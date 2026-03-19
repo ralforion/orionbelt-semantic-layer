@@ -415,9 +415,7 @@ async def execute_query(
         ) from None
 
     try:
-        exec_result = await asyncio.to_thread(
-            execute_sql, result.sql, dialect=body.dialect
-        )
+        exec_result = await asyncio.to_thread(execute_sql, result.sql, dialect=body.dialect)
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:

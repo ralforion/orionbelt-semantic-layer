@@ -174,8 +174,7 @@ def execute_sql(sql: str, *, dialect: str) -> ExecutionResult:
         from ob_flight.db_router import get_credentials
     except ImportError:
         raise ExecutionUnavailableError(
-            "ob-flight-extension package is not installed. "
-            "Install with: uv sync --extra flight"
+            "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
         ) from None
 
     t0 = time.monotonic()

@@ -132,9 +132,7 @@ class TestSemanticValidator:
         errors = validator.validate(sales_model)
         assert len(errors) == 0
 
-    def test_dimension_may_share_name_with_data_object(
-        self, resolver: ReferenceResolver
-    ) -> None:
+    def test_dimension_may_share_name_with_data_object(self, resolver: ReferenceResolver) -> None:
         """Dimension names can match data object names (different namespaces)."""
         yaml_content = """\
 version: 1.0
@@ -160,9 +158,7 @@ dimensions:
         errors = validator.validate(model)
         assert not any(e.code == "DUPLICATE_IDENTIFIER" for e in errors)
 
-    def test_duplicate_identifier_dimension_measure(
-        self, resolver: ReferenceResolver
-    ) -> None:
+    def test_duplicate_identifier_dimension_measure(self, resolver: ReferenceResolver) -> None:
         """Dimension and measure with the same name should still error."""
         yaml_content = """\
 version: 1.0
