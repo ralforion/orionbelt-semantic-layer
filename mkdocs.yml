@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "1.1.0"
+  project_version: "1.2.0"
 
 extra_css:
   - stylesheets/extra.css
