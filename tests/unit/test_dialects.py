@@ -27,6 +27,7 @@ from orionbelt.dialect.clickhouse import ClickHouseDialect
 from orionbelt.dialect.databricks import DatabricksDialect
 from orionbelt.dialect.dremio import DremioDialect
 from orionbelt.dialect.duckdb import DuckDBDialect
+from orionbelt.dialect.mysql import MySQLDialect
 from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.dialect.snowflake import SnowflakeDialect
@@ -38,6 +39,7 @@ ALL_DIALECTS = [
     "databricks",
     "dremio",
     "duckdb",
+    "mysql",
     "postgres",
     "snowflake",
 ]
@@ -349,6 +351,176 @@ class TestDuckDBDialect:
         assert "ILIKE" in sql
 
 
+class TestMySQLDialect:
+    @pytest.fixture
+    def dialect(self) -> MySQLDialect:
+        return MySQLDialect()
+
+    def test_name(self, dialect: MySQLDialect) -> None:
+        assert dialect.name == "mysql"
+
+    def test_capabilities(self, dialect: MySQLDialect) -> None:
+        assert dialect.capabilities.supports_cte is True
+        assert dialect.capabilities.supports_qualify is False
+        assert dialect.capabilities.supports_ilike is False
+        assert dialect.capabilities.supports_arrays is False
+        assert dialect.capabilities.supports_union_all_by_name is False
+
+    def test_quote_identifier(self, dialect: MySQLDialect) -> None:
+        assert dialect.quote_identifier("col") == "`col`"
+        assert dialect.quote_identifier("has`tick") == "`has``tick`"
+
+    def test_format_table_ref(self, dialect: MySQLDialect) -> None:
+        ref = dialect.format_table_ref("ignored_db", "myschema", "orders")
+        assert ref == "`myschema`.`orders`"
+
+    def test_format_table_ref_escapes(self, dialect: MySQLDialect) -> None:
+        ref = dialect.format_table_ref("db", "my`schema", "my`table")
+        assert ref == "`my``schema`.`my``table`"
+
+    def test_compile_simple_select(self, dialect: MySQLDialect) -> None:
+        ast = QueryBuilder().select(Star()).from_("orders").build()
+        sql = dialect.compile(ast)
+        assert "SELECT *" in sql
+        assert "FROM orders" in sql
+
+    def test_compile_aggregation(self, dialect: MySQLDialect) -> None:
+        ast = (
+            QueryBuilder()
+            .select(
+                col("country", "c"),
+                AliasedExpr(
+                    expr=FunctionCall(name="SUM", args=[col("amount", "o")]),
+                    alias="total",
+                ),
+            )
+            .from_("orders", alias="o")
+            .join("customers", on=eq(col("customer_id", "o"), col("id", "c")), alias="c")
+            .group_by(col("country", "c"))
+            .order_by(col("total"), desc=True)
+            .limit(100)
+            .build()
+        )
+        sql = dialect.compile(ast)
+        assert "SELECT" in sql
+        assert "SUM" in sql
+        assert "GROUP BY" in sql
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+        assert "LIMIT 100" in sql
+        # MySQL uses backtick quoting
+        assert "`total`" in sql
+        assert "`c`" in sql
+
+    def test_time_grain_day(self, dialect: MySQLDialect) -> None:
+        result = dialect.render_time_grain(col("dt"), TimeGrain.DAY)
+        assert isinstance(result, FunctionCall)
+        assert result.name == "DATE_FORMAT"
+
+    def test_time_grain_month(self, dialect: MySQLDialect) -> None:
+        result = dialect.render_time_grain(col("dt"), TimeGrain.MONTH)
+        assert isinstance(result, FunctionCall)
+        assert result.name == "DATE_FORMAT"
+        sql = dialect.compile_expr(result)
+        assert "%Y-%m-01" in sql
+
+    def test_time_grain_quarter(self, dialect: MySQLDialect) -> None:
+        from orionbelt.ast.nodes import RawSQL
+
+        result = dialect.render_time_grain(col("dt"), TimeGrain.QUARTER)
+        assert isinstance(result, RawSQL)
+        assert "MAKEDATE" in result.sql
+        assert "QUARTER" in result.sql
+
+    def test_time_grain_year(self, dialect: MySQLDialect) -> None:
+        result = dialect.render_time_grain(col("dt"), TimeGrain.YEAR)
+        assert isinstance(result, FunctionCall)
+        sql = dialect.compile_expr(result)
+        assert "%Y-01-01" in sql
+
+    def test_time_grain_week(self, dialect: MySQLDialect) -> None:
+        result = dialect.render_time_grain(col("dt"), TimeGrain.WEEK)
+        assert isinstance(result, FunctionCall)
+        sql = dialect.compile_expr(result)
+        assert "%Y-%u" in sql
+
+    def test_compile_listagg(self, dialect: MySQLDialect) -> None:
+        expr = FunctionCall(
+            name="LISTAGG",
+            args=[ColumnRef(name="val")],
+            separator=",",
+        )
+        sql = dialect.compile_expr(expr)
+        assert "GROUP_CONCAT(" in sql
+        assert "SEPARATOR ','" in sql
+
+    def test_compile_listagg_with_order_by(self, dialect: MySQLDialect) -> None:
+        expr = FunctionCall(
+            name="LISTAGG",
+            args=[ColumnRef(name="val")],
+            order_by=[OrderByItem(expr=ColumnRef(name="val"))],
+            separator="; ",
+        )
+        sql = dialect.compile_expr(expr)
+        assert "GROUP_CONCAT(" in sql
+        assert "ORDER BY" in sql
+        assert "SEPARATOR '; '" in sql
+
+    def test_compile_median(self, dialect: MySQLDialect) -> None:
+        expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
+        sql = dialect.compile_expr(expr)
+        assert "PERCENTILE_CONT(0.5)" in sql
+        assert "ORDER BY" in sql
+
+    def test_compile_mode_raises(self, dialect: MySQLDialect) -> None:
+        expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
+        with pytest.raises(ValueError, match="MySQL does not support MODE"):
+            dialect.compile_expr(expr)
+
+    def test_current_date_sql(self, dialect: MySQLDialect) -> None:
+        assert dialect.current_date_sql() == "CURDATE()"
+
+    def test_date_add_positive(self, dialect: MySQLDialect) -> None:
+        sql = dialect.date_add_sql("CURDATE()", "day", 7)
+        assert sql == "DATE_ADD(CURDATE(), INTERVAL 7 DAY)"
+
+    def test_date_add_negative(self, dialect: MySQLDialect) -> None:
+        sql = dialect.date_add_sql("CURDATE()", "day", -7)
+        assert sql == "DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+
+    def test_type_map(self, dialect: MySQLDialect) -> None:
+        assert dialect._resolve_type_name("string") == "VARCHAR(255)"
+        assert dialect._resolve_type_name("boolean") == "TINYINT(1)"
+        assert dialect._resolve_type_name("timestamp_tz") == "DATETIME"
+        assert dialect._resolve_type_name("int") == "INT"
+        assert dialect._resolve_type_name("float") == "DOUBLE"
+
+    def test_string_contains_uses_concat(self, dialect: MySQLDialect) -> None:
+        result = dialect.render_string_contains(col("name"), lit("foo"))
+        sql = dialect.compile_expr(result)
+        assert "LIKE" in sql
+        assert "CONCAT(" in sql
+        # Must NOT use || (logical OR in MySQL)
+        assert "||" not in sql
+
+    def test_multi_field_count_uses_concat(self, dialect: MySQLDialect) -> None:
+        sql = dialect._compile_multi_field_count(
+            [ColumnRef(name="a"), ColumnRef(name="b")], distinct=True
+        )
+        assert "CONCAT(" in sql
+        assert "COUNT(DISTINCT" in sql
+        assert "CHAR" in sql
+
+    def test_registry_includes_mysql(self) -> None:
+        assert "mysql" in DialectRegistry.available()
+
+    def test_cast(self, dialect: MySQLDialect) -> None:
+        expr = Cast(expr=col("age"), type_name="boolean")
+        sql = dialect.compile_expr(expr)
+        assert "CAST" in sql
+        assert "TINYINT(1)" in sql
+
+
 class TestCrossDialectConsistency:
     """Ensure the same query produces valid SQL across all dialects."""
 
@@ -459,6 +631,7 @@ class TestWindowFunctionRendering:
         ("databricks", "current_date()", "date_add("),
         ("dremio", "CURRENT_DATE", "DATE_ADD"),
         ("duckdb", "CURRENT_DATE", "INTERVAL"),
+        ("mysql", "CURDATE()", "DATE_SUB"),
         ("postgres", "CURRENT_DATE", "INTERVAL"),
         ("snowflake", "CURRENT_DATE()", "DATEADD('day'"),
     ],
@@ -491,6 +664,7 @@ class TestListaggRendering:
             ("databricks", "ARRAY_JOIN(COLLECT_LIST("),
             ("dremio", "LISTAGG"),
             ("duckdb", "STRING_AGG"),
+            ("mysql", "GROUP_CONCAT"),
             ("postgres", "STRING_AGG"),
             ("snowflake", "LISTAGG"),
         ],
@@ -515,6 +689,7 @@ class TestListaggRendering:
             ("databricks", "ARRAY_JOIN(COLLECT_SET("),
             ("dremio", "LISTAGG(DISTINCT"),
             ("duckdb", "STRING_AGG(DISTINCT"),
+            ("mysql", "GROUP_CONCAT(DISTINCT"),
             ("postgres", "STRING_AGG(DISTINCT"),
             ("snowflake", "LISTAGG(DISTINCT"),
         ],
@@ -539,6 +714,7 @@ class TestListaggRendering:
             ("databricks", "SORT_ARRAY(COLLECT_LIST("),
             ("dremio", "WITHIN GROUP (ORDER BY"),
             ("duckdb", "ORDER BY"),
+            ("mysql", "ORDER BY"),
             ("postgres", "ORDER BY"),
             ("snowflake", "WITHIN GROUP (ORDER BY"),
         ],
@@ -564,6 +740,7 @@ class TestListaggRendering:
             ("databricks", "SORT_ARRAY(COLLECT_SET(", ""),
             ("dremio", "LISTAGG(DISTINCT", "WITHIN GROUP (ORDER BY"),
             ("duckdb", "STRING_AGG(DISTINCT", "ORDER BY"),
+            ("mysql", "GROUP_CONCAT(DISTINCT", "ORDER BY"),
             ("postgres", "STRING_AGG(DISTINCT", "ORDER BY"),
             ("snowflake", "LISTAGG(DISTINCT", "WITHIN GROUP (ORDER BY"),
         ],
@@ -646,6 +823,7 @@ class TestAnyValueRendering:
             ("databricks", "ANY_VALUE("),
             ("dremio", "ANY_VALUE("),
             ("duckdb", "ANY_VALUE("),
+            ("mysql", "ANY_VALUE("),
             ("postgres", "ANY_VALUE("),
             ("snowflake", "ANY_VALUE("),
         ],
@@ -684,6 +862,13 @@ class TestModeRendering:
         with pytest.raises(ValueError, match="Dremio does not support MODE"):
             dialect.compile_expr(expr)
 
+    def test_mysql_mode_raises(self) -> None:
+        """MySQL does not support MODE."""
+        dialect = DialectRegistry.get("mysql")
+        expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
+        with pytest.raises(ValueError, match="MySQL does not support MODE"):
+            dialect.compile_expr(expr)
+
 
 class TestMedianRendering:
     """Test MEDIAN rendering across all dialects."""
@@ -696,6 +881,7 @@ class TestMedianRendering:
             ("databricks", "MEDIAN("),
             ("dremio", "MEDIAN("),
             ("duckdb", "MEDIAN("),
+            ("mysql", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY"),
             ("postgres", "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY"),
             ("snowflake", "MEDIAN("),
         ],

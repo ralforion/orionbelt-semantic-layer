@@ -21,6 +21,7 @@ keywords = [
     "dremio",
     "databricks",
     "duckdb",
+    "mysql",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -122,6 +123,7 @@ members = [
     "drivers/ob-dremio",
     "drivers/ob-databricks",
     "drivers/ob-duckdb",
+    "drivers/ob-mysql",
     "drivers/ob-flight-extension",
 ]
 
@@ -136,4 +138,5 @@ ob-clickhouse = { workspace = true }
 ob-dremio = { workspace = true }
 ob-databricks = { workspace = true }
 ob-duckdb = { workspace = true }
+ob-mysql = { workspace = true }
 ob-flight-extension = { workspace = true }

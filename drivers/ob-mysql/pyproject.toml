@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ob-mysql"
+version = "0.1.0"
+description = "OrionBelt Semantic Layer driver for MySQL 8.0+ (DB-API 2.0)"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ralfo Becher", email = "info@orionbelt.ai" }]
+keywords = ["mysql", "semantic-layer", "obml", "db-api", "orionbelt"]
+requires-python = ">=3.12"
+dependencies = [
+    "ob-driver-core>=0.1",
+    "mysql-connector-python>=8.0",
+    "pyarrow>=16.0",
+]
+
+[project.optional-dependencies]
+sqlalchemy = ["sqlalchemy>=2.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+    "ruff>=0.4",
+    "respx>=0.21",
+]
+
+[project.entry-points."sqlalchemy.dialects"]
+"ob.mysql" = "ob_mysql.dialect:OBMySQLDialect"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ob_mysql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/ob_mysql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["integration: requires live DB + OB API"]
+addopts = "-m 'not integration'"

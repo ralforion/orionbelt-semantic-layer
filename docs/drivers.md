@@ -1,6 +1,6 @@
 # DB-API 2.0 Drivers & Arrow Flight SQL
 
-OrionBelt provides PEP 249 DB-API 2.0 drivers for 7 databases and an Arrow Flight SQL server extension that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
+OrionBelt provides PEP 249 DB-API 2.0 drivers for 8 databases and an Arrow Flight SQL server extension that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
 
 All drivers work against the **OrionBelt REST API in single-model mode** (`MODEL_FILE` set). OBML queries are compiled transparently via `POST /v1/query/sql` — the user writes OBML, the driver returns SQL results.
 

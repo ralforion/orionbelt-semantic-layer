@@ -21,6 +21,7 @@ VENDOR_MAP: dict[str, str] = {
     "clickhouse": "ob_clickhouse",
     "dremio": "ob_dremio",
     "databricks": "ob_databricks",
+    "mysql": "ob_mysql",
 }
 
 # Environment variable prefixes for vendor credentials
@@ -64,6 +65,13 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "DATABRICKS_HTTP_PATH",
         "DATABRICKS_ACCESS_TOKEN",
     ],
+    "mysql": [
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_DATABASE",
+        "MYSQL_USER",
+        "MYSQL_PASSWORD",
+    ],
 }
 
 # Env var name -> connect() kwarg name mapping
@@ -95,6 +103,11 @@ _ENV_TO_KWARG: dict[str, str] = {
     "DATABRICKS_SERVER_HOSTNAME": "server_hostname",
     "DATABRICKS_HTTP_PATH": "http_path",
     "DATABRICKS_ACCESS_TOKEN": "access_token",
+    "MYSQL_HOST": "host",
+    "MYSQL_PORT": "port",
+    "MYSQL_DATABASE": "database",
+    "MYSQL_USER": "user",
+    "MYSQL_PASSWORD": "password",
 }
 
 

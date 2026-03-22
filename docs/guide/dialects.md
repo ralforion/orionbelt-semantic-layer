@@ -1,6 +1,6 @@
 # SQL Dialects
 
-OrionBelt compiles semantic queries into SQL for seven database dialects. Each dialect has its own identifier quoting, function names, and SQL syntax. The plugin architecture allows adding new dialects without modifying the core compiler.
+OrionBelt compiles semantic queries into SQL for eight database dialects. Each dialect has its own identifier quoting, function names, and SQL syntax. The plugin architecture allows adding new dialects without modifying the core compiler.
 
 ## Supported Dialects
 
@@ -11,6 +11,7 @@ OrionBelt compiles semantic queries into SQL for seven database dialects. Each d
 | Databricks SQL | `databricks` | Spark SQL semantics with backtick identifiers |
 | Dremio | `dremio` | Data lakehouse with reduced function surface |
 | DuckDB / MotherDuck | `duckdb` | Embedded analytics engine with PostgreSQL-like syntax, QUALIFY, UNION ALL BY NAME |
+| MySQL | `mysql` | MySQL 8.0+ with backtick identifiers, DATE_FORMAT time grains, GROUP_CONCAT |
 | PostgreSQL | `postgres` | Standard PostgreSQL with strict GROUP BY |
 | Snowflake | `snowflake` | Cloud data warehouse with QUALIFY, semi-structured types |
 
@@ -18,15 +19,15 @@ OrionBelt compiles semantic queries into SQL for seven database dialects. Each d
 
 Each dialect declares capability flags that the compiler uses to choose SQL generation strategies.
 
-| Capability | BigQuery | ClickHouse | Databricks | Dremio | DuckDB | Postgres | Snowflake |
-|-----------|----------|------------|------------|--------|--------|----------|-----------|
-| `supports_cte` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `supports_qualify` | Yes | No | No | No | Yes | No | Yes |
-| `supports_arrays` | Yes | Yes | Yes | No | Yes | Yes | Yes |
-| `supports_window_filters` | Yes | No | No | No | Yes | No | Yes |
-| `supports_ilike` | No | Yes | No | No | Yes | Yes | Yes |
-| `supports_time_travel` | No | No | No | No | No | No | Yes |
-| `supports_semi_structured` | Yes | No | No | No | No | No | Yes |
+| Capability | BigQuery | ClickHouse | Databricks | Dremio | DuckDB | MySQL | Postgres | Snowflake |
+|-----------|----------|------------|------------|--------|--------|-------|----------|-----------|
+| `supports_cte` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `supports_qualify` | Yes | No | No | No | Yes | No | No | Yes |
+| `supports_arrays` | Yes | Yes | Yes | No | Yes | No | Yes | Yes |
+| `supports_window_filters` | Yes | No | No | No | Yes | No | No | Yes |
+| `supports_ilike` | No | Yes | No | No | Yes | No | Yes | Yes |
+| `supports_time_travel` | No | No | No | No | No | No | No | Yes |
+| `supports_semi_structured` | Yes | No | No | No | No | No | No | Yes |
 
 ## Identifier Quoting
 
@@ -37,6 +38,7 @@ Each dialect declares capability flags that the compiler uses to choose SQL gene
 | Databricks | Backticks | `` `column_name` `` |
 | Dremio | Double quotes | `"column_name"` |
 | DuckDB | Double quotes | `"column_name"` |
+| MySQL | Backticks | `` `column_name` `` |
 | Postgres | Double quotes | `"column_name"` |
 | Snowflake | Double quotes | `"column_name"` |
 
@@ -86,6 +88,17 @@ The `timeGrain` is rendered differently per dialect:
     date_trunc('month', "order_date")
     date_trunc('year', "order_date")
     date_trunc('quarter', "order_date")
+    ```
+
+=== "MySQL"
+
+    ```sql
+    DATE_FORMAT(`order_date`, '%Y-%m-01')           -- month
+    DATE_FORMAT(`order_date`, '%Y-01-01')           -- year
+    DATE_ADD(MAKEDATE(YEAR(`order_date`), 1),
+      INTERVAL (QUARTER(`order_date`) - 1) * 3 MONTH)  -- quarter
+    DATE_FORMAT(`order_date`, '%Y-%u')              -- week (ISO)
+    DATE_FORMAT(`order_date`, '%Y-%m-%d')           -- day
     ```
 
 === "Postgres"
@@ -138,6 +151,14 @@ The `contains` filter operator is rendered per dialect:
     "column" ILIKE '%' || 'search' || '%'
     ```
 
+=== "MySQL"
+
+    ```sql
+    `column` LIKE CONCAT('%', 'search', '%')
+    ```
+
+    MySQL string comparisons are case-insensitive by default with `utf8mb4_general_ci` collation, so `LIKE` is sufficient (no `ILIKE` needed).
+
 === "Postgres"
 
     ```sql
@@ -152,7 +173,7 @@ The `contains` filter operator is rendered per dialect:
 
 ## CAST Handling
 
-=== "BigQuery / Databricks / Dremio / DuckDB / Postgres / Snowflake"
+=== "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 
     ```sql
     CAST(expr AS INTEGER)
@@ -188,6 +209,7 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 | Databricks | `ANY_VALUE(col)` |
 | Dremio | `ANY_VALUE(col)` |
 | DuckDB | `ANY_VALUE(col)` |
+| MySQL | `ANY_VALUE(col)` |
 | Postgres | `ANY_VALUE(col)` |
 | Snowflake | `ANY_VALUE(col)` |
 
@@ -200,6 +222,7 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 | Databricks | `MEDIAN(col)` |
 | Dremio | `MEDIAN(col)` |
 | DuckDB | `MEDIAN(col)` |
+| MySQL | `MAX(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col))` |
 | Postgres | `PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY col)` |
 | Snowflake | `MEDIAN(col)` |
 
@@ -212,6 +235,7 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 | Databricks | `MODE(col)` |
 | Dremio | Not supported |
 | DuckDB | `MODE(col)` |
+| MySQL | Not supported |
 | Postgres | `MODE() WITHIN GROUP (ORDER BY col)` |
 | Snowflake | `MODE(col)` |
 
@@ -224,11 +248,15 @@ Most aggregations (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`) compile identically acro
 | Databricks | `ARRAY_JOIN(COLLECT_LIST(col), sep)` | `ARRAY_JOIN(COLLECT_SET(col), sep)` | `ARRAY_JOIN(SORT_ARRAY(COLLECT_LIST(col)), sep)` |
 | Dremio | `LISTAGG(col, sep)` | `LISTAGG(DISTINCT col, sep)` | `LISTAGG(col, sep) WITHIN GROUP (ORDER BY col)` |
 | DuckDB | `STRING_AGG(col, sep)` | `STRING_AGG(DISTINCT col, sep)` | `STRING_AGG(col, sep ORDER BY col)` |
+| MySQL | `GROUP_CONCAT(col SEPARATOR sep)` | `GROUP_CONCAT(DISTINCT col SEPARATOR sep)` | `GROUP_CONCAT(col ORDER BY col SEPARATOR sep)` |
 | Postgres | `STRING_AGG(col, sep)` | `STRING_AGG(DISTINCT col, sep)` | `STRING_AGG(col, sep ORDER BY col)` |
 | Snowflake | `LISTAGG(col, sep)` | `LISTAGG(DISTINCT col, sep)` | `LISTAGG(col, sep) WITHIN GROUP (ORDER BY col)` |
 
 !!! warning "LISTAGG ordering limitations"
     ClickHouse and Databricks only support self-ordering (sorting by the aggregated column). Ordering by a different column raises an error at compile time.
+
+!!! warning "MySQL GROUP_CONCAT limitations"
+    MySQL's `GROUP_CONCAT` has a default length limit of 1024 bytes (`group_concat_max_len`). For large aggregations, users may need to increase this: `SET SESSION group_concat_max_len = 1000000`. Additionally, MySQL silently ignores `ORDER BY` when `DISTINCT` is also present in `GROUP_CONCAT`.
 
 !!! warning "Total not supported"
     `MEDIAN`, `MODE`, `LISTAGG`, and `ANY_VALUE` do not support `total: true` because they cannot be meaningfully re-aggregated via window functions.

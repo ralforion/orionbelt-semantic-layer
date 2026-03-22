@@ -1,6 +1,6 @@
 # Multi-Dialect Output
 
-This example shows how the same semantic model and query produce different SQL for each of the seven supported dialects.
+This example shows how the same semantic model and query produce different SQL for each of the eight supported dialects.
 
 ## The Model
 

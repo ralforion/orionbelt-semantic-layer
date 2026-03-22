@@ -27,12 +27,13 @@
 [![Dremio](https://img.shields.io/badge/Dremio-31B48D.svg)](https://www.dremio.com)
 [![Databricks](https://img.shields.io/badge/Databricks-FF3621.svg?logo=databricks&logoColor=white)](https://www.databricks.com)
 [![DuckDB](https://img.shields.io/badge/DuckDB-FFF000.svg?logo=duckdb&logoColor=black)](https://duckdb.org)
+[![MySQL](https://img.shields.io/badge/MySQL-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com)
 
-OrionBelt Semantic Layer is an **API-first** semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, Postgres, and Snowflake. It provides a unified abstraction over your data warehouse, so analysts and applications can query using business concepts (dimensions, measures, metrics) instead of raw SQL. Every capability — model loading, validation, query compilation and execution, and diagram generation — is exposed through a REST API, making OrionBelt easy to integrate into any application, workflow, or AI assistant.
+OrionBelt Semantic Layer is an **API-first** semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, and Snowflake. It provides a unified abstraction over your data warehouse, so analysts and applications can query using business concepts (dimensions, measures, metrics) instead of raw SQL. Every capability — model loading, validation, query compilation and execution, and diagram generation — is exposed through a REST API, making OrionBelt easy to integrate into any application, workflow, or AI assistant.
 
 ## Features
 
-- **7 SQL Dialects** — BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, Postgres, Snowflake with dialect-specific optimizations
+- **8 SQL Dialects** — BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, Snowflake with dialect-specific optimizations
 - **AST-Based SQL Generation** — Custom SQL AST ensures correct, injection-safe SQL (no string concatenation)
 - **OrionBelt ML (OBML)** — YAML-based semantic models with data objects, dimensions, measures, metrics (derived and cumulative), and joins
 - **Cumulative Metrics** — Running totals, rolling windows, and grain-to-date (MTD/YTD) via window functions with configurable aggregation types
@@ -46,7 +47,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 - **MCP Server** — Available as a separate thin client in [orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) — delegates to the REST API via HTTP, deployable independently (e.g. to Prefect Horizon)
 - **Gradio UI** — Interactive web interface for model editing, query testing, and SQL compilation with live validation feedback
 - **[OSI](https://github.com/open-semantic-interchange/OSI) Interoperability** — Bidirectional conversion between OBML and the Open Semantic Interchange format via REST API (`/convert`) and Gradio UI, with validation for both directions
-- **DB-API 2.0 Drivers** — PEP 249 drivers for all 7 databases with transparent OBML-to-SQL compilation via REST API
+- **DB-API 2.0 Drivers** — PEP 249 drivers for all 8 databases with transparent OBML-to-SQL compilation via REST API
 - **Arrow Flight SQL** — Embedded gRPC server for DBeaver, Tableau, and Power BI — single container, two ports (8080 + 8815)
 - **Plugin Architecture** — Extensible dialect system with capability flags and registry
 
@@ -204,7 +205,7 @@ GROUP BY "Customers"."COUNTRY"
 LIMIT 100
 ```
 
-Change the dialect to `"bigquery"`, `"clickhouse"`, `"databricks"`, `"dremio"`, `"duckdb"`, or `"snowflake"` to get dialect-specific SQL.
+Change the dialect to `"bigquery"`, `"clickhouse"`, `"databricks"`, `"dremio"`, `"duckdb"`, `"mysql"`, or `"snowflake"` to get dialect-specific SQL.
 
 > **Interactive notebook:** Try the full workflow in [`examples/quickstart.ipynb`](examples/quickstart.ipynb) — uses the TPC-H dataset in DuckDB to demonstrate multi-dialect compilation, query execution, multi-fact CFL, metrics, filters, and ER diagrams.
 
@@ -323,7 +324,7 @@ Load Balancer (single IP)
 The UI provides:
 
 - **Side-by-side editors** — OBML model (YAML) and query (YAML) with syntax highlighting
-- **Dialect selector** — Switch between BigQuery, ClickHouse, Databricks, Dremio, DuckDB, Postgres, and Snowflake
+- **Dialect selector** — Switch between BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres, and Snowflake
 - **One-click compilation** — Compile button generates formatted SQL output
 - **SQL validation feedback** — Warnings and validation errors from sqlglot are displayed as comments above the generated SQL
 - **ER Diagram tab** — Visualize the semantic model as a Mermaid ER diagram with left-to-right layout, FK annotations, dotted lines for secondary joins, and an adjustable zoom slider
@@ -395,7 +396,7 @@ The API is available at `http://localhost:8080`. The UI is at `http://localhost:
 
 ## DB-API 2.0 Drivers & Arrow Flight SQL
 
-OrionBelt provides **PEP 249 DB-API 2.0 drivers** for 7 databases and an **Arrow Flight SQL server** that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
+OrionBelt provides **PEP 249 DB-API 2.0 drivers** for 8 databases and an **Arrow Flight SQL server** that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
 
 | Package | Database | Native Connector | Arrow Support |
 |---------|----------|------------------|---------------|

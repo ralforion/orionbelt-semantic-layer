@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**OrionBelt Semantic Layer** is a SaaS semantic layer engine that compiles and executes YAML semantic models (OBML format) as analytical SQL across 7 database dialects: BigQuery, ClickHouse, Databricks, Dremio, DuckDB, Postgres, Snowflake. It exposes all capabilities through a REST API (FastAPI). An MCP server is available as a separate thin client in [orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp).
+**OrionBelt Semantic Layer** is a SaaS semantic layer engine that compiles and executes YAML semantic models (OBML format) as analytical SQL across 8 database dialects: BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres, Snowflake. It exposes all capabilities through a REST API (FastAPI). An MCP server is available as a separate thin client in [orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp).
 
 ## Commands
 
@@ -96,7 +96,7 @@ The pipeline is orchestrated by `CompilationPipeline` in `compiler/pipeline.py`.
 ## Key Subsystems
 
 ### Dialect Registry (`dialect/`)
-Dialects self-register via `@DialectRegistry.register` decorator. `dialect/__init__.py` imports all 7 modules to trigger registration. `DialectRegistry.get(name)` returns a fresh instance. Each dialect implements `quote_identifier()`, `render_time_grain()`, `render_cast()`, `current_date_sql()`, `date_add_sql()`, and `compile_expr()` (uses `match` on AST nodes).
+Dialects self-register via `@DialectRegistry.register` decorator. `dialect/__init__.py` imports all 8 modules to trigger registration. `DialectRegistry.get(name)` returns a fresh instance. Each dialect implements `quote_identifier()`, `render_time_grain()`, `render_cast()`, `current_date_sql()`, `date_add_sql()`, and `compile_expr()` (uses `match` on AST nodes).
 
 ### SQL AST (`ast/nodes.py`)
 All nodes are frozen dataclasses. Key types: `Select`, `From`, `Join`, `CTE`, `UnionAll`, `ColumnRef`, `AliasedExpr`, `FunctionCall`, `BinaryOp`, `WindowFunction`, `CaseExpr`, `Cast`, `Literal`, `RawSQL`. The union type `Expr` covers all expression nodes.
@@ -161,7 +161,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 |--------|------|-------------|
 | GET | `/health` | Health check (returns version) |
 | GET | `/v1/settings` | Public config (single-model mode, TTL) |
-| GET | `/v1/dialects` | List 7 dialects with capabilities |
+| GET | `/v1/dialects` | List 8 dialects with capabilities |
 | POST | `/v1/sessions` | Create session |
 | GET | `/v1/sessions` | List sessions |
 | GET | `/v1/sessions/{id}` | Get session info |

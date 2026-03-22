@@ -21,14 +21,14 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 | Feature             | Description                                                                                                     |
 | ------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 7 SQL Dialects      | BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, Postgres, Snowflake                                |
+| 8 SQL Dialects      | BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, Snowflake                         |
 | OrionBelt ML (OBML) | YAML-based data objects, dimensions, measures, metrics, joins                                                   |
 | Star Schema & CFL   | Automatic fact selection and join path resolution                                                               |
 | Session Management  | TTL-scoped per-client sessions for the REST API                                                                 |
 | REST API            | FastAPI endpoints for session-based model management, validation, compilation, execution, and OSI conversion               |
 | Gradio UI           | Interactive web interface for model editing, query testing, SQL compilation, ER diagrams, and OSI import/export |
 | Custom Extensions   | Vendor-specific metadata at all model levels (model, data object, column, dimension, measure, metric)           |
-| DB-API 2.0 Drivers  | PEP 249 drivers for all 7 databases with transparent OBML compilation                                          |
+| DB-API 2.0 Drivers  | PEP 249 drivers for all 8 databases with transparent OBML compilation                                          |
 | Arrow Flight SQL    | Embedded gRPC server for DBeaver, Tableau, Power BI — single container, two ports                               |
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
 | Source Tracking     | Error messages with YAML line/column positions                                                                  |
