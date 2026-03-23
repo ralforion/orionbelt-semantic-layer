@@ -68,6 +68,8 @@ dev = [
     "mypy>=1.19",
     "pre-commit>=4.5",
     "duckdb>=1.0",
+    "testcontainers>=4.0",
+    "psycopg2-binary>=2.9",
 ]
 docs = [
     "mkdocs-material>=9.7",
@@ -101,6 +103,9 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "docker: requires Docker (testcontainers) — run with: pytest -m docker",
+]
 
 [tool.mypy]
 python_version = "3.12"

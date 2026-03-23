@@ -11,6 +11,18 @@ from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.service.session_manager import SessionManager
 
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip docker-marked tests unless ``-m docker`` is explicitly requested."""
+    marker_expr = config.getoption("-m", default="")
+    if "docker" in str(marker_expr):
+        return  # user explicitly asked for docker tests
+    skip_docker = pytest.mark.skip(reason="Docker tests not selected — run with: pytest -m docker")
+    for item in items:
+        if "docker" in item.keywords:
+            item.add_marker(skip_docker)
+
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 SALES_MODEL_DIR = FIXTURES_DIR / "sales_model"
 QUERIES_DIR = FIXTURES_DIR / "queries"
