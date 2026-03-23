@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import (
     AliasedExpr,
@@ -33,6 +33,15 @@ from orionbelt.ast.nodes import (
 from orionbelt.models.semantic import TimeGrain
 
 
+class UnsupportedAggregationError(Exception):
+    """Raised when a dialect does not support a specific aggregation function."""
+
+    def __init__(self, dialect: str, aggregation: str) -> None:
+        self.dialect = dialect
+        self.aggregation = aggregation
+        super().__init__(f"Dialect '{dialect}' does not support {aggregation.upper()} aggregation")
+
+
 @dataclass
 class DialectCapabilities:
     """Flags indicating what SQL features a dialect supports."""
@@ -45,6 +54,7 @@ class DialectCapabilities:
     supports_time_travel: bool = False
     supports_semi_structured: bool = False
     supports_union_all_by_name: bool = False
+    unsupported_aggregations: list[str] = field(default_factory=list)
 
 
 class Dialect(ABC):

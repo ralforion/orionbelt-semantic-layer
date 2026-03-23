@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import Dialect, DialectCapabilities, UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -41,6 +41,7 @@ class MySQLDialect(Dialect):
             supports_time_travel=False,
             supports_semi_structured=False,
             supports_union_all_by_name=False,
+            unsupported_aggregations=["mode"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
@@ -105,10 +106,7 @@ class MySQLDialect(Dialect):
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """MySQL does not support MODE aggregation at the dialect level."""
-        raise ValueError(
-            "MySQL does not support MODE aggregation — "
-            "a correct emulation requires FROM clause context unavailable at codegen time"
-        )
+        raise UnsupportedAggregationError("mysql", "mode")
 
     def _compile_listagg(
         self,

@@ -365,6 +365,7 @@ class TestMySQLDialect:
         assert dialect.capabilities.supports_ilike is False
         assert dialect.capabilities.supports_arrays is False
         assert dialect.capabilities.supports_union_all_by_name is False
+        assert dialect.capabilities.unsupported_aggregations == ["mode"]
 
     def test_quote_identifier(self, dialect: MySQLDialect) -> None:
         assert dialect.quote_identifier("col") == "`col`"
@@ -473,8 +474,10 @@ class TestMySQLDialect:
         assert "ORDER BY" in sql
 
     def test_compile_mode_raises(self, dialect: MySQLDialect) -> None:
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
         expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
-        with pytest.raises(ValueError, match="MySQL does not support MODE"):
+        with pytest.raises(UnsupportedAggregationError, match="mysql.*MODE"):
             dialect.compile_expr(expr)
 
     def test_current_date_sql(self, dialect: MySQLDialect) -> None:
@@ -857,16 +860,20 @@ class TestModeRendering:
 
     def test_dremio_mode_raises(self) -> None:
         """Dremio does not support MODE."""
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
         dialect = DialectRegistry.get("dremio")
         expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
-        with pytest.raises(ValueError, match="Dremio does not support MODE"):
+        with pytest.raises(UnsupportedAggregationError, match="dremio.*MODE"):
             dialect.compile_expr(expr)
 
     def test_mysql_mode_raises(self) -> None:
         """MySQL does not support MODE."""
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
         dialect = DialectRegistry.get("mysql")
         expr = FunctionCall(name="MODE", args=[ColumnRef(name="status")])
-        with pytest.raises(ValueError, match="MySQL does not support MODE"):
+        with pytest.raises(UnsupportedAggregationError, match="mysql.*MODE"):
             dialect.compile_expr(expr)
 
 

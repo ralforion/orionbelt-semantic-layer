@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import Dialect, DialectCapabilities, UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -24,6 +24,7 @@ class DremioDialect(Dialect):
             supports_arrays=False,
             supports_window_filters=False,
             supports_ilike=False,
+            unsupported_aggregations=["mode"],
         )
 
     def quote_identifier(self, name: str) -> str:
@@ -55,7 +56,7 @@ class DremioDialect(Dialect):
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
-        raise ValueError("Dremio does not support MODE aggregation")
+        raise UnsupportedAggregationError("dremio", "mode")
 
     def current_date_sql(self) -> str:
         return "CURRENT_DATE"

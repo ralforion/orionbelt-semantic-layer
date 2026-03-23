@@ -39,6 +39,7 @@ from orionbelt.api.schemas import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
 from orionbelt.service.diagram import generate_mermaid_er
@@ -289,6 +290,16 @@ async def compile_query(
             status_code=422,
             detail={"error": "Query fanout detected", "message": exc.message},
         ) from None
+    except UnsupportedAggregationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported aggregation",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "aggregation": exc.aggregation,
+            },
+        ) from None
     explain_resp = None
     if result.explain:
         explain_resp = ExplainPlanResponse(
@@ -412,6 +423,16 @@ async def execute_query(
         raise HTTPException(
             status_code=422,
             detail={"error": "Query fanout detected", "message": exc.message},
+        ) from None
+    except UnsupportedAggregationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported aggregation",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "aggregation": exc.aggregation,
+            },
         ) from None
 
     try:

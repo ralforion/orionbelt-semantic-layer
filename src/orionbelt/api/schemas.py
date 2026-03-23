@@ -128,6 +128,7 @@ class DialectInfo(BaseModel):
 
     name: str
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    unsupported_aggregations: list[str] = Field(default_factory=list)
 
 
 class DialectListResponse(BaseModel):

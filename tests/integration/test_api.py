@@ -59,6 +59,16 @@ class TestDialectsEndpoint:
         assert "dremio" in names
         assert "databricks" in names
 
+    async def test_dialects_unsupported_aggregations(self, client: AsyncClient) -> None:
+        response = await client.get("/v1/dialects")
+        data = response.json()
+        by_name = {d["name"]: d for d in data["dialects"]}
+        # MySQL and Dremio declare mode as unsupported
+        assert "mode" in by_name["mysql"]["unsupported_aggregations"]
+        assert "mode" in by_name["dremio"]["unsupported_aggregations"]
+        # Postgres supports all aggregations
+        assert by_name["postgres"]["unsupported_aggregations"] == []
+
 
 class TestSettingsEndpoint:
     async def test_settings_default(self, client: AsyncClient) -> None:
