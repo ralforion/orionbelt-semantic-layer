@@ -94,3 +94,18 @@ class DuckDBDialect(Dialect):
 
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         return f"{date_sql} + INTERVAL '{count} {unit}'"
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        return f"date_trunc('{grain}', {column_sql})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        prev = f"d + INTERVAL '{offset} {offset_grain}'"
+        return (
+            f"SELECT d::date AS spine_date,\n"
+            f"       CASE WHEN ({prev})::date >= {min_date}\n"
+            f"            THEN ({prev})::date END AS spine_date_prev\n"
+            f"FROM generate_series({min_date}::timestamp, "
+            f"{max_date}::timestamp, INTERVAL '1 {grain}') AS t(d)"
+        )

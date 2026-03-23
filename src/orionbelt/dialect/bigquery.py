@@ -108,3 +108,18 @@ class BigQueryDialect(Dialect):
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         unit_sql = unit.upper()
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit_sql})"
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        return f"DATE_TRUNC({column_sql}, {grain.upper()})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        prev = f"DATE_ADD(d, INTERVAL {offset} {offset_grain.upper()})"
+        return (
+            f"SELECT d AS spine_date,\n"
+            f"       CASE WHEN {prev} >= {min_date}\n"
+            f"            THEN {prev} END AS spine_date_prev\n"
+            f"FROM UNNEST(GENERATE_DATE_ARRAY("
+            f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d"
+        )

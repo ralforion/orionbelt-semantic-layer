@@ -64,3 +64,26 @@ class DremioDialect(Dialect):
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         unit_sql = unit.upper()
         return f"DATE_ADD({date_sql}, INTERVAL '{count}' {unit_sql})"
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        return f"DATE_TRUNC('{grain}', {column_sql})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        prev = self.date_add_sql("spine_date", offset_grain, offset)
+        step = f"DATE_ADD(spine_date, INTERVAL '1' {grain.upper()})"
+        return (
+            f"SELECT spine_date,\n"
+            f"       CASE WHEN {prev} >= {min_date}\n"
+            f"            THEN {prev} END AS spine_date_prev\n"
+            f"FROM (\n"
+            f"  WITH RECURSIVE dates AS (\n"
+            f"    SELECT {min_date} AS spine_date\n"
+            f"    UNION ALL\n"
+            f"    SELECT {step}\n"
+            f"    FROM dates WHERE spine_date < {max_date}\n"
+            f"  )\n"
+            f"  SELECT spine_date FROM dates\n"
+            f") AS spine"
+        )

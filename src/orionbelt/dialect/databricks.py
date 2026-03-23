@@ -95,3 +95,18 @@ class DatabricksDialect(Dialect):
         if unit == "year":
             return f"add_months({date_sql}, {count * 12})"
         raise ValueError(f"Unsupported unit '{unit}' for Databricks")
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        return f"date_trunc('{grain}', {column_sql})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        prev = self.date_add_sql("d", offset_grain, offset)
+        return (
+            f"SELECT d AS spine_date,\n"
+            f"       CASE WHEN {prev} >= {min_date}\n"
+            f"            THEN {prev} END AS spine_date_prev\n"
+            f"FROM (SELECT EXPLODE(SEQUENCE("
+            f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d)"
+        )

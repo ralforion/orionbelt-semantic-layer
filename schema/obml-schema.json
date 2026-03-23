@@ -594,21 +594,55 @@
       "description": "Reset boundary for grain-to-date cumulative metrics",
       "enum": ["year", "quarter", "month", "week"]
     },
+    "periodOverPeriodComparison": {
+      "description": "Comparison type for period-over-period metrics",
+      "enum": ["ratio", "difference", "previousValue", "percentChange"]
+    },
+    "periodOverPeriod": {
+      "type": "object",
+      "description": "Period-over-period configuration — compares a measure against a prior time period",
+      "properties": {
+        "timeDimension": {
+          "type": "string",
+          "description": "Name of the time dimension used for period comparison (must be in SELECT)"
+        },
+        "grain": {
+          "$ref": "#/definitions/timeGrain",
+          "description": "Time grain for the date spine (e.g. month, quarter, year)"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Number of periods to look back (negative = past, e.g. -1 = previous period)",
+          "default": -1
+        },
+        "offsetGrain": {
+          "$ref": "#/definitions/timeGrain",
+          "description": "Unit for the offset (e.g. year for YoY, month for MoM)"
+        },
+        "comparison": {
+          "$ref": "#/definitions/periodOverPeriodComparison",
+          "description": "How to compare current vs previous period value",
+          "default": "percentChange"
+        }
+      },
+      "required": ["timeDimension", "grain", "offsetGrain"],
+      "additionalProperties": false
+    },
     "metric": {
       "type": "object",
-      "description": "Metric definition. Either a derived metric (expression referencing measures) or a cumulative metric (window function over a measure).",
+      "description": "Metric definition. A derived metric (expression referencing measures), a cumulative metric (window function over a measure), or a period-over-period metric (comparing a measure across time periods).",
       "properties": {
         "label": {
           "type": "string"
         },
         "type": {
-          "description": "Metric category: derived (expression-based) or cumulative (window function)",
-          "enum": ["derived", "cumulative"],
+          "description": "Metric category: derived (expression-based), cumulative (window function), or period_over_period (time comparison)",
+          "enum": ["derived", "cumulative", "period_over_period"],
           "default": "derived"
         },
         "expression": {
           "type": "string",
-          "description": "Template string with {[Measure Name]} placeholders (required for derived metrics)"
+          "description": "Template string with {[Measure Name]} placeholders (required for derived and period_over_period metrics)"
         },
         "measure": {
           "type": "string",
@@ -632,6 +666,10 @@
           "$ref": "#/definitions/grainToDate",
           "description": "Reset boundary for grain-to-date (e.g. month for MTD). Mutually exclusive with window."
         },
+        "periodOverPeriod": {
+          "$ref": "#/definitions/periodOverPeriod",
+          "description": "Period-over-period configuration (required for period_over_period metrics)"
+        },
         "description": {
           "type": "string",
           "description": "Business description of this metric"
@@ -654,19 +692,40 @@
           "items": { "$ref": "#/definitions/customExtension" }
         }
       },
-      "if": {
-        "properties": { "type": { "const": "cumulative" } },
-        "required": ["type"]
-      },
-      "then": {
-        "required": ["measure", "timeDimension"],
-        "not": {
-          "required": ["window", "grainToDate"]
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "cumulative" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["measure", "timeDimension"],
+            "not": {
+              "required": ["window", "grainToDate"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "period_over_period" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expression", "periodOverPeriod"]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": { "type": { "enum": ["cumulative", "period_over_period"] } },
+              "required": ["type"]
+            }
+          },
+          "then": {
+            "required": ["expression"]
+          }
         }
-      },
-      "else": {
-        "required": ["expression"]
-      },
+      ],
       "additionalProperties": false
     },
     "locale": {

@@ -120,6 +120,41 @@ class Dialect(ABC):
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         """Return SQL that adds count units to date_sql."""
 
+    @abstractmethod
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        """Return SQL string that truncates a date/timestamp to the given grain.
+
+        String-level helper (not AST) for use in raw SQL CTEs like date_range.
+        """
+
+    @abstractmethod
+    def render_date_spine_cte_sql(
+        self,
+        min_date: str,
+        max_date: str,
+        grain: str,
+        offset: int,
+        offset_grain: str,
+    ) -> str:
+        """Return the SQL body for a date spine CTE.
+
+        Must produce two columns: ``spine_date`` and ``spine_date_prev``.
+        ``spine_date_prev`` is NULL when the offset date falls before min_date.
+
+        Parameters
+        ----------
+        min_date : str
+            SQL expression referencing the minimum date (e.g. ``date_range.min_date``).
+        max_date : str
+            SQL expression referencing the maximum date.
+        grain : str
+            Time grain string: ``day``, ``week``, ``month``, ``quarter``, ``year``.
+        offset : int
+            Signed period offset (e.g. ``-1`` for previous period).
+        offset_grain : str
+            Grain of the offset (e.g. ``year`` for YoY).
+        """
+
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:
         """Default: column LIKE '%' || pattern || '%'."""
         return BinaryOp(

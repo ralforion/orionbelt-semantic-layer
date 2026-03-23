@@ -145,3 +145,35 @@ class MySQLDialect(Dialect):
         if count < 0:
             return f"DATE_SUB({date_sql}, INTERVAL {abs(count)} {unit.upper()})"
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit.upper()})"
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        grain_map = {
+            "year": f"DATE_FORMAT({column_sql}, '%Y-01-01')",
+            "quarter": (
+                f"DATE_ADD(MAKEDATE(YEAR({column_sql}), 1), "
+                f"INTERVAL (QUARTER({column_sql}) - 1) * 3 MONTH)"
+            ),
+            "month": f"DATE_FORMAT({column_sql}, '%Y-%m-01')",
+            "week": f"DATE_SUB({column_sql}, INTERVAL WEEKDAY({column_sql}) DAY)",
+            "day": f"DATE({column_sql})",
+        }
+        return grain_map.get(grain, f"DATE({column_sql})")
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        prev = self.date_add_sql("spine_date", offset_grain, offset)
+        return (
+            f"SELECT spine_date,\n"
+            f"       CASE WHEN {prev} >= {min_date}\n"
+            f"            THEN {prev} END AS spine_date_prev\n"
+            f"FROM (\n"
+            f"  WITH RECURSIVE dates AS (\n"
+            f"    SELECT {min_date} AS spine_date\n"
+            f"    UNION ALL\n"
+            f"    SELECT DATE_ADD(spine_date, INTERVAL 1 {grain.upper()})\n"
+            f"    FROM dates WHERE spine_date < {max_date}\n"
+            f"  )\n"
+            f"  SELECT spine_date FROM dates\n"
+            f") AS spine"
+        )

@@ -66,6 +66,14 @@ class NumClass(StrEnum):
 class MetricType(StrEnum):
     DERIVED = "derived"
     CUMULATIVE = "cumulative"
+    PERIOD_OVER_PERIOD = "period_over_period"
+
+
+class PeriodOverPeriodComparison(StrEnum):
+    RATIO = "ratio"
+    DIFFERENCE = "difference"
+    PREVIOUS_VALUE = "previousValue"
+    PERCENT_CHANGE = "percentChange"
 
 
 class CumulativeAggType(StrEnum):
@@ -236,6 +244,22 @@ class WithinGroup(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PeriodOverPeriod(BaseModel):
+    """Configuration for period-over-period metric comparison.
+
+    Defines how to shift time and compare measure values between
+    the current period and a previous period.
+    """
+
+    time_dimension: str = Field(alias="timeDimension")
+    grain: TimeGrain
+    offset: int = -1
+    offset_grain: TimeGrain = Field(alias="offsetGrain")
+    comparison: PeriodOverPeriodComparison = PeriodOverPeriodComparison.PERCENT_CHANGE
+
+    model_config = {"populate_by_name": True}
+
+
 class Measure(BaseModel):
     """An aggregation measure with optional expression template."""
 
@@ -260,11 +284,13 @@ class Measure(BaseModel):
 
 
 class Metric(BaseModel):
-    """A metric: either a derived expression or a cumulative window over a measure.
+    """A metric: derived expression, cumulative window, or period-over-period comparison.
 
     **Derived** (default): references measures by name using ``{[Measure Name]}`` syntax.
     **Cumulative**: applies a window function to an existing measure, ordered by a time
     dimension.  Supports running totals, rolling windows, and grain-to-date resets.
+    **Period-over-Period**: compares a measure's value against a prior time period using
+    a synthetical date spine.  Supports ratio, difference, previous value, and percent change.
     """
 
     label: str
@@ -277,6 +303,8 @@ class Metric(BaseModel):
     cumulative_type: CumulativeAggType = Field(CumulativeAggType.SUM, alias="cumulativeType")
     window: int | None = None
     grain_to_date: GrainToDate | None = Field(None, alias="grainToDate")
+    # Period-over-Period metrics
+    period_over_period: PeriodOverPeriod | None = Field(None, alias="periodOverPeriod")
     # Common
     description: str | None = None
     format: str | None = None
@@ -302,6 +330,20 @@ class Metric(BaseModel):
                 raise ValueError("'window' and 'grainToDate' are mutually exclusive")
             if self.window is not None and self.window < 1:
                 raise ValueError("'window' must be >= 1")
+        elif self.type == MetricType.PERIOD_OVER_PERIOD:
+            if not self.expression:
+                raise ValueError("Period-over-period metrics require 'expression'")
+            if not self.period_over_period:
+                raise ValueError("Period-over-period metrics require 'periodOverPeriod'")
+            if self.measure:
+                raise ValueError(
+                    "Period-over-period metrics must not have 'measure' "
+                    "(use 'expression' to reference measures)"
+                )
+            if self.window is not None or self.grain_to_date is not None:
+                raise ValueError(
+                    "Period-over-period metrics must not have 'window' or 'grainToDate'"
+                )
         return self
 
 

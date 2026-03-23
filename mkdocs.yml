@@ -92,6 +92,7 @@ nav:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
       - SQL Dialects: guide/dialects.md
+      - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
   - API:
       - Overview: api/overview.md
