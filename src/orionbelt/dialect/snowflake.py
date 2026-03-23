@@ -49,6 +49,25 @@ class SnowflakeDialect(Dialect):
         unit_sql = unit.lower()
         return f"DATEADD('{unit_sql}', {count}, {date_sql})"
 
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        return f"DATE_TRUNC('{grain}', {column_sql})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        return (
+            f"SELECT DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
+            f"{min_date})::date AS spine_date,\n"
+            f"       CASE WHEN DATEADD('{offset_grain}', {offset}, "
+            f"DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
+            f"{min_date}))::date >= {min_date}\n"
+            f"            THEN DATEADD('{offset_grain}', {offset}, "
+            f"DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
+            f"{min_date}))::date END AS spine_date_prev\n"
+            f"FROM TABLE(GENERATOR(ROWCOUNT => "
+            f"DATEDIFF('{grain}', {min_date}, {max_date}) + 1))"
+        )
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Snowflake supports native multi-arg COUNT(col1, col2)."""
         args_sql = ", ".join(self.compile_expr(a) for a in args)

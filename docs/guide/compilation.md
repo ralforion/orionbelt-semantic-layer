@@ -1,6 +1,6 @@
 # Compilation Pipeline
 
-OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: **Resolution**, **Planning**, optional **wrapping** (totals, cumulative), and **Code Generation**. Each phase transforms the query into a progressively more concrete representation.
+OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: **Resolution**, **Planning**, optional **wrapping** (PoP, totals, cumulative), and **Code Generation**. Each phase transforms the query into a progressively more concrete representation.
 
 ```
 QueryObject + SemanticModel
@@ -16,6 +16,12 @@ QueryObject + SemanticModel
 |  Phase 2:       |
 |  Planning       |  -> QueryPlan (SQL AST)
 |  (Star or CFL)  |
++--------+--------+
+         |
+         v
++-----------------+
+|  Phase 2.4:     |
+|  PoP Wrap       |  -> 4-CTE date spine + period comparison
 +--------+--------+
          |
          v
@@ -207,6 +213,21 @@ FROM non_combinations
 
 The dimensions are partitioned into independent groups based on the join graph. Each group gets a CTE with distinct values, and the `all_pairs` CTE uses an implicit cross join (comma-separated FROM) to produce all possible combinations. The `EXCEPT` clause removes existing combinations found through the fact/bridge tables.
 
+## Phase 2.4: Period-over-Period Wrap
+
+**Module:** `orionbelt.compiler.pop_wrap`
+
+When a query includes period-over-period metrics (`type: period_over_period`), the PoP wrapper restructures the planner output into a 4-CTE date spine architecture:
+
+1. **`date_range`** -- Discovers `MIN`/`MAX` date from fact tables with ALL query `WHERE` filters pushed down (time and dimension filters alike). For multi-fact (CFL) queries, each fact table leg is scanned independently via `UNION ALL`.
+2. **`date_spine`** -- Generates a date series from `min_date` to `max_date` at the configured grain. Each row includes a `spine_date_prev` column pointing to the comparison period. The generation technique is dialect-specific (e.g. `generate_series` in Postgres, `TABLE(GENERATOR(...))` in Snowflake).
+3. **`pop_base`** -- Aggregates measures using the spine as `FROM`, with fact and dimension tables LEFT JOINed via the truncated date column. Non-time dimensions are included in the `GROUP BY`.
+4. **`pop_compare`** -- Self-joins `pop_base` onto itself via `spine_date_prev`, matching on all non-time dimensions, and computes the comparison expression (percent change, ratio, difference, or previous value).
+
+The outer `SELECT` projects all dimensions, non-PoP measures, and PoP metric columns from `pop_compare`.
+
+PoP wrapping runs before total and cumulative wraps so those layers can operate on the already-aggregated comparison output. For details, see the [Period-over-Period Metrics](period-over-period.md) guide.
+
 ## Phase 3: Code Generation
 
 **Module:** `orionbelt.compiler.codegen`
@@ -311,8 +332,11 @@ class CompilationPipeline:
         else:
             plan = StarSchemaPlanner.plan(resolved, model)
 
+        # Phase 2.4: PoP wrap (period-over-period metrics)
+        wrapped_ast = wrap_with_pop(plan.ast, resolved, model, dialect, qualify_table)
+
         # Phase 2.5: Total wrap (grand total measures)
-        wrapped_ast = wrap_with_totals(plan.ast, resolved)
+        wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
 
         # Phase 2.6: Cumulative wrap (running/rolling/grain-to-date metrics)
         wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)

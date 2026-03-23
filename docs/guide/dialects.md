@@ -318,6 +318,25 @@ sql = dialect.compile(ast)
 
 ## Querying Dialect Info via API
 
+## Date Spine Generation
+
+Period-over-period metrics require generating a date series (spine). Each dialect uses a different technique:
+
+| Dialect | Technique |
+|---------|-----------|
+| Postgres | `generate_series(min, max, INTERVAL)` |
+| DuckDB | `generate_series(min, max, INTERVAL)` |
+| Snowflake | `TABLE(GENERATOR(ROWCOUNT => ...))` + `DATEADD` |
+| BigQuery | `UNNEST(GENERATE_DATE_ARRAY(min, max, INTERVAL))` |
+| Databricks | `EXPLODE(SEQUENCE(min, max, INTERVAL))` |
+| MySQL | Recursive CTE: `WITH RECURSIVE dates AS (...)` |
+| ClickHouse | `arrayJoin(range(...))` + date arithmetic |
+| Dremio | Recursive CTE: `WITH RECURSIVE dates AS (...)` |
+
+For details, see the [Period-over-Period Metrics](period-over-period.md) guide.
+
+## Querying Available Dialects
+
 ```bash
 curl http://127.0.0.1:8000/v1/dialects
 ```

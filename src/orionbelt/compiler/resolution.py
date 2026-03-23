@@ -36,6 +36,7 @@ from orionbelt.models.semantic import (
     Measure,
     Metric,
     MetricType,
+    PeriodOverPeriodComparison,
     SemanticModel,
     TimeGrain,
 )
@@ -69,6 +70,14 @@ class ResolvedMeasure:
     cumulative_type: CumulativeAggType = CumulativeAggType.SUM
     cumulative_window: int | None = None
     cumulative_grain_to_date: GrainToDate | None = None
+    # Period-over-period metric fields
+    is_pop: bool = False
+    pop_base_measure: str | None = None
+    pop_time_dimension: str | None = None
+    pop_grain: TimeGrain | None = None
+    pop_offset: int = -1
+    pop_offset_grain: TimeGrain | None = None
+    pop_comparison: PeriodOverPeriodComparison | None = None
 
 
 @dataclass
@@ -122,6 +131,11 @@ class ResolvedQuery:
     def has_cumulative(self) -> bool:
         """Check if any selected metric is cumulative."""
         return any(m.is_cumulative for m in self.measures)
+
+    @property
+    def has_pop(self) -> bool:
+        """Check if any selected metric is period-over-period."""
+        return any(m.is_pop for m in self.measures)
 
 
 @dataclass
@@ -403,6 +417,8 @@ class QueryResolver:
         """Resolve a metric to its combined expression."""
         if metric.type == MetricType.CUMULATIVE:
             return self._resolve_cumulative_metric(ctx, name, metric)
+        if metric.type == MetricType.PERIOD_OVER_PERIOD:
+            return self._resolve_pop_metric(ctx, name, metric)
         return self._resolve_derived_metric(ctx, name, metric)
 
     def _resolve_derived_metric(
@@ -514,6 +530,98 @@ class QueryResolver:
             cumulative_grain_to_date=metric.grain_to_date,
         )
 
+    def _resolve_pop_metric(
+        self, ctx: _ResolutionContext, name: str, metric: Metric
+    ) -> ResolvedMeasure | None:
+        """Resolve a period-over-period metric."""
+        assert metric.period_over_period is not None
+        assert metric.expression is not None
+
+        pop = metric.period_over_period
+
+        # Validate timeDimension is a known dimension
+        dim = ctx.model.dimensions.get(pop.time_dimension)
+        if dim is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="POP_UNKNOWN_TIME_DIMENSION",
+                    message=(
+                        f"Period-over-period metric '{name}' references unknown "
+                        f"time dimension '{pop.time_dimension}'"
+                    ),
+                    path=f"metrics.{name}.periodOverPeriod.timeDimension",
+                )
+            )
+            return None
+
+        # Validate timeDimension is in the query's selected dimensions
+        dim_names = {d.name for d in ctx.result.dimensions}
+        if pop.time_dimension not in dim_names:
+            ctx.errors.append(
+                SemanticError(
+                    code="POP_TIME_DIMENSION_NOT_IN_SELECT",
+                    message=(
+                        f"Period-over-period metric '{name}' requires time dimension "
+                        f"'{pop.time_dimension}' to be in the query's selected dimensions"
+                    ),
+                    path=f"metrics.{name}.periodOverPeriod.timeDimension",
+                )
+            )
+            return None
+
+        # Validate offset is non-zero
+        if pop.offset == 0:
+            ctx.errors.append(
+                SemanticError(
+                    code="POP_INVALID_OFFSET",
+                    message=(
+                        f"Period-over-period metric '{name}' has offset=0 "
+                        f"(must be non-zero, e.g. -1 for previous period)"
+                    ),
+                    path=f"metrics.{name}.periodOverPeriod.offset",
+                )
+            )
+            return None
+
+        # Resolve the expression (same as derived — parse {[Measure Name]} refs)
+        component_names = re.findall(r"\{\[([^\]]+)\]\}", metric.expression)
+        for comp_name in component_names:
+            if comp_name not in ctx.result.metric_components:
+                comp = self._resolve_measure(ctx, comp_name)
+                if comp:
+                    ctx.result.metric_components[comp_name] = comp
+
+        try:
+            tokens = tokenize_metric_formula(metric.expression)
+            parsed_expr = parse_expression(tokens)
+        except Exception as exc:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC_EXPRESSION",
+                    message=f"Metric '{name}' has invalid expression: {exc}",
+                    path=f"metrics.{name}.expression",
+                )
+            )
+            return None
+
+        # Use the first component measure as the base (for single-measure PoP)
+        pop_base = component_names[0] if component_names else None
+
+        return ResolvedMeasure(
+            name=name,
+            aggregation="",
+            expression=parsed_expr,
+            component_measures=component_names,
+            is_expression=True,
+            is_pop=True,
+            pop_base_measure=pop_base,
+            pop_time_dimension=pop.time_dimension,
+            pop_grain=pop.grain,
+            pop_offset=pop.offset,
+            pop_offset_grain=pop.offset_grain,
+            pop_comparison=pop.comparison,
+        )
+
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
         """Extract all source data objects for a measure or metric."""
         result: set[str] = set()
@@ -535,7 +643,7 @@ class QueryResolver:
                 # Cumulative metric: source objects come from the referenced measure
                 result.update(self._get_measure_source_objects(ctx, metric.measure))
             elif metric.expression:
-                # Derived metric: parse expression for measure references
+                # Derived or PoP metric: parse expression for measure references
                 measure_refs = re.findall(r"\{\[([^\]]+)\]\}", metric.expression)
                 for ref_name in measure_refs:
                     result.update(self._get_measure_source_objects(ctx, ref_name))

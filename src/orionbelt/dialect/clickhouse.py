@@ -145,3 +145,59 @@ class ClickHouseDialect(Dialect):
         if func is None:
             raise ValueError(f"Unsupported unit '{unit}' for ClickHouse")
         return f"{func}({date_sql}, {count})"
+
+    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        grain_func_map: dict[str, str] = {
+            "year": "toStartOfYear",
+            "quarter": "toStartOfQuarter",
+            "month": "toStartOfMonth",
+            "week": "toMonday",
+            "day": "toDate",
+        }
+        func = grain_func_map.get(grain, "toDate")
+        return f"{func}({column_sql})"
+
+    def render_date_spine_cte_sql(
+        self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
+    ) -> str:
+        diff_map: dict[str, str] = {
+            "day": "day",
+            "week": "week",
+            "month": "month",
+            "quarter": "quarter",
+            "year": "year",
+        }
+        diff_grain = diff_map.get(grain, "day")
+        add_grain_fn = {
+            "day": "addDays",
+            "week": "addWeeks",
+            "month": "addMonths",
+            "quarter": "addMonths",
+            "year": "addYears",
+        }
+        add_fn = add_grain_fn.get(grain, "addDays")
+        add_mul = ", n * 3)" if grain == "quarter" else ", n)"
+
+        offset_fn = {
+            "day": "addDays",
+            "week": "addWeeks",
+            "month": "addMonths",
+            "quarter": "addMonths",
+            "year": "addYears",
+        }
+        off_fn = offset_fn.get(offset_grain, "addDays")
+        off_mul = f", {offset} * 3)" if offset_grain == "quarter" else f", {offset})"
+
+        n_expr = f"dateDiff('{diff_grain}', {min_date}, {max_date})"
+        if grain == "quarter":
+            n_expr = f"intDiv(dateDiff('month', {min_date}, {max_date}), 3)"
+
+        spine_date = f"{add_fn}({min_date}{add_mul}"
+        prev_date = f"{off_fn}({spine_date}{off_mul}"
+
+        return (
+            f"SELECT {spine_date} AS spine_date,\n"
+            f"       CASE WHEN {prev_date} >= {min_date}\n"
+            f"            THEN {prev_date} END AS spine_date_prev\n"
+            f"FROM (SELECT arrayJoin(range(0, toUInt32({n_expr}) + 1)) AS n)"
+        )
