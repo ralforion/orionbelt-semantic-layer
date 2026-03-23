@@ -404,13 +404,21 @@ class OSItoOBML:
             if isinstance(osi_ai_ctx, dict) and osi_ai_ctx.get("synonyms"):
                 osi_synonyms = list(osi_ai_ctx["synonyms"])
 
+            # Restore OBML-only properties from custom_extensions
+            obml_extras = self._extract_obml_extras(m)
+
+            # Check for cumulative metric stored in custom_extensions
+            if obml_extras.get("obml_metric_type") == "cumulative":
+                cum_metric = self._reconstruct_cumulative_metric(
+                    name, obml_extras, osi_description, osi_synonyms
+                )
+                metrics[name] = cum_metric
+                continue
+
             expr_text = self._get_ansi_expression(m.get("expression", {}))
             if not expr_text:
                 self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
                 continue
-
-            # Restore OBML-only properties from custom_extensions
-            obml_extras = self._extract_obml_extras(m)
 
             # Try simple: AGG(dataset.column) or AGG(DISTINCT dataset.column)
             parsed = self._parse_simple_agg(expr_text)
@@ -495,6 +503,32 @@ class OSItoOBML:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return {}
+
+    @staticmethod
+    def _reconstruct_cumulative_metric(
+        name: str, extras: dict,
+        description: str | None, synonyms: list[str],
+    ) -> dict:
+        """Reconstruct an OBML cumulative metric from custom_extensions data."""
+        metric_def: dict[str, Any] = {
+            "type": "cumulative",
+            "measure": extras["obml_cumulative_measure"],
+            "timeDimension": extras["obml_cumulative_time_dimension"],
+        }
+        cum_type = extras.get("obml_cumulative_type", "sum")
+        if cum_type != "sum":
+            metric_def["cumulativeType"] = cum_type
+        if extras.get("obml_cumulative_window") is not None:
+            metric_def["window"] = extras["obml_cumulative_window"]
+        if extras.get("obml_cumulative_grain_to_date"):
+            metric_def["grainToDate"] = extras["obml_cumulative_grain_to_date"]
+        if description:
+            metric_def["description"] = description
+        if extras.get("obml_format"):
+            metric_def["format"] = extras["obml_format"]
+        if synonyms:
+            metric_def["synonyms"] = synonyms
+        return metric_def
 
     @staticmethod
     def _apply_obml_measure_extras(measure_def: dict, extras: dict) -> None:
@@ -1002,8 +1036,14 @@ class OBMLtoOSI:
 
         # Convert OBML metrics (which reference measures) to OSI metrics
         for metric_name, metric_obj in obml_metrics.items():
-            osi_metric = self._convert_obml_metric(metric_name, metric_obj,
-                                                    obml_measures, data_objects)
+            if metric_obj.get("type") == "cumulative":
+                osi_metric = self._convert_obml_cumulative_metric(
+                    metric_name, metric_obj, obml_measures, data_objects
+                )
+            else:
+                osi_metric = self._convert_obml_metric(
+                    metric_name, metric_obj, obml_measures, data_objects
+                )
             if osi_metric:
                 osi_metrics.append(osi_metric)
 
@@ -1171,6 +1211,86 @@ class OBMLtoOSI:
                 "vendor_name": "COMMON",
                 "data": json.dumps({"obml_format": metric["format"]}),
             })
+        return result
+
+    def _convert_obml_cumulative_metric(
+        self, name: str, metric: dict,
+        obml_measures: dict, data_objects: dict,
+    ) -> dict | None:
+        """Convert an OBML cumulative metric to an OSI metric.
+
+        Cumulative metrics have no direct OSI equivalent.  We generate an
+        approximate SQL expression for readability and store the full OBML
+        cumulative configuration in ``custom_extensions`` (vendor ``COMMON``)
+        so the OSI → OBML direction can reconstruct it losslessly.
+        """
+        measure_name = metric.get("measure", "")
+        time_dim = metric.get("timeDimension", "")
+        cum_type = metric.get("cumulativeType", "sum").upper()
+        window_size = metric.get("window")
+        grain = metric.get("grainToDate")
+
+        if not measure_name:
+            self.warnings.append(
+                f"Cumulative metric '{name}' has no measure reference; skipped."
+            )
+            return None
+
+        # Build an approximate SQL expression for the OSI metric
+        measure_def = obml_measures.get(measure_name, {})
+        inner_sql = self._measure_to_sql(measure_def, data_objects) or measure_name
+
+        if window_size is not None:
+            frame = (
+                f" OVER (ORDER BY \"{time_dim}\" "
+                f"ROWS BETWEEN {window_size - 1} PRECEDING AND CURRENT ROW)"
+            )
+        elif grain:
+            frame = (
+                f" OVER (PARTITION BY DATE_TRUNC('{grain}', \"{time_dim}\") "
+                f"ORDER BY \"{time_dim}\")"
+            )
+        else:
+            # Running total (unbounded)
+            frame = f" OVER (ORDER BY \"{time_dim}\" ROWS UNBOUNDED PRECEDING)"
+
+        sql_expr = f"{cum_type}({inner_sql}){frame}"
+
+        result: dict[str, Any] = {
+            "name": name,
+            "expression": {
+                "dialects": [{
+                    "dialect": "ANSI_SQL",
+                    "expression": sql_expr,
+                }]
+            },
+            "description": metric.get("description", name),
+        }
+
+        obml_synonyms = metric.get("synonyms", [])
+        ai_synonyms = [s for s in obml_synonyms if s != name]
+        if ai_synonyms:
+            result["ai_context"] = {"synonyms": ai_synonyms}
+
+        # Store full cumulative config in custom_extensions for roundtrip
+        ext_data: dict[str, Any] = {
+            "obml_metric_type": "cumulative",
+            "obml_cumulative_measure": measure_name,
+            "obml_cumulative_time_dimension": time_dim,
+            "obml_cumulative_type": metric.get("cumulativeType", "sum"),
+        }
+        if window_size is not None:
+            ext_data["obml_cumulative_window"] = window_size
+        if grain:
+            ext_data["obml_cumulative_grain_to_date"] = grain
+        if metric.get("format"):
+            ext_data["obml_format"] = metric["format"]
+
+        result["custom_extensions"] = [{
+            "vendor_name": "COMMON",
+            "data": json.dumps(ext_data),
+        }]
+
         return result
 
     def _measure_to_sql(self, measure: dict, data_objects: dict) -> str | None:
