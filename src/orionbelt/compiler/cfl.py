@@ -29,6 +29,7 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import ResolvedDimension, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.star import CflLegInfo, QueryPlan
+from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import DataObject, SemanticModel
 
 __all__ = ["CFLPlanner", "FanoutError"]
@@ -49,6 +50,7 @@ class CFLPlanner:
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
         union_by_name: bool = False,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         """Plan a CFL query."""
         self._validate_fanout(resolved, model)
@@ -69,7 +71,9 @@ class CFLPlanner:
             # Single fact — delegate to star schema
             from orionbelt.compiler.star import StarSchemaPlanner
 
-            return StarSchemaPlanner().plan(resolved, model, qualify_table=qualify_table)
+            return StarSchemaPlanner().plan(
+                resolved, model, qualify_table=qualify_table, dialect=dialect
+            )
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(
@@ -79,6 +83,7 @@ class CFLPlanner:
             cross_fact,
             qualify_table=qualify_table,
             union_by_name=union_by_name,
+            dialect=dialect,
         )
 
     def _validate_fanout(self, resolved: ResolvedQuery, model: SemanticModel) -> None:
@@ -349,6 +354,7 @@ class CFLPlanner:
         cross_fact: list[ResolvedMeasure] | None = None,
         qualify_table: Callable[[DataObject], str] | None = None,
         union_by_name: bool = False,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         """UNION ALL strategy: stack fact legs with NULL padding, aggregate outside.
 
@@ -393,6 +399,8 @@ class CFLPlanner:
             for dim in resolved.dimensions:
                 if dim.object_name in reachable:
                     col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+                    if dim.grain and dialect:
+                        col = dialect.render_time_grain(col, dim.grain)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
                 elif not union_by_name:
                     model_dim = model.dimensions.get(dim.name)

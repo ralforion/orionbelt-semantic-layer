@@ -237,7 +237,7 @@ class CTE:
     """Common Table Expression: WITH name AS (query or UNION ALL)."""
 
     name: str
-    query: Select | UnionAll | Except
+    query: Select | UnionAll | Except | RawSQL
 
 
 @dataclass(frozen=True)

@@ -484,3 +484,27 @@ metrics:
 
   Average Sale:
     expression: "{[Total Sales]} / {[Sales Count]}"
+
+  Running Total Sales:
+    type: cumulative
+    measure: Total Sales
+    timeDimension: Sales Date
+    description: Running total of sales over time
+
+  Rolling 3m Sales:
+    type: cumulative
+    measure: Total Sales
+    timeDimension: Sales Date
+    cumulativeType: sum
+    window: 3
+    description: 3-month rolling sum of sales
+
+  Sales MoM Change:
+    type: period_over_period
+    expression: "{[Total Sales]}"
+    periodOverPeriod:
+      timeDimension: Sales Date
+      grain: month
+      offsetGrain: month
+      comparison: difference
+    description: Month-over-month sales change

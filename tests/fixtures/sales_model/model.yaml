@@ -130,3 +130,27 @@ metrics:
 
   Revenue Share:
     expression: '{[Revenue]} / {[Grand Total Revenue]}'
+
+  Running Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    description: Running total of revenue over time
+
+  Rolling 3m Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    cumulativeType: sum
+    window: 3
+    description: 3-month rolling sum of revenue
+
+  Revenue MoM Change:
+    type: period_over_period
+    expression: "{[Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offsetGrain: month
+      comparison: difference
+    description: Month-over-month revenue change

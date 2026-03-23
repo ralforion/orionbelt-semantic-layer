@@ -23,6 +23,7 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    Literal,
     OrderByItem,
     Select,
     WindowFrame,
@@ -176,10 +177,7 @@ def wrap_with_cumulative(ast: Select, resolved: ResolvedQuery) -> Select:
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
 
     # --- ORDER BY remapping ---
-    outer_order_by = []
-    for ob in ast.order_by:
-        remapped = _remap_order_by_expr(ob.expr)
-        outer_order_by.append(OrderByItem(expr=remapped, desc=ob.desc, nulls_last=ob.nulls_last))
+    outer_order_by = _build_outer_order_by(resolved)
 
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
@@ -205,8 +203,27 @@ def _get_alias(expr: Expr) -> str | None:
     return None
 
 
-def _remap_order_by_expr(expr: Expr) -> Expr:
-    """Remap table-qualified column refs to alias-only for the outer query."""
-    if isinstance(expr, ColumnRef) and expr.table is not None:
-        return ColumnRef(name=expr.name)
-    return expr
+def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
+    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
+    col_to_dim: dict[tuple[str, str | None], str] = {
+        (d.source_column, d.object_name): d.name for d in resolved.dimensions
+    }
+    order_by: list[OrderByItem] = []
+    for expr, desc in resolved.order_by_exprs:
+        if isinstance(expr, Literal):
+            order_by.append(OrderByItem(expr=expr, desc=desc))
+        elif isinstance(expr, ColumnRef):
+            dim_name = col_to_dim.get((expr.name, expr.table))
+            name = dim_name if dim_name else expr.name
+            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc))
+        else:
+            # Measure expression — find matching measure by expression equality
+            matched = False
+            for m in resolved.measures:
+                if m.expression == expr:
+                    order_by.append(OrderByItem(expr=ColumnRef(name=m.name), desc=desc))
+                    matched = True
+                    break
+            if not matched:
+                order_by.append(OrderByItem(expr=expr, desc=desc))
+    return order_by

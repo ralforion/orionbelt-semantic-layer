@@ -530,3 +530,117 @@ class TestPoPMultiDialect:
         assert "POP_COMPARE" in sql
         # Should match non-time dims in the self-join
         assert "PREV" in sql
+
+
+# ── Time dimension on a different table than measures ────────────────────
+
+# Mimics TPC-H: Order Date on Orders, Revenue on Line Items
+_POP_CROSS_TABLE_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order Key:
+        code: o_orderkey
+        abstractType: int
+      Order Date:
+        code: o_orderdate
+        abstractType: date
+
+  Line Items:
+    code: lineitem
+    schema: main
+    columns:
+      Line Order Key:
+        code: l_orderkey
+        abstractType: int
+      Extended Price:
+        code: l_extendedprice
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom:
+          - Line Order Key
+        columnsTo:
+          - Order Key
+
+dimensions:
+  Order Date:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+
+measures:
+  Revenue:
+    columns:
+      - dataObject: Line Items
+        column: Extended Price
+    resultType: float
+    aggregation: sum
+
+metrics:
+  Revenue MoM:
+    type: period_over_period
+    expression: "{[Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offsetGrain: month
+      comparison: difference
+"""
+
+
+class TestPoPTimeDimOnDifferentTable:
+    """PoP with time dimension on a different table than the measures.
+
+    This is the TPC-H pattern: Order Date lives on 'Orders', but Revenue
+    is aggregated from 'Line Items'. The pop_base CTE must:
+    1. LEFT JOIN Orders onto the spine (via date truncation)
+    2. LEFT JOIN Line Items onto Orders (via reversed FK)
+    """
+
+    def test_pop_cross_table_compiles(self) -> None:
+        model = _load_model(_POP_CROSS_TABLE_YAML)
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM"],
+            ),
+        )
+        result = pipeline.compile(query, model, "duckdb")
+        sql = result.sql
+        upper = sql.upper()
+
+        # 4 CTEs present
+        assert "DATE_RANGE" in upper
+        assert "DATE_SPINE" in upper
+        assert "POP_BASE" in upper
+        assert "POP_COMPARE" in upper
+
+        # pop_base joins Orders first (time dim table), then Line Items (fact)
+        assert "main.orders" in sql
+        assert "main.lineitem" in sql
+
+        # Uses physical codes, not display names, in JOIN ON
+        assert '"l_orderkey"' in sql
+        assert '"o_orderkey"' in sql
+
+    @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
+    def test_pop_cross_table_all_dialects(self, dialect: str) -> None:
+        model = _load_model(_POP_CROSS_TABLE_YAML)
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM"],
+            ),
+        )
+        result = pipeline.compile(query, model, dialect)
+        assert result.sql_valid
+        assert "pop_compare" in result.sql.lower()

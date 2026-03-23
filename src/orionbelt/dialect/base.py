@@ -236,7 +236,9 @@ class Dialect(ABC):
         if node.ctes:
             cte_parts = []
             for cte in node.ctes:
-                if isinstance(cte.query, UnionAll):
+                if isinstance(cte.query, RawSQL):
+                    cte_sql = cte.query.sql
+                elif isinstance(cte.query, UnionAll):
                     cte_sql = self.compile_union_all(cte.query)
                 elif isinstance(cte.query, Except):
                     cte_sql = self.compile_except(cte.query)

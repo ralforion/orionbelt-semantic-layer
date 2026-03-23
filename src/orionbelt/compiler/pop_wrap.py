@@ -37,6 +37,14 @@ if TYPE_CHECKING:
     from orionbelt.models.semantic import DataObject
 
 
+def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:
+    """Resolve a column display name to its physical code."""
+    obj = model.data_objects.get(obj_name)
+    if obj and display_name in obj.columns:
+        return obj.columns[display_name].code
+    return display_name
+
+
 def wrap_with_pop(
     ast: Select,
     resolved: ResolvedQuery,
@@ -73,45 +81,19 @@ def wrap_with_pop(
     date_range_sql = _build_date_range_sql(
         resolved, model, dialect, qualify_table, grain, time_dim_name
     )
-    date_range_cte = CTE(
-        name="date_range",
-        query=Select(
-            columns=[RawSQL(sql=date_range_sql)],
-            from_=From(source="__raw__"),
-            joins=[],
-            where=None,
-            group_by=[],
-            having=None,
-            order_by=[],
-            limit=None,
-            offset=None,
-            ctes=[],
-        ),
-    )
+    date_range_cte = CTE(name="date_range", query=RawSQL(sql=date_range_sql))
 
     # --- CTE 2: date_spine ---
+    # Use scalar subqueries so every dialect can resolve date_range references
+    # without needing date_range in their FROM clause (universally compatible).
     spine_sql = dialect.render_date_spine_cte_sql(
-        min_date="date_range.min_date",
-        max_date="date_range.max_date",
+        min_date="(SELECT min_date FROM date_range)",
+        max_date="(SELECT max_date FROM date_range)",
         grain=grain,
         offset=offset,
         offset_grain=offset_grain,
     )
-    date_spine_cte = CTE(
-        name="date_spine",
-        query=Select(
-            columns=[RawSQL(sql=spine_sql)],
-            from_=From(source="__raw__"),
-            joins=[],
-            where=None,
-            group_by=[],
-            having=None,
-            order_by=[],
-            limit=None,
-            offset=None,
-            ctes=[],
-        ),
-    )
+    date_spine_cte = CTE(name="date_spine", query=RawSQL(sql=spine_sql))
 
     # --- CTE 3: pop_base ---
     # Build FROM date_spine with LEFT JOINs to fact and dimension tables
@@ -119,39 +101,11 @@ def wrap_with_pop(
     pop_base_sql = _build_pop_base_sql(
         ast, resolved, model, dialect, qualify_table, grain, time_obj_name, time_source_col
     )
-    pop_base_cte = CTE(
-        name="pop_base",
-        query=Select(
-            columns=[RawSQL(sql=pop_base_sql)],
-            from_=From(source="__raw__"),
-            joins=[],
-            where=None,
-            group_by=[],
-            having=None,
-            order_by=[],
-            limit=None,
-            offset=None,
-            ctes=[],
-        ),
-    )
+    pop_base_cte = CTE(name="pop_base", query=RawSQL(sql=pop_base_sql))
 
     # --- CTE 4: pop_compare ---
     pop_compare_sql = _build_pop_compare_sql(resolved, dialect, pop_measures)
-    pop_compare_cte = CTE(
-        name="pop_compare",
-        query=Select(
-            columns=[RawSQL(sql=pop_compare_sql)],
-            from_=From(source="__raw__"),
-            joins=[],
-            where=None,
-            group_by=[],
-            having=None,
-            order_by=[],
-            limit=None,
-            offset=None,
-            ctes=[],
-        ),
-    )
+    pop_compare_cte = CTE(name="pop_compare", query=RawSQL(sql=pop_compare_sql))
 
     # --- Final SELECT from pop_compare ---
     outer_columns: list[Expr] = []
@@ -163,11 +117,8 @@ def wrap_with_pop(
         else:
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
 
-    # Remap ORDER BY to alias-only refs
-    outer_order_by: list[OrderByItem] = []
-    for ob_expr, desc in resolved.order_by_exprs:
-        remapped = _remap_order_by(ob_expr)
-        outer_order_by.append(OrderByItem(expr=remapped, desc=desc))
+    # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
+    outer_order_by = _build_outer_order_by(resolved)
 
     # Collect all CTEs (planner CTEs + our 4 new ones)
     all_ctes = list(ast.ctes) + [date_range_cte, date_spine_cte, pop_base_cte, pop_compare_cte]
@@ -231,8 +182,10 @@ def _build_date_range_sql(
         on_parts = []
         for fc, tc in zip(step.from_columns, step.to_columns, strict=True):
             from_q = dialect.quote_identifier(step.from_object)
-            from_ref = f"{from_q}.{dialect.quote_identifier(fc)}"
-            to_ref = f"{to_alias}.{dialect.quote_identifier(tc)}"
+            fc_code = _resolve_col_code(model, step.from_object, fc)
+            tc_code = _resolve_col_code(model, step.to_object, tc)
+            from_ref = f"{from_q}.{dialect.quote_identifier(fc_code)}"
+            to_ref = f"{to_alias}.{dialect.quote_identifier(tc_code)}"
             on_parts.append(f"{from_ref} = {to_ref}")
         on_clause = " AND ".join(on_parts)
         join_clauses.append(f"\n  LEFT JOIN {to_table} AS {to_alias} ON {on_clause}")
@@ -245,7 +198,8 @@ def _build_date_range_sql(
         obj = model.data_objects[obj_name]
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
-        time_col = f"{alias}.{dialect.quote_identifier(time_source_col)}"
+        time_alias = dialect.quote_identifier(time_obj_name)
+        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
         trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
         trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
 
@@ -339,37 +293,70 @@ def _build_pop_base_sql(
 
     # FROM date_spine
     from_clause = "date_spine"
+    base_obj_name = resolved.base_object or time_obj_name
 
-    # LEFT JOIN fact table onto spine
-    fact_obj_name = time_obj_name
-    fact_obj = model.data_objects[fact_obj_name]
-    fact_table = qualify_table(fact_obj)
-    fact_alias = dialect.quote_identifier(fact_obj_name)
-    time_col = f"{fact_alias}.{dialect.quote_identifier(time_source_col)}"
+    # ── Build LEFT JOINs ──
+    # Case 1: time column is on the base fact table (common case)
+    #   → LEFT JOIN fact ON date_trunc(fact.time_col) = spine_date
+    # Case 2: time column is on a different (dimension) table
+    #   → LEFT JOIN time_table ON date_trunc(time_table.time_col) = spine_date
+    #   → LEFT JOIN fact ON fact.fk = time_table.pk  (reversed join step)
+    joined_objects: set[str] = set()
+    join_clauses: list[str] = []
+
+    # Step A: LEFT JOIN the time dimension's table onto the spine
+    time_obj = model.data_objects[time_obj_name]
+    time_table = qualify_table(time_obj)
+    time_alias_q = dialect.quote_identifier(time_obj_name)
+    time_col = f"{time_alias_q}.{dialect.quote_identifier(time_source_col)}"
     trunc_col = dialect.render_date_trunc_sql(time_col, grain)
+    join_clauses.append(
+        f"\n  LEFT JOIN {time_table} AS {time_alias_q}\n    ON {trunc_col} = date_spine.spine_date"
+    )
+    joined_objects.add(time_obj_name)
 
-    join_clauses = [
-        f"\n  LEFT JOIN {fact_table} AS {fact_alias}\n    ON {trunc_col} = date_spine.spine_date"
-    ]
+    # Step B: If base fact is different from time table, find the join step to connect them
+    if base_obj_name != time_obj_name and base_obj_name not in joined_objects:
+        for step in resolved.join_steps:
+            if step.from_object == base_obj_name and step.to_object == time_obj_name:
+                # Reverse: JOIN base_fact ON base.fk = time_table.pk
+                base_obj = model.data_objects[base_obj_name]
+                base_table = qualify_table(base_obj)
+                base_alias_q = dialect.quote_identifier(base_obj_name)
+                on_parts = []
+                for fc, tc in zip(step.from_columns, step.to_columns, strict=True):
+                    fc_code = _resolve_col_code(model, step.from_object, fc)
+                    tc_code = _resolve_col_code(model, step.to_object, tc)
+                    on_parts.append(
+                        f"{base_alias_q}.{dialect.quote_identifier(fc_code)}"
+                        f" = {time_alias_q}.{dialect.quote_identifier(tc_code)}"
+                    )
+                join_clauses.append(
+                    f"\n  LEFT JOIN {base_table} AS {base_alias_q} ON {' AND '.join(on_parts)}"
+                )
+                joined_objects.add(base_obj_name)
+                break
 
-    # Add dimension table joins (from resolved join_steps)
+    # Step C: Add remaining dimension table joins (from resolved join_steps)
     for step in resolved.join_steps:
+        if step.to_object in joined_objects:
+            continue
         to_obj = model.data_objects.get(step.to_object)
         if to_obj is None:
-            continue
-        # Skip if this is the fact table (already joined above)
-        if step.to_object == fact_obj_name:
             continue
         to_table = qualify_table(to_obj)
         to_alias = dialect.quote_identifier(step.to_object)
         on_parts = []
         for fc, tc in zip(step.from_columns, step.to_columns, strict=True):
             from_q = dialect.quote_identifier(step.from_object)
-            from_ref = f"{from_q}.{dialect.quote_identifier(fc)}"
-            to_ref = f"{to_alias}.{dialect.quote_identifier(tc)}"
+            fc_code = _resolve_col_code(model, step.from_object, fc)
+            tc_code = _resolve_col_code(model, step.to_object, tc)
+            from_ref = f"{from_q}.{dialect.quote_identifier(fc_code)}"
+            to_ref = f"{to_alias}.{dialect.quote_identifier(tc_code)}"
             on_parts.append(f"{from_ref} = {to_ref}")
         on_clause = " AND ".join(on_parts)
         join_clauses.append(f"\n  LEFT JOIN {to_table} AS {to_alias} ON {on_clause}")
+        joined_objects.add(step.to_object)
 
     joins_sql = "".join(join_clauses)
     group_clause = ", ".join(dim_groups)
@@ -450,8 +437,29 @@ def _build_pop_compare_sql(
     )
 
 
-def _remap_order_by(expr: Expr) -> Expr:
-    """Remap table-qualified column refs to alias-only for the outer query."""
-    if isinstance(expr, ColumnRef) and expr.table is not None:
-        return ColumnRef(name=expr.name)
-    return expr
+def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
+    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
+    from orionbelt.ast.nodes import Literal
+
+    col_to_dim: dict[tuple[str, str | None], str] = {
+        (d.source_column, d.object_name): d.name for d in resolved.dimensions
+    }
+    order_by: list[OrderByItem] = []
+    for expr, desc in resolved.order_by_exprs:
+        if isinstance(expr, Literal):
+            order_by.append(OrderByItem(expr=expr, desc=desc))
+        elif isinstance(expr, ColumnRef):
+            dim_name = col_to_dim.get((expr.name, expr.table))
+            name = dim_name if dim_name else expr.name
+            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc))
+        else:
+            # Measure expression — find matching measure by expression equality
+            matched = False
+            for m in resolved.measures:
+                if m.expression == expr:
+                    order_by.append(OrderByItem(expr=ColumnRef(name=m.name), desc=desc))
+                    matched = True
+                    break
+            if not matched:
+                order_by.append(OrderByItem(expr=expr, desc=desc))
+    return order_by

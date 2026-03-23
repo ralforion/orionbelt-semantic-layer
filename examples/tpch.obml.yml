@@ -394,3 +394,39 @@ metrics:
 
   Gross Margin:
     expression: "({[Revenue]} - {[Supply Cost]}) / {[Revenue]}"
+
+  # ── Cumulative metrics ────────────────────────────────────────────
+  Running Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    description: Running total of revenue over time
+
+  Rolling 3m Revenue:
+    type: cumulative
+    measure: Revenue
+    timeDimension: Order Date
+    cumulativeType: sum
+    window: 3
+    description: 3-month rolling sum of revenue
+
+  # ── Period-over-period metrics ────────────────────────────────────
+  Revenue YoY Growth:
+    type: period_over_period
+    expression: "{[Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offsetGrain: year
+      comparison: percentChange
+    description: Year-over-year revenue growth rate
+
+  Revenue MoM Change:
+    type: period_over_period
+    expression: "{[Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: month
+      offsetGrain: month
+      comparison: difference
+    description: Month-over-month revenue change in absolute terms

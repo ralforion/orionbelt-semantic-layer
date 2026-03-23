@@ -115,13 +115,19 @@ else
     fail "POST /sessions" "HTTP $HTTP_CODE, body: $BODY"
 fi
 
-# 5. List sessions
+# 5. List sessions (may be disabled via DISABLE_SESSION_LIST=true in Docker)
 api GET /v1/sessions
-SESSION_COUNT=$(python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())['sessions']))" <<< "$BODY")
-if [[ "$HTTP_CODE" == "200" ]] && [[ "$SESSION_COUNT" -ge 1 ]]; then
-    pass "GET /sessions lists $SESSION_COUNT session(s)"
+if [[ "$HTTP_CODE" == "200" ]]; then
+    SESSION_COUNT=$(python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())['sessions']))" <<< "$BODY")
+    if [[ "$SESSION_COUNT" -ge 1 ]]; then
+        pass "GET /sessions lists $SESSION_COUNT session(s)"
+    else
+        fail "GET /sessions" "HTTP $HTTP_CODE, count=$SESSION_COUNT"
+    fi
+elif [[ "$HTTP_CODE" == "403" ]]; then
+    pass "GET /sessions disabled (DISABLE_SESSION_LIST=true)"
 else
-    fail "GET /sessions" "HTTP $HTTP_CODE, count=$SESSION_COUNT"
+    fail "GET /sessions" "HTTP $HTTP_CODE"
 fi
 
 # 6. Get session
@@ -212,7 +218,70 @@ else
     fail "POST /sessions/{id}/validate" "HTTP $HTTP_CODE, body: $BODY"
 fi
 
-# 13. Invalid query returns error (unknown dimension)
+# 13. Cumulative metric query (running total)
+CUMUL_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Running Total Sales"]
+    }
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${CUMUL_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"cumulative_base"* ]]; then
+    pass "POST query/sql compiles cumulative metric (running total)"
+else
+    fail "POST query/sql cumulative" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 14. Cumulative metric query (rolling window)
+ROLLING_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Rolling 3m Sales"]
+    }
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${ROLLING_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"cumulative_base"* ]] && [[ "$SQL" == *"ROWS BETWEEN"* ]]; then
+    pass "POST query/sql compiles cumulative metric (rolling 3m)"
+else
+    fail "POST query/sql rolling cumulative" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 15. Period-over-Period metric query (MoM change)
+POP_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Sales MoM Change"]
+    }
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${POP_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"date_range"* ]] && [[ "$SQL" == *"date_spine"* ]] && [[ "$SQL" == *"pop_base"* ]]; then
+    pass "POST query/sql compiles PoP metric (MoM change)"
+else
+    fail "POST query/sql PoP" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 16. Invalid query returns error (unknown dimension)
 api POST "/v1/sessions/${SESSION_ID}/query/sql" \
     -H "Content-Type: application/json" \
     -d "{

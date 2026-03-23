@@ -615,11 +615,16 @@ class TestOrderByAndLimit:
             measures=[revenue, cum],
             base_object="Orders",
             metric_components={"Revenue": revenue},
+            order_by_exprs=[
+                (ColumnRef(name="ORDER_DATE", table="Orders"), False),
+            ],
         )
         result = wrap_with_cumulative(ast, resolved)
         assert len(result.order_by) == 1
         assert isinstance(result.order_by[0].expr, ColumnRef)
         assert result.order_by[0].expr.table is None
+        # Should use dimension alias, not physical column code
+        assert result.order_by[0].expr.name == "Order Date"
 
     def test_limit_on_outer(self) -> None:
         ast = _make_ast(measure_names=["Revenue", "Cumulative Revenue"], limit=10)

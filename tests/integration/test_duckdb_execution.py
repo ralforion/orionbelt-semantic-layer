@@ -660,6 +660,103 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     return execute_sql
 
 
+# ---------------------------------------------------------------------------
+# Cumulative metrics (running total / rolling window)
+# ---------------------------------------------------------------------------
+
+# Revenue by month: Jan=100, Feb=125, Mar=15
+# Running: Jan=100, Feb=225, Mar=240
+# Rolling 3m: Jan=100, Feb=225, Mar=240
+
+
+class TestCumulativeExecution:
+    """Cumulative metrics executed against real DuckDB."""
+
+    def test_running_total(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Running Revenue"],
+            ),
+            order_by=[QueryOrderBy(field="Order Date")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        assert len(rows) == 3
+        assert rows[0]["Revenue"] == pytest.approx(100.0)
+        assert rows[0]["Running Revenue"] == pytest.approx(100.0)
+        assert rows[1]["Revenue"] == pytest.approx(125.0)
+        assert rows[1]["Running Revenue"] == pytest.approx(225.0)
+        assert rows[2]["Revenue"] == pytest.approx(15.0)
+        assert rows[2]["Running Revenue"] == pytest.approx(240.0)
+
+    def test_rolling_3m(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Rolling 3m Revenue"],
+            ),
+            order_by=[QueryOrderBy(field="Order Date")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        assert len(rows) == 3
+        # All 3 months fit within a 3-month window
+        assert rows[0]["Rolling 3m Revenue"] == pytest.approx(100.0)
+        assert rows[1]["Rolling 3m Revenue"] == pytest.approx(225.0)
+        assert rows[2]["Rolling 3m Revenue"] == pytest.approx(240.0)
+
+
+# ---------------------------------------------------------------------------
+# Period-over-period metrics (MoM change)
+# ---------------------------------------------------------------------------
+
+# Revenue by month: Jan=100, Feb=125, Mar=15
+# MoM difference: Jan=NULL, Feb=125-100=25, Mar=15-125=-110
+
+
+class TestPoPExecution:
+    """Period-over-period metrics executed against real DuckDB."""
+
+    def test_mom_difference(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM Change"],
+            ),
+            order_by=[QueryOrderBy(field="Order Date")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        assert len(rows) == 3
+        assert rows[0]["Revenue MoM Change"] is None  # no prior month
+        assert rows[1]["Revenue MoM Change"] == pytest.approx(25.0)
+        assert rows[2]["Revenue MoM Change"] == pytest.approx(-110.0)
+
+
+# ---------------------------------------------------------------------------
+# API endpoint integration (POST /query/execute)
+# ---------------------------------------------------------------------------
+
+
 class TestAPIExecuteEndpoint:
     """POST /query/execute against a real DuckDB via mocked execute_sql."""
 

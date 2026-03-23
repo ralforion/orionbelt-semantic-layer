@@ -113,9 +113,12 @@ class CompilationPipeline:
                 model,
                 qualify_table=qualify_table,
                 union_by_name=dialect.capabilities.supports_union_all_by_name,
+                dialect=dialect,
             )
         else:
-            plan = self._star_planner.plan(resolved, model, qualify_table=qualify_table)
+            plan = self._star_planner.plan(
+                resolved, model, qualify_table=qualify_table, dialect=dialect
+            )
 
         # Phase 2.4: Wrap with PoP CTEs if needed
         wrapped_ast = wrap_with_pop(plan.ast, resolved, model, dialect, qualify_table)

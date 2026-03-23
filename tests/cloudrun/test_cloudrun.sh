@@ -270,6 +270,47 @@ PURCHASE_QUERY='{
 }'
 compile_query "Purchases fact table query" "dremio" "$PURCHASE_QUERY" "purchases"
 
+# ── Cumulative & PoP metric queries ──────────────────────────────────
+
+# 22. Cumulative metric — running total
+CUMUL_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Running Total Sales"]
+    }
+}'
+compile_query "Cumulative running total" "postgres" "$CUMUL_QUERY" "cumulative_base"
+
+# 23. Cumulative metric — rolling 3-month window
+ROLLING_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Rolling 3m Sales"]
+    }
+}'
+compile_query "Cumulative rolling 3m" "postgres" "$ROLLING_QUERY" "cumulative_base"
+
+# 24. Period-over-Period metric — MoM change
+POP_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date"],
+        "measures": ["Sales MoM Change"]
+    }
+}'
+compile_query "PoP MoM change" "postgres" "$POP_QUERY" "date_spine"
+
+# 25. PoP metric with additional dimension
+POP_DIM_QUERY='{
+    "select": {
+        "dimensions": ["Sales Date", "Product Category"],
+        "measures": ["Sales MoM Change"]
+    }
+}'
+compile_query "PoP MoM with dimension" "snowflake" "$POP_DIM_QUERY" "pop_compare"
+
+# 26. Cumulative metric — different dialect
+compile_query "Cumulative running total" "snowflake" "$CUMUL_QUERY" "cumulative_base"
+
 # ── Error handling ───────────────────────────────────────────────────
 
 # 22. Unknown dimension

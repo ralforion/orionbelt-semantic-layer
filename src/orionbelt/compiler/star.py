@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
@@ -16,6 +17,9 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.models.semantic import DataObject, SemanticModel
+
+if TYPE_CHECKING:
+    from orionbelt.dialect.base import Dialect
 
 
 def _substitute_measure_refs(
@@ -60,6 +64,7 @@ class StarSchemaPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         builder = QueryBuilder()
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
@@ -73,14 +78,12 @@ class StarSchemaPlanner:
 
         base_alias = resolved.base_object
 
-        # SELECT: dimensions
+        # SELECT: dimensions (apply time grain truncation if specified)
         for dim in resolved.dimensions:
-            col = ColumnRef(name=dim.source_column, table=dim.object_name)
-            if dim.grain:
-                # Time grain will be applied by dialect, for now use column directly
-                builder.select(AliasedExpr(expr=col, alias=dim.name))
-            else:
-                builder.select(AliasedExpr(expr=col, alias=dim.name))
+            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            if dim.grain and dialect:
+                col = dialect.render_time_grain(col, dim.grain)
+            builder.select(AliasedExpr(expr=col, alias=dim.name))
 
         # SELECT: measures (aggregated) — for metrics, substitute component refs
         for measure in resolved.measures:
@@ -121,17 +124,26 @@ class StarSchemaPlanner:
         for wf in resolved.where_filters:
             builder.where(wf.expression)
 
-        # GROUP BY (all dimension columns)
+        # GROUP BY (all dimension columns, with time grain if applicable)
         for dim in resolved.dimensions:
-            col = ColumnRef(name=dim.source_column, table=dim.object_name)
-            builder.group_by(col)
+            gb_col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            if dim.grain and dialect:
+                gb_col = dialect.render_time_grain(gb_col, dim.grain)
+            builder.group_by(gb_col)
 
         # HAVING
         for hf in resolved.having_filters:
             builder.having(hf.expression)
 
-        # ORDER BY
+        # ORDER BY (use alias for time-grained dimensions)
+        grained_cols: dict[tuple[str, str | None], str] = {
+            (d.source_column, d.object_name): d.name
+            for d in resolved.dimensions
+            if d.grain
+        }
         for expr, desc in resolved.order_by_exprs:
+            if isinstance(expr, ColumnRef) and (expr.name, expr.table) in grained_cols:
+                expr = ColumnRef(name=grained_cols[(expr.name, expr.table)])
             builder.order_by(expr, desc=desc)
 
         # LIMIT / OFFSET

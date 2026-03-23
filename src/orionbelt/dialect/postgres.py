@@ -98,7 +98,6 @@ class PostgresDialect(Dialect):
             f"SELECT d::date AS spine_date,\n"
             f"       CASE WHEN ({prev})::date >= {min_date}\n"
             f"            THEN ({prev})::date END AS spine_date_prev\n"
-            f"FROM {min_date}::timestamp AS _dr_min,\n"
-            f"     {max_date}::timestamp AS _dr_max,\n"
-            f"     generate_series(_dr_min, _dr_max, INTERVAL '1 {grain}') AS d"
+            f"FROM generate_series({min_date}::timestamp, "
+            f"{max_date}::timestamp, INTERVAL '1 {grain}') AS d"
         )
