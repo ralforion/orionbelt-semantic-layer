@@ -5,15 +5,10 @@ from __future__ import annotations
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import (
     QueryResolver,
     ResolutionError,
-    ResolvedDimension,
-    ResolvedMeasure,
-    ResolvedQuery,
 )
-from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     Metric,

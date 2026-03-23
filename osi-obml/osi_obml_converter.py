@@ -415,6 +415,14 @@ class OSItoOBML:
                 metrics[name] = cum_metric
                 continue
 
+            # Check for period-over-period metric stored in custom_extensions
+            if obml_extras.get("obml_metric_type") == "period_over_period":
+                pop_metric = self._reconstruct_pop_metric(
+                    name, obml_extras, osi_description, osi_synonyms
+                )
+                metrics[name] = pop_metric
+                continue
+
             expr_text = self._get_ansi_expression(m.get("expression", {}))
             if not expr_text:
                 self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
@@ -522,6 +530,37 @@ class OSItoOBML:
             metric_def["window"] = extras["obml_cumulative_window"]
         if extras.get("obml_cumulative_grain_to_date"):
             metric_def["grainToDate"] = extras["obml_cumulative_grain_to_date"]
+        if description:
+            metric_def["description"] = description
+        if extras.get("obml_format"):
+            metric_def["format"] = extras["obml_format"]
+        if synonyms:
+            metric_def["synonyms"] = synonyms
+        return metric_def
+
+    @staticmethod
+    def _reconstruct_pop_metric(
+        name: str, extras: dict,
+        description: str | None, synonyms: list[str],
+    ) -> dict:
+        """Reconstruct an OBML period-over-period metric from custom_extensions data."""
+        pop_config: dict[str, Any] = {
+            "timeDimension": extras["obml_pop_time_dimension"],
+            "grain": extras["obml_pop_grain"],
+            "offsetGrain": extras["obml_pop_offset_grain"],
+        }
+        offset = extras.get("obml_pop_offset", -1)
+        if offset != -1:
+            pop_config["offset"] = offset
+        comparison = extras.get("obml_pop_comparison", "percentChange")
+        if comparison != "percentChange":
+            pop_config["comparison"] = comparison
+
+        metric_def: dict[str, Any] = {
+            "type": "period_over_period",
+            "expression": extras.get("obml_pop_expression", ""),
+            "periodOverPeriod": pop_config,
+        }
         if description:
             metric_def["description"] = description
         if extras.get("obml_format"):
@@ -1040,6 +1079,10 @@ class OBMLtoOSI:
                 osi_metric = self._convert_obml_cumulative_metric(
                     metric_name, metric_obj, obml_measures, data_objects
                 )
+            elif metric_obj.get("type") == "period_over_period":
+                osi_metric = self._convert_obml_pop_metric(
+                    metric_name, metric_obj, obml_measures, data_objects
+                )
             else:
                 osi_metric = self._convert_obml_metric(
                     metric_name, metric_obj, obml_measures, data_objects
@@ -1283,6 +1326,83 @@ class OBMLtoOSI:
             ext_data["obml_cumulative_window"] = window_size
         if grain:
             ext_data["obml_cumulative_grain_to_date"] = grain
+        if metric.get("format"):
+            ext_data["obml_format"] = metric["format"]
+
+        result["custom_extensions"] = [{
+            "vendor_name": "COMMON",
+            "data": json.dumps(ext_data),
+        }]
+
+        return result
+
+    def _convert_obml_pop_metric(
+        self, name: str, metric: dict,
+        obml_measures: dict, data_objects: dict,
+    ) -> dict | None:
+        """Convert an OBML period-over-period metric to an OSI metric.
+
+        PoP metrics have no direct OSI equivalent.  We generate an
+        approximate SQL expression for readability and store the full OBML
+        PoP configuration in ``custom_extensions`` (vendor ``COMMON``)
+        so the OSI → OBML direction can reconstruct it losslessly.
+        """
+        pop_config = metric.get("periodOverPeriod", {})
+        expr_template = metric.get("expression", "")
+        if not pop_config or not expr_template:
+            self.warnings.append(
+                f"Period-over-period metric '{name}' missing configuration; skipped."
+            )
+            return None
+
+        time_dim = pop_config.get("timeDimension", "")
+        grain = pop_config.get("grain", "month")
+        offset = pop_config.get("offset", -1)
+        offset_grain = pop_config.get("offsetGrain", "year")
+        comparison = pop_config.get("comparison", "percentChange")
+
+        # Resolve the base measure SQL for an approximate expression
+        pattern = r'\{\[([^\]]+)\]\}'
+        measure_names = re.findall(pattern, expr_template)
+        base_measure = measure_names[0] if measure_names else "measure"
+        measure_def = obml_measures.get(base_measure, {})
+        inner_sql = self._measure_to_sql(measure_def, data_objects) or base_measure
+
+        # Build approximate SQL comment-style expression
+        comparison_map = {
+            "percentChange": f"({inner_sql} / NULLIF(prev.value, 0)) - 1",
+            "ratio": f"{inner_sql} / NULLIF(prev.value, 0)",
+            "difference": f"{inner_sql} - prev.value",
+            "previousValue": "prev.value",
+        }
+        sql_expr = comparison_map.get(comparison, f"{inner_sql} -- PoP({comparison})")
+
+        result: dict[str, Any] = {
+            "name": name,
+            "expression": {
+                "dialects": [{
+                    "dialect": "ANSI_SQL",
+                    "expression": sql_expr,
+                }]
+            },
+            "description": metric.get("description", name),
+        }
+
+        obml_synonyms = metric.get("synonyms", [])
+        ai_synonyms = [s for s in obml_synonyms if s != name]
+        if ai_synonyms:
+            result["ai_context"] = {"synonyms": ai_synonyms}
+
+        # Store full PoP config in custom_extensions for roundtrip
+        ext_data: dict[str, Any] = {
+            "obml_metric_type": "period_over_period",
+            "obml_pop_expression": expr_template,
+            "obml_pop_time_dimension": time_dim,
+            "obml_pop_grain": grain,
+            "obml_pop_offset": offset,
+            "obml_pop_offset_grain": offset_grain,
+            "obml_pop_comparison": comparison,
+        }
         if metric.get("format"):
             ext_data["obml_format"] = metric["format"]
 
