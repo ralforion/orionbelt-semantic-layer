@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections import deque
 
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.semantic import DataType, SemanticModel
+from orionbelt.models.semantic import (
+    DataType,
+    MeasureFilter,
+    MeasureFilterGroup,
+    MeasureFilterItem,
+    SemanticModel,
+)
 
 
 class SemanticValidator:
@@ -22,6 +28,7 @@ class SemanticValidator:
         errors.extend(self._check_join_targets_exist(model))
         errors.extend(self._check_references_resolve(model))
         errors.extend(self._check_num_class_on_numeric_columns(model))
+        errors.extend(self._check_measure_filter_refs(model))
         return errors
 
     def _check_unique_identifiers(self, model: SemanticModel) -> list[SemanticError]:
@@ -362,3 +369,50 @@ class SemanticValidator:
                         )
                     )
         return errors
+
+    def _check_measure_filter_refs(self, model: SemanticModel) -> list[SemanticError]:
+        """Verify that measure filter columns reference existing data objects and columns."""
+        errors: list[SemanticError] = []
+        for meas_name, measure in model.measures.items():
+            for fi in measure.filters:
+                self._validate_filter_item(fi, model, meas_name, errors)
+        return errors
+
+    def _validate_filter_item(
+        self,
+        item: MeasureFilterItem,
+        model: SemanticModel,
+        meas_name: str,
+        errors: list[SemanticError],
+    ) -> None:
+        """Recursively validate a measure filter item."""
+        if isinstance(item, MeasureFilter):
+            if not item.column or not item.column.view:
+                return
+            obj = model.data_objects.get(item.column.view)
+            if not obj:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_FILTER_DATA_OBJECT",
+                        message=(
+                            f"Measure '{meas_name}' filter references unknown "
+                            f"data object '{item.column.view}'"
+                        ),
+                        path=f"measures.{meas_name}.filters",
+                    )
+                )
+                return
+            if item.column.column and item.column.column not in obj.columns:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_FILTER_COLUMN",
+                        message=(
+                            f"Measure '{meas_name}' filter references unknown "
+                            f"column '{item.column.column}' in '{item.column.view}'"
+                        ),
+                        path=f"measures.{meas_name}.filters",
+                    )
+                )
+        elif isinstance(item, MeasureFilterGroup):
+            for child in item.filters:
+                self._validate_filter_item(child, model, meas_name, errors)

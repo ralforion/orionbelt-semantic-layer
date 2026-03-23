@@ -52,8 +52,9 @@ The resolver transforms a high-level `QueryObject` (business names) into a `Reso
 3. **Resolve metrics** — Expand measure references (`{[Measure Name]}`), compose expressions
 4. **Select base object** — Choose the primary fact table (prefers data objects with joins defined)
 5. **Find join paths** — Use the join graph to find the minimal set of joins connecting all required objects
-6. **Classify filters** — Dimension filters -> WHERE, measure filters -> HAVING
-7. **Resolve ORDER BY** — Map field names to dimension or measure expressions
+6. **Apply measure filters** — Measures with `filters` are wrapped in `CASE WHEN` inside the aggregate function
+7. **Classify query filters** — Dimension filters -> WHERE, measure filters -> HAVING
+8. **Resolve ORDER BY** — Map field names to dimension or measure expressions
 
 ### ResolvedQuery
 

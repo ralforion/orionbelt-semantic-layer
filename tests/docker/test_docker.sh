@@ -281,7 +281,49 @@ else
     fail "POST query/sql PoP" "HTTP $HTTP_CODE, body: $BODY"
 fi
 
-# 16. Invalid query returns error (unknown dimension)
+# 16. Filtered measure query (CASE WHEN)
+FILTERED_QUERY='{
+    "select": {
+        "dimensions": ["Product Category"],
+        "measures": ["Electronics Sales"]
+    }
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${FILTERED_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"CASE WHEN"* ]]; then
+    pass "POST query/sql compiles filtered measure (CASE WHEN)"
+else
+    fail "POST query/sql filtered measure" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 17. Ratio metric with filtered component
+RATIO_QUERY='{
+    "select": {
+        "dimensions": ["Product Category"],
+        "measures": ["Electronics Share"]
+    }
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${RATIO_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"CASE WHEN"* ]] && [[ "$SQL" == *"SUM"* ]]; then
+    pass "POST query/sql compiles ratio metric with filtered component"
+else
+    fail "POST query/sql ratio metric" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 18. Invalid query returns error (unknown dimension)
 api POST "/v1/sessions/${SESSION_ID}/query/sql" \
     -H "Content-Type: application/json" \
     -d "{

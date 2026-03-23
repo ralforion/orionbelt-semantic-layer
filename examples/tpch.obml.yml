@@ -380,6 +380,16 @@ measures:
     resultType: int
     aggregation: sum
 
+  Returned Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    filters:
+      - column: {dataObject: Line Items, column: Return Flag}
+        operator: equals
+        values: [{dataType: string, valueString: "R"}]
+    description: Revenue from returned items only
+
 # ── Metrics (cross-measure formulas) ──────────────────────────────
 
 metrics:
@@ -394,6 +404,9 @@ metrics:
 
   Gross Margin:
     expression: "({[Revenue]} - {[Supply Cost]}) / {[Revenue]}"
+
+  Return Rate:
+    expression: "{[Returned Revenue]} / {[Revenue]}"
 
   # ── Cumulative metrics ────────────────────────────────────────────
   Running Revenue:

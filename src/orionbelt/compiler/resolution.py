@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import (
     BinaryOp,
+    CaseExpr,
     ColumnRef,
     Expr,
     FunctionCall,
@@ -19,7 +20,11 @@ from orionbelt.compiler.expr_parser import (
     tokenize_measure_expression,
     tokenize_metric_formula,
 )
-from orionbelt.compiler.filters import build_filter_expr
+from orionbelt.compiler.filters import (
+    build_filter_expr,
+    build_measure_filter_condition,
+    collect_measure_filter_objects,
+)
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
@@ -384,13 +389,14 @@ class QueryResolver:
                     )
                 ]
 
-        return FunctionCall(
+        result = FunctionCall(
             name=agg,
             args=args,
             distinct=distinct,
             order_by=order_by,
             separator=separator,
         )
+        return self._apply_measure_filters(ctx, measure, result)
 
     def _expand_expression(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
         """Expand a measure expression with ``{[DataObject].[Column]}`` refs into AST."""
@@ -405,10 +411,32 @@ class QueryResolver:
             agg = "COUNT"
             distinct = True
 
-        return FunctionCall(
+        result = FunctionCall(
             name=agg,
             args=[inner],
             distinct=distinct,
+        )
+        return self._apply_measure_filters(ctx, measure, result)
+
+    @staticmethod
+    def _apply_measure_filters(
+        ctx: _ResolutionContext, measure: Measure, func: FunctionCall
+    ) -> FunctionCall:
+        """Wrap aggregate args with CASE WHEN if the measure has filters."""
+        if not measure.filters:
+            return func
+        condition = build_measure_filter_condition(measure.filters, ctx.model, ctx.errors)
+        if condition is None:
+            return func
+        wrapped_args: list[Expr] = [
+            CaseExpr(when_clauses=[(condition, arg)]) for arg in func.args
+        ]
+        return FunctionCall(
+            name=func.name,
+            args=wrapped_args,
+            distinct=func.distinct,
+            order_by=func.order_by,
+            separator=func.separator,
         )
 
     def _resolve_metric(
@@ -635,6 +663,8 @@ class QueryResolver:
                 col_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", measure.expression)
                 for obj_name, _col_name in col_refs:
                     result.add(obj_name)
+            for fi in measure.filters:
+                collect_measure_filter_objects(fi, result)
             return result
 
         metric = ctx.model.metrics.get(name)

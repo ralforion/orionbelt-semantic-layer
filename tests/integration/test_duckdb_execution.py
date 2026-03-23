@@ -727,6 +727,81 @@ class TestCumulativeExecution:
 # MoM difference: Jan=NULL, Feb=125-100=25, Mar=15-125=-110
 
 
+class TestFilteredMeasureExecution:
+    """Filtered measures (CASE WHEN) executed against real DuckDB."""
+
+    def test_filtered_revenue_us_only(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        """US Revenue should only include US customers (C1=200, C3 not counted separately)."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["US Revenue"],
+            ),
+            order_by=[QueryOrderBy(field="Customer Country")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        # US Revenue is filtered: only US customers contribute
+        us_row = next(r for r in rows if r["Customer Country"] == "US")
+        uk_row = next(r for r in rows if r["Customer Country"] == "UK")
+        assert us_row["US Revenue"] == pytest.approx(200.0)
+        assert uk_row["US Revenue"] is None  # no US revenue for UK rows
+
+    def test_filtered_and_unfiltered_together(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        """Both US Revenue (filtered) and Revenue (unfiltered) in same query."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Revenue", "US Revenue"],
+            ),
+            order_by=[QueryOrderBy(field="Customer Country")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        us_row = next(r for r in rows if r["Customer Country"] == "US")
+        uk_row = next(r for r in rows if r["Customer Country"] == "UK")
+        assert us_row["Revenue"] == pytest.approx(200.0)
+        assert us_row["US Revenue"] == pytest.approx(200.0)
+        assert uk_row["Revenue"] == pytest.approx(40.0)
+        assert uk_row["US Revenue"] is None
+
+    def test_ratio_metric_with_filtered_measure(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        """US Revenue Share = US Revenue / Revenue — verify percentages."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["US Revenue Share"],
+            ),
+            order_by=[QueryOrderBy(field="Customer Country")],
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        us_row = next(r for r in rows if r["Customer Country"] == "US")
+        uk_row = next(r for r in rows if r["Customer Country"] == "UK")
+        # US: 200/200 = 1.0
+        assert us_row["US Revenue Share"] == pytest.approx(1.0)
+        # UK: None/40 = None (NULL / 40)
+        assert uk_row["US Revenue Share"] is None
+
+
 class TestPoPExecution:
     """Period-over-period metrics executed against real DuckDB."""
 

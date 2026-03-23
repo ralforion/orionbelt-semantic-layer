@@ -1,4 +1,4 @@
-"""Filter expression builder — converts QueryFilter to AST expressions."""
+"""Filter expression builder — converts QueryFilter and MeasureFilter to AST expressions."""
 
 from __future__ import annotations
 
@@ -7,14 +7,25 @@ from typing import TypedDict
 from orionbelt.ast.nodes import (
     Between,
     BinaryOp,
+    ColumnRef,
     Expr,
     InList,
     IsNull,
     Literal,
     RelativeDateRange,
+    UnaryOp,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter
+from orionbelt.models.semantic import (
+    DataType,
+    FilterLogic,
+    FilterValue,
+    MeasureFilter,
+    MeasureFilterGroup,
+    MeasureFilterItem,
+    SemanticModel,
+)
 
 
 class RelativeFilterParsed(TypedDict):
@@ -198,3 +209,203 @@ def parse_relative_filter(
         "direction": direction,
         "include_current": include_current,
     }
+
+
+# ---------------------------------------------------------------------------
+# Measure-level filter compilation (MeasureFilter → CASE WHEN condition)
+# ---------------------------------------------------------------------------
+
+
+def _extract_filter_value(fv: FilterValue) -> str | int | float | bool | None:
+    """Pick the concrete value from a typed FilterValue."""
+    if fv.is_null:
+        return None
+    match fv.data_type:
+        case DataType.STRING | DataType.JSON:
+            return fv.value_string
+        case DataType.INT:
+            return fv.value_int
+        case DataType.FLOAT:
+            return fv.value_float
+        case DataType.DATE | DataType.TIMESTAMP:
+            return fv.value_date
+        case DataType.BOOLEAN:
+            return fv.value_boolean
+    return fv.value_string  # fallback
+
+
+def _build_single_measure_filter(
+    mf: MeasureFilter,
+    model: SemanticModel,
+    errors: list[SemanticError],
+) -> Expr | None:
+    """Convert a single MeasureFilter leaf to an AST condition expression."""
+    if not mf.column or not mf.column.view or not mf.column.column:
+        errors.append(
+            SemanticError(
+                code="INVALID_MEASURE_FILTER",
+                message="Measure filter must specify column.dataObject and column.column",
+                path="measures",
+            )
+        )
+        return None
+
+    obj = model.data_objects.get(mf.column.view)
+    if not obj:
+        errors.append(
+            SemanticError(
+                code="UNKNOWN_FILTER_DATA_OBJECT",
+                message=f"Measure filter references unknown data object '{mf.column.view}'",
+                path="measures",
+            )
+        )
+        return None
+
+    obj_col = obj.columns.get(mf.column.column)
+    if not obj_col:
+        errors.append(
+            SemanticError(
+                code="UNKNOWN_FILTER_COLUMN",
+                message=(
+                    f"Measure filter references unknown column "
+                    f"'{mf.column.column}' in '{mf.column.view}'"
+                ),
+                path="measures",
+            )
+        )
+        return None
+
+    col: Expr = ColumnRef(name=obj_col.code, table=mf.column.view)
+    op_str = mf.operator.lower()
+
+    # Extract values
+    values = [_extract_filter_value(fv) for fv in mf.values]
+
+    match op_str:
+        case "equals":
+            return BinaryOp(left=col, op="=", right=Literal(value=values[0] if values else None))
+        case "notequals":
+            return BinaryOp(left=col, op="<>", right=Literal(value=values[0] if values else None))
+        case "gt":
+            return BinaryOp(left=col, op=">", right=Literal(value=values[0] if values else None))
+        case "gte":
+            return BinaryOp(left=col, op=">=", right=Literal(value=values[0] if values else None))
+        case "lt":
+            return BinaryOp(left=col, op="<", right=Literal(value=values[0] if values else None))
+        case "lte":
+            return BinaryOp(left=col, op="<=", right=Literal(value=values[0] if values else None))
+        case "inlist":
+            return InList(expr=col, values=[Literal(value=v) for v in values])
+        case "notinlist":
+            return InList(expr=col, values=[Literal(value=v) for v in values], negated=True)
+        case "set":
+            return IsNull(expr=col, negated=True)
+        case "notset":
+            return IsNull(expr=col, negated=False)
+        case "contains":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{v}%"))
+        case "notcontains":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(f"%{v}%"))
+        case "starts_with":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"{v}%"))
+        case "ends_with":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{v}"))
+        case "like":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(str(v)))
+        case "notlike":
+            v = values[0] if values else ""
+            return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(str(v)))
+        case "between":
+            if len(values) >= 2:
+                return Between(
+                    expr=col, low=Literal(value=values[0]), high=Literal(value=values[1]),
+                )
+            return BinaryOp(left=col, op="=", right=Literal(value=values[0] if values else None))
+        case "notbetween":
+            if len(values) >= 2:
+                return Between(
+                    expr=col, low=Literal(value=values[0]), high=Literal(value=values[1]),
+                    negated=True,
+                )
+            return BinaryOp(left=col, op="<>", right=Literal(value=values[0] if values else None))
+        case _:
+            errors.append(
+                SemanticError(
+                    code="INVALID_MEASURE_FILTER_OPERATOR",
+                    message=f"Unsupported measure filter operator '{mf.operator}'",
+                    path="measures",
+                )
+            )
+            return None
+
+
+def _build_measure_filter_item(
+    item: MeasureFilterItem,
+    model: SemanticModel,
+    errors: list[SemanticError],
+) -> Expr | None:
+    """Recursively build an AST condition from a MeasureFilter or MeasureFilterGroup."""
+    if isinstance(item, MeasureFilter):
+        return _build_single_measure_filter(item, model, errors)
+
+    # MeasureFilterGroup — recurse children, combine with logic
+    child_exprs: list[Expr] = []
+    for child in item.filters:
+        expr = _build_measure_filter_item(child, model, errors)
+        if expr is not None:
+            child_exprs.append(expr)
+
+    if not child_exprs:
+        return None
+
+    op = "AND" if item.logic == FilterLogic.AND else "OR"
+    combined: Expr = child_exprs[0]
+    for expr in child_exprs[1:]:
+        combined = BinaryOp(left=combined, op=op, right=expr)
+
+    if item.negated:
+        combined = UnaryOp(op="NOT", operand=combined)
+
+    return combined
+
+
+def build_measure_filter_condition(
+    filters: list[MeasureFilterItem],
+    model: SemanticModel,
+    errors: list[SemanticError],
+) -> Expr | None:
+    """Build a combined AST condition from a measure's filter list.
+
+    Top-level filters are combined with AND. Returns ``None`` if no valid
+    conditions could be built.
+    """
+    parts: list[Expr] = []
+    for item in filters:
+        expr = _build_measure_filter_item(item, model, errors)
+        if expr is not None:
+            parts.append(expr)
+
+    if not parts:
+        return None
+
+    combined: Expr = parts[0]
+    for expr in parts[1:]:
+        combined = BinaryOp(left=combined, op="AND", right=expr)
+    return combined
+
+
+def collect_measure_filter_objects(
+    item: MeasureFilterItem, objects: set[str]
+) -> None:
+    """Recursively collect data object names referenced by measure filters."""
+    if isinstance(item, MeasureFilter):
+        if item.column and item.column.view:
+            objects.add(item.column.view)
+    elif isinstance(item, MeasureFilterGroup):
+        for child in item.filters:
+            collect_measure_filter_objects(child, objects)

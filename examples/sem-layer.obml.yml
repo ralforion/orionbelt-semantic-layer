@@ -416,6 +416,18 @@ measures:
     resultType: float
     aggregation: sum
 
+  Electronics Sales:
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+    resultType: float
+    aggregation: sum
+    filters:
+      - column: {dataObject: Products, column: Product Category}
+        operator: equals
+        values: [{dataType: string, valueString: "Electronics"}]
+    description: Total sales filtered to Electronics category
+
   Sales Count:
     columns:
       - dataObject: Sales
@@ -484,6 +496,9 @@ metrics:
 
   Average Sale:
     expression: "{[Total Sales]} / {[Sales Count]}"
+
+  Electronics Share:
+    expression: "{[Electronics Sales]} / {[Total Sales]}"
 
   Running Total Sales:
     type: cumulative

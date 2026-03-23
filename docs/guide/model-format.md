@@ -366,6 +366,24 @@ measures:
 
 Multiple top-level filters are combined with **AND**. Filter groups and leaf filters can be mixed freely and nested recursively.
 
+#### How Measure Filters Compile
+
+Filtered measures compile to `CASE WHEN` inside the aggregate function. The implicit `ELSE NULL` is ignored by all aggregate functions (SUM, COUNT, AVG, etc.):
+
+```sql
+-- Unfiltered:   SUM("extendedprice" * (1 - "discount"))
+-- Filtered:     SUM(CASE WHEN "returnflag" = 'R'
+--                        THEN "extendedprice" * (1 - "discount") END)
+```
+
+This works with all planners (star, CFL, cumulative, period-over-period) and all 8 dialects. Filtered measures can be combined with unfiltered measures in ratio metrics:
+
+```yaml
+metrics:
+  Return Rate:
+    expression: "{[Returned Revenue]} / {[Revenue]}"
+```
+
 ### LISTAGG Measures
 
 Use `listagg` to concatenate column values into a delimited string. OrionBelt renders the correct SQL for each database dialect automatically.

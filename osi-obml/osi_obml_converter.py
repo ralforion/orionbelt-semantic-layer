@@ -572,8 +572,8 @@ class OSItoOBML:
     @staticmethod
     def _apply_obml_measure_extras(measure_def: dict, extras: dict) -> None:
         """Restore OBML-only measure properties from extracted extras."""
-        if extras.get("obml_filter"):
-            measure_def["filter"] = extras["obml_filter"]
+        if extras.get("obml_filters"):
+            measure_def["filters"] = extras["obml_filters"]
         if extras.get("obml_total"):
             measure_def["total"] = True
         if extras.get("obml_allow_fan_out"):
@@ -1163,8 +1163,8 @@ class OBMLtoOSI:
     def _add_obml_measure_extras(result: dict, measure: dict) -> None:
         """Preserve OBML-only measure properties in custom_extensions for roundtrip."""
         extras: dict[str, Any] = {}
-        if measure.get("filter"):
-            extras["obml_filter"] = measure["filter"]
+        if measure.get("filters"):
+            extras["obml_filters"] = measure["filters"]
         if measure.get("total"):
             extras["obml_total"] = True
         if measure.get("allowFanOut"):

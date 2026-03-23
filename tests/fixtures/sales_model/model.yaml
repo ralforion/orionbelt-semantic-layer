@@ -124,12 +124,24 @@ measures:
     expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
     total: true
 
+  US Revenue:
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
+    filters:
+      - column: {dataObject: Customers, column: Country}
+        operator: equals
+        values: [{dataType: string, valueString: "US"}]
+
 metrics:
   Revenue per Order:
     expression: '{[Revenue]} / {[Order Count]}'
 
   Revenue Share:
     expression: '{[Revenue]} / {[Grand Total Revenue]}'
+
+  US Revenue Share:
+    expression: '{[US Revenue]} / {[Revenue]}'
 
   Running Revenue:
     type: cumulative

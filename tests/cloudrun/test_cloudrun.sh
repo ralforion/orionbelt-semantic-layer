@@ -308,7 +308,25 @@ POP_DIM_QUERY='{
 }'
 compile_query "PoP MoM with dimension" "snowflake" "$POP_DIM_QUERY" "pop_compare"
 
-# 26. Cumulative metric — different dialect
+# 27. Filtered measure (CASE WHEN)
+FILTERED_QUERY='{
+    "select": {
+        "dimensions": ["Product Category"],
+        "measures": ["Electronics Sales"]
+    }
+}'
+compile_query "Filtered measure CASE WHEN" "postgres" "$FILTERED_QUERY" "CASE WHEN"
+
+# 28. Ratio metric with filtered component
+RATIO_QUERY='{
+    "select": {
+        "dimensions": ["Product Category"],
+        "measures": ["Electronics Share"]
+    }
+}'
+compile_query "Ratio metric with filtered component" "duckdb" "$RATIO_QUERY" "CASE WHEN"
+
+# 29. Cumulative metric — different dialect
 compile_query "Cumulative running total" "snowflake" "$CUMUL_QUERY" "cumulative_base"
 
 # ── Error handling ───────────────────────────────────────────────────
