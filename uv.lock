@@ -2232,6 +2232,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "duckdb" },
     { name = "httpx" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -2263,6 +2264,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.128,<1.0" },
     { name = "gradio", marker = "extra == 'ui'", specifier = ">=5.0,<6.0" },
     { name = "httpx", specifier = ">=0.28,<1.0" },
