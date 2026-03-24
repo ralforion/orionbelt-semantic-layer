@@ -26,6 +26,7 @@ from orionbelt.api.schemas import (
     ColumnMetadata,
     DiagramResponse,
     DimensionDetail,
+    ErrorDetail,
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
@@ -39,6 +40,8 @@ from orionbelt.api.schemas import (
     SchemaResponse,
     SearchRequest,
     SearchResponse,
+    ValidateRequest,
+    ValidateResponse,
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -277,6 +280,37 @@ async def shortcut_diagram_er(
     _, _, model = _resolve_single_model(mgr)
     mermaid = generate_mermaid_er(model, show_columns=show_columns, theme=theme)
     return DiagramResponse(mermaid=mermaid)
+
+
+def _resolve_any_store(mgr: SessionManager) -> ModelStore:
+    """Resolve to any available ModelStore (for stateless operations like validate).
+
+    Checks __default__ session first, then user-created sessions.
+    """
+    try:
+        return mgr.get_store("__default__")
+    except Exception:
+        pass
+    for sess in mgr.list_sessions():
+        return mgr.get_store(sess.session_id)
+    raise HTTPException(status_code=404, detail="No active sessions")
+
+
+@router.post("/validate", response_model=ValidateResponse, tags=["validation"])
+async def shortcut_validate(
+    body: ValidateRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ValidateResponse:
+    """Validate OBML YAML (auto-resolves session)."""
+    store = _resolve_any_store(mgr)
+    summary = store.validate(body.model_yaml)
+    return ValidateResponse(
+        valid=summary.valid,
+        errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
+        warnings=[
+            ErrorDetail(code=w.code, message=w.message, path=w.path) for w in summary.warnings
+        ],
+    )
 
 
 class ShortcutQueryRequest(QueryObject):
