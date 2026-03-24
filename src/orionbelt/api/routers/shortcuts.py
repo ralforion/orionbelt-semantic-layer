@@ -24,6 +24,7 @@ from orionbelt.api.routers.model_api import (
 )
 from orionbelt.api.schemas import (
     ColumnMetadata,
+    DiagramResponse,
     DimensionDetail,
     ExplainCflLegResponse,
     ExplainJoinResponse,
@@ -58,17 +59,24 @@ router = APIRouter()
 def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]:
     """Resolve to a unique (session_id, model_id, model).
 
-    Raises 409 if ambiguous, 404 if nothing loaded.
+    Checks the __default__ session first (single-model mode), then falls back
+    to scanning user-created sessions. Raises 409 if ambiguous, 404 if nothing loaded.
     """
-    sessions = mgr.list_sessions()
-    if not sessions:
-        raise HTTPException(status_code=404, detail="No active sessions")
-
     candidates: list[tuple[str, str, SemanticModel]] = []
-    for sess in sessions:
+
+    # Check __default__ session first (auto-created in single-model mode)
+    try:
+        default_store = mgr.get_store("__default__")
+        for ms in default_store.list_models():
+            model = default_store.get_model(ms.model_id)
+            candidates.append(("__default__", ms.model_id, model))
+    except Exception:
+        pass
+
+    # Also scan user-created sessions
+    for sess in mgr.list_sessions():
         store = mgr.get_store(sess.session_id)
-        models = store.list_models()
-        for ms in models:
+        for ms in store.list_models():
             model = store.get_model(ms.model_id)
             candidates.append((sess.session_id, ms.model_id, model))
 
@@ -87,16 +95,25 @@ def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]
 def _resolve_store_and_model(
     mgr: SessionManager,
 ) -> tuple[ModelStore, str]:
-    """Resolve to a unique (store, model_id) for query compilation."""
-    sessions = mgr.list_sessions()
-    if not sessions:
-        raise HTTPException(status_code=404, detail="No active sessions")
+    """Resolve to a unique (store, model_id) for query compilation.
 
+    Checks the __default__ session first (single-model mode), then falls back
+    to scanning user-created sessions.
+    """
     candidates: list[tuple[ModelStore, str]] = []
-    for sess in sessions:
+
+    # Check __default__ session first
+    try:
+        default_store = mgr.get_store("__default__")
+        for ms in default_store.list_models():
+            candidates.append((default_store, ms.model_id))
+    except Exception:
+        pass
+
+    # Also scan user-created sessions
+    for sess in mgr.list_sessions():
         store = mgr.get_store(sess.session_id)
-        models = store.list_models()
-        for ms in models:
+        for ms in store.list_models():
             candidates.append((store, ms.model_id))
 
     if not candidates:
@@ -246,6 +263,20 @@ async def shortcut_join_graph(
     """Return the join graph (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
     return _build_join_graph(model)
+
+
+@router.get("/diagram/er", response_model=DiagramResponse, tags=["model-discovery"])
+async def shortcut_diagram_er(
+    show_columns: bool = True,
+    theme: str = "default",
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> DiagramResponse:
+    """Generate a Mermaid ER diagram (auto-resolves session/model)."""
+    from orionbelt.service.diagram import generate_mermaid_er
+
+    _, _, model = _resolve_single_model(mgr)
+    mermaid = generate_mermaid_er(model, show_columns=show_columns, theme=theme)
+    return DiagramResponse(mermaid=mermaid)
 
 
 class ShortcutQueryRequest(QueryObject):

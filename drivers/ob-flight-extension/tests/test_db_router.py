@@ -10,7 +10,7 @@ from ob_flight.db_router import VENDOR_MAP, connect, get_credentials
 
 class TestVendorMap:
     def test_all_dialects_present(self):
-        expected = {"duckdb", "postgres", "snowflake", "clickhouse", "dremio", "databricks"}
+        expected = {"duckdb", "postgres", "snowflake", "clickhouse", "dremio", "databricks", "bigquery", "mysql"}
         assert set(VENDOR_MAP) == expected
 
 
@@ -67,7 +67,7 @@ class TestConnect:
         with patch("importlib.import_module", return_value=mock_module) as mock_import:
             result = connect("duckdb", database=":memory:")
             mock_import.assert_called_once_with("ob_duckdb")
-            mock_module.connect.assert_called_once_with(database=":memory:")
+            mock_module.connect.assert_called_once_with(database=":memory:", read_only=True)
             assert result is mock_conn
 
     def test_env_overridden_by_kwargs(self, monkeypatch):

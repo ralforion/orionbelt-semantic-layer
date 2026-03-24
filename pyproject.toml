@@ -84,7 +84,15 @@ ui = [
 flight = [
     "pyarrow>=16.0,<20.0",
     "ob-flight-extension>=0.1",
+    "ob-driver-core>=0.1",
+    "ob-bigquery>=0.1",
+    "ob-clickhouse>=0.1",
+    "ob-databricks>=0.1",
+    "ob-dremio>=0.1",
     "ob-duckdb>=0.1",
+    "ob-mysql>=0.1",
+    "ob-postgres>=0.1",
+    "ob-snowflake>=0.1",
 ]
 
 [build-system]

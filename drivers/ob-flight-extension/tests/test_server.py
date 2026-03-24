@@ -20,15 +20,12 @@ def mock_session_manager():
     model_info = MagicMock()
     model_info.model_id = "test-model"
 
-    model_store = MagicMock()
-    model_store.list_models.return_value = [model_info]
-    model_store.get_model.return_value = model
-
-    session = MagicMock()
-    session.model_store = model_store
+    store = MagicMock()
+    store.list_models.return_value = [model_info]
+    store.get_model.return_value = model
 
     mgr = MagicMock()
-    mgr.get_session.return_value = session
+    mgr.get_store.return_value = store
     return mgr
 
 
@@ -42,9 +39,9 @@ class TestGetModel:
 
     def test_no_models_loaded(self):
         mgr = MagicMock()
-        session = MagicMock()
-        session.model_store.list_models.return_value = []
-        mgr.get_session.return_value = session
+        store = MagicMock()
+        store.list_models.return_value = []
+        mgr.get_store.return_value = store
 
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = mgr
@@ -54,7 +51,7 @@ class TestGetModel:
 
     def test_no_default_session(self):
         mgr = MagicMock()
-        mgr.get_session.side_effect = KeyError("session not found")
+        mgr.get_store.side_effect = KeyError("session not found")
 
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = mgr
@@ -77,7 +74,7 @@ class TestGetModel:
         server._default_dialect = "duckdb"
 
         model, dialect = server._get_model()
-        mock_session_manager.get_session.assert_called_once_with("__default__")
+        mock_session_manager.get_store.assert_called_once_with("__default__")
         assert dialect == "duckdb"
 
 
@@ -110,6 +107,10 @@ class TestCompileObml:
 
 
 class TestGetFlightInfo:
+    def _mock_probe(self):
+        """Return a schema patch for _probe_schema."""
+        return pa.schema([pa.field("n", pa.int64())])
+
     def test_plain_sql(self, mock_session_manager):
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = mock_session_manager
@@ -119,14 +120,16 @@ class TestGetFlightInfo:
         descriptor = flight.FlightDescriptor.for_command(b"SELECT 1")
         context = MagicMock()
 
-        info = server.get_flight_info(context, descriptor)
+        with patch.object(server, "_probe_schema", return_value=self._mock_probe()):
+            info = server.get_flight_info(context, descriptor)
         assert len(info.endpoints) == 1
         # Ticket should be stored
         assert len(server._pending) == 1
         ticket_id = list(server._pending.keys())[0]
-        sql, dialect, model = server._pending[ticket_id]
-        assert sql == "SELECT 1"
-        assert dialect == "duckdb"
+        pending = server._pending[ticket_id]
+        assert pending[0] == "sql"
+        assert pending[1] == "SELECT 1"
+        assert pending[2] == "duckdb"
 
     def test_obml_query(self, mock_session_manager):
         server = OBFlightServer.__new__(OBFlightServer)
@@ -140,11 +143,13 @@ class TestGetFlightInfo:
 
         compiled_sql = "SELECT region, SUM(amount) FROM orders GROUP BY region"
         with patch.object(server, "_compile_obml", return_value=compiled_sql):
-            info = server.get_flight_info(context, descriptor)
-            assert len(server._pending) == 1
-            ticket_id = list(server._pending.keys())[0]
-            sql, _, _ = server._pending[ticket_id]
-            assert sql == compiled_sql
+            with patch.object(server, "_probe_schema", return_value=self._mock_probe()):
+                info = server.get_flight_info(context, descriptor)
+        assert len(server._pending) == 1
+        ticket_id = list(server._pending.keys())[0]
+        pending = server._pending[ticket_id]
+        assert pending[0] == "sql"
+        assert pending[1] == compiled_sql
 
     def test_returns_endpoint_with_ticket(self, mock_session_manager):
         server = OBFlightServer.__new__(OBFlightServer)
@@ -155,11 +160,27 @@ class TestGetFlightInfo:
         descriptor = flight.FlightDescriptor.for_command(b"SELECT 42")
         context = MagicMock()
 
-        info = server.get_flight_info(context, descriptor)
+        with patch.object(server, "_probe_schema", return_value=self._mock_probe()):
+            info = server.get_flight_info(context, descriptor)
         assert len(info.endpoints) == 1
         endpoint = info.endpoints[0]
         ticket_id = endpoint.ticket.ticket.decode("utf-8")
         assert ticket_id in server._pending
+
+    def test_schema_from_probe(self, mock_session_manager):
+        """FlightInfo schema should come from _probe_schema, not a placeholder."""
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+        server._pending = {}
+
+        real_schema = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())])
+        descriptor = flight.FlightDescriptor.for_command(b"SELECT id, name FROM t")
+        context = MagicMock()
+
+        with patch.object(server, "_probe_schema", return_value=real_schema):
+            info = server.get_flight_info(context, descriptor)
+        assert info.schema == real_schema
 
     def test_no_session_manager_raises(self):
         server = OBFlightServer.__new__(OBFlightServer)
@@ -172,6 +193,30 @@ class TestGetFlightInfo:
 
         with pytest.raises(flight.FlightUnavailableError):
             server.get_flight_info(context, descriptor)
+
+    def test_flight_sql_catalog_command(self, mock_session_manager):
+        """Flight SQL protobuf commands should be recognized and handled."""
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+        server._pending = {}
+
+        # Build a minimal protobuf Any for CommandGetTables
+        from ob_flight.flight_sql import CMD_GET_TABLES
+
+        type_url_bytes = CMD_GET_TABLES.encode("utf-8")
+        # protobuf: field 1 (tag 0x0a) + length + type_url
+        cmd = b"\x0a" + bytes([len(type_url_bytes)]) + type_url_bytes
+
+        descriptor = flight.FlightDescriptor.for_command(cmd)
+        context = MagicMock()
+
+        info = server.get_flight_info(context, descriptor)
+        assert len(info.endpoints) == 1
+        ticket_id = list(server._pending.keys())[0]
+        pending = server._pending[ticket_id]
+        assert pending[0] == "catalog"
+        assert pending[1] == CMD_GET_TABLES
 
 
 class TestDoGet:
@@ -187,10 +232,9 @@ class TestDoGet:
         server = OBFlightServer.__new__(OBFlightServer)
         server._batch_size = 1024
 
-        # Set up pending query
-        model = MagicMock()
+        # Set up pending query (new tuple format with "sql" prefix)
         ticket_id = "test-ticket"
-        server._pending = {ticket_id: ("SELECT 1 AS n", "duckdb", model)}
+        server._pending = {ticket_id: ("sql", "SELECT 1 AS n", "duckdb")}
 
         # Mock the DB connection
         from ob_driver_core.type_codes import NUMBER
@@ -216,7 +260,7 @@ class TestDoGet:
         server._batch_size = 1024
 
         ticket_id = "ddl-ticket"
-        server._pending = {ticket_id: ("CREATE TABLE t (x INT)", "duckdb", MagicMock())}
+        server._pending = {ticket_id: ("sql", "CREATE TABLE t (x INT)", "duckdb")}
 
         mock_cursor = MagicMock()
         mock_cursor.description = None  # DDL has no description
@@ -237,7 +281,7 @@ class TestDoGet:
 
         ticket_id = "empty-ticket"
         server._pending = {
-            ticket_id: ("SELECT * FROM t WHERE 1=0", "duckdb", MagicMock())
+            ticket_id: ("sql", "SELECT * FROM t WHERE 1=0", "duckdb")
         }
 
         from ob_driver_core.type_codes import STRING
@@ -261,7 +305,7 @@ class TestDoGet:
         server._batch_size = 1024
 
         ticket_id = "error-ticket"
-        server._pending = {ticket_id: ("SELECT bad", "duckdb", MagicMock())}
+        server._pending = {ticket_id: ("sql", "SELECT bad", "duckdb")}
 
         mock_cursor = MagicMock()
         mock_cursor.execute.side_effect = RuntimeError("SQL error")
@@ -276,9 +320,81 @@ class TestDoGet:
 
         mock_conn.close.assert_called_once()
 
+    def test_catalog_command_returns_table(self, mock_session_manager):
+        """Catalog commands should return Arrow tables without DB execution."""
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+        server._batch_size = 1024
+
+        from ob_flight.flight_sql import CMD_GET_TABLE_TYPES
+
+        ticket_id = "catalog-ticket"
+        server._pending = {ticket_id: ("catalog", CMD_GET_TABLE_TYPES)}
+
+        ticket = flight.Ticket(ticket_id.encode("utf-8"))
+        stream = server.do_get(MagicMock(), ticket)
+        assert stream is not None
+        assert ticket_id not in server._pending
+
 
 class TestListFlights:
-    def test_with_model(self, mock_session_manager):
+    def _db_schema_result(self):
+        """Sample database schema result for testing."""
+        tables = [
+            {
+                "catalog_name": "testdb",
+                "db_schema_name": "public",
+                "table_name": "orders",
+                "table_type": "TABLE",
+            },
+            {
+                "catalog_name": "testdb",
+                "db_schema_name": "public",
+                "table_name": "customers",
+                "table_type": "TABLE",
+            },
+        ]
+        schemas = {
+            "orders": pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.float64())]),
+            "customers": pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())]),
+        }
+        return tables, schemas
+
+    def test_with_db_tables(self):
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._default_dialect = "postgres"
+
+        tables, schemas = self._db_schema_result()
+        with patch.object(server, "_query_db_schema", return_value=(tables, schemas)):
+            infos = list(server.list_flights(MagicMock(), b""))
+        assert len(infos) == 2
+
+    def test_db_query_returns_physical_columns(self):
+        """list_flights should show physical database columns, not model columns."""
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._default_dialect = "postgres"
+
+        tables = [{
+            "catalog_name": "testdb",
+            "db_schema_name": "public",
+            "table_name": "orders",
+            "table_type": "TABLE",
+        }]
+        schemas = {
+            "orders": pa.schema([
+                pa.field("order_id", pa.int64()),
+                pa.field("order_date", pa.date32()),
+                pa.field("total", pa.float64()),
+            ]),
+        }
+        with patch.object(server, "_query_db_schema", return_value=(tables, schemas)):
+            infos = list(server.list_flights(MagicMock(), b""))
+        assert len(infos) == 1
+        assert infos[0].schema == schemas["orders"]
+
+    def test_fallback_to_model(self, mock_session_manager):
+        """Falls back to model-based listing when DB metadata is unavailable."""
         col = MagicMock()
         col.label = "ID"
         col.abstract_type = "int"
@@ -288,46 +404,22 @@ class TestListFlights:
         model = MagicMock()
         model.data_objects = {"Orders": obj}
 
-        mock_session_manager.get_session.return_value.model_store.get_model.return_value = (
-            model
-        )
+        mock_session_manager.get_store.return_value.get_model.return_value = model
 
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = mock_session_manager
         server._default_dialect = "duckdb"
 
-        # list_flights returns a generator
-        infos = list(server.list_flights(MagicMock(), b""))
+        # Empty DB result triggers model fallback
+        with patch.object(server, "_query_db_schema", return_value=([], {})):
+            infos = list(server.list_flights(MagicMock(), b""))
         assert len(infos) == 1
 
-    def test_no_model_returns_empty(self):
+    def test_no_model_no_db_returns_empty(self):
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = None
         server._default_dialect = "duckdb"
 
-        infos = list(server.list_flights(MagicMock(), b""))
+        with patch.object(server, "_query_db_schema", return_value=([], {})):
+            infos = list(server.list_flights(MagicMock(), b""))
         assert len(infos) == 0
-
-    def test_multiple_objects_listed(self, mock_session_manager):
-        col = MagicMock()
-        col.label = "X"
-        col.abstract_type = "string"
-
-        obj1 = MagicMock()
-        obj1.columns = {"X": col}
-        obj2 = MagicMock()
-        obj2.columns = {"X": col}
-
-        model = MagicMock()
-        model.data_objects = {"A": obj1, "B": obj2}
-
-        mock_session_manager.get_session.return_value.model_store.get_model.return_value = (
-            model
-        )
-
-        server = OBFlightServer.__new__(OBFlightServer)
-        server._session_manager = mock_session_manager
-        server._default_dialect = "duckdb"
-
-        infos = list(server.list_flights(MagicMock(), b""))
-        assert len(infos) == 2

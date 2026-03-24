@@ -38,6 +38,7 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "POSTGRES_DBNAME",
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
+        "POSTGRES_SCHEMA",
     ],
     "snowflake": [
         "SNOWFLAKE_ACCOUNT",
@@ -85,6 +86,7 @@ _ENV_TO_KWARG: dict[str, str] = {
     "POSTGRES_DBNAME": "dbname",
     "POSTGRES_USER": "user",
     "POSTGRES_PASSWORD": "password",
+    "POSTGRES_SCHEMA": "schema",
     "SNOWFLAKE_ACCOUNT": "account",
     "SNOWFLAKE_USER": "user",
     "SNOWFLAKE_PASSWORD": "password",

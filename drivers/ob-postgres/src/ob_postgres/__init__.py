@@ -76,6 +76,7 @@ def connect(
     user: str | None = None,
     password: str | None = None,
     sslmode: str | None = None,
+    schema: str | None = None,
     options: dict[str, Any] | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
@@ -99,6 +100,8 @@ def connect(
         Password.
     sslmode : str, optional
         SSL mode (``disable``, ``require``, ``verify-full``, etc.).
+    schema : str, optional
+        PostgreSQL schema — sets ``search_path`` after connecting.
     options : dict, optional
         Extra connection options (added as URI query parameters).
     ob_api_url : str
@@ -109,6 +112,11 @@ def connect(
     if dsn is not None:
         uri = dsn
     else:
+        # Include search_path as a connection option if schema is specified
+        extra_options = dict(options) if options else {}
+        if schema:
+            extra_options["options"] = f"-csearch_path={schema}"
+
         uri = _build_pg_uri(
             host=host,
             port=port,
@@ -117,12 +125,12 @@ def connect(
             password=password,
             sslmode=sslmode,
         )
-        # Append extra options as query parameters
-        if options:
+        if extra_options:
             sep = "&" if "?" in uri else "?"
-            uri += sep + urlencode(options)
+            uri += sep + urlencode(extra_options)
 
     native = adbc_driver_postgresql.dbapi.connect(uri)
+
     return Connection(
         native,
         ob_api_url=ob_api_url,

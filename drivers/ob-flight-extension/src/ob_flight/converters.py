@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
@@ -24,18 +26,59 @@ def pep249_type_to_arrow(type_code: Any) -> pa.DataType:
     return pa.utf8()  # fallback
 
 
+def _python_type_to_arrow(value: Any) -> pa.DataType:
+    """Infer Arrow type from a Python value (fallback when type codes are unreliable)."""
+    if isinstance(value, bool):
+        return pa.bool_()
+    if isinstance(value, int):
+        return pa.int64()
+    if isinstance(value, float):
+        return pa.float64()
+    if isinstance(value, Decimal):
+        return pa.float64()
+    if isinstance(value, datetime.datetime):
+        return pa.timestamp("us")
+    if isinstance(value, datetime.date):
+        return pa.date32()
+    if isinstance(value, datetime.time):
+        return pa.time64("us")
+    if isinstance(value, bytes):
+        return pa.binary()
+    return pa.utf8()
+
+
 def schema_from_description(
     description: tuple[tuple[str, Any, ...], ...],
+    sample_row: tuple[Any, ...] | None = None,
+    sample_rows: list[tuple[Any, ...]] | None = None,
 ) -> pa.Schema:
     """Build an Arrow Schema from PEP 249 cursor.description.
 
     Each description entry is a 7-tuple: (name, type_code, ...).
+    When sample_rows (or sample_row) is provided, Python value types are used
+    as the primary type source (more reliable than type_code with ADBC drivers).
+
+    For UNION ALL queries with NULL padding, a single sample row may have None
+    for some columns. Passing sample_rows allows scanning multiple rows to find
+    the first non-None value per column.
     """
+    # Normalize: prefer sample_rows, fall back to single sample_row
+    rows = sample_rows or ([sample_row] if sample_row is not None else [])
+
     fields = []
-    for col in description:
+    for i, col in enumerate(description):
         name = col[0]
-        type_code = col[1]
-        arrow_type = pep249_type_to_arrow(type_code)
+        # Scan rows for first non-None value in this column
+        value = None
+        for row in rows:
+            if i < len(row) and row[i] is not None:
+                value = row[i]
+                break
+        if value is not None:
+            arrow_type = _python_type_to_arrow(value)
+        else:
+            type_code = col[1]
+            arrow_type = pep249_type_to_arrow(type_code)
         fields.append(pa.field(name, arrow_type))
     return pa.schema(fields)
 

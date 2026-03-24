@@ -127,20 +127,15 @@ def start_api(
             "API did not start in time\n" + open("api.log").read()[-2000:]
         )
 
-    # Create session (MODEL_FILE auto-loads the model)
-    session = api("POST", "/v1/sessions")
-    sid = session["session_id"]
-
-    # Remove stale sessions so shortcut endpoints work
-    for s in api("GET", "/v1/sessions")["sessions"]:
-        if s["session_id"] != sid:
-            api("DELETE", f"/v1/sessions/{s['session_id']}")
-
-    models = api("GET", f"/v1/sessions/{sid}/models")
-    mid = models[0]["model_id"]
-
-    print(f"Session: {sid} ({session['model_count']} model loaded)")
-    return sid, mid
+    # MODEL_FILE triggers single-model mode: __default__ session is auto-created
+    # with the model pre-loaded — no need to create a session manually.
+    # Shortcut endpoints (/v1/schema, /v1/query/sql, etc.) resolve automatically.
+    schema = api("GET", "/v1/schema")
+    dims = len(schema.get("dimensions", []))
+    measures = len(schema.get("measures", []))
+    metrics = len(schema.get("metrics", []))
+    print(f"Model ready: {dims} dimensions, {measures} measures, {metrics} metrics")
+    return "", ""
 
 
 def api(method: str, path: str, body: dict | str | None = None) -> dict | list | str:

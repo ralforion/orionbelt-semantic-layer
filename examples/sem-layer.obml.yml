@@ -6,8 +6,8 @@ dataObjects:
 
   Calendar:
     code: calendar
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Calendar Date:
         code: date
@@ -24,8 +24,8 @@ dataObjects:
 
   Countries:
     code: countries
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Country ID:
         code: country_id
@@ -36,8 +36,8 @@ dataObjects:
 
   Clients:
     code: clients
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Client ID:
         code: client_id
@@ -61,8 +61,8 @@ dataObjects:
 
   Suppliers:
     code: suppliers
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Supplier ID:
         code: supplier_id
@@ -86,8 +86,8 @@ dataObjects:
 
   Products:
     code: products
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Product ID:
         code: product_id
@@ -119,8 +119,8 @@ dataObjects:
 
   Employees:
     code: employees
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Employee ID:
         code: employee_id
@@ -133,9 +133,9 @@ dataObjects:
         abstractType: string
 
   Account Balances:
-    code: acct_bal
-    database: ANALYTICS
-    schema: PUBLIC
+    code: acctbal
+    database: postgres
+    schema: orionbelt_1
     columns:
       Account ID:
         code: account_id
@@ -152,8 +152,8 @@ dataObjects:
 
   Sales:
     code: sales
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Sales ID:
         code: sales_id
@@ -224,8 +224,8 @@ dataObjects:
 
   Returns:
     code: returns
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Return ID:
         code: return_id
@@ -260,8 +260,8 @@ dataObjects:
 
   Shipments:
     code: shipments
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Shipment ID:
         code: shipment_id
@@ -305,8 +305,8 @@ dataObjects:
 
   Purchases:
     code: purchases
-    database: ANALYTICS
-    schema: PUBLIC
+    database: postgres
+    schema: orionbelt_1
     columns:
       Purchase ID:
         code: purchase_id
@@ -423,9 +423,9 @@ measures:
     resultType: float
     aggregation: sum
     filters:
-      - column: {dataObject: Products, column: Product Category}
+      - column: { dataObject: Products, column: Product Category }
         operator: equals
-        values: [{dataType: string, valueString: "Electronics"}]
+        values: [{ dataType: string, valueString: "Electronics" }]
     description: Total sales filtered to Electronics category
 
   Sales Count:

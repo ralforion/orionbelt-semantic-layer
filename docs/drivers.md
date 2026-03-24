@@ -6,17 +6,17 @@ All drivers work against the **OrionBelt REST API in single-model mode** (`MODEL
 
 ## Package Overview
 
-| Package | Database | Native Connector | Dialect | paramstyle | Arrow Support |
-|---------|----------|-------------------|---------|------------|---------------|
-| `ob-driver-core` | — | — | — | — | — |
-| `ob-bigquery` | BigQuery | `google-cloud-bigquery` | `bigquery` | `pyformat` | `to_arrow()` |
-| `ob-duckdb` | DuckDB | `duckdb` | `duckdb` | `qmark` | `fetch_arrow_table()` |
-| `ob-postgres` | PostgreSQL | `adbc-driver-postgresql` | `postgres` | `qmark` | ADBC native |
-| `ob-snowflake` | Snowflake | `snowflake-connector-python` | `snowflake` | `pyformat` | `fetch_arrow_all()` |
-| `ob-clickhouse` | ClickHouse | `clickhouse-connect` | `clickhouse` | `pyformat` | `query_arrow()` |
-| `ob-dremio` | Dremio | `pyarrow.flight` | `dremio` | `qmark` | Flight native |
-| `ob-databricks` | Databricks | `databricks-sql-connector` | `databricks` | `pyformat` | `fetchall_arrow()` |
-| `ob-flight-extension` | Arrow Flight SQL server | `pyarrow.flight` | all | — | — |
+| Package               | Database                | Native Connector             | Dialect      | paramstyle | Arrow Support         |
+| --------------------- | ----------------------- | ---------------------------- | ------------ | ---------- | --------------------- |
+| `ob-driver-core`      | —                       | —                            | —            | —          | —                     |
+| `ob-bigquery`         | BigQuery                | `google-cloud-bigquery`      | `bigquery`   | `pyformat` | `to_arrow()`          |
+| `ob-duckdb`           | DuckDB                  | `duckdb`                     | `duckdb`     | `qmark`    | `fetch_arrow_table()` |
+| `ob-postgres`         | PostgreSQL              | `adbc-driver-postgresql`     | `postgres`   | `qmark`    | ADBC native           |
+| `ob-snowflake`        | Snowflake               | `snowflake-connector-python` | `snowflake`  | `pyformat` | `fetch_arrow_all()`   |
+| `ob-clickhouse`       | ClickHouse              | `clickhouse-connect`         | `clickhouse` | `pyformat` | `query_arrow()`       |
+| `ob-dremio`           | Dremio                  | `pyarrow.flight`             | `dremio`     | `qmark`    | Flight native         |
+| `ob-databricks`       | Databricks              | `databricks-sql-connector`   | `databricks` | `pyformat` | `fetchall_arrow()`    |
+| `ob-flight-extension` | Arrow Flight SQL server | `pyarrow.flight`             | all          | —          | —                     |
 
 `ob-driver-core` is the shared foundation — PEP 249 exceptions, type codes, OBML detection, and the REST compilation bridge. All vendor drivers depend on it.
 
@@ -179,21 +179,21 @@ conn = ob_duckdb.connect(ob_api_url="http://my-api:9000")
 
 ### Common OrionBelt parameters (all drivers)
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `ob_api_url` | `http://localhost:8000` | OrionBelt REST API URL |
-| `ob_timeout` | `30` | HTTP timeout (seconds) for OBML compilation |
+| Parameter    | Default                 | Description                                 |
+| ------------ | ----------------------- | ------------------------------------------- |
+| `ob_api_url` | `http://localhost:8000` | OrionBelt REST API URL                      |
+| `ob_timeout` | `30`                    | HTTP timeout (seconds) for OBML compilation |
 
 ### Vendor-specific parameters
 
-| Driver | Parameters |
-|--------|-----------|
-| `ob-duckdb` | `database` (`:memory:`), `read_only`, `config` |
-| `ob-postgres` | `dsn`, `host`, `port`, `dbname`, `user`, `password`, `sslmode` |
-| `ob-snowflake` | `account`, `user`, `password`, `database`, `schema`, `warehouse`, `role`, `authenticator` |
-| `ob-clickhouse` | `host`, `port`, `username`, `password`, `database`, `secure` |
-| `ob-dremio` | `host`, `port`, `username`, `password`, `tls` |
-| `ob-databricks` | `server_hostname`, `http_path`, `access_token`, `catalog`, `schema` |
+| Driver          | Parameters                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| `ob-duckdb`     | `database` (`:memory:`), `read_only`, `config`                                            |
+| `ob-postgres`   | `dsn`, `host`, `port`, `dbname`, `user`, `password`, `sslmode`                            |
+| `ob-snowflake`  | `account`, `user`, `password`, `database`, `schema`, `warehouse`, `role`, `authenticator` |
+| `ob-clickhouse` | `host`, `port`, `username`, `password`, `database`, `secure`                              |
+| `ob-dremio`     | `host`, `port`, `username`, `password`, `tls`                                             |
+| `ob-databricks` | `server_hostname`, `http_path`, `access_token`, `catalog`, `schema`                       |
 
 ## Running Driver Tests
 
@@ -269,26 +269,26 @@ POSTGRES_PASSWORD=secret
 
 ### Settings Reference
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLIGHT_ENABLED` | `false` | Enable the Flight SQL server |
-| `FLIGHT_PORT` | `8815` | gRPC listen port |
-| `FLIGHT_AUTH_MODE` | `none` | `none` (open) or `token` (static bearer) |
-| `FLIGHT_API_TOKEN` | — | Required when `FLIGHT_AUTH_MODE=token` |
-| `DB_VENDOR` | `duckdb` | Default vendor driver for query execution |
+| Variable           | Default  | Description                               |
+| ------------------ | -------- | ----------------------------------------- |
+| `FLIGHT_ENABLED`   | `false`  | Enable the Flight SQL server              |
+| `FLIGHT_PORT`      | `8815`   | gRPC listen port                          |
+| `FLIGHT_AUTH_MODE` | `none`   | `none` (open) or `token` (static bearer)  |
+| `FLIGHT_API_TOKEN` | —        | Required when `FLIGHT_AUTH_MODE=token`    |
+| `DB_VENDOR`        | `duckdb` | Default vendor driver for query execution |
 
 ### DB_VENDOR and Credentials
 
 `DB_VENDOR` selects which database driver the Flight server uses to execute compiled SQL:
 
-| DB_VENDOR | Driver | Credential Environment Variables |
-|-----------|--------|----------------------------------|
-| `duckdb` | ob-duckdb | `DUCKDB_DATABASE` |
-| `postgres` | ob-postgres | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DBNAME`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
-| `snowflake` | ob-snowflake | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE` |
-| `clickhouse` | ob-clickhouse | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` |
-| `dremio` | ob-dremio | `DREMIO_HOST`, `DREMIO_PORT`, `DREMIO_USERNAME`, `DREMIO_PASSWORD` |
-| `databricks` | ob-databricks | `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN` |
+| DB_VENDOR    | Driver        | Credential Environment Variables                                                                                             |
+| ------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE`                                                                                                            |
+| `postgres`   | ob-postgres   | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DBNAME`, `POSTGRES_USER`, `POSTGRES_PASSWORD`                                    |
+| `snowflake`  | ob-snowflake  | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE` |
+| `clickhouse` | ob-clickhouse | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                    |
+| `dremio`     | ob-dremio     | `DREMIO_HOST`, `DREMIO_PORT`, `DREMIO_USERNAME`, `DREMIO_PASSWORD`                                                           |
+| `databricks` | ob-databricks | `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`                                              |
 
 ### Running Locally
 
@@ -350,8 +350,8 @@ services:
     build:
       dockerfile: Dockerfile.flight
     ports:
-      - "8080:8080"   # REST API
-      - "8815:8815"   # Flight SQL
+      - "8080:8080" # REST API
+      - "8815:8815" # Flight SQL
     env_file: .env
     volumes:
       - ./models:/models:ro
@@ -387,12 +387,18 @@ The Flight extension is **not needed** for Cloud Run deployments. Cloud Run uses
 
 ### DBeaver Setup
 
-1. **New Connection** > Apache Arrow Flight SQL
-2. **Host:** your Docker host IP or `localhost`
-3. **Port:** `8815`
-4. **Authentication:** leave empty (or use token if `FLIGHT_AUTH_MODE=token`)
-5. **Test Connection** > should show "Connected"
-6. In the SQL editor, write OBML or plain SQL:
+1. **Download** the [Arrow Flight SQL JDBC driver](https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver) JAR and install in Driver Manager:
+
+<p align="center">
+  <img src="../docs/assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
+</p>
+
+2. **New Connection** > Apache Arrow Flight SQL
+3. **Host:** your Docker host IP or `localhost`
+4. **Port:** `8815`
+5. **Authentication:** leave empty (or use token if `FLIGHT_AUTH_MODE=token`)
+6. **Test Connection** > should show "Connected"
+7. In the SQL editor, write OBML query or plain SQL:
 
 ```yaml
 select:
@@ -403,11 +409,15 @@ select:
 limit: 10
 ```
 
-The schema browser shows the model's data objects as tables.
+The schema browser shows raw tables. The query YAML gets compiled to SQL in the background and executed.
+
+<p align="center">
+  <img src="../docs/assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
+</p>
 
 ### Tableau Setup
 
 1. Download the [Arrow Flight SQL JDBC driver](https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver) JAR
 2. **Connect** > Other Databases (JDBC)
 3. **URL:** `jdbc:arrow-flight-sql://host:8815?useEncryption=false`
-4. Use Custom SQL with OBML or plain SQL
+4. Use Custom SQL with OBML query or plain SQL

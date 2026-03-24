@@ -80,6 +80,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # query/execute is available when explicitly enabled OR when Flight is enabled
     query_execute_enabled = settings.query_execute or settings.flight_enabled
 
+    # Single-model mode: create __default__ session with the preloaded model
+    if preload_yaml is not None:
+        default_store = mgr.get_or_create_default()
+        default_store.load_model(preload_yaml)
+        logger.info("Preloaded model into __default__ session")
+
     init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
@@ -99,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             flight_thread = start_flight_background(
                 session_manager=mgr,
                 port=settings.flight_port,
+                default_dialect=settings.db_vendor,
             )
             logger.info(
                 "Flight SQL server started on port %d (vendor=%s)",
@@ -196,6 +203,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def main() -> None:
     """Run the REST API server using settings from environment / .env file."""
+    # Load .env into os.environ so all env vars (DB credentials, POSTGRES_SCHEMA,
+    # etc.) are visible to os.getenv() — not just to pydantic Settings.
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
+
     settings = Settings()
 
     configure_logging(log_level=settings.log_level, log_format=settings.log_format)
