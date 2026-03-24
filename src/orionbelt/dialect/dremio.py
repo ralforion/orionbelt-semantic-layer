@@ -27,6 +27,19 @@ class DremioDialect(Dialect):
             unsupported_aggregations=["mode"],
         )
 
+    def format_table_ref(self, database: str, schema: str, code: str) -> str:
+        """Dremio: supports multi-level paths via the ``code`` field.
+
+        Dremio namespaces can be arbitrarily deep (Space.Folder.SubFolder.Table).
+        When ``database`` and ``schema`` are empty, ``code`` is used as the full
+        path (user encodes the complete Dremio path in the OBML ``code`` field).
+        Otherwise falls back to the standard 3-part format.
+        """
+        parts = [p for p in (database, schema) if p]
+        if parts:
+            return f"{'.'.join(parts)}.{code}"
+        return code
+
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'

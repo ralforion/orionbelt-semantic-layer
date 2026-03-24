@@ -153,8 +153,13 @@ class OBFlightServer(flight.FlightServerBase):
             # Replace quoted "Label" → code (DBeaver-generated SQL)
             if label != code:
                 sql = sql.replace(f'"{label}"', code)
-            # Strip schema prefix (e.g. PUBLIC.sales → sales)
+            # Strip schema/database prefix — connection context handles resolution
+            # 3-part: ANALYTICS.PUBLIC.sales → sales (BigQuery, Snowflake, Databricks)
+            # 2-part: PUBLIC.sales → sales (Postgres, MySQL, ClickHouse, DuckDB)
+            database = getattr(obj, "database", None)
             schema_name = getattr(obj, "schema_name", None)
+            if database and schema_name:
+                sql = sql.replace(f"{database}.{schema_name}.{code}", code)
             if schema_name:
                 sql = sql.replace(f"{schema_name}.{code}", code)
         return sql

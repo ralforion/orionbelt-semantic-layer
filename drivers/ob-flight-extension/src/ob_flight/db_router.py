@@ -65,6 +65,8 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
         "DATABRICKS_SERVER_HOSTNAME",
         "DATABRICKS_HTTP_PATH",
         "DATABRICKS_ACCESS_TOKEN",
+        "DATABRICKS_CATALOG",
+        "DATABRICKS_SCHEMA",
     ],
     "mysql": [
         "MYSQL_HOST",
@@ -105,6 +107,8 @@ _ENV_TO_KWARG: dict[str, str] = {
     "DATABRICKS_SERVER_HOSTNAME": "server_hostname",
     "DATABRICKS_HTTP_PATH": "http_path",
     "DATABRICKS_ACCESS_TOKEN": "access_token",
+    "DATABRICKS_CATALOG": "catalog",
+    "DATABRICKS_SCHEMA": "schema",
     "MYSQL_HOST": "host",
     "MYSQL_PORT": "port",
     "MYSQL_DATABASE": "database",
