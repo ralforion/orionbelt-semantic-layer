@@ -1027,7 +1027,7 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         value=api_base,
                         label="API Base URL",
                         scale=2,
-                        visible=not cohosted,
+                        interactive=not cohosted,
                     )
                     import_osi_btn = gr.Button(
                         "Import OSI",
