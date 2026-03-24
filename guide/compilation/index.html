@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://ralfbecher.github.io/orionbelt-semantic-layer/guide/compilation/">
       
       
-        <link rel="prev" href="../dialects/">
+        <link rel="prev" href="../period-over-period/">
       
       
         <link rel="next" href="../../api/overview/">
@@ -676,6 +676,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../period-over-period/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Period-over-Period Metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -850,6 +878,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#phase-24-period-over-period-wrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2.4: Period-over-Period Wrap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#phase-3-code-generation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -926,7 +965,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.1.0
+  OrionBelt v1.2.0
 </div>
       
     </li>
@@ -1486,6 +1525,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#phase-24-period-over-period-wrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2.4: Period-over-Period Wrap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#phase-3-code-generation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1562,7 +1612,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.1.0
+  OrionBelt v1.2.0
 </div>
                   </div>
                 </div>
@@ -1582,7 +1632,7 @@
 
 
 <h1 id="compilation-pipeline">Compilation Pipeline<a class="headerlink" href="#compilation-pipeline" title="Permanent link">&para;</a></h1>
-<p>OrionBelt compiles semantic queries into SQL through a three-phase pipeline: <strong>Resolution</strong>, <strong>Planning</strong>, and <strong>Code Generation</strong>. Each phase transforms the query into a progressively more concrete representation.</p>
+<p>OrionBelt compiles semantic queries into SQL through a multi-phase pipeline: <strong>Resolution</strong>, <strong>Planning</strong>, optional <strong>wrapping</strong> (PoP, totals, cumulative), and <strong>Code Generation</strong>. Each phase transforms the query into a progressively more concrete representation.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>QueryObject + SemanticModel
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>        |
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>        v
@@ -1600,10 +1650,23 @@
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>         |
 </span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>         v
 </span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>+-----------------+
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>|  Phase 3:       |
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>|  Code Generation|  -&gt; SQL string
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>|  (Dialect)      |
-</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>+-----------------+
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>|  Phase 2.4:     |
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>|  PoP Wrap       |  -&gt; 4-CTE date spine + period comparison
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>+--------+--------+
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>         |
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>         v
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>+-----------------+
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>|  Phase 2.5-2.6: |
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>|  Total Wrap     |  -&gt; CTE + AGG(x) OVER () for total measures
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>|  Cumulative Wrap|  -&gt; CTE + window functions for cumulative metrics
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>+--------+--------+
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>         |
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>         v
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>+-----------------+
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>|  Phase 3:       |
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>|  Code Generation|  -&gt; SQL string
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>|  (Dialect)      |
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>+-----------------+
 </span></code></pre></div>
 <h2 id="phase-1-resolution">Phase 1: Resolution<a class="headerlink" href="#phase-1-resolution" title="Permanent link">&para;</a></h2>
 <p><strong>Module:</strong> <code>orionbelt.compiler.resolution</code></p>
@@ -1615,7 +1678,8 @@
 <li><strong>Resolve metrics</strong> — Expand measure references (<code>{[Measure Name]}</code>), compose expressions</li>
 <li><strong>Select base object</strong> — Choose the primary fact table (prefers data objects with joins defined)</li>
 <li><strong>Find join paths</strong> — Use the join graph to find the minimal set of joins connecting all required objects</li>
-<li><strong>Classify filters</strong> — Dimension filters -&gt; WHERE, measure filters -&gt; HAVING</li>
+<li><strong>Apply measure filters</strong> — Measures with <code>filters</code> are wrapped in <code>CASE WHEN</code> inside the aggregate function</li>
+<li><strong>Classify query filters</strong> — Dimension filters -&gt; WHERE, measure filters -&gt; HAVING</li>
 <li><strong>Resolve ORDER BY</strong> — Map field names to dimension or measure expressions</li>
 </ol>
 <h3 id="resolvedquery">ResolvedQuery<a class="headerlink" href="#resolvedquery" title="Permanent link">&para;</a></h3>
@@ -1804,6 +1868,17 @@
 </span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="k">FROM</span><span class="w"> </span><span class="n">non_combinations</span>
 </span></code></pre></div>
 <p>The dimensions are partitioned into independent groups based on the join graph. Each group gets a CTE with distinct values, and the <code>all_pairs</code> CTE uses an implicit cross join (comma-separated FROM) to produce all possible combinations. The <code>EXCEPT</code> clause removes existing combinations found through the fact/bridge tables.</p>
+<h2 id="phase-24-period-over-period-wrap">Phase 2.4: Period-over-Period Wrap<a class="headerlink" href="#phase-24-period-over-period-wrap" title="Permanent link">&para;</a></h2>
+<p><strong>Module:</strong> <code>orionbelt.compiler.pop_wrap</code></p>
+<p>When a query includes period-over-period metrics (<code>type: period_over_period</code>), the PoP wrapper restructures the planner output into a 4-CTE date spine architecture:</p>
+<ol>
+<li><strong><code>date_range</code></strong> -- Discovers <code>MIN</code>/<code>MAX</code> date from fact tables with ALL query <code>WHERE</code> filters pushed down (time and dimension filters alike). For multi-fact (CFL) queries, each fact table leg is scanned independently via <code>UNION ALL</code>.</li>
+<li><strong><code>date_spine</code></strong> -- Generates a date series from <code>min_date</code> to <code>max_date</code> at the configured grain. Each row includes a <code>spine_date_prev</code> column pointing to the comparison period. The generation technique is dialect-specific (e.g. <code>generate_series</code> in Postgres, <code>TABLE(GENERATOR(...))</code> in Snowflake).</li>
+<li><strong><code>pop_base</code></strong> -- Aggregates measures using the spine as <code>FROM</code>, with fact and dimension tables LEFT JOINed via the truncated date column. Non-time dimensions are included in the <code>GROUP BY</code>.</li>
+<li><strong><code>pop_compare</code></strong> -- Self-joins <code>pop_base</code> onto itself via <code>spine_date_prev</code>, matching on all non-time dimensions, and computes the comparison expression (percent change, ratio, difference, or previous value).</li>
+</ol>
+<p>The outer <code>SELECT</code> projects all dimensions, non-PoP measures, and PoP metric columns from <code>pop_compare</code>.</p>
+<p>PoP wrapping runs before total and cumulative wraps so those layers can operate on the already-aggregated comparison output. For details, see the <a href="../period-over-period/">Period-over-Period Metrics</a> guide.</p>
 <h2 id="phase-3-code-generation">Phase 3: Code Generation<a class="headerlink" href="#phase-3-code-generation" title="Permanent link">&para;</a></h2>
 <p><strong>Module:</strong> <code>orionbelt.compiler.codegen</code></p>
 <p>The code generator walks the SQL AST and produces a dialect-specific SQL string. It delegates entirely to the dialect's <code>compile()</code> method.</p>
@@ -1902,6 +1977,16 @@
 <td><code>(SELECT ...)</code></td>
 </tr>
 <tr>
+<td><code>WindowFunction</code></td>
+<td>Window function</td>
+<td><code>SUM(x) OVER (ORDER BY y ROWS ...)</code></td>
+</tr>
+<tr>
+<td><code>WindowFrame</code></td>
+<td>Window frame</td>
+<td><code>ROWS BETWEEN ... AND ...</code></td>
+</tr>
+<tr>
 <td><code>RawSQL</code></td>
 <td>Escape hatch</td>
 <td>Raw SQL string</td>
@@ -1979,11 +2064,20 @@
 </span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>        <span class="k">else</span><span class="p">:</span>
 </span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>            <span class="n">plan</span> <span class="o">=</span> <span class="n">StarSchemaPlanner</span><span class="o">.</span><span class="n">plan</span><span class="p">(</span><span class="n">resolved</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span>
 </span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>        <span class="c1"># Phase 3: Code Generation</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="n">dialect</span> <span class="o">=</span> <span class="n">DialectRegistry</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">dialect_name</span><span class="p">)</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="n">sql</span> <span class="o">=</span> <span class="n">CodeGenerator</span><span class="p">(</span><span class="n">dialect</span><span class="p">)</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="n">plan</span><span class="o">.</span><span class="n">ast</span><span class="p">)</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>        <span class="k">return</span> <span class="n">CompilationResult</span><span class="p">(</span><span class="n">sql</span><span class="o">=</span><span class="n">sql</span><span class="p">,</span> <span class="n">dialect</span><span class="o">=</span><span class="n">dialect_name</span><span class="p">,</span> <span class="n">resolved</span><span class="o">=...</span><span class="p">,</span> <span class="n">warnings</span><span class="o">=...</span><span class="p">)</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>        <span class="c1"># Phase 2.4: PoP wrap (period-over-period metrics)</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="n">wrapped_ast</span> <span class="o">=</span> <span class="n">wrap_with_pop</span><span class="p">(</span><span class="n">plan</span><span class="o">.</span><span class="n">ast</span><span class="p">,</span> <span class="n">resolved</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">dialect</span><span class="p">,</span> <span class="n">qualify_table</span><span class="p">)</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>        <span class="c1"># Phase 2.5: Total wrap (grand total measures)</span>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>        <span class="n">wrapped_ast</span> <span class="o">=</span> <span class="n">wrap_with_totals</span><span class="p">(</span><span class="n">wrapped_ast</span><span class="p">,</span> <span class="n">resolved</span><span class="p">)</span>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>        <span class="c1"># Phase 2.6: Cumulative wrap (running/rolling/grain-to-date metrics)</span>
+</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>        <span class="n">wrapped_ast</span> <span class="o">=</span> <span class="n">wrap_with_cumulative</span><span class="p">(</span><span class="n">wrapped_ast</span><span class="p">,</span> <span class="n">resolved</span><span class="p">)</span>
+</span><span id="__span-8-20"><a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>
+</span><span id="__span-8-21"><a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>        <span class="c1"># Phase 3: Code Generation</span>
+</span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>        <span class="n">dialect</span> <span class="o">=</span> <span class="n">DialectRegistry</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">dialect_name</span><span class="p">)</span>
+</span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>        <span class="n">sql</span> <span class="o">=</span> <span class="n">CodeGenerator</span><span class="p">(</span><span class="n">dialect</span><span class="p">)</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="n">wrapped_ast</span><span class="p">)</span>
+</span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>
+</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>        <span class="k">return</span> <span class="n">CompilationResult</span><span class="p">(</span><span class="n">sql</span><span class="o">=</span><span class="n">sql</span><span class="p">,</span> <span class="n">dialect</span><span class="o">=</span><span class="n">dialect_name</span><span class="p">,</span> <span class="n">resolved</span><span class="o">=...</span><span class="p">,</span> <span class="n">warnings</span><span class="o">=...</span><span class="p">)</span>
 </span></code></pre></div>
 <p>The <code>CompilationResult</code> includes:</p>
 <table>
