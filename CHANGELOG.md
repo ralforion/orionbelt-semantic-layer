@@ -2,6 +2,56 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.2.0] - 2026-03-25
+
+### Added
+
+- **MySQL dialect** — full SQL generation support for MySQL (8th dialect), plus `ob-mysql` PEP 249 driver
+- **Cumulative metrics** — running total, rolling window, and grain-to-date aggregations via `cumulative` metric type
+- **Period-over-period (PoP) metrics** — 4-CTE date spine architecture for comparing current vs prior periods
+- **Filtered measures** — CASE WHEN wrapping for measures with inline filters, plus ratio metrics
+- **Integration tests** — DuckDB, PostgreSQL, MySQL, and ClickHouse tests via testcontainers; `ob-*` PEP 249 driver tests against real databases
+- **UnsupportedAggregationError** — dialect limitations exposed in API response when an aggregation is not supported
+- **OSI converter** — cumulative and period-over-period metric support for OSI ↔ OBML roundtrip
+
+### Changed
+
+- Dialect count increased from 7 to 8 (added MySQL)
+- Version bumped to 1.2.0
+
+---
+
+## [1.1.0] - 2026-03-17
+
+### Added
+
+- **DB-API 2.0 drivers** — PEP 249 drivers for all 7 databases: `ob-postgres`, `ob-clickhouse`, `ob-duckdb`, `ob-databricks`, `ob-snowflake`, `ob-dremio`, `ob-bigquery`
+- **Arrow Flight SQL** — query execution endpoint via Arrow Flight SQL server, with execute support across all 7 database drivers
+- **Query execution endpoint** — `POST /v1/sessions/{id}/query/execute` compiles and runs queries (requires database connection)
+- **TPC-H quickstart notebook** — Jupyter notebook with TPC-H model, Docker Hub badges, and interactive examples
+- **`description` property** — optional description metadata on all OBML model objects, mapped in OSI converter
+- **Filter groups** — `AND`/`OR`/`NOT` compound filter expressions in query WHERE clauses
+- **Qualified WHERE filters** — `DataObject.Column` references in WHERE filters with auto-join
+- **CFL optimization** — skip NULL padding for dialects supporting `UNION ALL BY NAME` (Snowflake, DuckDB)
+- **OSI roundtrip** — preserve OBML-only properties in `custom_extensions` for lossless OSI ↔ OBML conversion
+- **Split SQL/Explain UI** — side-by-side SQL and explain panel with detailed CFL leg explanations
+
+### Changed
+
+- `QUERY_EXECUTE` decoupled from `FLIGHT_ENABLED` — REST query execution works without Arrow Flight
+- `ob_flight` uses lazy imports to avoid `pyarrow.flight` dependency when using DB-API drivers only
+- OBML validator relaxed: `database` and `schema` now optional on data objects
+- Version bumped to 1.1.0
+
+### Fixed
+
+- Reversed join path swapping columns incorrectly in JoinGraph
+- CFL not triggering for expression-based measures
+- Execute endpoint hang with DuckDB dbgen data duplication
+- Swagger UI blank page (missing `unsafe-inline` in docs CSP)
+
+---
+
 ## [1.0.0] - 2026-03-16
 
 ### Added

@@ -82,9 +82,13 @@ uv run uvicorn orionbelt.api.app:create_app --factory --reload
 
 The API is available at `http://127.0.0.1:8000`. Interactive docs at `/docs` (Swagger UI) and `/redoc`.
 
-### Interactive Notebook
+### Interactive Jupyter Notebook
 
-The [Quickstart Notebook](examples/quickstart.ipynb) walks through the full workflow using TPC-H in DuckDB — explore the model, compile queries across dialects, execute against real data, and see multi-fact CFL and secondary join paths in action. No cloud database needed.
+The [Quickstart Notebook](examples/quickstart.ipynb) walks through the full workflow using TPC-H in DuckDB — explore the model, compile queries across dialects, execute against real data, and see multi-fact CFL, secondary join paths, and complex measures in action. No cloud database needed.
+
+<p align="center">
+  <img src="docs/assets/quickstart_notebook.png" alt="Interactive Jupyter Notebook" width="900">
+</p>
 
 ## Example
 
@@ -398,17 +402,17 @@ The API is available at `http://localhost:8080`. The UI is at `http://localhost:
 
 OrionBelt provides **PEP 249 DB-API 2.0 drivers** for 8 databases and an **Arrow Flight SQL server** that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
 
-| Package | Database | Native Connector | Arrow Support |
-|---------|----------|------------------|---------------|
-| `ob-driver-core` | — (shared foundation) | — | — |
-| `ob-bigquery` | BigQuery | `google-cloud-bigquery` | `to_arrow()` |
-| `ob-duckdb` | DuckDB | `duckdb` | `fetch_arrow_table()` |
-| `ob-postgres` | PostgreSQL | `adbc-driver-postgresql` | ADBC native |
-| `ob-snowflake` | Snowflake | `snowflake-connector-python` | `fetch_arrow_all()` |
-| `ob-clickhouse` | ClickHouse | `clickhouse-connect` | `query_arrow()` |
-| `ob-dremio` | Dremio | `pyarrow.flight` | Flight native |
-| `ob-databricks` | Databricks | `databricks-sql-connector` | `fetchall_arrow()` |
-| `ob-flight-extension` | Arrow Flight SQL server | `pyarrow.flight` | — |
+| Package               | Database                | Native Connector             | Arrow Support         |
+| --------------------- | ----------------------- | ---------------------------- | --------------------- |
+| `ob-driver-core`      | — (shared foundation)   | —                            | —                     |
+| `ob-bigquery`         | BigQuery                | `google-cloud-bigquery`      | `to_arrow()`          |
+| `ob-duckdb`           | DuckDB                  | `duckdb`                     | `fetch_arrow_table()` |
+| `ob-postgres`         | PostgreSQL              | `adbc-driver-postgresql`     | ADBC native           |
+| `ob-snowflake`        | Snowflake               | `snowflake-connector-python` | `fetch_arrow_all()`   |
+| `ob-clickhouse`       | ClickHouse              | `clickhouse-connect`         | `query_arrow()`       |
+| `ob-dremio`           | Dremio                  | `pyarrow.flight`             | Flight native         |
+| `ob-databricks`       | Databricks              | `databricks-sql-connector`   | `fetchall_arrow()`    |
+| `ob-flight-extension` | Arrow Flight SQL server | `pyarrow.flight`             | —                     |
 
 All drivers work against the OrionBelt REST API in **single-model mode** (`MODEL_FILE` set). OBML queries are compiled transparently via `POST /v1/query/sql` — the user writes OBML, the driver returns SQL results. Plain SQL queries bypass the API entirely.
 
@@ -439,24 +443,24 @@ See **[Drivers Documentation](docs/drivers.md)** for full usage examples, connec
 
 Configuration is via environment variables or a `.env` file. See `.env.template` for all options:
 
-| Variable                   | Default     | Description                             |
-| -------------------------- | ----------- | --------------------------------------- |
-| `LOG_LEVEL`                | `INFO`      | Logging level                           |
+| Variable                   | Default     | Description                               |
+| -------------------------- | ----------- | ----------------------------------------- |
+| `LOG_LEVEL`                | `INFO`      | Logging level                             |
 | `LOG_FORMAT`               | `console`   | `console` (pretty) or `json` (structured) |
-| `API_SERVER_HOST`          | `localhost` | REST API bind host                      |
-| `API_SERVER_PORT`          | `8000`      | REST API bind port                      |
-| `PORT`                     | —           | Override port (Cloud Run sets this)     |
-| `DISABLE_SESSION_LIST`     | `false`     | Disable `GET /sessions` endpoint        |
-| `SESSION_TTL_SECONDS`      | `1800`      | Session inactivity timeout (30 min)     |
-| `SESSION_CLEANUP_INTERVAL` | `60`        | Cleanup sweep interval (seconds)        |
-| `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode |
-| `API_BASE_URL`             | —           | API URL for standalone UI               |
-| `ROOT_PATH`                | —           | ASGI root path for UI behind LB         |
-| `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution     |
-| `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port              |
-| `FLIGHT_AUTH_MODE`         | `none`      | `none` or `token`                       |
-| `FLIGHT_API_TOKEN`         | —           | Static token (when auth mode = token)   |
-| `DB_VENDOR`                | `duckdb`    | Database vendor for query execution     |
+| `API_SERVER_HOST`          | `localhost` | REST API bind host                        |
+| `API_SERVER_PORT`          | `8000`      | REST API bind port                        |
+| `PORT`                     | —           | Override port (Cloud Run sets this)       |
+| `DISABLE_SESSION_LIST`     | `false`     | Disable `GET /sessions` endpoint          |
+| `SESSION_TTL_SECONDS`      | `1800`      | Session inactivity timeout (30 min)       |
+| `SESSION_CLEANUP_INTERVAL` | `60`        | Cleanup sweep interval (seconds)          |
+| `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode   |
+| `API_BASE_URL`             | —           | API URL for standalone UI                 |
+| `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |
+| `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |
+| `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port                |
+| `FLIGHT_AUTH_MODE`         | `none`      | `none` or `token`                         |
+| `FLIGHT_API_TOKEN`         | —           | Static token (when auth mode = token)     |
+| `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 
 ### Single-Model Mode
 
