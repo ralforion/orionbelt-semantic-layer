@@ -961,6 +961,69 @@ def compile_sql(
         return f"Error: {exc}", "", session_state, model_state
 
 
+def validate_model(
+    model_yaml: str,
+    api_url: str,
+) -> tuple[str, str]:
+    """Validate OBML YAML by calling the REST API.
+
+    Returns ``(validation_output, detail_yaml)`` shown in the SQL and explain panels.
+    """
+    if not model_yaml or not model_yaml.strip():
+        return "Error: No model YAML provided", ""
+
+    api_url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
+    try:
+        resp = httpx.post(
+            f"{api_url}/v1/validate",
+            json={"model_yaml": model_yaml},
+            timeout=30,
+            headers=_API_HEADERS,
+        )
+        if resp.status_code in (400, 422):
+            detail = resp.json().get("detail", resp.text)
+            return f"Error: {_format_api_errors(detail)}", ""
+        resp.raise_for_status()
+        data = resp.json()
+
+        errors: list[dict[str, str]] = data.get("errors", [])
+        warnings: list[dict[str, str]] = data.get("warnings", [])
+        valid: bool = data.get("valid", False)
+
+        # Build detail YAML for explain panel
+        detail: dict[str, Any] = {"valid": valid}
+        if errors:
+            detail["errors"] = [
+                {k: v for k, v in e.items() if v} for e in errors
+            ]
+        if warnings:
+            detail["warnings"] = [
+                {k: v for k, v in w.items() if v} for w in warnings
+            ]
+        detail_yaml = yaml.dump(detail, default_flow_style=False, sort_keys=False)
+
+        # Summary for SQL output panel (plain text, not SQL comments)
+        if valid:
+            summary = "Model is valid"
+            if warnings:
+                summary += f" ({len(warnings)} warning(s))"
+        else:
+            summary = f"Model validation FAILED — {len(errors)} error(s)"
+            if warnings:
+                summary += f", {len(warnings)} warning(s)"
+
+        return summary, detail_yaml
+
+    except httpx.ConnectError:
+        return (
+            f"Error: Cannot connect to API at {api_url}\n"
+            "Make sure the server is running: uv run orionbelt-api",
+            "",
+        )
+    except Exception as exc:
+        return f"Error: {exc}", ""
+
+
 def create_blocks(default_api_url: str | None = None) -> Any:
     """Build and return a ``gr.Blocks`` instance (without launching).
 
@@ -1096,9 +1159,13 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                 )
                 import_osi_btn.click(fn=None, js=_IMPORT_OSI_JS)
 
-                compile_btn = gr.Button(
-                    "Compile SQL", variant="primary", elem_classes=["purple-btn"]
-                )
+                with gr.Row():
+                    compile_btn = gr.Button(
+                        "Compile SQL", variant="primary", elem_classes=["purple-btn"]
+                    )
+                    validate_btn = gr.Button(
+                        "Validate Model", variant="secondary", scale=0, min_width=140
+                    )
 
                 with gr.Row():
                     sql_output = gr.Code(
@@ -1129,6 +1196,11 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         model_state,
                     ],
                     outputs=[sql_output, explain_output, session_state, model_state],
+                )
+                validate_btn.click(
+                    fn=validate_model,
+                    inputs=[model_input, api_url],
+                    outputs=[sql_output, explain_output],
                 )
 
                 # Wire OSI bridge + export after sql_output exists
@@ -1244,6 +1316,36 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     js=_DOWNLOAD_PNG_JS,
                 )
 
+            with gr.Tab("Settings", id=2) as settings_tab:
+                settings_output = gr.Code(
+                    language="yaml",
+                    label="API Settings",
+                    interactive=False,
+                    lines=10,
+                )
+
+                def _fetch_settings_yaml(api_url_val: str) -> str:
+                    url = api_url_val.rstrip("/") if api_url_val else _DEFAULT_API_URL
+                    try:
+                        resp = httpx.get(
+                            f"{url}/v1/settings", timeout=5, headers=_API_HEADERS
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                        # Remove model_yaml from display (too large)
+                        data.pop("model_yaml", None)
+                        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+                    except httpx.ConnectError:
+                        return f"# Error: Cannot connect to API at {url}"
+                    except Exception as exc:
+                        return f"# Error: {exc}"
+
+                settings_tab.select(
+                    fn=_fetch_settings_yaml,
+                    inputs=[api_url],
+                    outputs=[settings_output],
+                )
+
         # ── Toggle: Python saves inputs → BrowserState, then JS redirects ──
         dark_btn.click(
             fn=lambda m, q, a, d, z, s: (m, q, a, d, z, s),
@@ -1324,6 +1426,7 @@ def create_ui() -> None:
             proxy_headers=True,
             forwarded_allow_ips="*",
             access_log=False,
+            timeout_graceful_shutdown=3,
         )
     else:
         demo.launch(

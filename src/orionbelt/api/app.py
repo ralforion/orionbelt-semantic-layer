@@ -201,6 +201,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+class _ShutdownLogFilter(logging.Filter):
+    """Suppress noisy uvicorn errors during graceful shutdown.
+
+    When Gradio keeps WebSocket connections open, uvicorn's graceful shutdown
+    timeout force-cancels them, producing ERROR-level messages that are
+    harmless but alarming.  This filter silences those specific messages.
+    """
+
+    _SUPPRESSED = (
+        "Cancel",
+        "ASGI callable returned without completing response",
+        "Exception in ASGI application",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(msg.startswith(prefix) for prefix in self._SUPPRESSED)
+
+
 def main() -> None:
     """Run the REST API server using settings from environment / .env file."""
     # Load .env into os.environ so all env vars (DB credentials, POSTGRES_SCHEMA,
@@ -219,10 +238,16 @@ def main() -> None:
         settings.effective_port,
     )
 
+    # Filter noisy uvicorn shutdown errors caused by Gradio WebSockets
+    # being force-closed after the graceful timeout.
+    _uv_error = logging.getLogger("uvicorn.error")
+    _uv_error.addFilter(_ShutdownLogFilter())
+
     uvicorn.run(
         "orionbelt.api.app:create_app",
         factory=True,
         host=settings.api_server_host,
         port=settings.effective_port,
         log_level=settings.log_level.lower(),
+        timeout_graceful_shutdown=3,
     )
