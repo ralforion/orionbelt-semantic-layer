@@ -13,6 +13,7 @@ _DIALECT_MAP: dict[str, str] = {
     "databricks": "databricks",
     "dremio": "trino",
     "duckdb": "duckdb",
+    "mysql": "mysql",
     "postgres": "postgres",
     "snowflake": "snowflake",
 }

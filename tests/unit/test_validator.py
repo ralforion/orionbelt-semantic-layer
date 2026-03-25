@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.validator import validate_sql
+from orionbelt.compiler.validator import _DIALECT_MAP, validate_sql
+from orionbelt.dialect import DialectRegistry
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -22,7 +23,10 @@ def _load_model() -> SemanticModel:
     return model
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "snowflake", "clickhouse", "databricks", "dremio"])
+@pytest.mark.parametrize(
+    "dialect",
+    ["bigquery", "clickhouse", "databricks", "dremio", "duckdb", "mysql", "postgres", "snowflake"],
+)
 def test_valid_sql_all_dialects(dialect: str) -> None:
     errors = validate_sql("SELECT 1", dialect)
     assert errors == []
@@ -36,6 +40,17 @@ def test_invalid_sql_returns_errors() -> None:
 def test_dremio_maps_to_trino() -> None:
     errors = validate_sql("SELECT 1 AS x", "dremio")
     assert errors == []
+
+
+def test_dialect_map_covers_all_registered_dialects() -> None:
+    """Every registered dialect must have an entry in the validator's _DIALECT_MAP."""
+    registered = set(DialectRegistry.available())
+    mapped = set(_DIALECT_MAP.keys())
+    missing = registered - mapped
+    assert not missing, (
+        f"Dialects registered but missing from validator _DIALECT_MAP: {sorted(missing)}. "
+        f"Add them to _DIALECT_MAP in compiler/validator.py."
+    )
 
 
 def test_unknown_dialect_returns_warning() -> None:
