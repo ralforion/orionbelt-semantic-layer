@@ -409,10 +409,16 @@ select:
 limit: 10
 ```
 
-The schema browser shows raw tables. The query YAML gets compiled to SQL in the background and executed.
+The schema browser shows raw tables and virtual tables of the OBML artefacts. The query YAML gets compiled to SQL in the background and executed.
 
 <p align="center">
   <img src="../docs/assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
+</p>
+
+You can also query the vritual OBML tables:
+
+<p align="center">
+  <img src="../docs/assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
 ### Tableau Setup

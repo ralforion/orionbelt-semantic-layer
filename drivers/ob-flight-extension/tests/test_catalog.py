@@ -6,7 +6,13 @@ from unittest.mock import MagicMock
 
 import pyarrow as pa
 
-from ob_flight.catalog import model_to_flight_infos, object_to_schema
+from ob_flight.catalog import (
+    build_dimensions_data,
+    build_measures_data,
+    build_metrics_data,
+    model_to_flight_infos,
+    object_to_schema,
+)
 
 
 class TestObjectToSchema:
@@ -125,9 +131,9 @@ class TestModelToFlightInfos:
         model.data_objects = {"Orders": obj}
 
         infos = model_to_flight_infos(model, "test-model")
-        assert len(infos) == 1
-        info = infos[0]
-        assert info.descriptor.path == [b"test-model", b"Orders"]
+        # 1 data object + 3 virtual tables (_dimensions, _measures, _metrics)
+        assert len(infos) == 4
+        assert infos[0].descriptor.path == [b"test-model", b"Orders"]
 
     def test_multiple_objects(self):
         col = MagicMock()
@@ -143,7 +149,8 @@ class TestModelToFlightInfos:
         model.data_objects = {"A": obj1, "B": obj2}
 
         infos = model_to_flight_infos(model, "m1")
-        assert len(infos) == 2
+        # 2 data objects + 3 virtual tables
+        assert len(infos) == 5
 
     def test_no_data_objects(self):
         model = MagicMock()
@@ -175,3 +182,123 @@ class TestModelToFlightInfos:
         assert len(schema) == 2
         assert schema.field(0).name == "Name"
         assert schema.field(1).name == "Amount"
+
+    def test_virtual_tables_included(self):
+        col = MagicMock()
+        col.label = "X"
+        col.abstract_type = "string"
+        obj = MagicMock()
+        obj.columns = {"X": col}
+
+        model = MagicMock()
+        model.data_objects = {"T": obj}
+
+        infos = model_to_flight_infos(model, "m1")
+        vt_paths = {info.descriptor.path[-1] for info in infos[1:]}
+        assert b"_dimensions" in vt_paths
+        assert b"_measures" in vt_paths
+        assert b"_metrics" in vt_paths
+
+
+class TestBuildDimensionsData:
+    def test_basic(self):
+        dim = MagicMock()
+        dim.label = "Region"
+        dim.view = "Orders"
+        dim.column = "region"
+        dim.result_type = MagicMock(value="string")
+        dim.time_grain = None
+        dim.description = "Sales region"
+
+        model = MagicMock()
+        model.dimensions = {"Region": dim}
+
+        table = build_dimensions_data(model)
+        assert len(table) == 1
+        assert table.column("name")[0].as_py() == "Region"
+        assert table.column("data_object")[0].as_py() == "Orders"
+        assert table.column("column")[0].as_py() == "region"
+        assert table.column("type")[0].as_py() == "string"
+        assert table.column("description")[0].as_py() == "Sales region"
+
+    def test_with_time_grain(self):
+        dim = MagicMock()
+        dim.label = "Order Date"
+        dim.view = "Orders"
+        dim.column = "order_date"
+        dim.result_type = MagicMock(value="date")
+        dim.time_grain = MagicMock(value="month")
+        dim.description = None
+
+        model = MagicMock()
+        model.dimensions = {"Order Date": dim}
+
+        table = build_dimensions_data(model)
+        assert table.column("time_grain")[0].as_py() == "month"
+
+    def test_empty_model(self):
+        model = MagicMock()
+        model.dimensions = {}
+        table = build_dimensions_data(model)
+        assert len(table) == 0
+
+    def test_no_dimensions_attr(self):
+        model = MagicMock(spec=[])
+        table = build_dimensions_data(model)
+        assert len(table) == 0
+
+
+class TestBuildMeasuresData:
+    def test_basic(self):
+        col_ref = MagicMock()
+        col_ref.view = "Orders"
+        col_ref.column = "amount"
+
+        meas = MagicMock()
+        meas.label = "Total Sales"
+        meas.aggregation = "sum"
+        meas.expression = None
+        meas.result_type = MagicMock(value="float")
+        meas.columns = [col_ref]
+        meas.description = "Sum of sales"
+
+        model = MagicMock()
+        model.measures = {"Total Sales": meas}
+
+        table = build_measures_data(model)
+        assert len(table) == 1
+        assert table.column("name")[0].as_py() == "Total Sales"
+        assert table.column("aggregation")[0].as_py() == "sum"
+        assert table.column("columns")[0].as_py() == "Orders.amount"
+        assert table.column("description")[0].as_py() == "Sum of sales"
+
+    def test_empty_model(self):
+        model = MagicMock()
+        model.measures = {}
+        table = build_measures_data(model)
+        assert len(table) == 0
+
+
+class TestBuildMetricsData:
+    def test_basic(self):
+        met = MagicMock()
+        met.label = "Return Rate"
+        met.type = MagicMock(value="derived")
+        met.expression = "{[Total Returns]} / {[Total Sales]}"
+        met.measure = None
+        met.description = "Rate of returns"
+
+        model = MagicMock()
+        model.metrics = {"Return Rate": met}
+
+        table = build_metrics_data(model)
+        assert len(table) == 1
+        assert table.column("name")[0].as_py() == "Return Rate"
+        assert table.column("metric_type")[0].as_py() == "derived"
+        assert table.column("expression")[0].as_py() == "{[Total Returns]} / {[Total Sales]}"
+
+    def test_empty_model(self):
+        model = MagicMock()
+        model.metrics = {}
+        table = build_metrics_data(model)
+        assert len(table) == 0

@@ -212,12 +212,20 @@ def build_tables_table(model: Any) -> pa.Table:
             catalogs.append("orionbelt")
             schemas.append("model")
             types.append("TABLE")
-            # Serialize Arrow schema as IPC for the table_schema column
+            # Serialize Arrow schema for the table_schema column
+            # Flight SQL spec requires Schema serialization (not IPC stream)
             arrow_schema = object_to_schema(obj)
-            sink = pa.BufferOutputStream()
-            writer = pa.ipc.new_stream(sink, arrow_schema)
-            writer.close()
-            table_schemas.append(sink.getvalue().to_pybytes())
+            table_schemas.append(arrow_schema.serialize().to_pybytes())
+
+    # Virtual metadata tables (_dimensions, _measures, _metrics)
+    from ob_flight.catalog import VIRTUAL_TABLES
+
+    for vt_name, vt_schema in VIRTUAL_TABLES.items():
+        names.append(vt_name)
+        catalogs.append("orionbelt")
+        schemas.append("model")
+        types.append("TABLE")
+        table_schemas.append(vt_schema.serialize().to_pybytes())
 
     return pa.table(
         {

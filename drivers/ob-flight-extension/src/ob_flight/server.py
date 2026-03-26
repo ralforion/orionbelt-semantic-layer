@@ -11,7 +11,13 @@ import pyarrow.flight as flight
 
 from ob_driver_core.detection import is_obml, parse_obml
 
-from ob_flight.catalog import model_to_flight_infos
+from ob_flight.catalog import (
+    VIRTUAL_TABLES,
+    build_dimensions_data,
+    build_measures_data,
+    build_metrics_data,
+    model_to_flight_infos,
+)
 from ob_flight.converters import rows_to_batch, schema_from_description
 from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
@@ -44,28 +50,6 @@ from ob_flight.flight_sql import (
 )
 
 logger = logging.getLogger("ob_flight.server")
-
-
-def _sql_type_to_arrow(sql_type: str) -> pa.DataType:
-    """Map a SQL data type name to an Arrow type (best-effort)."""
-    t = sql_type.lower()
-    if "int" in t or t in ("serial", "bigserial", "smallserial"):
-        return pa.int64()
-    if "float" in t or "double" in t or "real" in t:
-        return pa.float64()
-    if "numeric" in t or "decimal" in t or "money" in t:
-        return pa.float64()
-    if "bool" in t:
-        return pa.bool_()
-    if "timestamp" in t:
-        return pa.timestamp("us")
-    if "date" in t:
-        return pa.date32()
-    if "time" in t:
-        return pa.time64("us")
-    if "bytea" in t or "blob" in t or "binary" in t:
-        return pa.binary()
-    return pa.utf8()
 
 
 # Flight SQL catalog command type URLs that return metadata (no DB execution)
@@ -177,6 +161,28 @@ class OBFlightServer(flight.FlightServerBase):
         sql = self._rewrite_table_names(sql, model)
         return sql, dialect, model
 
+    @staticmethod
+    def _detect_virtual_table(sql: str) -> str | None:
+        """Detect if SQL queries a virtual metadata table (_dimensions, etc.)."""
+        sql_lower = sql.lower()
+        for vt in VIRTUAL_TABLES:
+            if vt in sql_lower:
+                return vt
+        return None
+
+    def _query_virtual_table(self, vt_name: str) -> flight.RecordBatchStream:
+        """Return data for a virtual metadata table."""
+        model, _ = self._get_model()
+        if vt_name == "_dimensions":
+            table = build_dimensions_data(model)
+        elif vt_name == "_measures":
+            table = build_measures_data(model)
+        elif vt_name == "_metrics":
+            table = build_metrics_data(model)
+        else:
+            raise flight.FlightServerError(f"Unknown virtual table: {vt_name}")
+        return flight.RecordBatchStream(table)
+
     def _probe_schema(self, sql: str, dialect: str) -> pa.Schema:
         """Probe the database to determine the result schema for a query.
 
@@ -184,6 +190,10 @@ class OBFlightServer(flight.FlightServerBase):
         (UNION ALL queries may have NULL-padded columns in early rows).
         Falls back to a generic schema on error.
         """
+        vt = self._detect_virtual_table(sql)
+        if vt is not None:
+            return VIRTUAL_TABLES[vt]
+
         conn = db_connect(dialect)
         try:
             cursor = conn.cursor()
@@ -198,80 +208,17 @@ class OBFlightServer(flight.FlightServerBase):
         finally:
             conn.close()
 
-    def _query_db_schema(self, dialect: str) -> tuple[list[dict[str, str]], dict[str, pa.Schema]]:
-        """Query the database for physical table and column metadata.
+    def _build_tables_from_model(self) -> pa.Table:
+        """Build tables metadata from the semantic model data objects.
 
-        Returns (tables, schemas_by_table) where:
-          - tables: list of dicts with catalog_name, db_schema_name, table_name, table_type
-          - schemas_by_table: table_name -> Arrow schema
+        Each data object becomes a virtual "table" in DBeaver's schema browser,
+        showing only the columns defined on that data object.
         """
-        # SQL to get tables and their columns varies by dialect
-        if dialect in ("postgres", "mysql", "clickhouse", "snowflake", "databricks"):
-            tables_sql = (
-                "SELECT table_catalog, table_schema, table_name, table_type "
-                "FROM information_schema.tables "
-                "WHERE table_schema = current_schema() "
-                "ORDER BY table_name"
-            )
-            columns_sql = (
-                "SELECT table_name, column_name, data_type, ordinal_position "
-                "FROM information_schema.columns "
-                "WHERE table_schema = current_schema() "
-                "ORDER BY table_name, ordinal_position"
-            )
-        elif dialect == "duckdb":
-            tables_sql = (
-                "SELECT table_catalog, table_schema, table_name, table_type "
-                "FROM information_schema.tables "
-                "ORDER BY table_name"
-            )
-            columns_sql = (
-                "SELECT table_name, column_name, data_type, ordinal_position "
-                "FROM information_schema.columns "
-                "ORDER BY table_name, ordinal_position"
-            )
-        else:
-            return [], {}
-
-        conn = db_connect(dialect)
         try:
-            cursor = conn.cursor()
-            # Fetch tables
-            cursor.execute(tables_sql)
-            table_rows = cursor.fetchall()
-            tables: list[dict[str, str]] = []
-            for row in table_rows:
-                tables.append({
-                    "catalog_name": str(row[0] or ""),
-                    "db_schema_name": str(row[1] or ""),
-                    "table_name": str(row[2] or ""),
-                    "table_type": str(row[3] or "TABLE").upper().replace("BASE ", ""),
-                })
-
-            # Fetch columns
-            cursor.execute(columns_sql)
-            col_rows = cursor.fetchall()
-            schemas_by_table: dict[str, pa.Schema] = {}
-            from collections import defaultdict
-            cols_by_table: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            for row in col_rows:
-                tbl = str(row[0] or "")
-                col_name = str(row[1] or "")
-                data_type = str(row[2] or "").lower()
-                cols_by_table[tbl].append((col_name, data_type))
-
-            for tbl, cols in cols_by_table.items():
-                fields = []
-                for col_name, data_type in cols:
-                    fields.append(pa.field(col_name, _sql_type_to_arrow(data_type)))
-                schemas_by_table[tbl] = pa.schema(fields)
-
-            return tables, schemas_by_table
-        except Exception as exc:
-            logger.warning("Failed to query database metadata: %s", exc)
-            return [], {}
-        finally:
-            conn.close()
+            model, _ = self._get_model()
+        except Exception:
+            model = None
+        return build_tables_table(model)
 
     def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> str:
         """Compile OBML to SQL using the OrionBelt pipeline directly."""
@@ -365,9 +312,9 @@ class OBFlightServer(flight.FlightServerBase):
         if type_url == CMD_GET_CATALOGS:
             table = build_catalogs_table()
         elif type_url == CMD_GET_DB_SCHEMAS:
-            table = self._build_db_schemas_from_db()
+            table = build_db_schemas_table()
         elif type_url == CMD_GET_TABLES:
-            table = self._build_tables_from_db()
+            table = self._build_tables_from_model()
         elif type_url == CMD_GET_TABLE_TYPES:
             table = build_table_types_table()
         elif type_url in (CMD_GET_PRIMARY_KEYS, CMD_GET_EXPORTED_KEYS, CMD_GET_CROSS_REFERENCE):
@@ -383,64 +330,13 @@ class OBFlightServer(flight.FlightServerBase):
         logger.debug("Catalog response for %s: %d rows", type_url.rsplit(".", 1)[-1], len(table))
         return flight.RecordBatchStream(table)
 
-    def _build_db_schemas_from_db(self) -> pa.Table:
-        """Query database for actual schema names."""
-        db_tables, _ = self._query_db_schema(self._default_dialect)
-        if db_tables:
-            # Unique (catalog, schema) pairs
-            seen: set[tuple[str, str]] = set()
-            catalogs: list[str] = []
-            schemas: list[str] = []
-            for t in db_tables:
-                key = (t["catalog_name"], t["db_schema_name"])
-                if key not in seen:
-                    seen.add(key)
-                    catalogs.append(t["catalog_name"])
-                    schemas.append(t["db_schema_name"])
-            from ob_flight.flight_sql import DB_SCHEMA_SCHEMA
-            return pa.table(
-                {"catalog_name": catalogs, "db_schema_name": schemas},
-                schema=DB_SCHEMA_SCHEMA,
-            )
-        return build_db_schemas_table()
-
-    def _build_tables_from_db(self) -> pa.Table:
-        """Query database for actual table metadata."""
-        db_tables, schemas_by_table = self._query_db_schema(self._default_dialect)
-        if db_tables:
-            from ob_flight.flight_sql import TABLE_SCHEMA
-            names: list[str] = []
-            catalogs: list[str] = []
-            db_schemas: list[str] = []
-            types: list[str] = []
-            table_schemas: list[bytes] = []
-            for t in db_tables:
-                tbl_name = t["table_name"]
-                names.append(tbl_name)
-                catalogs.append(t["catalog_name"])
-                db_schemas.append(t["db_schema_name"])
-                types.append(t["table_type"])
-                arrow_schema = schemas_by_table.get(tbl_name, pa.schema([]))
-                table_schemas.append(arrow_schema.serialize().to_pybytes())
-            return pa.table(
-                {
-                    "catalog_name": catalogs,
-                    "db_schema_name": db_schemas,
-                    "table_name": names,
-                    "table_type": types,
-                    "table_schema": table_schemas,
-                },
-                schema=TABLE_SCHEMA,
-            )
-        # Fallback to model-based catalog
-        try:
-            model, _ = self._get_model()
-            return build_tables_table(model)
-        except Exception:
-            return build_table_types_table()
-
     def _execute_sql(self, sql: str, dialect: str) -> flight.RecordBatchStream:
         """Execute SQL on the vendor database and stream results."""
+        # Virtual metadata tables — served from model, no DB needed
+        vt = self._detect_virtual_table(sql)
+        if vt is not None:
+            return self._query_virtual_table(vt)
+
         # Rewrite data object labels → physical table codes
         try:
             model, _ = self._get_model()
@@ -520,22 +416,10 @@ class OBFlightServer(flight.FlightServerBase):
     def list_flights(
         self, context: flight.ServerCallContext, criteria: bytes
     ) -> Any:
-        """List physical database tables for DBeaver schema browser."""
-        db_tables, schemas_by_table = self._query_db_schema(self._default_dialect)
-        if db_tables:
-            for t in db_tables:
-                tbl_name = t["table_name"]
-                schema = schemas_by_table.get(tbl_name, pa.schema([]))
-                descriptor = flight.FlightDescriptor.for_path(
-                    t["catalog_name"], t["db_schema_name"], tbl_name
-                )
-                info = flight.FlightInfo(schema, descriptor, [], -1, -1)
-                yield info
-        else:
-            # Fallback to model-based listing
-            try:
-                model, _ = self._get_model()
-            except Exception:
-                return
-            for info in model_to_flight_infos(model, "default"):
-                yield info
+        """List semantic model data objects as browsable tables in DBeaver."""
+        try:
+            model, _ = self._get_model()
+        except Exception:
+            return
+        for info in model_to_flight_infos(model, "default"):
+            yield info

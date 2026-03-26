@@ -339,70 +339,22 @@ class TestDoGet:
 
 
 class TestListFlights:
-    def _db_schema_result(self):
-        """Sample database schema result for testing."""
-        tables = [
-            {
-                "catalog_name": "testdb",
-                "db_schema_name": "public",
-                "table_name": "orders",
-                "table_type": "TABLE",
-            },
-            {
-                "catalog_name": "testdb",
-                "db_schema_name": "public",
-                "table_name": "customers",
-                "table_type": "TABLE",
-            },
-        ]
-        schemas = {
-            "orders": pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.float64())]),
-            "customers": pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())]),
-        }
-        return tables, schemas
+    def test_lists_model_data_objects(self, mock_session_manager):
+        """list_flights should show semantic model data objects as tables."""
+        col1 = MagicMock()
+        col1.label = "ID"
+        col1.abstract_type = "int"
+        obj1 = MagicMock()
+        obj1.columns = {"ID": col1}
 
-    def test_with_db_tables(self):
-        server = OBFlightServer.__new__(OBFlightServer)
-        server._default_dialect = "postgres"
-
-        tables, schemas = self._db_schema_result()
-        with patch.object(server, "_query_db_schema", return_value=(tables, schemas)):
-            infos = list(server.list_flights(MagicMock(), b""))
-        assert len(infos) == 2
-
-    def test_db_query_returns_physical_columns(self):
-        """list_flights should show physical database columns, not model columns."""
-        server = OBFlightServer.__new__(OBFlightServer)
-        server._default_dialect = "postgres"
-
-        tables = [{
-            "catalog_name": "testdb",
-            "db_schema_name": "public",
-            "table_name": "orders",
-            "table_type": "TABLE",
-        }]
-        schemas = {
-            "orders": pa.schema([
-                pa.field("order_id", pa.int64()),
-                pa.field("order_date", pa.date32()),
-                pa.field("total", pa.float64()),
-            ]),
-        }
-        with patch.object(server, "_query_db_schema", return_value=(tables, schemas)):
-            infos = list(server.list_flights(MagicMock(), b""))
-        assert len(infos) == 1
-        assert infos[0].schema == schemas["orders"]
-
-    def test_fallback_to_model(self, mock_session_manager):
-        """Falls back to model-based listing when DB metadata is unavailable."""
-        col = MagicMock()
-        col.label = "ID"
-        col.abstract_type = "int"
-        obj = MagicMock()
-        obj.columns = {"ID": col}
+        col2 = MagicMock()
+        col2.label = "Name"
+        col2.abstract_type = "string"
+        obj2 = MagicMock()
+        obj2.columns = {"Name": col2}
 
         model = MagicMock()
-        model.data_objects = {"Orders": obj}
+        model.data_objects = {"Orders": obj1, "Customers": obj2}
 
         mock_session_manager.get_store.return_value.get_model.return_value = model
 
@@ -410,16 +362,121 @@ class TestListFlights:
         server._session_manager = mock_session_manager
         server._default_dialect = "duckdb"
 
-        # Empty DB result triggers model fallback
-        with patch.object(server, "_query_db_schema", return_value=([], {})):
-            infos = list(server.list_flights(MagicMock(), b""))
-        assert len(infos) == 1
+        infos = list(server.list_flights(MagicMock(), b""))
+        # 2 data objects + 3 virtual tables (_dimensions, _measures, _metrics)
+        assert len(infos) == 5
 
-    def test_no_model_no_db_returns_empty(self):
+    def test_shows_correct_columns_per_data_object(self, mock_session_manager):
+        """Each data object should only show its own columns."""
+        col_id = MagicMock()
+        col_id.label = "order_id"
+        col_id.abstract_type = "int"
+        col_date = MagicMock()
+        col_date.label = "order_date"
+        col_date.abstract_type = "date"
+        obj_orders = MagicMock()
+        obj_orders.columns = {"order_id": col_id, "order_date": col_date}
+
+        col_name = MagicMock()
+        col_name.label = "name"
+        col_name.abstract_type = "string"
+        obj_customers = MagicMock()
+        obj_customers.columns = {"name": col_name}
+
+        model = MagicMock()
+        model.data_objects = {"Orders": obj_orders, "Customers": obj_customers}
+
+        mock_session_manager.get_store.return_value.get_model.return_value = model
+
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+
+        infos = list(server.list_flights(MagicMock(), b""))
+        # 2 data objects + 3 virtual tables
+        assert len(infos) == 5
+        # Orders should have 2 columns
+        assert len(infos[0].schema) == 2
+        # Customers should have 1 column
+        assert len(infos[1].schema) == 1
+        # Virtual tables should be present
+        vt_names = {info.descriptor.path[-1] for info in infos[2:]}
+        assert vt_names == {b"_dimensions", b"_measures", b"_metrics"}
+
+    def test_no_model_returns_empty(self):
         server = OBFlightServer.__new__(OBFlightServer)
         server._session_manager = None
         server._default_dialect = "duckdb"
 
-        with patch.object(server, "_query_db_schema", return_value=([], {})):
-            infos = list(server.list_flights(MagicMock(), b""))
+        infos = list(server.list_flights(MagicMock(), b""))
         assert len(infos) == 0
+
+
+class TestVirtualTables:
+    def test_detect_dimensions(self):
+        assert OBFlightServer._detect_virtual_table("SELECT * FROM _dimensions") == "_dimensions"
+
+    def test_detect_measures_quoted(self):
+        sql = 'SELECT * FROM "orionbelt"."model"."_measures" LIMIT 200'
+        assert OBFlightServer._detect_virtual_table(sql) == "_measures"
+
+    def test_detect_metrics(self):
+        assert OBFlightServer._detect_virtual_table("SELECT * FROM _metrics") == "_metrics"
+
+    def test_no_virtual_table(self):
+        assert OBFlightServer._detect_virtual_table("SELECT * FROM orders") is None
+
+    def test_probe_schema_returns_virtual_schema(self, mock_session_manager):
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+
+        schema = server._probe_schema("SELECT * FROM _dimensions", "duckdb")
+        assert schema.field(0).name == "name"
+        assert schema.field(1).name == "data_object"
+
+    def test_query_dimensions(self, mock_session_manager):
+        dim = MagicMock()
+        dim.label = "Region"
+        dim.view = "Orders"
+        dim.column = "region"
+        dim.result_type = MagicMock(value="string")
+        dim.time_grain = None
+        dim.description = None
+
+        model = MagicMock()
+        model.data_objects = {}
+        model.dimensions = {"Region": dim}
+
+        mock_session_manager.get_store.return_value.get_model.return_value = model
+
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+
+        stream = server._query_virtual_table("_dimensions")
+        assert stream is not None
+
+    def test_execute_sql_intercepts_virtual_table(self, mock_session_manager):
+        dim = MagicMock()
+        dim.label = "Region"
+        dim.view = "Orders"
+        dim.column = "region"
+        dim.result_type = MagicMock(value="string")
+        dim.time_grain = None
+        dim.description = "test"
+
+        model = MagicMock()
+        model.data_objects = {}
+        model.dimensions = {"Region": dim}
+
+        mock_session_manager.get_store.return_value.get_model.return_value = model
+
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = mock_session_manager
+        server._default_dialect = "duckdb"
+        server._batch_size = 1024
+
+        # Should NOT hit the database — returns virtual table data
+        stream = server._execute_sql('SELECT * FROM "_dimensions"', "duckdb")
+        assert stream is not None
