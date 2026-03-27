@@ -38,7 +38,7 @@ class ClickHouseDialect(Dialect):
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """ClickHouse: two-part ``schema.code`` (OBML schema maps to CH database)."""
-        return f"{schema}.{code}"
+        return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
     @property
     def name(self) -> str:

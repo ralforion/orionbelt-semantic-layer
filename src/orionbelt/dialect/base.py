@@ -89,8 +89,13 @@ class Dialect(ABC):
 
         Default: three-part ``database.schema.code`` (Snowflake/Databricks/Dremio).
         Postgres and ClickHouse override to two-part naming.
+        All components are quoted to prevent SQL injection.
         """
-        return f"{database}.{schema}.{code}"
+        return (
+            f"{self.quote_identifier(database)}"
+            f".{self.quote_identifier(schema)}"
+            f".{self.quote_identifier(code)}"
+        )
 
     @property
     @abstractmethod

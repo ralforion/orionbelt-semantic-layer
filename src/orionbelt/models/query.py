@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from orionbelt.models.semantic import FilterLogic, TimeGrain
 
@@ -74,6 +74,23 @@ class QueryFilter(BaseModel):
     value: Any = None
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_filter_value(cls, v: Any) -> Any:
+        """Reject arbitrary nested objects — allow scalars, lists of scalars, and dicts
+        (for RELATIVE filters which use ``{unit, count, direction}`` objects).
+        """
+        if v is None:
+            return v
+        if isinstance(v, (str, int, float, bool)):
+            return v
+        if isinstance(v, list) and all(isinstance(i, (str, int, float, bool)) for i in v):
+            return v
+        if isinstance(v, dict) and all(isinstance(k, str) for k in v):
+            return v
+        msg = "Filter value must be a scalar, list of scalars, or object"
+        raise ValueError(msg)
 
 
 class QueryFilterGroup(BaseModel):

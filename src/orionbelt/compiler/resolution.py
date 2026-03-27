@@ -489,8 +489,24 @@ class QueryResolver:
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a cumulative metric referencing an existing measure."""
-        assert metric.measure is not None
-        assert metric.time_dimension is not None
+        if metric.measure is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=f"Cumulative metric '{name}' missing required 'measure' field",
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
+        if metric.time_dimension is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=f"Cumulative metric '{name}' missing required 'timeDimension' field",
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
 
         # Validate referenced measure exists
         base_measure = ctx.model.measures.get(metric.measure)
@@ -562,8 +578,24 @@ class QueryResolver:
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a period-over-period metric."""
-        assert metric.period_over_period is not None
-        assert metric.expression is not None
+        if metric.period_over_period is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=f"PoP metric '{name}' missing required 'periodOverPeriod' field",
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
+        if metric.expression is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=f"PoP metric '{name}' missing required 'expression' field",
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
 
         pop = metric.period_over_period
 

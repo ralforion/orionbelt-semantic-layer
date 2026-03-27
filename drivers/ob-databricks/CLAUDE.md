@@ -7,7 +7,7 @@ queries, compiles them to databricks SQL via the OrionBelt CompilationPipeline
 (direct import) or OB REST API (standalone), and executes them natively.
 
 **OB dialect string:** `"databricks"`
-**Author:** Ralfo Becher / RALFORION d.o.o. (info@orionbelt.ai)
+**Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
 **License:** Apache 2.0
 
 ---

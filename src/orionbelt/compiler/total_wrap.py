@@ -27,6 +27,7 @@ from orionbelt.ast.nodes import (
     Expr,
     From,
     FunctionCall,
+    Literal,
     OrderByItem,
     Select,
     WindowFunction,
@@ -280,7 +281,9 @@ def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str) -> AliasedE
     if isinstance(measure.expression, FunctionCall) and measure.expression.args:
         inner_args = list(measure.expression.args)
     else:
-        inner_args = [ColumnRef(name=measure.name)]
+        # Fallback: use Literal(1) — an AVG measure with no args is unusual
+        # but using the measure alias as a column ref would be invalid SQL.
+        inner_args = [Literal.number(1)]
 
     if kind == "sum":
         return AliasedExpr(

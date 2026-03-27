@@ -68,11 +68,9 @@ class SemanticValidator:
     def _check_unique_column_names(self, model: SemanticModel) -> list[SemanticError]:
         """Column names must be unique within each data object.
 
-        Since columns are stored as dict keys, YAML parsers silently drop
-        duplicates. This validator therefore returns no errors — uniqueness
-        is structurally enforced by the dict representation. The method is
-        retained as a hook for future stricter duplicate-key detection at
-        the YAML parse level.
+        Duplicate YAML keys are now rejected at parse time by TrackedLoader
+        (``allow_duplicate_keys = False``). This validator is retained as a
+        structural hook in case models are constructed programmatically.
         """
         return []
 
@@ -132,33 +130,46 @@ class SemanticValidator:
                 if not join.secondary:
                     adj[obj_name].add(join.join_to)
 
-        # DFS cycle detection
+        # Iterative DFS cycle detection (avoids RecursionError on large models)
         visited: set[str] = set()
         rec_stack: set[str] = set()
 
-        def _dfs(node: str, path: list[str]) -> None:
-            visited.add(node)
-            rec_stack.add(node)
-            for neighbor in adj.get(node, set()):
-                if neighbor not in visited:
-                    _dfs(neighbor, path + [neighbor])
-                elif neighbor in rec_stack:
-                    if neighbor in path:
-                        cycle = path[path.index(neighbor) :] + [neighbor]
-                    else:
-                        cycle = [node, neighbor]
-                    errors.append(
-                        SemanticError(
-                            code="CYCLIC_JOIN",
-                            message=f"Cyclic join detected: {' -> '.join(cycle)}",
-                            path=f"dataObjects.{node}.joins",
-                        )
-                    )
-            rec_stack.discard(node)
+        for start in adj:
+            if start in visited:
+                continue
+            stack: list[tuple[str, list[str]]] = [(start, iter(adj.get(start, set())))]  # type: ignore[list-item]
+            path: list[str] = [start]
+            visited.add(start)
+            rec_stack.add(start)
 
-        for node in adj:
-            if node not in visited:
-                _dfs(node, [node])
+            while stack:
+                node, neighbors = stack[-1]
+                advanced = False
+                for neighbor in neighbors:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        rec_stack.add(neighbor)
+                        path.append(neighbor)
+                        stack.append((neighbor, iter(adj.get(neighbor, set()))))  # type: ignore[arg-type]
+                        advanced = True
+                        break
+                    elif neighbor in rec_stack:
+                        if neighbor in path:
+                            cycle = path[path.index(neighbor) :] + [neighbor]
+                        else:
+                            cycle = [node, neighbor]
+                        errors.append(
+                            SemanticError(
+                                code="CYCLIC_JOIN",
+                                message=f"Cyclic join detected: {' -> '.join(cycle)}",
+                                path=f"dataObjects.{node}.joins",
+                            )
+                        )
+                if not advanced:
+                    stack.pop()
+                    rec_stack.discard(node)
+                    if path:
+                        path.pop()
 
         return errors
 
@@ -267,7 +278,18 @@ class SemanticValidator:
         errors: list[SemanticError] = []
         for obj_name, obj in model.data_objects.items():
             for i, join in enumerate(obj.joins):
-                if len(join.columns_from) != len(join.columns_to):
+                if not join.columns_from or not join.columns_to:
+                    errors.append(
+                        SemanticError(
+                            code="EMPTY_JOIN_COLUMNS",
+                            message=(
+                                f"Data object '{obj_name}' join[{i}] to "
+                                f"'{join.join_to}' has empty join columns"
+                            ),
+                            path=f"dataObjects.{obj_name}.joins[{i}]",
+                        )
+                    )
+                elif len(join.columns_from) != len(join.columns_to):
                     errors.append(
                         SemanticError(
                             code="JOIN_COLUMN_COUNT_MISMATCH",

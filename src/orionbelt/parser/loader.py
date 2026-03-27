@@ -65,6 +65,9 @@ class TrackedLoader:
     def __init__(self) -> None:
         self._yaml = YAML()
         self._yaml.preserve_quotes = True
+        # Reject duplicate YAML keys (e.g. two columns with the same name).
+        # Without this, ruamel.yaml silently keeps only the last value.
+        self._yaml.allow_duplicate_keys = False
         # Reject deeply nested structures (mitigates stack-based DoS).
         # ruamel.yaml raises an error when nesting exceeds this limit.
         self._yaml.max_depth = _MAX_DEPTH

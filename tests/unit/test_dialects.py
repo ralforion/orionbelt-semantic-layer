@@ -343,7 +343,7 @@ class TestDuckDBDialect:
 
     def test_two_part_table_ref(self, dialect: DuckDBDialect) -> None:
         ref = dialect.format_table_ref("db", "main", "orders")
-        assert ref == "main.orders"
+        assert ref == '"main"."orders"'
 
     def test_string_contains_ilike(self, dialect: DuckDBDialect) -> None:
         result = dialect.render_string_contains(col("name"), lit("foo"))

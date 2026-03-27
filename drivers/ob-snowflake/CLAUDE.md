@@ -7,7 +7,7 @@ queries, compiles them to snowflake SQL via the OrionBelt CompilationPipeline
 (direct import) or OB REST API (standalone), and executes them natively.
 
 **OB dialect string:** `"snowflake"`
-**Author:** Ralfo Becher / RALFORION d.o.o. (info@orionbelt.ai)
+**Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
 **License:** Apache 2.0
 
 ---

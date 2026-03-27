@@ -46,7 +46,11 @@ class BigQueryDialect(Dialect):
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """BigQuery: three-part ``project.dataset.table``."""
-        return f"{database}.{schema}.{code}"
+        return (
+            f"{self.quote_identifier(database)}"
+            f".{self.quote_identifier(schema)}"
+            f".{self.quote_identifier(code)}"
+        )
 
     def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         if grain == TimeGrain.WEEK:

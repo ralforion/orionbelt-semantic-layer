@@ -207,14 +207,13 @@ class JoinGraph:
                     )
                 else:
                     # Path traverses edge in reverse direction.
-                    # from_object = source_object (edge[1]), to_object = join target (edge[0]).
-                    # columns_from/to belong to source_object/join_target respectively,
-                    # so they stay aligned with from_object/to_object — no swap needed.
+                    # from_object/to_object are swapped, so columns must be
+                    # swapped too to keep the ON clause correctly oriented.
                     step = JoinStep(
                         from_object=edge[1],
                         to_object=edge[0],
-                        from_columns=edge_data["columns_from"],
-                        to_columns=edge_data["columns_to"],
+                        from_columns=edge_data["columns_to"],
+                        to_columns=edge_data["columns_from"],
                         join_type=ASTJoinType.LEFT,
                         cardinality=edge_data["cardinality"],
                         reversed=True,
@@ -246,6 +245,12 @@ class JoinGraph:
                 )
             )
 
+        if not conditions:
+            msg = (
+                f"Join from '{step.from_object}' to '{step.to_object}' "
+                f"has no join columns"
+            )
+            raise ValueError(msg)
         result: Expr = conditions[0]
         for cond in conditions[1:]:
             result = BinaryOp(left=result, op="AND", right=cond)

@@ -78,7 +78,10 @@ def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]
 
     # Also scan user-created sessions
     for sess in mgr.list_sessions():
-        store = mgr.get_store(sess.session_id)
+        try:
+            store = mgr.get_store(sess.session_id)
+        except Exception:
+            continue
         for ms in store.list_models():
             model = store.get_model(ms.model_id)
             candidates.append((sess.session_id, ms.model_id, model))

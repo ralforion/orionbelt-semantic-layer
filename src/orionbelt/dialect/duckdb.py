@@ -29,7 +29,7 @@ class DuckDBDialect(Dialect):
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """DuckDB: two-part ``schema.code`` (skip database for local mode)."""
-        return f"{schema}.{code}"
+        return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')

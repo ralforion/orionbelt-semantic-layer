@@ -34,11 +34,12 @@ class DremioDialect(Dialect):
         When ``database`` and ``schema`` are empty, ``code`` is used as the full
         path (user encodes the complete Dremio path in the OBML ``code`` field).
         Otherwise falls back to the standard 3-part format.
+        All components are quoted to prevent SQL injection.
         """
-        parts = [p for p in (database, schema) if p]
+        parts = [self.quote_identifier(p) for p in (database, schema) if p]
         if parts:
-            return f"{'.'.join(parts)}.{code}"
-        return code
+            return f"{'.'.join(parts)}.{self.quote_identifier(code)}"
+        return self.quote_identifier(code)
 
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')

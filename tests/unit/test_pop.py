@@ -624,8 +624,8 @@ class TestPoPTimeDimOnDifferentTable:
         assert "POP_COMPARE" in upper
 
         # pop_base joins Orders first (time dim table), then Line Items (fact)
-        assert "main.orders" in sql
-        assert "main.lineitem" in sql
+        assert '"main"."orders"' in sql
+        assert '"main"."lineitem"' in sql
 
         # Uses physical codes, not display names, in JOIN ON
         assert '"l_orderkey"' in sql

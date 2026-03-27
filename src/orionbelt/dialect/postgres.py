@@ -14,7 +14,7 @@ class PostgresDialect(Dialect):
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """PostgreSQL: two-part ``schema.code`` (skip database)."""
-        return f"{schema}.{code}"
+        return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
     @property
     def name(self) -> str:

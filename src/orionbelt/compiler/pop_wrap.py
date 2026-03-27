@@ -29,7 +29,8 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
 
 if TYPE_CHECKING:
@@ -63,9 +64,24 @@ def wrap_with_pop(
 
     # v1 constraint: all PoP metrics must share the same time dimension + grain
     pop_config = pop_measures[0]
-    assert pop_config.pop_time_dimension is not None
-    assert pop_config.pop_grain is not None
-    assert pop_config.pop_offset_grain is not None
+    if pop_config.pop_time_dimension is None:
+        raise ResolutionError([SemanticError(
+            code="INVALID_METRIC",
+            message="PoP metric missing required timeDimension",
+            path="metrics",
+        )])
+    if pop_config.pop_grain is None:
+        raise ResolutionError([SemanticError(
+            code="INVALID_METRIC",
+            message="PoP metric missing required grain",
+            path="metrics",
+        )])
+    if pop_config.pop_offset_grain is None:
+        raise ResolutionError([SemanticError(
+            code="INVALID_METRIC",
+            message="PoP metric missing required offsetGrain",
+            path="metrics",
+        )])
 
     grain = pop_config.pop_grain.value
     offset = pop_config.pop_offset
@@ -388,7 +404,12 @@ def _build_pop_compare_sql(
 
     # PoP measures: compute comparison expression
     for m in pop_measures:
-        assert m.pop_comparison is not None
+        if m.pop_comparison is None:
+            raise ResolutionError([SemanticError(
+                code="INVALID_METRIC",
+                message=f"PoP measure '{m.name}' missing comparison type",
+                path="metrics",
+            )])
         # For single-measure PoP: use the base measure name
         base_name = m.pop_base_measure or m.component_measures[0]
         q_base = dialect.quote_identifier(base_name)
@@ -407,7 +428,11 @@ def _build_pop_compare_sql(
         elif m.pop_comparison == PeriodOverPeriodComparison.PERCENT_CHANGE:
             expr = f"{current} / {nullif_prev} - 1"
         else:
-            expr = f"{current} / {nullif_prev} - 1"
+            raise ResolutionError([SemanticError(
+                code="INVALID_METRIC",
+                message=f"Unknown PoP comparison type: {m.pop_comparison}",
+                path="metrics",
+            )])
 
         selects.append(f"{expr} AS {q_metric}")
 

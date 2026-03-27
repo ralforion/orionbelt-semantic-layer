@@ -198,7 +198,9 @@ class SessionManager:
         now_mono = time.monotonic()
         with self._lock:
             expired = [
-                sid for sid, s in self._sessions.items() if now_mono - s.last_accessed > self._ttl
+                sid
+                for sid, s in self._sessions.items()
+                if sid != _DEFAULT_SESSION_ID and now_mono - s.last_accessed > self._ttl
             ]
             for sid in expired:
                 del self._sessions[sid]
