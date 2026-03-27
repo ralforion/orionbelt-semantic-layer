@@ -84,19 +84,23 @@ class DremioDialect(Dialect):
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
     ) -> str:
-        prev = self.date_add_sql("spine_date", offset_grain, offset)
-        step = f"DATE_ADD(spine_date, INTERVAL '1' {grain.upper()})"
+        prev = self.date_add_sql("d", offset_grain, offset)
+        grain_upper = grain.upper()
+        # Cross-join of three 10-row value sets produces 1000 rows (0-999),
+        # enough for any practical date range and grain combination.
+        # Uses TIMESTAMPADD instead of WITH RECURSIVE (unsupported by Dremio).
         return (
-            f"SELECT spine_date,\n"
+            f"SELECT d AS spine_date,\n"
             f"       CASE WHEN {prev} >= {min_date}\n"
             f"            THEN {prev} END AS spine_date_prev\n"
             f"FROM (\n"
-            f"  WITH RECURSIVE dates AS (\n"
-            f"    SELECT {min_date} AS spine_date\n"
-            f"    UNION ALL\n"
-            f"    SELECT {step}\n"
-            f"    FROM dates WHERE spine_date < {max_date}\n"
-            f"  )\n"
-            f"  SELECT spine_date FROM dates\n"
+            f"  SELECT CAST(TIMESTAMPADD({grain_upper}, n, {min_date}) AS DATE) AS d\n"
+            f"  FROM (\n"
+            f"    SELECT a.n + b.n * 10 + c.n * 100 AS n\n"
+            f"    FROM (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) a(n)\n"
+            f"    CROSS JOIN (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) b(n)\n"
+            f"    CROSS JOIN (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) c(n)\n"
+            f"  ) AS nums\n"
+            f"  WHERE TIMESTAMPADD({grain_upper}, n, {min_date}) <= {max_date}\n"
             f") AS spine"
         )

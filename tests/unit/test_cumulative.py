@@ -9,6 +9,7 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     From,
     FunctionCall,
+    Literal,
     OrderByItem,
     Select,
     WindowFunction,
@@ -283,7 +284,8 @@ metrics:
         assert any("NonExistent" in e.message for e in result.errors)
 
     def test_cumulative_unknown_time_dimension_error(self) -> None:
-        yaml = """\
+        """Unknown timeDimension should be caught at parse time (not resolution)."""
+        yaml_content = """\
 version: 1.0
 dataObjects:
   T:
@@ -306,14 +308,13 @@ metrics:
     measure: M
     timeDimension: NonExistent
 """
-        model = _load_model(yaml)
-        resolver = QueryResolver()
-        query = QueryObject(
-            select=QuerySelect(dimensions=[], measures=["Bad"]),
-        )
-        with pytest.raises(ResolutionError) as exc_info:
-            resolver.resolve(query, model)
-        assert any("NonExistent" in e.message for e in exc_info.value.errors)
+        loader = TrackedLoader()
+        resolver = ReferenceResolver()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        assert not result.valid
+        assert any("NonExistent" in e.message for e in result.errors)
+        assert any(e.code == "CUMULATIVE_UNKNOWN_TIME_DIMENSION" for e in result.errors)
 
     def test_cumulative_time_dim_not_in_select_error(self) -> None:
         """timeDimension must be in the query's selected dimensions."""
@@ -568,8 +569,8 @@ class TestGrainToDate:
         assert isinstance(part, FunctionCall)
         # DATE_TRUNC('year', time_dim)
         assert len(part.args) == 2
-        assert isinstance(part.args[0], ColumnRef)
-        assert part.args[0].name == "year"
+        assert isinstance(part.args[0], Literal)
+        assert part.args[0].value == "year"
 
 
 class TestCumulativeAggTypes:

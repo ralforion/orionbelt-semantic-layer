@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 
-from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
+from langgraph.prebuilt import create_react_agent
 
 from orionbelt_tools import get_tools
 
@@ -52,12 +53,9 @@ API_BASE_URL = "http://localhost:8000"
 async def main() -> None:
     tools = get_tools(API_BASE_URL)
 
-    # Using Anthropic Claude (change to "openai:gpt-4o" for OpenAI)
-    agent = create_agent(
-        "anthropic:claude-sonnet-4-5",
-        tools,
-        prompt=SYSTEM_PROMPT,
-    )
+    # Using Anthropic Claude (swap ChatAnthropic for ChatOpenAI for OpenAI)
+    llm = ChatAnthropic(model="claude-sonnet-4-5-20241022")
+    agent = create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
     # Interactive loop
     print("OrionBelt Semantic Layer Agent (type 'quit' to exit)\n")

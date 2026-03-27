@@ -98,17 +98,12 @@ def connect(
     if password is not None:
         kwargs["password"] = password
 
-    # SSL configuration
-    if ssl_ca or ssl_cert or ssl_key:
-        ssl_config: dict[str, str] = {}
-        if ssl_ca:
-            ssl_config["ca"] = ssl_ca
-        if ssl_cert:
-            ssl_config["cert"] = ssl_cert
-        if ssl_key:
-            ssl_config["key"] = ssl_key
+    # SSL configuration — only add non-None values
+    if ssl_ca:
         kwargs["ssl_ca"] = ssl_ca
+    if ssl_cert:
         kwargs["ssl_cert"] = ssl_cert
+    if ssl_key:
         kwargs["ssl_key"] = ssl_key
 
     native = mysql.connector.connect(**kwargs)

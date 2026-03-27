@@ -41,7 +41,7 @@ class MySQLDialect(Dialect):
             supports_time_travel=False,
             supports_semi_structured=False,
             supports_union_all_by_name=False,
-            unsupported_aggregations=["mode"],
+            unsupported_aggregations=["mode", "median"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
@@ -100,9 +100,8 @@ class MySQLDialect(Dialect):
         )
 
     def _compile_median(self, args: list[Expr]) -> str:
-        """MySQL 8.0+: emulate MEDIAN via PERCENTILE_CONT window function."""
-        col_sql = self.compile_expr(args[0]) if args else "NULL"
-        return f"MAX(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {col_sql}))"
+        """MySQL does not support MEDIAN aggregation."""
+        raise UnsupportedAggregationError("mysql", "median")
 
     def _compile_mode(self, args: list[Expr]) -> str:
         """MySQL does not support MODE aggregation at the dialect level."""

@@ -17,7 +17,7 @@ from orionbelt.dialect.registry import DialectRegistry
         ("databricks", ["EXPLODE", "SEQUENCE", "spine_date", "spine_date_prev"]),
         ("mysql", ["RECURSIVE", "spine_date", "spine_date_prev", "DATE_ADD"]),
         ("clickhouse", ["arrayJoin", "spine_date", "spine_date_prev"]),
-        ("dremio", ["RECURSIVE", "spine_date", "spine_date_prev", "DATE_ADD"]),
+        ("dremio", ["TIMESTAMPADD", "spine_date", "spine_date_prev", "CROSS JOIN"]),
     ],
 )
 def test_date_spine_sql_contains_keywords(dialect_name: str, expected_keywords: list[str]) -> None:

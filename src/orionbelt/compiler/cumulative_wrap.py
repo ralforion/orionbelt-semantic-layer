@@ -65,7 +65,7 @@ def _build_cumulative_window(
         grain = _GRAIN_TRUNC_MAP[measure.cumulative_grain_to_date]
         partition_expr = FunctionCall(
             name="DATE_TRUNC",
-            args=[ColumnRef(name=grain), time_ref],
+            args=[Literal.string(grain), time_ref],
         )
         return WindowFunction(
             func_name=func_name,

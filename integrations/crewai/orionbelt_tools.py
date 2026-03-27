@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import httpx
 from crewai.tools import tool
@@ -110,7 +111,10 @@ class OrionBeltTools:
                      "limit": 100}
                 dialect: Target SQL dialect.
             """
-            query = json.loads(query_json)
+            try:
+                query = json.loads(query_json)
+            except json.JSONDecodeError as exc:
+                return f"Error: invalid JSON in query_json: {exc}"
             data = ob._post("/v1/query/sql", query, params={"dialect": dialect})
             parts = [f"-- Dialect: {data['dialect']}", data["sql"]]
             if data.get("warnings"):
@@ -126,7 +130,7 @@ class OrionBeltTools:
             Args:
                 name: Exact name of the dimension, measure, or metric.
             """
-            return json.dumps(ob._get(f"/v1/explain/{name}"), indent=2)
+            return json.dumps(ob._get(f"/v1/explain/{quote(name, safe='')}"), indent=2)
 
         @tool("Search Model")
         def search_model(query: str) -> str:

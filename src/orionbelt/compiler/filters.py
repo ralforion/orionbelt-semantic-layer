@@ -28,6 +28,11 @@ from orionbelt.models.semantic import (
 )
 
 
+def _escape_like(val: str) -> str:
+    """Escape SQL LIKE wildcard characters (% and _) with backslash."""
+    return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class RelativeFilterParsed(TypedDict):
     unit: str
     count: int
@@ -71,25 +76,25 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
             return BinaryOp(
                 left=col,
                 op="LIKE",
-                right=Literal.string(f"%{val}%"),
+                right=Literal.string(f"%{_escape_like(str(val))}%"),
             )
         case FilterOperator.NOT_CONTAINS:
             return BinaryOp(
                 left=col,
                 op="NOT LIKE",
-                right=Literal.string(f"%{val}%"),
+                right=Literal.string(f"%{_escape_like(str(val))}%"),
             )
         case FilterOperator.STARTS_WITH:
             return BinaryOp(
                 left=col,
                 op="LIKE",
-                right=Literal.string(f"{val}%"),
+                right=Literal.string(f"{_escape_like(str(val))}%"),
             )
         case FilterOperator.ENDS_WITH:
             return BinaryOp(
                 left=col,
                 op="LIKE",
-                right=Literal.string(f"%{val}"),
+                right=Literal.string(f"%{_escape_like(str(val))}"),
             )
         case FilterOperator.LIKE:
             return BinaryOp(left=col, op="LIKE", right=Literal.string(str(val)))
@@ -304,16 +309,18 @@ def _build_single_measure_filter(
             return IsNull(expr=col, negated=False)
         case "contains":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{v}%"))
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{_escape_like(str(v))}%"))
         case "notcontains":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="NOT LIKE", right=Literal.string(f"%{v}%"))
+            return BinaryOp(
+                left=col, op="NOT LIKE", right=Literal.string(f"%{_escape_like(str(v))}%")
+            )
         case "starts_with":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"{v}%"))
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"{_escape_like(str(v))}%"))
         case "ends_with":
             v = values[0] if values else ""
-            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{v}"))
+            return BinaryOp(left=col, op="LIKE", right=Literal.string(f"%{_escape_like(str(v))}"))
         case "like":
             v = values[0] if values else ""
             return BinaryOp(left=col, op="LIKE", right=Literal.string(str(v)))

@@ -124,7 +124,16 @@ class CompilationPipeline:
         wrapped_ast = wrap_with_pop(plan.ast, resolved, model, dialect, qualify_table)
 
         # Phase 2.5: Wrap with totals CTE if needed
-        wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
+        # Skip totals wrap when PoP or cumulative is active — the combination
+        # produces invalid SQL because totals rewrites the AST structure that
+        # PoP/cumulative wrappers depend on.
+        if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
+            resolved.warnings.append(
+                "total=True measures are ignored when combined with "
+                "period-over-period or cumulative metrics in the same query"
+            )
+        else:
+            wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
 
         # Phase 2.6: Wrap with cumulative CTE if needed
         wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)

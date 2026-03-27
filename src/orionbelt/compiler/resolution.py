@@ -613,6 +613,22 @@ class QueryResolver:
 
         # Resolve the expression (same as derived — parse {[Measure Name]} refs)
         component_names = re.findall(r"\{\[([^\]]+)\]\}", metric.expression)
+
+        # PoP comparison logic only supports single-measure expressions
+        if len(component_names) > 1:
+            ctx.errors.append(
+                SemanticError(
+                    code="POP_MULTI_MEASURE_NOT_SUPPORTED",
+                    message=(
+                        f"Period-over-period metric '{name}' references multiple measures "
+                        f"({', '.join(component_names)}). PoP comparison currently supports "
+                        f"only single-measure expressions."
+                    ),
+                    path=f"metrics.{name}.expression",
+                )
+            )
+            return None
+
         for comp_name in component_names:
             if comp_name not in ctx.result.metric_components:
                 comp = self._resolve_measure(ctx, comp_name)

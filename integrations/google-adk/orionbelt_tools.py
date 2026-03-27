@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import httpx
 from google.adk.tools import FunctionTool
@@ -102,7 +103,10 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
                  "limit": 100}
             dialect: Target SQL dialect.
         """
-        query = json.loads(query_json)
+        try:
+            query = json.loads(query_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: invalid JSON in query_json: {exc}"
         data = _post(api_base_url, "/v1/query/sql", query, params={"dialect": dialect})
         parts = [f"-- Dialect: {data['dialect']}", data["sql"]]
         if data.get("warnings"):
@@ -117,7 +121,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
         Args:
             name: Exact name of the dimension, measure, or metric.
         """
-        return json.dumps(_get(api_base_url, f"/v1/explain/{name}"), indent=2)
+        return json.dumps(_get(api_base_url, f"/v1/explain/{quote(name, safe='')}"), indent=2)
 
     def search_model(query: str) -> str:
         """Search for dimensions, measures, or metrics by name or synonym.

@@ -216,8 +216,9 @@ def _build_date_range_sql(
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
 
-        # Find the time column on this fact table (may differ per table)
-        time_col = f"{alias}.{dialect.quote_identifier(time_source_col)}"
+        # Use the time dimension's table alias (may differ from the fact table)
+        time_alias = dialect.quote_identifier(time_obj_name)
+        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
         trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
         trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
 

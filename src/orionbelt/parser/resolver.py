@@ -332,6 +332,29 @@ class ReferenceResolver:
                             )
                         )
 
+                    # Validate timeDimension references a known dimension
+                    cum_time_dim = raw_metric.get("timeDimension", "")
+                    if cum_time_dim and cum_time_dim not in dimensions:
+                        span = (
+                            source_map.get(f"metrics.{name}.timeDimension")
+                            if source_map
+                            else None
+                        )
+                        errors.append(
+                            SemanticError(
+                                code="CUMULATIVE_UNKNOWN_TIME_DIMENSION",
+                                message=(
+                                    f"Cumulative metric '{name}' references "
+                                    f"unknown time dimension '{cum_time_dim}'"
+                                ),
+                                path=f"metrics.{name}.timeDimension",
+                                span=span,
+                                suggestions=_suggest_similar(
+                                    cum_time_dim, list(dimensions.keys())
+                                ),
+                            )
+                        )
+
                     metrics[name] = Metric(
                         label=name,
                         type=MetricType.CUMULATIVE,

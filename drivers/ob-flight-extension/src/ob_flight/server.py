@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -90,11 +92,38 @@ class OBFlightServer(flight.FlightServerBase):
         self._session_manager = session_manager
         self._default_dialect = default_dialect
         self._batch_size = batch_size
-        # Pending queries: ticket_id -> payload
+        self._lock = threading.Lock()
+        # Pending queries: ticket_id -> (payload, timestamp)
         # payload is either ("sql", sql, dialect) or ("catalog", type_url)
-        self._pending: dict[str, tuple[str, ...]] = {}
+        self._pending: dict[str, tuple[tuple[str, ...], float]] = {}
         # Prepared statements: handle_hex -> (sql, dialect, schema)
         self._prepared: dict[str, tuple[str, str, pa.Schema]] = {}
+        # TTL for pending tickets (seconds) — entries older than this are evicted
+        self._pending_ttl = 300
+
+    def _store_pending(self, ticket_id: str, payload: tuple[str, ...]) -> None:
+        """Store a pending query with timestamp, evicting stale entries."""
+        now = time.monotonic()
+        with self._lock:
+            # Evict expired entries
+            expired = [
+                k for k, (_, ts) in self._pending.items() if now - ts > self._pending_ttl
+            ]
+            for k in expired:
+                del self._pending[k]
+            self._pending[ticket_id] = (payload, now)
+
+    def _pop_pending(self, ticket_id: str) -> tuple[str, ...] | None:
+        """Pop a pending query by ticket ID, returning None if not found or expired."""
+        now = time.monotonic()
+        with self._lock:
+            entry = self._pending.pop(ticket_id, None)
+        if entry is None:
+            return None
+        payload, ts = entry
+        if now - ts > self._pending_ttl:
+            return None
+        return payload
 
     def _get_model(self) -> tuple[Any, str]:
         """Get the default model from the session manager.
@@ -163,10 +192,17 @@ class OBFlightServer(flight.FlightServerBase):
 
     @staticmethod
     def _detect_virtual_table(sql: str) -> str | None:
-        """Detect if SQL queries a virtual metadata table (_dimensions, etc.)."""
+        """Detect if SQL queries a virtual metadata table (_dimensions, etc.).
+
+        Uses word-boundary matching to avoid false positives on table/column
+        names like ``sales_dimensions`` or ``total_measures``.
+        """
+        import re
+
         sql_lower = sql.lower()
         for vt in VIRTUAL_TABLES:
-            if vt in sql_lower:
+            # Match the virtual table name as a standalone word
+            if re.search(rf"\b{re.escape(vt)}\b", sql_lower):
                 return vt
         return None
 
@@ -249,7 +285,7 @@ class OBFlightServer(flight.FlightServerBase):
                 if sql is None:
                     raise flight.FlightServerError("Failed to parse SQL from Flight SQL command")
                 sql, dialect, _ = self._prepare_sql(sql)
-                self._pending[ticket_id] = ("sql", sql, dialect)
+                self._store_pending(ticket_id, ("sql", sql, dialect))
                 schema = self._probe_schema(sql, dialect)
 
             elif type_url == CMD_PREPARED_STATEMENT_QUERY:
@@ -261,11 +297,11 @@ class OBFlightServer(flight.FlightServerBase):
                 if handle_hex not in self._prepared:
                     raise flight.FlightServerError(f"Unknown prepared statement: {handle_hex}")
                 sql, dialect, schema = self._prepared[handle_hex]
-                self._pending[ticket_id] = ("sql", sql, dialect)
+                self._store_pending(ticket_id, ("sql", sql, dialect))
 
             elif type_url in _CATALOG_COMMANDS:
                 # Store the raw command for do_get to handle
-                self._pending[ticket_id] = ("catalog", type_url)
+                self._store_pending(ticket_id, ("catalog", type_url))
                 schema = pa.schema([pa.field("result", pa.utf8())])
 
             else:
@@ -278,7 +314,7 @@ class OBFlightServer(flight.FlightServerBase):
         # Plain text: SQL or OBML
         query_str = command_bytes.decode("utf-8")
         sql, dialect, _ = self._prepare_sql(query_str)
-        self._pending[ticket_id] = ("sql", sql, dialect)
+        self._store_pending(ticket_id, ("sql", sql, dialect))
         schema = self._probe_schema(sql, dialect)
         ticket = flight.Ticket(ticket_id.encode("utf-8"))
         endpoint = flight.FlightEndpoint(ticket, [])
@@ -290,10 +326,10 @@ class OBFlightServer(flight.FlightServerBase):
         """Execute a query or return catalog metadata."""
         ticket_id = ticket.ticket.decode("utf-8")
 
-        if ticket_id not in self._pending:
+        pending = self._pop_pending(ticket_id)
+        if pending is None:
             raise flight.FlightServerError(f"Unknown ticket: {ticket_id}")
 
-        pending = self._pending.pop(ticket_id)
         kind = pending[0]
 
         if kind == "catalog":
@@ -331,18 +367,15 @@ class OBFlightServer(flight.FlightServerBase):
         return flight.RecordBatchStream(table)
 
     def _execute_sql(self, sql: str, dialect: str) -> flight.RecordBatchStream:
-        """Execute SQL on the vendor database and stream results."""
+        """Execute SQL on the vendor database and stream results.
+
+        Note: table name rewriting is already handled by ``_prepare_sql``
+        during the ``get_flight_info`` phase — no need to rewrite here.
+        """
         # Virtual metadata tables — served from model, no DB needed
         vt = self._detect_virtual_table(sql)
         if vt is not None:
             return self._query_virtual_table(vt)
-
-        # Rewrite data object labels → physical table codes
-        try:
-            model, _ = self._get_model()
-            sql = self._rewrite_table_names(sql, model)
-        except Exception:
-            pass  # no model loaded — execute as-is
 
         conn = db_connect(dialect)
         try:

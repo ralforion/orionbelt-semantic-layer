@@ -55,17 +55,17 @@ class SnowflakeDialect(Dialect):
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
     ) -> str:
+        spine = f"DATEADD('{grain}', rn - 1, {min_date})::date"
+        prev = f"DATEADD('{offset_grain}', {offset}, {spine})::date"
         return (
-            f"SELECT DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
-            f"{min_date})::date AS spine_date,\n"
-            f"       CASE WHEN DATEADD('{offset_grain}', {offset}, "
-            f"DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
-            f"{min_date}))::date >= {min_date}\n"
-            f"            THEN DATEADD('{offset_grain}', {offset}, "
-            f"DATEADD('{grain}', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, "
-            f"{min_date}))::date END AS spine_date_prev\n"
-            f"FROM TABLE(GENERATOR(ROWCOUNT => "
-            f"DATEDIFF('{grain}', {min_date}, {max_date}) + 1))"
+            f"SELECT {spine} AS spine_date,\n"
+            f"       CASE WHEN {prev} >= {min_date}\n"
+            f"            THEN {prev} END AS spine_date_prev\n"
+            f"FROM (\n"
+            f"  SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS rn\n"
+            f"  FROM TABLE(GENERATOR(ROWCOUNT => "
+            f"DATEDIFF('{grain}', {min_date}, {max_date}) + 1))\n"
+            f") AS t"
         )
 
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:

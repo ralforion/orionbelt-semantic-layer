@@ -365,7 +365,7 @@ class TestMySQLDialect:
         assert dialect.capabilities.supports_ilike is False
         assert dialect.capabilities.supports_arrays is False
         assert dialect.capabilities.supports_union_all_by_name is False
-        assert dialect.capabilities.unsupported_aggregations == ["mode"]
+        assert dialect.capabilities.unsupported_aggregations == ["mode", "median"]
 
     def test_quote_identifier(self, dialect: MySQLDialect) -> None:
         assert dialect.quote_identifier("col") == "`col`"
@@ -467,11 +467,12 @@ class TestMySQLDialect:
         assert "ORDER BY" in sql
         assert "SEPARATOR '; '" in sql
 
-    def test_compile_median(self, dialect: MySQLDialect) -> None:
+    def test_compile_median_raises(self, dialect: MySQLDialect) -> None:
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
         expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
-        sql = dialect.compile_expr(expr)
-        assert "PERCENTILE_CONT(0.5)" in sql
-        assert "ORDER BY" in sql
+        with pytest.raises(UnsupportedAggregationError, match="mysql.*MEDIAN"):
+            dialect.compile_expr(expr)
 
     def test_compile_mode_raises(self, dialect: MySQLDialect) -> None:
         from orionbelt.dialect.base import UnsupportedAggregationError
@@ -888,7 +889,6 @@ class TestMedianRendering:
             ("databricks", "MEDIAN("),
             ("dremio", "MEDIAN("),
             ("duckdb", "MEDIAN("),
-            ("mysql", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY"),
             ("postgres", "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY"),
             ("snowflake", "MEDIAN("),
         ],
@@ -898,3 +898,11 @@ class TestMedianRendering:
         expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
         sql = dialect.compile_expr(expr)
         assert expected in sql
+
+    def test_median_mysql_unsupported(self) -> None:
+        from orionbelt.dialect.base import UnsupportedAggregationError
+
+        dialect = DialectRegistry.get("mysql")
+        expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
+        with pytest.raises(UnsupportedAggregationError, match="mysql.*MEDIAN"):
+            dialect.compile_expr(expr)

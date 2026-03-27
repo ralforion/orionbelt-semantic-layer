@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import httpx
 from langchain_core.tools import tool
@@ -133,7 +134,10 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list:
                 }
             dialect: Target SQL dialect.
         """
-        query = json.loads(query_json)
+        try:
+            query = json.loads(query_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: invalid JSON in query_json: {exc}"
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
             resp = await client.post(
                 "/v1/query/sql", json=query, params={"dialect": dialect}
@@ -156,7 +160,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list:
             name: Exact name of the dimension, measure, or metric.
         """
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
-            resp = await client.get(f"/v1/explain/{name}")
+            resp = await client.get(f"/v1/explain/{quote(name, safe='')}")
             resp.raise_for_status()
             return json.dumps(resp.json(), indent=2)
 
