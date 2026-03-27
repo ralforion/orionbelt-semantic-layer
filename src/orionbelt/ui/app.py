@@ -1005,12 +1005,12 @@ def validate_model(
         valid: bool = data.get("valid", False)
 
         # Build detail YAML for explain panel
-        detail: dict[str, Any] = {"valid": valid}
+        detail_info: dict[str, Any] = {"valid": valid}
         if errors:
-            detail["errors"] = [{k: v for k, v in e.items() if v} for e in errors]
+            detail_info["errors"] = [{k: v for k, v in e.items() if v} for e in errors]
         if warnings:
-            detail["warnings"] = [{k: v for k, v in w.items() if v} for w in warnings]
-        detail_yaml = yaml.dump(detail, default_flow_style=False, sort_keys=False)
+            detail_info["warnings"] = [{k: v for k, v in w.items() if v} for w in warnings]
+        detail_yaml = yaml.dump(detail_info, default_flow_style=False, sort_keys=False)
 
         # Summary for SQL output panel (plain text, not SQL comments)
         if valid:
