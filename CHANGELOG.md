@@ -2,6 +2,29 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.2.1] - 2026-03-27
+
+### Fixed
+
+- **Reversed join ON clauses** — swap columns when traversing join edges in reverse direction (CR-01)
+- **Empty join column crash** — reject empty `columnsFrom`/`columnsTo` in validator; guard `build_join_condition` (CR-02)
+- **Default session purge** — skip `__default__` session in TTL cleanup so single-model mode survives idle periods (CR-03)
+- **Assert in production** — replace `assert` with structured `ResolutionError`/`SemanticError` in PoP and cumulative metric resolution (CR-04)
+- **SQL injection via table refs** — quote all `format_table_ref` components across 7 dialect implementations (CR-05)
+- **Filter value injection** — validate `QueryFilter.value` rejects arbitrary nested objects (CR-06)
+- **TOCTOU race in shortcuts** — handle session expiry between `list_sessions` and `get_store` (CR-07)
+- **Duplicate YAML keys** — reject duplicate keys at parse time via `allow_duplicate_keys = False` (CR-08)
+- **Recursion on large models** — convert DFS cycle detection to iterative with explicit stack (CR-09)
+- **Silent PoP fallback** — raise error for unknown comparison types instead of defaulting to percent change (CR-10)
+- **AVG total fallback** — use `Literal(1)` instead of invalid column reference in edge case (CR-11)
+
+### Changed
+
+- Version bumped to 1.2.1
+- Published 11 packages to PyPI: `orionbelt-semantic-layer` + 10 driver packages
+
+---
+
 ## [1.2.0] - 2026-03-25
 
 ### Added
