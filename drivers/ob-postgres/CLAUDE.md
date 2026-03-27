@@ -10,7 +10,7 @@ Uses ADBC (Arrow Database Connectivity) for native Arrow support — `fetch_arro
 returns zero-copy PyArrow Tables directly from the PostgreSQL wire protocol.
 
 **OB dialect string:** `"postgres"`
-**Author:** Ralfo Becher / RALFORION d.o.o. (info@orionbelt.ai)
+**Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
 **License:** Apache 2.0
 
 ---

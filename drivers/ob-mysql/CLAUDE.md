@@ -10,7 +10,7 @@ Unlike the postgres driver (which uses ADBC for native Arrow), this driver fetch
 `mysql-connector-python` tuples and converts to PyArrow Tables on demand in `fetch_arrow_table()`.
 
 **OB dialect string:** `"mysql"`
-**Author:** Ralfo Becher / RALFORION d.o.o. (info@orionbelt.ai)
+**Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
 **License:** Apache 2.0
 
 ---
