@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -18,6 +19,9 @@ from orionbelt.service.db_executor import (
     _serialize_value,
     execute_sql,
 )
+
+_has_ob_driver_core = importlib.util.find_spec("ob_driver_core") is not None
+_has_ob_flight = importlib.util.find_spec("ob_flight") is not None
 
 
 class TestSerializeValue:
@@ -61,6 +65,7 @@ class TestSerializeRow:
         assert result == ["US", 42, 100.5, None, "2024-01-01T00:00:00"]
 
 
+@pytest.mark.skipif(not _has_ob_driver_core, reason="ob_driver_core not installed")
 class TestMapTypeCode:
     def test_number_type(self) -> None:
         from ob_driver_core.type_codes import NUMBER
@@ -100,6 +105,8 @@ def _mock_get_connection(mock_conn: MagicMock):
 
 
 class TestExecuteSql:
+    _needs_ob_flight = pytest.mark.skipif(not _has_ob_flight, reason="ob_flight not installed")
+
     def test_import_error_raises_unavailable(self) -> None:
         with (
             patch.dict("sys.modules", {"ob_flight": None, "ob_flight.db_router": None}),
@@ -107,6 +114,7 @@ class TestExecuteSql:
         ):
             execute_sql("SELECT 1", dialect="duckdb")
 
+    @_needs_ob_flight
     def test_successful_execution(self) -> None:
         mock_cursor = MagicMock()
         mock_cursor.description = [
@@ -136,6 +144,7 @@ class TestExecuteSql:
         assert result.execution_time_ms >= 0
         mock_cursor.close.assert_called_once()
 
+    @_needs_ob_flight
     def test_duckdb_direct_execution(self) -> None:
         """DuckDB uses a direct native path (no get_connection)."""
         mock_result = MagicMock()
@@ -160,6 +169,7 @@ class TestExecuteSql:
         assert result.rows == [["US", 100]]
         mock_conn.close.assert_called_once()
 
+    @_needs_ob_flight
     def test_db_error_raises_execution_error(self) -> None:
         mock_cursor = MagicMock()
         mock_cursor.execute.side_effect = RuntimeError("connection refused")
@@ -177,6 +187,7 @@ class TestExecuteSql:
         ):
             execute_sql("SELECT 1", dialect="postgres")
 
+    @_needs_ob_flight
     def test_unsupported_dialect_raises_unavailable(self) -> None:
         @contextmanager
         def _raise_key_error(dialect: str, **kw):  # noqa: ARG001
@@ -193,6 +204,7 @@ class TestExecuteSql:
         ):
             execute_sql("SELECT 1", dialect="mysql")
 
+    @_needs_ob_flight
     def test_cursor_closed_on_error(self) -> None:
         mock_cursor = MagicMock()
         mock_cursor.execute.side_effect = RuntimeError("boom")

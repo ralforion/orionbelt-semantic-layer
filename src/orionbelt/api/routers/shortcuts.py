@@ -15,7 +15,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from orionbelt.api.deps import get_session_manager
+from orionbelt.api.deps import get_session_manager, is_single_model_mode
 from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
@@ -62,8 +62,10 @@ router = APIRouter()
 def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]:
     """Resolve to a unique (session_id, model_id, model).
 
-    Checks the __default__ session first (single-model mode), then falls back
-    to scanning user-created sessions. Raises 409 if ambiguous, 404 if nothing loaded.
+    In single-model mode every session holds the same preloaded model, so we
+    always return the __default__ session's copy — no ambiguity check needed.
+    Otherwise falls back to scanning all sessions. Raises 409 if ambiguous,
+    404 if nothing loaded.
     """
     candidates: list[tuple[str, str, SemanticModel]] = []
 
@@ -75,6 +77,11 @@ def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]
             candidates.append(("__default__", ms.model_id, model))
     except Exception:
         pass
+
+    # In single-model mode the same model is pre-loaded into every session;
+    # return the __default__ copy directly to avoid counting duplicates.
+    if candidates and is_single_model_mode():
+        return candidates[0]
 
     # Also scan user-created sessions
     for sess in mgr.list_sessions():
@@ -103,8 +110,8 @@ def _resolve_store_and_model(
 ) -> tuple[ModelStore, str]:
     """Resolve to a unique (store, model_id) for query compilation.
 
-    Checks the __default__ session first (single-model mode), then falls back
-    to scanning user-created sessions.
+    In single-model mode returns the __default__ session's store directly.
+    Otherwise checks __default__ then scans user-created sessions.
     """
     candidates: list[tuple[ModelStore, str]] = []
 
@@ -115,6 +122,10 @@ def _resolve_store_and_model(
             candidates.append((default_store, ms.model_id))
     except Exception:
         pass
+
+    # In single-model mode, return immediately — no ambiguity possible.
+    if candidates and is_single_model_mode():
+        return candidates[0]
 
     # Also scan user-created sessions
     for sess in mgr.list_sessions():
@@ -285,27 +296,12 @@ async def shortcut_diagram_er(
     return DiagramResponse(mermaid=mermaid)
 
 
-def _resolve_any_store(mgr: SessionManager) -> ModelStore:
-    """Resolve to any available ModelStore (for stateless operations like validate).
-
-    Checks __default__ session first, then user-created sessions.
-    """
-    try:
-        return mgr.get_store("__default__")
-    except Exception:
-        pass
-    for sess in mgr.list_sessions():
-        return mgr.get_store(sess.session_id)
-    raise HTTPException(status_code=404, detail="No active sessions")
-
-
 @router.post("/validate", response_model=ValidateResponse, tags=["validation"])
 async def shortcut_validate(
     body: ValidateRequest,
-    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ValidateResponse:
-    """Validate OBML YAML (auto-resolves session)."""
-    store = _resolve_any_store(mgr)
+    """Validate OBML YAML (stateless — no session required)."""
+    store = ModelStore()
     summary = store.validate(body.model_yaml)
     return ValidateResponse(
         valid=summary.valid,
