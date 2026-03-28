@@ -2,6 +2,21 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.2.2] - 2026-03-28
+
+### Fixed
+
+- **Flight info stale after auto-detection** — refresh cached deps (flight_info, query_execute_enabled) after ob_flight auto-detection so /v1/settings and query gating reflect actual runtime state
+- **Shortcut 409 in single-model mode** — return __default__ session immediately in _resolve_single_model() and _resolve_store_and_model() when single-model mode is active, avoiding false 409 Conflict after creating a second session
+- **Test failures without optional packages** — add pytest skip guards to TestMapTypeCode (ob_driver_core) and TestExecuteSql (ob_flight) so default test suite passes on standard install
+- **Validate shortcut not stateless** — remove session dependency from POST /v1/validate; create a fresh ModelStore for validation since it only needs YAML parsing
+
+### Changed
+
+- Version bumped to 1.2.2
+
+---
+
 ## [1.2.1] - 2026-03-27
 
 ### Fixed

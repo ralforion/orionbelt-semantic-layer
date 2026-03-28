@@ -65,6 +65,17 @@ def get_flight_info() -> dict[str, object] | None:
     return _flight_info
 
 
+def update_flight_state(
+    *,
+    flight_info: dict[str, object] | None,
+    query_execute_enabled: bool,
+) -> None:
+    """Refresh cached Flight state after auto-detection at startup."""
+    global _flight_info, _query_execute_enabled  # noqa: PLW0603
+    _flight_info = flight_info
+    _query_execute_enabled = query_execute_enabled
+
+
 def is_query_execute_enabled() -> bool:
     """Return True when POST /query/execute is available."""
     return _query_execute_enabled

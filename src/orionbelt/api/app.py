@@ -116,6 +116,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 settings.flight_port,
                 settings.db_vendor,
             )
+            # Refresh cached deps so /v1/settings and query gating
+            # reflect the auto-detected Flight state.
+            from orionbelt.api.deps import update_flight_state
+
+            update_flight_state(
+                flight_info={
+                    "enabled": True,
+                    "port": settings.flight_port,
+                    "auth_mode": settings.flight_auth_mode,
+                    "db_vendor": settings.db_vendor,
+                },
+                query_execute_enabled=True,
+            )
         except ImportError:
             logger.warning(
                 "FLIGHT_ENABLED=true but ob-flight-extension is not installed. "
