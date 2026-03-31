@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/ORIONBELT Logo.png" alt="OrionBelt Logo" width="400">
+  <img src="assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
 </p>
 
 # OrionBelt Semantic Layer
@@ -114,7 +114,7 @@ Ready to dive in? Start with [Installation](getting-started/installation.md) and
 ---
 
 <p align="center">
-  <a href="https://ralforion.com"><img src="assets/RALFORION doo Logo.png" alt="RALFORION d.o.o." width="200"></a>
+  <a href="https://ralforion.com"><img src="assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200"></a>
   <br>
   Copyright 2025 RALFORION d.o.o. &mdash; Licensed under BSL 1.1
 </p>

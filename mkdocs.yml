@@ -17,8 +17,8 @@ extra_css:
 theme:
   name: material
   custom_dir: docs/overrides
-  logo: assets/logo w.png
-  favicon: assets/ORIONBELT Logo.png
+  logo: assets/logo_w.png
+  favicon: assets/ORIONBELT_Logo.png
   palette:
     - scheme: default
       primary: deep purple
