@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
 </p>
 
 <h1 align="center">OrionBelt Semantic Layer</h1>
@@ -90,7 +90,7 @@ The [Quickstart Notebook](examples/quickstart.ipynb) walks through the full work
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Run the full quickstart directly in Google Colab (requires Python 3.12 runtime).
 
 <p align="center">
-  <img src="docs/assets/quickstart_notebook.png" alt="Interactive Jupyter Notebook" width="900">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/quickstart_notebook.png" alt="Interactive Jupyter Notebook" width="900">
 </p>
 
 ## Example
@@ -325,7 +325,7 @@ Load Balancer (single IP)
 ```
 
 <p align="center">
-  <img src="docs/assets/ui-sqlcompiler-dark.png" alt="SQL Compiler in Gradio UI (dark mode)" width="900">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="SQL Compiler in Gradio UI (dark mode)" width="900">
 </p>
 
 The UI provides:
@@ -341,7 +341,7 @@ The UI provides:
 The bundled example model (`examples/sem-layer.obml.yml`) is loaded automatically on startup.
 
 <p align="center">
-  <img src="docs/assets/ui-er-diagram-dark.png" alt="ER Diagram in Gradio UI (dark mode)" width="900">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-er-diagram-dark.png" alt="ER Diagram in Gradio UI (dark mode)" width="900">
 </p>
 
 The ER diagram is also available as download (MD, or PNG) or via the REST API.
@@ -555,7 +555,7 @@ All REST API integrations use the [shortcut endpoints](#single-model-mode) and w
 OrionBelt Analytics is an ontology-based MCP server that analyzes relational database schemas and generates RDF/OWL ontologies with embedded SQL mappings. It connects to PostgreSQL, Snowflake, and Dremio, providing AI assistants with deep structural and semantic understanding of your data.
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="OrionBelt Analytics Architecture" width="800">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/architecture.png" alt="OrionBelt Analytics Architecture" width="800">
 </p>
 
 Together, the two projects form a powerful combination for AI-guided analytical workflows:
@@ -577,6 +577,6 @@ By contributing to this project, you agree to the [Contributor License Agreement
 
 <p align="center">
   <a href="https://ralforion.com">
-    <img src="docs/assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200">
+    <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200">
   </a>
 </p>
