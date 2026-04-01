@@ -21,7 +21,15 @@ from orionbelt.api.middleware import (
     RequestTimingMiddleware,
     SecurityHeadersMiddleware,
 )
-from orionbelt.api.routers import convert, dialects, model_api, reference, sessions, shortcuts
+from orionbelt.api.routers import (
+    convert,
+    dialects,
+    graph,
+    model_api,
+    reference,
+    sessions,
+    shortcuts,
+)
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.service.session_manager import SessionManager
@@ -187,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1 = APIRouter(prefix="/v1")
     v1.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
     v1.include_router(model_api.router, prefix="/sessions", tags=["model-discovery"])
+    v1.include_router(graph.router, prefix="/sessions", tags=["graph"])
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])
     v1.include_router(dialects.router, prefix="/dialects", tags=["dialects"])

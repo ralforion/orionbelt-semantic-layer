@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
+
+from rdflib import Graph
 
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.obsl.exporter import export_obsl
+from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
 from orionbelt.parser.loader import TrackedLoader, YAMLSafetyError
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -121,6 +126,15 @@ class ValidationSummary:
     warnings: list[ErrorInfo]
 
 
+@dataclass
+class GraphArtifact:
+    """Cached OBSL-Core RDF graph derived from a loaded model."""
+
+    graph: Graph
+    turtle: str
+    generated_at: float
+
+
 # ---------------------------------------------------------------------------
 # ModelStore
 # ---------------------------------------------------------------------------
@@ -150,6 +164,7 @@ class ModelStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._models: dict[str, SemanticModel] = {}
+        self._graphs: dict[str, GraphArtifact] = {}
 
         # Internal pipeline singletons (stateless, safe to share).
         self._loader = TrackedLoader()
@@ -230,8 +245,15 @@ class ModelStore:
             raise ModelValidationError(errors, warnings)
 
         model_id = self._new_id()
+
+        # Eagerly export OBSL-Core graph (Option C: at model load time).
+        graph = export_obsl(model, model_id)
+        turtle = graph.serialize(format="turtle")
+        artifact = GraphArtifact(graph=graph, turtle=turtle, generated_at=time.monotonic())
+
         with self._lock:
             self._models[model_id] = model
+            self._graphs[model_id] = artifact
 
         return LoadResult(
             model_id=model_id,
@@ -329,12 +351,13 @@ class ModelStore:
         ]
 
     def remove_model(self, model_id: str) -> None:
-        """Unload a model.  Raises ``KeyError`` if not found."""
+        """Unload a model and its cached OBSL graph.  Raises ``KeyError`` if not found."""
         with self._lock:
             try:
                 del self._models[model_id]
             except KeyError:
                 raise KeyError(f"No model loaded with id '{model_id}'") from None
+            self._graphs.pop(model_id, None)
 
     def compile_query(
         self,
@@ -354,3 +377,18 @@ class ModelStore:
             errors=errors,
             warnings=warnings,
         )
+
+    # -- OBSL graph ---------------------------------------------------------
+
+    def get_graph(self, model_id: str) -> GraphArtifact:
+        """Return the cached OBSL graph for a model.  Raises ``KeyError`` if not found."""
+        with self._lock:
+            try:
+                return self._graphs[model_id]
+            except KeyError:
+                raise KeyError(f"No graph for model '{model_id}'") from None
+
+    def query_graph(self, model_id: str, sparql: str) -> SPARQLResult:
+        """Execute a read-only SPARQL query against a model's OBSL graph."""
+        artifact = self.get_graph(model_id)
+        return execute_sparql(artifact.graph, sparql)

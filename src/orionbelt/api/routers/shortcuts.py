@@ -14,6 +14,7 @@ import asyncio
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from orionbelt.api.deps import get_session_manager, is_single_model_mode
 from orionbelt.api.routers.model_api import (
@@ -40,6 +41,8 @@ from orionbelt.api.schemas import (
     SchemaResponse,
     SearchRequest,
     SearchResponse,
+    SPARQLRequest,
+    SPARQLResponse,
     ValidateRequest,
     ValidateResponse,
 )
@@ -294,6 +297,49 @@ async def shortcut_diagram_er(
     _, _, model = _resolve_single_model(mgr)
     mermaid = generate_mermaid_er(model, show_columns=show_columns, theme=theme)
     return DiagramResponse(mermaid=mermaid)
+
+
+@router.get(
+    "/graph",
+    tags=["graph"],
+    response_class=Response,
+    responses={200: {"content": {"text/turtle": {}}}},
+)
+async def shortcut_graph(
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> Response:
+    """Return the OBSL-Core RDF graph as Turtle (auto-resolves session/model)."""
+    store, model_id = _resolve_store_and_model(mgr)
+    try:
+        artifact = store.get_graph(model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
+    return Response(content=artifact.turtle, media_type="text/turtle")
+
+
+@router.post("/sparql", response_model=SPARQLResponse, tags=["graph"])
+async def shortcut_sparql(
+    body: SPARQLRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> SPARQLResponse:
+    """Execute a read-only SPARQL query (auto-resolves session/model)."""
+    from orionbelt.obsl.sparql import SPARQLUpdateError
+
+    store, model_id = _resolve_store_and_model(mgr)
+    try:
+        result = store.query_graph(model_id, body.query)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
+    except SPARQLUpdateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"SPARQL error: {exc}") from None
+    return SPARQLResponse(
+        type=result.type,
+        variables=result.variables,
+        results=result.results,
+        boolean=result.boolean,
+    )
 
 
 @router.post("/validate", response_model=ValidateResponse, tags=["validation"])

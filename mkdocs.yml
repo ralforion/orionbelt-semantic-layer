@@ -94,6 +94,7 @@ nav:
       - SQL Dialects: guide/dialects.md
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
+      - OBSL Graph & SPARQL: guide/obsl.md
   - API:
       - Overview: api/overview.md
       - Endpoints: api/endpoints.md

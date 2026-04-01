@@ -1126,21 +1126,21 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                 f' src="{_LOGO_LIGHT_URI}"'
                 f' style="height:34px;width:auto" alt="OrionBelt">'
                 f'<span class="header-title">'
-                f'Semantic Layer</span></span>'
+                f"Semantic Layer</span></span>"
                 f'<span class="header-links">'
                 f'<span class="header-version">'
-                f'v{__version__}</span>'
+                f"v{__version__}</span>"
                 f'<a href="https://github.com/ralfbecher'
                 f'/orionbelt-semantic-layer"'
                 f' target="_blank">'
-                f'{_GITHUB_SVG} GitHub</a>'
+                f"{_GITHUB_SVG} GitHub</a>"
                 f'<a href="https://github.com/ralfbecher'
                 f'/orionbelt-semantic-layer/issues"'
                 f' target="_blank">Report Issue</a>'
                 f'<a href="https://ralforion.com'
                 f'/orionbelt-semantic-layer/"'
                 f' target="_blank">Docs</a>'
-                f'</span></div>'
+                f"</span></div>"
             )
             dark_btn = gr.Button("Light / Dark", size="sm", scale=0, min_width=120)
 

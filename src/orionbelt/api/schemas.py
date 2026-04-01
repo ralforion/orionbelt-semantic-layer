@@ -432,3 +432,25 @@ class JoinGraphResponse(BaseModel):
 
     nodes: list[str] = Field(default_factory=list)
     edges: list[JoinEdge] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# OBSL graph / SPARQL schemas
+# ---------------------------------------------------------------------------
+
+
+class SPARQLRequest(BaseModel):
+    """Request body for POST /sparql."""
+
+    query: str = Field(description="SPARQL query (SELECT or ASK only)", max_length=100_000)
+
+
+class SPARQLResponse(BaseModel):
+    """Response body for POST /sparql."""
+
+    type: str = Field(description="Query type: select or ask")
+    variables: list[str] = Field(default_factory=list, description="Binding variable names")
+    results: list[dict[str, str | None]] = Field(
+        default_factory=list, description="Rows of variable bindings"
+    )
+    boolean: bool | None = Field(default=None, description="ASK query result")

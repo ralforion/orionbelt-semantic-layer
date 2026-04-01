@@ -1,0 +1,390 @@
+@prefix obsl: <https://ralforion.com/ns/obsl#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://ralforion.com/ns/model/sales> a owl:NamedIndividual,
+        owl:Ontology,
+        obsl:SemanticModel ;
+    owl:imports obsl: ;
+    obsl:hasDataObject <https://ralforion.com/ns/model/sales/data-object/customers>,
+        <https://ralforion.com/ns/model/sales/data-object/orders>,
+        <https://ralforion.com/ns/model/sales/data-object/products> ;
+    obsl:hasDimension <https://ralforion.com/ns/model/sales/dimension/customer-country>,
+        <https://ralforion.com/ns/model/sales/dimension/customer-segment>,
+        <https://ralforion.com/ns/model/sales/dimension/order-date>,
+        <https://ralforion.com/ns/model/sales/dimension/product-category>,
+        <https://ralforion.com/ns/model/sales/dimension/product-name> ;
+    obsl:hasMeasure <https://ralforion.com/ns/model/sales/measure/average-order-value>,
+        <https://ralforion.com/ns/model/sales/measure/grand-total-revenue>,
+        <https://ralforion.com/ns/model/sales/measure/order-count>,
+        <https://ralforion.com/ns/model/sales/measure/revenue>,
+        <https://ralforion.com/ns/model/sales/measure/us-revenue> ;
+    obsl:hasMetric <https://ralforion.com/ns/model/sales/metric/revenue-mom-change>,
+        <https://ralforion.com/ns/model/sales/metric/revenue-per-order>,
+        <https://ralforion.com/ns/model/sales/metric/revenue-share>,
+        <https://ralforion.com/ns/model/sales/metric/rolling-3m-revenue>,
+        <https://ralforion.com/ns/model/sales/metric/running-revenue>,
+        <https://ralforion.com/ns/model/sales/metric/us-revenue-share> .
+
+obsl:aggregation a owl:DatatypeProperty .
+
+obsl:allowFanOut a owl:DatatypeProperty .
+
+obsl:baseMeasure a owl:ObjectProperty ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Measure .
+
+obsl:cardinality a owl:DatatypeProperty .
+
+obsl:code a owl:DatatypeProperty .
+
+obsl:column a owl:ObjectProperty ;
+    rdfs:domain obsl:Dimension ;
+    rdfs:range obsl:Column .
+
+obsl:columnFrom a owl:ObjectProperty ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:Column .
+
+obsl:columnTo a owl:ObjectProperty ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:Column .
+
+obsl:dataObject a owl:ObjectProperty ;
+    rdfs:domain obsl:Dimension ;
+    rdfs:range obsl:DataObject .
+
+obsl:database a owl:DatatypeProperty .
+
+obsl:distinct a owl:DatatypeProperty .
+
+obsl:expressionSource a owl:DatatypeProperty .
+
+obsl:hasColumn a owl:ObjectProperty ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:Column .
+
+obsl:hasDataObject a owl:ObjectProperty ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:DataObject .
+
+obsl:hasDimension a owl:ObjectProperty ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Dimension .
+
+obsl:hasJoin a owl:ObjectProperty ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:Join .
+
+obsl:hasMeasure a owl:ObjectProperty ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Measure .
+
+obsl:hasMetric a owl:ObjectProperty ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Metric .
+
+obsl:joinTo a owl:ObjectProperty ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:DataObject .
+
+obsl:metricType a owl:DatatypeProperty .
+
+obsl:pathName a owl:DatatypeProperty .
+
+obsl:referencesMeasure a owl:ObjectProperty ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Measure .
+
+obsl:resultType a owl:DatatypeProperty .
+
+obsl:schema a owl:DatatypeProperty .
+
+obsl:secondary a owl:DatatypeProperty .
+
+obsl:sourceColumn a owl:ObjectProperty ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:Column .
+
+obsl:synonym a owl:DatatypeProperty .
+
+obsl:timeGrain a owl:DatatypeProperty .
+
+obsl:total a owl:DatatypeProperty .
+
+<https://ralforion.com/ns/model/sales/data-object/customers/column/customer-name> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Customer Name" ;
+    obsl:code "NAME" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/price> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Price" ;
+    obsl:code "PRICE" ;
+    obsl:resultType "float" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/quantity> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Quantity" ;
+    obsl:code "QUANTITY" ;
+    obsl:resultType "int" .
+
+<https://ralforion.com/ns/model/sales/dimension/customer-country> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Customer Country" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/customers/column/country> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/customers> ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/dimension/customer-segment> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Customer Segment" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/customers/column/segment> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/customers> ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/dimension/order-date> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Order Date" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/orders/column/order-date> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/orders> ;
+    obsl:resultType "date" ;
+    obsl:timeGrain "month" .
+
+<https://ralforion.com/ns/model/sales/dimension/product-category> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Product Category" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/products/column/category> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/products> ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/dimension/product-name> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Product Name" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/products/column/product-name> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/products> ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/join/orders-to-customers> a owl:NamedIndividual,
+        obsl:Join ;
+    rdfs:label "Orders → Customers" ;
+    obsl:cardinality "many-to-one" ;
+    obsl:columnFrom <https://ralforion.com/ns/model/sales/data-object/orders/column/order-customer-id> ;
+    obsl:columnTo <https://ralforion.com/ns/model/sales/data-object/customers/column/customer-id> ;
+    obsl:joinTo <https://ralforion.com/ns/model/sales/data-object/customers> .
+
+<https://ralforion.com/ns/model/sales/join/orders-to-products> a owl:NamedIndividual,
+        obsl:Join ;
+    rdfs:label "Orders → Products" ;
+    obsl:cardinality "many-to-one" ;
+    obsl:columnFrom <https://ralforion.com/ns/model/sales/data-object/orders/column/order-product-id> ;
+    obsl:columnTo <https://ralforion.com/ns/model/sales/data-object/products/column/product-id> ;
+    obsl:joinTo <https://ralforion.com/ns/model/sales/data-object/products> .
+
+<https://ralforion.com/ns/model/sales/measure/average-order-value> a owl:NamedIndividual,
+        obsl:Measure ;
+    rdfs:label "Average Order Value" ;
+    obsl:aggregation "avg" ;
+    obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
+    obsl:resultType "float" .
+
+<https://ralforion.com/ns/model/sales/metric/revenue-mom-change> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "Revenue MoM Change" ;
+    rdfs:comment "Month-over-month revenue change" ;
+    obsl:expressionSource "{[Revenue]}" ;
+    obsl:metricType "period_over_period" ;
+    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue> .
+
+<https://ralforion.com/ns/model/sales/metric/revenue-per-order> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "Revenue per Order" ;
+    obsl:expressionSource "{[Revenue]} / {[Order Count]}" ;
+    obsl:metricType "derived" ;
+    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/order-count>,
+        <https://ralforion.com/ns/model/sales/measure/revenue> .
+
+<https://ralforion.com/ns/model/sales/metric/revenue-share> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "Revenue Share" ;
+    obsl:expressionSource "{[Revenue]} / {[Grand Total Revenue]}" ;
+    obsl:metricType "derived" ;
+    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/grand-total-revenue>,
+        <https://ralforion.com/ns/model/sales/measure/revenue> .
+
+<https://ralforion.com/ns/model/sales/metric/rolling-3m-revenue> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "Rolling 3m Revenue" ;
+    rdfs:comment "3-month rolling sum of revenue" ;
+    obsl:baseMeasure <https://ralforion.com/ns/model/sales/measure/revenue> ;
+    obsl:metricType "cumulative" .
+
+<https://ralforion.com/ns/model/sales/metric/running-revenue> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "Running Revenue" ;
+    rdfs:comment "Running total of revenue over time" ;
+    obsl:baseMeasure <https://ralforion.com/ns/model/sales/measure/revenue> ;
+    obsl:metricType "cumulative" .
+
+<https://ralforion.com/ns/model/sales/metric/us-revenue-share> a owl:NamedIndividual,
+        obsl:Metric ;
+    rdfs:label "US Revenue Share" ;
+    obsl:expressionSource "{[US Revenue]} / {[Revenue]}" ;
+    obsl:metricType "derived" ;
+    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue>,
+        <https://ralforion.com/ns/model/sales/measure/us-revenue> .
+
+<https://ralforion.com/ns/model/sales/data-object/customers/column/country> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Country" ;
+    obsl:code "COUNTRY" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/customers/column/customer-id> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Customer ID" ;
+    obsl:code "CUSTOMER_ID" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/customers/column/segment> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Segment" ;
+    obsl:code "SEGMENT" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders> a owl:NamedIndividual,
+        obsl:DataObject ;
+    rdfs:label "Orders" ;
+    obsl:code "ORDERS" ;
+    obsl:database "WAREHOUSE" ;
+    obsl:hasColumn <https://ralforion.com/ns/model/sales/data-object/orders/column/order-customer-id>,
+        <https://ralforion.com/ns/model/sales/data-object/orders/column/order-date>,
+        <https://ralforion.com/ns/model/sales/data-object/orders/column/order-id>,
+        <https://ralforion.com/ns/model/sales/data-object/orders/column/order-product-id>,
+        <https://ralforion.com/ns/model/sales/data-object/orders/column/price>,
+        <https://ralforion.com/ns/model/sales/data-object/orders/column/quantity> ;
+    obsl:hasJoin <https://ralforion.com/ns/model/sales/join/orders-to-customers>,
+        <https://ralforion.com/ns/model/sales/join/orders-to-products> ;
+    obsl:schema "PUBLIC" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/order-customer-id> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Order Customer ID" ;
+    obsl:code "CUSTOMER_ID" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/order-date> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Order Date" ;
+    obsl:code "ORDER_DATE" ;
+    obsl:resultType "date" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/order-id> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Order ID" ;
+    obsl:code "ORDER_ID" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/orders/column/order-product-id> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Order Product ID" ;
+    obsl:code "PRODUCT_ID" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/products/column/category> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Category" ;
+    obsl:code "CATEGORY" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/products/column/product-id> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Product ID" ;
+    obsl:code "PRODUCT_ID" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/data-object/products/column/product-name> a owl:NamedIndividual,
+        obsl:Column ;
+    rdfs:label "Product Name" ;
+    obsl:code "NAME" ;
+    obsl:resultType "string" .
+
+<https://ralforion.com/ns/model/sales/measure/grand-total-revenue> a owl:NamedIndividual,
+        obsl:Measure ;
+    rdfs:label "Grand Total Revenue" ;
+    obsl:aggregation "sum" ;
+    obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
+    obsl:resultType "float" ;
+    obsl:total true .
+
+<https://ralforion.com/ns/model/sales/measure/order-count> a owl:NamedIndividual,
+        obsl:Measure ;
+    rdfs:label "Order Count" ;
+    obsl:aggregation "count" ;
+    obsl:resultType "int" ;
+    obsl:sourceColumn <https://ralforion.com/ns/model/sales/data-object/orders/column/order-id> .
+
+<https://ralforion.com/ns/model/sales/measure/us-revenue> a owl:NamedIndividual,
+        obsl:Measure ;
+    rdfs:label "US Revenue" ;
+    obsl:aggregation "sum" ;
+    obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
+    obsl:resultType "float" .
+
+<https://ralforion.com/ns/model/sales/data-object/customers> a owl:NamedIndividual,
+        obsl:DataObject ;
+    rdfs:label "Customers" ;
+    obsl:code "CUSTOMERS" ;
+    obsl:database "WAREHOUSE" ;
+    obsl:hasColumn <https://ralforion.com/ns/model/sales/data-object/customers/column/country>,
+        <https://ralforion.com/ns/model/sales/data-object/customers/column/customer-id>,
+        <https://ralforion.com/ns/model/sales/data-object/customers/column/customer-name>,
+        <https://ralforion.com/ns/model/sales/data-object/customers/column/segment> ;
+    obsl:schema "PUBLIC" ;
+    obsl:synonym "buyer",
+        "client",
+        "purchaser" .
+
+<https://ralforion.com/ns/model/sales/data-object/products> a owl:NamedIndividual,
+        obsl:DataObject ;
+    rdfs:label "Products" ;
+    obsl:code "PRODUCTS" ;
+    obsl:database "WAREHOUSE" ;
+    obsl:hasColumn <https://ralforion.com/ns/model/sales/data-object/products/column/category>,
+        <https://ralforion.com/ns/model/sales/data-object/products/column/product-id>,
+        <https://ralforion.com/ns/model/sales/data-object/products/column/product-name> ;
+    obsl:schema "PUBLIC" .
+
+obsl:SemanticModel a owl:Class ;
+    rdfs:label "Semantic Model" .
+
+obsl:Join a owl:Class ;
+    rdfs:label "Join" .
+
+<https://ralforion.com/ns/model/sales/measure/revenue> a owl:NamedIndividual,
+        obsl:Measure ;
+    rdfs:label "Revenue" ;
+    obsl:aggregation "sum" ;
+    obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
+    obsl:resultType "float" ;
+    obsl:synonym "income",
+        "sales",
+        "turnover" .
+
+obsl:DataObject a owl:Class ;
+    rdfs:label "Data Object" .
+
+obsl:Dimension a owl:Class ;
+    rdfs:label "Dimension" .
+
+obsl:Measure a owl:Class ;
+    rdfs:label "Measure" .
+
+obsl:Metric a owl:Class ;
+    rdfs:label "Metric" .
+
+obsl:Column a owl:Class ;
+    rdfs:label "Column" .
+

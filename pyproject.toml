@@ -52,6 +52,7 @@ dependencies = [
     "sqlparse>=0.5,<1.0",
     "sqlglot>=26.0,<27.0",
     "jsonschema>=4.23,<5.0",
+    "rdflib>=7.0,<8.0",
 ]
 
 [project.scripts]

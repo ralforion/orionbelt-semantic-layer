@@ -601,6 +601,70 @@ Return the join graph as nodes and edges.
 
 ---
 
+## OBSL Graph & SPARQL
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/graph`
+
+Return the OBSL-Core RDF graph as Turtle. The graph is generated at model load time.
+
+**Response (200):** `text/turtle`
+
+```turtle
+@prefix obsl: <https://ralforion.com/ns/obsl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://ralforion.com/ns/model/abc123> a obsl:SemanticModel ;
+    obsl:hasDataObject <.../data-object/orders> ;
+    obsl:hasMeasure <.../measure/revenue> .
+```
+
+**Error (404):** Session or model not found.
+
+### `POST /v1/sessions/{session_id}/models/{model_id}/sparql`
+
+Execute a read-only SPARQL query against the model's OBSL graph.
+
+**Request:**
+
+```json
+{
+  "query": "PREFIX obsl: <https://ralforion.com/ns/obsl#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?label WHERE { ?m a obsl:Measure ; rdfs:label ?label . }"
+}
+```
+
+Only `SELECT` and `ASK` queries are allowed. The `query` field has a maximum length of 100,000 characters.
+
+**Response (200):**
+
+```json
+{
+  "type": "select",
+  "variables": ["label"],
+  "results": [
+    {"label": "Revenue"},
+    {"label": "Order Count"}
+  ],
+  "boolean": null
+}
+```
+
+For `ASK` queries:
+
+```json
+{
+  "type": "ask",
+  "variables": [],
+  "results": [],
+  "boolean": true
+}
+```
+
+**Error (400):** Update query rejected or invalid SPARQL syntax.
+
+**Error (404):** Session or model not found.
+
+---
+
 ## Top-level Shortcuts
 
 These endpoints auto-resolve the session and model when only one exists. They mirror the session-scoped model discovery endpoints without requiring session/model IDs.
@@ -619,6 +683,8 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `GET /v1/explain/{name}` | `GET /v1/sessions/{id}/models/{mid}/explain/{name}` |
 | `POST /v1/find` | `POST /v1/sessions/{id}/models/{mid}/find` |
 | `GET /v1/join-graph` | `GET /v1/sessions/{id}/models/{mid}/join-graph` |
+| `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
+| `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |
 | `POST /v1/query/sql` | `POST /v1/sessions/{id}/query/sql` (auto-resolves model_id) |
 
 ---
