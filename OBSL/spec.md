@@ -7,7 +7,7 @@ OBSL, the OrionBelt Semantic Layer vocabulary, is an RDF-based exchange format f
 
 OBSL uses:
 - RDF for machine-readable structure
-- SKOS for labels, synonyms, and discoverability
+- RDFS for labels and descriptions
 - SHACL for optional validation
 - a custom `obsl:` namespace for semantic-layer meaning
 
@@ -38,7 +38,7 @@ OBSL-Core is not intended to represent:
 - measures
 - metrics
 - expression strings
-- SKOS labels and synonyms
+- labels, descriptions, and synonyms
 
 ### 3.2 OBSL-Full
 OBSL-Full adds:
@@ -58,7 +58,6 @@ Final prefixes:
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
 @prefix obsl: <https://ralforion.com/ns/obsl#> .
 ```
@@ -77,7 +76,7 @@ Required:
 
 Optional:
 - `rdfs:label`
-- `skos:definition`
+- `rdfs:comment`
 - `obsl:hasDataObject`
 - `obsl:hasDimension`
 - `obsl:hasMeasure`
@@ -91,7 +90,7 @@ Cardinality:
 Represents a logical or physical source relation.
 
 Required:
-- `skos:prefLabel`
+- `rdfs:label`
 - `obsl:code`
 - `obsl:database`
 - `obsl:schema`
@@ -100,11 +99,11 @@ Optional:
 - `obsl:physicalName`
 - `obsl:hasColumn`
 - `obsl:hasJoin`
-- `skos:altLabel`
-- `skos:definition`
+- `obsl:synonym`
+- `rdfs:comment`
 
 Cardinality:
-- exactly one `skos:prefLabel`
+- exactly one `rdfs:label`
 - exactly one `obsl:code`
 - exactly one `obsl:database`
 - exactly one `obsl:schema`
@@ -113,17 +112,17 @@ Cardinality:
 Represents a logical column within a data object.
 
 Required:
-- `skos:prefLabel`
+- `rdfs:label`
 - `obsl:code`
 - `obsl:resultType`
 
 Optional:
 - `obsl:belongsToDataObject`
-- `skos:altLabel`
-- `skos:definition`
+- `obsl:synonym`
+- `rdfs:comment`
 
 Cardinality:
-- exactly one `skos:prefLabel`
+- exactly one `rdfs:label`
 - exactly one `obsl:code`
 - exactly one `obsl:resultType`
 
@@ -151,18 +150,18 @@ Cardinality:
 Represents an analytic dimension.
 
 Required:
-- `skos:prefLabel`
+- `rdfs:label`
 - `obsl:dataObject`
 - `obsl:column`
 - `obsl:resultType`
 
 Optional:
 - `obsl:timeGrain`
-- `skos:altLabel`
-- `skos:definition`
+- `obsl:synonym`
+- `rdfs:comment`
 
 Cardinality:
-- exactly one `skos:prefLabel`
+- exactly one `rdfs:label`
 - exactly one `obsl:dataObject`
 - exactly one `obsl:column`
 - exactly one `obsl:resultType`
@@ -172,7 +171,7 @@ Cardinality:
 Represents an aggregated analytic field.
 
 Required:
-- `skos:prefLabel`
+- `rdfs:label`
 - `obsl:aggregation`
 - `obsl:resultType`
 
@@ -186,7 +185,7 @@ Optional:
 - `obsl:allowFanOut`
 
 Cardinality:
-- exactly one `skos:prefLabel`
+- exactly one `rdfs:label`
 - exactly one `obsl:aggregation`
 - exactly one `obsl:resultType`
 - either one or more `obsl:sourceColumn`, or exactly one `obsl:expressionSource`
@@ -199,7 +198,7 @@ Out of scope for Core:
 Represents a derived, cumulative, or period-over-period metric at core metadata level.
 
 Required:
-- `skos:prefLabel`
+- `rdfs:label`
 - `obsl:metricType`
 
 A metric MUST define at least one semantic source:
@@ -209,7 +208,7 @@ A metric MUST define at least one semantic source:
 Optional:
 - `obsl:referencesMeasure`
 Cardinality:
-- exactly one `skos:prefLabel`
+- exactly one `rdfs:label`
 - exactly one `obsl:metricType`
 - at least one of `obsl:expressionSource` or `obsl:baseMeasure`
 
@@ -318,13 +317,13 @@ Recommended practice:
 - `dimensions` -> `obsl:hasDimension`
 - `measures` -> `obsl:hasMeasure`
 - `metrics` -> `obsl:hasMetric`
-- `description` -> `skos:definition`
+- `description` -> `rdfs:comment`
 
 ### 10.2 Data Objects
 - `code` -> `obsl:code`
 - `database` -> `obsl:database`
 - `schema` -> `obsl:schema`
-- `synonyms[]` -> `skos:altLabel`
+- `synonyms[]` -> `obsl:synonym`
 
 ### 10.3 Columns
 - `code` -> `obsl:code`
@@ -418,6 +417,7 @@ Core datatype properties:
 - `obsl:cardinality`
 - `obsl:timeGrain`
 - `obsl:expressionSource`
+- `obsl:synonym`
 - `obsl:secondary`
 - `obsl:pathName`
 - `obsl:distinct`

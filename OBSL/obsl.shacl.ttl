@@ -1,18 +1,18 @@
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix obsl: <https://ralforion.com/ns/obsl#> .
 
 obsl:DataObjectShape a sh:NodeShape ;
   sh:targetClass obsl:DataObject ;
-  sh:property [ sh:path skos:prefLabel ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path obsl:code ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:property [ sh:path obsl:database ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:property [ sh:path obsl:schema ; sh:minCount 1 ; sh:maxCount 1 ] .
 
 obsl:ColumnShape a sh:NodeShape ;
   sh:targetClass obsl:Column ;
-  sh:property [ sh:path skos:prefLabel ; sh:minCount 1 ] ;
+  sh:property [ sh:path rdfs:label ; sh:minCount 1 ] ;
   sh:property [ sh:path obsl:code ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:property [ sh:path obsl:resultType ; sh:minCount 1 ; sh:maxCount 1 ] .
 
@@ -31,7 +31,7 @@ obsl:DimensionShape a sh:NodeShape ;
 
 obsl:MeasureShape a sh:NodeShape ;
   sh:targetClass obsl:Measure ;
-  sh:property [ sh:path skos:prefLabel ; sh:minCount 1 ] ;
+  sh:property [ sh:path rdfs:label ; sh:minCount 1 ] ;
   sh:property [ sh:path obsl:aggregation ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:property [ sh:path obsl:resultType ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:xone (
@@ -41,7 +41,7 @@ obsl:MeasureShape a sh:NodeShape ;
 
 obsl:MetricShape a sh:NodeShape ;
   sh:targetClass obsl:Metric ;
-  sh:property [ sh:path skos:prefLabel ; sh:minCount 1 ] ;
+  sh:property [ sh:path rdfs:label ; sh:minCount 1 ] ;
   sh:property [ sh:path obsl:metricType ; sh:minCount 1 ; sh:maxCount 1 ] ;
   sh:or (
     [ sh:property [ sh:path obsl:expressionSource ; sh:minCount 1 ] ]
