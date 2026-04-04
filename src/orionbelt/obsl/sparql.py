@@ -60,6 +60,14 @@ def execute_sparql(graph: Graph, query: str) -> SPARQLResult:
     if result_any.type == "ASK":
         return SPARQLResult(type="ask", boolean=bool(result_any.askAnswer))
 
+    if result_any.type == "CONSTRUCT":
+        raise ValueError("Only SELECT and ASK queries are supported; CONSTRUCT is not allowed")
+
+    if result_any.type not in ("SELECT",):
+        raise ValueError(
+            f"Only SELECT and ASK queries are supported; got {result_any.type}"
+        )
+
     # SELECT query
     variables: list[str] = [str(v) for v in (result_any.vars or [])]
     rows: list[dict[str, str | None]] = []

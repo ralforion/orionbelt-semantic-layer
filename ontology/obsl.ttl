@@ -1,0 +1,309 @@
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix vann:    <http://purl.org/vocab/vann/> .
+@prefix obsl:    <https://ralforion.com/ns/obsl#> .
+
+# =============================================================================
+# OBSL --- OrionBelt Semantic Layer Core Vocabulary 0.1
+#
+# A vocabulary for describing business-level semantic-layer concepts:
+# semantic models, data objects, columns, joins, dimensions, measures,
+# and metrics.  Complements OBA (OrionBelt Analytics Ontology) which
+# describes physical database schema metadata.
+#
+# Published at: https://ralforion.com/ns/obsl/
+# Namespace:    https://ralforion.com/ns/obsl#
+# =============================================================================
+
+obsl: a owl:Ontology ;
+    owl:versionIRI <https://ralforion.com/ns/obsl/0.1> ;
+    owl:versionInfo "0.1" ;
+    rdfs:label "OrionBelt Semantic Layer Core Vocabulary" ;
+    rdfs:comment "Business-level vocabulary for semantic models, dimensions, measures, and metrics.  Designed for OBML-based model authoring and graph-based semantic-layer tooling." ;
+    dcterms:creator "Ralf Becher" ;
+    dcterms:created "2026-04-01"^^xsd:date ;
+    dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
+    vann:preferredNamespacePrefix "obsl" ;
+    vann:preferredNamespaceUri "https://ralforion.com/ns/obsl#" .
+
+# =============================================================================
+# 1. CLASSES
+# =============================================================================
+
+obsl:SemanticModel a owl:Class ;
+    rdfs:label "Semantic Model" ;
+    rdfs:comment "Top-level container representing a complete semantic-layer model.  Groups data objects, dimensions, measures, and metrics." .
+
+obsl:DataObject a owl:Class ;
+    rdfs:label "Data Object" ;
+    rdfs:comment "A physical data source (table or view) referenced by the semantic model.  Identified by database, schema, and code." .
+
+obsl:Column a owl:Class ;
+    rdfs:label "Column" ;
+    rdfs:comment "A column within a data object.  Carries a physical code and an abstract result type." .
+
+obsl:Join a owl:Class ;
+    rdfs:label "Join" ;
+    rdfs:comment "A join path between two data objects, defined by source/target columns and cardinality." .
+
+obsl:Dimension a owl:Class ;
+    rdfs:label "Dimension" ;
+    rdfs:comment "A grouping or filtering attribute exposed to analysts.  References a column in a data object." .
+
+obsl:Measure a owl:Class ;
+    rdfs:label "Measure" ;
+    rdfs:comment "An aggregated numeric value derived from a source column or expression." .
+
+obsl:Metric a owl:Class ;
+    rdfs:label "Metric" ;
+    rdfs:comment "A derived, cumulative, or period-over-period calculation built on top of one or more measures." .
+
+obsl:CumulativeMetric a owl:Class ;
+    rdfs:subClassOf obsl:Metric ;
+    rdfs:label "Cumulative Metric" ;
+    rdfs:comment "A metric that applies a time-windowed aggregation over a base measure.  Supports running totals, rolling windows, and grain-to-date resets." .
+
+obsl:PeriodOverPeriodMetric a owl:Class ;
+    rdfs:subClassOf obsl:Metric ;
+    rdfs:label "Period-over-Period Metric" ;
+    rdfs:comment "A metric that compares a measure's value across consecutive time periods using a date spine.  Supports ratio, difference, previous value, and percent change." .
+
+# =============================================================================
+# 2. OBJECT PROPERTIES --- Model composition
+# =============================================================================
+
+obsl:hasDataObject a owl:ObjectProperty ;
+    rdfs:label "has data object" ;
+    rdfs:comment "Links a semantic model to one of its data objects." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:DataObject .
+
+obsl:hasDimension a owl:ObjectProperty ;
+    rdfs:label "has dimension" ;
+    rdfs:comment "Links a semantic model to one of its dimensions." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Dimension .
+
+obsl:hasMeasure a owl:ObjectProperty ;
+    rdfs:label "has measure" ;
+    rdfs:comment "Links a semantic model to one of its measures." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Measure .
+
+obsl:hasMetric a owl:ObjectProperty ;
+    rdfs:label "has metric" ;
+    rdfs:comment "Links a semantic model to one of its metrics." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:Metric .
+
+obsl:belongsToModel a owl:ObjectProperty ;
+    rdfs:label "belongs to model" ;
+    rdfs:comment "Inverse convenience link from any model element back to its parent semantic model." ;
+    rdfs:range obsl:SemanticModel .
+
+# =============================================================================
+# 3. OBJECT PROPERTIES --- Data object structure
+# =============================================================================
+
+obsl:hasColumn a owl:ObjectProperty ;
+    rdfs:label "has column" ;
+    rdfs:comment "Links a data object to one of its columns." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:Column .
+
+obsl:hasJoin a owl:ObjectProperty ;
+    rdfs:label "has join" ;
+    rdfs:comment "Links a data object to a join path originating from it." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:Join .
+
+obsl:joinTo a owl:ObjectProperty ;
+    rdfs:label "join to" ;
+    rdfs:comment "Target data object of a join path." ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:DataObject .
+
+obsl:columnFrom a owl:ObjectProperty ;
+    rdfs:label "column from" ;
+    rdfs:comment "Source column (in the originating data object) used in the join condition." ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:Column .
+
+obsl:columnTo a owl:ObjectProperty ;
+    rdfs:label "column to" ;
+    rdfs:comment "Target column (in the joined data object) used in the join condition." ;
+    rdfs:domain obsl:Join ;
+    rdfs:range obsl:Column .
+
+# =============================================================================
+# 4. OBJECT PROPERTIES --- Dimension, measure & metric references
+# =============================================================================
+
+obsl:dataObject a owl:ObjectProperty ;
+    rdfs:label "data object" ;
+    rdfs:comment "Data object that a dimension draws its values from." ;
+    rdfs:range obsl:DataObject .
+
+obsl:column a owl:ObjectProperty ;
+    rdfs:label "column" ;
+    rdfs:comment "Column that a dimension or measure is bound to." ;
+    rdfs:range obsl:Column .
+
+obsl:sourceColumn a owl:ObjectProperty ;
+    rdfs:label "source column" ;
+    rdfs:comment "Column that a measure aggregates over (when the measure is column-based, not expression-based)." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:Column .
+
+obsl:baseMeasure a owl:ObjectProperty ;
+    rdfs:label "base measure" ;
+    rdfs:comment "Measure that a cumulative metric is computed from (used when metricType is cumulative)." ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Measure .
+
+obsl:referencesMeasure a owl:ObjectProperty ;
+    rdfs:label "references measure" ;
+    rdfs:comment "Measure referenced in a metric's expression.  A metric may reference multiple measures." ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Measure .
+
+obsl:timeDimension a owl:ObjectProperty ;
+    rdfs:label "time dimension" ;
+    rdfs:comment "Dimension used as the time axis for cumulative or period-over-period metrics." ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Dimension .
+
+# =============================================================================
+# 5. DATATYPE PROPERTIES --- Identifiers & physical mapping
+# =============================================================================
+
+obsl:code a owl:DatatypeProperty ;
+    rdfs:label "code" ;
+    rdfs:comment "Machine-readable identifier or physical name (e.g., SQL column name, table name)." ;
+    rdfs:range xsd:string .
+
+obsl:database a owl:DatatypeProperty ;
+    rdfs:label "database" ;
+    rdfs:comment "Database or catalog name where the data object resides." ;
+    rdfs:range xsd:string .
+
+obsl:schema a owl:DatatypeProperty ;
+    rdfs:label "schema" ;
+    rdfs:comment "Database schema containing the data object." ;
+    rdfs:range xsd:string .
+
+obsl:physicalName a owl:DatatypeProperty ;
+    rdfs:label "physical name" ;
+    rdfs:comment "Physical SQL name when it differs from the code value." ;
+    rdfs:range xsd:string .
+
+# =============================================================================
+# 6. DATATYPE PROPERTIES --- Types, aggregation & expressions
+# =============================================================================
+
+obsl:resultType a owl:DatatypeProperty ;
+    rdfs:label "result type" ;
+    rdfs:comment "Abstract data type of the value: string, int, float, date, time, timestamp, boolean, json, time_tz, timestamp_tz." ;
+    rdfs:range xsd:string .
+
+obsl:aggregation a owl:DatatypeProperty ;
+    rdfs:label "aggregation" ;
+    rdfs:comment "Aggregation function applied to the measure: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg." ;
+    rdfs:range xsd:string .
+
+obsl:metricType a owl:DatatypeProperty ;
+    rdfs:label "metric type" ;
+    rdfs:comment "Kind of metric calculation: derived, cumulative, period_over_period." ;
+    rdfs:range xsd:string .
+
+obsl:cardinality a owl:DatatypeProperty ;
+    rdfs:label "cardinality" ;
+    rdfs:comment "Join cardinality between data objects: many-to-one, one-to-one, many-to-many." ;
+    rdfs:range xsd:string .
+
+obsl:timeGrain a owl:DatatypeProperty ;
+    rdfs:label "time grain" ;
+    rdfs:comment "Time granularity.  On dimensions: default grain.  On period-over-period metrics: comparison grain." ;
+    rdfs:range xsd:string .
+
+obsl:expressionSource a owl:DatatypeProperty ;
+    rdfs:label "expression source" ;
+    rdfs:comment "Expression string defining a calculated measure or metric.  Measures use {[DataObject].[Column]} syntax; metrics use {[Measure Name]} syntax." ;
+    rdfs:range xsd:string .
+
+# =============================================================================
+# 7. DATATYPE PROPERTIES --- Behavioral flags
+# =============================================================================
+
+obsl:secondary a owl:DatatypeProperty ;
+    rdfs:label "secondary" ;
+    rdfs:comment "When true, marks a join as a secondary join path (not the default path between two data objects)." ;
+    rdfs:range xsd:boolean .
+
+obsl:pathName a owl:DatatypeProperty ;
+    rdfs:label "path name" ;
+    rdfs:comment "Named join path used when a dimension reaches its data object through a non-default route." ;
+    rdfs:range xsd:string .
+
+obsl:synonym a owl:DatatypeProperty ;
+    rdfs:label "synonym" ;
+    rdfs:comment "Alternative name for an element, used for natural-language search and LLM disambiguation." ;
+    rdfs:range xsd:string .
+
+obsl:distinct a owl:DatatypeProperty ;
+    rdfs:label "distinct" ;
+    rdfs:comment "When true, the measure applies DISTINCT to its aggregation (e.g., COUNT DISTINCT)." ;
+    rdfs:range xsd:boolean .
+
+obsl:total a owl:DatatypeProperty ;
+    rdfs:label "total" ;
+    rdfs:comment "When true, the measure computes a grand total across all dimension values (ignores GROUP BY)." ;
+    rdfs:range xsd:boolean .
+
+obsl:allowFanOut a owl:DatatypeProperty ;
+    rdfs:label "allow fan-out" ;
+    rdfs:comment "When true, permits this measure to be queried along fan-out join paths (bypasses fan-trap prevention)." ;
+    rdfs:range xsd:boolean .
+
+# =============================================================================
+# 8. DATATYPE PROPERTIES --- Cumulative & period-over-period metrics
+# =============================================================================
+
+obsl:cumulativeType a owl:DatatypeProperty ;
+    rdfs:label "cumulative type" ;
+    rdfs:comment "Aggregation function for the cumulative window: sum, avg, min, max, count." ;
+    rdfs:domain obsl:CumulativeMetric ;
+    rdfs:range xsd:string .
+
+obsl:window a owl:DatatypeProperty ;
+    rdfs:label "window" ;
+    rdfs:comment "Rolling window size in periods for a cumulative metric.  Absent means unbounded (running total)." ;
+    rdfs:domain obsl:CumulativeMetric ;
+    rdfs:range xsd:integer .
+
+obsl:grainToDate a owl:DatatypeProperty ;
+    rdfs:label "grain to date" ;
+    rdfs:comment "Grain-to-date reset boundary for a cumulative metric: year, quarter, month, week.  Mutually exclusive with window." ;
+    rdfs:domain obsl:CumulativeMetric ;
+    rdfs:range xsd:string .
+
+obsl:offset a owl:DatatypeProperty ;
+    rdfs:label "offset" ;
+    rdfs:comment "Period offset for a period-over-period comparison (typically -1)." ;
+    rdfs:domain obsl:PeriodOverPeriodMetric ;
+    rdfs:range xsd:integer .
+
+obsl:offsetGrain a owl:DatatypeProperty ;
+    rdfs:label "offset grain" ;
+    rdfs:comment "Grain of the offset period: day, week, month, quarter, year." ;
+    rdfs:domain obsl:PeriodOverPeriodMetric ;
+    rdfs:range xsd:string .
+
+obsl:comparison a owl:DatatypeProperty ;
+    rdfs:label "comparison" ;
+    rdfs:comment "Comparison type for a period-over-period metric: ratio, difference, previousValue, percentChange." ;
+    rdfs:domain obsl:PeriodOverPeriodMetric ;
+    rdfs:range xsd:string .

@@ -98,6 +98,163 @@ class TestExporterJoins:
         assert (join, OBSL.columnTo, col_to) in g
 
 
+class TestExporterJoinOrderIndependence:
+    """Regression: join target columns must resolve regardless of data object order."""
+
+    LATE_TARGET_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID:
+        code: ORDER_ID
+        abstractType: string
+      Customer FK:
+        code: CUSTOMER_ID
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom:
+          - Customer FK
+        columnsTo:
+          - Customer ID
+
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID:
+        code: CUSTOMER_ID
+        abstractType: string
+
+dimensions:
+  Customer ID:
+    dataObject: Customers
+    column: Customer ID
+    resultType: string
+
+measures:
+  Order Count:
+    columns:
+      - dataObject: Orders
+        column: Order ID
+    resultType: int
+    aggregation: count
+"""
+
+    def _build_model(self) -> SemanticModel:
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, sm = TrackedLoader().load_string(self.LATE_TARGET_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid
+        return model
+
+    def test_column_to_present_when_target_declared_later(self) -> None:
+        model = self._build_model()
+        g = export_obsl(model, "t1")
+        join = URIRef(f"{BASE}t1/join/orders-to-customers")
+        col_to = URIRef(f"{BASE}t1/data-object/customers/column/customer-id")
+        assert (join, OBSL.columnTo, col_to) in g
+
+
+class TestExporterSecondaryJoinURIs:
+    """Regression: multiple joins to the same target must get distinct URIs."""
+
+    SECONDARY_JOIN_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID:
+        code: ORDER_ID
+        abstractType: string
+      Customer FK:
+        code: CUSTOMER_ID
+        abstractType: string
+      Shipping Customer FK:
+        code: SHIP_CUSTOMER_ID
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom:
+          - Customer FK
+        columnsTo:
+          - Customer ID
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom:
+          - Shipping Customer FK
+        columnsTo:
+          - Customer ID
+        secondary: true
+        pathName: ship_to
+
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID:
+        code: CUSTOMER_ID
+        abstractType: string
+
+dimensions:
+  Customer ID:
+    dataObject: Customers
+    column: Customer ID
+    resultType: string
+
+measures:
+  Order Count:
+    columns:
+      - dataObject: Orders
+        column: Order ID
+    resultType: int
+    aggregation: count
+"""
+
+    def _build_model(self) -> SemanticModel:
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, sm = TrackedLoader().load_string(self.SECONDARY_JOIN_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid
+        return model
+
+    def test_secondary_join_gets_distinct_uri(self) -> None:
+        model = self._build_model()
+        g = export_obsl(model, "t1")
+        primary = URIRef(f"{BASE}t1/join/orders-to-customers")
+        secondary = URIRef(f"{BASE}t1/join/orders-to-customers/ship-to")
+        assert (primary, RDF.type, OBSL.Join) in g
+        assert (secondary, RDF.type, OBSL.Join) in g
+
+    def test_secondary_join_columns_not_mixed(self) -> None:
+        model = self._build_model()
+        g = export_obsl(model, "t1")
+        primary = URIRef(f"{BASE}t1/join/orders-to-customers")
+        secondary = URIRef(f"{BASE}t1/join/orders-to-customers/ship-to")
+        primary_from = set(g.objects(primary, OBSL.columnFrom))
+        secondary_from = set(g.objects(secondary, OBSL.columnFrom))
+        assert len(primary_from) == 1
+        assert len(secondary_from) == 1
+        assert primary_from != secondary_from
+
+
 class TestExporterDimensions:
     def test_dimension_type(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
@@ -195,6 +352,50 @@ class TestExporterMetrics:
         uri = URIRef(f"{BASE}t1/metric/running-revenue")
         assert (uri, RDFS.comment, Literal("Running total of revenue over time")) in g
 
+    # -- Cumulative metric extended properties --------------------------------
+
+    def test_cumulative_metric_subtype(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/running-revenue")
+        assert (uri, RDF.type, OBSL.CumulativeMetric) in g
+
+    def test_cumulative_time_dimension(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/running-revenue")
+        dim = URIRef(f"{BASE}t1/dimension/order-date")
+        assert (uri, OBSL.timeDimension, dim) in g
+
+    def test_cumulative_type_property(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/running-revenue")
+        assert (uri, OBSL.cumulativeType, Literal("sum")) in g
+
+    def test_cumulative_window(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/rolling-3m-revenue")
+        assert (uri, OBSL.window, Literal(3)) in g
+
+    # -- Period-over-period metric extended properties ------------------------
+
+    def test_pop_metric_subtype(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/revenue-mom-change")
+        assert (uri, RDF.type, OBSL.PeriodOverPeriodMetric) in g
+
+    def test_pop_time_dimension(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/revenue-mom-change")
+        dim = URIRef(f"{BASE}t1/dimension/order-date")
+        assert (uri, OBSL.timeDimension, dim) in g
+
+    def test_pop_comparison_properties(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/metric/revenue-mom-change")
+        assert (uri, OBSL.timeGrain, Literal("month")) in g
+        assert (uri, OBSL.offset, Literal(-1)) in g
+        assert (uri, OBSL.offsetGrain, Literal("month")) in g
+        assert (uri, OBSL.comparison, Literal("difference")) in g
+
 
 class TestExporterSerialization:
     def test_turtle_output(self, sales_model: SemanticModel) -> None:
@@ -266,6 +467,17 @@ class TestSPARQL:
         g = export_obsl(sales_model, "t1")
         with pytest.raises(SPARQLUpdateError):
             execute_sparql(g, "DROP GRAPH <urn:g>")
+
+    def test_reject_construct(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        with pytest.raises(ValueError, match="CONSTRUCT is not allowed"):
+            execute_sparql(
+                g,
+                """
+                PREFIX obsl: <https://ralforion.com/ns/obsl#>
+                CONSTRUCT { ?s a obsl:Measure } WHERE { ?s a obsl:Measure }
+                """,
+            )
 
     def test_metrics_referencing_measure(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

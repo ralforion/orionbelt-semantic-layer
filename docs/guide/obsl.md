@@ -15,6 +15,8 @@ OBSL-Core 0.1 maps every OBML concept to RDF triples using standard vocabularies
 | Dimension | `obsl:Dimension` | `obsl:dataObject`, `obsl:column`, `obsl:resultType`, `obsl:timeGrain` |
 | Measure | `obsl:Measure` | `obsl:aggregation`, `obsl:resultType`, `obsl:sourceColumn`, `obsl:expressionSource` |
 | Metric | `obsl:Metric` | `obsl:metricType`, `obsl:expressionSource`, `obsl:baseMeasure`, `obsl:referencesMeasure` |
+| Cumulative Metric | `obsl:CumulativeMetric` | `obsl:timeDimension`, `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate` |
+| Period-over-Period Metric | `obsl:PeriodOverPeriodMetric` | `obsl:timeDimension`, `obsl:timeGrain`, `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison` |
 
 Labels use `rdfs:label`, synonyms use `obsl:synonym`, and descriptions use `rdfs:comment`.
 
@@ -172,6 +174,6 @@ The graph is removed when the model is unloaded (`DELETE /v1/sessions/{id}/model
 
 ## Specification
 
-The full OBSL-Core 0.1 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`OBSL/spec.md`](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/OBSL/spec.md).
+The full OBSL-Core 0.1 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/ontology/spec.md).
 
-The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`OBSL/`](https://github.com/ralfbecher/orionbelt-semantic-layer/tree/main/OBSL) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).
+The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`ontology/`](https://github.com/ralfbecher/orionbelt-semantic-layer/tree/main/ontology) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).

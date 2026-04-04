@@ -1,0 +1,380 @@
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix obsl: <https://ralforion.com/ns/obsl#> .
+
+# =============================================================================
+# OBSL SHACL Shapes 0.1
+#
+# Validation shapes for graphs conforming to the OBSL-Core vocabulary.
+# Each shape targets an OBSL class and enforces required properties,
+# cardinalities, and value types.
+#
+# Usage:
+#   pyshacl -s obsl.shacl.ttl -e obsl.ttl data.ttl
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Semantic Model --- top-level container
+# -----------------------------------------------------------------------------
+
+obsl:SemanticModelShape a sh:NodeShape ;
+    sh:targetClass obsl:SemanticModel ;
+    rdfs:label "OBSL Semantic Model Shape" ;
+    rdfs:comment "Validates that a semantic model may have data objects, dimensions, measures, and metrics." ;
+    sh:property [
+        sh:path obsl:hasDataObject ;
+        sh:class obsl:DataObject ;
+        sh:name "has data object"
+    ] ;
+    sh:property [
+        sh:path obsl:hasDimension ;
+        sh:class obsl:Dimension ;
+        sh:name "has dimension"
+    ] ;
+    sh:property [
+        sh:path obsl:hasMeasure ;
+        sh:class obsl:Measure ;
+        sh:name "has measure"
+    ] ;
+    sh:property [
+        sh:path obsl:hasMetric ;
+        sh:class obsl:Metric ;
+        sh:name "has metric"
+    ] .
+
+# -----------------------------------------------------------------------------
+# Data Object --- physical table or view referenced by the model
+# -----------------------------------------------------------------------------
+
+obsl:DataObjectShape a sh:NodeShape ;
+    sh:targetClass obsl:DataObject ;
+    rdfs:label "OBSL Data Object Shape" ;
+    rdfs:comment "Validates that every data object has a label, code, database, and schema." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "label" ;
+        sh:message "Every data object must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:code ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "code" ;
+        sh:message "Every data object must have exactly one obsl:code."
+    ] ;
+    sh:property [
+        sh:path obsl:database ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "database" ;
+        sh:message "Every data object must have exactly one obsl:database."
+    ] ;
+    sh:property [
+        sh:path obsl:schema ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "schema" ;
+        sh:message "Every data object must have exactly one obsl:schema."
+    ] .
+
+# -----------------------------------------------------------------------------
+# Column --- a column within a data object
+# -----------------------------------------------------------------------------
+
+obsl:ColumnShape a sh:NodeShape ;
+    sh:targetClass obsl:Column ;
+    rdfs:label "OBSL Column Shape" ;
+    rdfs:comment "Validates that every column has a label, code, and result type." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "label" ;
+        sh:message "Every column must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:code ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "code" ;
+        sh:message "Every column must have exactly one obsl:code."
+    ] ;
+    sh:property [
+        sh:path obsl:resultType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "result type" ;
+        sh:message "Every column must have exactly one obsl:resultType."
+    ] .
+
+# -----------------------------------------------------------------------------
+# Join --- a join path between two data objects
+# -----------------------------------------------------------------------------
+
+obsl:JoinShape a sh:NodeShape ;
+    sh:targetClass obsl:Join ;
+    rdfs:label "OBSL Join Shape" ;
+    rdfs:comment "Validates that every join specifies a target data object, cardinality, and column mappings." ;
+    sh:property [
+        sh:path obsl:joinTo ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:DataObject ;
+        sh:name "join to" ;
+        sh:message "Every join must reference exactly one target obsl:DataObject via obsl:joinTo."
+    ] ;
+    sh:property [
+        sh:path obsl:cardinality ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "cardinality" ;
+        sh:message "Every join must have exactly one obsl:cardinality."
+    ] ;
+    sh:property [
+        sh:path obsl:columnFrom ;
+        sh:minCount 1 ;
+        sh:class obsl:Column ;
+        sh:name "column from" ;
+        sh:message "Every join must specify at least one source column via obsl:columnFrom."
+    ] ;
+    sh:property [
+        sh:path obsl:columnTo ;
+        sh:minCount 1 ;
+        sh:class obsl:Column ;
+        sh:name "column to" ;
+        sh:message "Every join must specify at least one target column via obsl:columnTo."
+    ] .
+
+# -----------------------------------------------------------------------------
+# Dimension --- a grouping/filtering attribute for analysts
+# -----------------------------------------------------------------------------
+
+obsl:DimensionShape a sh:NodeShape ;
+    sh:targetClass obsl:Dimension ;
+    rdfs:label "OBSL Dimension Shape" ;
+    rdfs:comment "Validates that every dimension has a label, references a data object and column, and declares its result type." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "label" ;
+        sh:message "Every dimension must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:dataObject ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:DataObject ;
+        sh:name "data object" ;
+        sh:message "Every dimension must reference exactly one obsl:DataObject."
+    ] ;
+    sh:property [
+        sh:path obsl:column ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:Column ;
+        sh:name "column" ;
+        sh:message "Every dimension must reference exactly one obsl:Column."
+    ] ;
+    sh:property [
+        sh:path obsl:resultType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "result type" ;
+        sh:message "Every dimension must have exactly one obsl:resultType."
+    ] .
+
+# -----------------------------------------------------------------------------
+# Measure --- an aggregated numeric value
+# -----------------------------------------------------------------------------
+
+obsl:MeasureShape a sh:NodeShape ;
+    sh:targetClass obsl:Measure ;
+    rdfs:label "OBSL Measure Shape" ;
+    rdfs:comment "Validates that every measure has a label, aggregation, result type, and either a source column or expression." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "label" ;
+        sh:message "Every measure must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:aggregation ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "aggregation" ;
+        sh:message "Every measure must have exactly one obsl:aggregation (sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg)."
+    ] ;
+    sh:property [
+        sh:path obsl:resultType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "result type" ;
+        sh:message "Every measure must have exactly one obsl:resultType."
+    ] ;
+    sh:xone (
+        [ sh:property [
+            sh:path obsl:sourceColumn ;
+            sh:minCount 1 ;
+            sh:name "source column" ;
+            sh:message "Column-based measures must have at least one obsl:sourceColumn."
+        ] ; sh:property [
+            sh:path obsl:expressionSource ;
+            sh:maxCount 0 ;
+            sh:message "Column-based measures must not have obsl:expressionSource."
+        ] ]
+        [ sh:property [
+            sh:path obsl:expressionSource ;
+            sh:minCount 1 ;
+            sh:maxCount 1 ;
+            sh:name "expression source" ;
+            sh:message "Expression-based measures must have exactly one obsl:expressionSource."
+        ] ; sh:property [
+            sh:path obsl:sourceColumn ;
+            sh:maxCount 0 ;
+            sh:message "Expression-based measures must not have obsl:sourceColumn."
+        ] ]
+    ) .
+
+# -----------------------------------------------------------------------------
+# Metric --- a derived or cumulative calculation on measures
+# -----------------------------------------------------------------------------
+
+obsl:MetricShape a sh:NodeShape ;
+    sh:targetClass obsl:Metric ;
+    rdfs:label "OBSL Metric Shape" ;
+    rdfs:comment "Validates that every metric has a label, metric type, and either an expression or base measure." ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "label" ;
+        sh:message "Every metric must have exactly one rdfs:label."
+    ] ;
+    sh:property [
+        sh:path obsl:metricType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "metric type" ;
+        sh:message "Every metric must have exactly one obsl:metricType (derived, cumulative, period_over_period)."
+    ] ;
+    sh:or (
+        [ sh:property [
+            sh:path obsl:expressionSource ;
+            sh:minCount 1 ;
+            sh:name "expression source"
+        ] ]
+        [ sh:property [
+            sh:path obsl:baseMeasure ;
+            sh:minCount 1 ;
+            sh:name "base measure"
+        ] ]
+    ) .
+
+# -----------------------------------------------------------------------------
+# Cumulative Metric --- time-windowed aggregation over a base measure
+# -----------------------------------------------------------------------------
+
+obsl:CumulativeMetricShape a sh:NodeShape ;
+    sh:targetClass obsl:CumulativeMetric ;
+    rdfs:label "OBSL Cumulative Metric Shape" ;
+    rdfs:comment "Validates cumulative metrics that aggregate a base measure over a time window." ;
+    sh:property [
+        sh:path obsl:baseMeasure ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "base measure" ;
+        sh:message "Cumulative metrics must reference exactly one obsl:baseMeasure."
+    ] ;
+    sh:property [
+        sh:path obsl:timeDimension ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:Dimension ;
+        sh:name "time dimension" ;
+        sh:message "Cumulative metrics must specify exactly one obsl:timeDimension."
+    ] ;
+    sh:property [
+        sh:path obsl:cumulativeType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "cumulative type" ;
+        sh:message "Cumulative metrics must specify exactly one obsl:cumulativeType (sum, avg, min, max, count)."
+    ] ;
+    sh:property [
+        sh:path obsl:window ;
+        sh:maxCount 1 ;
+        sh:name "window" ;
+        sh:message "Cumulative metrics must have at most one obsl:window."
+    ] ;
+    sh:property [
+        sh:path obsl:grainToDate ;
+        sh:maxCount 1 ;
+        sh:name "grain to date" ;
+        sh:message "Cumulative metrics must have at most one obsl:grainToDate."
+    ] ;
+    sh:not [
+        sh:and (
+            [ sh:property [ sh:path obsl:window ; sh:minCount 1 ] ]
+            [ sh:property [ sh:path obsl:grainToDate ; sh:minCount 1 ] ]
+        ) ;
+        sh:message "obsl:window and obsl:grainToDate are mutually exclusive."
+    ] .
+
+# -----------------------------------------------------------------------------
+# Period-over-Period Metric --- compares values across time periods
+# -----------------------------------------------------------------------------
+
+obsl:PeriodOverPeriodMetricShape a sh:NodeShape ;
+    sh:targetClass obsl:PeriodOverPeriodMetric ;
+    rdfs:label "OBSL Period-over-Period Metric Shape" ;
+    rdfs:comment "Validates period-over-period metrics that compare values across consecutive time periods." ;
+    sh:property [
+        sh:path obsl:expressionSource ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "expression source" ;
+        sh:message "Period-over-period metrics must have exactly one obsl:expressionSource."
+    ] ;
+    sh:property [
+        sh:path obsl:timeDimension ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:Dimension ;
+        sh:name "time dimension" ;
+        sh:message "Period-over-period metrics must specify exactly one obsl:timeDimension."
+    ] ;
+    sh:property [
+        sh:path obsl:timeGrain ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "time grain" ;
+        sh:message "Period-over-period metrics must specify exactly one obsl:timeGrain."
+    ] ;
+    sh:property [
+        sh:path obsl:offset ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "offset" ;
+        sh:message "Period-over-period metrics must specify exactly one obsl:offset."
+    ] ;
+    sh:property [
+        sh:path obsl:offsetGrain ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "offset grain" ;
+        sh:message "Period-over-period metrics must specify exactly one obsl:offsetGrain."
+    ] ;
+    sh:property [
+        sh:path obsl:comparison ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "comparison" ;
+        sh:message "Period-over-period metrics must specify exactly one obsl:comparison (ratio, difference, previousValue, percentChange)."
+    ] .
+

@@ -12,7 +12,7 @@ import re
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import MetricType, SemanticModel
 
 # ---------------------------------------------------------------------------
 # OBSL namespace and URI helpers
@@ -39,8 +39,13 @@ def _column_uri(model_id: str, obj_name: str, col_name: str) -> URIRef:
     return URIRef(f"{BASE}{model_id}/data-object/{_slug(obj_name)}/column/{_slug(col_name)}")
 
 
-def _join_uri(model_id: str, obj_name: str, target_name: str) -> URIRef:
-    return URIRef(f"{BASE}{model_id}/join/{_slug(obj_name)}-to-{_slug(target_name)}")
+def _join_uri(
+    model_id: str, obj_name: str, target_name: str, path_name: str | None = None,
+) -> URIRef:
+    base = f"{BASE}{model_id}/join/{_slug(obj_name)}-to-{_slug(target_name)}"
+    if path_name:
+        base = f"{base}/{_slug(path_name)}"
+    return URIRef(base)
 
 
 def _dimension_uri(model_id: str, name: str) -> URIRef:
@@ -90,9 +95,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.Dimension, "Dimension"),
         (OBSL.Measure, "Measure"),
         (OBSL.Metric, "Metric"),
+        (OBSL.CumulativeMetric, "Cumulative Metric"),
+        (OBSL.PeriodOverPeriodMetric, "Period-over-Period Metric"),
     ):
         g.add((cls, RDF.type, OWL.Class))
         g.add((cls, RDFS.label, Literal(label)))
+    g.add((OBSL.CumulativeMetric, RDFS.subClassOf, OBSL.Metric))
+    g.add((OBSL.PeriodOverPeriodMetric, RDFS.subClassOf, OBSL.Metric))
 
     # Object properties with domain/range — connects classes in visualisation.
     for prop, domain, range_ in (
@@ -110,6 +119,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.sourceColumn, OBSL.Measure, OBSL.Column),
         (OBSL.baseMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.referencesMeasure, OBSL.Metric, OBSL.Measure),
+        (OBSL.timeDimension, OBSL.Metric, OBSL.Dimension),
     ):
         g.add((prop, RDF.type, OWL.ObjectProperty))
         g.add((prop, RDFS.domain, domain))
@@ -120,7 +130,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.code, OBSL.database, OBSL["schema"], OBSL.resultType, OBSL.aggregation,
         OBSL.metricType, OBSL.cardinality, OBSL.timeGrain, OBSL.expressionSource,
         OBSL.pathName, OBSL.synonym, OBSL.secondary, OBSL.distinct, OBSL.total,
-        OBSL.allowFanOut,
+        OBSL.allowFanOut, OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
+        OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
     ):
         g.add((prop, RDF.type, OWL.DatatypeProperty))
 
@@ -134,8 +145,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     if model.description:
         g.add((m_uri, RDFS.comment, Literal(model.description)))
 
-    # Pre-build column URI lookup (needed for joins, dimensions, measures)
+    # Pre-build column URI lookup for ALL data objects (needed for joins,
+    # dimensions, measures).  This must happen before any join export so that
+    # target columns are always resolvable regardless of declaration order.
     col_uris: dict[tuple[str, str], URIRef] = {}
+    for obj_name, obj in model.data_objects.items():
+        for col_name in obj.columns:
+            col_uris[(obj_name, col_name)] = _column_uri(model_id, obj_name, col_name)
 
     # -- Data Objects -------------------------------------------------------
     for obj_name, obj in model.data_objects.items():
@@ -155,8 +171,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
         # Columns
         for col_name, col in obj.columns.items():
-            col_uri = _column_uri(model_id, obj_name, col_name)
-            col_uris[(obj_name, col_name)] = col_uri
+            col_uri = col_uris[(obj_name, col_name)]
             g.add((obj_uri, OBSL.hasColumn, col_uri))
             g.add((col_uri, RDF.type, OBSL.Column))
             g.add((col_uri, RDF.type, OWL.NamedIndividual))
@@ -169,9 +184,9 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             for syn in col.synonyms:
                 g.add((col_uri, OBSL.synonym, Literal(syn)))
 
-        # Joins
+        # Joins — path_name disambiguates multiple joins to the same target
         for join in obj.joins:
-            join_uri = _join_uri(model_id, obj_name, join.join_to)
+            join_uri = _join_uri(model_id, obj_name, join.join_to, join.path_name)
             g.add((obj_uri, OBSL.hasJoin, join_uri))
             g.add((join_uri, RDF.type, OBSL.Join))
             g.add((join_uri, RDF.type, OWL.NamedIndividual))
@@ -274,6 +289,29 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         if met.measure:
             base_uri = _measure_uri(model_id, met.measure)
             g.add((met_uri, OBSL.baseMeasure, base_uri))
+
+        # Cumulative metric extended properties
+        if met.type == MetricType.CUMULATIVE:
+            g.add((met_uri, RDF.type, OBSL.CumulativeMetric))
+            if met.time_dimension:
+                g.add((met_uri, OBSL.timeDimension,
+                       _dimension_uri(model_id, met.time_dimension)))
+            g.add((met_uri, OBSL.cumulativeType, Literal(met.cumulative_type.value)))
+            if met.window is not None:
+                g.add((met_uri, OBSL.window, Literal(met.window)))
+            if met.grain_to_date is not None:
+                g.add((met_uri, OBSL.grainToDate, Literal(met.grain_to_date.value)))
+
+        # Period-over-period metric extended properties
+        if met.type == MetricType.PERIOD_OVER_PERIOD and met.period_over_period:
+            pop = met.period_over_period
+            g.add((met_uri, RDF.type, OBSL.PeriodOverPeriodMetric))
+            g.add((met_uri, OBSL.timeDimension,
+                   _dimension_uri(model_id, pop.time_dimension)))
+            g.add((met_uri, OBSL.timeGrain, Literal(pop.grain.value)))
+            g.add((met_uri, OBSL.offset, Literal(pop.offset)))
+            g.add((met_uri, OBSL.offsetGrain, Literal(pop.offset_grain.value)))
+            g.add((met_uri, OBSL.comparison, Literal(pop.comparison.value)))
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))

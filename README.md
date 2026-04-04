@@ -50,7 +50,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 - **[OSI](https://github.com/open-semantic-interchange/OSI) Interoperability** — Bidirectional conversion between OBML and the Open Semantic Interchange format via REST API (`/convert`) and Gradio UI, with validation for both directions
 - **DB-API 2.0 Drivers** — PEP 249 drivers for all 8 databases with transparent OBML-to-SQL compilation via REST API
 - **Arrow Flight SQL** — Embedded gRPC server for DBeaver, Tableau, and Power BI — single container, two ports (8080 + 8815)
-- **OBSL Graph & SPARQL** — Every loaded model is exported as an [OBSL-Core 0.1](OBSL/spec.md) RDF graph (Turtle) with read-only SPARQL querying via API
+- **OBSL Graph & SPARQL** — Every loaded model is exported as an [OBSL-Core 0.1](ontology/spec.md) RDF graph (Turtle) with read-only SPARQL querying via API
 - **Plugin Architecture** — Extensible dialect system with capability flags and registry
 
 ## Quick Start

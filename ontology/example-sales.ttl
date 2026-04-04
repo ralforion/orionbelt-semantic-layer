@@ -3,6 +3,17 @@
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
+# =============================================================================
+# OBSL Example --- Sales Semantic Model
+#
+# A complete OBSL-Core 0.1 example showing a 3-table sales model (customers,
+# orders, products) with dimensions, measures (column-based and expression-based),
+# and all three metric types: derived (obsl:Metric), cumulative
+# (obsl:CumulativeMetric), and period-over-period (obsl:PeriodOverPeriodMetric).
+#
+# Validate with:  pyshacl -s obsl.shacl.ttl -e obsl.ttl example-sales.ttl
+# =============================================================================
+
 <https://ralforion.com/ns/model/sales> a owl:NamedIndividual,
         owl:Ontology,
         obsl:SemanticModel ;
@@ -51,6 +62,10 @@ obsl:columnTo a owl:ObjectProperty ;
     rdfs:domain obsl:Join ;
     rdfs:range obsl:Column .
 
+obsl:comparison a owl:DatatypeProperty .
+
+obsl:cumulativeType a owl:DatatypeProperty .
+
 obsl:dataObject a owl:ObjectProperty ;
     rdfs:domain obsl:Dimension ;
     rdfs:range obsl:DataObject .
@@ -60,6 +75,8 @@ obsl:database a owl:DatatypeProperty .
 obsl:distinct a owl:DatatypeProperty .
 
 obsl:expressionSource a owl:DatatypeProperty .
+
+obsl:grainToDate a owl:DatatypeProperty .
 
 obsl:hasColumn a owl:ObjectProperty ;
     rdfs:domain obsl:DataObject ;
@@ -91,6 +108,10 @@ obsl:joinTo a owl:ObjectProperty ;
 
 obsl:metricType a owl:DatatypeProperty .
 
+obsl:offset a owl:DatatypeProperty .
+
+obsl:offsetGrain a owl:DatatypeProperty .
+
 obsl:pathName a owl:DatatypeProperty .
 
 obsl:referencesMeasure a owl:ObjectProperty ;
@@ -109,9 +130,15 @@ obsl:sourceColumn a owl:ObjectProperty ;
 
 obsl:synonym a owl:DatatypeProperty .
 
+obsl:timeDimension a owl:ObjectProperty ;
+    rdfs:domain obsl:Metric ;
+    rdfs:range obsl:Dimension .
+
 obsl:timeGrain a owl:DatatypeProperty .
 
 obsl:total a owl:DatatypeProperty .
+
+obsl:window a owl:DatatypeProperty .
 
 <https://ralforion.com/ns/model/sales/data-object/customers/column/customer-name> a owl:NamedIndividual,
         obsl:Column ;
@@ -144,14 +171,6 @@ obsl:total a owl:DatatypeProperty .
     obsl:column <https://ralforion.com/ns/model/sales/data-object/customers/column/segment> ;
     obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/customers> ;
     obsl:resultType "string" .
-
-<https://ralforion.com/ns/model/sales/dimension/order-date> a owl:NamedIndividual,
-        obsl:Dimension ;
-    rdfs:label "Order Date" ;
-    obsl:column <https://ralforion.com/ns/model/sales/data-object/orders/column/order-date> ;
-    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/orders> ;
-    obsl:resultType "date" ;
-    obsl:timeGrain "month" .
 
 <https://ralforion.com/ns/model/sales/dimension/product-category> a owl:NamedIndividual,
         obsl:Dimension ;
@@ -191,12 +210,18 @@ obsl:total a owl:DatatypeProperty .
     obsl:resultType "float" .
 
 <https://ralforion.com/ns/model/sales/metric/revenue-mom-change> a owl:NamedIndividual,
-        obsl:Metric ;
+        obsl:Metric,
+        obsl:PeriodOverPeriodMetric ;
     rdfs:label "Revenue MoM Change" ;
     rdfs:comment "Month-over-month revenue change" ;
+    obsl:comparison "difference" ;
     obsl:expressionSource "{[Revenue]}" ;
     obsl:metricType "period_over_period" ;
-    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue> .
+    obsl:offset -1 ;
+    obsl:offsetGrain "month" ;
+    obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue> ;
+    obsl:timeDimension <https://ralforion.com/ns/model/sales/dimension/order-date> ;
+    obsl:timeGrain "month" .
 
 <https://ralforion.com/ns/model/sales/metric/revenue-per-order> a owl:NamedIndividual,
         obsl:Metric ;
@@ -215,18 +240,25 @@ obsl:total a owl:DatatypeProperty .
         <https://ralforion.com/ns/model/sales/measure/revenue> .
 
 <https://ralforion.com/ns/model/sales/metric/rolling-3m-revenue> a owl:NamedIndividual,
+        obsl:CumulativeMetric,
         obsl:Metric ;
     rdfs:label "Rolling 3m Revenue" ;
     rdfs:comment "3-month rolling sum of revenue" ;
     obsl:baseMeasure <https://ralforion.com/ns/model/sales/measure/revenue> ;
-    obsl:metricType "cumulative" .
+    obsl:cumulativeType "sum" ;
+    obsl:metricType "cumulative" ;
+    obsl:timeDimension <https://ralforion.com/ns/model/sales/dimension/order-date> ;
+    obsl:window 3 .
 
 <https://ralforion.com/ns/model/sales/metric/running-revenue> a owl:NamedIndividual,
+        obsl:CumulativeMetric,
         obsl:Metric ;
     rdfs:label "Running Revenue" ;
     rdfs:comment "Running total of revenue over time" ;
     obsl:baseMeasure <https://ralforion.com/ns/model/sales/measure/revenue> ;
-    obsl:metricType "cumulative" .
+    obsl:cumulativeType "sum" ;
+    obsl:metricType "cumulative" ;
+    obsl:timeDimension <https://ralforion.com/ns/model/sales/dimension/order-date> .
 
 <https://ralforion.com/ns/model/sales/metric/us-revenue-share> a owl:NamedIndividual,
         obsl:Metric ;
@@ -235,6 +267,10 @@ obsl:total a owl:DatatypeProperty .
     obsl:metricType "derived" ;
     obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue>,
         <https://ralforion.com/ns/model/sales/measure/us-revenue> .
+
+obsl:PeriodOverPeriodMetric a owl:Class ;
+    rdfs:label "Period-over-Period Metric" ;
+    rdfs:subClassOf obsl:Metric .
 
 <https://ralforion.com/ns/model/sales/data-object/customers/column/country> a owl:NamedIndividual,
         obsl:Column ;
@@ -333,6 +369,10 @@ obsl:total a owl:DatatypeProperty .
     obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
     obsl:resultType "float" .
 
+obsl:CumulativeMetric a owl:Class ;
+    rdfs:label "Cumulative Metric" ;
+    rdfs:subClassOf obsl:Metric .
+
 <https://ralforion.com/ns/model/sales/data-object/customers> a owl:NamedIndividual,
         obsl:DataObject ;
     rdfs:label "Customers" ;
@@ -356,6 +396,14 @@ obsl:total a owl:DatatypeProperty .
         <https://ralforion.com/ns/model/sales/data-object/products/column/product-id>,
         <https://ralforion.com/ns/model/sales/data-object/products/column/product-name> ;
     obsl:schema "PUBLIC" .
+
+<https://ralforion.com/ns/model/sales/dimension/order-date> a owl:NamedIndividual,
+        obsl:Dimension ;
+    rdfs:label "Order Date" ;
+    obsl:column <https://ralforion.com/ns/model/sales/data-object/orders/column/order-date> ;
+    obsl:dataObject <https://ralforion.com/ns/model/sales/data-object/orders> ;
+    obsl:resultType "date" ;
+    obsl:timeGrain "month" .
 
 obsl:SemanticModel a owl:Class ;
     rdfs:label "Semantic Model" .

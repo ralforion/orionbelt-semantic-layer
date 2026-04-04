@@ -36,17 +36,17 @@ OBSL-Core is not intended to represent:
 - joins
 - dimensions
 - measures
-- metrics
+- metrics (derived, cumulative, period-over-period)
+- cumulative metric metadata (time dimension, window, grain-to-date)
+- period-over-period metric metadata (time dimension, offset, comparison)
 - expression strings
 - labels, descriptions, and synonyms
+- SHACL validation shapes
 
 ### 3.2 OBSL-Full
 OBSL-Full adds:
 - structured expression graphs
 - explicit filter graphs
-- cumulative metric metadata
-- period-over-period metadata
-- SHACL validation
 
 Only `OBSL-Core 0.1` is finalized by this document. `OBSL-Full` remains future work.
 
@@ -117,7 +117,6 @@ Required:
 - `obsl:resultType`
 
 Optional:
-- `obsl:belongsToDataObject`
 - `obsl:synonym`
 - `rdfs:comment`
 
@@ -125,6 +124,8 @@ Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:code`
 - exactly one `obsl:resultType`
+
+Note: Column membership in a data object is expressed via `obsl:hasColumn` on the parent `DataObject`, not via a reverse property on the column.
 
 ### 5.4 Join
 Represents a semantic join edge between data objects.
@@ -195,7 +196,7 @@ Out of scope for Core:
 - `obsl:hasExpression`
 
 ### 5.7 Metric
-Represents a derived, cumulative, or period-over-period metric at core metadata level.
+Represents a derived, cumulative, or period-over-period metric.
 
 Required:
 - `rdfs:label`
@@ -207,20 +208,36 @@ A metric MUST define at least one semantic source:
 
 Optional:
 - `obsl:referencesMeasure`
+- `obsl:synonym`
+- `rdfs:comment`
+
 Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:metricType`
 - at least one of `obsl:expressionSource` or `obsl:baseMeasure`
 
-Optional Core properties:
-- `obsl:referencesMeasure`
-
 Out of scope for Core:
 - `obsl:hasExpression`
-- `obsl:timeDimension`
+
+### 5.8 CumulativeMetric (subclass of Metric)
+Represents a metric that applies a time-windowed aggregation over a base measure.
+
+Additional required:
+- `obsl:baseMeasure`
+- `obsl:timeDimension` (class `obsl:Dimension`)
 - `obsl:cumulativeType`
-- `obsl:window`
-- `obsl:grainToDate`
+
+Optional:
+- `obsl:window` (rolling window size; absent means running total)
+- `obsl:grainToDate` (grain-to-date reset; mutually exclusive with `window`)
+
+### 5.9 PeriodOverPeriodMetric (subclass of Metric)
+Represents a metric that compares values across consecutive time periods.
+
+Additional required:
+- `obsl:expressionSource`
+- `obsl:timeDimension` (class `obsl:Dimension`)
+- `obsl:timeGrain`
 - `obsl:offset`
 - `obsl:offsetGrain`
 - `obsl:comparison`
@@ -292,6 +309,19 @@ If a system needs filter exchange, it should use a future `OBSL-Full` profile.
 - `previousValue`
 - `percentChange`
 
+### 8.7 Cumulative Aggregation Types
+- `sum`
+- `avg`
+- `min`
+- `max`
+- `count`
+
+### 8.8 Grain-to-Date Reset Grains
+- `year`
+- `quarter`
+- `month`
+- `week`
+
 ## 9. URI Strategy
 Final URI guidance:
 
@@ -358,11 +388,22 @@ Recommended practice:
 - `measure` -> `obsl:baseMeasure`
 - derived measure references parsed from `expression` -> `obsl:referencesMeasure`
 
+### 10.8 Cumulative Metrics (type: cumulative → rdf:type obsl:CumulativeMetric)
+- `timeDimension` -> `obsl:timeDimension`
+- `cumulativeType` -> `obsl:cumulativeType`
+- `window` -> `obsl:window`
+- `grainToDate` -> `obsl:grainToDate`
+
+### 10.9 Period-over-Period Metrics (type: period_over_period → rdf:type obsl:PeriodOverPeriodMetric)
+- `periodOverPeriod.timeDimension` -> `obsl:timeDimension`
+- `periodOverPeriod.grain` -> `obsl:timeGrain`
+- `periodOverPeriod.offset` -> `obsl:offset`
+- `periodOverPeriod.offsetGrain` -> `obsl:offsetGrain`
+- `periodOverPeriod.comparison` -> `obsl:comparison`
+
 Fields intentionally excluded from Core mapping:
 - measure filters
 - expression AST nodes
-- cumulative metric details
-- period-over-period detail fields
 
 ## 11. Validation
 SHACL MAY be used to enforce Core rules such as:
@@ -371,14 +412,21 @@ SHACL MAY be used to enforce Core rules such as:
 - join completeness
 - model-level structural consistency
 
-## 12. Versioning
+## 12. Self-Contained Graphs
+The exporter embeds OWL class and property declarations inside each exported graph.
+This is intentional: it allows the graph to be loaded and queried without requiring
+a separate import of the published `obsl.ttl` ontology.  These embedded declarations
+are derived from the canonical ontology and should not be treated as a second source
+of truth.
+
+## 13. Versioning
 OBSL-Core 0.1 keeps:
 - expression strings as normative
 - AST out of scope
 - planner details out of scope
 - vocabulary small and close to OBML
 
-## 13. Finalized Core Surface
+## 14. Finalized Core Surface
 The finalized `OBSL-Core 0.1` surface is:
 
 Classes:
@@ -389,6 +437,8 @@ Classes:
 - `obsl:Dimension`
 - `obsl:Measure`
 - `obsl:Metric`
+- `obsl:CumulativeMetric` (subclass of `obsl:Metric`)
+- `obsl:PeriodOverPeriodMetric` (subclass of `obsl:Metric`)
 
 Core object properties:
 - `obsl:hasDataObject`
@@ -405,6 +455,7 @@ Core object properties:
 - `obsl:sourceColumn`
 - `obsl:baseMeasure`
 - `obsl:referencesMeasure`
+- `obsl:timeDimension`
 
 Core datatype properties:
 - `obsl:code`
@@ -423,3 +474,9 @@ Core datatype properties:
 - `obsl:distinct`
 - `obsl:total`
 - `obsl:allowFanOut`
+- `obsl:cumulativeType`
+- `obsl:window`
+- `obsl:grainToDate`
+- `obsl:offset`
+- `obsl:offsetGrain`
+- `obsl:comparison`
