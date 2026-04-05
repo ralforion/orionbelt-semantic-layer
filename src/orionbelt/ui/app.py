@@ -243,6 +243,19 @@ _DETECT_THEME_JS = """
 }
 """
 
+# JS: download OBSL Turtle as a .ttl file
+_DOWNLOAD_TTL_JS = """(turtle) => {
+    if (!turtle) { alert('No OBSL graph available. Load a model first.'); return; }
+    var blob = new Blob([turtle], {type: 'text/turtle'});
+    var a = document.createElement('a');
+    a.download = 'obsl-model.ttl';
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+}"""
+
 # JS: download the raw Mermaid text as a .md file
 _DOWNLOAD_MD_JS = """(raw) => {
     if (!raw) { alert('No diagram available. Generate the ER diagram first.'); return; }
@@ -590,6 +603,53 @@ def _export_to_osi(obml_yaml: str, api_base: str) -> tuple[str, str]:
     )
     output: str = data.get("output_yaml", "")
     return status + "\nCopy the OSI YAML output below.\n\n" + output, ""
+
+
+def _fetch_obsl_turtle(
+    model_yaml: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[str, dict[str, str] | None, dict[str, str] | None]:
+    """Fetch the OBSL-Core Turtle graph for the current model.
+
+    Returns ``(turtle_str, session_state, model_state)``.  Falls back to
+    local generation when the API is unreachable.
+    """
+    if not model_yaml or not model_yaml.strip():
+        return "", session_state, model_state
+
+    try:
+        client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+            model_yaml, api_url, session_state, model_state
+        )
+        resp = client.get(f"/v1/sessions/{session_id}/models/{model_id}/graph")
+        if resp.status_code == 404:
+            client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+                model_yaml, api_url, None, None
+            )
+            resp = client.get(f"/v1/sessions/{session_id}/models/{model_id}/graph")
+        resp.raise_for_status()
+        return resp.text, session_state, model_state
+    except _ModelValidationError:
+        return "", session_state, model_state
+    except httpx.ConnectError:
+        # API not available — fall back to local generation
+        try:
+            from orionbelt.obsl.exporter import export_obsl
+            from orionbelt.parser.loader import TrackedLoader
+            from orionbelt.parser.resolver import ReferenceResolver
+
+            raw, sm = TrackedLoader().load_string(model_yaml)
+            model, result = ReferenceResolver().resolve(raw, sm)
+            if not result.valid:
+                return "", session_state, model_state
+            g = export_obsl(model, "model")
+            return g.serialize(format="turtle"), session_state, model_state
+        except Exception:
+            return "", session_state, model_state
+    except Exception:
+        return "", session_state, model_state
 
 
 def _format_sql(sql: str) -> str:
@@ -1167,6 +1227,9 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         visible=not single_model,
                     )
                     export_osi_btn = gr.Button("Export to OSI", size="sm", scale=0, min_width=120)
+                    download_obsl_btn = gr.Button(
+                        "\u2193 OBSL", size="sm", scale=0, min_width=80
+                    )
 
                 with gr.Row(equal_height=True):
                     model_label = (
@@ -1280,6 +1343,18 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     fn=_export_to_osi,
                     inputs=[model_input, api_url],
                     outputs=[sql_output, explain_output],
+                )
+
+                # OBSL graph download: fetch Turtle → JS triggers file download
+                obsl_turtle_state = gr.Textbox(visible=False)
+                download_obsl_btn.click(
+                    fn=_fetch_obsl_turtle,
+                    inputs=[model_input, api_url, session_state, model_state],
+                    outputs=[obsl_turtle_state, session_state, model_state],
+                ).then(
+                    fn=None,
+                    inputs=[obsl_turtle_state],
+                    js=_DOWNLOAD_TTL_JS,
                 )
 
             with gr.Tab("ER Diagram", id=1) as er_tab:
