@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
 from orionbelt.models.semantic import MetricType, SemanticModel
@@ -61,6 +61,28 @@ def _metric_uri(model_id: str, name: str) -> URIRef:
 
 
 # ---------------------------------------------------------------------------
+# RDF helpers
+# ---------------------------------------------------------------------------
+
+
+def _rdf_list(g: Graph, items: list[URIRef]) -> BNode:
+    """Build an RDF collection (linked list) and return its head node."""
+    if not items:
+        return RDF.nil  # type: ignore[return-value]
+    head = BNode()
+    node = head
+    for i, item in enumerate(items):
+        g.add((node, RDF.first, item))
+        if i < len(items) - 1:
+            nxt = BNode()
+            g.add((node, RDF.rest, nxt))
+            node = nxt
+        else:
+            g.add((node, RDF.rest, RDF.nil))
+    return head
+
+
+# ---------------------------------------------------------------------------
 # Exporter
 # ---------------------------------------------------------------------------
 
@@ -87,6 +109,15 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     g.bind("xsd", XSD)
 
     # Embed obsl: class declarations so the graph is self-contained.
+    core_classes = (
+        OBSL.SemanticModel,
+        OBSL.DataObject,
+        OBSL.Column,
+        OBSL.Join,
+        OBSL.Dimension,
+        OBSL.Measure,
+        OBSL.Metric,
+    )
     for cls, label in (
         (OBSL.SemanticModel, "Semantic Model"),
         (OBSL.DataObject, "Data Object"),
@@ -102,6 +133,33 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         g.add((cls, RDFS.label, Literal(label)))
     g.add((OBSL.CumulativeMetric, RDFS.subClassOf, OBSL.Metric))
     g.add((OBSL.PeriodOverPeriodMetric, RDFS.subClassOf, OBSL.Metric))
+
+    # -- OWL axioms ------------------------------------------------------------
+
+    # Class disjointness — core classes are mutually exclusive.
+    disjoint_bnode = BNode()
+    g.add((disjoint_bnode, RDF.type, OWL.AllDisjointClasses))
+    member_list = _rdf_list(g, list(core_classes))
+    g.add((disjoint_bnode, OWL.members, member_list))
+
+    # Metric subtypes are disjoint with each other.
+    g.add((OBSL.CumulativeMetric, OWL.disjointWith, OBSL.PeriodOverPeriodMetric))
+
+    # Functional properties — at most one value.
+    for prop in (
+        OBSL.joinTo,
+        OBSL.code, OBSL.database, OBSL["schema"], OBSL.physicalName,
+        OBSL.resultType, OBSL.aggregation, OBSL.metricType, OBSL.cardinality,
+        OBSL.expressionSource,
+        OBSL.dataObject, OBSL.column,
+        OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
+        OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
+    ):
+        g.add((prop, RDF.type, OWL.FunctionalProperty))
+
+    # Inverse property — belongsToModel ↔ hasDataObject.
+    g.add((OBSL.belongsToModel, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.belongsToModel, OWL.inverseOf, OBSL.hasDataObject))
 
     # Object properties with domain/range — connects classes in visualisation.
     for prop, domain, range_ in (

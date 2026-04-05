@@ -405,28 +405,67 @@ Fields intentionally excluded from Core mapping:
 - measure filters
 - expression AST nodes
 
-## 11. Validation
+## 11. OWL Axioms
+OBSL-Core 0.1 includes a small set of OWL axioms that formalize structural invariants at the ontology level, complementing SHACL validation.
+
+### 11.1 Class Disjointness
+The seven core classes are declared mutually exclusive via `owl:AllDisjointClasses`:
+
+```ttl
+[] a owl:AllDisjointClasses ;
+   owl:members ( obsl:SemanticModel obsl:DataObject obsl:Column
+                 obsl:Join obsl:Dimension obsl:Measure obsl:Metric ) .
+```
+
+A resource cannot be typed as more than one of these classes. Additionally, the two metric subtypes are disjoint:
+
+```ttl
+obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .
+```
+
+### 11.2 Functional Properties
+Properties constrained to at most one value are declared `owl:FunctionalProperty`:
+
+- Object properties: `obsl:joinTo`, `obsl:dataObject`, `obsl:column`
+- Identifier properties: `obsl:code`, `obsl:database`, `obsl:schema`, `obsl:physicalName`
+- Type properties: `obsl:resultType`, `obsl:aggregation`, `obsl:metricType`, `obsl:cardinality`
+- Expression: `obsl:expressionSource`
+- Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`
+- Period-over-period: `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison`
+
+This mirrors the `sh:maxCount 1` constraints in SHACL but at the ontology level, enabling OWL-aware tools to enforce cardinality without loading the SHACL shapes.
+
+### 11.3 Inverse Properties
+`obsl:belongsToModel` is declared as the inverse of `obsl:hasDataObject`:
+
+```ttl
+obsl:belongsToModel owl:inverseOf obsl:hasDataObject .
+```
+
+This enables bidirectional traversal (DataObject → SemanticModel) when using a reasoner. The exporter embeds these axioms in each exported graph so they are available without importing the published ontology.
+
+## 12. Validation
 SHACL MAY be used to enforce Core rules such as:
 - required properties
 - mutually exclusive source forms
 - join completeness
 - model-level structural consistency
 
-## 12. Self-Contained Graphs
+## 13. Self-Contained Graphs
 The exporter embeds OWL class and property declarations inside each exported graph.
 This is intentional: it allows the graph to be loaded and queried without requiring
 a separate import of the published `obsl.ttl` ontology.  These embedded declarations
 are derived from the canonical ontology and should not be treated as a second source
 of truth.
 
-## 13. Versioning
+## 14. Versioning
 OBSL-Core 0.1 keeps:
 - expression strings as normative
 - AST out of scope
 - planner details out of scope
 - vocabulary small and close to OBML
 
-## 14. Finalized Core Surface
+## 15. Finalized Core Surface
 The finalized `OBSL-Core 0.1` surface is:
 
 Classes:
@@ -447,36 +486,43 @@ Core object properties:
 - `obsl:hasMetric`
 - `obsl:hasColumn`
 - `obsl:hasJoin`
-- `obsl:joinTo`
+- `obsl:joinTo` (functional)
 - `obsl:columnFrom`
 - `obsl:columnTo`
-- `obsl:dataObject`
-- `obsl:column`
+- `obsl:dataObject` (functional)
+- `obsl:column` (functional)
 - `obsl:sourceColumn`
 - `obsl:baseMeasure`
 - `obsl:referencesMeasure`
 - `obsl:timeDimension`
+- `obsl:belongsToModel` (inverse of `obsl:hasDataObject`)
 
 Core datatype properties:
-- `obsl:code`
-- `obsl:database`
-- `obsl:schema`
-- `obsl:physicalName`
-- `obsl:resultType`
-- `obsl:aggregation`
-- `obsl:metricType`
-- `obsl:cardinality`
+- `obsl:code` (functional)
+- `obsl:database` (functional)
+- `obsl:schema` (functional)
+- `obsl:physicalName` (functional)
+- `obsl:resultType` (functional)
+- `obsl:aggregation` (functional)
+- `obsl:metricType` (functional)
+- `obsl:cardinality` (functional)
 - `obsl:timeGrain`
-- `obsl:expressionSource`
+- `obsl:expressionSource` (functional)
 - `obsl:synonym`
 - `obsl:secondary`
 - `obsl:pathName`
 - `obsl:distinct`
 - `obsl:total`
 - `obsl:allowFanOut`
-- `obsl:cumulativeType`
-- `obsl:window`
-- `obsl:grainToDate`
-- `obsl:offset`
-- `obsl:offsetGrain`
-- `obsl:comparison`
+- `obsl:cumulativeType` (functional)
+- `obsl:window` (functional)
+- `obsl:grainToDate` (functional)
+- `obsl:offset` (functional)
+- `obsl:offsetGrain` (functional)
+- `obsl:comparison` (functional)
+
+Axioms:
+- `owl:AllDisjointClasses` over the 7 core classes
+- `obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric`
+- 18 `owl:FunctionalProperty` declarations (see section 11.2)
+- `obsl:belongsToModel owl:inverseOf obsl:hasDataObject`

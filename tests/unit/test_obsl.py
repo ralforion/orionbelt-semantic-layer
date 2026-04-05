@@ -397,6 +397,55 @@ class TestExporterMetrics:
         assert (uri, OBSL.comparison, Literal("difference")) in g
 
 
+class TestExporterAxioms:
+    """OWL axioms embedded in exported graphs."""
+
+    def test_all_disjoint_classes(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        from rdflib.namespace import OWL as OWL_NS
+
+        disjoint_nodes = list(g.subjects(RDF.type, OWL_NS.AllDisjointClasses))
+        assert len(disjoint_nodes) == 1
+        # Collect the members list
+        members_head = g.value(disjoint_nodes[0], OWL_NS.members)
+        assert members_head is not None
+        members = list(g.items(members_head))
+        expected = {
+            OBSL.SemanticModel, OBSL.DataObject, OBSL.Column,
+            OBSL.Join, OBSL.Dimension, OBSL.Measure, OBSL.Metric,
+        }
+        assert set(members) == expected
+
+    def test_metric_subclass_disjointness(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        from rdflib.namespace import OWL as OWL_NS
+
+        assert (OBSL.CumulativeMetric, OWL_NS.disjointWith, OBSL.PeriodOverPeriodMetric) in g
+
+    def test_functional_properties(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        from rdflib.namespace import OWL as OWL_NS
+
+        functional_props = {
+            OBSL.joinTo, OBSL.code, OBSL.database, OBSL["schema"],
+            OBSL.resultType, OBSL.aggregation, OBSL.metricType,
+            OBSL.cardinality, OBSL.expressionSource,
+            OBSL.dataObject, OBSL.column,
+            OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
+            OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
+        }
+        for prop in functional_props:
+            assert (prop, RDF.type, OWL_NS.FunctionalProperty) in g, (
+                f"{prop} should be declared owl:FunctionalProperty"
+            )
+
+    def test_inverse_property(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        from rdflib.namespace import OWL as OWL_NS
+
+        assert (OBSL.belongsToModel, OWL_NS.inverseOf, OBSL.hasDataObject) in g
+
+
 class TestExporterSerialization:
     def test_turtle_output(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

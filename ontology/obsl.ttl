@@ -307,3 +307,62 @@ obsl:comparison a owl:DatatypeProperty ;
     rdfs:comment "Comparison type for a period-over-period metric: ratio, difference, previousValue, percentChange." ;
     rdfs:domain obsl:PeriodOverPeriodMetric ;
     rdfs:range xsd:string .
+
+# =============================================================================
+# 9. OWL AXIOMS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 9.1 Class disjointness — core classes are mutually exclusive
+# -----------------------------------------------------------------------------
+
+[] a owl:AllDisjointClasses ;
+    owl:members ( obsl:SemanticModel
+                  obsl:DataObject
+                  obsl:Column
+                  obsl:Join
+                  obsl:Dimension
+                  obsl:Measure
+                  obsl:Metric ) .
+
+# Metric subtypes are disjoint with each other.
+obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .
+
+# -----------------------------------------------------------------------------
+# 9.2 Functional properties — at most one value
+# -----------------------------------------------------------------------------
+# Properties that SHACL constrains to sh:maxCount 1 are also declared
+# owl:FunctionalProperty so that OWL-aware tools can enforce cardinality
+# without loading the SHACL shapes.
+
+obsl:joinTo a owl:FunctionalProperty .
+
+obsl:code a owl:FunctionalProperty .
+obsl:database a owl:FunctionalProperty .
+obsl:schema a owl:FunctionalProperty .
+obsl:physicalName a owl:FunctionalProperty .
+obsl:resultType a owl:FunctionalProperty .
+obsl:aggregation a owl:FunctionalProperty .
+obsl:metricType a owl:FunctionalProperty .
+obsl:cardinality a owl:FunctionalProperty .
+obsl:expressionSource a owl:FunctionalProperty .
+
+obsl:dataObject a owl:FunctionalProperty .
+obsl:column a owl:FunctionalProperty .
+
+obsl:cumulativeType a owl:FunctionalProperty .
+obsl:window a owl:FunctionalProperty .
+obsl:grainToDate a owl:FunctionalProperty .
+obsl:offset a owl:FunctionalProperty .
+obsl:offsetGrain a owl:FunctionalProperty .
+obsl:comparison a owl:FunctionalProperty .
+
+# -----------------------------------------------------------------------------
+# 9.3 Inverse properties
+# -----------------------------------------------------------------------------
+# belongsToModel is the inverse of the four has* composition properties.
+# Since OWL inverseOf is per-property, belongsToModel is declared inverse
+# of hasDataObject; the other has* links share the same semantic intent
+# but would require a union-property pattern to formalize further.
+
+obsl:belongsToModel owl:inverseOf obsl:hasDataObject .

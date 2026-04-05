@@ -1,8 +1,3 @@
-@prefix obsl: <https://ralforion.com/ns/obsl#> .
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
 # =============================================================================
 # OBSL Example --- Sales Semantic Model
 #
@@ -13,6 +8,12 @@
 #
 # Validate with:  pyshacl -s obsl.shacl.ttl -e obsl.ttl example-sales.ttl
 # =============================================================================
+
+@prefix obsl: <https://ralforion.com/ns/obsl#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 <https://ralforion.com/ns/model/sales> a owl:NamedIndividual,
         owl:Ontology,
@@ -38,7 +39,8 @@
         <https://ralforion.com/ns/model/sales/metric/running-revenue>,
         <https://ralforion.com/ns/model/sales/metric/us-revenue-share> .
 
-obsl:aggregation a owl:DatatypeProperty .
+obsl:aggregation a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 obsl:allowFanOut a owl:DatatypeProperty .
 
@@ -46,11 +48,17 @@ obsl:baseMeasure a owl:ObjectProperty ;
     rdfs:domain obsl:Metric ;
     rdfs:range obsl:Measure .
 
-obsl:cardinality a owl:DatatypeProperty .
+obsl:belongsToModel a owl:ObjectProperty ;
+    owl:inverseOf obsl:hasDataObject .
 
-obsl:code a owl:DatatypeProperty .
+obsl:cardinality a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:column a owl:ObjectProperty ;
+obsl:code a owl:DatatypeProperty,
+        owl:FunctionalProperty .
+
+obsl:column a owl:FunctionalProperty,
+        owl:ObjectProperty ;
     rdfs:domain obsl:Dimension ;
     rdfs:range obsl:Column .
 
@@ -62,29 +70,31 @@ obsl:columnTo a owl:ObjectProperty ;
     rdfs:domain obsl:Join ;
     rdfs:range obsl:Column .
 
-obsl:comparison a owl:DatatypeProperty .
+obsl:comparison a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:cumulativeType a owl:DatatypeProperty .
+obsl:cumulativeType a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:dataObject a owl:ObjectProperty ;
+obsl:dataObject a owl:FunctionalProperty,
+        owl:ObjectProperty ;
     rdfs:domain obsl:Dimension ;
     rdfs:range obsl:DataObject .
 
-obsl:database a owl:DatatypeProperty .
+obsl:database a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 obsl:distinct a owl:DatatypeProperty .
 
-obsl:expressionSource a owl:DatatypeProperty .
+obsl:expressionSource a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:grainToDate a owl:DatatypeProperty .
+obsl:grainToDate a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 obsl:hasColumn a owl:ObjectProperty ;
     rdfs:domain obsl:DataObject ;
     rdfs:range obsl:Column .
-
-obsl:hasDataObject a owl:ObjectProperty ;
-    rdfs:domain obsl:SemanticModel ;
-    rdfs:range obsl:DataObject .
 
 obsl:hasDimension a owl:ObjectProperty ;
     rdfs:domain obsl:SemanticModel ;
@@ -102,25 +112,33 @@ obsl:hasMetric a owl:ObjectProperty ;
     rdfs:domain obsl:SemanticModel ;
     rdfs:range obsl:Metric .
 
-obsl:joinTo a owl:ObjectProperty ;
+obsl:joinTo a owl:FunctionalProperty,
+        owl:ObjectProperty ;
     rdfs:domain obsl:Join ;
     rdfs:range obsl:DataObject .
 
-obsl:metricType a owl:DatatypeProperty .
+obsl:metricType a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:offset a owl:DatatypeProperty .
+obsl:offset a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:offsetGrain a owl:DatatypeProperty .
+obsl:offsetGrain a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 obsl:pathName a owl:DatatypeProperty .
+
+obsl:physicalName a owl:FunctionalProperty .
 
 obsl:referencesMeasure a owl:ObjectProperty ;
     rdfs:domain obsl:Metric ;
     rdfs:range obsl:Measure .
 
-obsl:resultType a owl:DatatypeProperty .
+obsl:resultType a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
-obsl:schema a owl:DatatypeProperty .
+obsl:schema a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 obsl:secondary a owl:DatatypeProperty .
 
@@ -138,7 +156,8 @@ obsl:timeGrain a owl:DatatypeProperty .
 
 obsl:total a owl:DatatypeProperty .
 
-obsl:window a owl:DatatypeProperty .
+obsl:window a owl:DatatypeProperty,
+        owl:FunctionalProperty .
 
 <https://ralforion.com/ns/model/sales/data-object/customers/column/customer-name> a owl:NamedIndividual,
         obsl:Column ;
@@ -268,9 +287,9 @@ obsl:window a owl:DatatypeProperty .
     obsl:referencesMeasure <https://ralforion.com/ns/model/sales/measure/revenue>,
         <https://ralforion.com/ns/model/sales/measure/us-revenue> .
 
-obsl:PeriodOverPeriodMetric a owl:Class ;
-    rdfs:label "Period-over-Period Metric" ;
-    rdfs:subClassOf obsl:Metric .
+obsl:hasDataObject a owl:ObjectProperty ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:DataObject .
 
 <https://ralforion.com/ns/model/sales/data-object/customers/column/country> a owl:NamedIndividual,
         obsl:Column ;
@@ -371,6 +390,11 @@ obsl:PeriodOverPeriodMetric a owl:Class ;
 
 obsl:CumulativeMetric a owl:Class ;
     rdfs:label "Cumulative Metric" ;
+    rdfs:subClassOf obsl:Metric ;
+    owl:disjointWith obsl:PeriodOverPeriodMetric .
+
+obsl:PeriodOverPeriodMetric a owl:Class ;
+    rdfs:label "Period-over-Period Metric" ;
     rdfs:subClassOf obsl:Metric .
 
 <https://ralforion.com/ns/model/sales/data-object/customers> a owl:NamedIndividual,
@@ -408,9 +432,6 @@ obsl:CumulativeMetric a owl:Class ;
 obsl:SemanticModel a owl:Class ;
     rdfs:label "Semantic Model" .
 
-obsl:Join a owl:Class ;
-    rdfs:label "Join" .
-
 <https://ralforion.com/ns/model/sales/measure/revenue> a owl:NamedIndividual,
         obsl:Measure ;
     rdfs:label "Revenue" ;
@@ -420,6 +441,9 @@ obsl:Join a owl:Class ;
     obsl:synonym "income",
         "sales",
         "turnover" .
+
+obsl:Join a owl:Class ;
+    rdfs:label "Join" .
 
 obsl:DataObject a owl:Class ;
     rdfs:label "Data Object" .
@@ -435,4 +459,8 @@ obsl:Metric a owl:Class ;
 
 obsl:Column a owl:Class ;
     rdfs:label "Column" .
+
+[] a owl:AllDisjointClasses ;
+    owl:members ( obsl:SemanticModel obsl:DataObject obsl:Column obsl:Join obsl:Dimension obsl:Measure obsl:Metric ) .
+
 
