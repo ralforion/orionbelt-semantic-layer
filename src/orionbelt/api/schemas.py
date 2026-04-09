@@ -115,13 +115,6 @@ class ErrorDetail(BaseModel):
     path: str | None = None
 
 
-class ErrorResponse(BaseModel):
-    """Standard error response per spec §7.5."""
-
-    error: str
-    message: str
-    path: str | None = None
-
 
 class DialectInfo(BaseModel):
     """Information about a supported dialect."""

@@ -135,40 +135,6 @@ class TrackedLoader:
         self._extract_positions(data, filename, "", source_map)
         return self._to_plain_dict(data), source_map
 
-    def load_model_directory(self, root: Path) -> tuple[dict[str, Any], SourceMap]:
-        """Load a model directory: model.yaml + facts/*.yaml + dimensions/*.yaml + measures/*.yaml.
-
-        Returns a merged dict with all artifacts and a combined source map.
-        """
-        merged: dict[str, Any] = {}
-        combined_map = SourceMap()
-
-        # Load model.yaml (root file)
-        model_file = root / "model.yaml"
-        if model_file.exists():
-            data, smap = self.load(model_file)
-            merged.update(data)
-            combined_map.merge(smap)
-
-        # Load subdirectory YAML files
-        for subdir in ("facts", "dimensions", "measures", "macros", "policies"):
-            subdir_path = root / subdir
-            if subdir_path.is_dir():
-                section: dict[str, Any] = merged.get(subdir, {})
-                for yaml_file in sorted(subdir_path.glob("*.yaml")):
-                    data, smap = self.load(yaml_file)
-                    if isinstance(data, dict):
-                        # Use the filename stem as key if the file is a single artifact
-                        if "name" in data:
-                            section[data["name"]] = data
-                        else:
-                            section.update(data)
-                    combined_map.merge(smap)
-                if section:
-                    merged[subdir] = section
-
-        return merged, combined_map
-
     def _extract_positions(
         self,
         data: Any,

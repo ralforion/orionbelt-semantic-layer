@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 from typing import Any
 
@@ -887,14 +886,6 @@ class _ModelValidationError(Exception):
         self.detail = detail
         super().__init__(str(detail))
 
-
-def _cleanup_session(session_state: dict[str, str] | None) -> None:
-    """Delete the API session on browser tab close."""
-    if session_state:
-        with contextlib.suppress(Exception):
-            httpx.Client(base_url=session_state["api_url"], timeout=5, headers=_API_HEADERS).delete(
-                f"/v1/sessions/{session_state['session_id']}"
-            )
 
 
 def _build_explain_yaml(data: dict[str, Any]) -> str:
