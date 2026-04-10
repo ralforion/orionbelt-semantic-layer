@@ -15,6 +15,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 - **Precise error reporting** — Validation errors include line and column numbers from your YAML source
 - **Automatic join resolution** — Declare relationships between data objects; OrionBelt finds optimal join paths using graph algorithms
 - **Multi-fact support** — Composite Fact Layer (CFL) planning handles queries spanning multiple fact tables with UNION ALL and CTE-based aggregation
+- **Machine-readable semantics** — Every loaded model is exported as an OBSL-Core 0.1 RDF graph and queryable via a read-only SPARQL endpoint, so AI agents and knowledge-graph tools can reason over your model
 - **Session management** — TTL-scoped sessions isolate model state per client, enabling iterative development workflows
 
 ## Key Features
@@ -30,6 +31,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 | Custom Extensions   | Vendor-specific metadata at all model levels (model, data object, column, dimension, measure, metric)           |
 | DB-API 2.0 Drivers  | PEP 249 drivers for all 8 databases with transparent OBML compilation                                          |
 | Arrow Flight SQL    | Embedded gRPC server for DBeaver, Tableau, Power BI — single container, two ports                               |
+| OBSL Graph & SPARQL | Every loaded model is exported as an OBSL-Core 0.1 RDF graph (Turtle) with a read-only SPARQL (SELECT/ASK) endpoint |
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
 | Source Tracking     | Error messages with YAML line/column positions                                                                  |
 
