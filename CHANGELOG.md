@@ -2,6 +2,39 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.3.0] - 2026-04-10
+
+### Added
+
+- **OBSL-Core 0.1 RDF graph export** — every loaded model is exported as an RDF graph (Turtle) using the OBSL vocabulary at `https://ralforion.com/ns/obsl#`. Graph is built eagerly at model load time and cached alongside the `SemanticModel`.
+- **SPARQL query API** — read-only `SELECT` and `ASK` queries against the OBSL graph via `POST /v1/sessions/{id}/models/{mid}/sparql` and the `/v1/sparql` shortcut. Update operations (`INSERT`, `DELETE`, `LOAD`, `DROP`) are rejected with HTTP 400.
+- **Graph endpoint** — `GET /v1/sessions/{id}/models/{mid}/graph` and `/v1/graph` shortcut return the OBSL graph as `text/turtle`.
+- **OWL axioms in OBSL-Core** — disjointness, functional properties, and inverse properties added to `ontology/obsl.ttl`.
+- **Extended metric profile** — OBSL vocabulary split into core and extended metric classes (`CumulativeMetric`, `PeriodOverPeriodMetric`) with dedicated properties.
+- **`obsl:synonym` property** — replaces SKOS alignment; synonyms are now first-class in the OBSL vocabulary.
+- **OBSL Turtle download button** — Gradio UI ER diagram tab now exposes a button to download the loaded model's OBSL graph as `.ttl`.
+- **OBML reference endpoint** — `GET /v1/reference/obml` returns the OBML reference documentation as structured JSON.
+- **OBSL guide page** — new `docs/guide/obsl.md` walks through graph retrieval, SPARQL queries (SELECT/ASK), and the OBSL vocabulary.
+
+### Fixed
+
+- **Colab notebook Mermaid rendering** — switched from client-side mermaid.js CDN (blocked by Colab's sandboxed output iframe CSP) to server-rendered SVG via `mermaid.ink`.
+- **Colab notebook zombie subprocesses** — added explicit port cleanup (`lsof -ti tcp:8099` + SIGKILL) before starting a fresh uvicorn subprocess; previous runs left stale listeners holding the port.
+- **Colab notebook model loading** — replaced unreliable `MODEL_FILE` env var with explicit `POST /v1/sessions` + `POST /v1/sessions/{id}/models` from the notebook.
+
+### Removed
+
+- **Dead code** — removed unused `load_model_directory` method, `_cleanup_session` helper, and unreferenced `ErrorResponse` Pydantic model (47 lines total, identified via ruff + vulture).
+
+### Changed
+
+- Version bumped to 1.3.0
+- Ontology directory renamed from `OBSL/` to `ontology/`
+- SHACL shapes updated to match OBSL-Core 0.1 vocabulary
+- Ruff format applied to `obsl/exporter.py`, `obsl/sparql.py`, `api/schemas.py`, `ui/app.py`, `tests/unit/test_obsl.py`
+
+---
+
 ## [1.2.2] - 2026-03-28
 
 ### Fixed
