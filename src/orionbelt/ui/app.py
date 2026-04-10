@@ -887,7 +887,6 @@ class _ModelValidationError(Exception):
         super().__init__(str(detail))
 
 
-
 def _build_explain_yaml(data: dict[str, Any]) -> str:
     """Build a human-readable YAML string from the compile response."""
     explain: dict[str, Any] = {}
@@ -1218,9 +1217,7 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         visible=not single_model,
                     )
                     export_osi_btn = gr.Button("Export to OSI", size="sm", scale=0, min_width=120)
-                    download_obsl_btn = gr.Button(
-                        "\u2193 OBSL", size="sm", scale=0, min_width=80
-                    )
+                    download_obsl_btn = gr.Button("\u2193 OBSL", size="sm", scale=0, min_width=80)
 
                 with gr.Row(equal_height=True):
                     model_label = (

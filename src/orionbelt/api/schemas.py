@@ -115,7 +115,6 @@ class ErrorDetail(BaseModel):
     path: str | None = None
 
 
-
 class DialectInfo(BaseModel):
     """Information about a supported dialect."""
 

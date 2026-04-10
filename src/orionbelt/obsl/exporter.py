@@ -40,7 +40,10 @@ def _column_uri(model_id: str, obj_name: str, col_name: str) -> URIRef:
 
 
 def _join_uri(
-    model_id: str, obj_name: str, target_name: str, path_name: str | None = None,
+    model_id: str,
+    obj_name: str,
+    target_name: str,
+    path_name: str | None = None,
 ) -> URIRef:
     base = f"{BASE}{model_id}/join/{_slug(obj_name)}-to-{_slug(target_name)}"
     if path_name:
@@ -148,12 +151,23 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
     # Functional properties — at most one value.
     for prop in (
         OBSL.joinTo,
-        OBSL.code, OBSL.database, OBSL["schema"], OBSL.physicalName,
-        OBSL.resultType, OBSL.aggregation, OBSL.metricType, OBSL.cardinality,
+        OBSL.code,
+        OBSL.database,
+        OBSL["schema"],
+        OBSL.physicalName,
+        OBSL.resultType,
+        OBSL.aggregation,
+        OBSL.metricType,
+        OBSL.cardinality,
         OBSL.expressionSource,
-        OBSL.dataObject, OBSL.column,
-        OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
-        OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
+        OBSL.dataObject,
+        OBSL.column,
+        OBSL.cumulativeType,
+        OBSL.window,
+        OBSL.grainToDate,
+        OBSL.offset,
+        OBSL.offsetGrain,
+        OBSL.comparison,
     ):
         g.add((prop, RDF.type, OWL.FunctionalProperty))
 
@@ -185,11 +199,27 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
     # Datatype properties
     for prop in (
-        OBSL.code, OBSL.database, OBSL["schema"], OBSL.resultType, OBSL.aggregation,
-        OBSL.metricType, OBSL.cardinality, OBSL.timeGrain, OBSL.expressionSource,
-        OBSL.pathName, OBSL.synonym, OBSL.secondary, OBSL.distinct, OBSL.total,
-        OBSL.allowFanOut, OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
-        OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
+        OBSL.code,
+        OBSL.database,
+        OBSL["schema"],
+        OBSL.resultType,
+        OBSL.aggregation,
+        OBSL.metricType,
+        OBSL.cardinality,
+        OBSL.timeGrain,
+        OBSL.expressionSource,
+        OBSL.pathName,
+        OBSL.synonym,
+        OBSL.secondary,
+        OBSL.distinct,
+        OBSL.total,
+        OBSL.allowFanOut,
+        OBSL.cumulativeType,
+        OBSL.window,
+        OBSL.grainToDate,
+        OBSL.offset,
+        OBSL.offsetGrain,
+        OBSL.comparison,
     ):
         g.add((prop, RDF.type, OWL.DatatypeProperty))
 
@@ -352,8 +382,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         if met.type == MetricType.CUMULATIVE:
             g.add((met_uri, RDF.type, OBSL.CumulativeMetric))
             if met.time_dimension:
-                g.add((met_uri, OBSL.timeDimension,
-                       _dimension_uri(model_id, met.time_dimension)))
+                g.add((met_uri, OBSL.timeDimension, _dimension_uri(model_id, met.time_dimension)))
             g.add((met_uri, OBSL.cumulativeType, Literal(met.cumulative_type.value)))
             if met.window is not None:
                 g.add((met_uri, OBSL.window, Literal(met.window)))
@@ -364,8 +393,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         if met.type == MetricType.PERIOD_OVER_PERIOD and met.period_over_period:
             pop = met.period_over_period
             g.add((met_uri, RDF.type, OBSL.PeriodOverPeriodMetric))
-            g.add((met_uri, OBSL.timeDimension,
-                   _dimension_uri(model_id, pop.time_dimension)))
+            g.add((met_uri, OBSL.timeDimension, _dimension_uri(model_id, pop.time_dimension)))
             g.add((met_uri, OBSL.timeGrain, Literal(pop.grain.value)))
             g.add((met_uri, OBSL.offset, Literal(pop.offset)))
             g.add((met_uri, OBSL.offsetGrain, Literal(pop.offset_grain.value)))

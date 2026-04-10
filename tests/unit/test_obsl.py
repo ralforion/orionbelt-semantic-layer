@@ -411,8 +411,13 @@ class TestExporterAxioms:
         assert members_head is not None
         members = list(g.items(members_head))
         expected = {
-            OBSL.SemanticModel, OBSL.DataObject, OBSL.Column,
-            OBSL.Join, OBSL.Dimension, OBSL.Measure, OBSL.Metric,
+            OBSL.SemanticModel,
+            OBSL.DataObject,
+            OBSL.Column,
+            OBSL.Join,
+            OBSL.Dimension,
+            OBSL.Measure,
+            OBSL.Metric,
         }
         assert set(members) == expected
 
@@ -427,12 +432,23 @@ class TestExporterAxioms:
         from rdflib.namespace import OWL as OWL_NS
 
         functional_props = {
-            OBSL.joinTo, OBSL.code, OBSL.database, OBSL["schema"],
-            OBSL.resultType, OBSL.aggregation, OBSL.metricType,
-            OBSL.cardinality, OBSL.expressionSource,
-            OBSL.dataObject, OBSL.column,
-            OBSL.cumulativeType, OBSL.window, OBSL.grainToDate,
-            OBSL.offset, OBSL.offsetGrain, OBSL.comparison,
+            OBSL.joinTo,
+            OBSL.code,
+            OBSL.database,
+            OBSL["schema"],
+            OBSL.resultType,
+            OBSL.aggregation,
+            OBSL.metricType,
+            OBSL.cardinality,
+            OBSL.expressionSource,
+            OBSL.dataObject,
+            OBSL.column,
+            OBSL.cumulativeType,
+            OBSL.window,
+            OBSL.grainToDate,
+            OBSL.offset,
+            OBSL.offsetGrain,
+            OBSL.comparison,
         }
         for prop in functional_props:
             assert (prop, RDF.type, OWL_NS.FunctionalProperty) in g, (
