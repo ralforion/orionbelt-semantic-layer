@@ -456,7 +456,11 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `PORT`                     | —           | Override port (Cloud Run sets this)       |
 | `DISABLE_SESSION_LIST`     | `false`     | Disable `GET /sessions` endpoint          |
 | `SESSION_TTL_SECONDS`      | `1800`      | Session inactivity timeout (30 min)       |
+| `SESSION_MAX_AGE_SECONDS`  | `86400`     | Absolute max session lifetime (24 h)      |
 | `SESSION_CLEANUP_INTERVAL` | `60`        | Cleanup sweep interval (seconds)          |
+| `MAX_SESSIONS`             | `500`       | Global concurrent session cap (429 when full) |
+| `MAX_MODELS_PER_SESSION`   | `10`        | Max models a single session may hold      |
+| `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute    |
 | `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode   |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |

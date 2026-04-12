@@ -42,7 +42,7 @@ The primary API workflow uses sessions to manage model state:
 4. **Execute** — `POST /v1/sessions/{id}/query/execute` to compile and execute against the database (requires `FLIGHT_ENABLED=true`)
 5. **Close** — `DELETE /v1/sessions/{id}` when done (or let TTL expire)
 
-Sessions automatically expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SECONDS`).
+Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SECONDS`) or after an absolute maximum lifetime of 24 hours (`SESSION_MAX_AGE_SECONDS`). The server enforces a global concurrent session cap (`MAX_SESSIONS`, default 500) and a per-session model cap (`MAX_MODELS_PER_SESSION`, default 10). Session creation is rate-limited per IP (`SESSION_RATE_LIMIT`, default 10/min). When limits are exceeded, the API returns **429 Too Many Requests** with a `Retry-After` header. Expired sessions return **410 Gone** (not 404) so clients can distinguish expiry from unknown IDs.
 
 ### Single-Model Mode
 
