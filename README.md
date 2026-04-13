@@ -298,12 +298,11 @@ uv run orionbelt-api
 The UI can also run as a separate process, connecting to the API via `API_BASE_URL`:
 
 ```bash
-uv sync --extra ui
-
 # Start the REST API (required backend)
 uv run orionbelt-api &
 
-# Launch the Gradio UI (standalone on port 7860)
+# Install UI deps and launch the Gradio UI (standalone on port 7860)
+uv sync --extra ui
 API_BASE_URL=http://localhost:8000 uv run orionbelt-ui
 ```
 
