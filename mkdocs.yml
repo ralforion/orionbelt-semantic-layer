@@ -88,6 +88,8 @@ nav:
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quickstart.md
+      - Docker & Deployment: getting-started/docker.md
+      - Development: getting-started/development.md
   - Guide:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
@@ -95,6 +97,9 @@ nav:
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
       - OBSL Graph & SPARQL: guide/obsl.md
+      - Gradio UI: guide/ui.md
+      - AI Integrations: guide/integrations.md
+      - OSI Interoperability: guide/osi.md
   - API:
       - Overview: api/overview.md
       - Endpoints: api/endpoints.md
@@ -106,3 +111,6 @@ nav:
       - TPC-DS Benchmark: examples/tpcds.md
   - Reference:
       - Python API: reference/python-api.md
+      - Architecture: reference/architecture.md
+      - Configuration: reference/configuration.md
+  - Drivers & Flight SQL: drivers.md
