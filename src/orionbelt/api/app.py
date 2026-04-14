@@ -198,6 +198,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         SessionRateLimitMiddleware,
         max_requests=settings.session_rate_limit,
         window_seconds=60,
+        trusted_proxy_count=settings.trusted_proxy_count,
     )
     app.add_middleware(RequestIdMiddleware)
 

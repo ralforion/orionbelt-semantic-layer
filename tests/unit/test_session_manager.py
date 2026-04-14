@@ -229,6 +229,36 @@ class TestModelCap:
         store.remove_model(result.model_id)
         store.load_model(SAMPLE_MODEL_YAML)  # should succeed now
 
+    def test_model_cap_enforced_under_concurrency(self) -> None:
+        """Concurrent load_model() calls must not exceed the cap."""
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_models_per_session=1,
+            cleanup_interval=9999,
+        )
+        info = mgr.create_session()
+        store = mgr.get_store(info.session_id)
+
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        results: list[object] = []
+
+        def _load() -> object:
+            try:
+                return store.load_model(SAMPLE_MODEL_YAML)
+            except ModelCapacityError as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_load) for _ in range(4)]
+            results = [f.result() for f in futures]
+
+        successes = [r for r in results if not isinstance(r, ModelCapacityError)]
+        failures = [r for r in results if isinstance(r, ModelCapacityError)]
+        assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
+        assert len(failures) == 3, f"Expected 3 failures, got {len(failures)}"
+
 
 class TestDefaultSession:
     def test_get_or_create_default(self, session_manager: SessionManager) -> None:

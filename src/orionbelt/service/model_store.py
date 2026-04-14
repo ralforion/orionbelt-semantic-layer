@@ -262,6 +262,13 @@ class ModelStore:
         artifact = GraphArtifact(graph=graph, turtle=turtle, generated_at=time.monotonic())
 
         with self._lock:
+            # Re-check capacity under lock — the first check (above) ran
+            # outside the lock while parsing/exporting, so a concurrent
+            # request may have filled the slot in the meantime.
+            if len(self._models) >= self._max_models:
+                raise ModelCapacityError(
+                    f"Maximum models per session reached ({self._max_models})"
+                )
             self._models[model_id] = model
             self._graphs[model_id] = artifact
 

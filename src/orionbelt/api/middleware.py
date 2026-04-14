@@ -96,21 +96,61 @@ class SessionRateLimitMiddleware(BaseHTTPMiddleware):
     Rejects with 429 + ``Retry-After`` header when the limit is exceeded.
     Uses an in-memory deque per IP — safe for single-instance deployments.
     For multi-instance, rely on Cloud Armor or an external rate limiter.
+
+    ``trusted_proxy_count`` controls whether ``X-Forwarded-For`` is used:
+    - **0** (default): ignore forwarding headers, use the direct peer IP.
+    - **N > 0**: take the Nth-from-last entry in ``X-Forwarded-For``
+      (i.e. the value set by the outermost trusted proxy).
+
+    Stale buckets are purged automatically to bound memory growth.
     """
 
-    def __init__(self, app: object, max_requests: int = 10, window_seconds: int = 60) -> None:
+    # Hard cap on tracked IPs to prevent memory exhaustion from spoofed keys.
+    _MAX_BUCKETS = 50_000
+
+    def __init__(
+        self,
+        app: object,
+        max_requests: int = 10,
+        window_seconds: int = 60,
+        trusted_proxy_count: int = 0,
+    ) -> None:
         super().__init__(app)  # type: ignore[arg-type]
         self._max = max_requests
         self._window = window_seconds
+        self._trusted_proxy_count = trusted_proxy_count
         self._lock = threading.Lock()
         self._buckets: dict[str, collections.deque[float]] = {}
 
     def _client_ip(self, request: Request) -> str:
-        """Extract client IP, respecting X-Forwarded-For from trusted proxies."""
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        """Extract client IP.
+
+        Only trusts ``X-Forwarded-For`` when ``trusted_proxy_count > 0``.
+        With *N* trusted proxies the real client IP is at position ``-N``
+        in the comma-separated list (rightmost entries are set by proxies
+        closest to the server).
+        """
+        if self._trusted_proxy_count > 0:
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                parts = [p.strip() for p in forwarded.split(",")]
+                idx = -self._trusted_proxy_count
+                if abs(idx) <= len(parts):
+                    return parts[idx]
         return request.client.host if request.client else "unknown"
+
+    def _purge_stale_buckets(self, now: float) -> None:
+        """Remove buckets whose newest entry is older than the window.
+
+        Called under ``self._lock``.
+        """
+        stale = [
+            ip
+            for ip, bucket in self._buckets.items()
+            if not bucket or bucket[-1] < now - self._window
+        ]
+        for ip in stale:
+            del self._buckets[ip]
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Only rate-limit session creation
@@ -121,6 +161,10 @@ class SessionRateLimitMiddleware(BaseHTTPMiddleware):
         now = time.monotonic()
 
         with self._lock:
+            # Periodically purge stale buckets to bound memory usage.
+            if len(self._buckets) > self._MAX_BUCKETS:
+                self._purge_stale_buckets(now)
+
             bucket = self._buckets.get(ip)
             if bucket is None:
                 bucket = collections.deque()
