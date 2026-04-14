@@ -210,7 +210,7 @@ class SemanticValidator:
                     queue.append((neighbor, start))
 
             while queue:
-                node, parent = queue.popleft()
+                node, _parent = queue.popleft()
                 for neighbor in adj.get(node, []):
                     if neighbor == start:
                         continue

@@ -76,7 +76,11 @@ Key settings:
 | `API_SERVER_HOST`          | `localhost` | REST API bind host                          |
 | `API_SERVER_PORT`          | `8000`      | REST API bind port                          |
 | `SESSION_TTL_SECONDS`      | `1800`      | Session inactivity timeout (30 min)         |
+| `SESSION_MAX_AGE_SECONDS`  | `86400`     | Absolute max session lifetime (24 h)        |
 | `SESSION_CLEANUP_INTERVAL` | `60`        | Cleanup sweep interval (seconds)            |
+| `MAX_SESSIONS`             | `500`       | Global concurrent session cap (429 when full) |
+| `MAX_MODELS_PER_SESSION`   | `10`        | Max models a single session may hold        |
+| `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute      |
 | `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode     |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution         |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution         |

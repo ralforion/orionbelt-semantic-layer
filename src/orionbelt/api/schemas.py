@@ -154,6 +154,18 @@ class SettingsResponse(BaseModel):
         description="Pre-loaded OBML YAML content (only when single_model_mode is true)",
     )
     session_ttl_seconds: int = 1800
+    session_max_age_seconds: int = Field(
+        default=86400,
+        description="Absolute max session lifetime in seconds",
+    )
+    max_sessions: int = Field(
+        default=500,
+        description="Global concurrent session cap",
+    )
+    max_models_per_session: int = Field(
+        default=10,
+        description="Maximum models per session",
+    )
     query_execute: bool = Field(
         default=False,
         description="Whether POST /query/execute is available",
@@ -183,6 +195,8 @@ class SessionResponse(BaseModel):
     last_accessed_at: datetime
     model_count: int
     metadata: dict[str, str] = Field(default_factory=dict)
+    expires_at: datetime = Field(description="Idle TTL deadline (refreshed on each access)")
+    max_expires_at: datetime = Field(description="Absolute lifetime deadline (fixed at creation)")
 
 
 class SessionListResponse(BaseModel):

@@ -27,7 +27,11 @@ from orionbelt.api.schemas import (
 )
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.service.model_store import ModelStore
-from orionbelt.service.session_manager import SessionManager, SessionNotFoundError
+from orionbelt.service.session_manager import (
+    SessionExpiredError,
+    SessionManager,
+    SessionNotFoundError,
+)
 
 router = APIRouter()
 
@@ -38,6 +42,8 @@ router = APIRouter()
 def _get_store(session_id: str, mgr: SessionManager) -> ModelStore:
     try:
         return mgr.get_store(session_id)
+    except SessionExpiredError:
+        raise HTTPException(status_code=410, detail=f"Session '{session_id}' has expired") from None
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
 

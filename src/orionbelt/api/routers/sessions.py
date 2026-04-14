@@ -43,8 +43,14 @@ from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
 from orionbelt.service.diagram import generate_mermaid_er
-from orionbelt.service.model_store import ModelStore, ModelValidationError
-from orionbelt.service.session_manager import SessionInfo, SessionManager, SessionNotFoundError
+from orionbelt.service.model_store import ModelCapacityError, ModelStore, ModelValidationError
+from orionbelt.service.session_manager import (
+    SessionCapacityError,
+    SessionExpiredError,
+    SessionInfo,
+    SessionManager,
+    SessionNotFoundError,
+)
 
 router = APIRouter()
 
@@ -53,9 +59,11 @@ router = APIRouter()
 
 
 def _get_store(session_id: str, mgr: SessionManager) -> ModelStore:
-    """Resolve session_id to ModelStore, raise 404 if missing/expired."""
+    """Resolve session_id to ModelStore, raise 410/404 as appropriate."""
     try:
         return mgr.get_store(session_id)
+    except SessionExpiredError:
+        raise HTTPException(status_code=410, detail=f"Session '{session_id}' has expired") from None
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
 
@@ -76,7 +84,14 @@ async def create_session(
 ) -> SessionResponse:
     """Create a new session."""
     metadata = body.metadata if body else {}
-    info = mgr.create_session(metadata=metadata)
+    try:
+        info = mgr.create_session(metadata=metadata)
+    except SessionCapacityError:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many active sessions. Please retry later.",
+            headers={"Retry-After": "60"},
+        ) from None
 
     # Single-model mode: pre-load the configured model into the new session
     preload_yaml = get_preload_model_yaml()
@@ -108,6 +123,8 @@ async def get_session(
     """Get info for a specific session."""
     try:
         info = mgr.get_session(session_id)
+    except SessionExpiredError:
+        raise HTTPException(status_code=410, detail=f"Session '{session_id}' has expired") from None
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
     return _session_response(info)
@@ -144,6 +161,8 @@ async def load_model(
     store = _get_store(session_id, mgr)
     try:
         result = store.load_model(body.model_yaml)
+    except ModelCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:
         raise HTTPException(
             status_code=422,

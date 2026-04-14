@@ -7,7 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from orionbelt.service.session_manager import SessionManager, SessionNotFoundError
+from orionbelt.service.model_store import ModelCapacityError
+from orionbelt.service.session_manager import (
+    SessionCapacityError,
+    SessionExpiredError,
+    SessionManager,
+    SessionNotFoundError,
+)
 
 
 class TestSessionLifecycle:
@@ -60,19 +66,198 @@ class TestSessionLifecycle:
 
 
 class TestSessionExpiration:
-    def test_expired_session_raises(self) -> None:
-        mgr = SessionManager(ttl_seconds=0, cleanup_interval=9999)
-        info = mgr.create_session()
-        time.sleep(0.05)  # ensure TTL has passed
-        with pytest.raises(SessionNotFoundError, match="expired"):
-            mgr.get_store(info.session_id)
-
-    def test_get_session_expired_raises(self) -> None:
-        mgr = SessionManager(ttl_seconds=0, cleanup_interval=9999)
+    def test_idle_expired_session_raises_expired_error(self) -> None:
+        mgr = SessionManager(ttl_seconds=0, max_age_seconds=86400, cleanup_interval=9999)
         info = mgr.create_session()
         time.sleep(0.05)
-        with pytest.raises(SessionNotFoundError, match="expired"):
+        with pytest.raises(SessionExpiredError, match="expired"):
+            mgr.get_store(info.session_id)
+
+    def test_get_session_idle_expired_raises_expired_error(self) -> None:
+        mgr = SessionManager(ttl_seconds=0, max_age_seconds=86400, cleanup_interval=9999)
+        info = mgr.create_session()
+        time.sleep(0.05)
+        with pytest.raises(SessionExpiredError, match="expired"):
             mgr.get_session(info.session_id)
+
+    def test_absolute_max_age_expiry(self) -> None:
+        """Session expires after max_age_seconds even if actively used."""
+        mgr = SessionManager(ttl_seconds=3600, max_age_seconds=0, cleanup_interval=9999)
+        info = mgr.create_session()
+        time.sleep(0.05)
+        with pytest.raises(SessionExpiredError, match="max-age"):
+            mgr.get_store(info.session_id)
+
+    def test_max_age_get_session_expired(self) -> None:
+        mgr = SessionManager(ttl_seconds=3600, max_age_seconds=0, cleanup_interval=9999)
+        info = mgr.create_session()
+        time.sleep(0.05)
+        with pytest.raises(SessionExpiredError, match="max-age"):
+            mgr.get_session(info.session_id)
+
+    def test_not_found_vs_expired_distinction(self) -> None:
+        """SessionNotFoundError for unknown IDs, SessionExpiredError for expired ones."""
+        mgr = SessionManager(ttl_seconds=0, max_age_seconds=86400, cleanup_interval=9999)
+        info = mgr.create_session()
+        time.sleep(0.05)
+
+        # Expired session → SessionExpiredError
+        with pytest.raises(SessionExpiredError):
+            mgr.get_store(info.session_id)
+
+        # After expiry removal, same ID → SessionNotFoundError
+        with pytest.raises(SessionNotFoundError):
+            mgr.get_store(info.session_id)
+
+        # Never-existed ID → SessionNotFoundError
+        with pytest.raises(SessionNotFoundError):
+            mgr.get_store("never_existed_id")
+
+
+class TestExpiryInfo:
+    def test_session_info_has_expires_at(self, session_manager: SessionManager) -> None:
+        info = session_manager.create_session()
+        assert info.expires_at is not None
+        assert info.max_expires_at is not None
+        # expires_at should be in the future
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        assert info.expires_at > now
+        assert info.max_expires_at > now
+
+    def test_expires_at_refreshes_on_access(self, session_manager: SessionManager) -> None:
+        info = session_manager.create_session()
+        time.sleep(0.05)
+        refreshed = session_manager.get_session(info.session_id)
+        # expires_at should have been pushed forward
+        assert refreshed.expires_at >= info.expires_at
+        # max_expires_at should stay roughly the same (same creation time)
+        delta = abs((refreshed.max_expires_at - info.max_expires_at).total_seconds())
+        assert delta < 1.0  # within 1 second tolerance
+
+
+class TestSessionCap:
+    def test_global_session_cap(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_sessions=3,
+            cleanup_interval=9999,
+        )
+        mgr.create_session()
+        mgr.create_session()
+        mgr.create_session()
+        with pytest.raises(SessionCapacityError, match="Maximum"):
+            mgr.create_session()
+
+    def test_cap_does_not_count_default_session(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_sessions=2,
+            cleanup_interval=9999,
+        )
+        mgr.get_or_create_default()  # should not count
+        mgr.create_session()
+        mgr.create_session()
+        with pytest.raises(SessionCapacityError):
+            mgr.create_session()
+
+    def test_cap_frees_after_close(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_sessions=2,
+            cleanup_interval=9999,
+        )
+        s1 = mgr.create_session()
+        mgr.create_session()
+        with pytest.raises(SessionCapacityError):
+            mgr.create_session()
+        mgr.close_session(s1.session_id)
+        # Now should succeed
+        mgr.create_session()
+
+    def test_cap_frees_after_expiry(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=0,
+            max_age_seconds=86400,
+            max_sessions=2,
+            cleanup_interval=9999,
+        )
+        mgr.create_session()
+        mgr.create_session()
+        time.sleep(0.05)
+        # Expired sessions don't count toward cap
+        mgr.create_session()
+
+
+class TestModelCap:
+    def test_max_models_per_session(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_models_per_session=2,
+            cleanup_interval=9999,
+        )
+        info = mgr.create_session()
+        store = mgr.get_store(info.session_id)
+
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        store.load_model(SAMPLE_MODEL_YAML)
+        store.load_model(SAMPLE_MODEL_YAML)
+        with pytest.raises(ModelCapacityError, match="Maximum"):
+            store.load_model(SAMPLE_MODEL_YAML)
+
+    def test_model_cap_frees_after_remove(self) -> None:
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_models_per_session=1,
+            cleanup_interval=9999,
+        )
+        info = mgr.create_session()
+        store = mgr.get_store(info.session_id)
+
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        result = store.load_model(SAMPLE_MODEL_YAML)
+        with pytest.raises(ModelCapacityError):
+            store.load_model(SAMPLE_MODEL_YAML)
+        store.remove_model(result.model_id)
+        store.load_model(SAMPLE_MODEL_YAML)  # should succeed now
+
+    def test_model_cap_enforced_under_concurrency(self) -> None:
+        """Concurrent load_model() calls must not exceed the cap."""
+        mgr = SessionManager(
+            ttl_seconds=3600,
+            max_age_seconds=86400,
+            max_models_per_session=1,
+            cleanup_interval=9999,
+        )
+        info = mgr.create_session()
+        store = mgr.get_store(info.session_id)
+
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        results: list[object] = []
+
+        def _load() -> object:
+            try:
+                return store.load_model(SAMPLE_MODEL_YAML)
+            except ModelCapacityError as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_load) for _ in range(4)]
+            results = [f.result() for f in futures]
+
+        successes = [r for r in results if not isinstance(r, ModelCapacityError)]
+        failures = [r for r in results if isinstance(r, ModelCapacityError)]
+        assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
+        assert len(failures) == 3, f"Expected 3 failures, got {len(failures)}"
 
 
 class TestDefaultSession:
@@ -85,18 +270,65 @@ class TestDefaultSession:
         session_manager.get_or_create_default()
         assert session_manager.list_sessions() == []
 
+    def test_default_session_purged_when_not_single_model_mode(self) -> None:
+        """Default session is purged when not in single-model mode."""
+        mgr = SessionManager(
+            ttl_seconds=0,
+            max_age_seconds=86400,
+            cleanup_interval=9999,
+            is_single_model_mode=False,
+        )
+        mgr.get_or_create_default()
+        time.sleep(0.05)
+        mgr._purge_expired()
+        # Default session should have been purged
+        # get_or_create_default creates a new one
+        store = mgr.get_or_create_default()
+        assert store.list_models() == []  # fresh store
+
+    def test_default_session_kept_in_single_model_mode(self) -> None:
+        """Default session is NOT purged in single-model mode."""
+        mgr = SessionManager(
+            ttl_seconds=0,
+            max_age_seconds=0,
+            cleanup_interval=9999,
+            is_single_model_mode=True,
+        )
+        store = mgr.get_or_create_default()
+
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        store.load_model(SAMPLE_MODEL_YAML)
+        time.sleep(0.05)
+        mgr._purge_expired()
+        # Default session should still be alive with its model
+        store2 = mgr.get_or_create_default()
+        assert store is store2
+        assert len(store2.list_models()) == 1
+
 
 class TestCleanup:
     def test_purge_expired(self) -> None:
-        mgr = SessionManager(ttl_seconds=0, cleanup_interval=9999)
+        mgr = SessionManager(ttl_seconds=0, max_age_seconds=86400, cleanup_interval=9999)
         mgr.create_session()
         mgr.create_session()
         time.sleep(0.05)
         mgr._purge_expired()
         assert mgr.active_count == 0
 
+    def test_purge_max_age_expired(self) -> None:
+        mgr = SessionManager(ttl_seconds=3600, max_age_seconds=0, cleanup_interval=9999)
+        mgr.create_session()
+        time.sleep(0.05)
+        mgr._purge_expired()
+        assert mgr.active_count == 0
+
     def test_cleanup_thread(self) -> None:
-        mgr = SessionManager(ttl_seconds=0, cleanup_interval=0.05)
+        mgr = SessionManager(
+            ttl_seconds=0,
+            max_age_seconds=86400,
+            cleanup_interval=0.05,  # type: ignore[arg-type]
+        )
         mgr.start()
         try:
             mgr.create_session()

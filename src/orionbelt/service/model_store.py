@@ -153,6 +153,10 @@ class ModelValidationError(ValueError):
         super().__init__(f"Model validation failed: {msgs}")
 
 
+class ModelCapacityError(Exception):
+    """Raised when a session's model cap is reached."""
+
+
 class ModelStore:
     """In-memory model registry.  Thread-safe via ``threading.Lock``.
 
@@ -161,10 +165,11 @@ class ModelStore:
     same singleton pattern as ``api/deps.py``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_models: int = 10) -> None:
         self._lock = threading.Lock()
         self._models: dict[str, SemanticModel] = {}
         self._graphs: dict[str, GraphArtifact] = {}
+        self._max_models = max_models
 
         # Internal pipeline singletons (stateless, safe to share).
         self._loader = TrackedLoader()
@@ -238,8 +243,13 @@ class ModelStore:
     def load_model(self, yaml_str: str) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
-        Raises ``ValueError`` if the model has validation errors.
+        Raises ``ModelValidationError`` if the model has validation errors.
+        Raises ``ModelCapacityError`` if the session's model cap is reached.
         """
+        with self._lock:
+            if len(self._models) >= self._max_models:
+                raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
+
         model, errors, warnings = self._parse_and_validate(yaml_str)
         if errors:
             raise ModelValidationError(errors, warnings)
@@ -252,6 +262,13 @@ class ModelStore:
         artifact = GraphArtifact(graph=graph, turtle=turtle, generated_at=time.monotonic())
 
         with self._lock:
+            # Re-check capacity under lock — the first check (above) ran
+            # outside the lock while parsing/exporting, so a concurrent
+            # request may have filled the slot in the meantime.
+            if len(self._models) >= self._max_models:
+                raise ModelCapacityError(
+                    f"Maximum models per session reached ({self._max_models})"
+                )
             self._models[model_id] = model
             self._graphs[model_id] = artifact
 

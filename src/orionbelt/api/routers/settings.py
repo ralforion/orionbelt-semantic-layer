@@ -27,6 +27,9 @@ async def get_settings(
         single_model_mode=is_single_model_mode(),
         model_yaml=get_preload_model_yaml() if is_single_model_mode() else None,
         session_ttl_seconds=mgr.ttl,
+        session_max_age_seconds=mgr.max_age,
+        max_sessions=mgr.max_sessions,
+        max_models_per_session=mgr.max_models_per_session,
         query_execute=is_query_execute_enabled(),
         flight=FlightSettingsInfo(**fi) if fi else None,
     )

@@ -20,6 +20,7 @@ from orionbelt.api.middleware import (
     RequestIdMiddleware,
     RequestTimingMiddleware,
     SecurityHeadersMiddleware,
+    SessionRateLimitMiddleware,
 )
 from orionbelt.api.routers import (
     convert,
@@ -72,7 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
+        max_age_seconds=settings.session_max_age_seconds,
+        max_sessions=settings.max_sessions,
+        max_models_per_session=settings.max_models_per_session,
         cleanup_interval=settings.session_cleanup_interval,
+        is_single_model_mode=preload_yaml is not None,
     )
     mgr.start()
 
@@ -189,6 +194,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestTimingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestBodyLimitMiddleware)
+    app.add_middleware(
+        SessionRateLimitMiddleware,
+        max_requests=settings.session_rate_limit,
+        window_seconds=60,
+        trusted_proxy_count=settings.trusted_proxy_count,
+    )
     app.add_middleware(RequestIdMiddleware)
 
     # Versioned API routes under /v1

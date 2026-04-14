@@ -2,6 +2,28 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.4.0] - 2026-04-12
+
+### Added
+
+- **Absolute max-age** — `SESSION_MAX_AGE_SECONDS` (default 24 h) prevents immortal sessions from chatty clients that keep refreshing the idle TTL.
+- **Global session cap** — `MAX_SESSIONS` (default 500) returns HTTP **429 Too Many Requests** with `Retry-After` header when at capacity.
+- **Per-session model cap** — `MAX_MODELS_PER_SESSION` (default 10) limits how many models a single session may hold.
+- **Rate limiting** — `SESSION_RATE_LIMIT` (default 10/min) per-IP sliding-window rate limit on `POST /sessions` via `SessionRateLimitMiddleware`.
+- **Expiry visibility** — `expires_at` and `max_expires_at` fields in session responses let clients refresh proactively instead of getting surprise 404s.
+- **410 Gone for expired sessions** — `SessionExpiredError` returns HTTP 410 (not 404) so clients can distinguish expired from never-existed.
+- **Session lifecycle logging** — structured log events for session create, expire, close, and purge sweeps.
+- **New settings in `GET /v1/settings`** — `session_max_age_seconds`, `max_sessions`, `max_models_per_session`.
+
+### Changed
+
+- Version bumped to 1.4.0
+- Default session (`__default__`) is now purged when not in single-model mode (`MODEL_FILE` not set)
+- `SessionManager` constructor accepts `max_age_seconds`, `max_sessions`, `max_models_per_session`, `is_single_model_mode` parameters
+- `ModelStore` constructor accepts `max_models` parameter
+
+---
+
 ## [1.3.0] - 2026-04-10
 
 ### Added

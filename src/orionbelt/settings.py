@@ -38,8 +38,13 @@ class Settings(BaseSettings):
 
     # Sessions
     session_ttl_seconds: int = 1800  # 30 min inactivity
+    session_max_age_seconds: int = 86400  # 24 h absolute max lifetime
     session_cleanup_interval: int = 60  # seconds between cleanup sweeps
+    max_sessions: int = 500  # global concurrent session cap (429 when full)
+    max_models_per_session: int = 10  # max models a single session may hold
     disable_session_list: bool = False  # hide GET /sessions endpoint
+    session_rate_limit: int = 10  # max POST /sessions per IP per minute
+    trusted_proxy_count: int = 0  # number of trusted reverse proxies in front of the app
 
     # Single-model mode — pre-loaded into every new session.
     # When set, model upload/removal endpoints return 403.

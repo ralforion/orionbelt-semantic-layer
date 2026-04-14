@@ -48,9 +48,6 @@ class SourceMap:
     def get(self, path: str) -> SourceSpan | None:
         return self._positions.get(path)
 
-    def merge(self, other: SourceMap) -> None:
-        self._positions.update(other._positions)
-
     @property
     def paths(self) -> list[str]:
         return list(self._positions.keys())

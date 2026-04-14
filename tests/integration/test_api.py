@@ -19,6 +19,9 @@ def app():
     # Manually init SessionManager (ASGITransport doesn't trigger lifespan)
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
+        max_age_seconds=settings.session_max_age_seconds,
+        max_sessions=settings.max_sessions,
+        max_models_per_session=settings.max_models_per_session,
         cleanup_interval=settings.session_cleanup_interval,
     )
     init_session_manager(mgr)
