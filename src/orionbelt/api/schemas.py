@@ -367,6 +367,16 @@ class MetricDetail(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ModelFilterDetail(BaseModel):
+    """Detail of a static model filter."""
+
+    data_object: str
+    column: str
+    operator: str
+    value: str | int | float | bool | None = None
+    values: list[str | int | float | bool] = Field(default_factory=list)
+
+
 class SchemaResponse(BaseModel):
     """Response for GET /schema — full model structure."""
 
@@ -378,6 +388,7 @@ class SchemaResponse(BaseModel):
     dimensions: list[DimensionDetail] = Field(default_factory=list)
     measures: list[MeasureDetail] = Field(default_factory=list)
     metrics: list[MetricDetail] = Field(default_factory=list)
+    filters: list[ModelFilterDetail] = Field(default_factory=list)
 
 
 class ExplainLineageItem(BaseModel):

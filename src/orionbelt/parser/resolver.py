@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from typing import Any
 
 from orionbelt.models.errors import SemanticError, ValidationResult
@@ -20,6 +21,7 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     Metric,
     MetricType,
+    ModelFilter,
     PeriodOverPeriod,
     SemanticModel,
 )
@@ -30,6 +32,15 @@ def _parse_extensions(raw: dict[str, Any]) -> list[CustomExtension]:
     """Extract customExtensions from a raw YAML dict."""
     exts = raw.get("customExtensions", [])
     return [CustomExtension(vendor=e.get("vendor", ""), data=e.get("data", "")) for e in exts]
+
+
+def _coerce_filter_value(v: object) -> str | int | float | bool | None:
+    """Coerce YAML-parsed values (e.g. datetime.date) to types ModelFilter accepts."""
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return v  # type: ignore[return-value]
 
 
 def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
@@ -455,12 +466,76 @@ class ReferenceResolver:
                     )
                 )
 
+        # Parse static model filters
+        model_filters: list[ModelFilter] = []
+        raw_filters = raw.get("filters", [])
+        if not isinstance(raw_filters, list):
+            errors.append(
+                SemanticError(
+                    code="FILTER_PARSE_ERROR",
+                    message="'filters' must be a YAML list, not a mapping or scalar",
+                    path="filters",
+                )
+            )
+            raw_filters = []
+        for i, rf in enumerate(raw_filters):
+            try:
+                obj_name = rf.get("dataObject", "")
+                col_name = rf.get("column", "")
+                if obj_name and obj_name not in data_objects:
+                    span = source_map.get(f"filters[{i}]") if source_map else None
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_FILTER_DATA_OBJECT",
+                            message=(
+                                f"Static filter[{i}] references unknown data object '{obj_name}'"
+                            ),
+                            path=f"filters[{i}]",
+                            span=span,
+                        )
+                    )
+                elif obj_name and col_name and col_name not in data_objects[obj_name].columns:
+                    span = source_map.get(f"filters[{i}]") if source_map else None
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_FILTER_COLUMN",
+                            message=(
+                                f"Static filter[{i}] references unknown column "
+                                f"'{col_name}' in data object '{obj_name}'"
+                            ),
+                            path=f"filters[{i}]",
+                            span=span,
+                        )
+                    )
+                raw_val = rf.get("value")
+                raw_vals = rf.get("values", [])
+                model_filters.append(
+                    ModelFilter(
+                        data_object=obj_name,
+                        column=col_name,
+                        operator=rf.get("operator", "equals"),
+                        value=_coerce_filter_value(raw_val),
+                        values=[_coerce_filter_value(v) for v in raw_vals],
+                    )
+                )
+            except Exception as e:
+                span = source_map.get(f"filters[{i}]") if source_map else None
+                errors.append(
+                    SemanticError(
+                        code="FILTER_PARSE_ERROR",
+                        message=f"Failed to parse static filter[{i}]: {e}",
+                        path=f"filters[{i}]",
+                        span=span,
+                    )
+                )
+
         model = SemanticModel(
             version=raw.get("version", 1.0),
             data_objects=data_objects,
             dimensions=dimensions,
             measures=measures,
             metrics=metrics,
+            filters=model_filters,
             owner=raw.get("owner"),
             custom_extensions=_parse_extensions(raw),
         )

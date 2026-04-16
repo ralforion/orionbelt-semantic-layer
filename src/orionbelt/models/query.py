@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -80,13 +81,20 @@ class QueryFilter(BaseModel):
     def _validate_filter_value(cls, v: Any) -> Any:
         """Reject arbitrary nested objects — allow scalars, lists of scalars, and dicts
         (for RELATIVE filters which use ``{unit, count, direction}`` objects).
+        Date/datetime values are coerced to ISO strings.
         """
         if v is None:
             return v
+        if isinstance(v, datetime):
+            return v.isoformat()
+        if isinstance(v, date):
+            return v.isoformat()
         if isinstance(v, (str, int, float, bool)):
             return v
-        if isinstance(v, list) and all(isinstance(i, (str, int, float, bool)) for i in v):
-            return v
+        if isinstance(v, list):
+            coerced = [i.isoformat() if isinstance(i, (date, datetime)) else i for i in v]
+            if all(isinstance(i, (str, int, float, bool)) for i in coerced):
+                return coerced
         if isinstance(v, dict) and all(isinstance(k, str) for k in v):
             return v
         msg = "Filter value must be a scalar, list of scalars, or object"

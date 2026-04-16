@@ -20,9 +20,12 @@ measures:     # Aggregations with expressions
 
 metrics:      # Composite metrics combining measures
   ...
+
+filters:      # Optional: static WHERE conditions applied to every query
+  ...
 ```
 
-All four sections are dictionaries keyed by name.
+The four main sections (`dataObjects`, `dimensions`, `measures`, `metrics`) are dictionaries keyed by name. The optional `filters` section is a list.
 
 ### Owner Field
 
@@ -600,6 +603,135 @@ Use cases:
 - **Governance tags**: Owner, classification, cost center, lineage information
 - **Vendor-specific metadata**: Any key-value data that OrionBelt should pass through without interpretation
 
+## Static Filters
+
+A model can declare **static filters** — mandatory WHERE conditions applied to every query against the model. Use them to restrict data by business unit, region, status, time range, or any column-level condition.
+
+```yaml
+filters:
+  - dataObject: Orders
+    column: Status
+    operator: equals
+    value: completed
+  - dataObject: Orders
+    column: Order Date
+    operator: ">="
+    value: 2026-01-01
+  - dataObject: Customers
+    column: Region
+    operator: in
+    values:
+      - EMEA
+      - APAC
+```
+
+Multiple static filters are combined with **AND**. They are always injected before any query-time filters and cannot be overridden at query time.
+
+### Filter Properties
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `dataObject` | string | Yes | Data object containing the column |
+| `column` | string | Yes | Column name in the data object |
+| `operator` | string | Yes | Comparison operator (see table below) |
+| `value` | scalar | No | Single comparison value |
+| `values` | list | No | List of values (for `in` / `not_in` / `between`) |
+
+### Supported Operators
+
+| Operator | SQL | Example |
+|----------|-----|---------|
+| `equals` | `= 'val'` | Exact match |
+| `!=` | `<> 'val'` | Not equal |
+| `>` | `> val` | Greater than |
+| `>=` | `>= val` | Greater than or equal |
+| `<` | `< val` | Less than |
+| `<=` | `<= val` | Less than or equal |
+| `in` | `IN ('a', 'b')` | Match any value in list (use `values`) |
+| `not_in` | `NOT IN ('a', 'b')` | Exclude values in list (use `values`) |
+| `is_not_null` | `IS NOT NULL` | Column is not null (no `value` needed) |
+| `is_null` | `IS NULL` | Column is null (no `value` needed) |
+| `between` | `BETWEEN a AND b` | Range (use `values` with two elements) |
+| `contains` | `LIKE '%val%'` | Substring match |
+| `starts_with` | `LIKE 'val%'` | Prefix match |
+| `ends_with` | `LIKE '%val'` | Suffix match |
+
+### Date and Timestamp Values
+
+Date and timestamp values follow ISO 8601 format. They can be written as bare YAML dates/timestamps or quoted strings — both produce valid SQL:
+
+```yaml
+filters:
+  # Bare date — YAML parses as date, coerced to ISO string
+  - dataObject: Orders
+    column: Order Date
+    operator: ">="
+    value: 2026-01-01
+
+  # ISO timestamp with timezone
+  - dataObject: Orders
+    column: Created At
+    operator: ">="
+    value: 2026-01-01T00:00:00Z
+
+  # ISO timestamp with offset
+  - dataObject: Orders
+    column: Created At
+    operator: "<"
+    value: 2026-07-01T00:00:00+02:00
+
+  # Quoted string — works identically
+  - dataObject: Orders
+    column: Order Date
+    operator: "<"
+    value: "2027-01-01"
+
+  # Date range
+  - dataObject: Orders
+    column: Order Date
+    operator: between
+    values:
+      - "2026-01-01"
+      - "2026-12-31"
+```
+
+All ISO 8601 variants are supported:
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| Date | `2026-01-01` | Bare or quoted |
+| Timestamp | `2026-01-01T14:30:00` | ISO with `T` separator |
+| Timestamp (space) | `2026-01-01 14:30:00` | YAML-style space separator |
+| UTC | `2026-01-01T00:00:00Z` | Zulu/UTC timezone |
+| Offset | `2026-01-01T14:30:00+02:00` | Explicit timezone offset |
+
+### Auto-Join Extension
+
+If a static filter references a data object that is not already in the query's join path, the compiler automatically extends the join graph to include it. For example, a filter on `Customers.Region` will add the `Customers` join even if the query only selects measures from `Orders`.
+
+### Interaction with Query-Time Filters
+
+Static filters are injected **before** query-time `where` filters. Both sets are combined with AND in the final SQL. Static filters cannot be removed or overridden by the query.
+
+```yaml
+# Model-level: always applied
+filters:
+  - dataObject: Orders
+    column: Status
+    operator: equals
+    value: completed
+```
+
+```json
+// Query-time: added on top
+{
+  "select": { "dimensions": ["Customer Country"], "measures": ["Total Revenue"] },
+  "where": [{ "field": "Customer Country", "op": "equals", "value": "Germany" }]
+}
+```
+
+Produces: `WHERE "STATUS" = 'completed' AND "COUNTRY" = 'Germany'`
+
 ## Validation Rules
 
 OrionBelt validates models against these rules:
@@ -611,6 +743,7 @@ OrionBelt validates models against these rules:
 5. **Measures resolve** — All column references in measures must point to existing data object columns
 6. **Join targets exist** — All `joinTo` targets must be defined data objects
 7. **References resolve** — All dimension references (dataObject/column) must resolve
+8. **Static filters resolve** — Filter `dataObject` and `column` must reference existing data objects and columns
 
 Validation errors include source positions (line/column) when available.
 

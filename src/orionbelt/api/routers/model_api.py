@@ -20,6 +20,7 @@ from orionbelt.api.schemas import (
     JoinGraphResponse,
     MeasureDetail,
     MetricDetail,
+    ModelFilterDetail,
     SchemaResponse,
     SearchRequest,
     SearchResponse,
@@ -138,6 +139,17 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             )
         )
 
+    filters = [
+        ModelFilterDetail(
+            data_object=f.data_object,
+            column=f.column,
+            operator=f.operator,
+            value=f.value,
+            values=f.values,
+        )
+        for f in model.filters
+    ]
+
     return SchemaResponse(
         model_id=model_id,
         version=model.version,
@@ -147,6 +159,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
         dimensions=dimensions,
         measures=measures,
         metrics=metrics,
+        filters=filters,
     )
 
 

@@ -892,6 +892,37 @@
       "type": "string",
       "description": "Owner or responsible party for this model"
     },
+    "filters": {
+      "type": "array",
+      "description": "Static WHERE filters applied to every query against this model",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dataObject": {
+            "type": "string",
+            "description": "Data object containing the filter column"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column name within the data object"
+          },
+          "operator": {
+            "type": "string",
+            "description": "Filter operator (equals, notequals, in, not_in, gt, gte, lt, lte, between, like, notlike, is_null, is_not_null, contains, notcontains, starts_with, ends_with)"
+          },
+          "value": {
+            "description": "Single filter value (scalar)"
+          },
+          "values": {
+            "type": "array",
+            "description": "List of filter values (for in/between operators)",
+            "items": {}
+          }
+        },
+        "required": ["dataObject", "column", "operator"],
+        "additionalProperties": false
+      }
+    },
     "customExtensions": {
       "type": "array",
       "description": "Vendor-keyed extension data at model level",
