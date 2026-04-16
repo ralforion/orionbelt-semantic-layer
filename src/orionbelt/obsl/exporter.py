@@ -12,7 +12,13 @@ import re
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-from orionbelt.models.semantic import MetricType, SemanticModel
+from orionbelt.models.semantic import (
+    MeasureFilter,
+    MeasureFilterGroup,
+    MeasureFilterItem,
+    MetricType,
+    SemanticModel,
+)
 
 # ---------------------------------------------------------------------------
 # OBSL namespace and URI helpers
@@ -83,6 +89,65 @@ def _rdf_list(g: Graph, items: list[URIRef]) -> BNode:
         else:
             g.add((node, RDF.rest, RDF.nil))
     return head
+
+
+# ---------------------------------------------------------------------------
+# Measure filter → expression string
+# ---------------------------------------------------------------------------
+
+
+def _format_filter_value(fv: object) -> str:
+    """Format a FilterValue as a readable literal."""
+    from orionbelt.models.semantic import FilterValue
+
+    if not isinstance(fv, FilterValue):
+        return str(fv)
+    if fv.is_null:
+        return "NULL"
+    for attr in ("value_string", "value_date"):
+        v = getattr(fv, attr, None)
+        if v is not None:
+            return f"'{v}'"
+    for attr in ("value_int", "value_float", "value_boolean"):
+        v = getattr(fv, attr, None)
+        if v is not None:
+            return str(v)
+    return "NULL"
+
+
+def _serialize_filter_item(item: MeasureFilterItem) -> str:
+    """Serialize a single MeasureFilter or MeasureFilterGroup to a string."""
+    if isinstance(item, MeasureFilter):
+        col_ref = ""
+        if item.column and item.column.view and item.column.column:
+            col_ref = f"{item.column.view}.{item.column.column}"
+        elif item.column and item.column.column:
+            col_ref = item.column.column
+        vals = [_format_filter_value(v) for v in item.values]
+        op = item.operator
+        if len(vals) == 1:
+            return f"{col_ref} {op} {vals[0]}"
+        return f"{col_ref} {op} ({', '.join(vals)})"
+    if isinstance(item, MeasureFilterGroup):
+        parts = [_serialize_filter_item(f) for f in item.filters]
+        joiner = f" {item.logic.value.upper()} "
+        expr = joiner.join(parts)
+        if len(parts) > 1:
+            expr = f"({expr})"
+        if item.negated:
+            expr = f"NOT {expr}"
+        return expr
+    return str(item)
+
+
+def _serialize_measure_filters(filters: list[MeasureFilterItem]) -> str | None:
+    """Serialize a measure's filter list to a human-readable expression string."""
+    if not filters:
+        return None
+    parts = [_serialize_filter_item(f) for f in filters]
+    if len(parts) == 1:
+        return parts[0]
+    return " AND ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +225,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.metricType,
         OBSL.cardinality,
         OBSL.expressionSource,
+        OBSL.filterExpression,
         OBSL.dataObject,
         OBSL.column,
         OBSL.cumulativeType,
@@ -208,6 +274,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.cardinality,
         OBSL.timeGrain,
         OBSL.expressionSource,
+        OBSL.filterExpression,
         OBSL.pathName,
         OBSL.synonym,
         OBSL.secondary,
@@ -350,6 +417,11 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((meas_uri, OBSL.total, Literal(True)))
         if meas.allow_fan_out:
             g.add((meas_uri, OBSL.allowFanOut, Literal(True)))
+
+        # Filter expression
+        filter_expr = _serialize_measure_filters(meas.filters)
+        if filter_expr:
+            g.add((meas_uri, OBSL.filterExpression, Literal(filter_expr)))
 
         if meas.description:
             g.add((meas_uri, RDFS.comment, Literal(meas.description)))
