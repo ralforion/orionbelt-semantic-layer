@@ -41,6 +41,7 @@ from orionbelt.models.semantic import (
     Measure,
     Metric,
     MetricType,
+    ModelFilter,
     PeriodOverPeriodComparison,
     SemanticModel,
     TimeGrain,
@@ -254,10 +255,18 @@ class QueryResolver:
         for step in ctx.result.join_steps:
             ctx.joined_objects.add(step.to_object)
 
-        # 6. Classify filters — filters may auto-extend the join path
+        # 5b. Inject static model filters — always applied as WHERE conditions
+        static_exprs: list[Expr] = []
+        for mf in model.filters:
+            static_filter = self._resolve_static_filter(ctx, mf)
+            if static_filter:
+                ctx.result.where_filters.append(static_filter)
+                static_exprs.append(static_filter.expression)
+
+        # 6. Classify filters — skip query-time duplicates of static filters
         for qfi in query.where:
             resolved_filter = self._resolve_filter_item(ctx, qfi, is_having=False)
-            if resolved_filter:
+            if resolved_filter and resolved_filter.expression not in static_exprs:
                 ctx.result.where_filters.append(resolved_filter)
 
         for qfi in query.having:
@@ -803,6 +812,47 @@ class QueryResolver:
                         path="usePathNames",
                     )
                 )
+
+    # -- static model filters ------------------------------------------------
+
+    def _resolve_static_filter(
+        self, ctx: _ResolutionContext, mf: ModelFilter
+    ) -> ResolvedFilter | None:
+        """Resolve a static model filter to a physical WHERE expression."""
+        obj = ctx.model.data_objects.get(mf.data_object)
+        if obj is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="UNKNOWN_FILTER_DATA_OBJECT",
+                    message=(f"Static filter references unknown data object '{mf.data_object}'"),
+                    path="filters",
+                )
+            )
+            return None
+
+        col = obj.columns.get(mf.column)
+        if col is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="UNKNOWN_FILTER_COLUMN",
+                    message=(
+                        f"Static filter references unknown column "
+                        f"'{mf.column}' in data object '{mf.data_object}'"
+                    ),
+                    path="filters",
+                )
+            )
+            return None
+
+        if not self._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
+            return None
+
+        col_expr: Expr = ColumnRef(name=col.code, table=mf.data_object)
+        qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
+        filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+        if filter_expr is None:
+            return None
+        return ResolvedFilter(expression=filter_expr, is_aggregate=False)
 
     # -- filters -------------------------------------------------------------
 

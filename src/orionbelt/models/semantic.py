@@ -347,6 +347,18 @@ class Metric(BaseModel):
         return self
 
 
+class ModelFilter(BaseModel):
+    """Static WHERE filter applied to every query against this model."""
+
+    data_object: str = Field(alias="dataObject")
+    column: str
+    operator: str
+    value: str | int | float | bool | None = None
+    values: list[str | int | float | bool] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
 class SemanticModel(BaseModel):
     """Complete semantic model parsed from OBML YAML."""
 
@@ -356,6 +368,7 @@ class SemanticModel(BaseModel):
     dimensions: dict[str, Dimension] = {}
     measures: dict[str, Measure] = {}
     metrics: dict[str, Metric] = {}
+    filters: list[ModelFilter] = Field(default_factory=list)
     owner: str | None = None
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 

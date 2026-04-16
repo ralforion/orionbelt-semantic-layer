@@ -228,7 +228,19 @@ Multiple top-level filters are combined with **AND**. For **OR** logic or more c
 |----------|------|-------------|
 | `field` | string | Dimension name or `DataObject.Column` (`where`), measure name (`having`) |
 | `op` | string | Filter operator (see table below) |
-| `value` | any | Comparison value (string, number, list, etc.) |
+| `value` | any | Comparison value (string, number, boolean, date, list, etc.) |
+
+**Date and timestamp values** are supported as ISO 8601 strings. All variants work: `"2026-01-01"`, `"2026-01-01T14:30:00"`, `"2026-01-01T00:00:00Z"`, `"2026-01-01T14:30:00+02:00"`. When constructing queries in Python, `datetime.date` and `datetime.datetime` objects are automatically coerced to ISO strings.
+
+```json
+{
+  "where": [
+    { "field": "Order Date", "op": ">=", "value": "2026-01-01" },
+    { "field": "Created At", "op": ">=", "value": "2026-01-01T00:00:00Z" },
+    { "field": "Order Date", "op": "<", "value": "2027-01-01" }
+  ]
+}
+```
 
 ### Filter Groups (AND / OR / NOT)
 

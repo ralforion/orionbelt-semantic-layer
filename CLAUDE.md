@@ -135,7 +135,7 @@ OBML defines all types, enums, error codes, operators, and semantics for the pro
 
 Never change any dependent without checking consistency with OBML and all other dependents.
 
-Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metrics`.
+Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metrics`, `filters`.
 
 - **Column names are unique within each data object** — dimensions, measures, and metrics must be unique across the whole model
 - **Measure expressions** reference columns by data object + column: `{[DataObject].[Column]}`

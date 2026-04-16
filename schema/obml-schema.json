@@ -222,7 +222,7 @@
       "additionalProperties": false
     },
     "operator": {
-      "description": "Filter operation code",
+      "description": "Filter operation code (measure-level filters)",
       "enum": [
         "equals",
         "notequals",
@@ -242,6 +242,17 @@
         "notlike",
         "starts_with",
         "ends_with"
+      ]
+    },
+    "staticFilterOperator": {
+      "description": "Filter operator for static model filters — supports both OBML and SQL-style naming",
+      "enum": [
+        "equals", "notequals", "inlist", "notinlist",
+        "contains", "notcontains", "gt", "gte", "lt", "lte",
+        "set", "notset", "between", "notbetween",
+        "like", "notlike", "starts_with", "ends_with",
+        "=", "!=", ">", ">=", "<", "<=",
+        "in", "not_in", "is_null", "is_not_null"
       ]
     },
     "parameterValue": {
@@ -891,6 +902,47 @@
     "owner": {
       "type": "string",
       "description": "Owner or responsible party for this model"
+    },
+    "filters": {
+      "type": "array",
+      "description": "Static WHERE filters applied to every query against this model",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dataObject": {
+            "type": "string",
+            "description": "Data object containing the filter column"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column name within the data object"
+          },
+          "operator": {
+            "$ref": "#/definitions/staticFilterOperator"
+          },
+          "value": {
+            "description": "Single filter value. Dates and timestamps use ISO 8601 strings (e.g. '2026-01-01', '2026-01-01T14:30:00Z'). Bare YAML dates are auto-coerced to ISO strings at load time.",
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" }
+            ]
+          },
+          "values": {
+            "type": "array",
+            "description": "List of filter values (for in/between operators). Dates use ISO 8601 strings.",
+            "items": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "number" },
+                { "type": "boolean" }
+              ]
+            }
+          }
+        },
+        "required": ["dataObject", "column", "operator"],
+        "additionalProperties": false
+      }
     },
     "customExtensions": {
       "type": "array",

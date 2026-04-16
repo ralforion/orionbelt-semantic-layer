@@ -7,7 +7,7 @@
 <p align="center"><strong>Compile and execute YAML semantic models as analytical SQL across multiple database dialects</strong></p>
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 1.4.0](https://img.shields.io/badge/version-1.4.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 1.5.0](https://img.shields.io/badge/version-1.5.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/LICENSE)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
@@ -34,6 +34,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 - **OBML Model Format** — YAML-based semantic models with data objects, dimensions, measures, metrics, and joins
 - **AST-Based SQL** — Custom SQL AST ensures correct, injection-safe SQL generation
 - **Cross-Schema Queries** — Model data objects across multiple databases and schemas in a single model
+- **Static Model Filters** — Mandatory WHERE conditions baked into the model, applied to every query with auto-join extension
 - **Star Schema & CFL** — Automatic join resolution with Composite Fact Layer for multi-fact queries
 - **REST API** — FastAPI endpoints for model management, validation, compilation, and execution
 - **Gradio UI** — Interactive web interface for model editing, query testing, and ER diagrams

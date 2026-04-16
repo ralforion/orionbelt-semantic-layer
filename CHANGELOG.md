@@ -2,6 +2,23 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.5.0] - 2026-04-16
+
+### Added
+
+- **Static model filters** — top-level `filters:` YAML key injects mandatory WHERE conditions into every query against the model. Supports all filter operators (OBML and SQL-style), auto-join extension, and AND combination with query-time filters.
+- **ISO 8601 date/timestamp support** — bare YAML dates (`2026-01-01`) and timestamps (`2026-01-01T14:30:00Z`, `+02:00` offsets) are auto-coerced to ISO strings in both static and query-time filters.
+- **Filter deduplication** — query-time WHERE filters identical to a static filter are silently skipped (no duplicate predicates in SQL).
+- **OSI roundtrip for static filters** — `obml_filters` preserved in `custom_extensions` during OBML → OSI → OBML conversion.
+- **JSON Schema validation** — `staticFilterOperator` enum (30 operators), typed `value`/`values` fields.
+- **Schema API** — `filters` field in `GET /schema` response exposes static filters.
+
+### Changed
+
+- Version bumped to 1.5.0
+
+---
+
 ## [1.4.0] - 2026-04-12
 
 ### Added
