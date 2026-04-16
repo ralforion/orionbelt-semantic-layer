@@ -519,7 +519,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.4.0
+  OrionBelt v1.5.0
 </div>
       
     </li>
@@ -1577,7 +1577,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.4.0
+  OrionBelt v1.5.0
 </div>
                   </div>
                 </div>
@@ -1610,6 +1610,7 @@
 <li><strong>Cross-schema &amp; cross-database</strong> — Model data objects across multiple schemas and databases; dimensions, measures, and metrics can span schema boundaries in a single query</li>
 <li><strong>Safe by construction</strong> — AST-based SQL generation prevents injection and ensures syntactic correctness</li>
 <li><strong>Precise error reporting</strong> — Validation errors include line and column numbers from your YAML source</li>
+<li><strong>Static model filters</strong> — Bake mandatory WHERE conditions into the model (by status, region, date range, etc.) — applied to every query automatically, with auto-join extension and ISO 8601 date/timestamp support</li>
 <li><strong>Automatic join resolution</strong> — Declare relationships between data objects; OrionBelt finds optimal join paths using graph algorithms</li>
 <li><strong>Multi-fact support</strong> — Composite Fact Layer (CFL) planning handles queries spanning multiple fact tables with UNION ALL and CTE-based aggregation</li>
 <li><strong>Machine-readable semantics</strong> — Every loaded model is exported as an OBSL-Core 0.1 RDF graph and queryable via a read-only SPARQL endpoint, so AI agents and knowledge-graph tools can reason over your model</li>
@@ -1635,6 +1636,10 @@
 <tr>
 <td>Cross-Schema Queries</td>
 <td>Dimensions, measures, and metrics can span multiple databases and schemas in a single query</td>
+</tr>
+<tr>
+<td>Static Model Filters</td>
+<td>Mandatory WHERE conditions on any column, auto-join, ISO 8601 dates, deduplicated with query-time filters</td>
 </tr>
 <tr>
 <td>Star Schema &amp; CFL</td>

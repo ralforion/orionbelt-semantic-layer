@@ -1124,6 +1124,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#static-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static Filters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Static Filters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filter-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filter Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supported-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#date-and-timestamp-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Date and Timestamp Values
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#auto-join-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-Join Extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interaction-with-query-time-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interaction with Query-Time Filters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#validation-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1150,7 +1222,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.4.0
+  OrionBelt v1.5.0
 </div>
       
     </li>
@@ -2300,6 +2372,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#static-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static Filters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Static Filters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filter-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filter Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supported-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#date-and-timestamp-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Date and Timestamp Values
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#auto-join-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-Join Extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interaction-with-query-time-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interaction with Query-Time Filters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#validation-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2326,7 +2470,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.4.0
+  OrionBelt v1.5.0
 </div>
                   </div>
                 </div>
@@ -2363,8 +2507,11 @@
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
 </span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="nt">metrics</span><span class="p">:</span><span class="w">      </span><span class="c1"># Composite metrics combining measures</span>
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">...</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="nt">filters</span><span class="p">:</span><span class="w">      </span><span class="c1"># Optional: static WHERE conditions applied to every query</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">...</span>
 </span></code></pre></div>
-<p>All four sections are dictionaries keyed by name.</p>
+<p>The four main sections (<code>dataObjects</code>, <code>dimensions</code>, <code>measures</code>, <code>metrics</code>) are dictionaries keyed by name. The optional <code>filters</code> section is a list.</p>
 <h3 id="owner-field">Owner Field<a class="headerlink" href="#owner-field" title="Permanent link">&para;</a></h3>
 <p>Every level of the model supports an optional <code>owner</code> field — a free-text string identifying the responsible team or person. The owner is returned in model discovery API responses.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span>
@@ -3335,6 +3482,240 @@
 <li><strong>Governance tags</strong>: Owner, classification, cost center, lineage information</li>
 <li><strong>Vendor-specific metadata</strong>: Any key-value data that OrionBelt should pass through without interpretation</li>
 </ul>
+<h2 id="static-filters">Static Filters<a class="headerlink" href="#static-filters" title="Permanent link">&para;</a></h2>
+<p>A model can declare <strong>static filters</strong> — mandatory WHERE conditions applied to every query against the model. Use them to restrict data by business unit, region, status, time range, or any column-level condition.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nt">filters</span><span class="p">:</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Status</span>
+</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">equals</span>
+</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">completed</span>
+</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Date</span>
+</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&gt;=&quot;</span>
+</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-01-01</span>
+</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Customers</span>
+</span><span id="__span-20-11"><a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Region</span>
+</span><span id="__span-20-12"><a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">in</span>
+</span><span id="__span-20-13"><a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a><span class="w">    </span><span class="nt">values</span><span class="p">:</span>
+</span><span id="__span-20-14"><a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">EMEA</span>
+</span><span id="__span-20-15"><a id="__codelineno-20-15" name="__codelineno-20-15" href="#__codelineno-20-15"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">APAC</span>
+</span></code></pre></div>
+<p>Multiple static filters are combined with <strong>AND</strong>. They are always injected before any query-time filters and cannot be overridden at query time.</p>
+<h3 id="filter-properties">Filter Properties<a class="headerlink" href="#filter-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataObject</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Data object containing the column</td>
+</tr>
+<tr>
+<td><code>column</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Column name in the data object</td>
+</tr>
+<tr>
+<td><code>operator</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Comparison operator (see table below)</td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td>scalar</td>
+<td>No</td>
+<td>Single comparison value</td>
+</tr>
+<tr>
+<td><code>values</code></td>
+<td>list</td>
+<td>No</td>
+<td>List of values (for <code>in</code> / <code>not_in</code> / <code>between</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="supported-operators">Supported Operators<a class="headerlink" href="#supported-operators" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>SQL</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>equals</code></td>
+<td><code>= 'val'</code></td>
+<td>Exact match</td>
+</tr>
+<tr>
+<td><code>!=</code></td>
+<td><code>&lt;&gt; 'val'</code></td>
+<td>Not equal</td>
+</tr>
+<tr>
+<td><code>&gt;</code></td>
+<td><code>&gt; val</code></td>
+<td>Greater than</td>
+</tr>
+<tr>
+<td><code>&gt;=</code></td>
+<td><code>&gt;= val</code></td>
+<td>Greater than or equal</td>
+</tr>
+<tr>
+<td><code>&lt;</code></td>
+<td><code>&lt; val</code></td>
+<td>Less than</td>
+</tr>
+<tr>
+<td><code>&lt;=</code></td>
+<td><code>&lt;= val</code></td>
+<td>Less than or equal</td>
+</tr>
+<tr>
+<td><code>in</code></td>
+<td><code>IN ('a', 'b')</code></td>
+<td>Match any value in list (use <code>values</code>)</td>
+</tr>
+<tr>
+<td><code>not_in</code></td>
+<td><code>NOT IN ('a', 'b')</code></td>
+<td>Exclude values in list (use <code>values</code>)</td>
+</tr>
+<tr>
+<td><code>is_not_null</code></td>
+<td><code>IS NOT NULL</code></td>
+<td>Column is not null (no <code>value</code> needed)</td>
+</tr>
+<tr>
+<td><code>is_null</code></td>
+<td><code>IS NULL</code></td>
+<td>Column is null (no <code>value</code> needed)</td>
+</tr>
+<tr>
+<td><code>between</code></td>
+<td><code>BETWEEN a AND b</code></td>
+<td>Range (use <code>values</code> with two elements)</td>
+</tr>
+<tr>
+<td><code>contains</code></td>
+<td><code>LIKE '%val%'</code></td>
+<td>Substring match</td>
+</tr>
+<tr>
+<td><code>starts_with</code></td>
+<td><code>LIKE 'val%'</code></td>
+<td>Prefix match</td>
+</tr>
+<tr>
+<td><code>ends_with</code></td>
+<td><code>LIKE '%val'</code></td>
+<td>Suffix match</td>
+</tr>
+</tbody>
+</table>
+<h3 id="date-and-timestamp-values">Date and Timestamp Values<a class="headerlink" href="#date-and-timestamp-values" title="Permanent link">&para;</a></h3>
+<p>Date and timestamp values follow ISO 8601 format. They can be written as bare YAML dates/timestamps or quoted strings — both produce valid SQL:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nt">filters</span><span class="p">:</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span><span class="c1"># Bare date — YAML parses as date, coerced to ISO string</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Date</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&gt;=&quot;</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-01-01</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">  </span><span class="c1"># ISO timestamp with timezone</span>
+</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Created At</span>
+</span><span id="__span-21-11"><a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&gt;=&quot;</span>
+</span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-01-01T00:00:00Z</span>
+</span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>
+</span><span id="__span-21-14"><a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a><span class="w">  </span><span class="c1"># ISO timestamp with offset</span>
+</span><span id="__span-21-15"><a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-21-16"><a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Created At</span>
+</span><span id="__span-21-17"><a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;&quot;</span>
+</span><span id="__span-21-18"><a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-07-01T00:00:00+02:00</span>
+</span><span id="__span-21-19"><a id="__codelineno-21-19" name="__codelineno-21-19" href="#__codelineno-21-19"></a>
+</span><span id="__span-21-20"><a id="__codelineno-21-20" name="__codelineno-21-20" href="#__codelineno-21-20"></a><span class="w">  </span><span class="c1"># Quoted string — works identically</span>
+</span><span id="__span-21-21"><a id="__codelineno-21-21" name="__codelineno-21-21" href="#__codelineno-21-21"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-21-22"><a id="__codelineno-21-22" name="__codelineno-21-22" href="#__codelineno-21-22"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Date</span>
+</span><span id="__span-21-23"><a id="__codelineno-21-23" name="__codelineno-21-23" href="#__codelineno-21-23"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;&quot;</span>
+</span><span id="__span-21-24"><a id="__codelineno-21-24" name="__codelineno-21-24" href="#__codelineno-21-24"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2027-01-01&quot;</span>
+</span><span id="__span-21-25"><a id="__codelineno-21-25" name="__codelineno-21-25" href="#__codelineno-21-25"></a>
+</span><span id="__span-21-26"><a id="__codelineno-21-26" name="__codelineno-21-26" href="#__codelineno-21-26"></a><span class="w">  </span><span class="c1"># Date range</span>
+</span><span id="__span-21-27"><a id="__codelineno-21-27" name="__codelineno-21-27" href="#__codelineno-21-27"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-21-28"><a id="__codelineno-21-28" name="__codelineno-21-28" href="#__codelineno-21-28"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Date</span>
+</span><span id="__span-21-29"><a id="__codelineno-21-29" name="__codelineno-21-29" href="#__codelineno-21-29"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">between</span>
+</span><span id="__span-21-30"><a id="__codelineno-21-30" name="__codelineno-21-30" href="#__codelineno-21-30"></a><span class="w">    </span><span class="nt">values</span><span class="p">:</span>
+</span><span id="__span-21-31"><a id="__codelineno-21-31" name="__codelineno-21-31" href="#__codelineno-21-31"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;2026-01-01&quot;</span>
+</span><span id="__span-21-32"><a id="__codelineno-21-32" name="__codelineno-21-32" href="#__codelineno-21-32"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;2026-12-31&quot;</span>
+</span></code></pre></div>
+<p>All ISO 8601 variants are supported:</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Example</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Date</td>
+<td><code>2026-01-01</code></td>
+<td>Bare or quoted</td>
+</tr>
+<tr>
+<td>Timestamp</td>
+<td><code>2026-01-01T14:30:00</code></td>
+<td>ISO with <code>T</code> separator</td>
+</tr>
+<tr>
+<td>Timestamp (space)</td>
+<td><code>2026-01-01 14:30:00</code></td>
+<td>YAML-style space separator</td>
+</tr>
+<tr>
+<td>UTC</td>
+<td><code>2026-01-01T00:00:00Z</code></td>
+<td>Zulu/UTC timezone</td>
+</tr>
+<tr>
+<td>Offset</td>
+<td><code>2026-01-01T14:30:00+02:00</code></td>
+<td>Explicit timezone offset</td>
+</tr>
+</tbody>
+</table>
+<h3 id="auto-join-extension">Auto-Join Extension<a class="headerlink" href="#auto-join-extension" title="Permanent link">&para;</a></h3>
+<p>If a static filter references a data object that is not already in the query's join path, the compiler automatically extends the join graph to include it. For example, a filter on <code>Customers.Region</code> will add the <code>Customers</code> join even if the query only selects measures from <code>Orders</code>.</p>
+<h3 id="interaction-with-query-time-filters">Interaction with Query-Time Filters<a class="headerlink" href="#interaction-with-query-time-filters" title="Permanent link">&para;</a></h3>
+<p>Static filters are injected <strong>before</strong> query-time <code>where</code> filters. Both sets are combined with AND in the final SQL. Static filters cannot be removed or overridden by the query.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Model-level: always applied</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="nt">filters</span><span class="p">:</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Orders</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">    </span><span class="nt">column</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Status</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">    </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">equals</span>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">completed</span>
+</span></code></pre></div>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="c1">// Query-time: added on top</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="p">{</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">  </span><span class="nt">&quot;select&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;dimensions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;Customer Country&quot;</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;measures&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;Total Revenue&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">  </span><span class="nt">&quot;where&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">&quot;field&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Customer Country&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;equals&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Germany&quot;</span><span class="w"> </span><span class="p">}]</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Produces: <code>WHERE "STATUS" = 'completed' AND "COUNTRY" = 'Germany'</code></p>
 <h2 id="validation-rules">Validation Rules<a class="headerlink" href="#validation-rules" title="Permanent link">&para;</a></h2>
 <p>OrionBelt validates models against these rules:</p>
 <ol>
@@ -3345,6 +3726,7 @@
 <li><strong>Measures resolve</strong> — All column references in measures must point to existing data object columns</li>
 <li><strong>Join targets exist</strong> — All <code>joinTo</code> targets must be defined data objects</li>
 <li><strong>References resolve</strong> — All dimension references (dataObject/column) must resolve</li>
+<li><strong>Static filters resolve</strong> — Filter <code>dataObject</code> and <code>column</code> must reference existing data objects and columns</li>
 </ol>
 <p>Validation errors include source positions (line/column) when available.</p>
 <h2 id="full-example">Full Example<a class="headerlink" href="#full-example" title="Permanent link">&para;</a></h2>
