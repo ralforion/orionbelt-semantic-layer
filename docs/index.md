@@ -12,6 +12,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 - **Analytics as Code** — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible
 - **One model, many dialects** — Define your semantic model once in YAML, compile and execute SQL for any supported warehouse
+- **Cross-schema & cross-database** — Model data objects across multiple schemas and databases; dimensions, measures, and metrics can span schema boundaries in a single query
 - **Safe by construction** — AST-based SQL generation prevents injection and ensures syntactic correctness
 - **Precise error reporting** — Validation errors include line and column numbers from your YAML source
 - **Automatic join resolution** — Declare relationships between data objects; OrionBelt finds optimal join paths using graph algorithms
@@ -25,6 +26,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 | ------------------- | --------------------------------------------------------------------------------------------------------------- |
 | 8 SQL Dialects      | BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, Snowflake                         |
 | OrionBelt ML (OBML) | YAML-based data objects, dimensions, measures, metrics, joins                                                   |
+| Cross-Schema Queries | Dimensions, measures, and metrics can span multiple databases and schemas in a single query                     |
 | Star Schema & CFL   | Automatic fact selection and join path resolution                                                               |
 | Session Management  | TTL-scoped per-client sessions for the REST API                                                                 |
 | REST API            | FastAPI endpoints for session-based model management, validation, compilation, execution, and OSI conversion               |
