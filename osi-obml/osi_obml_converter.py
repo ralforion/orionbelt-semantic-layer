@@ -117,6 +117,17 @@ class OSItoOBML:
         if metrics:
             obml["metrics"] = metrics
 
+        # ── Restore model-level static filters from custom_extensions ─���
+        for ext in model.get("custom_extensions", []):
+            if ext.get("vendor_name") == "COMMON":
+                try:
+                    ext_data = json.loads(ext.get("data", "{}"))
+                    if ext_data.get("obml_filters"):
+                        obml["filters"] = ext_data["obml_filters"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                break
+
         return obml
 
     def _parse_source(self, source: str) -> tuple[str, str, str]:
@@ -831,13 +842,18 @@ class OBMLtoOSI:
             sem_model["metrics"] = osi_metrics
 
         # Add OBML as custom extension for lossless roundtrip info
+        roundtrip_data: dict[str, Any] = {
+            "source_format": "OBML",
+            "source_version": str(self.obml.get("version", "1.0")),
+            "converter": "osi_obml_converter",
+        }
+        # Preserve model-level static filters for roundtrip
+        obml_filters = self.obml.get("filters", [])
+        if obml_filters:
+            roundtrip_data["obml_filters"] = obml_filters
         sem_model["custom_extensions"] = [{
             "vendor_name": "COMMON",
-            "data": json.dumps({
-                "source_format": "OBML",
-                "source_version": str(self.obml.get("version", "1.0")),
-                "converter": "osi_obml_converter"
-            })
+            "data": json.dumps(roundtrip_data),
         }]
 
         osi["semantic_model"] = [sem_model]
