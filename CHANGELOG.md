@@ -2,6 +2,22 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.5.1] - 2026-04-16
+
+### Added
+
+- **OBSL measure filter expression** — measures with filters now export `obsl:filterExpression` in the RDF graph (e.g., `"Customers.Country equals 'US'"`). Updated ontology (`obsl.ttl`), SHACL shapes, spec, and example.
+
+### Fixed
+
+- **Unreachable filters silently skipped** — static and query-time filters on data objects not reachable from the query's join graph are now silently ignored instead of raising `UNREACHABLE_FILTER_FIELD`. Filters are irrelevant when the query doesn't touch that part of the schema.
+
+### Changed
+
+- Version bumped to 1.5.1
+
+---
+
 ## [1.5.0] - 2026-04-16
 
 ### Added
