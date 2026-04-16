@@ -10,6 +10,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 ## Why OrionBelt?
 
+- **Analytics as Code** — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible
 - **One model, many dialects** — Define your semantic model once in YAML, compile and execute SQL for any supported warehouse
 - **Safe by construction** — AST-based SQL generation prevents injection and ensures syntactic correctness
 - **Precise error reporting** — Validation errors include line and column numbers from your YAML source
