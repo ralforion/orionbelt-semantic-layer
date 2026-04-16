@@ -89,6 +89,9 @@ obsl:distinct a owl:DatatypeProperty .
 obsl:expressionSource a owl:DatatypeProperty,
         owl:FunctionalProperty .
 
+obsl:filterExpression a owl:DatatypeProperty,
+        owl:FunctionalProperty .
+
 obsl:grainToDate a owl:DatatypeProperty,
         owl:FunctionalProperty .
 
@@ -386,6 +389,7 @@ obsl:hasDataObject a owl:ObjectProperty ;
     rdfs:label "US Revenue" ;
     obsl:aggregation "sum" ;
     obsl:expressionSource "{[Orders].[Price]} * {[Orders].[Quantity]}" ;
+    obsl:filterExpression "Customers.Country equals 'US'" ;
     obsl:resultType "float" .
 
 obsl:CumulativeMetric a owl:Class ;
