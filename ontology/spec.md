@@ -24,7 +24,7 @@ OBSL-Core is not intended to represent:
 - dialect-specific SQL
 - runtime planner internals
 - structured expression ASTs
-- explicit filter graphs
+- structured filter graphs (measure filters are serialized as expression strings)
 
 ## 3. Profiles
 
@@ -46,7 +46,7 @@ OBSL-Core is not intended to represent:
 ### 3.2 OBSL-Full
 OBSL-Full adds:
 - structured expression graphs
-- explicit filter graphs
+- structured filter graphs
 
 Only `OBSL-Core 0.1` is finalized by this document. `OBSL-Full` remains future work.
 
@@ -184,15 +184,16 @@ Optional:
 - `obsl:distinct`
 - `obsl:total`
 - `obsl:allowFanOut`
+- `obsl:filterExpression`
 
 Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:aggregation`
 - exactly one `obsl:resultType`
 - either one or more `obsl:sourceColumn`, or exactly one `obsl:expressionSource`
+- at most one `obsl:filterExpression`
 
 Out of scope for Core:
-- `obsl:hasFilter`
 - `obsl:hasExpression`
 
 ### 5.7 Metric
@@ -253,9 +254,13 @@ Core-compatible derived links:
 - expression-based measures MAY include `obsl:referencesColumn` in a future compatible extension, but this is not required for Core conformance
 
 ## 7. Filters
-Explicit filter graphs are out of scope for `OBSL-Core 0.1`.
+Structured filter graphs (nested AND/OR trees) are out of scope for `OBSL-Core 0.1`.
 
-If a system needs filter exchange, it should use a future `OBSL-Full` profile.
+Measure-level filters are represented as a human-readable expression string via `obsl:filterExpression`. This captures the filter semantics (e.g., `"Customers.Country equals 'US'"`) without requiring a full filter graph vocabulary. The expression is serialized from OBML's structured `MeasureFilter` / `MeasureFilterGroup` model, including nested groups and negation.
+
+Model-level static filters (`filters:` top-level key) are operational constraints and are not exported to the OBSL graph.
+
+If a system needs structured filter exchange, it should use a future `OBSL-Full` profile.
 
 ## 8. Controlled Value Sets
 
@@ -381,6 +386,7 @@ Recommended practice:
 - `distinct` -> `obsl:distinct`
 - `total` -> `obsl:total`
 - `allowFanOut` -> `obsl:allowFanOut`
+- `filters[]` -> `obsl:filterExpression` (serialized as expression string)
 
 ### 10.7 Metrics
 - `type` -> `obsl:metricType`
@@ -402,7 +408,6 @@ Recommended practice:
 - `periodOverPeriod.comparison` -> `obsl:comparison`
 
 Fields intentionally excluded from Core mapping:
-- measure filters
 - expression AST nodes
 
 ## 11. OWL Axioms
@@ -429,7 +434,7 @@ Properties constrained to at most one value are declared `owl:FunctionalProperty
 - Object properties: `obsl:joinTo`, `obsl:dataObject`, `obsl:column`
 - Identifier properties: `obsl:code`, `obsl:database`, `obsl:schema`, `obsl:physicalName`
 - Type properties: `obsl:resultType`, `obsl:aggregation`, `obsl:metricType`, `obsl:cardinality`
-- Expression: `obsl:expressionSource`
+- Expression: `obsl:expressionSource`, `obsl:filterExpression`
 - Cumulative: `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate`
 - Period-over-period: `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison`
 
@@ -508,6 +513,7 @@ Core datatype properties:
 - `obsl:cardinality` (functional)
 - `obsl:timeGrain`
 - `obsl:expressionSource` (functional)
+- `obsl:filterExpression` (functional)
 - `obsl:synonym`
 - `obsl:secondary`
 - `obsl:pathName`
@@ -524,5 +530,5 @@ Core datatype properties:
 Axioms:
 - `owl:AllDisjointClasses` over the 7 core classes
 - `obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric`
-- 18 `owl:FunctionalProperty` declarations (see section 11.2)
+- 19 `owl:FunctionalProperty` declarations (see section 11.2)
 - `obsl:belongsToModel owl:inverseOf obsl:hasDataObject`

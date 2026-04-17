@@ -311,6 +311,20 @@ class TestExporterMeasures:
         uri = URIRef(f"{BASE}t1/measure/grand-total-revenue")
         assert (uri, OBSL.total, Literal(True)) in g
 
+    def test_filter_expression(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/measure/us-revenue")
+        expr_values = list(g.objects(uri, OBSL.filterExpression))
+        assert len(expr_values) == 1
+        expr = str(expr_values[0])
+        assert "Customers.Country" in expr
+        assert "'US'" in expr
+
+    def test_no_filter_expression_when_empty(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/measure/revenue")
+        assert not list(g.objects(uri, OBSL.filterExpression))
+
     def test_measure_synonyms(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
         uri = URIRef(f"{BASE}t1/measure/revenue")
@@ -441,6 +455,7 @@ class TestExporterAxioms:
             OBSL.metricType,
             OBSL.cardinality,
             OBSL.expressionSource,
+            OBSL.filterExpression,
             OBSL.dataObject,
             OBSL.column,
             OBSL.cumulativeType,

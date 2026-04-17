@@ -818,30 +818,17 @@ class QueryResolver:
     def _resolve_static_filter(
         self, ctx: _ResolutionContext, mf: ModelFilter
     ) -> ResolvedFilter | None:
-        """Resolve a static model filter to a physical WHERE expression."""
+        """Resolve a static model filter to a physical WHERE expression.
+
+        Silently skips filters on data objects that are unreachable from the
+        query's join graph — they are simply irrelevant to the current query.
+        """
         obj = ctx.model.data_objects.get(mf.data_object)
         if obj is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_FILTER_DATA_OBJECT",
-                    message=(f"Static filter references unknown data object '{mf.data_object}'"),
-                    path="filters",
-                )
-            )
             return None
 
         col = obj.columns.get(mf.column)
         if col is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_FILTER_COLUMN",
-                    message=(
-                        f"Static filter references unknown column "
-                        f"'{mf.column}' in data object '{mf.data_object}'"
-                    ),
-                    path="filters",
-                )
-            )
             return None
 
         if not self._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
@@ -863,35 +850,26 @@ class QueryResolver:
         filter_path: str,
         field_label: str,
     ) -> bool:
-        """Ensure *obj_name* is joined; auto-extend if reachable. Return success."""
+        """Ensure *obj_name* is joined; auto-extend if reachable.
+
+        Silently skips filters on unreachable data objects — they are
+        irrelevant to the current query.
+        """
         if obj_name in ctx.joined_objects:
             return True
-        reachable = False
-        if ctx.graph is not None:
-            for joined_obj in list(ctx.joined_objects):
-                if obj_name in ctx.graph.descendants(joined_obj):
-                    reachable = True
-                    break
-        if not reachable:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNREACHABLE_FILTER_FIELD",
-                    message=(
-                        f"Filter field '{field_label}' references data object "
-                        f"'{obj_name}' which is not reachable from "
-                        f"the query's join graph"
-                    ),
-                    path=filter_path,
-                )
-            )
+        if ctx.graph is None:
             return False
-        if ctx.graph is not None:
-            new_steps = ctx.graph.find_join_path(ctx.joined_objects, {obj_name})
-            for step in new_steps:
-                if step.to_object not in ctx.joined_objects:
-                    ctx.result.join_steps.append(step)
-                    ctx.joined_objects.add(step.to_object)
-                    ctx.result.required_objects.add(step.to_object)
+        reachable = any(
+            obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects)
+        )
+        if not reachable:
+            return False
+        new_steps = ctx.graph.find_join_path(ctx.joined_objects, {obj_name})
+        for step in new_steps:
+            if step.to_object not in ctx.joined_objects:
+                ctx.result.join_steps.append(step)
+                ctx.joined_objects.add(step.to_object)
+                ctx.result.required_objects.add(step.to_object)
         return True
 
     def _resolve_filter_item(

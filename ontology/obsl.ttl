@@ -234,6 +234,12 @@ obsl:expressionSource a owl:DatatypeProperty ;
     rdfs:comment "Expression string defining a calculated measure or metric.  Measures use {[DataObject].[Column]} syntax; metrics use {[Measure Name]} syntax." ;
     rdfs:range xsd:string .
 
+obsl:filterExpression a owl:DatatypeProperty ;
+    rdfs:label "filter expression" ;
+    rdfs:comment "Human-readable expression string describing the measure's filter conditions (e.g. \"Customers.Country equals 'US'\").  Serialized from structured OBML measure filters." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
 # =============================================================================
 # 7. DATATYPE PROPERTIES --- Behavioral flags
 # =============================================================================
@@ -346,6 +352,7 @@ obsl:aggregation a owl:FunctionalProperty .
 obsl:metricType a owl:FunctionalProperty .
 obsl:cardinality a owl:FunctionalProperty .
 obsl:expressionSource a owl:FunctionalProperty .
+obsl:filterExpression a owl:FunctionalProperty .
 
 obsl:dataObject a owl:FunctionalProperty .
 obsl:column a owl:FunctionalProperty .

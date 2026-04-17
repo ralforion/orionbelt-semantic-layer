@@ -298,6 +298,55 @@ class TestStaticFilterCompilation:
         assert "\"REGION\" = 'EMEA'" in result.sql
         assert "LEFT JOIN" in result.sql
 
+    def test_unreachable_filter_silently_ignored(self):
+        """A static filter on a data object unreachable from the query is skipped."""
+        yaml = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID:
+        code: ORDER_ID
+        abstractType: string
+      Amount:
+        code: AMOUNT
+        abstractType: float
+  Suppliers:
+    code: SUPPLIERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Supplier ID:
+        code: SUPPLIER_ID
+        abstractType: string
+      Rating:
+        code: RATING
+        abstractType: string
+
+measures:
+  Total Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    resultType: float
+    aggregation: sum
+
+filters:
+  - dataObject: Suppliers
+    column: Rating
+    operator: equals
+    value: A
+"""
+        model = _load_model(yaml)
+        query = QueryObject(select=QuerySelect(measures=["Total Revenue"]))
+        result = PIPELINE.compile(query, model, "postgres")
+        assert "RATING" not in result.sql
+        assert "SUPPLIERS" not in result.sql
+
 
 class TestStaticFilterValidation:
     """Static filter validation catches invalid references."""

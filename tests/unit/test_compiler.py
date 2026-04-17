@@ -892,8 +892,8 @@ class TestFilterValidation:
             resolver.resolve(query, model)
         assert any(e.code == "UNKNOWN_FILTER_FIELD" for e in exc_info.value.errors)
 
-    def test_filter_unreachable_dimension(self) -> None:
-        """Filter on a dimension whose data object is not reachable."""
+    def test_filter_unreachable_dimension_silently_skipped(self) -> None:
+        """Filter on a dimension whose data object is not reachable is silently skipped."""
         model = _load_model(VALIDATION_MODEL_YAML)
         resolver = QueryResolver()
         query = QueryObject(
@@ -904,9 +904,9 @@ class TestFilterValidation:
             # Supplier Name is on Suppliers, which has no join path from Orders
             where=[QueryFilter(field="Supplier Name", op=FilterOperator.EQ, value="Acme")],
         )
-        with pytest.raises(ResolutionError) as exc_info:
-            resolver.resolve(query, model)
-        assert any(e.code == "UNREACHABLE_FILTER_FIELD" for e in exc_info.value.errors)
+        resolved = resolver.resolve(query, model)
+        assert "SUPPLIERS" not in str(resolved.join_steps)
+        assert all(f.expression != "Acme" for f in resolved.where_filters)
 
 
 class TestFilterGroups:

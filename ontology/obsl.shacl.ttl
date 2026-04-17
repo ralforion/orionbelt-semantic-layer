@@ -217,6 +217,13 @@ obsl:MeasureShape a sh:NodeShape ;
         sh:name "result type" ;
         sh:message "Every measure must have exactly one obsl:resultType."
     ] ;
+    sh:property [
+        sh:path obsl:filterExpression ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "filter expression" ;
+        sh:message "A measure may have at most one obsl:filterExpression."
+    ] ;
     sh:xone (
         [ sh:property [
             sh:path obsl:sourceColumn ;
