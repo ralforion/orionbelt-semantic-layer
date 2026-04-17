@@ -859,9 +859,7 @@ class QueryResolver:
             return True
         if ctx.graph is None:
             return False
-        reachable = any(
-            obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects)
-        )
+        reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
         if not reachable:
             return False
         new_steps = ctx.graph.find_join_path(ctx.joined_objects, {obj_name})
