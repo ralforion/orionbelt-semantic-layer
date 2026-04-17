@@ -1156,7 +1156,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.5.0
+  OrionBelt v1.5.1
 </div>
       
     </li>
@@ -2282,7 +2282,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.5.0
+  OrionBelt v1.5.1
 </div>
                   </div>
                 </div>
@@ -2628,7 +2628,7 @@
 <li>Directly joined in the query (base object or any object in the join path)</li>
 <li>A descendant — reachable via directed joins from any already-joined object</li>
 </ul>
-<p>If the data object is reachable but not yet in the join path, it is <strong>auto-joined</strong> automatically. If the data object is not reachable at all, the query returns an <code>UNREACHABLE_FILTER_FIELD</code> error.</p>
+<p>If the data object is reachable but not yet in the join path, it is <strong>auto-joined</strong> automatically. If the data object is not reachable at all, the filter is <strong>silently skipped</strong> — it is irrelevant to the current query.</p>
 <p>A <code>having</code> filter field must reference a <strong>measure</strong> name.</p>
 <h3 id="filter-operators">Filter Operators<a class="headerlink" href="#filter-operators" title="Permanent link">&para;</a></h3>
 <p>OrionBelt supports two operator naming conventions — OBML style and SQL style. Both are equivalent.</p>
@@ -2891,11 +2891,6 @@
 <td><code>UNKNOWN_FILTER_FIELD</code></td>
 <td>400</td>
 <td>Filter field is not a dimension (WHERE) or measure (HAVING)</td>
-</tr>
-<tr>
-<td><code>UNREACHABLE_FILTER_FIELD</code></td>
-<td>400</td>
-<td>Filter dimension's data object is not reachable from join graph</td>
 </tr>
 <tr>
 <td><code>UNKNOWN_ORDER_BY_FIELD</code></td>
