@@ -1,0 +1,14 @@
+version: 1.0
+inherits: parent_model.yaml
+
+filters:
+  - dataObject: Customers
+    column: Region
+    operator: equals
+    value: "EMEA"
+
+measures:
+  EMEA Margin:
+    resultType: float
+    aggregation: avg
+    expression: "{[Orders].[Price]}"

@@ -1,0 +1,9 @@
+version: 1.0
+extends:
+  - circular_a.yaml
+
+dimensions:
+  Dim B:
+    dataObject: Orders
+    column: Quantity
+    resultType: int

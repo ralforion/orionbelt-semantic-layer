@@ -40,7 +40,14 @@ logger = logging.getLogger("orionbelt.api")
 
 
 def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
-    """Read and validate the MODEL_FILE at startup. Raises on error."""
+    """Read and validate the MODEL_FILE at startup. Raises on error.
+
+    If the YAML contains ``extends`` or ``inherits`` keys, the referenced files
+    are resolved relative to the model file's directory and merged before
+    validation. The returned string is the fully merged YAML.
+    """
+    import yaml as pyyaml
+
     path = Path(path_str)
     if not path.is_absolute() and model_dir:
         path = Path(model_dir) / path
@@ -49,6 +56,15 @@ def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
     yaml_str = path.read_text(encoding="utf-8")
     if not yaml_str.strip():
         raise ValueError(f"MODEL_FILE is empty: {path}")
+
+    raw = pyyaml.safe_load(yaml_str) or {}
+    if raw.get("extends") or raw.get("inherits"):
+        from orionbelt.parser.merger import ExtendsMerger
+
+        merger = ExtendsMerger()
+        merged, _warnings = merger.merge_from_files(raw, path.parent)
+        yaml_str = pyyaml.dump(merged, default_flow_style=False, allow_unicode=True)
+
     # Validate the model can be parsed (fail fast at startup)
     from orionbelt.service.model_store import ModelStore
 

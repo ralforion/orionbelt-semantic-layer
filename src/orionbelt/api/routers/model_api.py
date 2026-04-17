@@ -160,6 +160,8 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
         measures=measures,
         metrics=metrics,
         filters=filters,
+        extends=model.extends_sources,
+        inherits=model.inherits_source,
     )
 
 

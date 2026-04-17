@@ -1,0 +1,46 @@
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    columns:
+      Customer ID: { code: CUSTOMER_ID, abstractType: string }
+      Country: { code: COUNTRY, abstractType: string }
+      Region: { code: REGION, abstractType: string }
+  Orders:
+    code: ORDERS
+    columns:
+      Order Customer ID: { code: CUSTOMER_ID, abstractType: string }
+      Price: { code: PRICE, abstractType: float }
+      Quantity: { code: QUANTITY, abstractType: int }
+      Order Date: { code: ORDER_DATE, abstractType: date }
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+
+dimensions:
+  Country:
+    dataObject: Customers
+    column: Country
+    resultType: string
+  Order Date:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+
+measures:
+  Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Orders].[Price]} * {[Orders].[Quantity]}"
+  Order Count:
+    resultType: int
+    aggregation: count
+    expression: "{[Orders].[Price]}"
+
+metrics:
+  Revenue per Order:
+    resultType: float
+    expression: "{[Revenue]} / {[Order Count]}"

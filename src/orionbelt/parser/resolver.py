@@ -536,6 +536,8 @@ class ReferenceResolver:
             measures=measures,
             metrics=metrics,
             filters=model_filters,
+            extends_sources=raw.get("_extends_sources", []),
+            inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
             custom_extensions=_parse_extensions(raw),
         )

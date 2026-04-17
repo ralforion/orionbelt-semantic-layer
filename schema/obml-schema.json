@@ -944,6 +944,15 @@
         "additionalProperties": false
       }
     },
+    "extends": {
+      "type": "array",
+      "description": "List of OBML files to merge as analytical layers (dimensions, measures, metrics). Extend files must not contain dataObjects.",
+      "items": { "type": "string" }
+    },
+    "inherits": {
+      "type": "string",
+      "description": "Path to a parent OBML model to inherit all definitions from. The parent provides dataObjects, joins, dimensions, measures, metrics, and filters. The child can add or override analytical definitions and append static filters."
+    },
     "customExtensions": {
       "type": "array",
       "description": "Vendor-keyed extension data at model level",
@@ -951,5 +960,31 @@
     },
     "additionalProperties": false
   },
-  "required": ["version", "dataObjects"]
+  "required": ["version"],
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "anyOf": [
+            { "required": ["extends"] },
+            { "required": ["inherits"] }
+          ]
+        }
+      },
+      "then": {
+        "required": ["dataObjects"]
+      }
+    },
+    {
+      "not": {
+        "required": ["extends", "inherits"]
+      }
+    },
+    {
+      "if": { "required": ["inherits"] },
+      "then": {
+        "not": { "required": ["dataObjects"] }
+      }
+    }
+  ]
 }

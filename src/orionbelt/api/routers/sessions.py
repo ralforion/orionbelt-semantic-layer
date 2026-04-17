@@ -160,7 +160,11 @@ async def load_model(
         raise HTTPException(status_code=403, detail="Single-model mode: model upload is disabled")
     store = _get_store(session_id, mgr)
     try:
-        result = store.load_model(body.model_yaml)
+        result = store.load_model(
+            body.model_yaml,
+            extends_yaml=body.extends,
+            inherits_model_id=body.inherits,
+        )
     except ModelCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:
@@ -268,7 +272,11 @@ async def validate_model(
 ) -> ValidateResponse:
     """Validate OBML YAML within a session context."""
     store = _get_store(session_id, mgr)
-    summary = store.validate(body.model_yaml)
+    summary = store.validate(
+        body.model_yaml,
+        extends_yaml=body.extends,
+        inherits_model_id=body.inherits,
+    )
     return ValidateResponse(
         valid=summary.valid,
         errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],

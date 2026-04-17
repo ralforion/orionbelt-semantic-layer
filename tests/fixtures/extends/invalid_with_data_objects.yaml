@@ -1,0 +1,13 @@
+version: 1.0
+
+dataObjects:
+  BadTable:
+    code: BAD
+    columns:
+      id: { code: ID, abstractType: string }
+
+dimensions:
+  Bad Dim:
+    dataObject: BadTable
+    column: id
+    resultType: string
