@@ -168,10 +168,14 @@ async def load_model(
     except ModelCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:
+        error_lines = "; ".join(
+            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "")
+            for e in exc.errors
+        )
         raise HTTPException(
             status_code=422,
             detail={
-                "message": "Invalid OBML model: parsing or validation failed",
+                "message": f"Invalid OBML model: {error_lines}",
                 "errors": [
                     {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
                 ],
