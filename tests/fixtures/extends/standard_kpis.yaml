@@ -1,0 +1,11 @@
+version: 1.0
+
+measures:
+  Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Orders].[Price]} * {[Orders].[Quantity]}"
+  Order Count:
+    resultType: int
+    aggregation: count
+    expression: "{[Orders].[Price]}"

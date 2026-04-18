@@ -1,0 +1,9 @@
+version: 1.0
+extends:
+  - circular_b.yaml
+
+dimensions:
+  Dim A:
+    dataObject: Orders
+    column: Price
+    resultType: float

@@ -1,0 +1,12 @@
+version: 1.0
+
+dimensions:
+  Order Date:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+  Order Year:
+    dataObject: Orders
+    column: Order Date
+    resultType: string
+    timeGrain: year

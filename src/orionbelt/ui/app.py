@@ -112,8 +112,9 @@ _CSS = """\
 /* compact settings row */
 .settings-row { min-height: 0 !important; }
 
-/* Code editors + SQL output: viewport-percentage heights */
-.code-editor .cm-editor { max-height: 45dvh !important; }
+/* Code editors + SQL output: fixed heights */
+.code-editor .cm-editor { height: 45dvh !important; }
+#ob-query .cm-editor { height: calc(45dvh - 90px) !important; }
 .sql-output .cm-editor { max-height: 20dvh !important; }
 
 /* purple primary button — compact */
@@ -184,6 +185,19 @@ _CSS = """\
   padding: 0 !important;
   margin: -1px !important;
   border: 0 !important;
+}
+
+/* ── Model picker dropdowns ── */
+.picker-col {
+  gap: 0 !important; padding: 0 !important;
+}
+.picker-row {
+  min-height: 0 !important; padding: 0 !important;
+  margin: 0 !important; flex: 0 0 auto !important;
+}
+.picker-row > div { gap: 4px !important; }
+.picker-row label span {
+  font-size: 0.75rem !important;
 }
 
 /* ── ER Diagram tab ── */
@@ -467,11 +481,91 @@ _INJECT_UPLOAD_JS = (
         };
     }
 
+    function addClearBtn(codeId, bridgeId) {
+        var root = document.getElementById(codeId);
+        if (!root || root.querySelector('.ob-clear-btn')) return;
+        var svgBtn = root.querySelector('button svg');
+        if (!svgBtn) return;
+        var toolbar = svgBtn.closest('button').parentElement;
+        var btn = document.createElement('button');
+        btn.className = 'ob-upload-btn ob-clear-btn';
+        btn.title = 'Clear query';
+        btn.innerHTML = '\u2715';
+        btn.style.fontSize = '14px';
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var el = document.getElementById(bridgeId);
+            if (!el) return;
+            var ta = el.querySelector('textarea') || el.querySelector('input');
+            if (!ta) return;
+            ta.value = ' ';
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+            setTimeout(function() {
+                ta.value = '';
+                ta.dispatchEvent(new Event('input', {bubbles: true}));
+            }, 50);
+        });
+        toolbar.style.display = 'flex';
+        toolbar.style.flexWrap = 'nowrap';
+        toolbar.style.alignItems = 'center';
+        toolbar.insertBefore(btn, toolbar.firstChild);
+    }
+
+    var isMac = /Mac/.test(navigator.platform);
+    function cmKeyCmd(codeId, key, shift) {
+        var root = document.getElementById(codeId);
+        if (!root) return;
+        var content = root.querySelector('.cm-content');
+        if (!content) return;
+        content.focus();
+        content.dispatchEvent(new KeyboardEvent('keydown', {
+            key: key, code: 'Key' + key.toUpperCase(),
+            ctrlKey: !isMac, metaKey: isMac,
+            shiftKey: !!shift,
+            bubbles: true, cancelable: true, composed: true
+        }));
+    }
+
+    function addUndoRedoBtns(codeId) {
+        var root = document.getElementById(codeId);
+        if (!root || root.querySelector('.ob-redo-btn')) return;
+        var svgBtn = root.querySelector('button svg');
+        if (!svgBtn) return;
+        var toolbar = svgBtn.closest('button').parentElement;
+
+        var redo = document.createElement('button');
+        redo.className = 'ob-upload-btn ob-redo-btn';
+        redo.title = 'Redo';
+        redo.innerHTML = '\u21B7';
+        redo.style.fontSize = '16px';
+        redo.addEventListener('click', function(e) {
+            e.preventDefault(); e.stopPropagation();
+            cmKeyCmd(codeId, 'z', true);
+        });
+
+        var undo = document.createElement('button');
+        undo.className = 'ob-upload-btn ob-undo-btn';
+        undo.title = 'Undo';
+        undo.innerHTML = '\u21B6';
+        undo.style.fontSize = '16px';
+        undo.addEventListener('click', function(e) {
+            e.preventDefault(); e.stopPropagation();
+            cmKeyCmd(codeId, 'z', false);
+        });
+
+        toolbar.insertBefore(redo, toolbar.firstChild);
+        toolbar.insertBefore(undo, toolbar.firstChild);
+    }
+
     /* Retry — components render asynchronously. */
     var attempts = 0;
     var iv = setInterval(function() {
         addUploadBtn('ob-model', 'ob-model-bridge');
         addUploadBtn('ob-query', 'ob-query-bridge');
+        addClearBtn('ob-query', 'ob-query-bridge');
+        addUndoRedoBtns('ob-model');
+        addUndoRedoBtns('ob-query');
         patchDownloads('ob-model', 'obml.yml');
         patchDownloads('ob-query', 'query.yml');
         patchDownloads('ob-sql', 'query.sql');
@@ -1120,6 +1214,109 @@ def validate_model(
         return f"Error: {exc}", ""
 
 
+def _extract_model_items(model_yaml: str) -> tuple[list[str], list[str], list[str]]:
+    """Extract dimension names, measure/metric names, and field names from model YAML.
+
+    Returns ``(dimensions, measures_metrics, fields)``.
+    """
+    try:
+        raw = yaml.safe_load(model_yaml) or {}
+    except Exception:
+        return [], [], []
+    raw_dims = raw.get("dimensions", {})
+    dims = sorted(raw_dims.keys()) if isinstance(raw_dims, dict) else []
+    raw_meas = raw.get("measures", {})
+    measures = list(raw_meas.keys()) if isinstance(raw_meas, dict) else []
+    raw_mets = raw.get("metrics", {})
+    metrics = list(raw_mets.keys()) if isinstance(raw_mets, dict) else []
+    meas_met = sorted(measures + metrics)
+    fields: list[str] = []
+    data_objects = raw.get("dataObjects", {})
+    if isinstance(data_objects, dict):
+        for obj_name, obj in data_objects.items():
+            if isinstance(obj, dict):
+                for col_name in obj.get("columns", {}):
+                    fields.append(f"{obj_name}.{col_name}")
+    fields.sort()
+    return dims, meas_met, fields
+
+
+def _insert_into_query(query: str, value: str, section: str) -> str:
+    """Insert *value* into the correct *section* of query YAML.
+
+    *section* is one of ``"dimensions"``, ``"measures"``, or ``"where"``.
+    """
+    lines = query.rstrip("\n").split("\n")
+
+    if section in ("dimensions", "measures"):
+        target = f"  {section}:"
+        idx = None
+        for i, ln in enumerate(lines):
+            if ln.rstrip() == target:
+                idx = i
+                break
+
+        if idx is not None:
+            last = idx
+            for i in range(idx + 1, len(lines)):
+                if lines[i].startswith("    - "):
+                    last = i
+                elif lines[i].strip() and not lines[i].startswith("      "):
+                    break
+            lines.insert(last + 1, f"    - {value}")
+        else:
+            sel_idx = None
+            for i, ln in enumerate(lines):
+                if ln.rstrip() == "select:":
+                    sel_idx = i
+                    break
+            if sel_idx is not None:
+                end = sel_idx
+                for i in range(sel_idx + 1, len(lines)):
+                    if lines[i] and not lines[i].startswith(" "):
+                        break
+                    end = i
+                lines.insert(end + 1, target)
+                lines.insert(end + 2, f"    - {value}")
+            else:
+                lines.insert(0, "select:")
+                lines.insert(1, target)
+                lines.insert(2, f"    - {value}")
+
+    elif section == "where":
+        tpl = [
+            f"  - field: {value}",
+            "    op: equals",
+            "    value: ",
+        ]
+        idx = None
+        for i, ln in enumerate(lines):
+            if ln.rstrip() == "where:":
+                idx = i
+                break
+        if idx is not None:
+            end = idx
+            for i in range(idx + 1, len(lines)):
+                if lines[i] and not lines[i].startswith(" "):
+                    break
+                if lines[i].strip():
+                    end = i
+            for j, t in enumerate(tpl):
+                lines.insert(end + 1 + j, t)
+        else:
+            pos = len(lines)
+            for i, ln in enumerate(lines):
+                s = ln.strip()
+                if s.startswith("order_by:") or s.startswith("limit:"):
+                    pos = i
+                    break
+            lines.insert(pos, "where:")
+            for j, t in enumerate(tpl):
+                lines.insert(pos + 1 + j, t)
+
+    return "\n".join(lines) + "\n"
+
+
 def create_blocks(default_api_url: str | None = None) -> Any:
     """Build and return a ``gr.Blocks`` instance (without launching).
 
@@ -1219,7 +1416,11 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     export_osi_btn = gr.Button("Export to OSI", size="sm", scale=0, min_width=120)
                     download_obsl_btn = gr.Button("\u2193 OBSL", size="sm", scale=0, min_width=80)
 
-                with gr.Row(equal_height=True):
+                init_dims, init_meas, init_fields = _extract_model_items(
+                    example_model
+                )
+
+                with gr.Row():
                     model_label = (
                         "OBML Model (YAML) \u2014 read-only (single-model mode)"
                         if single_model
@@ -1235,16 +1436,35 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         elem_classes=["code-editor"],
                         elem_id="ob-model",
                     )
-                    query_input = gr.Code(
-                        value=_DEFAULT_QUERY,
-                        language="yaml",
-                        label="Query (YAML) \u2014 schema/query-schema.json",
-                        lines=11,
-                        scale=2,
-                        interactive=True,
-                        elem_classes=["code-editor"],
-                        elem_id="ob-query",
-                    )
+                    with gr.Column(scale=2, elem_classes=["picker-col"]):
+                        with gr.Row(elem_classes=["picker-row"]):
+                            dim_picker = gr.Dropdown(
+                                choices=init_dims,
+                                label="Dimensions",
+                                scale=1,
+                                interactive=True,
+                            )
+                            meas_picker = gr.Dropdown(
+                                choices=init_meas,
+                                label="Measures / Metrics",
+                                scale=1,
+                                interactive=True,
+                            )
+                            field_picker = gr.Dropdown(
+                                choices=init_fields,
+                                label="Columns",
+                                scale=1,
+                                interactive=True,
+                            )
+                        query_input = gr.Code(
+                            value=_DEFAULT_QUERY,
+                            language="yaml",
+                            label="Query (YAML) \u2014 schema/query-schema.json",
+                            lines=11,
+                            interactive=True,
+                            elem_classes=["code-editor"],
+                            elem_id="ob-query",
+                        )
 
                 # Hidden textboxes: JS writes file content here → Python
                 # forwards to Code editors (bridges JS↔Gradio state).
@@ -1276,6 +1496,47 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     elem_classes=["ob-bridge"],
                 )
                 import_osi_btn.click(fn=None, js=_IMPORT_OSI_JS)
+
+                def _update_pickers(model_yaml: str) -> tuple[object, ...]:
+                    dims, meas_met, fields = _extract_model_items(model_yaml)
+                    import gradio as gr
+
+                    return (
+                        gr.update(choices=dims, value=None),
+                        gr.update(choices=meas_met, value=None),
+                        gr.update(choices=fields, value=None),
+                    )
+
+                def _make_inserter(section: str):  # noqa: E501
+                    def _fn(val: str | None, query: str) -> tuple[str, object]:
+                        import gradio as gr
+
+                        if not val:
+                            return query, gr.update(value=None)
+                        return (
+                            _insert_into_query(query, val, section),
+                            gr.update(value=None),
+                        )
+
+                    return _fn
+
+                model_input.change(
+                    fn=_update_pickers,
+                    inputs=[model_input],
+                    outputs=[dim_picker, meas_picker, field_picker],
+                )
+
+                for picker, sec in (
+                    (dim_picker, "dimensions"),
+                    (meas_picker, "measures"),
+                    (field_picker, "where"),
+                ):
+                    picker.change(
+                        fn=_make_inserter(sec),
+                        inputs=[picker, query_input],
+                        outputs=[query_input, picker],
+                    )
+
 
                 with gr.Row():
                     compile_btn = gr.Button(

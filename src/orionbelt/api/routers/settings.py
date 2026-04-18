@@ -17,7 +17,7 @@ from orionbelt.service.session_manager import SessionManager
 router = APIRouter()
 
 
-@router.get("", response_model=SettingsResponse)
+@router.get("", response_model=SettingsResponse, response_model_exclude_none=True)
 async def get_settings(
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> SettingsResponse:

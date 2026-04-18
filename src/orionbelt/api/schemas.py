@@ -97,6 +97,14 @@ class ValidateRequest(BaseModel):
     model_yaml: str = Field(
         description="YAML semantic model content to validate", max_length=5_000_000
     )
+    extends: list[str] | None = Field(
+        default=None,
+        description="Optional inline YAML strings of analytical fragments to merge",
+    )
+    inherits: str | None = Field(
+        default=None,
+        description="Optional model ID of an already-loaded parent model in the session",
+    )
 
 
 class ValidateResponse(BaseModel):
@@ -209,6 +217,14 @@ class ModelLoadRequest(BaseModel):
     """Request body for POST /sessions/{session_id}/models."""
 
     model_yaml: str = Field(description="OBML YAML content", max_length=5_000_000)
+    extends: list[str] | None = Field(
+        default=None,
+        description="Optional inline YAML strings of analytical fragments to merge",
+    )
+    inherits: str | None = Field(
+        default=None,
+        description="Optional model ID of an already-loaded parent model in the session",
+    )
 
 
 class ModelLoadResponse(BaseModel):
@@ -389,6 +405,8 @@ class SchemaResponse(BaseModel):
     measures: list[MeasureDetail] = Field(default_factory=list)
     metrics: list[MetricDetail] = Field(default_factory=list)
     filters: list[ModelFilterDetail] = Field(default_factory=list)
+    extends: list[str] = Field(default_factory=list)
+    inherits: str | None = None
 
 
 class ExplainLineageItem(BaseModel):

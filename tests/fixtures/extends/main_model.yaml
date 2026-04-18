@@ -1,0 +1,34 @@
+version: 1.0
+extends:
+  - date_dims.yaml
+  - standard_kpis.yaml
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    columns:
+      Customer ID: { code: CUSTOMER_ID, abstractType: string }
+      Country: { code: COUNTRY, abstractType: string }
+  Orders:
+    code: ORDERS
+    columns:
+      Order Customer ID: { code: CUSTOMER_ID, abstractType: string }
+      Price: { code: PRICE, abstractType: float }
+      Quantity: { code: QUANTITY, abstractType: int }
+      Order Date: { code: ORDER_DATE, abstractType: date }
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+
+dimensions:
+  Country:
+    dataObject: Customers
+    column: Country
+    resultType: string
+
+metrics:
+  Revenue per Order:
+    resultType: float
+    expression: "{[Revenue]} / {[Order Count]}"

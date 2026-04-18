@@ -1,0 +1,9 @@
+version: 1.0
+extends:
+  - nested_child.yaml
+
+dimensions:
+  Price Dim:
+    dataObject: Orders
+    column: Price
+    resultType: float

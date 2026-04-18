@@ -15,6 +15,7 @@ from orionbelt.models.semantic import SemanticModel
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
 from orionbelt.parser.loader import TrackedLoader, YAMLSafetyError
+from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
 
@@ -175,6 +176,7 @@ class ModelStore:
         self._loader = TrackedLoader()
         self._resolver = ReferenceResolver()
         self._validator = SemanticValidator()
+        self._merger = ExtendsMerger()
         self._pipeline = CompilationPipeline()
 
     # -- helpers -------------------------------------------------------------
@@ -184,7 +186,11 @@ class ModelStore:
         return uuid.uuid4().hex[:8]
 
     def _parse_and_validate(
-        self, yaml_str: str
+        self,
+        yaml_str: str,
+        *,
+        extends_yaml: list[str] | None = None,
+        inherits_model_id: str | None = None,
     ) -> tuple[SemanticModel, list[ErrorInfo], list[ErrorInfo]]:
         """Parse YAML, resolve references, run semantic validation.
 
@@ -201,6 +207,34 @@ class ModelStore:
             return SemanticModel(), errors, warnings
         except Exception as exc:
             errors.append(ErrorInfo(code="YAML_PARSE_ERROR", message=str(exc)))
+            return SemanticModel(), errors, warnings
+
+        # 1b. Merge extends/inherits if provided
+        try:
+            inherits_raw: dict[str, object] | None = None
+            if inherits_model_id is not None:
+                parent_model = self.get_model(inherits_model_id)
+                inherits_raw = self._model_to_raw(parent_model)
+
+            if extends_yaml or inherits_raw is not None:
+                raw, merge_warnings = self._merger.merge_from_strings(
+                    raw,
+                    extend_yamls=extends_yaml,
+                    inherits_raw=inherits_raw,
+                )
+                for mw in merge_warnings:
+                    warnings.append(ErrorInfo(code="MERGE_WARNING", message=mw))
+                source_map = None  # type: ignore[assignment]
+        except MergeError as exc:
+            errors.append(ErrorInfo(code=exc.code, message=exc.message))
+            return SemanticModel(), errors, warnings
+        except KeyError:
+            errors.append(
+                ErrorInfo(
+                    code="PARENT_MODEL_NOT_FOUND",
+                    message=f"Parent model '{inherits_model_id}' not found in session",
+                )
+            )
             return SemanticModel(), errors, warnings
 
         # 2. Resolve references
@@ -238,9 +272,108 @@ class ModelStore:
 
         return model, errors, warnings
 
+    @staticmethod
+    def _model_to_raw(model: SemanticModel) -> dict[str, object]:
+        """Convert a SemanticModel back to a raw dict for inherits merging."""
+        raw: dict[str, object] = {"version": model.version}
+        if model.description:
+            raw["description"] = model.description
+        if model.data_objects:
+            objs: dict[str, object] = {}
+            for name, obj in model.data_objects.items():
+                obj_raw: dict[str, object] = {
+                    "code": obj.code,
+                    "database": obj.database,
+                    "schema": obj.schema_name,
+                }
+                if obj.columns:
+                    cols: dict[str, object] = {}
+                    for cname, col in obj.columns.items():
+                        cols[cname] = {
+                            "code": col.code,
+                            "abstractType": col.abstract_type.value,
+                        }
+                    obj_raw["columns"] = cols
+                if obj.joins:
+                    joins: list[dict[str, object]] = []
+                    for j in obj.joins:
+                        jd: dict[str, object] = {
+                            "joinType": j.join_type.value,
+                            "joinTo": j.join_to,
+                            "columnsFrom": list(j.columns_from),
+                            "columnsTo": list(j.columns_to),
+                        }
+                        if j.secondary:
+                            jd["secondary"] = True
+                            jd["pathName"] = j.path_name
+                        joins.append(jd)
+                    obj_raw["joins"] = joins
+                objs[name] = obj_raw
+            raw["dataObjects"] = objs
+        if model.dimensions:
+            dims: dict[str, object] = {}
+            for name, dim in model.dimensions.items():
+                dd: dict[str, object] = {
+                    "dataObject": dim.view,
+                    "column": dim.column,
+                    "resultType": dim.result_type.value,
+                }
+                if dim.time_grain:
+                    dd["timeGrain"] = dim.time_grain.value
+                dims[name] = dd
+            raw["dimensions"] = dims
+        if model.measures:
+            meas: dict[str, object] = {}
+            for name, m in model.measures.items():
+                md: dict[str, object] = {
+                    "aggregation": m.aggregation,
+                    "resultType": m.result_type.value,
+                }
+                if m.expression:
+                    md["expression"] = m.expression
+                if m.columns:
+                    md["columns"] = [
+                        {"dataObject": c.view or "", "column": c.column or ""}
+                        for c in m.columns
+                    ]
+                if m.total:
+                    md["total"] = True
+                meas[name] = md
+            raw["measures"] = meas
+        if model.metrics:
+            mets: dict[str, object] = {}
+            for name, met in model.metrics.items():
+                mtd: dict[str, object] = {"type": met.type.value}
+                if met.expression:
+                    mtd["expression"] = met.expression
+                if met.measure:
+                    mtd["measure"] = met.measure
+                if met.time_dimension:
+                    mtd["timeDimension"] = met.time_dimension
+                mets[name] = mtd
+            raw["metrics"] = mets
+        if model.filters:
+            raw["filters"] = [
+                {
+                    "dataObject": f.data_object,
+                    "column": f.column,
+                    "operator": f.operator,
+                    **({"value": f.value} if f.value is not None else {}),
+                    **({"values": f.values} if f.values else {}),
+                }
+                for f in model.filters
+            ]
+        return raw
+
     # -- public API ----------------------------------------------------------
 
-    def load_model(self, yaml_str: str) -> LoadResult:
+    def load_model(
+        self,
+        yaml_str: str,
+        *,
+        extends_yaml: list[str] | None = None,
+        inherits_model_id: str | None = None,
+    ) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
         Raises ``ModelValidationError`` if the model has validation errors.
@@ -250,7 +383,9 @@ class ModelStore:
             if len(self._models) >= self._max_models:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
 
-        model, errors, warnings = self._parse_and_validate(yaml_str)
+        model, errors, warnings = self._parse_and_validate(
+            yaml_str, extends_yaml=extends_yaml, inherits_model_id=inherits_model_id
+        )
         if errors:
             raise ModelValidationError(errors, warnings)
 
@@ -384,9 +519,17 @@ class ModelStore:
         model = self.get_model(model_id)
         return self._pipeline.compile(query, model, dialect)
 
-    def validate(self, yaml_str: str) -> ValidationSummary:
+    def validate(
+        self,
+        yaml_str: str,
+        *,
+        extends_yaml: list[str] | None = None,
+        inherits_model_id: str | None = None,
+    ) -> ValidationSummary:
         """Validate a YAML model string without storing it."""
-        _model, errors, warnings = self._parse_and_validate(yaml_str)
+        _model, errors, warnings = self._parse_and_validate(
+            yaml_str, extends_yaml=extends_yaml, inherits_model_id=inherits_model_id
+        )
         return ValidationSummary(
             valid=len(errors) == 0,
             errors=errors,

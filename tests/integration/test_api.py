@@ -79,9 +79,9 @@ class TestSettingsEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["single_model_mode"] is False
-        assert data["model_yaml"] is None
+        assert "model_yaml" not in data  # omitted when not in single-model mode
         assert data["session_ttl_seconds"] == 3600  # from fixture
-        assert data["flight"] is None  # not enabled by default
+        assert "flight" not in data  # omitted when not enabled
 
     async def test_settings_single_model(self, single_model_client: AsyncClient) -> None:
         response = await single_model_client.get("/v1/settings")

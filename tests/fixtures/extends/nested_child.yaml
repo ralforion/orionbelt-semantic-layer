@@ -1,0 +1,7 @@
+version: 1.0
+
+measures:
+  Avg Price:
+    resultType: float
+    aggregation: avg
+    expression: "{[Orders].[Price]}"

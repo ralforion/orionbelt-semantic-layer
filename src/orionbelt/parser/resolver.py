@@ -536,6 +536,8 @@ class ReferenceResolver:
             measures=measures,
             metrics=metrics,
             filters=model_filters,
+            extends_sources=raw.get("_extends_sources", []),
+            inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
             custom_extensions=_parse_extensions(raw),
         )
@@ -557,9 +559,9 @@ class ReferenceResolver:
         source_map: SourceMap | None,
     ) -> None:
         """Validate {[DataObject].[Column]} references in a measure expression."""
-        named_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", expression)
+        span = source_map.get(f"measures.{measure_name}.expression") if source_map else None
+        named_refs = re.findall(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\]\}", expression)
         for obj_name, col_name in named_refs:
-            span = source_map.get(f"measures.{measure_name}.expression") if source_map else None
             if obj_name not in data_objects:
                 errors.append(
                     SemanticError(
@@ -585,6 +587,78 @@ class ReferenceResolver:
                     )
                 )
 
+        # Strip valid refs, scan remainder for malformed attempts.
+        remainder = re.sub(r"\{\[[^\]{}\[]+\]\.\[[^\]{}\[]+\]\}", "", expression)
+        path = f"measures.{measure_name}.expression"
+
+        def _merr(msg: str) -> None:
+            errors.append(
+                SemanticError(code="MALFORMED_EXPRESSION_REF", message=msg, path=path, span=span)
+            )
+
+        # {[Obj][Col]} — missing dot separator
+        for o, c in re.findall(r"\{\[([^\]{}\[]+)\]\[([^\]{}\[]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{o}][{c}]}}' — missing '.' separator"
+            )
+
+        # {[Obj.Col]} — dot inside single bracket pair
+        for bad in re.findall(r"\{\[([^\]{}\[]+\.[^\]{}\[]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{bad}]}}' — use '{{[Obj].[Col]}}' syntax"
+            )
+
+        # {Obj.Col} — missing all inner brackets
+        for bad in re.findall(r"\{([A-Za-z][^\[{}\]]*\.[A-Za-z][^\[{}\]]*)\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{{bad}}}' — missing '[' and ']', use '{{[Obj].[Col]}}' syntax"
+            )
+
+        # {[Obj].[Col] — missing closing }
+        for o, c in re.findall(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\](?!\})", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{o}].[{c}]' — missing closing '}}'"
+            )
+
+        # [Obj].[Col]} — missing opening {
+        for o, c in re.findall(r"(?<!\{)\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '[{o}].[{c}]}}' — missing opening '{{'"
+            )
+
+        # {[Obj].[Col} — missing ] on column
+        for o, c in re.findall(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]*)\}(?!\])", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{o}].[{c}}}' — missing closing ']' on column"
+            )
+
+        # {[Obj.[Col]} — missing ] on data object
+        for o, c in re.findall(r"\{\[([^\]{}\[]*)\.?\[([^\]{}\[]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{o}.[{c}]}}' — missing closing ']' on data object"
+            )
+
+        # {Obj].[Col]} — missing [ on data object
+        for o, c in re.findall(r"\{([^\[{}\]]+)\]\.\[([^\]{}\[]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{{o}].[{c}]}}' — missing opening '[' on data object"
+            )
+
+        # {[Obj].Col]} — missing [ on column
+        for o, c in re.findall(r"\{\[([^\]{}\[]+)\]\.([^\[{}\]]+)\]\}", remainder):
+            _merr(
+                f"Measure '{measure_name}' has malformed reference"
+                f" '{{[{o}].{c}]}}' — missing opening '[' on column"
+            )
+
     def _validate_metric_expression_refs(
         self,
         metric_name: str,
@@ -594,11 +668,85 @@ class ReferenceResolver:
         source_map: SourceMap | None,
     ) -> None:
         """Validate {[Measure Name]} references in a metric expression."""
-        # Extract all {[Name]} references from the expression
-        named_refs = re.findall(r"\{\[([^\]]+)\]\}", expression)
-        for ref_name in named_refs:
+        span = source_map.get(f"metrics.{metric_name}.expression") if source_map else None
+
+        valid_refs = re.findall(r"\{\[([^\]{}\[]+)\]\}", expression)
+
+        # Strip valid {[Name]} refs, then scan remainder for malformed attempts.
+        remainder = re.sub(r"\{\[[^\]{}\[]+\]\}", "", expression)
+
+        # {[Name} — missing closing ]
+        for bad in re.findall(r"\{\[([^\]{}]*)\}", remainder):
+            errors.append(
+                SemanticError(
+                    code="MALFORMED_EXPRESSION_REF",
+                    message=(
+                        f"Metric '{metric_name}' has malformed reference"
+                        f" '{{[{bad}}}' — missing closing ']'"
+                    ),
+                    path=f"metrics.{metric_name}.expression",
+                    span=span,
+                )
+            )
+
+        # {[Name] — missing closing }
+        for bad in re.findall(r"\{\[([^\]{}]+)\](?!\})", remainder):
+            errors.append(
+                SemanticError(
+                    code="MALFORMED_EXPRESSION_REF",
+                    message=(
+                        f"Metric '{metric_name}' has malformed reference"
+                        f" '{{[{bad}]' — missing closing '}}'"
+                    ),
+                    path=f"metrics.{metric_name}.expression",
+                    span=span,
+                )
+            )
+
+        # {Name]} — missing opening [
+        for bad in re.findall(r"\{([^\[{}\]]+)\]\}", remainder):
+            errors.append(
+                SemanticError(
+                    code="MALFORMED_EXPRESSION_REF",
+                    message=(
+                        f"Metric '{metric_name}' has malformed reference"
+                        f" '{{{bad}]}}' — missing opening '['"
+                    ),
+                    path=f"metrics.{metric_name}.expression",
+                    span=span,
+                )
+            )
+
+        # {Name} — missing both [ and ]
+        for bad in re.findall(r"\{([^\[{\]}\s]+)\}", remainder):
+            errors.append(
+                SemanticError(
+                    code="MALFORMED_EXPRESSION_REF",
+                    message=(
+                        f"Metric '{metric_name}' has malformed reference"
+                        f" '{{{bad}}}' — missing '[' and ']'"
+                    ),
+                    path=f"metrics.{metric_name}.expression",
+                    span=span,
+                )
+            )
+
+        # [Name]} — missing opening {
+        for bad in re.findall(r"(?<!\{)\[([^\]{}\[]+)\]\}", remainder):
+            errors.append(
+                SemanticError(
+                    code="MALFORMED_EXPRESSION_REF",
+                    message=(
+                        f"Metric '{metric_name}' has malformed reference"
+                        f" '[{bad}]}}' — missing opening '{{'"
+                    ),
+                    path=f"metrics.{metric_name}.expression",
+                    span=span,
+                )
+            )
+
+        for ref_name in valid_refs:
             if ref_name not in measures:
-                span = source_map.get(f"metrics.{metric_name}.expression") if source_map else None
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_MEASURE_REF",

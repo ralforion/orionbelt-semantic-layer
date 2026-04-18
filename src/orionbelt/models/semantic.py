@@ -369,6 +369,8 @@ class SemanticModel(BaseModel):
     measures: dict[str, Measure] = {}
     metrics: dict[str, Metric] = {}
     filters: list[ModelFilter] = Field(default_factory=list)
+    extends_sources: list[str] = Field(default_factory=list)
+    inherits_source: str | None = None
     owner: str | None = None
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 

@@ -2,6 +2,25 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.6.0] - 2026-04-18
+
+### Added
+
+- **Extends/inherits model composition** — models can extend or inherit from other models via `extends_yaml` and `inherits_model_id` parameters on `POST /sessions/{id}/models`. `ExtendsMerger` deep-merges data objects, dimensions, measures, metrics, and filters with conflict detection.
+- **Comprehensive malformed expression ref detection** — 16 bracket patterns detected across metric (`{[MeasureName]}`) and measure (`{[DataObject].[Column]}`) expressions, with specific error messages for each malformation (missing `[`, `]`, `{`, `}`, `.` separator, etc.).
+- **UI query pickers** — dimension, measure/metric, and column dropdown pickers in the Gradio SQL Compiler tab with intelligent YAML insertion at correct sections and indentation.
+- **UI editor toolbar buttons** — clear (✕), undo (↶), and redo (↷) buttons on both OBML and query CodeMirror editors.
+
+### Fixed
+
+- **UI editor layout** — fixed-height CodeMirror editors (45dvh) with bottom alignment, no content-dependent resizing.
+
+### Changed
+
+- Version bumped to 1.6.0
+
+---
+
 ## [1.5.1] - 2026-04-16
 
 ### Added
