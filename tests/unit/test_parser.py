@@ -1094,3 +1094,265 @@ dataObjects:
         validator = SemanticValidator()
         errors = validator.validate(model)
         assert not any(e.code == "NUM_CLASS_ON_NON_NUMERIC" for e in errors)
+
+    def test_malformed_metric_ref_missing_close_bracket(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Bad Metric:
+    expression: '{[Total Revenue} * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing closing ']'" in malformed[0].message
+
+    def test_malformed_metric_ref_missing_close_brace(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Bad Metric:
+    expression: '{[Total Revenue] * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing closing '}'" in malformed[0].message
+
+    def test_malformed_metric_ref_missing_open_bracket(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Bad Metric:
+    expression: '{Total Revenue]} * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing opening '['" in malformed[0].message
+
+    def test_malformed_metric_ref_missing_both_brackets(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Bad Metric:
+    expression: '{TotalRevenue} * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing '[' and ']'" in malformed[0].message
+
+    def test_malformed_metric_ref_missing_open_brace(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Bad Metric:
+    expression: '[Total Revenue]} * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing opening '{'" in malformed[0].message
+
+    def test_valid_metric_ref_no_malformed_error(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Total Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+  Good Metric:
+    expression: '{[Total Revenue]} * 2'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 0
+
+
+_MEASURE_EXPR_MODEL = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+      Qty:
+        code: qty
+        abstractType: integer
+measures:
+  Revenue:
+    aggregation: SUM
+    resultType: float
+    expression: '{expr}'
+"""
+
+
+class TestMalformedMeasureExpressionRefs:
+    """Malformed {[DataObject].[Column]} bracket detection in measure expressions."""
+
+    @staticmethod
+    def _get_malformed(resolver: ReferenceResolver, expression: str) -> list[object]:
+        yaml_content = _MEASURE_EXPR_MODEL.replace("{expr}", expression)
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        return [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+
+    def test_valid_measure_ref(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders].[Amount]}")
+        assert len(errs) == 0
+
+    def test_missing_dot_separator(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders][Amount]}")
+        assert len(errs) == 1
+        assert "missing '.' separator" in errs[0].message  # type: ignore[union-attr]
+
+    def test_dot_inside_single_bracket_pair(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders.Amount]}")
+        assert len(errs) == 1
+        assert "{[Obj].[Col]}" in errs[0].message  # type: ignore[union-attr]
+
+    def test_no_inner_brackets(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{Orders.Amount}")
+        assert len(errs) == 1
+        assert "missing '[' and ']'" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_close_brace(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders].[Amount] + 1")
+        assert len(errs) == 1
+        assert "missing closing '}'" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_open_brace(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "[Orders].[Amount]} + 1")
+        assert len(errs) == 1
+        assert "missing opening '{'" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_close_bracket_on_column(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders].[Amount}")
+        assert len(errs) == 1
+        assert "missing closing ']' on column" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_close_bracket_on_object(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders.[Amount]}")
+        assert len(errs) == 1
+        assert "missing closing ']' on data object" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_open_bracket_on_object(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{Orders].[Amount]}")
+        assert len(errs) == 1
+        assert "missing opening '[' on data object" in errs[0].message  # type: ignore[union-attr]
+
+    def test_missing_open_bracket_on_column(self, resolver: ReferenceResolver) -> None:
+        errs = self._get_malformed(resolver, "{[Orders].Amount]}")
+        assert len(errs) == 1
+        assert "missing opening '[' on column" in errs[0].message  # type: ignore[union-attr]
