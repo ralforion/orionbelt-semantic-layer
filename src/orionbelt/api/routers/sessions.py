@@ -158,10 +158,13 @@ async def load_model(
     """Load an OBML model into a session."""
     if is_single_model_mode():
         raise HTTPException(status_code=403, detail="Single-model mode: model upload is disabled")
+    if not body.model_yaml and not body.model_json:
+        raise HTTPException(status_code=422, detail="Provide either model_yaml or model_json")
     store = _get_store(session_id, mgr)
     try:
         result = store.load_model(
             body.model_yaml,
+            raw_dict=body.model_json,
             extends_yaml=body.extends,
             inherits_model_id=body.inherits,
         )
@@ -274,10 +277,13 @@ async def validate_model(
     body: ValidateRequest,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ValidateResponse:
-    """Validate OBML YAML within a session context."""
+    """Validate an OBML model within a session context."""
+    if not body.model_yaml and not body.model_json:
+        raise HTTPException(status_code=422, detail="Provide either model_yaml or model_json")
     store = _get_store(session_id, mgr)
     summary = store.validate(
         body.model_yaml,
+        raw_dict=body.model_json,
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
     )

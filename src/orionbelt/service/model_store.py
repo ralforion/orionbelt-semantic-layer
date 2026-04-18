@@ -187,26 +187,40 @@ class ModelStore:
 
     def _parse_and_validate(
         self,
-        yaml_str: str,
+        yaml_str: str | None = None,
         *,
+        raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
     ) -> tuple[SemanticModel, list[ErrorInfo], list[ErrorInfo]]:
-        """Parse YAML, resolve references, run semantic validation.
+        """Parse YAML (or accept pre-parsed dict), resolve references, validate.
 
         Returns ``(model, errors, warnings)``.
+        Provide either ``yaml_str`` or ``raw_dict``, not both.
         """
         errors: list[ErrorInfo] = []
         warnings: list[ErrorInfo] = []
 
-        # 1. Parse YAML
-        try:
-            raw, source_map = self._loader.load_string(yaml_str)
-        except YAMLSafetyError as exc:
-            errors.append(ErrorInfo(code="YAML_SAFETY_ERROR", message=str(exc)))
-            return SemanticModel(), errors, warnings
-        except Exception as exc:
-            errors.append(ErrorInfo(code="YAML_PARSE_ERROR", message=str(exc)))
+        # 1. Parse YAML or use pre-parsed dict
+        if raw_dict is not None:
+            raw = raw_dict
+            source_map = None
+        elif yaml_str is not None:
+            try:
+                raw, source_map = self._loader.load_string(yaml_str)
+            except YAMLSafetyError as exc:
+                errors.append(ErrorInfo(code="YAML_SAFETY_ERROR", message=str(exc)))
+                return SemanticModel(), errors, warnings
+            except Exception as exc:
+                errors.append(ErrorInfo(code="YAML_PARSE_ERROR", message=str(exc)))
+                return SemanticModel(), errors, warnings
+        else:
+            errors.append(
+                ErrorInfo(
+                    code="NO_MODEL_INPUT",
+                    message="Provide either model_yaml or model_json",
+                )
+            )
             return SemanticModel(), errors, warnings
 
         # 1b. Merge extends/inherits if provided
@@ -369,13 +383,15 @@ class ModelStore:
 
     def load_model(
         self,
-        yaml_str: str,
+        yaml_str: str | None = None,
         *,
+        raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
     ) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
+        Provide either ``yaml_str`` or ``raw_dict``.
         Raises ``ModelValidationError`` if the model has validation errors.
         Raises ``ModelCapacityError`` if the session's model cap is reached.
         """
@@ -384,7 +400,10 @@ class ModelStore:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
 
         model, errors, warnings = self._parse_and_validate(
-            yaml_str, extends_yaml=extends_yaml, inherits_model_id=inherits_model_id
+            yaml_str,
+            raw_dict=raw_dict,
+            extends_yaml=extends_yaml,
+            inherits_model_id=inherits_model_id,
         )
         if errors:
             raise ModelValidationError(errors, warnings)
@@ -521,14 +540,18 @@ class ModelStore:
 
     def validate(
         self,
-        yaml_str: str,
+        yaml_str: str | None = None,
         *,
+        raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
     ) -> ValidationSummary:
-        """Validate a YAML model string without storing it."""
+        """Validate a model without storing it.  Accepts YAML string or raw dict."""
         _model, errors, warnings = self._parse_and_validate(
-            yaml_str, extends_yaml=extends_yaml, inherits_model_id=inherits_model_id
+            yaml_str,
+            raw_dict=raw_dict,
+            extends_yaml=extends_yaml,
+            inherits_model_id=inherits_model_id,
         )
         return ValidationSummary(
             valid=len(errors) == 0,

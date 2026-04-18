@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from orionbelt.models.query import QueryObject
 
@@ -94,8 +95,14 @@ class SessionQueryExecuteRequest(BaseModel):
 class ValidateRequest(BaseModel):
     """Request body for POST /validate."""
 
-    model_yaml: str = Field(
-        description="YAML semantic model content to validate", max_length=5_000_000
+    model_yaml: str | None = Field(
+        default=None,
+        description="OBML model as YAML string (provide model_yaml OR model_json)",
+        max_length=5_000_000,
+    )
+    model_json: dict[str, object] | str | None = Field(
+        default=None,
+        description="OBML model as JSON object or JSON string (auto-parsed)",
     )
     extends: list[str] | None = Field(
         default=None,
@@ -105,6 +112,12 @@ class ValidateRequest(BaseModel):
         default=None,
         description="Optional model ID of an already-loaded parent model in the session",
     )
+
+    @model_validator(mode="after")
+    def _parse_model_json_string(self) -> ValidateRequest:
+        if isinstance(self.model_json, str):
+            self.model_json = json.loads(self.model_json)
+        return self
 
 
 class ValidateResponse(BaseModel):
@@ -216,7 +229,15 @@ class SessionListResponse(BaseModel):
 class ModelLoadRequest(BaseModel):
     """Request body for POST /sessions/{session_id}/models."""
 
-    model_yaml: str = Field(description="OBML YAML content", max_length=5_000_000)
+    model_yaml: str | None = Field(
+        default=None,
+        description="OBML model as YAML string (provide model_yaml OR model_json)",
+        max_length=5_000_000,
+    )
+    model_json: dict[str, object] | str | None = Field(
+        default=None,
+        description="OBML model as JSON object or JSON string (auto-parsed)",
+    )
     extends: list[str] | None = Field(
         default=None,
         description="Optional inline YAML strings of analytical fragments to merge",
@@ -225,6 +246,12 @@ class ModelLoadRequest(BaseModel):
         default=None,
         description="Optional model ID of an already-loaded parent model in the session",
     )
+
+    @model_validator(mode="after")
+    def _parse_model_json_string(self) -> ModelLoadRequest:
+        if isinstance(self.model_json, str):
+            self.model_json = json.loads(self.model_json)
+        return self
 
 
 class ModelLoadResponse(BaseModel):

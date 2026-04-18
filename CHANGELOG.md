@@ -2,6 +2,23 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.6.1] - 2026-04-18
+
+### Added
+
+- **`model_json` input** — load and validate endpoints now accept `model_json` (JSON object) as an alternative to `model_yaml` (YAML string). Eliminates YAML escaping/indentation issues for LLM consumers.
+- **Auto-parse stringified JSON** — if `model_json` is passed as a JSON string instead of an object (common with smaller LLMs), it is auto-parsed via `json.loads()`.
+
+### Fixed
+
+- **Verbose 422 error messages** — model validation errors now include all error codes and messages in the top-level `message` field, so MCP consumers see actionable details instead of generic "parsing or validation failed".
+
+### Changed
+
+- Version bumped to 1.6.1
+
+---
+
 ## [1.6.0] - 2026-04-18
 
 ### Added

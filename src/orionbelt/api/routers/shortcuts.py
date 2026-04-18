@@ -346,9 +346,9 @@ async def shortcut_sparql(
 async def shortcut_validate(
     body: ValidateRequest,
 ) -> ValidateResponse:
-    """Validate OBML YAML (stateless — no session required)."""
+    """Validate an OBML model (stateless — no session required)."""
     store = ModelStore()
-    summary = store.validate(body.model_yaml)
+    summary = store.validate(body.model_yaml, raw_dict=body.model_json)
     return ValidateResponse(
         valid=summary.valid,
         errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
