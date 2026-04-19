@@ -1788,6 +1788,9 @@ def create_blocks(
                     interactive=False,
                     wrap=True,
                 )
+                csv_download = gr.DownloadButton(
+                    "Download CSV", visible=False, variant="secondary", scale=0
+                )
 
             # Refresh execute button/tab visibility when API URL changes
             def _refresh_query_exec_visibility(api_url_val: str) -> tuple[object, object]:
@@ -1824,9 +1827,30 @@ def create_blocks(
                     result_info,
                 ],
             ).then(
-                fn=lambda info: gr.Tabs(selected=1) if info else gr.Tabs(),
+                fn=lambda info: (
+                    gr.Tabs(selected=1) if info else gr.Tabs(),
+                    gr.update(visible=bool(info)),
+                ),
                 inputs=[result_info],
-                outputs=[tabs],
+                outputs=[tabs, csv_download],
+            )
+
+            def _export_csv(df: object) -> str | None:
+                import pandas as pd
+
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    return None
+                import tempfile
+
+                _, path = tempfile.mkstemp(suffix=".csv", prefix="query_results_")
+                export = df.drop(columns=["#"], errors="ignore")
+                export.to_csv(path, index=False)
+                return path
+
+            csv_download.click(
+                fn=_export_csv,
+                inputs=[result_table],
+                outputs=[csv_download],
             )
 
             with gr.Tab("ER Diagram", id=2) as er_tab:
