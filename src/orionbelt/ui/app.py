@@ -1796,7 +1796,7 @@ def create_blocks(
                     label="Query Results",
                     interactive=False,
                     wrap=True,
-                    max_height=2000,
+                    max_height=800,
                 )
 
             # Refresh execute button/tab visibility when API URL changes
