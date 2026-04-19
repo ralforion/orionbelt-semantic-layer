@@ -293,8 +293,7 @@ POSTGRES_PASSWORD=secret
 ### Running Locally
 
 ```bash
-# Install Flight dependencies
-uv sync --extra flight
+uv sync
 
 # Start API + Flight SQL
 FLIGHT_ENABLED=true MODEL_FILE=models/sales.obml.yaml uv run orionbelt-api
@@ -303,7 +302,7 @@ FLIGHT_ENABLED=true MODEL_FILE=models/sales.obml.yaml uv run orionbelt-api
 Or with a `.env` file:
 
 ```bash
-uv sync --extra flight
+uv sync
 uv run orionbelt-api
 # reads FLIGHT_ENABLED=true from .env
 ```

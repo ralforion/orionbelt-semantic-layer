@@ -18,34 +18,7 @@ cd orionbelt-semantic-layer
 uv sync
 ```
 
-This installs all runtime dependencies:
-
-| Package                  | Purpose                               |
-| ------------------------ | ------------------------------------- |
-| `fastapi`                | REST API framework                    |
-| `uvicorn`                | ASGI server                           |
-| `pydantic`               | Model validation (v2)                 |
-| `pydantic-settings`      | Configuration from environment / .env |
-| `ruamel.yaml`            | YAML parsing with source positions    |
-| `networkx`               | Join graph algorithms                 |
-| `structlog`              | Structured logging                    |
-| `opentelemetry-api`      | Observability                         |
-
-### Development Dependencies
-
-```bash
-uv sync --group dev
-```
-
-Adds `pytest`, `ruff`, `mypy`, `httpx`, `pre-commit`, and type stubs.
-
-### Documentation Dependencies
-
-```bash
-uv sync --extra docs
-```
-
-Adds `mkdocs-material`, `mkdocs-autorefs`, and `mkdocstrings[python]`.
+This installs all dependencies — runtime, development tools, UI, Flight SQL drivers, and docs — via the default `dev` dependency group. No extra flags needed.
 
 ## Verify the Installation
 

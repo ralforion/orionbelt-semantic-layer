@@ -8,12 +8,10 @@
 ## Install Dependencies
 
 ```bash
-# Main dependencies only
 uv sync
-
-# All dependencies (dev tools, docs, UI, type stubs)
-uv sync --all-extras --all-groups
 ```
+
+This installs everything — dev tools, docs, UI, Flight SQL drivers, and type stubs.
 
 ## Run Tests
 
@@ -35,7 +33,6 @@ uv run mypy src/                  # type check
 ## Build Documentation
 
 ```bash
-uv sync --extra docs
 uv run mkdocs serve               # docs at http://127.0.0.1:8080
 ```
 

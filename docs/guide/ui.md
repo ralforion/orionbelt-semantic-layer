@@ -22,10 +22,10 @@ The ER diagram is also available as download (MD or PNG) or via the REST API.
 
 ## Local Development
 
-For local development, the Gradio UI is automatically mounted at `/ui` on the REST API server when the `ui` extra is installed:
+For local development, the Gradio UI is automatically mounted at `/ui` on the REST API server:
 
 ```bash
-uv sync --extra ui
+uv sync
 uv run orionbelt-api
 # -> API at http://localhost:8000
 # -> UI  at http://localhost:8000/ui
@@ -36,12 +36,10 @@ uv run orionbelt-api
 The UI can also run as a separate process, connecting to the API via `API_BASE_URL`:
 
 ```bash
-# Start the REST API (required backend)
-uv run orionbelt-api &
-
-# Install UI deps and launch the Gradio UI (standalone on port 7860)
-uv sync --extra ui
-API_BASE_URL=http://localhost:8000 uv run orionbelt-ui
+uv sync
+uv run orionbelt-api                                    # API on :8000
+uv run orionbelt-ui                                     # UI on :7860
+API_BASE_URL=http://remote-api:8080 uv run orionbelt-ui # point to remote API
 ```
 
 ## Live Demo

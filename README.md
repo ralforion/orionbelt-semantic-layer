@@ -162,17 +162,17 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
   <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="SQL Compiler in Gradio UI" width="900">
 </p>
 
-**Embedded mode** — install the `ui` extra and the UI is mounted at `/ui` on the API server:
+**Embedded mode** — the UI is mounted at `/ui` on the API server:
 
 ```bash
-uv sync --extra ui && uv run orionbelt-api
+uv sync && uv run orionbelt-api
 # -> UI at http://localhost:8000/ui
 ```
 
-**Standalone mode** — install the `ui` extra, then run API and UI as separate processes:
+**Standalone mode** — run API and UI as separate processes:
 
 ```bash
-uv sync --extra ui
+uv sync
 uv run orionbelt-api                                          # API on :8000
 uv run orionbelt-ui                                           # UI on :7860 (connects to API on :8000)
 API_BASE_URL=http://remote-api:8080 uv run orionbelt-ui       # point UI to a remote API
