@@ -1178,15 +1178,17 @@ def execute_query(
     str,
     dict[str, str] | None,
     dict[str, str] | None,
-    list[list[object]],
+    object,
     str,
 ]:
     """Execute query via the REST API and return results as a table.
 
     Returns ``(sql_output, explain_yaml, session_state, model_state,
-    dataframe_rows, result_info)``.
+    dataframe, result_info)``.
     """
-    empty_df: list[list[object]] = []
+    import pandas as pd
+
+    empty_df = pd.DataFrame()
     try:
         client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
             model_yaml, api_url, session_state, model_state
@@ -1257,7 +1259,7 @@ def execute_query(
         exec_time = data.get("execution_time_ms", 0.0)
 
         col_names = [c["name"] for c in columns]
-        df_rows: list[list[object]] = [col_names] + rows if col_names else rows
+        df = pd.DataFrame(rows, columns=col_names) if col_names else pd.DataFrame(rows)
 
         warnings: list[str] = data.get("warnings", [])
         sql_valid: bool = data.get("sql_valid", True)
@@ -1271,7 +1273,7 @@ def execute_query(
             formatted = "\n".join(header_lines) + "\n" + formatted
 
         info = f"{row_count} rows in {exec_time:.0f} ms"
-        return formatted, explain_yaml, session_state, model_state, df_rows, info
+        return formatted, explain_yaml, session_state, model_state, df, info
 
     except _ModelValidationError as exc:
         return (
