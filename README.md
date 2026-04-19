@@ -162,6 +162,13 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
   <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="SQL Compiler in Gradio UI" width="900">
 </p>
 
+- **SQL Compiler** — side-by-side OBML model and query editors with syntax highlighting, 8 dialect selector, one-click compilation with formatted SQL output and query explain
+- **Query Execution** — execute compiled queries against a connected database, view results in a scrollable data table with CSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
+- **ER Diagram** — interactive Mermaid ER diagram with zoom, column toggle, and download (MD/PNG/Turtle)
+- **Editor Toolbar** — clear, undo, redo, upload, download, and copy buttons on all code editors
+- **OSI Import/Export** — convert between OBML and OSI formats
+- **Dark/Light Mode** — toggle via header button, state persisted across sessions
+
 **Embedded mode** — the UI is mounted at `/ui` on the API server:
 
 ```bash
