@@ -1755,7 +1755,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.1
+  OrionBelt v1.6.2
 </div>
       
     </li>
@@ -2097,7 +2097,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.1
+  OrionBelt v1.6.2
 </div>
                   </div>
                 </div>
@@ -2528,14 +2528,13 @@
 </tbody>
 </table>
 <h3 id="running-locally">Running Locally<a class="headerlink" href="#running-locally" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Install Flight dependencies</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>flight
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Start API + Flight SQL</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="nv">FLIGHT_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">MODEL_FILE</span><span class="o">=</span>models/sales.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>uv<span class="w"> </span>sync
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># Start API + Flight SQL</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="nv">FLIGHT_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">MODEL_FILE</span><span class="o">=</span>models/sales.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span></code></pre></div>
 <p>Or with a <code>.env</code> file:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>flight
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>uv<span class="w"> </span>sync
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="c1"># reads FLIGHT_ENABLED=true from .env</span>
 </span></code></pre></div>

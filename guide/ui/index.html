@@ -946,7 +946,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.1
+  OrionBelt v1.6.2
 </div>
       
     </li>
@@ -1582,7 +1582,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.1
+  OrionBelt v1.6.2
 </div>
                   </div>
                 </div>
@@ -1618,20 +1618,18 @@
 <p><img alt="ER Diagram" src="../../assets/ui-er-diagram-dark.png" /></p>
 <p>The ER diagram is also available as download (MD or PNG) or via the REST API.</p>
 <h2 id="local-development">Local Development<a class="headerlink" href="#local-development" title="Permanent link">&para;</a></h2>
-<p>For local development, the Gradio UI is automatically mounted at <code>/ui</code> on the REST API server when the <code>ui</code> extra is installed:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>ui
+<p>For local development, the Gradio UI is automatically mounted at <code>/ui</code> on the REST API server:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>sync
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># -&gt; API at http://localhost:8000</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># -&gt; UI  at http://localhost:8000/ui</span>
 </span></code></pre></div>
 <h2 id="standalone-mode">Standalone Mode<a class="headerlink" href="#standalone-mode" title="Permanent link">&para;</a></h2>
 <p>The UI can also run as a separate process, connecting to the API via <code>API_BASE_URL</code>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Start the REST API (required backend)</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api<span class="w"> </span><span class="p">&amp;</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Install UI deps and launch the Gradio UI (standalone on port 7860)</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>ui
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nv">API_BASE_URL</span><span class="o">=</span>http://localhost:8000<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-ui
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>sync
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api<span class="w">                                    </span><span class="c1"># API on :8000</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-ui<span class="w">                                     </span><span class="c1"># UI on :7860</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nv">API_BASE_URL</span><span class="o">=</span>http://remote-api:8080<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-ui<span class="w"> </span><span class="c1"># point to remote API</span>
 </span></code></pre></div>
 <h2 id="live-demo">Live Demo<a class="headerlink" href="#live-demo" title="Permanent link">&para;</a></h2>
 <p>The hosted demo is available at:</p>

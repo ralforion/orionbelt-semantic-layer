@@ -2,102 +2,102 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/drivers/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/api/endpoints/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/api/openapi/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/api/overview/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/examples/multi-dialect/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/examples/multi-fact/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/examples/sales-model/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/examples/tpcds/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/getting-started/development/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/getting-started/docker/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/getting-started/installation/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/getting-started/quickstart/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/compilation/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/dialects/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/integrations/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/model-format/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/obsl/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/osi/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/period-over-period/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/query-language/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/guide/ui/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/reference/architecture/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/reference/configuration/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
     <url>
          <loc>https://ralfbecher.github.io/orionbelt-semantic-layer/reference/python-api/</loc>
-         <lastmod>2026-04-18</lastmod>
+         <lastmod>2026-04-19</lastmod>
     </url>
 </urlset>
