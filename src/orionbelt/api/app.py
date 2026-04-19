@@ -243,10 +243,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
+        from orionbelt.api.deps import (
+            get_flight_info,
+            is_query_execute_enabled,
+            is_single_model_mode,
+        )
         from orionbelt.ui.app import create_blocks
 
         api_url = f"http://localhost:{settings.effective_port}"
-        demo = create_blocks(default_api_url=api_url)
+        fi = get_flight_info()
+        ui_settings: dict[str, object] = {
+            "single_model_mode": is_single_model_mode(),
+            "query_execute": is_query_execute_enabled(),
+            "session_ttl_seconds": settings.session_ttl_seconds,
+        }
+        if fi:
+            ui_settings["flight"] = fi
+        demo = create_blocks(default_api_url=api_url, embedded_settings=ui_settings)
         app = gr.mount_gradio_app(app, demo, path="/ui")
         logger.info("Gradio UI mounted at %s/ui", api_url)
     except Exception:

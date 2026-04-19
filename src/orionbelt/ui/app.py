@@ -1457,7 +1457,10 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def create_blocks(default_api_url: str | None = None) -> Any:
+def create_blocks(
+    default_api_url: str | None = None,
+    embedded_settings: dict[str, Any] | None = None,
+) -> Any:
     """Build and return a ``gr.Blocks`` instance (without launching).
 
     Parameters
@@ -1466,6 +1469,10 @@ def create_blocks(default_api_url: str | None = None) -> Any:
         Override the default API URL shown in the UI.  When the UI is
         co-hosted inside FastAPI (mounted at ``/ui``), this is set to the
         local server address so the UI talks to the same process.
+    embedded_settings:
+        Pre-built settings dict passed by the API host process in embedded
+        mode.  Avoids an HTTP round-trip to ``/v1/settings`` before the
+        server is listening.
     """
     import gradio as gr
 
@@ -1473,13 +1480,13 @@ def create_blocks(default_api_url: str | None = None) -> Any:
 
     cohosted = default_api_url is not None
     api_base = default_api_url or _DEFAULT_API_URL
-    dialects = _fetch_dialects(api_base)
+    dialects = _fetch_dialects(api_base) if not cohosted else _FALLBACK_DIALECTS
     default_dialect = (
         "postgres" if "postgres" in dialects else (dialects[0] if dialects else "postgres")
     )
 
-    # Detect single-model mode and query execution capability from API
-    api_settings = _fetch_settings(api_base)
+    # In embedded mode use pre-supplied settings; standalone fetches via HTTP
+    api_settings = embedded_settings if embedded_settings is not None else _fetch_settings(api_base)
     single_model = api_settings.get("single_model_mode", False)
     query_exec_enabled = api_settings.get("query_execute", False)
     if single_model and api_settings.get("model_yaml"):
