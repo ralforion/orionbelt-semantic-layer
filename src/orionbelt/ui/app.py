@@ -116,10 +116,6 @@ _CSS = """\
 .code-editor .cm-editor { height: 45dvh !important; }
 #ob-query .cm-editor { height: calc(45dvh - 90px) !important; }
 .sql-output .cm-editor { max-height: 20dvh !important; }
-.result-table .table-wrap {
-  max-height: calc(100dvh - 260px) !important;
-  overflow-y: auto !important;
-}
 
 /* purple primary button — compact */
 .purple-btn {
@@ -1800,7 +1796,7 @@ def create_blocks(
                     label="Query Results",
                     interactive=False,
                     wrap=True,
-                    elem_classes=["result-table"],
+                    max_height=2000,
                 )
 
             # Refresh execute button/tab visibility when API URL changes
