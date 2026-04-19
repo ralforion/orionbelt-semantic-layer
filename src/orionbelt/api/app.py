@@ -248,6 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         api_url = f"http://localhost:{settings.effective_port}"
         demo = create_blocks(default_api_url=api_url)
         app = gr.mount_gradio_app(app, demo, path="/ui")
+        logger.info("Gradio UI mounted at %s/ui", api_url)
     except Exception:
         pass  # gradio not installed or mount failed — skip UI mount
 

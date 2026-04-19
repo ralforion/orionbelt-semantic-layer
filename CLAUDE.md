@@ -45,6 +45,10 @@ docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8080 orionbe
 ./tests/cloudrun/test_cloudrun.sh <CLOUD_RUN_URL> # 30 live API tests
 ```
 
+## Code Review
+
+Code changes are reviewed with **OpenAI Codex**. Write clean, well-structured code that passes automated review. Avoid unnecessary complexity, dead code, or patterns that would trigger review warnings. Ensure all changes pass `ruff check`, `ruff format`, and `mypy` before submitting.
+
 ## Architecture — Compilation Pipeline
 
 ```

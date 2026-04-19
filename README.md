@@ -49,10 +49,19 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 ### Docker (fastest)
 
 ```bash
+# API only
 docker run -p 8080:8080 ralforion/orionbelt-api
+
+# API + Gradio UI (two containers)
+docker run -p 8080:8080 ralforion/orionbelt-api
+docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8080 ralforion/orionbelt-ui
+
+# API + Flight SQL + Gradio UI (all-in-one image)
+docker run -p 8080:8080 -p 8815:8815 ralforion/orionbelt-flight
+docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8080 ralforion/orionbelt-ui
 ```
 
-API at `http://localhost:8080` — Swagger docs at [`/docs`](http://localhost:8080/docs)
+API at `http://localhost:8080` — Swagger docs at [`/docs`](http://localhost:8080/docs) — UI at `http://localhost:7860`
 
 ### From Source
 
@@ -153,11 +162,20 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
   <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="SQL Compiler in Gradio UI" width="900">
 </p>
 
-Install the `ui` extra and the UI is mounted at `/ui` on the API server:
+**Embedded mode** — install the `ui` extra and the UI is mounted at `/ui` on the API server:
 
 ```bash
 uv sync --extra ui && uv run orionbelt-api
 # -> UI at http://localhost:8000/ui
+```
+
+**Standalone mode** — install the `ui` extra, then run API and UI as separate processes:
+
+```bash
+uv sync --extra ui
+uv run orionbelt-api                                          # API on :8000
+uv run orionbelt-ui                                           # UI on :7860 (connects to API on :8000)
+API_BASE_URL=http://remote-api:8080 uv run orionbelt-ui       # point UI to a remote API
 ```
 
 ## Documentation

@@ -537,7 +537,7 @@ _INJECT_UPLOAD_JS = (
         var redo = document.createElement('button');
         redo.className = 'ob-upload-btn ob-redo-btn';
         redo.title = 'Redo';
-        redo.innerHTML = '\u21B7';
+        redo.innerHTML = '\u21b7';
         redo.style.fontSize = '16px';
         redo.addEventListener('click', function(e) {
             e.preventDefault(); e.stopPropagation();
@@ -547,7 +547,7 @@ _INJECT_UPLOAD_JS = (
         var undo = document.createElement('button');
         undo.className = 'ob-upload-btn ob-undo-btn';
         undo.title = 'Undo';
-        undo.innerHTML = '\u21B6';
+        undo.innerHTML = '\u21b6';
         undo.style.fontSize = '16px';
         undo.addEventListener('click', function(e) {
             e.preventDefault(); e.stopPropagation();
@@ -1155,6 +1155,146 @@ def compile_sql(
         return f"Error: {exc}", "", session_state, model_state
 
 
+def execute_query(
+    model_yaml: str,
+    query_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+) -> tuple[
+    str,
+    str,
+    dict[str, str] | None,
+    dict[str, str] | None,
+    list[list[object]],
+    str,
+]:
+    """Execute query via the REST API and return results as a table.
+
+    Returns ``(sql_output, explain_yaml, session_state, model_state,
+    dataframe_rows, result_info)``.
+    """
+    empty_df: list[list[object]] = []
+    try:
+        client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+            model_yaml, api_url, session_state, model_state
+        )
+
+        try:
+            query_dict = yaml.safe_load(query_yaml)
+        except yaml.YAMLError as exc:
+            return f"Error: Invalid query YAML\n{exc}", "", session_state, model_state, empty_df, ""
+
+        if not isinstance(query_dict, dict):
+            return (
+                "Error: Query YAML must be a mapping (dict), not a scalar or list",
+                "",
+                session_state,
+                model_state,
+                empty_df,
+                "",
+            )
+
+        if "query" in query_dict and "select" not in query_dict:
+            query_dict = query_dict["query"]
+
+        resp = client.post(
+            f"/v1/sessions/{session_id}/query/execute",
+            json={"model_id": model_id, "query": query_dict, "dialect": dialect},
+            timeout=120,
+        )
+        if resp.status_code == 404:
+            client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
+                model_yaml, api_url, None, None
+            )
+            resp = client.post(
+                f"/v1/sessions/{session_id}/query/execute",
+                json={"model_id": model_id, "query": query_dict, "dialect": dialect},
+                timeout=120,
+            )
+        if resp.status_code == 503:
+            detail = resp.json().get("detail", resp.text)
+            return (
+                f"Error: {detail}",
+                "",
+                session_state,
+                model_state,
+                empty_df,
+                "",
+            )
+        if resp.status_code in (400, 422):
+            detail = resp.json().get("detail", resp.text)
+            return (
+                f"Error: Query execution failed\n{_format_api_errors(detail)}",
+                "",
+                session_state,
+                model_state,
+                empty_df,
+                "",
+            )
+        resp.raise_for_status()
+        data = resp.json()
+
+        sql: str = data["sql"]
+        formatted = _format_sql(sql)
+        explain_yaml = _build_explain_yaml(data)
+
+        columns = data.get("columns", [])
+        rows = data.get("rows", [])
+        row_count = data.get("row_count", 0)
+        exec_time = data.get("execution_time_ms", 0.0)
+
+        col_names = [c["name"] for c in columns]
+        df_rows: list[list[object]] = [col_names] + rows if col_names else rows
+
+        warnings: list[str] = data.get("warnings", [])
+        sql_valid: bool = data.get("sql_valid", True)
+        header_lines: list[str] = []
+        if not sql_valid:
+            header_lines.append("-- WARNING: SQL validation failed")
+        for w in warnings:
+            header_lines.append(f"-- WARNING: {w}")
+        if header_lines:
+            header_lines.append("")
+            formatted = "\n".join(header_lines) + "\n" + formatted
+
+        info = f"{row_count} rows in {exec_time:.0f} ms"
+        return formatted, explain_yaml, session_state, model_state, df_rows, info
+
+    except _ModelValidationError as exc:
+        return (
+            f"Error: Model validation failed\n{_format_api_errors(exc.detail)}",
+            "",
+            session_state,
+            model_state,
+            empty_df,
+            "",
+        )
+    except httpx.ConnectError:
+        api = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
+        return (
+            f"Error: Cannot connect to API at {api}\n"
+            "Make sure the server is running: uv run orionbelt-api",
+            "",
+            session_state,
+            model_state,
+            empty_df,
+            "",
+        )
+    except httpx.HTTPStatusError as exc:
+        return (
+            f"Error: HTTP {exc.response.status_code}\n{exc.response.text}",
+            "",
+            session_state,
+            model_state,
+            empty_df,
+            "",
+        )
+    except Exception as exc:
+        return f"Error: {exc}", "", session_state, model_state, empty_df, ""
+
+
 def validate_model(
     model_yaml: str,
     api_url: str,
@@ -1338,9 +1478,10 @@ def create_blocks(default_api_url: str | None = None) -> Any:
         "postgres" if "postgres" in dialects else (dialects[0] if dialects else "postgres")
     )
 
-    # Detect single-model mode from the API /settings endpoint
+    # Detect single-model mode and query execution capability from API
     api_settings = _fetch_settings(api_base)
     single_model = api_settings.get("single_model_mode", False)
+    query_exec_enabled = api_settings.get("query_execute", False)
     if single_model and api_settings.get("model_yaml"):
         example_model = api_settings["model_yaml"]
     else:
@@ -1391,7 +1532,7 @@ def create_blocks(default_api_url: str | None = None) -> Any:
             )
             dark_btn = gr.Button("Light / Dark", size="sm", scale=0, min_width=120)
 
-        with gr.Tabs():
+        with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
                     dialect = gr.Dropdown(
@@ -1416,9 +1557,7 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     export_osi_btn = gr.Button("Export to OSI", size="sm", scale=0, min_width=120)
                     download_obsl_btn = gr.Button("\u2193 OBSL", size="sm", scale=0, min_width=80)
 
-                init_dims, init_meas, init_fields = _extract_model_items(
-                    example_model
-                )
+                init_dims, init_meas, init_fields = _extract_model_items(example_model)
 
                 with gr.Row():
                     model_label = (
@@ -1537,10 +1676,16 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                         outputs=[query_input, picker],
                     )
 
-
                 with gr.Row():
                     compile_btn = gr.Button(
                         "Compile SQL", variant="primary", elem_classes=["purple-btn"]
+                    )
+                    execute_btn = gr.Button(
+                        "Execute Query",
+                        variant="primary",
+                        scale=0,
+                        min_width=140,
+                        visible=query_exec_enabled,
                     )
                     validate_btn = gr.Button(
                         "Validate Model", variant="secondary", scale=0, min_width=140
@@ -1606,7 +1751,44 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     js=_DOWNLOAD_TTL_JS,
                 )
 
-            with gr.Tab("ER Diagram", id=1) as er_tab:
+            with gr.Tab("Query Results", id=1, visible=query_exec_enabled):
+                result_info = gr.Textbox(
+                    label="Execution Info",
+                    interactive=False,
+                    lines=1,
+                    max_lines=1,
+                )
+                result_table = gr.Dataframe(
+                    label="Query Results",
+                    interactive=False,
+                    wrap=True,
+                )
+
+            # Wire execute button after result components are defined
+            execute_btn.click(
+                fn=execute_query,
+                inputs=[
+                    model_input,
+                    query_input,
+                    dialect,
+                    api_url,
+                    session_state,
+                    model_state,
+                ],
+                outputs=[
+                    sql_output,
+                    explain_output,
+                    session_state,
+                    model_state,
+                    result_table,
+                    result_info,
+                ],
+            ).then(
+                fn=lambda: gr.Tabs(selected=1),
+                outputs=[tabs],
+            )
+
+            with gr.Tab("ER Diagram", id=2) as er_tab:
                 with gr.Row():
                     show_columns_cb = gr.Checkbox(value=True, label="Show columns")
                     zoom_slider = gr.Slider(
@@ -1707,7 +1889,7 @@ def create_blocks(default_api_url: str | None = None) -> Any:
                     js=_DOWNLOAD_PNG_JS,
                 )
 
-            with gr.Tab("Settings", id=2) as settings_tab:
+            with gr.Tab("Settings", id=3) as settings_tab:
                 settings_output = gr.Code(
                     language="yaml",
                     label="API Settings",
