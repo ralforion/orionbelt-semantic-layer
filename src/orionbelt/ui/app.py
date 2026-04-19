@@ -129,6 +129,17 @@ _CSS = """\
 .purple-btn:hover {
   background: linear-gradient(135deg, #6d28d9, #7c3aed) !important;
 }
+.orange-btn {
+  background: linear-gradient(135deg, #ea580c, #f97316) !important;
+  border: none !important;
+  color: white !important;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  margin: 0 !important;
+}
+.orange-btn:hover {
+  background: linear-gradient(135deg, #c2410c, #ea580c) !important;
+}
 
 /* Custom upload button: match Gradio's native toolbar button style */
 .ob-upload-btn {
@@ -1683,7 +1694,7 @@ def create_blocks(
                         outputs=[query_input, picker],
                     )
 
-                with gr.Row():
+                with gr.Row(equal_height=True):
                     compile_btn = gr.Button(
                         "Compile SQL", variant="primary", elem_classes=["purple-btn"]
                     )
@@ -1693,9 +1704,13 @@ def create_blocks(
                         scale=0,
                         min_width=140,
                         visible=query_exec_enabled,
+                        elem_classes=["orange-btn"],
                     )
                     validate_btn = gr.Button(
-                        "Validate Model", variant="secondary", scale=0, min_width=140
+                        "Validate Model",
+                        variant="secondary",
+                        scale=0,
+                        min_width=140,
                     )
 
                 with gr.Row():
