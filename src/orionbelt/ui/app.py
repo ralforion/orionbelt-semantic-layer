@@ -1821,7 +1821,8 @@ def create_blocks(
                     result_info,
                 ],
             ).then(
-                fn=lambda: gr.Tabs(selected=1),
+                fn=lambda info: gr.Tabs(selected=1) if info else gr.Tabs(),
+                inputs=[result_info],
                 outputs=[tabs],
             )
 
