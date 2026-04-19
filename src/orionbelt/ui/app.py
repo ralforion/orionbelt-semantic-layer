@@ -1261,9 +1261,6 @@ def execute_query(
 
         col_names = [c["name"] for c in columns]
         df = pd.DataFrame(rows, columns=col_names) if col_names else pd.DataFrame(rows)
-        for col in df.columns:
-            if pd.api.types.is_float_dtype(df[col]):
-                df[col] = df[col].round(2)
         df.insert(0, "#", range(1, len(df) + 1))
 
         warnings: list[str] = data.get("warnings", [])
