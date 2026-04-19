@@ -2043,6 +2043,10 @@ def create_ui() -> None:
 
     import uvicorn
 
+    from orionbelt import __version__
+
+    print(f"OrionBelt Semantic Layer UI v{__version__}")
+
     api_url = os.environ.get("API_BASE_URL") or None
     port = int(os.environ.get("PORT", "7860"))
     root_path = os.environ.get("ROOT_PATH", "")
