@@ -500,7 +500,7 @@ _INJECT_UPLOAD_JS = (
         var toolbar = svgBtn.closest('button').parentElement;
         var btn = document.createElement('button');
         btn.className = 'ob-upload-btn ob-clear-btn';
-        btn.title = 'Clear query';
+        btn.title = codeId === 'ob-model' ? 'Clear model' : 'Clear query';
         btn.innerHTML = '\u2715';
         btn.style.fontSize = '14px';
         btn.addEventListener('click', function(e) {
@@ -574,6 +574,7 @@ _INJECT_UPLOAD_JS = (
     var iv = setInterval(function() {
         addUploadBtn('ob-model', 'ob-model-bridge');
         addUploadBtn('ob-query', 'ob-query-bridge');
+        addClearBtn('ob-model', 'ob-model-bridge');
         addClearBtn('ob-query', 'ob-query-bridge');
         addUndoRedoBtns('ob-model');
         addUndoRedoBtns('ob-query');
