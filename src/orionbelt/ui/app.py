@@ -1260,6 +1260,7 @@ def execute_query(
 
         col_names = [c["name"] for c in columns]
         df = pd.DataFrame(rows, columns=col_names) if col_names else pd.DataFrame(rows)
+        df.insert(0, "#", range(1, len(df) + 1))
 
         warnings: list[str] = data.get("warnings", [])
         sql_valid: bool = data.get("sql_valid", True)
