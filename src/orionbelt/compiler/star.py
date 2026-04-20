@@ -39,6 +39,18 @@ def _substitute_measure_refs(
     return expr
 
 
+def _expand_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
+    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions."""
+    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
+        return measure_exprs[expr.name]
+    if isinstance(expr, BinaryOp):
+        new_left = _expand_measure_refs(expr.left, measure_exprs)
+        new_right = _expand_measure_refs(expr.right, measure_exprs)
+        if new_left is not expr.left or new_right is not expr.right:
+            return BinaryOp(left=new_left, op=expr.op, right=new_right)
+    return expr
+
+
 @dataclass
 class CflLegInfo:
     """Information about a single CFL leg for explain output."""
@@ -89,6 +101,7 @@ class StarSchemaPlanner:
 
         # SELECT: measures (aggregated) — for metrics, substitute component refs
         settings = model.settings
+        measure_exprs: dict[str, Expr] = {}
         for measure in resolved.measures:
             if measure.component_measures:
                 expr: Expr = _substitute_measure_refs(
@@ -110,6 +123,7 @@ class StarSchemaPlanner:
                         type_sql = dialect.render_obml_type(resolved_type)
                         expr = Cast(expr=expr, type_name=type_sql)
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
+            measure_exprs[measure.name] = expr
 
         # FROM: base fact table
         builder.from_(qualify(base_object), alias=base_alias)
@@ -147,9 +161,9 @@ class StarSchemaPlanner:
                 gb_col = dialect.render_time_grain(gb_col, dim.grain)
             builder.group_by(gb_col)
 
-        # HAVING
+        # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:
-            builder.having(hf.expression)
+            builder.having(_expand_measure_refs(hf.expression, measure_exprs))
 
         # ORDER BY (use alias for time-grained dimensions)
         grained_cols: dict[tuple[str, str | None], str] = {

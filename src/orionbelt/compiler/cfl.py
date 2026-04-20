@@ -36,6 +36,18 @@ from orionbelt.models.semantic import DataObject, SemanticModel
 __all__ = ["CFLPlanner", "FanoutError"]
 
 
+def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
+    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions."""
+    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
+        return measure_exprs[expr.name]
+    if isinstance(expr, BinaryOp):
+        new_left = _expand_cfl_measure_refs(expr.left, measure_exprs)
+        new_right = _expand_cfl_measure_refs(expr.right, measure_exprs)
+        if new_left is not expr.left or new_right is not expr.right:
+            return BinaryOp(left=new_left, op=expr.op, right=new_right)
+    return expr
+
+
 class CFLPlanner:
     """Plans Composite Fact Layer queries: conformed dimensions + fact stitching.
 
@@ -522,6 +534,7 @@ class CFLPlanner:
         # First, add all component measures (from UNION ALL legs)
         settings = model.settings
         seen_measure_names: set[str] = set()
+        outer_measure_exprs: dict[str, Expr] = {}
         for m in all_measures:
             seen_measure_names.add(m.name)
             agg = m.aggregation.upper()
@@ -551,6 +564,7 @@ class CFLPlanner:
                     type_sql = dialect.render_obml_type(resolved_type)
                     agg_expr = Cast(expr=agg_expr, type_name=type_sql)
             outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
+            outer_measure_exprs[m.name] = agg_expr
 
         # Then, add metric expressions that combine component measures
         for m in resolved.measures:
@@ -563,6 +577,7 @@ class CFLPlanner:
                         type_sql = dialect.render_obml_type(resolved_type)
                         metric_expr = Cast(expr=metric_expr, type_name=type_sql)
                 outer_builder.select(AliasedExpr(expr=metric_expr, alias=m.name))
+                outer_measure_exprs[m.name] = metric_expr
 
         outer_builder.from_(cte_name, alias=cte_name)
 
@@ -570,9 +585,11 @@ class CFLPlanner:
         for dim in resolved.dimensions:
             outer_builder.group_by(ColumnRef(name=dim.name))
 
-        # HAVING filters on the outer query
+        # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:
-            outer_builder.having(hf.expression)
+            outer_builder.having(
+                _expand_cfl_measure_refs(hf.expression, outer_measure_exprs)
+            )
 
         # ORDER BY and LIMIT — remap to CTE aliases
         for expr, desc in resolved.order_by_exprs:
