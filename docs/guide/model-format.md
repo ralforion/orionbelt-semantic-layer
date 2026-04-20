@@ -9,6 +9,9 @@ OrionBelt ML (OBML) is the YAML-based format for defining semantic models in Ori
 version: 1.0
 owner: team-data           # Optional: model-level owner
 
+settings:     # Optional: model-level compilation settings
+  defaultNumericDataType: "decimal(18, 4)"
+
 dataObjects:  # Database tables/views with columns and joins
   ...
 
@@ -280,6 +283,7 @@ measures:
 | `total` | bool | No | Use the total (unfiltered) value when referenced in a metric |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
 | `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`) |
+| `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
 | `filters` | list | No | Filters applied to this measure (supports AND/OR/NOT groups) |
 | `allowFanOut` | bool | No | Allow fan-out joins (default: false) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
@@ -534,6 +538,7 @@ For a detailed guide on PoP metrics, including CTE architecture, filter push-dow
 | `window` | integer | — | Rolling window size in periods (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
+| `dataType` | string | — | OBML data type (e.g. `decimal(18, 4)`). Overrides automatic type inference for CAST wrapping. |
 | `label` | string | — | Display label |
 | `description` | string | — | Business description |
 | `format` | string | — | Display format |
@@ -545,6 +550,104 @@ For a detailed guide on PoP metrics, including CTE architecture, filter push-dow
 | Placeholder | Resolves to |
 |-------------|-------------|
 | `{[Measure Name]}` | Named reference to any defined measure (derived metrics only) |
+
+## Data Types & Numerical Precision
+
+OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consistent numerical precision across dialects. Each measure and metric resolves to an **OBML data type** that maps to the appropriate SQL type per dialect.
+
+### OBML Data Types
+
+| Type | Example | Description |
+|------|---------|-------------|
+| `decimal(p, s)` | `decimal(18, 2)` | Fixed-point numeric with precision and scale |
+| `bigint` | — | 64-bit integer |
+| `integer` | — | 32-bit integer |
+| `double` | — | 64-bit floating point |
+| `date` | — | Calendar date |
+| `timestamp` | — | Date and time with timezone |
+| `time` | — | Time of day |
+| `string` | — | Text |
+| `boolean` | — | True/false |
+
+### Type Resolution Order
+
+The effective data type for a measure or metric is resolved in this order (first match wins):
+
+1. **Explicit declaration** — `dataType` on the measure or metric
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`
+3. **Model-level default** — `settings.defaultNumericDataType`
+4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
+
+Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
+
+### Explicit Data Type
+
+```yaml
+measures:
+  Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Orders].[Price]}"
+    dataType: "decimal(38, 8)"
+```
+
+### Model-Level Default
+
+Override the built-in default for all numeric measures/metrics in the model:
+
+```yaml
+version: "1.0"
+settings:
+  defaultNumericDataType: "decimal(18, 4)"
+
+dataObjects:
+  # ...
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Price]}"
+    # Will use decimal(18, 4) instead of built-in decimal(18, 2)
+```
+
+### Dialect-Specific Type Mapping
+
+| OBML Type | Postgres | Snowflake | ClickHouse | BigQuery | MySQL | Databricks |
+|-----------|----------|-----------|------------|----------|-------|------------|
+| `decimal(18, 2)` | `NUMERIC(18, 2)` | `NUMBER(18, 2)` | `Decimal(18, 2)` | `NUMERIC(18, 2)` | `DECIMAL(18, 2)` | `DECIMAL(18, 2)` |
+| `bigint` | `BIGINT` | `NUMBER(38, 0)` | `Int64` | `INT64` | `BIGINT` | `BIGINT` |
+| `double` | `DOUBLE PRECISION` | `FLOAT` | `Float64` | `FLOAT64` | `DOUBLE` | `DOUBLE` |
+
+Each dialect enforces its own maximum decimal precision (Postgres: 131072; Snowflake/DuckDB/Databricks/Dremio: 38; ClickHouse: 76; MySQL: 65). Values exceeding the limit are automatically clamped.
+
+### Generated SQL Example
+
+```yaml
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Price]}"
+    dataType: "decimal(18, 2)"
+```
+
+Compiles to:
+
+=== "Postgres"
+
+    ```sql
+    SELECT CAST(SUM("Orders"."PRICE") AS NUMERIC(18, 2)) AS "Revenue"
+    ```
+
+=== "Snowflake"
+
+    ```sql
+    SELECT CAST(SUM("Orders"."PRICE") AS NUMBER(18, 2)) AS "Revenue"
+    ```
+
+=== "ClickHouse"
+
+    ```sql
+    SELECT CAST(SUM("Orders"."PRICE") AS Decimal(18, 2)) AS "Revenue"
+    ```
 
 ## Synonyms
 

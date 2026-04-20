@@ -106,7 +106,7 @@ Output:
 ```sql
 SELECT
   "Orders"."COUNTRY" AS "Country",
-  SUM("Orders"."PRICE") AS "Total Revenue"
+  CAST(SUM("Orders"."PRICE") AS NUMERIC(18, 2)) AS "Total Revenue"
 FROM ORDERS AS "Orders"
 GROUP BY "Orders"."COUNTRY"
 ```
@@ -208,6 +208,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **8 SQL Dialects** — BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, Snowflake
 - **AST-Based Generation** — custom SQL AST ensures correct, injection-safe SQL (not string templates)
 - **Star Schema & CFL** — automatic join resolution with Composite Fact Layer for multi-fact queries
+- **Data Types & Precision** — automatic CAST wrapping with dialect-specific type rendering and precision clamping
 - **sqlglot Validation** — post-generation syntax check across all supported dialects
 
 ### Integration Surface
@@ -268,6 +269,7 @@ measures:
     resultType: float
     aggregation: sum
     expression: "{[Orders].[Price]} * {[Orders].[Quantity]}"
+    dataType: "decimal(18, 2)"
 ```
 
 ### Compile via REST API
@@ -296,7 +298,7 @@ curl -s -X POST http://localhost:8080/v1/sessions/a1b2c3d4/query/sql \
 ```sql
 SELECT
   "Customers"."COUNTRY" AS "Country",
-  SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
+  CAST(SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS NUMERIC(18, 2)) AS "Revenue"
 FROM WAREHOUSE.PUBLIC.ORDERS AS "Orders"
 LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS "Customers"
   ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
@@ -373,9 +375,9 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision |
 | In progress | Additional dialects, CLI tool |
-| Planned | Metric data types & numerical precision (CAST-based decimal formatting), authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations |
+| Planned | Authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations |
 
 ---
 

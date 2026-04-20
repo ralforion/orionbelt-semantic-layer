@@ -33,119 +33,119 @@ query = QueryObject(
     ```sql
     SELECT
       `Customers`.`COUNTRY` AS `Customer Country`,
-      SUM(`Orders`.`PRICE` * `Orders`.`QUANTITY`) AS `Revenue`
-    FROM WAREHOUSE.PUBLIC.ORDERS AS `Orders`
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS `Customers`
-      ON `Orders`.`CUSTOMER_ID` = `Customers`.`CUSTOMER_ID`
+      CAST(SUM((`Orders`.`PRICE` * `Orders`.`QUANTITY`)) AS NUMERIC(18, 2)) AS `Revenue`
+    FROM `WAREHOUSE`.`PUBLIC`.`ORDERS` AS `Orders`
+    LEFT JOIN `WAREHOUSE`.`PUBLIC`.`CUSTOMERS` AS `Customers`
+      ON (`Orders`.`CUSTOMER_ID` = `Customers`.`CUSTOMER_ID`)
     WHERE (`Customers`.`SEGMENT` IN ('SMB', 'MidMarket'))
     GROUP BY `Customers`.`COUNTRY`
-    ORDER BY `Revenue` DESC
+    ORDER BY SUM((`Orders`.`PRICE` * `Orders`.`QUANTITY`)) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Backtick-quoted identifiers, `DATE_TRUNC()` with column-first argument, `LOWER()` + `LIKE` for string matching, supports `QUALIFY` and semi-structured types.
+    **Key traits:** Backtick-quoted identifiers, `NUMERIC` for decimal types, `DATE_TRUNC()` with column-first argument, `LOWER()` + `LIKE` for string matching, supports `QUALIFY` and semi-structured types.
 
 === "ClickHouse"
 
     ```sql
     SELECT
       "Customers"."COUNTRY" AS "Customer Country",
-      SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
-    FROM WAREHOUSE.PUBLIC.ORDERS AS "Orders"
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS "Customers"
-      ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
+      CAST(SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) AS Decimal(18, 2)) AS "Revenue"
+    FROM "PUBLIC"."ORDERS" AS "Orders"
+    LEFT JOIN "PUBLIC"."CUSTOMERS" AS "Customers"
+      ON ("Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID")
     WHERE ("Customers"."SEGMENT" IN ('SMB', 'MidMarket'))
     GROUP BY "Customers"."COUNTRY"
-    ORDER BY "Revenue" DESC
+    ORDER BY SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers, custom time functions (`toStartOfMonth()`, `toStartOfYear()`), native type conversion (`toInt64()`, `toFloat64()`).
+    **Key traits:** Double-quoted identifiers, `Decimal(p, s)` type syntax, custom time functions (`toStartOfMonth()`, `toStartOfYear()`), native type conversion (`toInt64()`, `toFloat64()`).
 
 === "Databricks"
 
     ```sql
     SELECT
       `Customers`.`COUNTRY` AS `Customer Country`,
-      SUM(`Orders`.`PRICE` * `Orders`.`QUANTITY`) AS `Revenue`
-    FROM WAREHOUSE.PUBLIC.ORDERS AS `Orders`
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS `Customers`
-      ON `Orders`.`CUSTOMER_ID` = `Customers`.`CUSTOMER_ID`
+      CAST(SUM((`Orders`.`PRICE` * `Orders`.`QUANTITY`)) AS DECIMAL(18, 2)) AS `Revenue`
+    FROM `WAREHOUSE`.`PUBLIC`.`ORDERS` AS `Orders`
+    LEFT JOIN `WAREHOUSE`.`PUBLIC`.`CUSTOMERS` AS `Customers`
+      ON (`Orders`.`CUSTOMER_ID` = `Customers`.`CUSTOMER_ID`)
     WHERE (`Customers`.`SEGMENT` IN ('SMB', 'MidMarket'))
     GROUP BY `Customers`.`COUNTRY`
-    ORDER BY `Revenue` DESC
+    ORDER BY SUM((`Orders`.`PRICE` * `Orders`.`QUANTITY`)) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Backtick-quoted identifiers (Spark SQL), `date_trunc()` for time grains, `lower()` + `LIKE` for case-insensitive matching.
+    **Key traits:** Backtick-quoted identifiers (Spark SQL), `DECIMAL` type, `date_trunc()` for time grains, `lower()` + `LIKE` for case-insensitive matching.
 
 === "Dremio"
 
     ```sql
     SELECT
       "Customers"."COUNTRY" AS "Customer Country",
-      SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
-    FROM WAREHOUSE.PUBLIC.ORDERS AS "Orders"
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS "Customers"
-      ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
+      CAST(SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) AS DECIMAL(18, 2)) AS "Revenue"
+    FROM "WAREHOUSE"."PUBLIC"."ORDERS" AS "Orders"
+    LEFT JOIN "WAREHOUSE"."PUBLIC"."CUSTOMERS" AS "Customers"
+      ON ("Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID")
     WHERE ("Customers"."SEGMENT" IN ('SMB', 'MidMarket'))
     GROUP BY "Customers"."COUNTRY"
-    ORDER BY "Revenue" DESC
+    ORDER BY SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers, `DATE_TRUNC()`, no `ILIKE` support (uses `LOWER()` + `LIKE` workaround), minimal capability set.
+    **Key traits:** Double-quoted identifiers, `DECIMAL` type, `DATE_TRUNC()`, no `ILIKE` support (uses `LOWER()` + `LIKE` workaround), minimal capability set.
 
 === "DuckDB"
 
     ```sql
     SELECT
       "Customers"."COUNTRY" AS "Customer Country",
-      SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
-    FROM PUBLIC.ORDERS AS "Orders"
-    LEFT JOIN PUBLIC.CUSTOMERS AS "Customers"
-      ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
+      CAST(SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) AS DECIMAL(18, 2)) AS "Revenue"
+    FROM "PUBLIC"."ORDERS" AS "Orders"
+    LEFT JOIN "PUBLIC"."CUSTOMERS" AS "Customers"
+      ON ("Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID")
     WHERE ("Customers"."SEGMENT" IN ('SMB', 'MidMarket'))
     GROUP BY "Customers"."COUNTRY"
-    ORDER BY "Revenue" DESC
+    ORDER BY SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers (PostgreSQL-compatible), two-part table refs, `date_trunc()`, `ILIKE`, `UNION ALL BY NAME`.
+    **Key traits:** Double-quoted identifiers (PostgreSQL-compatible), `DECIMAL` type, two-part table refs, `date_trunc()`, `ILIKE`, `UNION ALL BY NAME`.
 
 === "PostgreSQL"
 
     ```sql
     SELECT
       "Customers"."COUNTRY" AS "Customer Country",
-      SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
-    FROM WAREHOUSE.PUBLIC.ORDERS AS "Orders"
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS "Customers"
-      ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
+      CAST(SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) AS NUMERIC(18, 2)) AS "Revenue"
+    FROM "PUBLIC"."ORDERS" AS "Orders"
+    LEFT JOIN "PUBLIC"."CUSTOMERS" AS "Customers"
+      ON ("Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID")
     WHERE ("Customers"."SEGMENT" IN ('SMB', 'MidMarket'))
     GROUP BY "Customers"."COUNTRY"
-    ORDER BY "Revenue" DESC
+    ORDER BY SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers, `date_trunc()` for time grains, `ILIKE` for case-insensitive matching.
+    **Key traits:** Double-quoted identifiers, `NUMERIC` type, `date_trunc()` for time grains, `ILIKE` for case-insensitive matching.
 
 === "Snowflake"
 
     ```sql
     SELECT
       "Customers"."COUNTRY" AS "Customer Country",
-      SUM("Orders"."PRICE" * "Orders"."QUANTITY") AS "Revenue"
-    FROM WAREHOUSE.PUBLIC.ORDERS AS "Orders"
-    LEFT JOIN WAREHOUSE.PUBLIC.CUSTOMERS AS "Customers"
-      ON "Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID"
+      CAST(SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) AS NUMBER(18, 2)) AS "Revenue"
+    FROM "WAREHOUSE"."PUBLIC"."ORDERS" AS "Orders"
+    LEFT JOIN "WAREHOUSE"."PUBLIC"."CUSTOMERS" AS "Customers"
+      ON ("Orders"."CUSTOMER_ID" = "Customers"."CUSTOMER_ID")
     WHERE ("Customers"."SEGMENT" IN ('SMB', 'MidMarket'))
     GROUP BY "Customers"."COUNTRY"
-    ORDER BY "Revenue" DESC
+    ORDER BY SUM(("Orders"."PRICE" * "Orders"."QUANTITY")) DESC
     LIMIT 1000
     ```
 
-    **Key traits:** Double-quoted identifiers (case-sensitive), `DATE_TRUNC()` (uppercase), `CONTAINS()` for string matching, supports `QUALIFY` and window filters.
+    **Key traits:** Double-quoted identifiers (case-sensitive), `NUMBER` type, `DATE_TRUNC()` (uppercase), `CONTAINS()` for string matching, supports `QUALIFY` and window filters.
 
 ## Key Differences
 
@@ -255,7 +255,7 @@ from orionbelt.compiler.pipeline import CompilationPipeline
 
 pipeline = CompilationPipeline()
 
-for dialect in ["bigquery", "clickhouse", "databricks", "dremio", "duckdb", "postgres", "snowflake"]:
+for dialect in ["bigquery", "clickhouse", "databricks", "dremio", "duckdb", "mysql", "postgres", "snowflake"]:
     result = pipeline.compile(query, model, dialect)
     print(f"--- {dialect} ---")
     print(result.sql)
