@@ -13,7 +13,7 @@ Returns the service status and version.
 ```json
 {
   "status": "ok",
-  "version": "1.6.2"
+  "version": "1.7.0"
 }
 ```
 

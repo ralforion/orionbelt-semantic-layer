@@ -11,6 +11,8 @@ owner: team-data           # Optional: model-level owner
 
 settings:     # Optional: model-level compilation settings
   defaultNumericDataType: "decimal(18, 4)"
+  defaultTimezone: "Europe/Zagreb"
+  allowUtcFallback: true
 
 dataObjects:  # Database tables/views with columns and joins
   ...
@@ -648,6 +650,94 @@ Compiles to:
     ```sql
     SELECT CAST(SUM("Orders"."PRICE") AS Decimal(18, 2)) AS "Revenue"
     ```
+
+## Timezone Settings
+
+OrionBelt supports timezone-aware serialization of temporal query results. When executing queries, naive timestamps (without timezone info) from the database are coerced to the configured timezone and serialized in ISO 8601 format.
+
+### Configuration
+
+```yaml
+version: "1.0"
+settings:
+  defaultTimezone: "Europe/Zagreb"
+  allowUtcFallback: true
+```
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `defaultTimezone` | string | — | IANA timezone (e.g. `Europe/Zagreb`, `America/New_York`, `UTC`) |
+| `allowUtcFallback` | boolean | `false` | If true, falls back to UTC when no timezone can be resolved |
+
+### Resolution Order
+
+The effective timezone for naive timestamp coercion is resolved in this order (first match wins):
+
+1. **Database session timezone** — auto-detected from the connection (one query, cached per dialect)
+2. **Model setting** — `settings.defaultTimezone` (fallback when detection fails)
+3. **Host process timezone** — the server's system timezone (if not UTC)
+4. **UTC fallback** — only if `settings.allowUtcFallback` is `true`
+
+If no timezone resolves, naive timestamps pass through without offset information.
+
+**Database session timezone detection** queries the connected database once per dialect:
+
+| Dialect | Detection Query |
+|---------|----------------|
+| Snowflake | `SELECT CURRENT_TIMEZONE()` |
+| Postgres | `SELECT current_setting('TIMEZONE')` |
+| MySQL | `SELECT @@session.time_zone` |
+| DuckDB | `SELECT current_setting('TimeZone')` |
+| ClickHouse | `SELECT timezone()` |
+| BigQuery | Fixed: UTC |
+| Databricks | Not detected (uses model fallback) |
+| Dremio | Not detected (uses model fallback) |
+
+This ensures naive timestamps from the database are labeled with the timezone they actually represent (the database session's timezone), not a potentially different model-level setting.
+
+### Serialization Rules
+
+| Input | Output |
+|-------|--------|
+| Naive datetime + resolved TZ | ISO 8601 with offset: `2026-04-19T14:30:00+02:00` |
+| UTC datetime | ISO 8601 with Z: `2026-04-19T14:30:00Z` |
+| TZ-aware datetime | Preserved as-is: `2026-04-19T14:30:00+02:00` |
+| Date | ISO 8601: `2026-04-19` |
+| Time (no microseconds) | `14:30:00` |
+| Time (with microseconds) | `14:30:00.123456` |
+
+Zero microseconds are elided for cleaner output. UTC offsets (`+00:00`) use the compact `Z` suffix.
+
+### Example
+
+```yaml
+version: "1.0"
+settings:
+  defaultNumericDataType: "decimal(18, 2)"
+  defaultTimezone: "Europe/Zagreb"
+  allowUtcFallback: true
+
+dataObjects:
+  Orders:
+    code: ORDERS
+    columns:
+      Order Date: { code: ORDER_DATE, abstractType: timestamp }
+      Price: { code: PRICE, abstractType: float }
+
+dimensions:
+  Order Date:
+    dataObject: Orders
+    column: Order Date
+    resultType: date
+
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Price]}"
+    dataType: "decimal(18, 2)"
+```
+
+When executing this model, timestamps in the `Order Date` column will be serialized with the `Europe/Zagreb` offset (e.g. `+01:00` in winter, `+02:00` in summer).
 
 ## Synonyms
 

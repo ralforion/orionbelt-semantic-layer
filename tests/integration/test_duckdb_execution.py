@@ -654,7 +654,7 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     def _coerce(v: Any) -> Any:
         return float(v) if isinstance(v, _Decimal) else v
 
-    def execute_sql(sql: str, *, dialect: str) -> ExecutionResult:
+    def execute_sql(sql: str, *, dialect: str, tz: Any = None) -> ExecutionResult:
         t0 = time.monotonic()
         result = conn.execute(sql)
         raw_rows = result.fetchall()

@@ -965,12 +965,21 @@
     },
     "settings": {
       "type": "object",
-      "description": "Model-level settings for compilation behavior",
+      "description": "Model-level settings for compilation and execution behavior",
       "properties": {
         "defaultNumericDataType": {
           "type": "string",
           "description": "Default numeric data type for measures/metrics without explicit data_type. Must be a decimal type (e.g. decimal(18, 4)).",
           "pattern": "^decimal\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)$"
+        },
+        "defaultTimezone": {
+          "type": "string",
+          "description": "IANA timezone name (e.g. Europe/Zagreb, America/New_York). Applied to naive timestamps in query results that lack timezone info."
+        },
+        "allowUtcFallback": {
+          "type": "boolean",
+          "description": "If true, fall back to UTC when no timezone is resolvable for naive timestamps. Default: false.",
+          "default": false
         }
       },
       "additionalProperties": false

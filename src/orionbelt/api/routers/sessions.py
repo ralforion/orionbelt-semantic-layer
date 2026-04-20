@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -41,7 +41,12 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
-from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
+from orionbelt.service.db_executor import (
+    ExecutionError,
+    ExecutionUnavailableError,
+    execute_sql,
+    resolve_timezone,
+)
 from orionbelt.service.diagram import generate_mermaid_er
 from orionbelt.service.model_store import ModelCapacityError, ModelStore, ModelValidationError
 from orionbelt.service.session_manager import (
@@ -164,7 +169,7 @@ async def load_model(
     try:
         result = store.load_model(
             body.model_yaml,
-            raw_dict=body.model_json,
+            raw_dict=cast("dict[str, object] | None", body.model_json),
             extends_yaml=body.extends,
             inherits_model_id=body.inherits,
         )
@@ -283,7 +288,7 @@ async def validate_model(
     store = _get_store(session_id, mgr)
     summary = store.validate(
         body.model_yaml,
-        raw_dict=body.model_json,
+        raw_dict=cast("dict[str, object] | None", body.model_json),
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
     )
@@ -472,8 +477,19 @@ async def execute_query(
             },
         ) from None
 
+    # Resolve timezone from model settings for naive timestamp coercion
+    model = store.get_model(body.model_id)
+    tz = None
+    if model.settings:
+        tz = resolve_timezone(
+            default_timezone=model.settings.default_timezone,
+            allow_utc_fallback=model.settings.allow_utc_fallback,
+        )
+
     try:
-        exec_result = await asyncio.to_thread(execute_sql, result.sql, dialect=body.dialect)
+        exec_result = await asyncio.to_thread(
+            execute_sql, result.sql, dialect=body.dialect, tz=tz
+        )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
@@ -486,6 +502,7 @@ async def execute_query(
         rows=exec_result.rows,
         row_count=exec_result.row_count,
         execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
         resolved=ResolvedInfoResponse(
             fact_tables=result.resolved.fact_tables,
             dimensions=result.resolved.dimensions,

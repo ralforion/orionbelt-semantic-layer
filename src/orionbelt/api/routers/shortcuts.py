@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -52,7 +53,12 @@ from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
+from orionbelt.service.db_executor import (
+    ExecutionError,
+    ExecutionUnavailableError,
+    execute_sql,
+    resolve_timezone,
+)
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import SessionManager
 
@@ -348,7 +354,8 @@ async def shortcut_validate(
 ) -> ValidateResponse:
     """Validate an OBML model (stateless — no session required)."""
     store = ModelStore()
-    summary = store.validate(body.model_yaml, raw_dict=body.model_json)
+    raw = cast("dict[str, object] | None", body.model_json)
+    summary = store.validate(body.model_yaml, raw_dict=raw)
     return ValidateResponse(
         valid=summary.valid,
         errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
@@ -518,8 +525,19 @@ async def shortcut_execute_query(
             },
         ) from None
 
+    # Resolve timezone from model settings for naive timestamp coercion
+    model = store.get_model(model_id)
+    tz = None
+    if model.settings:
+        tz = resolve_timezone(
+            default_timezone=model.settings.default_timezone,
+            allow_utc_fallback=model.settings.allow_utc_fallback,
+        )
+
     try:
-        exec_result = await asyncio.to_thread(execute_sql, result.sql, dialect=dialect)
+        exec_result = await asyncio.to_thread(
+            execute_sql, result.sql, dialect=dialect, tz=tz
+        )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
@@ -534,6 +552,7 @@ async def shortcut_execute_query(
         rows=exec_result.rows,
         row_count=exec_result.row_count,
         execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
         resolved=ResolvedInfoResponse(
             fact_tables=result.resolved.fact_tables,
             dimensions=result.resolved.dimensions,

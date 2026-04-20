@@ -5,6 +5,11 @@
 #
 version: 1.0
 
+settings:
+  defaultNumericDataType: "decimal(18, 2)"
+  defaultTimezone: "Europe/Zagreb"
+  allowUtcFallback: true
+
 dataObjects:
   # ── Dimension tables ───────────────────────────────────────────────
 
@@ -320,6 +325,7 @@ measures:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
     synonyms: [sales, income, turnover]
 
   Gross Amount:
@@ -328,11 +334,13 @@ measures:
         column: Extended Price
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
 
   Total Discount:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * {[Line Items].[Discount]}"
+    dataType: "decimal(18, 2)"
 
   Total Quantity:
     columns:
@@ -395,18 +403,22 @@ measures:
 metrics:
   Average Order Value:
     expression: "{[Revenue]} / {[Order Count]}"
+    dataType: "decimal(18, 2)"
 
   Discount Rate:
     expression: "{[Total Discount]} / {[Gross Amount]}"
+    dataType: "decimal(5, 4)"
 
   Average Line Price:
     expression: "{[Gross Amount]} / {[Line Item Count]}"
 
   Gross Margin:
     expression: "({[Revenue]} - {[Supply Cost]}) / {[Revenue]}"
+    dataType: "decimal(5, 4)"
 
   Return Rate:
     expression: "{[Returned Revenue]} / {[Revenue]}"
+    dataType: "decimal(5, 4)"
 
   # ── Cumulative metrics ────────────────────────────────────────────
   Running Revenue:

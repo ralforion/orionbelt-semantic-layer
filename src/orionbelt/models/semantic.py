@@ -366,9 +366,11 @@ class Metric(BaseModel):
 
 
 class ModelSettings(BaseModel):
-    """Model-level settings controlling compilation behavior."""
+    """Model-level settings controlling compilation and execution behavior."""
 
     default_numeric_data_type: str | None = Field(None, alias="defaultNumericDataType")
+    default_timezone: str | None = Field(None, alias="defaultTimezone")
+    allow_utc_fallback: bool = Field(False, alias="allowUtcFallback")
 
     model_config = {"populate_by_name": True}
 
@@ -383,6 +385,20 @@ class ModelSettings(BaseModel):
                 raise ValueError(
                     f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'"
                 )
+        return v
+
+    @field_validator("default_timezone", mode="before")
+    @classmethod
+    def _validate_timezone(cls, v: str | None) -> str | None:
+        if v is not None:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            try:
+                ZoneInfo(v)
+            except (ZoneInfoNotFoundError, KeyError):
+                raise ValueError(
+                    f"defaultTimezone must be a valid IANA timezone, got '{v}'"
+                ) from None
         return v
 
 

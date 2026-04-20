@@ -9,7 +9,7 @@
 <!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](http://35.187.174.102/ui/?__theme=dark)
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 1.6.2](https://img.shields.io/badge/version-1.6.2-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 1.7.0](https://img.shields.io/badge/version-1.7.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -129,7 +129,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:1.6.2
+    image: ralforion/orionbelt-api:1.7.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -138,7 +138,7 @@ services:
       MODEL_FILE: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:1.6.2
+    image: ralforion/orionbelt-ui:1.7.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -154,7 +154,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
-> - For production, pin a version tag (`:1.6.2`) rather than `:latest`.
+> - For production, pin a version tag (`:1.7.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -209,6 +209,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AST-Based Generation** — custom SQL AST ensures correct, injection-safe SQL (not string templates)
 - **Star Schema & CFL** — automatic join resolution with Composite Fact Layer for multi-fact queries
 - **Data Types & Precision** — automatic CAST wrapping with dialect-specific type rendering and precision clamping
+- **Timezone Settings** — auto-detect database session timezone with `defaultTimezone` fallback and ISO 8601 serialization
 - **sqlglot Validation** — post-generation syntax check across all supported dialects
 
 ### Integration Surface
@@ -375,7 +376,7 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings |
 | In progress | Additional dialects, CLI tool |
 | Planned | Authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations |
 

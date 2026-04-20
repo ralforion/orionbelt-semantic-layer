@@ -40,9 +40,15 @@ def _parse_settings(raw: dict[str, Any] | None) -> ModelSettings | None:
     if not raw:
         return None
     default_type = raw.get("defaultNumericDataType")
-    if not default_type:
+    default_tz = raw.get("defaultTimezone")
+    allow_utc = raw.get("allowUtcFallback", False)
+    if not default_type and not default_tz and not allow_utc:
         return None
-    return ModelSettings(default_numeric_data_type=default_type)
+    return ModelSettings(
+        default_numeric_data_type=default_type,
+        default_timezone=default_tz,
+        allow_utc_fallback=allow_utc,
+    )
 
 
 def _coerce_filter_value(v: object) -> str | int | float | bool | None:

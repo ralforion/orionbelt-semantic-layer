@@ -1668,7 +1668,7 @@ def create_blocks(
                         gr.update(choices=fields, value=None),
                     )
 
-                def _make_inserter(section: str):  # noqa: E501
+                def _make_inserter(section: str) -> object:  # noqa: E501
                     def _fn(val: str | None, query: str) -> tuple[str, object]:
                         import gradio as gr
 
@@ -1878,7 +1878,7 @@ def create_blocks(
                     gr.Info("No data to copy")
                     return ""
                 export = df.drop(columns=["#"], errors="ignore")
-                tsv = export.to_csv(sep="\t", index=False)
+                tsv: str = export.to_csv(sep="\t", index=False)
                 gr.Info("Copied to clipboard")
                 return tsv
 
