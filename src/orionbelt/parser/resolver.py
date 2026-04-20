@@ -22,6 +22,7 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ModelFilter,
+    ModelSettings,
     PeriodOverPeriod,
     SemanticModel,
 )
@@ -32,6 +33,16 @@ def _parse_extensions(raw: dict[str, Any]) -> list[CustomExtension]:
     """Extract customExtensions from a raw YAML dict."""
     exts = raw.get("customExtensions", [])
     return [CustomExtension(vendor=e.get("vendor", ""), data=e.get("data", "")) for e in exts]
+
+
+def _parse_settings(raw: dict[str, Any] | None) -> ModelSettings | None:
+    """Parse the settings block from raw YAML into ModelSettings."""
+    if not raw:
+        return None
+    default_type = raw.get("defaultNumericDataType")
+    if not default_type:
+        return None
+    return ModelSettings(default_numeric_data_type=default_type)
 
 
 def _coerce_filter_value(v: object) -> str | int | float | bool | None:
@@ -529,6 +540,8 @@ class ReferenceResolver:
                     )
                 )
 
+        settings = _parse_settings(raw.get("settings"))
+
         model = SemanticModel(
             version=raw.get("version", 1.0),
             data_objects=data_objects,
@@ -540,6 +553,7 @@ class ReferenceResolver:
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
             custom_extensions=_parse_extensions(raw),
+            settings=settings,
         )
 
         result = ValidationResult(

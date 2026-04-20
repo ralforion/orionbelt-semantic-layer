@@ -31,6 +31,7 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 class UnsupportedAggregationError(Exception):
@@ -75,6 +76,30 @@ class Dialect(ABC):
         "timestamp_tz": "TIMESTAMP",
         "boolean": "BOOLEAN",
     }
+
+    _MAX_DECIMAL_PRECISION: int = 38
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "BIGINT",
+        "integer": "INTEGER",
+        "double": "DOUBLE",
+        "date": "DATE",
+        "timestamp": "TIMESTAMP",
+        "time": "TIME",
+        "string": "VARCHAR",
+        "boolean": "BOOLEAN",
+    }
+
+    def render_obml_type(self, obml_type: OBMLType) -> str:
+        """Render an OBMLType to a dialect-specific SQL type string.
+
+        Handles precision clamping for decimal types.
+        """
+        if isinstance(obml_type, DecimalType):
+            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
+            s = min(obml_type.scale, p)
+            return f"DECIMAL({p}, {s})"
+        return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.

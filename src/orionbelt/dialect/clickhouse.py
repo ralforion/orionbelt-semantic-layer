@@ -6,6 +6,7 @@ from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, Ord
 from orionbelt.dialect.base import Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.YEAR: "toStartOfYear",
@@ -22,6 +23,26 @@ _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
 @DialectRegistry.register
 class ClickHouseDialect(Dialect):
     """ClickHouse dialect — custom date functions, aggregation differences."""
+
+    _MAX_DECIMAL_PRECISION: int = 76
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "Int64",
+        "integer": "Int32",
+        "double": "Float64",
+        "date": "Date",
+        "timestamp": "DateTime64(3)",
+        "time": "String",
+        "string": "String",
+        "boolean": "Bool",
+    }
+
+    def render_obml_type(self, obml_type: OBMLType) -> str:
+        if isinstance(obml_type, DecimalType):
+            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
+            s = min(obml_type.scale, p)
+            return f"Decimal({p}, {s})"
+        return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     _ABSTRACT_TYPE_MAP: dict[str, str] = {
         "string": "String",

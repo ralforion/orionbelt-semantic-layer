@@ -588,6 +588,11 @@
           "description": "Alternative names or terms for this measure (LLM hints)",
           "items": { "type": "string" }
         },
+        "dataType": {
+          "type": "string",
+          "description": "Explicit OBML data type for this measure (e.g. decimal(18, 2), bigint). Overrides automatic type inference.",
+          "pattern": "^(decimal\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)|bigint|integer|double|date|timestamp|time|string|boolean)$"
+        },
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
@@ -696,6 +701,11 @@
           "type": "array",
           "description": "Alternative names or terms for this metric (LLM hints)",
           "items": { "type": "string" }
+        },
+        "dataType": {
+          "type": "string",
+          "description": "Explicit OBML data type for this metric (e.g. decimal(18, 4)). Overrides automatic type inference.",
+          "pattern": "^(decimal\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)|bigint|integer|double|date|timestamp|time|string|boolean)$"
         },
         "customExtensions": {
           "type": "array",
@@ -952,6 +962,18 @@
     "inherits": {
       "type": "string",
       "description": "Path to a parent OBML model to inherit all definitions from. The parent provides dataObjects, joins, dimensions, measures, metrics, and filters. The child can add or override analytical definitions and append static filters."
+    },
+    "settings": {
+      "type": "object",
+      "description": "Model-level settings for compilation behavior",
+      "properties": {
+        "defaultNumericDataType": {
+          "type": "string",
+          "description": "Default numeric data type for measures/metrics without explicit data_type. Must be a decimal type (e.g. decimal(18, 4)).",
+          "pattern": "^decimal\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)$"
+        }
+      },
+      "additionalProperties": false
     },
     "customExtensions": {
       "type": "array",

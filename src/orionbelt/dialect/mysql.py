@@ -12,6 +12,19 @@ from orionbelt.models.semantic import TimeGrain
 class MySQLDialect(Dialect):
     """MySQL 8.0+ dialect — backtick quoting, DATE_FORMAT time grains, GROUP_CONCAT."""
 
+    _MAX_DECIMAL_PRECISION: int = 65
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "BIGINT",
+        "integer": "INT",
+        "double": "DOUBLE",
+        "date": "DATE",
+        "timestamp": "TIMESTAMP",
+        "time": "TIME",
+        "string": "VARCHAR(65535)",
+        "boolean": "TINYINT(1)",
+    }
+
     # MySQL-specific type overrides
     _ABSTRACT_TYPE_MAP: dict[str, str] = {
         "string": "VARCHAR(255)",

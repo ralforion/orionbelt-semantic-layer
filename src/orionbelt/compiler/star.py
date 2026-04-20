@@ -10,12 +10,14 @@ from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
     Expr,
     Select,
 )
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.models.semantic import DataObject, SemanticModel
 
 if TYPE_CHECKING:
@@ -86,14 +88,28 @@ class StarSchemaPlanner:
             builder.select(AliasedExpr(expr=col, alias=dim.name))
 
         # SELECT: measures (aggregated) — for metrics, substitute component refs
+        settings = model.settings
         for measure in resolved.measures:
             if measure.component_measures:
-                substituted = _substitute_measure_refs(
+                expr: Expr = _substitute_measure_refs(
                     measure.expression, resolved.metric_components
                 )
-                builder.select(AliasedExpr(expr=substituted, alias=measure.name))
+                metric = model.metrics.get(measure.name)
+                if metric and dialect:
+                    resolved_type = resolve_metric_data_type(metric, settings)
+                    if resolved_type:
+                        type_sql = dialect.render_obml_type(resolved_type)
+                        expr = Cast(expr=expr, type_name=type_sql)
+                builder.select(AliasedExpr(expr=expr, alias=measure.name))
             else:
-                builder.select(AliasedExpr(expr=measure.expression, alias=measure.name))
+                expr = measure.expression
+                model_measure = model.measures.get(measure.name)
+                if model_measure and dialect:
+                    resolved_type = resolve_measure_data_type(model_measure, settings)
+                    if resolved_type:
+                        type_sql = dialect.render_obml_type(resolved_type)
+                        expr = Cast(expr=expr, type_name=type_sql)
+                builder.select(AliasedExpr(expr=expr, alias=measure.name))
 
         # FROM: base fact table
         builder.from_(qualify(base_object), alias=base_alias)
