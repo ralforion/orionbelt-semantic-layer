@@ -8,6 +8,8 @@ OrionBelt includes an interactive web UI built with [Gradio](https://www.gradio.
 - **Dialect selector** — Switch between all 8 supported SQL dialects
 - **One-click compilation** — Compile button generates formatted SQL output
 - **SQL validation feedback** — Warnings and validation errors from sqlglot are displayed as comments above the generated SQL
+- **Query execution** — Execute compiled queries against a connected database with locale-aware number formatting, right-aligned numeric columns, TSV download, and clipboard copy
+- **Response metadata** — Collapsible panel showing execution metadata as YAML: dialect, row count, timing, timezone, column types and format patterns, and resolved query plan (fact tables, dimensions, measures)
 - **ER Diagram tab** — Visualize the semantic model as a Mermaid ER diagram with left-to-right layout, FK annotations, dotted lines for secondary joins, and an adjustable zoom slider
 - **OSI Import / Export** — Import OSI format models (converted to OBML) and export OBML models to OSI format, with validation feedback
 - **Dark / light mode** — Toggle via the header button; all inputs and UI state are persisted across mode switches

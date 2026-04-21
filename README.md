@@ -209,6 +209,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AST-Based Generation** — custom SQL AST ensures correct, injection-safe SQL (not string templates)
 - **Star Schema & CFL** — automatic join resolution with Composite Fact Layer for multi-fact queries
 - **Data Types & Precision** — automatic CAST wrapping with dialect-specific type rendering and precision clamping
+- **Display Formatting** — number format patterns (`#,##0.00`, `0.00%`) on measures/metrics with locale-aware rendering
 - **Timezone Settings** — auto-detect database session timezone with `defaultTimezone` fallback and ISO 8601 serialization
 - **sqlglot Validation** — post-generation syntax check across all supported dialects
 
@@ -319,7 +320,7 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 </p>
 
 - **SQL Compiler** — side-by-side OBML model and query editors with syntax highlighting, 8 dialect selector, one-click compilation with formatted SQL output and query explain
-- **Query Execution** — execute compiled queries against a connected database, view results in a scrollable data table with TSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
+- **Query Execution** — execute compiled queries against a connected database, view results with locale-aware number formatting, response metadata panel, TSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
 - **ER Diagram** — interactive Mermaid ER diagram with zoom, column toggle, and download (MD/PNG/Turtle)
 - **Editor Toolbar** — clear, undo, redo, upload, download, and copy buttons on all code editors
 - **OSI Import/Export** — convert between OBML and OSI formats

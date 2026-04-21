@@ -214,7 +214,7 @@ dimensions:
 | `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
 | `label` | string | No | Display label |
 | `timeGrain` | enum | No | Time grain: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` |
-| `format` | string | No | Display format |
+| `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
 
@@ -285,6 +285,8 @@ measures:
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
 | `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`) |
 | `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
+| `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
+| `description` | string | No | Business description |
 | `filters` | list | No | Filters applied to this measure (supports AND/OR/NOT groups) |
 | `allowFanOut` | bool | No | Allow fan-out joins (default: false) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
@@ -542,7 +544,7 @@ For a detailed guide on PoP metrics, including CTE architecture, filter push-dow
 | `dataType` | string | — | OBML data type (e.g. `decimal(18, 4)`). Overrides automatic type inference for CAST wrapping. |
 | `label` | string | — | Display label |
 | `description` | string | — | Business description |
-| `format` | string | — | Display format |
+| `format` | string | — | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | — | Alternative names or terms (LLM hints) |
 | `owner` | string | — | Responsible team or person |
 
@@ -649,6 +651,61 @@ Compiles to:
     ```sql
     SELECT CAST(SUM("Orders"."PRICE") AS Decimal(18, 2)) AS "Revenue"
     ```
+
+## Display Formatting
+
+Dimensions, measures, and metrics support a `format` property that defines how values are displayed in the UI and returned in the execute response metadata.
+
+### Format Patterns
+
+| Pattern | Description | Example Output |
+|---------|-------------|----------------|
+| `#,##0.00` | Thousands separator, 2 decimals | `1,399.86` |
+| `#,##0` | Thousands separator, no decimals | `1,400` |
+| `0.00%` | Percentage with 2 decimals | `12.34%` |
+| `0.00` | No thousands separator, 2 decimals | `1399.86` |
+
+### Example
+
+```yaml
+measures:
+  Revenue:
+    aggregation: sum
+    expression: "{[Orders].[Price]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+metrics:
+  Return Rate:
+    expression: "{[Total Returns]} / {[Total Sales]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+```
+
+### Locale-Aware Rendering
+
+The Gradio UI detects the browser's locale via the `Accept-Language` header and applies locale-specific separators automatically. For example, the pattern `#,##0.00` renders as:
+
+| Locale | Output |
+|--------|--------|
+| `en-US` | `1,399.86` |
+| `de-DE` | `1.399,86` |
+| `fr-FR` | `1.399,86` |
+
+### Execute Response
+
+Format patterns are returned in the column metadata of the execute response:
+
+```json
+{
+  "columns": [
+    {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"},
+    {"name": "Return Rate", "type": "decimal(5, 4)", "format": "0.00%"}
+  ]
+}
+```
+
+The `type` field uses the model's `dataType` when set, falls back to `settings.defaultNumericDataType`, then to a simple hint (`number`, `string`, `datetime`).
 
 ## Timezone Settings
 
