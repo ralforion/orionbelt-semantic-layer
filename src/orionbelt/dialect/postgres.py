@@ -6,11 +6,32 @@ from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
 from orionbelt.dialect.base import Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
 class PostgresDialect(Dialect):
     """PostgreSQL dialect — strict GROUP BY, date_trunc, ILIKE."""
+
+    _MAX_DECIMAL_PRECISION: int = 131072
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "BIGINT",
+        "integer": "INTEGER",
+        "double": "DOUBLE PRECISION",
+        "date": "DATE",
+        "timestamp": "TIMESTAMPTZ",
+        "time": "TIME",
+        "string": "TEXT",
+        "boolean": "BOOLEAN",
+    }
+
+    def render_obml_type(self, obml_type: OBMLType) -> str:
+        if isinstance(obml_type, DecimalType):
+            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
+            s = min(obml_type.scale, p)
+            return f"NUMERIC({p}, {s})"
+        return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """PostgreSQL: two-part ``schema.code`` (skip database)."""

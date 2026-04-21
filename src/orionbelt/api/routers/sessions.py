@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -41,7 +41,12 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
-from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
+from orionbelt.service.db_executor import (
+    ExecutionError,
+    ExecutionUnavailableError,
+    execute_sql,
+    resolve_timezone,
+)
 from orionbelt.service.diagram import generate_mermaid_er
 from orionbelt.service.model_store import ModelCapacityError, ModelStore, ModelValidationError
 from orionbelt.service.session_manager import (
@@ -164,7 +169,7 @@ async def load_model(
     try:
         result = store.load_model(
             body.model_yaml,
-            raw_dict=body.model_json,
+            raw_dict=cast("dict[str, object] | None", body.model_json),
             extends_yaml=body.extends,
             inherits_model_id=body.inherits,
         )
@@ -283,7 +288,7 @@ async def validate_model(
     store = _get_store(session_id, mgr)
     summary = store.validate(
         body.model_yaml,
-        raw_dict=body.model_json,
+        raw_dict=cast("dict[str, object] | None", body.model_json),
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
     )
@@ -381,6 +386,66 @@ async def compile_query(
     )
 
 
+_RESULT_TYPE_TO_HINT: dict[str, str] = {
+    "string": "string",
+    "json": "string",
+    "int": "number",
+    "float": "number",
+    "date": "datetime",
+    "time": "datetime",
+    "time_tz": "datetime",
+    "timestamp": "datetime",
+    "timestamp_tz": "datetime",
+    "boolean": "string",
+}
+
+
+def _build_type_map(model: Any) -> dict[str, str]:
+    """Build a column-name → type-hint map from model definitions.
+
+    Uses ``dataType`` when available (e.g. ``decimal(18, 2)``),
+    then falls back to ``settings.defaultNumericDataType`` for numeric
+    measures/metrics, otherwise maps ``resultType`` to a simple hint.
+    """
+    default_num = None
+    if model.settings and model.settings.default_numeric_data_type:
+        default_num = model.settings.default_numeric_data_type
+
+    types: dict[str, str] = {}
+    for label, dim in model.dimensions.items():
+        types[label] = _RESULT_TYPE_TO_HINT.get(str(dim.result_type), "string")
+    for label, measure in model.measures.items():
+        if measure.data_type:
+            types[label] = measure.data_type
+        elif default_num:
+            types[label] = default_num
+        else:
+            types[label] = _RESULT_TYPE_TO_HINT.get(str(measure.result_type), "number")
+    for label, metric in model.metrics.items():
+        if metric.data_type:
+            types[label] = metric.data_type
+        elif default_num:
+            types[label] = default_num
+        else:
+            types[label] = "number"
+    return types
+
+
+def _build_format_map(model: Any) -> dict[str, str | None]:
+    """Build a column-name → format-string map from model measures/metrics."""
+    fmt: dict[str, str | None] = {}
+    for label, dim in model.dimensions.items():
+        if dim.format:
+            fmt[label] = dim.format
+    for label, measure in model.measures.items():
+        if measure.format:
+            fmt[label] = measure.format
+    for label, metric in model.metrics.items():
+        if metric.format:
+            fmt[label] = metric.format
+    return fmt
+
+
 def _build_explain_response(result: Any) -> ExplainPlanResponse | None:
     """Build an ExplainPlanResponse from a CompilationResult, if explain exists."""
     if not result.explain:
@@ -472,20 +537,44 @@ async def execute_query(
             },
         ) from None
 
+    # Resolve timezone from model settings for naive timestamp coercion
+    model = store.get_model(body.model_id)
+    tz = None
+    override_db_tz = False
+    if model.settings:
+        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        override_db_tz = model.settings.override_database_timezone
+
     try:
-        exec_result = await asyncio.to_thread(execute_sql, result.sql, dialect=body.dialect)
+        exec_result = await asyncio.to_thread(
+            execute_sql,
+            result.sql,
+            dialect=body.dialect,
+            tz=tz,
+            override_db_tz=override_db_tz,
+        )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
+    type_map = _build_type_map(model)
+    fmt_map = _build_format_map(model)
     return QueryExecuteResponse(
         sql=result.sql,
         dialect=result.dialect,
-        columns=[ColumnMetadata(name=c.name, type=c.type_hint) for c in exec_result.columns],
+        columns=[
+            ColumnMetadata(
+                name=c.name,
+                type=type_map.get(c.name, c.type_hint),
+                format=fmt_map.get(c.name),
+            )
+            for c in exec_result.columns
+        ],
         rows=exec_result.rows,
         row_count=exec_result.row_count,
         execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
         resolved=ResolvedInfoResponse(
             fact_tables=result.resolved.fact_tables,
             dimensions=result.resolved.dimensions,

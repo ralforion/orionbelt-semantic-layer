@@ -1,6 +1,10 @@
 # yaml-language-server: $schema=../schema/obml-schema.json
 version: 1.0
 
+settings:
+  defaultNumericDataType: "decimal(18, 2)"
+  defaultTimezone: "Europe/Berlin"
+
 dataObjects:
   # ── Dimension tables ───────────────────────────────────────────────
 
@@ -415,6 +419,8 @@ measures:
         column: Sales Amount
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Electronics Sales:
     columns:
@@ -422,6 +428,8 @@ measures:
         column: Sales Amount
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     filters:
       - column: { dataObject: Products, column: Product Category }
         operator: equals
@@ -435,6 +443,7 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+    format: "#,##0"
 
   Total Sales Qty:
     columns:
@@ -442,6 +451,7 @@ measures:
         column: Sales Quantity
     resultType: int
     aggregation: sum
+    format: "#,##0"
 
   Total Returns:
     columns:
@@ -449,6 +459,8 @@ measures:
         column: Return Amount
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Return Count:
     columns:
@@ -459,6 +471,7 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+    format: "#,##0"
 
   Total Shipments:
     columns:
@@ -466,6 +479,8 @@ measures:
         column: Shipment Amount
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Total Shipment Qty:
     columns:
@@ -473,6 +488,7 @@ measures:
         column: Shipment Quantity
     resultType: int
     aggregation: sum
+    format: "#,##0"
 
   Total Purchases:
     columns:
@@ -480,6 +496,8 @@ measures:
         column: Purchase Price
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Total Purchase Qty:
     columns:
@@ -487,23 +505,32 @@ measures:
         column: Purchase Quantity
     resultType: float
     aggregation: sum
+    format: "#,##0.00"
 
 # ── Metrics (cross-fact) ───────────────────────────────────────────
 
 metrics:
   Return Rate:
     expression: "{[Total Returns]} / {[Total Sales]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
 
   Average Sale:
     expression: "{[Total Sales]} / {[Sales Count]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Electronics Share:
     expression: "{[Electronics Sales]} / {[Total Sales]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
 
   Running Total Sales:
     type: cumulative
     measure: Total Sales
     timeDimension: Sales Date
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Running total of sales over time
 
   Rolling 3m Sales:
@@ -512,6 +539,8 @@ metrics:
     timeDimension: Sales Date
     cumulativeType: sum
     window: 3
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: 3-month rolling sum of sales
 
   Sales MoM Change:
@@ -522,4 +551,6 @@ metrics:
       grain: month
       offsetGrain: month
       comparison: difference
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Month-over-month sales change

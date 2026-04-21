@@ -13,7 +13,7 @@ Returns the service status and version.
 ```json
 {
   "status": "ok",
-  "version": "1.6.2"
+  "version": "1.7.0"
 }
 ```
 
@@ -332,7 +332,7 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
   "dialect": "postgres",
   "columns": [
     {"name": "Customer Country", "type": "string"},
-    {"name": "Revenue", "type": "number"}
+    {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"}
   ],
   "rows": [
     ["US", 15230.50],

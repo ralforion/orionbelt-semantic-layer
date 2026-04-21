@@ -173,6 +173,27 @@ The `contains` filter operator is rendered per dialect:
 
 ## CAST Handling
 
+OrionBelt automatically wraps aggregate expressions with `CAST` based on resolved OBML data types. Each dialect maps OBML types to its native SQL types:
+
+| OBML Type | Postgres | Snowflake | ClickHouse | BigQuery | MySQL | Databricks | DuckDB | Dremio |
+|-----------|----------|-----------|------------|----------|-------|------------|--------|--------|
+| `decimal(p, s)` | `NUMERIC(p, s)` | `NUMBER(p, s)` | `Decimal(p, s)` | `NUMERIC(p, s)` | `DECIMAL(p, s)` | `DECIMAL(p, s)` | `DECIMAL(p, s)` | `DECIMAL(p, s)` |
+| `bigint` | `BIGINT` | `NUMBER(38, 0)` | `Int64` | `INT64` | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` |
+| `integer` | `INTEGER` | `NUMBER(38, 0)` | `Int32` | `INT64` | `INTEGER` | `INT` | `INTEGER` | `INTEGER` |
+| `double` | `DOUBLE PRECISION` | `FLOAT` | `Float64` | `FLOAT64` | `DOUBLE` | `DOUBLE` | `DOUBLE` | `DOUBLE` |
+| `string` | `TEXT` | `VARCHAR` | `String` | `STRING` | `VARCHAR(65535)` | `STRING` | `VARCHAR` | `VARCHAR` |
+| `boolean` | `BOOLEAN` | `BOOLEAN` | `Bool` | `BOOL` | `TINYINT(1)` | `BOOLEAN` | `BOOLEAN` | `BOOLEAN` |
+
+**Maximum decimal precision** (values are clamped):
+
+| Dialect | Max Precision |
+|---------|---------------|
+| Postgres | 131,072 |
+| ClickHouse | 76 |
+| MySQL | 65 |
+| Snowflake, DuckDB, Databricks, Dremio | 38 |
+| BigQuery | 38 |
+
 === "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 
     ```sql

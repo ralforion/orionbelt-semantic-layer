@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from orionbelt.models.types import parse_data_type
 
 
 class DataType(StrEnum):
@@ -271,6 +273,7 @@ class Measure(BaseModel):
     distinct: bool = False
     total: bool = False
     filters: list[MeasureFilterItem] = []
+    data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
     format: str | None = None
     allow_fan_out: bool = Field(False, alias="allowFanOut")
@@ -281,6 +284,13 @@ class Measure(BaseModel):
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("data_type", mode="before")
+    @classmethod
+    def _validate_data_type(cls, v: str | None) -> str | None:
+        if v is not None:
+            parse_data_type(v)
+        return v
 
 
 class Metric(BaseModel):
@@ -306,6 +316,7 @@ class Metric(BaseModel):
     # Period-over-Period metrics
     period_over_period: PeriodOverPeriod | None = Field(None, alias="periodOverPeriod")
     # Common
+    data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
     format: str | None = None
     owner: str | None = None
@@ -313,6 +324,13 @@ class Metric(BaseModel):
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("data_type", mode="before")
+    @classmethod
+    def _validate_data_type(cls, v: str | None) -> str | None:
+        if v is not None:
+            parse_data_type(v)
+        return v
 
     @model_validator(mode="after")
     def _validate_metric_type(self) -> Metric:
@@ -347,6 +365,43 @@ class Metric(BaseModel):
         return self
 
 
+class ModelSettings(BaseModel):
+    """Model-level settings controlling compilation and execution behavior."""
+
+    default_numeric_data_type: str | None = Field(None, alias="defaultNumericDataType")
+    default_timezone: str | None = Field(None, alias="defaultTimezone")
+    override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("default_numeric_data_type", mode="before")
+    @classmethod
+    def _validate_default_type(cls, v: str | None) -> str | None:
+        if v is not None:
+            from orionbelt.models.types import DecimalType
+
+            parsed = parse_data_type(v)
+            if not isinstance(parsed, DecimalType):
+                raise ValueError(
+                    f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'"
+                )
+        return v
+
+    @field_validator("default_timezone", mode="before")
+    @classmethod
+    def _validate_timezone(cls, v: str | None) -> str | None:
+        if v is not None:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            try:
+                ZoneInfo(v)
+            except (ZoneInfoNotFoundError, KeyError):
+                raise ValueError(
+                    f"defaultTimezone must be a valid IANA timezone, got '{v}'"
+                ) from None
+        return v
+
+
 class ModelFilter(BaseModel):
     """Static WHERE filter applied to every query against this model."""
 
@@ -364,6 +419,7 @@ class SemanticModel(BaseModel):
 
     version: float = 1.0
     description: str | None = None
+    settings: ModelSettings | None = None
     data_objects: dict[str, DataObject] = Field(default={}, alias="dataObjects")
     dimensions: dict[str, Dimension] = {}
     measures: dict[str, Measure] = {}

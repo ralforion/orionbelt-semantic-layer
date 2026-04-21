@@ -2,6 +2,26 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.7.0] - 2026-04-20
+
+### Added
+
+- **Data types & numerical precision** — automatic CAST wrapping with dialect-specific type rendering (`NUMERIC`, `NUMBER`, `Decimal`, etc.). Type resolution order: explicit `dataType` → structural inference → model default → built-in default. Precision clamping per dialect.
+- **Timezone settings** — `settings.defaultTimezone` (IANA timezone) and `settings.allowUtcFallback` for naive timestamp coercion in query execution results. Resolution chain: model setting → host process TZ → UTC fallback (opt-in).
+- **ISO 8601 serialization** — temporal query results use proper offset notation, UTC "Z" suffix, and elide zero microseconds.
+- **HAVING on metrics** — HAVING filters now accept metric names (not just measures). Alias expansion to full aggregate expressions ensures PostgreSQL compatibility.
+- **Model settings in samples** — TPC-H example and sales model fixtures include `defaultNumericDataType`, `defaultTimezone`, and `allowUtcFallback`.
+
+### Fixed
+
+- **Pre-existing mypy errors** — resolved all type errors across `ui/app.py`, `model_store.py`, `sessions.py`, and `shortcuts.py`.
+
+### Changed
+
+- Version bumped to 1.7.0
+
+---
+
 ## [1.6.2] - 2026-04-19
 
 ### Added

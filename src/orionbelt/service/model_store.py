@@ -238,7 +238,7 @@ class ModelStore:
                 )
                 for mw in merge_warnings:
                     warnings.append(ErrorInfo(code="MERGE_WARNING", message=mw))
-                source_map = None  # type: ignore[assignment]
+                source_map = None
         except MergeError as exc:
             errors.append(ErrorInfo(code=exc.code, message=exc.message))
             return SemanticModel(), errors, warnings

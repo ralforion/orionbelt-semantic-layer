@@ -5,6 +5,10 @@
 #
 version: 1.0
 
+settings:
+  defaultNumericDataType: "decimal(18, 2)"
+  defaultTimezone: "Europe/Zagreb"
+
 dataObjects:
   # ── Dimension tables ───────────────────────────────────────────────
 
@@ -320,6 +324,8 @@ measures:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     synonyms: [sales, income, turnover]
 
   Gross Amount:
@@ -328,11 +334,15 @@ measures:
         column: Extended Price
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Total Discount:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * {[Line Items].[Discount]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Total Quantity:
     columns:
@@ -340,6 +350,8 @@ measures:
         column: Quantity
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Order Count:
     columns:
@@ -348,6 +360,7 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+    format: "#,##0"
 
   Line Item Count:
     columns:
@@ -355,6 +368,7 @@ measures:
         column: Line Number
     resultType: int
     aggregation: count
+    format: "#,##0"
 
   Total Order Value:
     columns:
@@ -362,16 +376,22 @@ measures:
         column: Order Total
     resultType: float
     aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Supply Cost:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Quantity]} * {[Part Supply].[Supply Cost]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Inventory Value:
     resultType: float
     aggregation: sum
     expression: "{[Part Supply].[Available Qty]} * {[Part Supply].[Supply Cost]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Available Stock:
     columns:
@@ -379,11 +399,14 @@ measures:
         column: Available Qty
     resultType: int
     aggregation: sum
+    format: "#,##0"
 
   Returned Revenue:
     resultType: float
     aggregation: sum
     expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     filters:
       - column: {dataObject: Line Items, column: Return Flag}
         operator: equals
@@ -395,24 +418,36 @@ measures:
 metrics:
   Average Order Value:
     expression: "{[Revenue]} / {[Order Count]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Discount Rate:
     expression: "{[Total Discount]} / {[Gross Amount]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
 
   Average Line Price:
     expression: "{[Gross Amount]} / {[Line Item Count]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
   Gross Margin:
     expression: "({[Revenue]} - {[Supply Cost]}) / {[Revenue]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
 
   Return Rate:
     expression: "{[Returned Revenue]} / {[Revenue]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
 
   # ── Cumulative metrics ────────────────────────────────────────────
   Running Revenue:
     type: cumulative
     measure: Revenue
     timeDimension: Order Date
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Running total of revenue over time
 
   Rolling 3m Revenue:
@@ -421,6 +456,8 @@ metrics:
     timeDimension: Order Date
     cumulativeType: sum
     window: 3
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: 3-month rolling sum of revenue
 
   # ── Period-over-period metrics ────────────────────────────────────
@@ -432,6 +469,8 @@ metrics:
       grain: month
       offsetGrain: year
       comparison: percentChange
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
     description: Year-over-year revenue growth rate
 
   Revenue MoM Change:
@@ -442,4 +481,6 @@ metrics:
       grain: month
       offsetGrain: month
       comparison: difference
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Month-over-month revenue change in absolute terms

@@ -67,6 +67,10 @@ class ColumnMetadata(BaseModel):
 
     name: str
     type: str = Field(description="Type hint: string, number, datetime, binary")
+    format: str | None = Field(
+        default=None,
+        description="Display format pattern from model (e.g. '#,##0.00', '0.00%')",
+    )
 
 
 class QueryExecuteResponse(BaseModel):
@@ -78,6 +82,10 @@ class QueryExecuteResponse(BaseModel):
     rows: list[list[object]] = Field(default_factory=list)
     row_count: int = 0
     execution_time_ms: float = 0.0
+    timezone: str | None = Field(
+        default=None,
+        description="IANA timezone used to label naive timestamps in results",
+    )
     resolved: ResolvedInfoResponse = Field(default_factory=ResolvedInfoResponse)
     warnings: list[str] = Field(default_factory=list)
     sql_valid: bool = True

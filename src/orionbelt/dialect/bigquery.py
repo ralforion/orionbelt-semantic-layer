@@ -6,11 +6,30 @@ from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
 from orionbelt.dialect.base import Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
 class BigQueryDialect(Dialect):
     """BigQuery dialect — backtick identifiers, STRUCT/ARRAY support, SAFE functions."""
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "INT64",
+        "integer": "INT64",
+        "double": "FLOAT64",
+        "date": "DATE",
+        "timestamp": "TIMESTAMP",
+        "time": "TIME",
+        "string": "STRING",
+        "boolean": "BOOL",
+    }
+
+    def render_obml_type(self, obml_type: OBMLType) -> str:
+        if isinstance(obml_type, DecimalType):
+            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
+            s = min(obml_type.scale, p)
+            return f"NUMERIC({p}, {s})"
+        return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     _ABSTRACT_TYPE_MAP: dict[str, str] = {
         "string": "STRING",

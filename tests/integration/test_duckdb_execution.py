@@ -226,9 +226,17 @@ def _execute(conn: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[Any, ...]]
 
 def _execute_dict(conn: duckdb.DuckDBPyConnection, sql: str) -> list[dict[str, Any]]:
     """Execute SQL and return rows as dicts keyed by column name."""
+    from decimal import Decimal
+
     result = conn.execute(sql)
     cols = [d[0] for d in result.description]
-    return [dict(zip(cols, row, strict=False)) for row in result.fetchall()]
+    rows: list[dict[str, Any]] = []
+    for row in result.fetchall():
+        rows.append({
+            k: float(v) if isinstance(v, Decimal) else v
+            for k, v in zip(cols, row, strict=False)
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -641,14 +649,18 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     """Create a mock execute_sql that uses the test DuckDB connection."""
 
     import time
+    from decimal import Decimal as _Decimal
 
-    def execute_sql(sql: str, *, dialect: str) -> ExecutionResult:
+    def _coerce(v: Any) -> Any:
+        return float(v) if isinstance(v, _Decimal) else v
+
+    def execute_sql(sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False) -> ExecutionResult:
         t0 = time.monotonic()
         result = conn.execute(sql)
         raw_rows = result.fetchall()
         desc = result.description or []
         columns = [ColumnMeta(name=d[0], type_hint="string") for d in desc]
-        rows = [list(r) for r in raw_rows]
+        rows = [[_coerce(v) for v in r] for r in raw_rows]
         elapsed_ms = (time.monotonic() - t0) * 1000
         return ExecutionResult(
             columns=columns,

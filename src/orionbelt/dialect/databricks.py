@@ -12,6 +12,17 @@ from orionbelt.models.semantic import TimeGrain
 class DatabricksDialect(Dialect):
     """Databricks SQL dialect — Spark SQL semantics, backtick identifiers."""
 
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "BIGINT",
+        "integer": "INT",
+        "double": "DOUBLE",
+        "date": "DATE",
+        "timestamp": "TIMESTAMP",
+        "time": "STRING",
+        "string": "STRING",
+        "boolean": "BOOLEAN",
+    }
+
     @property
     def name(self) -> str:
         return "databricks"

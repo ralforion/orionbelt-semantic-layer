@@ -22,6 +22,7 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ModelFilter,
+    ModelSettings,
     PeriodOverPeriod,
     SemanticModel,
 )
@@ -32,6 +33,22 @@ def _parse_extensions(raw: dict[str, Any]) -> list[CustomExtension]:
     """Extract customExtensions from a raw YAML dict."""
     exts = raw.get("customExtensions", [])
     return [CustomExtension(vendor=e.get("vendor", ""), data=e.get("data", "")) for e in exts]
+
+
+def _parse_settings(raw: dict[str, Any] | None) -> ModelSettings | None:
+    """Parse the settings block from raw YAML into ModelSettings."""
+    if not raw:
+        return None
+    default_type = raw.get("defaultNumericDataType")
+    default_tz = raw.get("defaultTimezone")
+    override_db_tz = raw.get("overrideDatabaseTimezone", False)
+    if not default_type and not default_tz and not override_db_tz:
+        return None
+    return ModelSettings(
+        default_numeric_data_type=default_type,
+        default_timezone=default_tz,
+        override_database_timezone=override_db_tz,
+    )
 
 
 def _coerce_filter_value(v: object) -> str | int | float | bool | None:
@@ -293,8 +310,11 @@ class ReferenceResolver:
                     distinct=raw_meas.get("distinct", False),
                     total=raw_meas.get("total", False),
                     filters=measure_filters,
+                    data_type=raw_meas.get("dataType"),
                     format=raw_meas.get("format"),
                     allow_fan_out=raw_meas.get("allowFanOut", False),
+                    delimiter=raw_meas.get("delimiter"),
+                    within_group=raw_meas.get("withinGroup"),
                     owner=raw_meas.get("owner"),
                     synonyms=raw_meas.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_meas),
@@ -370,6 +390,7 @@ class ReferenceResolver:
                         cumulative_type=raw_metric.get("cumulativeType", "sum"),
                         window=raw_metric.get("window"),
                         grain_to_date=raw_metric.get("grainToDate"),
+                        data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),
                         format=raw_metric.get("format"),
                         owner=raw_metric.get("owner"),
@@ -433,6 +454,7 @@ class ReferenceResolver:
                         type=MetricType.PERIOD_OVER_PERIOD,
                         expression=expression,
                         period_over_period=pop_config,
+                        data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),
                         format=raw_metric.get("format"),
                         owner=raw_metric.get("owner"),
@@ -449,6 +471,7 @@ class ReferenceResolver:
                     metrics[name] = Metric(
                         label=name,
                         expression=expression,
+                        data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),
                         format=raw_metric.get("format"),
                         owner=raw_metric.get("owner"),
@@ -529,6 +552,8 @@ class ReferenceResolver:
                     )
                 )
 
+        settings = _parse_settings(raw.get("settings"))
+
         model = SemanticModel(
             version=raw.get("version", 1.0),
             data_objects=data_objects,
@@ -540,6 +565,7 @@ class ReferenceResolver:
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
             custom_extensions=_parse_extensions(raw),
+            settings=settings,
         )
 
         result = ValidationResult(

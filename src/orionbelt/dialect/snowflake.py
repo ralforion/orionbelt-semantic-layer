@@ -6,11 +6,30 @@ from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll
 from orionbelt.dialect.base import Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
 class SnowflakeDialect(Dialect):
     """Snowflake dialect — QUALIFY, case-sensitive identifiers, semi-structured types."""
+
+    _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
+        "bigint": "NUMBER(38, 0)",
+        "integer": "NUMBER(38, 0)",
+        "double": "FLOAT",
+        "date": "DATE",
+        "timestamp": "TIMESTAMP_TZ",
+        "time": "TIME",
+        "string": "VARCHAR",
+        "boolean": "BOOLEAN",
+    }
+
+    def render_obml_type(self, obml_type: OBMLType) -> str:
+        if isinstance(obml_type, DecimalType):
+            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
+            s = min(obml_type.scale, p)
+            return f"NUMBER({p}, {s})"
+        return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     @property
     def name(self) -> str:

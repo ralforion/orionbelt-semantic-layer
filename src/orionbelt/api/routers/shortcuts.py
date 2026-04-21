@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -52,7 +53,12 @@ from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError, execute_sql
+from orionbelt.service.db_executor import (
+    ExecutionError,
+    ExecutionUnavailableError,
+    execute_sql,
+    resolve_timezone,
+)
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import SessionManager
 
@@ -348,7 +354,8 @@ async def shortcut_validate(
 ) -> ValidateResponse:
     """Validate an OBML model (stateless — no session required)."""
     store = ModelStore()
-    summary = store.validate(body.model_yaml, raw_dict=body.model_json)
+    raw = cast("dict[str, object] | None", body.model_json)
+    summary = store.validate(body.model_yaml, raw_dict=raw)
     return ValidateResponse(
         valid=summary.valid,
         errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
@@ -518,22 +525,50 @@ async def shortcut_execute_query(
             },
         ) from None
 
+    # Resolve timezone from model settings for naive timestamp coercion
+    model = store.get_model(model_id)
+    tz = None
+    override_db_tz = False
+    if model.settings:
+        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        override_db_tz = model.settings.override_database_timezone
+
     try:
-        exec_result = await asyncio.to_thread(execute_sql, result.sql, dialect=dialect)
+        exec_result = await asyncio.to_thread(
+            execute_sql,
+            result.sql,
+            dialect=dialect,
+            tz=tz,
+            override_db_tz=override_db_tz,
+        )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
-    from orionbelt.api.routers.sessions import _build_explain_response
+    from orionbelt.api.routers.sessions import (
+        _build_explain_response,
+        _build_format_map,
+        _build_type_map,
+    )
 
+    type_map = _build_type_map(model)
+    fmt_map = _build_format_map(model)
     return QueryExecuteResponse(
         sql=result.sql,
         dialect=result.dialect,
-        columns=[ColumnMetadata(name=c.name, type=c.type_hint) for c in exec_result.columns],
+        columns=[
+            ColumnMetadata(
+                name=c.name,
+                type=type_map.get(c.name, c.type_hint),
+                format=fmt_map.get(c.name),
+            )
+            for c in exec_result.columns
+        ],
         rows=exec_result.rows,
         row_count=exec_result.row_count,
         execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
         resolved=ResolvedInfoResponse(
             fact_tables=result.resolved.fact_tables,
             dimensions=result.resolved.dimensions,
