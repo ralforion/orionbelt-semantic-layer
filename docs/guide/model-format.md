@@ -12,7 +12,6 @@ owner: team-data           # Optional: model-level owner
 settings:     # Optional: model-level compilation settings
   defaultNumericDataType: "decimal(18, 4)"
   defaultTimezone: "Europe/Zagreb"
-  allowUtcFallback: true
 
 dataObjects:  # Database tables/views with columns and joins
   ...
@@ -661,13 +660,12 @@ OrionBelt supports timezone-aware serialization of temporal query results. When 
 version: "1.0"
 settings:
   defaultTimezone: "Europe/Zagreb"
-  allowUtcFallback: true
 ```
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `defaultTimezone` | string | — | IANA timezone (e.g. `Europe/Zagreb`, `America/New_York`, `UTC`) |
-| `allowUtcFallback` | boolean | `false` | If true, falls back to UTC when no timezone can be resolved |
+| `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 
 ### Resolution Order
 
@@ -676,9 +674,9 @@ The effective timezone for naive timestamp coercion is resolved in this order (f
 1. **Database session timezone** — auto-detected from the connection (one query, cached per dialect)
 2. **Model setting** — `settings.defaultTimezone` (fallback when detection fails)
 3. **Host process timezone** — the server's system timezone (if not UTC)
-4. **UTC fallback** — only if `settings.allowUtcFallback` is `true`
+4. **UTC** — automatic final fallback
 
-If no timezone resolves, naive timestamps pass through without offset information.
+When `overrideDatabaseTimezone: true` is set and `defaultTimezone` is configured, the model timezone takes priority over the detected database session timezone. Use this when naive timestamps are stored in a known timezone that differs from the DB session (e.g. users storing local timestamps in a UTC-configured database).
 
 **Database session timezone detection** queries the connected database once per dialect:
 
@@ -715,7 +713,6 @@ version: "1.0"
 settings:
   defaultNumericDataType: "decimal(18, 2)"
   defaultTimezone: "Europe/Zagreb"
-  allowUtcFallback: true
 
 dataObjects:
   Orders:

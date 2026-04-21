@@ -31,23 +31,23 @@ class TestModelSettingsTimezone:
         with pytest.raises(ValueError, match="valid IANA timezone"):
             ModelSettings(default_timezone="NotATimezone/Nowhere")
 
-    def test_allow_utc_fallback_default(self) -> None:
+    def test_override_database_timezone_default(self) -> None:
         s = ModelSettings()
-        assert s.allow_utc_fallback is False
+        assert s.override_database_timezone is False
 
-    def test_allow_utc_fallback_true(self) -> None:
-        s = ModelSettings(allow_utc_fallback=True)
-        assert s.allow_utc_fallback is True
+    def test_override_database_timezone_true(self) -> None:
+        s = ModelSettings(override_database_timezone=True)
+        assert s.override_database_timezone is True
 
     def test_combined_settings(self) -> None:
         s = ModelSettings(
             default_numeric_data_type="decimal(18, 4)",
             default_timezone="America/New_York",
-            allow_utc_fallback=True,
+            override_database_timezone=True,
         )
         assert s.default_numeric_data_type == "decimal(18, 4)"
         assert s.default_timezone == "America/New_York"
-        assert s.allow_utc_fallback is True
+        assert s.override_database_timezone is True
 
 
 class TestResolveTimezone:
@@ -55,21 +55,13 @@ class TestResolveTimezone:
         result = resolve_timezone(default_timezone="Europe/Zagreb")
         assert result == ZoneInfo("Europe/Zagreb")
 
-    def test_utc_fallback_when_enabled(self) -> None:
-        result = resolve_timezone(allow_utc_fallback=True)
-        # Either host TZ or UTC
+    def test_always_returns_timezone(self) -> None:
+        result = resolve_timezone()
         assert result is not None
 
-    def test_no_fallback_returns_none_or_host(self) -> None:
-        result = resolve_timezone()
-        # On CI or containers without TZ, this may be None
-        # On dev machines with TZ set, this is the host TZ
-
-    def test_invalid_timezone_falls_through(self) -> None:
-        result = resolve_timezone(
-            default_timezone="Invalid/Zone", allow_utc_fallback=True
-        )
-        # Falls through to host or UTC fallback
+    def test_invalid_timezone_falls_through_to_utc(self) -> None:
+        result = resolve_timezone(default_timezone="Invalid/Zone")
+        # Falls through to host TZ or UTC
         assert result is not None
 
 
@@ -126,7 +118,7 @@ class TestParserSettings:
 version: "1.0"
 settings:
   defaultTimezone: "Europe/Zagreb"
-  allowUtcFallback: true
+  overrideDatabaseTimezone: true
 dataObjects:
   T:
     code: T
@@ -150,7 +142,7 @@ measures:
 
         assert model.settings is not None
         assert model.settings.default_timezone == "Europe/Zagreb"
-        assert model.settings.allow_utc_fallback is True
+        assert model.settings.override_database_timezone is True
 
 
 class TestDetectDbTimezone:
@@ -268,6 +260,17 @@ class TestDetectDbTimezone:
         model_tz = resolve_timezone(default_timezone="Europe/Zagreb")
 
         effective_tz = db_tz or model_tz
+        assert effective_tz == ZoneInfo("Europe/Zagreb")
+
+    def test_override_uses_model_tz_over_db_tz(self) -> None:
+        """When override_db_tz=True, model TZ wins even if DB TZ detected."""
+        cursor = self.MockCursor("America/Chicago")
+        db_tz = _detect_db_timezone(cursor, "postgres")
+        model_tz = resolve_timezone(default_timezone="Europe/Zagreb")
+
+        # Simulate override logic from execute_sql
+        override_db_tz = True
+        effective_tz = model_tz if (override_db_tz and model_tz) else (db_tz or model_tz)
         assert effective_tz == ZoneInfo("Europe/Zagreb")
 
     def test_exception_during_detection_returns_none(self) -> None:

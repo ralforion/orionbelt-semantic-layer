@@ -974,11 +974,11 @@
         },
         "defaultTimezone": {
           "type": "string",
-          "description": "IANA timezone name (e.g. Europe/Zagreb, America/New_York). Applied to naive timestamps in query results that lack timezone info."
+          "description": "IANA timezone name (e.g. Europe/Zagreb, America/New_York). Used as fallback for naive timestamps when DB session timezone cannot be detected, or as override when overrideDatabaseTimezone is true."
         },
-        "allowUtcFallback": {
+        "overrideDatabaseTimezone": {
           "type": "boolean",
-          "description": "If true, fall back to UTC when no timezone is resolvable for naive timestamps. Default: false.",
+          "description": "If true, use defaultTimezone instead of the auto-detected database session timezone. Use when naive timestamps are stored in a known timezone that differs from the DB session. Default: false.",
           "default": false
         }
       },

@@ -159,8 +159,7 @@ def _get_host_timezone() -> ZoneInfo | None:
 def resolve_timezone(
     *,
     default_timezone: str | None = None,
-    allow_utc_fallback: bool = False,
-) -> ZoneInfo | None:
+) -> ZoneInfo:
     """Resolve the model-level fallback timezone for naive timestamp coercion.
 
     This is used as a fallback when the database session timezone cannot be
@@ -169,10 +168,11 @@ def resolve_timezone(
     Resolution order (fallback chain):
     1. Model setting (default_timezone)
     2. Host process timezone (if not UTC)
-    3. UTC fallback (only if allow_utc_fallback=True)
+    3. UTC (automatic final fallback)
 
     At execution time, the actual database session timezone takes priority
-    over this fallback (see ``_detect_db_timezone``).
+    over this fallback unless ``overrideDatabaseTimezone`` is set
+    (see ``_detect_db_timezone``).
     """
     if default_timezone:
         try:
@@ -184,10 +184,7 @@ def resolve_timezone(
     if host_tz is not None:
         return host_tz
 
-    if allow_utc_fallback:
-        return ZoneInfo("UTC")
-
-    return None
+    return ZoneInfo("UTC")
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +313,11 @@ def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
 
 
 def execute_sql(
-    sql: str, *, dialect: str, tz: ZoneInfo | None = None
+    sql: str,
+    *,
+    dialect: str,
+    tz: ZoneInfo | None = None,
+    override_db_tz: bool = False,
 ) -> ExecutionResult:
     """Execute SQL against the configured vendor database.
 
@@ -329,6 +330,9 @@ def execute_sql(
         sql: The compiled SQL to execute.
         dialect: Target database dialect name.
         tz: Resolved timezone for naive timestamp coercion in results.
+        override_db_tz: If True, use ``tz`` instead of the detected
+            database session timezone (for cases where naive timestamps
+            are stored in a known timezone that differs from the DB session).
 
     Raises:
         ExecutionUnavailableError: if ob-flight-extension or vendor driver
@@ -345,15 +349,21 @@ def execute_sql(
     t0 = time.monotonic()
     try:
         if dialect == "duckdb":
-            return _execute_duckdb(sql, get_credentials(dialect), t0, tz=tz)
+            return _execute_duckdb(
+                sql, get_credentials(dialect), t0, tz=tz, override_db_tz=override_db_tz
+            )
         # Non-DuckDB: use the full ob driver via db_router
         from ob_flight.db_router import get_connection
 
         with get_connection(dialect) as conn:
             cursor = conn.cursor()
             try:
-                db_tz = _detect_db_timezone(cursor, dialect)
-                effective_tz = db_tz or tz
+                effective_tz: ZoneInfo | None
+                if override_db_tz and tz is not None:
+                    effective_tz = tz
+                else:
+                    db_tz = _detect_db_timezone(cursor, dialect)
+                    effective_tz = db_tz or tz
                 cursor.execute(sql)
                 return _fetch_result(cursor, t0, tz=effective_tz)
             finally:
@@ -368,7 +378,12 @@ def execute_sql(
 
 
 def _execute_duckdb(
-    sql: str, creds: dict[str, Any], t0: float, *, tz: ZoneInfo | None = None
+    sql: str,
+    creds: dict[str, Any],
+    t0: float,
+    *,
+    tz: ZoneInfo | None = None,
+    override_db_tz: bool = False,
 ) -> ExecutionResult:
     """Execute SQL directly via native duckdb.
 
@@ -380,8 +395,12 @@ def _execute_duckdb(
     database = creds.get("database", ":memory:")
     conn = duckdb.connect(database=database, read_only=True)
     try:
-        db_tz = _detect_db_timezone(conn, "duckdb")
-        effective_tz = db_tz or tz
+        effective_tz: ZoneInfo | None
+        if override_db_tz and tz is not None:
+            effective_tz = tz
+        else:
+            db_tz = _detect_db_timezone(conn, "duckdb")
+            effective_tz = db_tz or tz
         result = conn.execute(sql)
         rows_raw = result.fetchall()
         desc = result.description or []

@@ -8,7 +8,6 @@ version: 1.0
 settings:
   defaultNumericDataType: "decimal(18, 2)"
   defaultTimezone: "Europe/Zagreb"
-  allowUtcFallback: true
 
 dataObjects:
   # ── Dimension tables ───────────────────────────────────────────────

@@ -480,15 +480,18 @@ async def execute_query(
     # Resolve timezone from model settings for naive timestamp coercion
     model = store.get_model(body.model_id)
     tz = None
+    override_db_tz = False
     if model.settings:
-        tz = resolve_timezone(
-            default_timezone=model.settings.default_timezone,
-            allow_utc_fallback=model.settings.allow_utc_fallback,
-        )
+        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        override_db_tz = model.settings.override_database_timezone
 
     try:
         exec_result = await asyncio.to_thread(
-            execute_sql, result.sql, dialect=body.dialect, tz=tz
+            execute_sql,
+            result.sql,
+            dialect=body.dialect,
+            tz=tz,
+            override_db_tz=override_db_tz,
         )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

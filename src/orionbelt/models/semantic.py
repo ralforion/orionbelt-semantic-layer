@@ -370,7 +370,7 @@ class ModelSettings(BaseModel):
 
     default_numeric_data_type: str | None = Field(None, alias="defaultNumericDataType")
     default_timezone: str | None = Field(None, alias="defaultTimezone")
-    allow_utc_fallback: bool = Field(False, alias="allowUtcFallback")
+    override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
 
     model_config = {"populate_by_name": True}
 
