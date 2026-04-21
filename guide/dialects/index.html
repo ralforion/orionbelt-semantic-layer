@@ -978,7 +978,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.2
+  OrionBelt v1.7.0
 </div>
       
     </li>
@@ -1870,7 +1870,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v1.6.2
+  OrionBelt v1.7.0
 </div>
                   </div>
                 </div>
@@ -2192,6 +2192,121 @@
 </div>
 </div>
 <h2 id="cast-handling">CAST Handling<a class="headerlink" href="#cast-handling" title="Permanent link">&para;</a></h2>
+<p>OrionBelt automatically wraps aggregate expressions with <code>CAST</code> based on resolved OBML data types. Each dialect maps OBML types to its native SQL types:</p>
+<table>
+<thead>
+<tr>
+<th>OBML Type</th>
+<th>Postgres</th>
+<th>Snowflake</th>
+<th>ClickHouse</th>
+<th>BigQuery</th>
+<th>MySQL</th>
+<th>Databricks</th>
+<th>DuckDB</th>
+<th>Dremio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>decimal(p, s)</code></td>
+<td><code>NUMERIC(p, s)</code></td>
+<td><code>NUMBER(p, s)</code></td>
+<td><code>Decimal(p, s)</code></td>
+<td><code>NUMERIC(p, s)</code></td>
+<td><code>DECIMAL(p, s)</code></td>
+<td><code>DECIMAL(p, s)</code></td>
+<td><code>DECIMAL(p, s)</code></td>
+<td><code>DECIMAL(p, s)</code></td>
+</tr>
+<tr>
+<td><code>bigint</code></td>
+<td><code>BIGINT</code></td>
+<td><code>NUMBER(38, 0)</code></td>
+<td><code>Int64</code></td>
+<td><code>INT64</code></td>
+<td><code>BIGINT</code></td>
+<td><code>BIGINT</code></td>
+<td><code>BIGINT</code></td>
+<td><code>BIGINT</code></td>
+</tr>
+<tr>
+<td><code>integer</code></td>
+<td><code>INTEGER</code></td>
+<td><code>NUMBER(38, 0)</code></td>
+<td><code>Int32</code></td>
+<td><code>INT64</code></td>
+<td><code>INTEGER</code></td>
+<td><code>INT</code></td>
+<td><code>INTEGER</code></td>
+<td><code>INTEGER</code></td>
+</tr>
+<tr>
+<td><code>double</code></td>
+<td><code>DOUBLE PRECISION</code></td>
+<td><code>FLOAT</code></td>
+<td><code>Float64</code></td>
+<td><code>FLOAT64</code></td>
+<td><code>DOUBLE</code></td>
+<td><code>DOUBLE</code></td>
+<td><code>DOUBLE</code></td>
+<td><code>DOUBLE</code></td>
+</tr>
+<tr>
+<td><code>string</code></td>
+<td><code>TEXT</code></td>
+<td><code>VARCHAR</code></td>
+<td><code>String</code></td>
+<td><code>STRING</code></td>
+<td><code>VARCHAR(65535)</code></td>
+<td><code>STRING</code></td>
+<td><code>VARCHAR</code></td>
+<td><code>VARCHAR</code></td>
+</tr>
+<tr>
+<td><code>boolean</code></td>
+<td><code>BOOLEAN</code></td>
+<td><code>BOOLEAN</code></td>
+<td><code>Bool</code></td>
+<td><code>BOOL</code></td>
+<td><code>TINYINT(1)</code></td>
+<td><code>BOOLEAN</code></td>
+<td><code>BOOLEAN</code></td>
+<td><code>BOOLEAN</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Maximum decimal precision</strong> (values are clamped):</p>
+<table>
+<thead>
+<tr>
+<th>Dialect</th>
+<th>Max Precision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Postgres</td>
+<td>131,072</td>
+</tr>
+<tr>
+<td>ClickHouse</td>
+<td>76</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td>65</td>
+</tr>
+<tr>
+<td>Snowflake, DuckDB, Databricks, Dremio</td>
+<td>38</td>
+</tr>
+<tr>
+<td>BigQuery</td>
+<td>38</td>
+</tr>
+</tbody>
+</table>
 <div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked="checked" id="__tabbed_3_1" name="__tabbed_3" type="radio" /><input id="__tabbed_3_2" name="__tabbed_3" type="radio" /><div class="tabbed-labels"><label for="__tabbed_3_1">BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake</label><label for="__tabbed_3_2">ClickHouse</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
