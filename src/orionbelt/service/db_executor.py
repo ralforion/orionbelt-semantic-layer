@@ -110,6 +110,26 @@ def _map_type_code(type_code: Any) -> str:
     return "string"
 
 
+_DUCKDB_NUMERIC_PREFIXES = (
+    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+    "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+)
+_DUCKDB_DATETIME_PREFIXES = ("DATE", "TIME", "TIMESTAMP", "INTERVAL")
+
+
+def _duckdb_type_hint(type_obj: Any) -> str:
+    """Map a DuckDB type descriptor to a simple type hint string."""
+    s = str(type_obj).upper()
+    if s.startswith(_DUCKDB_NUMERIC_PREFIXES):
+        return "number"
+    if s.startswith(_DUCKDB_DATETIME_PREFIXES):
+        return "datetime"
+    if s in ("BLOB",):
+        return "binary"
+    return "string"
+
+
 def _arrow_type_to_hint(arrow_type: Any) -> str:
     """Map a PyArrow type to a simple type hint string."""
     import pyarrow as pa  # type: ignore[import-untyped]
@@ -404,7 +424,10 @@ def _execute_duckdb(
         result = conn.execute(sql)
         rows_raw = result.fetchall()
         desc = result.description or []
-        columns = [ColumnMeta(name=d[0], type_hint="string") for d in desc]
+        columns = [
+            ColumnMeta(name=d[0], type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string")
+            for d in desc
+        ]
         rows = [_serialize_row(r, effective_tz) for r in rows_raw]
         elapsed_ms = (time.monotonic() - t0) * 1000
         return ExecutionResult(

@@ -205,8 +205,9 @@ _CSS = """\
 .picker-row {
   min-height: 0 !important; padding: 0 !important;
   margin: 0 !important; flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
 }
-.picker-row > div { gap: 4px !important; }
+.picker-row > div { gap: 4px !important; flex-wrap: nowrap !important; }
 .picker-row label span {
   font-size: 0.75rem !important;
 }
@@ -222,6 +223,24 @@ _CSS = """\
 #er-diagram svg {
   transform-origin: top left;
   transition: transform 0.15s ease;
+}
+"""
+
+_ALIGN_HEADERS_JS = """
+(indices_str) => {
+    var old = document.getElementById('ob-hdr-align');
+    if (old) old.remove();
+    if (!indices_str) return;
+    var nums = indices_str.split(',').map(Number);
+    var css = '';
+    for (var j = 0; j < nums.length; j++) {
+        var n = nums[j];
+        css += '.result-table th:nth-child('+n+') button>span{text-align:right!important}';
+    }
+    var tag = document.createElement('style');
+    tag.id = 'ob-hdr-align';
+    tag.textContent = css;
+    document.head.appendChild(tag);
 }
 """
 
@@ -1180,12 +1199,15 @@ def execute_query(
     dict[str, str] | None,
     dict[str, str] | None,
     object,
+    object,
+    str,
+    str | None,
     str,
 ]:
     """Execute query via the REST API and return results as a table.
 
     Returns ``(sql_output, explain_yaml, session_state, model_state,
-    dataframe, result_info)``.
+    display_df, export_df, result_info, tsv_path, num_col_indices)``.
     """
     import pandas as pd
 
@@ -1198,7 +1220,17 @@ def execute_query(
         try:
             query_dict = yaml.safe_load(query_yaml)
         except yaml.YAMLError as exc:
-            return f"Error: Invalid query YAML\n{exc}", "", session_state, model_state, empty_df, ""
+            return (
+                f"Error: Invalid query YAML\n{exc}",
+                "",
+                session_state,
+                model_state,
+                empty_df,
+                empty_df,
+                "",
+                None,
+                "",
+            )
 
         if not isinstance(query_dict, dict):
             return (
@@ -1207,6 +1239,9 @@ def execute_query(
                 session_state,
                 model_state,
                 empty_df,
+                empty_df,
+                "",
+                None,
                 "",
             )
 
@@ -1235,6 +1270,9 @@ def execute_query(
                 session_state,
                 model_state,
                 empty_df,
+                empty_df,
+                "",
+                None,
                 "",
             )
         if resp.status_code in (400, 422):
@@ -1245,6 +1283,9 @@ def execute_query(
                 session_state,
                 model_state,
                 empty_df,
+                empty_df,
+                "",
+                None,
                 "",
             )
         resp.raise_for_status()
@@ -1260,8 +1301,55 @@ def execute_query(
         exec_time = data.get("execution_time_ms", 0.0)
 
         col_names = [c["name"] for c in columns]
+        col_type_map = {c["name"]: c.get("type", "string") for c in columns}
         df = pd.DataFrame(rows, columns=col_names) if col_names else pd.DataFrame(rows)
+        num_cols: set[str] = set()
+        for cname in col_names:
+            if cname not in df.columns:
+                continue
+            if (
+                col_type_map.get(cname) == "number"
+                or df[cname].apply(lambda v: isinstance(v, (int, float))).any()
+            ):
+                is_num = True
+            else:
+                coerced = pd.to_numeric(df[cname], errors="coerce")
+                is_num = coerced.notna().any()
+            if is_num:
+                df[cname] = pd.to_numeric(df[cname], errors="coerce")
+                num_cols.add(cname)
         df.insert(0, "#", range(1, len(df) + 1))
+
+        export_df = df.copy()
+
+        import html as _html
+
+        _rtag = '<span style="display:block;text-align:right;width:100%">'
+        all_cols = list(df.columns)
+        data_rows: list[list[object]] = []
+        display_rows: list[list[str]] = []
+        for _, row in df.iterrows():
+            d_row: list[object] = []
+            disp_row: list[str] = []
+            for cname in all_cols:
+                v = row[cname]
+                if cname in num_cols:
+                    d_row.append(v if pd.notna(v) else None)
+                    disp_row.append(f"{_rtag}{v}</span>" if pd.notna(v) else f"{_rtag}-</span>")
+                else:
+                    d_row.append(v if pd.notna(v) else None)
+                    disp_row.append(_html.escape(str(v)) if pd.notna(v) else "-")
+            data_rows.append(d_row)
+            display_rows.append(disp_row)
+
+        display_df: object = {
+            "headers": all_cols,
+            "data": data_rows,
+            "metadata": {
+                "display_value": display_rows,
+                "styling": [[""] * len(all_cols) for _ in data_rows],
+            },
+        }
 
         warnings: list[str] = data.get("warnings", [])
         sql_valid: bool = data.get("sql_valid", True)
@@ -1275,7 +1363,29 @@ def execute_query(
             formatted = "\n".join(header_lines) + "\n" + formatted
 
         info = f"{row_count} rows in {exec_time:.0f} ms"
-        return formatted, explain_yaml, session_state, model_state, df, info
+        tz_name = data.get("timezone")
+        if tz_name:
+            info += f" · TZ: {tz_name}"
+
+        import tempfile
+
+        _, tsv_path = tempfile.mkstemp(suffix=".tsv", prefix="query_results_")
+        export_df.drop(columns=["#"], errors="ignore").to_csv(tsv_path, sep="\t", index=False)
+
+        num_indices = [str(i + 1) for i, c in enumerate(all_cols) if c in num_cols]
+        num_col_str = ",".join(num_indices)
+
+        return (
+            formatted,
+            explain_yaml,
+            session_state,
+            model_state,
+            display_df,
+            export_df,
+            info,
+            tsv_path,
+            num_col_str,
+        )
 
     except _ModelValidationError as exc:
         return (
@@ -1284,6 +1394,9 @@ def execute_query(
             session_state,
             model_state,
             empty_df,
+            empty_df,
+            "",
+            None,
             "",
         )
     except httpx.ConnectError:
@@ -1295,6 +1408,9 @@ def execute_query(
             session_state,
             model_state,
             empty_df,
+            empty_df,
+            "",
+            None,
             "",
         )
     except httpx.HTTPStatusError as exc:
@@ -1304,10 +1420,23 @@ def execute_query(
             session_state,
             model_state,
             empty_df,
+            empty_df,
+            "",
+            None,
             "",
         )
     except Exception as exc:
-        return f"Error: {exc}", "", session_state, model_state, empty_df, ""
+        return (
+            f"Error: {exc}",
+            "",
+            session_state,
+            model_state,
+            empty_df,
+            empty_df,
+            "",
+            None,
+            "",
+        )
 
 
 def validate_model(
@@ -1554,6 +1683,10 @@ def create_blocks(
             )
             dark_btn = gr.Button("Light / Dark", size="sm", scale=0, min_width=120)
 
+        export_table = gr.Dataframe(visible=False, elem_classes=["ob-bridge"])
+        copy_buf = gr.Textbox(visible=False, elem_id="ob-copy-buf")
+        num_cols_box = gr.Textbox(visible=False, elem_classes=["ob-bridge"])
+
         with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
@@ -1792,8 +1925,8 @@ def create_blocks(
                         scale=0,
                         min_width=120,
                     )
-                    csv_download = gr.DownloadButton(
-                        "Download CSV",
+                    tsv_download = gr.DownloadButton(
+                        "Download TSV",
                         visible=False,
                         variant="secondary",
                         scale=0,
@@ -1804,6 +1937,7 @@ def create_blocks(
                     interactive=False,
                     wrap=True,
                     max_height=800,
+                    datatype="html",
                     elem_classes=["result-table"],
                 )
 
@@ -1839,7 +1973,10 @@ def create_blocks(
                     session_state,
                     model_state,
                     result_table,
+                    export_table,
                     result_info,
+                    tsv_download,
+                    num_cols_box,
                 ],
             ).then(
                 fn=lambda info: (
@@ -1848,28 +1985,14 @@ def create_blocks(
                     gr.update(visible=bool(info)),
                 ),
                 inputs=[result_info],
-                outputs=[tabs, csv_download, copy_data_btn],
+                outputs=[tabs, tsv_download, copy_data_btn],
+            ).then(
+                fn=None,
+                inputs=[num_cols_box],
+                js=_ALIGN_HEADERS_JS,
             )
 
-            def _export_csv(df: object) -> str | None:
-                import pandas as pd
-
-                if not isinstance(df, pd.DataFrame) or df.empty:
-                    return None
-                import tempfile
-
-                _, path = tempfile.mkstemp(suffix=".csv", prefix="query_results_")
-                export = df.drop(columns=["#"], errors="ignore")
-                export.to_csv(path, index=False)
-                return path
-
-            csv_download.click(
-                fn=_export_csv,
-                inputs=[result_table],
-                outputs=[csv_download],
-            )
-
-            copy_buf = gr.Textbox(visible=False, elem_id="ob-copy-buf")
+            tsv_download.click(fn=lambda: gr.Info("TSV file downloaded"))
 
             def _to_tsv(df: object) -> str:
                 import pandas as pd
@@ -1884,14 +2007,12 @@ def create_blocks(
 
             copy_data_btn.click(
                 fn=_to_tsv,
-                inputs=[result_table],
+                inputs=[export_table],
                 outputs=[copy_buf],
             ).then(
                 fn=None,
                 inputs=[copy_buf],
-                js="async (tsv) => {"
-                "if(tsv) await navigator.clipboard.writeText(tsv);"
-                "}",
+                js="async (tsv) => {if(tsv) await navigator.clipboard.writeText(tsv);}",
             )
 
             with gr.Tab("ER Diagram", id=2) as er_tab:

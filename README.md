@@ -319,7 +319,7 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 </p>
 
 - **SQL Compiler** — side-by-side OBML model and query editors with syntax highlighting, 8 dialect selector, one-click compilation with formatted SQL output and query explain
-- **Query Execution** — execute compiled queries against a connected database, view results in a scrollable data table with CSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
+- **Query Execution** — execute compiled queries against a connected database, view results in a scrollable data table with TSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
 - **ER Diagram** — interactive Mermaid ER diagram with zoom, column toggle, and download (MD/PNG/Turtle)
 - **Editor Toolbar** — clear, undo, redo, upload, download, and copy buttons on all code editors
 - **OSI Import/Export** — convert between OBML and OSI formats
