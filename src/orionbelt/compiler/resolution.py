@@ -930,9 +930,7 @@ class QueryResolver:
             col_expr: Expr = ColumnRef(name=source, table=obj_name)
 
         # 2. HAVING: try measure or metric name
-        elif is_having and (
-            qf.field in ctx.model.measures or qf.field in ctx.model.metrics
-        ):
+        elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
             col_expr = ColumnRef(name=qf.field)
 
         # 3. Try qualified column: "DataObject.Column"

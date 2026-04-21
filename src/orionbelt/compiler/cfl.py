@@ -587,9 +587,7 @@ class CFLPlanner:
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:
-            outer_builder.having(
-                _expand_cfl_measure_refs(hf.expression, outer_measure_exprs)
-            )
+            outer_builder.having(_expand_cfl_measure_refs(hf.expression, outer_measure_exprs))
 
         # ORDER BY and LIMIT — remap to CTE aliases
         for expr, desc in resolved.order_by_exprs:

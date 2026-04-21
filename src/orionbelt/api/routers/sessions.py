@@ -177,8 +177,7 @@ async def load_model(
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except ModelValidationError as exc:
         error_lines = "; ".join(
-            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "")
-            for e in exc.errors
+            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "") for e in exc.errors
         )
         raise HTTPException(
             status_code=422,

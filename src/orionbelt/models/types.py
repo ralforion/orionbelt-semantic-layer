@@ -71,8 +71,7 @@ def parse_data_type(raw: str) -> OBMLType:
         return DecimalType(precision=p, scale=s)
 
     raise ValueError(
-        f"Unknown data_type '{raw}'. "
-        f"Supported: decimal(p, s), {', '.join(sorted(_SIMPLE_TYPES))}"
+        f"Unknown data_type '{raw}'. Supported: decimal(p, s), {', '.join(sorted(_SIMPLE_TYPES))}"
     )
 
 

@@ -347,8 +347,7 @@ class ModelStore:
                     md["expression"] = m.expression
                 if m.columns:
                     md["columns"] = [
-                        {"dataObject": c.view or "", "column": c.column or ""}
-                        for c in m.columns
+                        {"dataObject": c.view or "", "column": c.column or ""} for c in m.columns
                     ]
                 if m.total:
                     md["total"] = True

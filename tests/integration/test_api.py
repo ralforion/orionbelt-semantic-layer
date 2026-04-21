@@ -224,9 +224,7 @@ class TestSessionModelFlow:
                 }
             },
         }
-        response = await client.post(
-            f"/v1/sessions/{sid}/models", json={"model_json": model_json}
-        )
+        response = await client.post(f"/v1/sessions/{sid}/models", json={"model_json": model_json})
         assert response.status_code == 201
         data = response.json()
         assert "model_id" in data

@@ -382,9 +382,7 @@ class ModelSettings(BaseModel):
 
             parsed = parse_data_type(v)
             if not isinstance(parsed, DecimalType):
-                raise ValueError(
-                    f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'"
-                )
+                raise ValueError(f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'")
         return v
 
     @field_validator("default_timezone", mode="before")

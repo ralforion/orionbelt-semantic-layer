@@ -50,9 +50,7 @@ class ExtendsMerger:
         self._validate_combination(raw)
 
         if "extends" in raw and raw["extends"]:
-            raw, ext_warnings = self._merge_extends_files(
-                raw, base_path, depth=_depth, seen=seen
-            )
+            raw, ext_warnings = self._merge_extends_files(raw, base_path, depth=_depth, seen=seen)
             warnings.extend(ext_warnings)
 
         if "inherits" in raw and raw["inherits"]:
@@ -314,9 +312,7 @@ class ExtendsMerger:
             tgt_section = target.setdefault(key, {})
             for name, defn in src_section.items():
                 if name in tgt_section:
-                    warnings.append(
-                        f"{key[:-1].title()} '{name}' overridden by '{origin}'"
-                    )
+                    warnings.append(f"{key[:-1].title()} '{name}' overridden by '{origin}'")
                 tgt_section[name] = defn
 
         # customExtensions: concatenate lists

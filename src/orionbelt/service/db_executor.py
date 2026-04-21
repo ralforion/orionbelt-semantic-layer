@@ -120,9 +120,20 @@ def _map_type_code(type_code: Any) -> str:
 
 
 _DUCKDB_NUMERIC_PREFIXES = (
-    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
-    "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "NUMBER",
-    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+    "TINYINT",
+    "SMALLINT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "FLOAT",
+    "DOUBLE",
+    "DECIMAL",
+    "NUMERIC",
+    "NUMBER",
+    "UTINYINT",
+    "USMALLINT",
+    "UINTEGER",
+    "UBIGINT",
 )
 _DUCKDB_DATETIME_PREFIXES = ("DATE", "TIME", "TIMESTAMP", "INTERVAL")
 
@@ -450,9 +461,7 @@ def _execute_duckdb(
         conn.close()
 
 
-def _fetch_result(
-    cursor: Any, t0: float, *, tz: ZoneInfo | None = None
-) -> ExecutionResult:
+def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> ExecutionResult:
     """Fetch query results, preferring Arrow format when available."""
     # Try Arrow-native fetch first (DuckDB, Snowflake, etc.)
     arrow_table = _try_fetch_arrow(cursor)

@@ -232,10 +232,9 @@ def _execute_dict(conn: duckdb.DuckDBPyConnection, sql: str) -> list[dict[str, A
     cols = [d[0] for d in result.description]
     rows: list[dict[str, Any]] = []
     for row in result.fetchall():
-        rows.append({
-            k: float(v) if isinstance(v, Decimal) else v
-            for k, v in zip(cols, row, strict=False)
-        })
+        rows.append(
+            {k: float(v) if isinstance(v, Decimal) else v for k, v in zip(cols, row, strict=False)}
+        )
     return rows
 
 
@@ -654,7 +653,9 @@ def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     def _coerce(v: Any) -> Any:
         return float(v) if isinstance(v, _Decimal) else v
 
-    def execute_sql(sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False) -> ExecutionResult:
+    def execute_sql(
+        sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
+    ) -> ExecutionResult:
         t0 = time.monotonic()
         result = conn.execute(sql)
         raw_rows = result.fetchall()

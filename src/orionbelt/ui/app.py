@@ -245,6 +245,7 @@ _ALIGN_HEADERS_JS = """
 }
 """
 
+
 def _parse_number_format(fmt: str | None) -> tuple[bool, int, bool]:
     """Parse a display format pattern into (use_thousands, decimals, is_percent).
 
@@ -265,11 +266,37 @@ def _parse_number_format(fmt: str | None) -> tuple[bool, int, bool]:
     return (use_thousands, decimals, is_pct)
 
 
-_COMMA_DECIMAL_LANGS = frozenset({
-    "de", "fr", "it", "es", "pt", "nl", "da", "nb", "nn", "sv", "fi",
-    "pl", "cs", "sk", "hu", "ro", "bg", "hr", "sl", "sr", "tr", "el",
-    "ru", "uk", "be", "ca", "id",
-})
+_COMMA_DECIMAL_LANGS = frozenset(
+    {
+        "de",
+        "fr",
+        "it",
+        "es",
+        "pt",
+        "nl",
+        "da",
+        "nb",
+        "nn",
+        "sv",
+        "fi",
+        "pl",
+        "cs",
+        "sk",
+        "hu",
+        "ro",
+        "bg",
+        "hr",
+        "sl",
+        "sr",
+        "tr",
+        "el",
+        "ru",
+        "uk",
+        "be",
+        "ca",
+        "id",
+    }
+)
 
 
 def _locale_separators(locale: str) -> tuple[str, str]:
