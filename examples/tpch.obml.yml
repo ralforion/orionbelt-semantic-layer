@@ -8,6 +8,7 @@ version: 1.0
 settings:
   defaultNumericDataType: "decimal(18, 2)"
   defaultTimezone: "Europe/Zagreb"
+  overrideDatabaseTimezone: false
 
 dataObjects:
   # ── Dimension tables ───────────────────────────────────────────────
@@ -360,6 +361,7 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+    dataType: bigint
     format: "#,##0"
 
   Line Item Count:
@@ -368,6 +370,7 @@ measures:
         column: Line Number
     resultType: int
     aggregation: count
+    dataType: bigint
     format: "#,##0"
 
   Total Order Value:
@@ -399,6 +402,7 @@ measures:
         column: Available Qty
     resultType: int
     aggregation: sum
+    dataType: bigint
     format: "#,##0"
 
   Returned Revenue:

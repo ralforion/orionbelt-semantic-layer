@@ -7,6 +7,7 @@
 <p align="center"><strong>Compile and execute YAML semantic models as analytical SQL across multiple database dialects</strong></p>
 
 <!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](http://35.187.174.102/ui/?__theme=dark)
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
 [![Version 1.7.0](https://img.shields.io/badge/version-1.7.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
@@ -36,7 +37,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 ## Table of Contents
 
-- [Try it in 30 Seconds](#try-it-in-30-seconds) — Live Demo | PyPI | Docker
+- [Try it in 30 Seconds](#try-it-in-30-seconds) — Live Demo | Colab | PyPI | Docker
 - [Claude Desktop / MCP](#claude-desktop--mcp)
 - [Why OrionBelt?](#why-orionbelt)
 - [Features](#features)
@@ -57,7 +58,11 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 API explorer: [Swagger UI](http://35.187.174.102/docs) | [ReDoc](http://35.187.174.102/redoc)
 
-### Option B: Install from PyPI
+### Option B: Google Colab (no install)
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries across dialects, execute against DuckDB, and see results. Requires Python 3.12 runtime.
+
+### Option C: Install from PyPI
 
 ```bash
 pip install orionbelt-semantic-layer
@@ -113,7 +118,7 @@ GROUP BY "Orders"."COUNTRY"
 
 No env file needed — the compilation pipeline is stateless.
 
-### Option C: Docker
+### Option D: Docker
 
 **Stage 1 — Zero-config start** (models loaded later via API or UI):
 
