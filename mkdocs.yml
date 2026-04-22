@@ -94,6 +94,7 @@ nav:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
       - SQL Dialects: guide/dialects.md
+      - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
       - OBSL Graph & SPARQL: guide/obsl.md

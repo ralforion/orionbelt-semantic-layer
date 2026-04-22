@@ -274,6 +274,73 @@ obsl:allowFanOut a owl:DatatypeProperty ;
     rdfs:comment "When true, permits this measure to be queried along fan-out join paths (bypasses fan-trap prevention)." ;
     rdfs:range xsd:boolean .
 
+obsl:owner a owl:DatatypeProperty ;
+    rdfs:label "owner" ;
+    rdfs:comment "Responsible team or person for this element." ;
+    rdfs:range xsd:string .
+
+obsl:dataType a owl:DatatypeProperty ;
+    rdfs:label "data type" ;
+    rdfs:comment "Explicit data type for CAST wrapping (e.g. 'NUMERIC(18,2)', 'bigint')." ;
+    rdfs:range xsd:string .
+
+obsl:format a owl:DatatypeProperty ;
+    rdfs:label "format" ;
+    rdfs:comment "Display format pattern (e.g. '#,##0.00', '0.00%')." ;
+    rdfs:range xsd:string .
+
+# =============================================================================
+# 7b. DATATYPE PROPERTIES --- Grain & filter context overrides
+# =============================================================================
+
+obsl:grainMode a owl:DatatypeProperty ;
+    rdfs:label "grain mode" ;
+    rdfs:comment "Grain override mode for a measure: FIXED (start empty) or RELATIVE (inherit query dimensions)." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:grainExclude a owl:DatatypeProperty ;
+    rdfs:label "grain exclude" ;
+    rdfs:comment "Dimension name excluded from inherited grain (RELATIVE mode).  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:grainInclude a owl:DatatypeProperty ;
+    rdfs:label "grain include" ;
+    rdfs:comment "Dimension name added to grain.  With FIXED: these are the grain.  With RELATIVE: added to inherited.  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:grainKeepOnly a owl:DatatypeProperty ;
+    rdfs:label "grain keep only" ;
+    rdfs:comment "Adaptive grain dimension name (FIXED mode): effective grain = keepOnly ∩ query_dims.  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:filterContextMode a owl:DatatypeProperty ;
+    rdfs:label "filter context mode" ;
+    rdfs:comment "Filter context override mode for a measure: FIXED (ignore all query filters) or RELATIVE (inherit and modify)." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:filterContextExclude a owl:DatatypeProperty ;
+    rdfs:label "filter context exclude" ;
+    rdfs:comment "Dimension name whose query filter is excluded from this measure's context.  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:filterContextKeepOnly a owl:DatatypeProperty ;
+    rdfs:label "filter context keep only" ;
+    rdfs:comment "Dimension name whose query filter is kept (all others are excluded).  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:filterContextInclude a owl:DatatypeProperty ;
+    rdfs:label "filter context include" ;
+    rdfs:comment "Static filter condition added to this measure's context, as a human-readable expression string (e.g. \"Region = 'EMEA'\").  Multi-valued." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
 # =============================================================================
 # 8. DATATYPE PROPERTIES --- Cumulative & period-over-period metrics
 # =============================================================================
@@ -356,6 +423,9 @@ obsl:filterExpression a owl:FunctionalProperty .
 
 obsl:dataObject a owl:FunctionalProperty .
 obsl:column a owl:FunctionalProperty .
+
+obsl:grainMode a owl:FunctionalProperty .
+obsl:filterContextMode a owl:FunctionalProperty .
 
 obsl:cumulativeType a owl:FunctionalProperty .
 obsl:window a owl:FunctionalProperty .

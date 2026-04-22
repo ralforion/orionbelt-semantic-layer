@@ -13,8 +13,8 @@ OBSL-Core 0.1 maps every OBML concept to RDF triples using standard vocabularies
 | Column | `obsl:Column` | `obsl:code`, `obsl:resultType` |
 | Join | `obsl:Join` | `obsl:joinTo`, `obsl:cardinality`, `obsl:columnFrom`, `obsl:columnTo` |
 | Dimension | `obsl:Dimension` | `obsl:dataObject`, `obsl:column`, `obsl:resultType`, `obsl:timeGrain` |
-| Measure | `obsl:Measure` | `obsl:aggregation`, `obsl:resultType`, `obsl:sourceColumn`, `obsl:expressionSource`, `obsl:filterExpression` |
-| Metric | `obsl:Metric` | `obsl:metricType`, `obsl:expressionSource`, `obsl:baseMeasure`, `obsl:referencesMeasure` |
+| Measure | `obsl:Measure` | `obsl:aggregation`, `obsl:resultType`, `obsl:sourceColumn`, `obsl:expressionSource`, `obsl:filterExpression`, `obsl:grainMode`, `obsl:grainInclude`, `obsl:filterContextMode`, `obsl:owner`, `obsl:dataType`, `obsl:format` |
+| Metric | `obsl:Metric` | `obsl:metricType`, `obsl:expressionSource`, `obsl:baseMeasure`, `obsl:referencesMeasure`, `obsl:owner`, `obsl:dataType`, `obsl:format` |
 | Cumulative Metric | `obsl:CumulativeMetric` | `obsl:timeDimension`, `obsl:cumulativeType`, `obsl:window`, `obsl:grainToDate` |
 | Period-over-Period Metric | `obsl:PeriodOverPeriodMetric` | `obsl:timeDimension`, `obsl:timeGrain`, `obsl:offset`, `obsl:offsetGrain`, `obsl:comparison` |
 

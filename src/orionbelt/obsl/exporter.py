@@ -228,6 +228,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.filterExpression,
         OBSL.dataObject,
         OBSL.column,
+        OBSL.grainMode,
+        OBSL.filterContextMode,
         OBSL.cumulativeType,
         OBSL.window,
         OBSL.grainToDate,
@@ -281,6 +283,17 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.distinct,
         OBSL.total,
         OBSL.allowFanOut,
+        OBSL.grainMode,
+        OBSL.grainExclude,
+        OBSL.grainInclude,
+        OBSL.grainKeepOnly,
+        OBSL.filterContextMode,
+        OBSL.filterContextExclude,
+        OBSL.filterContextKeepOnly,
+        OBSL.filterContextInclude,
+        OBSL.owner,
+        OBSL.dataType,
+        OBSL["format"],
         OBSL.cumulativeType,
         OBSL.window,
         OBSL.grainToDate,
@@ -321,6 +334,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
         if obj.description:
             g.add((obj_uri, RDFS.comment, Literal(obj.description)))
+        if obj.owner:
+            g.add((obj_uri, OBSL.owner, Literal(obj.owner)))
         for syn in obj.synonyms:
             g.add((obj_uri, OBSL.synonym, Literal(syn)))
 
@@ -336,6 +351,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
             if col.description:
                 g.add((col_uri, RDFS.comment, Literal(col.description)))
+            if col.owner:
+                g.add((col_uri, OBSL.owner, Literal(col.owner)))
             for syn in col.synonyms:
                 g.add((col_uri, OBSL.synonym, Literal(syn)))
 
@@ -386,6 +403,10 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((dim_uri, OBSL.timeGrain, Literal(dim.time_grain.value)))
         if dim.description:
             g.add((dim_uri, RDFS.comment, Literal(dim.description)))
+        if dim.owner:
+            g.add((dim_uri, OBSL.owner, Literal(dim.owner)))
+        if dim.format:
+            g.add((dim_uri, OBSL["format"], Literal(dim.format)))
         for syn in dim.synonyms:
             g.add((dim_uri, OBSL.synonym, Literal(syn)))
 
@@ -423,8 +444,40 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         if filter_expr:
             g.add((meas_uri, OBSL.filterExpression, Literal(filter_expr)))
 
+        # Grain override
+        if meas.grain:
+            go = meas.grain
+            g.add((meas_uri, OBSL.grainMode, Literal(go.mode.value)))
+            for dim_name in go.exclude:
+                g.add((meas_uri, OBSL.grainExclude, Literal(dim_name)))
+            for dim_name in go.include:
+                g.add((meas_uri, OBSL.grainInclude, Literal(dim_name)))
+            for dim_name in go.keep_only:
+                g.add((meas_uri, OBSL.grainKeepOnly, Literal(dim_name)))
+
+        # Filter context
+        if meas.filter_context:
+            fc = meas.filter_context
+            g.add((meas_uri, OBSL.filterContextMode, Literal(fc.mode.value)))
+            for dim_name in fc.exclude:
+                g.add((meas_uri, OBSL.filterContextExclude, Literal(dim_name)))
+            for dim_name in fc.keep_only:
+                g.add((meas_uri, OBSL.filterContextKeepOnly, Literal(dim_name)))
+            for incl in fc.include:
+                if incl.value:
+                    expr = f"{incl.field} {incl.op} {incl.value}"
+                else:
+                    expr = f"{incl.field} {incl.op}"
+                g.add((meas_uri, OBSL.filterContextInclude, Literal(expr)))
+
         if meas.description:
             g.add((meas_uri, RDFS.comment, Literal(meas.description)))
+        if meas.owner:
+            g.add((meas_uri, OBSL.owner, Literal(meas.owner)))
+        if meas.data_type:
+            g.add((meas_uri, OBSL.dataType, Literal(meas.data_type)))
+        if meas.format:
+            g.add((meas_uri, OBSL["format"], Literal(meas.format)))
         for syn in meas.synonyms:
             g.add((meas_uri, OBSL.synonym, Literal(syn)))
 
@@ -473,6 +526,12 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))
+        if met.owner:
+            g.add((met_uri, OBSL.owner, Literal(met.owner)))
+        if met.data_type:
+            g.add((met_uri, OBSL.dataType, Literal(met.data_type)))
+        if met.format:
+            g.add((met_uri, OBSL["format"], Literal(met.format)))
         for syn in met.synonyms:
             g.add((met_uri, OBSL.synonym, Literal(syn)))
 
