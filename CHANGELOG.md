@@ -2,6 +2,23 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.7.1] - 2026-04-22
+
+### Fixed
+
+- **OSI converter roundtrip** — full preservation for all OBML properties through OSI-to-OBML and OBML-to-OSI conversion: `settings`, `owner`, `dataType`, column metadata (`sqlType`, `sqlPrecision`, `sqlScale`, `numClass`, `comment`), dimension properties (`resultType`, `description`), and metric `format`. 22 new property roundtrip tests.
+
+### Added
+
+- **Favicon** — docs site now has a favicon.
+
+### Changed
+
+- Version bumped to 1.7.1
+- Fixed MkDocs Material pinned version
+
+---
+
 ## [1.7.0] - 2026-04-20
 
 ### Added
