@@ -417,6 +417,39 @@ measures:
         values: [{dataType: string, valueString: "R"}]
     description: Revenue from returned items only
 
+  Grand Total Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    description: Grand total revenue across all dimensions
+
+  Revenue by Nation:
+    resultType: float
+    aggregation: sum
+    expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+      include: [Nation]
+    description: Revenue aggregated at nation level only
+
+  Unfiltered Revenue:
+    resultType: float
+    aggregation: sum
+    expression: "{[Line Items].[Extended Price]} * (1 - {[Line Items].[Discount]})"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    filterContext:
+      mode: FIXED
+    description: Grand total revenue ignoring all query filters
+
 # ── Metrics (cross-measure formulas) ──────────────────────────────
 
 metrics:
@@ -444,6 +477,18 @@ metrics:
     expression: "{[Returned Revenue]} / {[Revenue]}"
     dataType: "decimal(5, 4)"
     format: "0.00%"
+
+  Pct of Total Revenue:
+    expression: "{[Revenue]} / {[Grand Total Revenue]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Revenue as percentage of grand total
+
+  Pct of Nation Revenue:
+    expression: "{[Revenue]} / {[Revenue by Nation]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Revenue as percentage of nation total
 
   # ── Cumulative metrics ────────────────────────────────────────────
   Running Revenue:
