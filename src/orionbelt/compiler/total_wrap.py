@@ -1,20 +1,24 @@
-"""Wrapper CTE for total (grand total) measures using window functions.
+"""Wrapper CTE for total and grain-override measures using window functions.
 
-When a measure has ``total: true``, the per-group aggregate must be turned
-into a grand total via ``AGG(x) OVER ()``.  Because window functions cannot
-coexist with ``GROUP BY`` on pre-grouped rows, we wrap the planner output
-in a CTE and apply window functions in an outer query.
+When a measure has ``total: true`` or a ``grain`` override, the per-group
+aggregate must be re-aggregated via ``AGG(x) OVER (PARTITION BY ...)``.
+For grand totals the partition is empty (``OVER ()``); for grain overrides
+the partition contains the effective grain dimensions.
+
+Because window functions cannot coexist with ``GROUP BY`` on pre-grouped
+rows, we wrap the planner output in a CTE and apply window functions in
+an outer query.
 
 Re-aggregation mapping (outer window function per aggregation type):
 
 | Original       | Window Re-agg            | Notes                          |
 |----------------|--------------------------|--------------------------------|
-| SUM            | SUM(x) OVER ()           | sum of per-group sums          |
-| COUNT          | SUM(x) OVER ()           | sum of per-group counts        |
-| COUNT_DISTINCT | SUM(x) OVER ()           | approximation (may overcount)  |
-| MIN            | MIN(x) OVER ()           | min of per-group mins          |
-| MAX            | MAX(x) OVER ()           | max of per-group maxes         |
-| AVG            | SUM(s) OVER () / SUM(c) OVER () | exact via sum+count helpers |
+| SUM            | SUM(x) OVER (...)        | sum of per-group sums          |
+| COUNT          | SUM(x) OVER (...)        | sum of per-group counts        |
+| COUNT_DISTINCT | SUM(x) OVER (...)        | approximation (may overcount)  |
+| MIN            | MIN(x) OVER (...)        | min of per-group mins          |
+| MAX            | MAX(x) OVER (...)        | max of per-group maxes         |
+| AVG            | SUM(s)/SUM(c) OVER (...) | exact via sum+count helpers    |
 """
 
 from __future__ import annotations
@@ -54,9 +58,14 @@ def _reagg_func(aggregation: str) -> str:
     return "SUM"
 
 
+def _needs_window_wrap(measure: ResolvedMeasure) -> bool:
+    """Check if a measure needs window wrapping (total or grain override)."""
+    return measure.total or measure.grain_override is not None
+
+
 def _is_avg_total(measure: ResolvedMeasure) -> bool:
-    """Check if a measure is an AVG total (needs sum+count helpers)."""
-    return measure.total and measure.aggregation.upper() == "AVG"
+    """Check if a measure is an AVG total/grain-override (needs sum+count helpers)."""
+    return _needs_window_wrap(measure) and measure.aggregation.upper() == "AVG"
 
 
 def _avg_sum_alias(name: str) -> str:
@@ -67,50 +76,60 @@ def _avg_count_alias(name: str) -> str:
     return f"{name}__count"
 
 
+def _partition_by_exprs(measure: ResolvedMeasure) -> list[Expr]:
+    """Build PARTITION BY column refs from effective_grain (empty = grand total)."""
+    if measure.effective_grain:
+        return [ColumnRef(name=d) for d in measure.effective_grain]
+    return []
+
+
 def _build_total_window(measure: ResolvedMeasure) -> Expr:
-    """Build a window function for a total measure's outer column."""
+    """Build a window function for a total/grain-override measure's outer column."""
+    partition_by = _partition_by_exprs(measure)
     if _is_avg_total(measure):
-        # AVG total: SUM(sum_helper) OVER () / SUM(count_helper) OVER ()
         return BinaryOp(
             left=WindowFunction(
                 func_name="SUM",
                 args=[ColumnRef(name=_avg_sum_alias(measure.name))],
+                partition_by=partition_by,
             ),
             op="/",
             right=WindowFunction(
                 func_name="SUM",
                 args=[ColumnRef(name=_avg_count_alias(measure.name))],
+                partition_by=partition_by,
             ),
         )
     reagg = _reagg_func(measure.aggregation)
     return WindowFunction(
         func_name=reagg,
         args=[ColumnRef(name=measure.name)],
+        partition_by=partition_by,
     )
 
 
 def _collect_total_names(resolved: ResolvedQuery) -> set[str]:
-    """Collect names of all measures that are totals (direct + metric components)."""
+    """Collect names of all measures that need window wrapping (direct + metric components)."""
     names: set[str] = set()
     for m in resolved.measures:
-        if m.total:
+        if _needs_window_wrap(m):
             names.add(m.name)
         for comp_name in m.component_measures:
             comp = resolved.metric_components.get(comp_name)
-            if comp and comp.total:
+            if comp and _needs_window_wrap(comp):
                 names.add(comp.name)
     return names
 
 
 def _metrics_with_total_components(resolved: ResolvedQuery) -> set[str]:
-    """Identify metrics that reference at least one total component."""
+    """Identify metrics that reference at least one window-wrapped component."""
     names: set[str] = set()
     for m in resolved.measures:
         if not m.component_measures:
             continue
         for comp_name in m.component_measures:
             comp = resolved.metric_components.get(comp_name)
-            if comp and comp.total:
+            if comp and _needs_window_wrap(comp):
                 names.add(m.name)
                 break
     return names
@@ -129,7 +148,7 @@ def _substitute_metric_refs(
     if isinstance(expr, ColumnRef) and expr.table is None:
         comp = resolved.metric_components.get(expr.name)
         if comp:
-            if comp.total:
+            if _needs_window_wrap(comp):
                 return _build_total_window(comp)
             return ColumnRef(name=comp.name)
     if isinstance(expr, BinaryOp):
@@ -172,8 +191,8 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                         base_columns.append(_build_avg_helpers_base_col(comp, "count"))
                     else:
                         base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
-        elif alias and _is_avg_total_by_name(alias, resolved):
-            # AVG total direct measure: replace with sum + count helpers
+        elif alias and _is_avg_window_wrap_by_name(alias, resolved):
+            # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
             base_columns.append(_build_avg_helpers_base_col(measure, "sum"))
             base_columns.append(_build_avg_helpers_base_col(measure, "count"))
@@ -214,8 +233,8 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
             else:
                 # Metric without total components: pass-through
                 outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
-        elif m.total:
-            # Total measure: window function
+        elif _needs_window_wrap(m):
+            # Total or grain-override measure: window function
             outer_columns.append(AliasedExpr(expr=_build_total_window(m), alias=m.name))
         else:
             # Regular measure: pass-through
@@ -263,8 +282,8 @@ def _remap_order_by_expr(expr: Expr) -> Expr:
     return expr
 
 
-def _is_avg_total_by_name(name: str, resolved: ResolvedQuery) -> bool:
-    """Check if a direct measure with given name is an AVG total."""
+def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:
+    """Check if a direct measure with given name is an AVG total/grain-override."""
     for m in resolved.measures:
         if m.name == name and not m.component_measures:
             return _is_avg_total(m)

@@ -60,6 +60,7 @@ class ExplainPlan:
     where_filter_count: int = 0
     having_filter_count: int = 0
     has_totals: bool = False
+    has_grain_overrides: bool = False
     has_cumulative: bool = False
     has_pop: bool = False
     cfl_legs: list[ExplainCflLeg] = field(default_factory=list)
@@ -274,6 +275,7 @@ class CompilationPipeline:
             where_filter_count=len(resolved.where_filters),
             having_filter_count=len(resolved.having_filters),
             has_totals=resolved.has_totals,
+            has_grain_overrides=resolved.has_grain_overrides,
             has_cumulative=resolved.has_cumulative,
             has_pop=resolved.has_pop,
             cfl_legs=cfl_leg_explains,

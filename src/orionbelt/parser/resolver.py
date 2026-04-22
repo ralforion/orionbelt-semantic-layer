@@ -15,6 +15,7 @@ from orionbelt.models.semantic import (
     DataObjectJoin,
     Dimension,
     FilterValue,
+    GrainOverride,
     Measure,
     MeasureFilter,
     MeasureFilterGroup,
@@ -301,6 +302,35 @@ class ReferenceResolver:
                     if raw_filter:
                         measure_filters.append(_parse_measure_filter_item(raw_filter))
 
+                # Parse grain override
+                grain_override: GrainOverride | None = None
+                raw_grain = raw_meas.get("grain")
+                if raw_grain and isinstance(raw_grain, dict):
+                    grain_override = GrainOverride(
+                        mode=raw_grain.get("mode", "RELATIVE"),
+                        exclude=raw_grain.get("exclude", []),
+                        include=raw_grain.get("include", []),
+                        keep_only=raw_grain.get("keepOnly", []),
+                    )
+                    # Validate dimension references in grain
+                    for dim_name in (
+                        grain_override.include + grain_override.exclude + grain_override.keep_only
+                    ):
+                        if dim_name not in dimensions:
+                            span = source_map.get(f"measures.{name}.grain") if source_map else None
+                            errors.append(
+                                SemanticError(
+                                    code="UNKNOWN_GRAIN_DIMENSION",
+                                    message=(
+                                        f"Measure '{name}' grain references "
+                                        f"unknown dimension '{dim_name}'"
+                                    ),
+                                    path=f"measures.{name}.grain",
+                                    span=span,
+                                    suggestions=_suggest_similar(dim_name, list(dimensions.keys())),
+                                )
+                            )
+
                 measures[name] = Measure(
                     label=name,
                     columns=measure_columns,
@@ -309,6 +339,7 @@ class ReferenceResolver:
                     expression=expression,
                     distinct=raw_meas.get("distinct", False),
                     total=raw_meas.get("total", False),
+                    grain=grain_override,
                     filters=measure_filters,
                     data_type=raw_meas.get("dataType"),
                     format=raw_meas.get("format"),
