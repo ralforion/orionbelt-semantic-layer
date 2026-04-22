@@ -59,7 +59,12 @@ def _reagg_func(aggregation: str) -> str:
 
 
 def _needs_window_wrap(measure: ResolvedMeasure) -> bool:
-    """Check if a measure needs window wrapping (total or grain override)."""
+    """Check if a measure needs window wrapping (total or grain override).
+
+    Measures with filter_context are handled by filter_wrap and skipped here.
+    """
+    if measure.filter_context is not None:
+        return False
     return measure.total or measure.grain_override is not None
 
 
@@ -169,6 +174,9 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
 
     total_names = _collect_total_names(resolved)
     decompose_metrics = _metrics_with_total_components(resolved)
+
+    if not total_names and not decompose_metrics:
+        return ast
 
     # --- Build base CTE columns from the planner's AST columns ---
     base_columns: list[Expr] = []

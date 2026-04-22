@@ -526,6 +526,56 @@
       },
       "additionalProperties": false
     },
+    "filterContextMode": {
+      "description": "Filter context mode: FIXED ignores all query filters, RELATIVE inherits them",
+      "enum": ["FIXED", "RELATIVE"]
+    },
+    "filterContextFilter": {
+      "type": "object",
+      "description": "A static filter to include in a filter context",
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Dimension name or DataObject.Column reference"
+        },
+        "op": {
+          "type": "string",
+          "description": "Filter operator (equals, notequals, gt, gte, lt, lte, inlist, etc.)"
+        },
+        "value": {
+          "description": "Filter value (scalar, list, or null)"
+        }
+      },
+      "required": ["field", "op"],
+      "additionalProperties": false
+    },
+    "filterContext": {
+      "type": "object",
+      "description": "Filter context override — controls which query WHERE filters apply to this measure",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/filterContextMode",
+          "description": "FIXED: ignore all query filters. RELATIVE (default): inherit query filters.",
+          "default": "RELATIVE"
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Field names — query filters referencing these fields are removed (RELATIVE mode only)",
+          "items": { "type": "string" }
+        },
+        "include": {
+          "type": "array",
+          "description": "Static filters to add to this measure's context",
+          "items": { "$ref": "#/definitions/filterContextFilter" }
+        },
+        "keepOnly": {
+          "type": "array",
+          "description": "Only query filters referencing these fields are kept",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
     "measure": {
       "type": "object",
       "description": "Measure definition",
@@ -586,6 +636,10 @@
         "grain": {
           "$ref": "#/definitions/grainOverride",
           "description": "Grain override — controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
+        },
+        "filterContext": {
+          "$ref": "#/definitions/filterContext",
+          "description": "Filter context override — controls which query WHERE filters apply to this measure. Requires CTE isolation."
         },
         "expression": {
           "type": "string",

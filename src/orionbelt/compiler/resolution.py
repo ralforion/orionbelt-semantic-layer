@@ -37,6 +37,7 @@ from orionbelt.models.query import (
 )
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    FilterContext,
     GrainMode,
     GrainOverride,
     GrainToDate,
@@ -74,6 +75,8 @@ class ResolvedMeasure:
     # Grain override fields
     grain_override: GrainOverride | None = None
     effective_grain: list[str] | None = None
+    # Filter context fields
+    filter_context: FilterContext | None = None
     # Cumulative metric fields
     is_cumulative: bool = False
     cumulative_measure: str | None = None
@@ -97,6 +100,7 @@ class ResolvedFilter:
 
     expression: Expr
     is_aggregate: bool = False
+    referenced_fields: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -149,6 +153,11 @@ class ResolvedQuery:
                 if comp and comp.grain_override is not None:
                     return True
         return False
+
+    @property
+    def has_filter_context(self) -> bool:
+        """Check if any measure has a filter context override."""
+        return any(m.filter_context is not None for m in self.measures)
 
     @property
     def has_cumulative(self) -> bool:
@@ -400,6 +409,7 @@ class QueryResolver:
             total=measure.total,
             grain_override=grain_override,
             effective_grain=effective_grain,
+            filter_context=measure.filter_context,
         )
 
     def _build_measure_expr(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
@@ -888,7 +898,11 @@ class QueryResolver:
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
         if filter_expr is None:
             return None
-        return ResolvedFilter(expression=filter_expr, is_aggregate=False)
+        return ResolvedFilter(
+            expression=filter_expr,
+            is_aggregate=False,
+            referenced_fields=frozenset({mf.column}),
+        )
 
     # -- filters -------------------------------------------------------------
 
@@ -932,10 +946,12 @@ class QueryResolver:
     ) -> ResolvedFilter | None:
         """Resolve a filter group recursively, combining with AND/OR."""
         child_exprs: list[Expr] = []
+        all_fields: set[str] = set()
         for child in group.filters:
             resolved = self._resolve_filter_item(ctx, child, is_having=is_having)
             if resolved:
                 child_exprs.append(resolved.expression)
+                all_fields.update(resolved.referenced_fields)
 
         if not child_exprs:
             return None
@@ -950,7 +966,11 @@ class QueryResolver:
         if group.negated:
             combined = UnaryOp(op="NOT", operand=combined)
 
-        return ResolvedFilter(expression=combined, is_aggregate=is_having)
+        return ResolvedFilter(
+            expression=combined,
+            is_aggregate=is_having,
+            referenced_fields=frozenset(all_fields),
+        )
 
     def _resolve_filter(
         self, ctx: _ResolutionContext, qf: QueryFilter, *, is_having: bool
@@ -1026,7 +1046,11 @@ class QueryResolver:
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
         if filter_expr is None:
             return None
-        return ResolvedFilter(expression=filter_expr, is_aggregate=is_having)
+        return ResolvedFilter(
+            expression=filter_expr,
+            is_aggregate=is_having,
+            referenced_fields=frozenset({qf.field}),
+        )
 
     # -- order by ------------------------------------------------------------
 

@@ -98,6 +98,11 @@ class GrainMode(StrEnum):
     FIXED = "FIXED"
 
 
+class FilterContextMode(StrEnum):
+    RELATIVE = "RELATIVE"
+    FIXED = "FIXED"
+
+
 class FilterLogic(StrEnum):
     AND = "and"
     OR = "or"
@@ -130,6 +135,35 @@ class GrainOverride(BaseModel):
     def _validate_grain_override(self) -> GrainOverride:
         if self.mode == GrainMode.FIXED and self.exclude:
             raise ValueError("grain.mode FIXED cannot have 'exclude' (nothing to exclude from)")
+        return self
+
+
+class FilterContextFilter(BaseModel):
+    """A static filter to include in a filterContext — same shape as a query filter."""
+
+    field: str
+    op: str
+    value: object = None
+
+    model_config = {"populate_by_name": True}
+
+
+class FilterContext(BaseModel):
+    """Filter context override for a measure — controls which query WHERE filters apply."""
+
+    mode: FilterContextMode = FilterContextMode.RELATIVE
+    exclude: list[str] = Field(default_factory=list)
+    include: list[FilterContextFilter] = Field(default_factory=list)
+    keep_only: list[str] = Field(default_factory=list, alias="keepOnly")
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_filter_context(self) -> FilterContext:
+        if self.mode == FilterContextMode.FIXED and self.exclude:
+            raise ValueError(
+                "filterContext.mode FIXED cannot have 'exclude' (nothing to exclude from)"
+            )
         return self
 
 
@@ -295,6 +329,7 @@ class Measure(BaseModel):
     distinct: bool = False
     total: bool = False
     grain: GrainOverride | None = None
+    filter_context: FilterContext | None = Field(None, alias="filterContext")
     filters: list[MeasureFilterItem] = []
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None

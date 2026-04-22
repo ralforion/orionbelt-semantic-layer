@@ -8,6 +8,7 @@ from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
 from orionbelt.compiler.fanout import detect_fanout
+from orionbelt.compiler.filter_wrap import wrap_with_filter_context
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
@@ -61,6 +62,7 @@ class ExplainPlan:
     having_filter_count: int = 0
     has_totals: bool = False
     has_grain_overrides: bool = False
+    has_filter_context: bool = False
     has_cumulative: bool = False
     has_pop: bool = False
     cfl_legs: list[ExplainCflLeg] = field(default_factory=list)
@@ -121,8 +123,11 @@ class CompilationPipeline:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
+        # Phase 2.3: Wrap with filter context CTEs if needed
+        wrapped_ast = wrap_with_filter_context(plan.ast, resolved, model, dialect, qualify_table)
+
         # Phase 2.4: Wrap with PoP CTEs if needed
-        wrapped_ast = wrap_with_pop(plan.ast, resolved, model, dialect, qualify_table)
+        wrapped_ast = wrap_with_pop(wrapped_ast, resolved, model, dialect, qualify_table)
 
         # Phase 2.5: Wrap with totals CTE if needed
         # Skip totals wrap when PoP or cumulative is active — the combination
@@ -276,6 +281,7 @@ class CompilationPipeline:
             having_filter_count=len(resolved.having_filters),
             has_totals=resolved.has_totals,
             has_grain_overrides=resolved.has_grain_overrides,
+            has_filter_context=resolved.has_filter_context,
             has_cumulative=resolved.has_cumulative,
             has_pop=resolved.has_pop,
             cfl_legs=cfl_leg_explains,
