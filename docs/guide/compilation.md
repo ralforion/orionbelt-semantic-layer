@@ -333,10 +333,13 @@ class CompilationPipeline:
         else:
             plan = StarSchemaPlanner.plan(resolved, model)
 
-        # Phase 2.4: PoP wrap (period-over-period metrics)
-        wrapped_ast = wrap_with_pop(plan.ast, resolved, model, dialect, qualify_table)
+        # Phase 2.3: Filter context wrap (measures with filterContext)
+        wrapped_ast = wrap_with_filter_context(plan.ast, resolved, model, dialect, qualify_table)
 
-        # Phase 2.5: Total wrap (grand total measures)
+        # Phase 2.4: PoP wrap (period-over-period metrics)
+        wrapped_ast = wrap_with_pop(wrapped_ast, resolved, model, dialect, qualify_table)
+
+        # Phase 2.5: Total/grain wrap (grain overrides + grand total measures)
         wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
 
         # Phase 2.6: Cumulative wrap (running/rolling/grain-to-date metrics)

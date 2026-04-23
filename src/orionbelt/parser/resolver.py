@@ -14,7 +14,10 @@ from orionbelt.models.semantic import (
     DataObjectColumn,
     DataObjectJoin,
     Dimension,
+    FilterContext,
+    FilterContextFilter,
     FilterValue,
+    GrainOverride,
     Measure,
     MeasureFilter,
     MeasureFilterGroup,
@@ -301,6 +304,100 @@ class ReferenceResolver:
                     if raw_filter:
                         measure_filters.append(_parse_measure_filter_item(raw_filter))
 
+                # Parse grain override
+                grain_override: GrainOverride | None = None
+                raw_grain = raw_meas.get("grain")
+                if raw_grain and isinstance(raw_grain, dict):
+                    grain_override = GrainOverride(
+                        mode=raw_grain.get("mode", "RELATIVE"),
+                        exclude=raw_grain.get("exclude", []),
+                        include=raw_grain.get("include", []),
+                        keep_only=raw_grain.get("keepOnly", []),
+                    )
+                    # Validate dimension references in grain
+                    for dim_name in (
+                        grain_override.include + grain_override.exclude + grain_override.keep_only
+                    ):
+                        if dim_name not in dimensions:
+                            span = source_map.get(f"measures.{name}.grain") if source_map else None
+                            errors.append(
+                                SemanticError(
+                                    code="UNKNOWN_GRAIN_DIMENSION",
+                                    message=(
+                                        f"Measure '{name}' grain references "
+                                        f"unknown dimension '{dim_name}'"
+                                    ),
+                                    path=f"measures.{name}.grain",
+                                    span=span,
+                                    suggestions=_suggest_similar(dim_name, list(dimensions.keys())),
+                                )
+                            )
+
+                # Parse filter context
+                filter_ctx: FilterContext | None = None
+                raw_fc = raw_meas.get("filterContext")
+                if raw_fc and isinstance(raw_fc, dict):
+                    include_filters: list[FilterContextFilter] = []
+                    for raw_incl in raw_fc.get("include", []):
+                        if isinstance(raw_incl, dict):
+                            include_filters.append(
+                                FilterContextFilter(
+                                    field=raw_incl.get("field", ""),
+                                    op=raw_incl.get("op", "equals"),
+                                    value=raw_incl.get("value"),
+                                )
+                            )
+                    filter_ctx = FilterContext(
+                        mode=raw_fc.get("mode", "RELATIVE"),
+                        exclude=raw_fc.get("exclude", []),
+                        include=include_filters,
+                        keep_only=raw_fc.get("keepOnly", []),
+                    )
+                    # Validate field references in exclude/keepOnly
+                    all_dim_names = set(dimensions.keys())
+                    all_col_refs: set[str] = set()
+                    for obj_name, obj_def in data_objects.items():
+                        for col_name in obj_def.columns:
+                            all_col_refs.add(f"{obj_name}.{col_name}")
+                    for field_name in filter_ctx.exclude + filter_ctx.keep_only:
+                        if field_name not in all_dim_names and field_name not in all_col_refs:
+                            span = (
+                                source_map.get(f"measures.{name}.filterContext")
+                                if source_map
+                                else None
+                            )
+                            errors.append(
+                                SemanticError(
+                                    code="UNKNOWN_FILTER_CONTEXT_FIELD",
+                                    message=(
+                                        f"Measure '{name}' filterContext references "
+                                        f"unknown field '{field_name}'"
+                                    ),
+                                    path=f"measures.{name}.filterContext",
+                                    span=span,
+                                    suggestions=_suggest_similar(field_name, list(all_dim_names)),
+                                )
+                            )
+                    for incl in filter_ctx.include:
+                        if incl.field not in all_dim_names and incl.field not in all_col_refs:
+                            span = (
+                                source_map.get(f"measures.{name}.filterContext")
+                                if source_map
+                                else None
+                            )
+                            errors.append(
+                                SemanticError(
+                                    code="UNKNOWN_FILTER_CONTEXT_FIELD",
+                                    message=(
+                                        f"Measure '{name}' filterContext.include "
+                                        f"references unknown field '{incl.field}'"
+                                    ),
+                                    path=f"measures.{name}.filterContext.include",
+                                    span=span,
+                                    suggestions=_suggest_similar(incl.field, list(all_dim_names)),
+                                )
+                            )
+
                 measures[name] = Measure(
                     label=name,
                     columns=measure_columns,
@@ -309,6 +406,8 @@ class ReferenceResolver:
                     expression=expression,
                     distinct=raw_meas.get("distinct", False),
                     total=raw_meas.get("total", False),
+                    grain=grain_override,
+                    filter_context=filter_ctx,
                     filters=measure_filters,
                     data_type=raw_meas.get("dataType"),
                     format=raw_meas.get("format"),

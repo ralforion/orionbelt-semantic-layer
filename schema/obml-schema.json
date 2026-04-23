@@ -495,6 +495,87 @@
       "required": ["dataObject", "column"],
       "additionalProperties": false
     },
+    "grainMode": {
+      "description": "Grain mode: FIXED starts empty, RELATIVE inherits query dimensions",
+      "enum": ["FIXED", "RELATIVE"]
+    },
+    "grainOverride": {
+      "type": "object",
+      "description": "Grain override — controls aggregation grain independently from query dimensions",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/grainMode",
+          "description": "FIXED: start with empty grain (include adds). RELATIVE: start with query dims (exclude removes).",
+          "default": "RELATIVE"
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Dimension names to remove from inherited grain (RELATIVE mode only)",
+          "items": { "type": "string" }
+        },
+        "include": {
+          "type": "array",
+          "description": "Dimension names to add. With FIXED: these are the grain. With RELATIVE: added to inherited.",
+          "items": { "type": "string" }
+        },
+        "keepOnly": {
+          "type": "array",
+          "description": "With FIXED: adaptive grain = keepOnly ∩ query_dims. Dimensions from this list present in the query.",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "filterContextMode": {
+      "description": "Filter context mode: FIXED ignores all query filters, RELATIVE inherits them",
+      "enum": ["FIXED", "RELATIVE"]
+    },
+    "filterContextFilter": {
+      "type": "object",
+      "description": "A static filter to include in a filter context",
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Dimension name or DataObject.Column reference"
+        },
+        "op": {
+          "type": "string",
+          "description": "Filter operator (equals, notequals, gt, gte, lt, lte, inlist, etc.)"
+        },
+        "value": {
+          "description": "Filter value (scalar, list, or null)"
+        }
+      },
+      "required": ["field", "op"],
+      "additionalProperties": false
+    },
+    "filterContext": {
+      "type": "object",
+      "description": "Filter context override — controls which query WHERE filters apply to this measure",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/filterContextMode",
+          "description": "FIXED: ignore all query filters. RELATIVE (default): inherit query filters.",
+          "default": "RELATIVE"
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Field names — query filters referencing these fields are removed (RELATIVE mode only)",
+          "items": { "type": "string" }
+        },
+        "include": {
+          "type": "array",
+          "description": "Static filters to add to this measure's context",
+          "items": { "$ref": "#/definitions/filterContextFilter" }
+        },
+        "keepOnly": {
+          "type": "array",
+          "description": "Only query filters referencing these fields are kept",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
     "measure": {
       "type": "object",
       "description": "Measure definition",
@@ -551,6 +632,14 @@
         "total": {
           "type": "boolean",
           "description": "will use the total value of the measure"
+        },
+        "grain": {
+          "$ref": "#/definitions/grainOverride",
+          "description": "Grain override — controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
+        },
+        "filterContext": {
+          "$ref": "#/definitions/filterContext",
+          "description": "Filter context override — controls which query WHERE filters apply to this measure. Requires CTE isolation."
         },
         "expression": {
           "type": "string",

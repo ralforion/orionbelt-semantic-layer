@@ -507,6 +507,45 @@ measures:
     aggregation: sum
     format: "#,##0.00"
 
+  Grand Total Sales:
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    description: Grand total of all sales (ignores GROUP BY dimensions)
+
+  Sales by Country:
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+      include: [Country Name]
+    description: Sales aggregated at country level only
+
+  Unfiltered Sales:
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    filterContext:
+      mode: FIXED
+    description: Grand total ignoring all query filters
+
 # ── Metrics (cross-fact) ───────────────────────────────────────────
 
 metrics:
@@ -524,6 +563,18 @@ metrics:
     expression: "{[Electronics Sales]} / {[Total Sales]}"
     dataType: "decimal(5, 4)"
     format: "0.00%"
+
+  Pct of Total:
+    expression: "{[Total Sales]} / {[Grand Total Sales]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Sales as percentage of grand total
+
+  Pct of Country:
+    expression: "{[Total Sales]} / {[Sales by Country]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Sales as percentage of country total
 
   Running Total Sales:
     type: cumulative

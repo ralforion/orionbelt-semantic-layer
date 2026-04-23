@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "1.7.1"
+  project_version: "1.8.0"
 
 extra_css:
   - stylesheets/extra.css
@@ -94,6 +94,7 @@ nav:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
       - SQL Dialects: guide/dialects.md
+      - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
       - OBSL Graph & SPARQL: guide/obsl.md

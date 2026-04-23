@@ -37,6 +37,9 @@ from orionbelt.models.query import (
 )
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    FilterContext,
+    GrainMode,
+    GrainOverride,
     GrainToDate,
     Measure,
     Metric,
@@ -69,6 +72,11 @@ class ResolvedMeasure:
     is_expression: bool = False
     component_measures: list[str] = field(default_factory=list)
     total: bool = False
+    # Grain override fields
+    grain_override: GrainOverride | None = None
+    effective_grain: list[str] | None = None
+    # Filter context fields
+    filter_context: FilterContext | None = None
     # Cumulative metric fields
     is_cumulative: bool = False
     cumulative_measure: str | None = None
@@ -92,6 +100,7 @@ class ResolvedFilter:
 
     expression: Expr
     is_aggregate: bool = False
+    referenced_fields: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -123,15 +132,32 @@ class ResolvedQuery:
 
     @property
     def has_totals(self) -> bool:
-        """Check if any measure (direct or metric component) uses total."""
+        """Check if any measure (direct or metric component) uses total or grain override."""
         for m in self.measures:
-            if m.total:
+            if m.total or m.grain_override is not None:
                 return True
             for comp_name in m.component_measures:
                 comp = self.metric_components.get(comp_name)
-                if comp and comp.total:
+                if comp and (comp.total or comp.grain_override is not None):
                     return True
         return False
+
+    @property
+    def has_grain_overrides(self) -> bool:
+        """Check if any measure (direct or metric component) uses grain override."""
+        for m in self.measures:
+            if m.grain_override is not None:
+                return True
+            for comp_name in m.component_measures:
+                comp = self.metric_components.get(comp_name)
+                if comp and comp.grain_override is not None:
+                    return True
+        return False
+
+    @property
+    def has_filter_context(self) -> bool:
+        """Check if any measure has a filter context override."""
+        return any(m.filter_context is not None for m in self.measures)
 
     @property
     def has_cumulative(self) -> bool:
@@ -154,6 +180,18 @@ class _ResolutionContext:
     result: ResolvedQuery = field(default_factory=ResolvedQuery)
     joined_objects: set[str] = field(default_factory=set)
     graph: JoinGraph | None = None
+
+
+def _resolve_effective_grain(grain: GrainOverride, query_dims: list[str]) -> list[str]:
+    """Compute the effective grain dimensions for a measure grain override."""
+    if grain.mode == GrainMode.FIXED:
+        if grain.keep_only:
+            return [d for d in grain.keep_only if d in query_dims]
+        return list(grain.include)
+    # RELATIVE mode
+    result = [d for d in query_dims if d not in grain.exclude]
+    result.extend(d for d in grain.include if d not in result)
+    return result
 
 
 class QueryResolver:
@@ -345,12 +383,33 @@ class QueryResolver:
             return None
 
         expr = self._build_measure_expr(ctx, measure)
+        grain_override = measure.grain
+        effective_grain: list[str] | None = None
+        if grain_override is not None:
+            query_dim_names = [d.name for d in ctx.result.dimensions]
+            effective_grain = _resolve_effective_grain(grain_override, query_dim_names)
+            if effective_grain is not None and not set(effective_grain) <= set(query_dim_names):
+                bad = sorted(set(effective_grain) - set(query_dim_names))
+                ctx.errors.append(
+                    SemanticError(
+                        code="GRAIN_NOT_SUBSET",
+                        message=(
+                            f"Measure '{name}' grain {bad} is not a subset of "
+                            f"query dimensions {query_dim_names}. "
+                            f"This would cause row multiplication."
+                        ),
+                        path="select.measures",
+                    )
+                )
         return ResolvedMeasure(
             name=name,
             aggregation=measure.aggregation,
             expression=expr,
             is_expression=measure.expression is not None,
             total=measure.total,
+            grain_override=grain_override,
+            effective_grain=effective_grain,
+            filter_context=measure.filter_context,
         )
 
     def _build_measure_expr(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
@@ -839,7 +898,11 @@ class QueryResolver:
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
         if filter_expr is None:
             return None
-        return ResolvedFilter(expression=filter_expr, is_aggregate=False)
+        return ResolvedFilter(
+            expression=filter_expr,
+            is_aggregate=False,
+            referenced_fields=frozenset({mf.column}),
+        )
 
     # -- filters -------------------------------------------------------------
 
@@ -883,10 +946,12 @@ class QueryResolver:
     ) -> ResolvedFilter | None:
         """Resolve a filter group recursively, combining with AND/OR."""
         child_exprs: list[Expr] = []
+        all_fields: set[str] = set()
         for child in group.filters:
             resolved = self._resolve_filter_item(ctx, child, is_having=is_having)
             if resolved:
                 child_exprs.append(resolved.expression)
+                all_fields.update(resolved.referenced_fields)
 
         if not child_exprs:
             return None
@@ -901,7 +966,11 @@ class QueryResolver:
         if group.negated:
             combined = UnaryOp(op="NOT", operand=combined)
 
-        return ResolvedFilter(expression=combined, is_aggregate=is_having)
+        return ResolvedFilter(
+            expression=combined,
+            is_aggregate=is_having,
+            referenced_fields=frozenset(all_fields),
+        )
 
     def _resolve_filter(
         self, ctx: _ResolutionContext, qf: QueryFilter, *, is_having: bool
@@ -977,7 +1046,11 @@ class QueryResolver:
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
         if filter_expr is None:
             return None
-        return ResolvedFilter(expression=filter_expr, is_aggregate=is_having)
+        return ResolvedFilter(
+            expression=filter_expr,
+            is_aggregate=is_having,
+            referenced_fields=frozenset({qf.field}),
+        )
 
     # -- order by ------------------------------------------------------------
 

@@ -220,7 +220,7 @@ class TestOrderByRemapping:
         # Should be alias-only ColumnRef (no table)
         assert isinstance(result.order_by[0].expr, ColumnRef)
         assert result.order_by[0].expr.table is None
-        assert result.order_by[0].expr.name == "COUNTRY"
+        assert result.order_by[0].expr.name == "Country"
 
 
 class TestLimitOnOuter:

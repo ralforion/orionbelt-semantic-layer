@@ -678,6 +678,10 @@ class OSItoOBML:
             measure_def["dataType"] = extras["obml_data_type"]
         if extras.get("obml_owner"):
             measure_def["owner"] = extras["obml_owner"]
+        if extras.get("obml_grain"):
+            measure_def["grain"] = extras["obml_grain"]
+        if extras.get("obml_filter_context"):
+            measure_def["filterContext"] = extras["obml_filter_context"]
 
     @staticmethod
     def _measures_equivalent(a: dict, b: dict) -> bool:
@@ -1324,6 +1328,10 @@ class OBMLtoOSI:
             extras["obml_data_type"] = measure["dataType"]
         if measure.get("owner"):
             extras["obml_owner"] = measure["owner"]
+        if measure.get("grain"):
+            extras["obml_grain"] = measure["grain"]
+        if measure.get("filterContext"):
+            extras["obml_filter_context"] = measure["filterContext"]
         if extras:
             exts = result.setdefault("custom_extensions", [])
             exts.append(

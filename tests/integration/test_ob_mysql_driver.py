@@ -201,8 +201,8 @@ class TestOBMySQLDriver:
         cur.close()
 
         by_country = {r["Customer Country"]: r["Revenue"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0)
-        assert by_country["UK"] == pytest.approx(40.0)
+        assert float(by_country["US"]) == pytest.approx(200.0)
+        assert float(by_country["UK"]) == pytest.approx(40.0)
 
     def test_obml_multi_measure(self, mysql_conn) -> None:
         cur = mysql_conn.cursor()
@@ -211,7 +211,7 @@ class TestOBMySQLDriver:
         cur.close()
 
         by_country = {r["Customer Country"]: r for r in rows}
-        assert by_country["US"]["Revenue"] == pytest.approx(200.0)
+        assert float(by_country["US"]["Revenue"]) == pytest.approx(200.0)
         assert by_country["US"]["Order Count"] == 3
 
     def test_obml_derived_metric(self, mysql_conn) -> None:
@@ -221,8 +221,8 @@ class TestOBMySQLDriver:
         cur.close()
 
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 240.0, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(40.0 / 240.0, rel=1e-3)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)
 
     def test_plain_sql_passthrough(self, mysql_conn) -> None:
         """Plain SQL bypasses OBML compilation."""

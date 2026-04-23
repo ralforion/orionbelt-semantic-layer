@@ -224,8 +224,8 @@ class TestMySQLStarSchema:
         rows = _execute_dict(mysql_conn, sql)
 
         by_country = {r["Customer Country"]: r["Average Order Value"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 3, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(20.0)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(20.0)
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +317,8 @@ class TestMySQLMetrics:
         rows = _execute_dict(mysql_conn, sql)
 
         by_country = {r["Customer Country"]: r["Revenue per Order"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 3, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(20.0)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(20.0)
 
     def test_revenue_share(self, mysql_conn, sales_model, pipeline) -> None:
         query = QueryObject(
@@ -331,5 +331,5 @@ class TestMySQLMetrics:
         rows = _execute_dict(mysql_conn, sql)
 
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 240.0, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(40.0 / 240.0, rel=1e-3)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)

@@ -45,31 +45,32 @@ pytestmark = pytest.mark.docker
 # Test data (same values as test_duckdb_execution.py for baseline comparison)
 # ---------------------------------------------------------------------------
 
-# Postgres case-sensitivity: the compiled SQL uses unquoted table names
-# (PUBLIC.ORDERS → folded to public.orders) but quoted column names
-# ("CUSTOMER_ID" → exact uppercase).  DDL must match: unquoted table names,
-# quoted uppercase column names.
+# Postgres case-sensitivity: the compiled SQL uses double-quoted identifiers
+# ("PUBLIC"."ORDERS", "CUSTOMER_ID") which are case-sensitive.  DDL must
+# create a quoted uppercase schema and use quoted uppercase table/column names.
 _SETUP_SQL = """\
-CREATE TABLE PUBLIC.CUSTOMERS (
+CREATE SCHEMA "PUBLIC";
+
+CREATE TABLE "PUBLIC"."CUSTOMERS" (
     "CUSTOMER_ID" VARCHAR, "NAME" VARCHAR, "COUNTRY" VARCHAR, "SEGMENT" VARCHAR
 );
-INSERT INTO PUBLIC.CUSTOMERS VALUES
+INSERT INTO "PUBLIC"."CUSTOMERS" VALUES
     ('C1', 'Alice',   'US', 'SMB'),
     ('C2', 'Bob',     'UK', 'Enterprise'),
     ('C3', 'Charlie', 'US', 'MidMarket');
 
-CREATE TABLE PUBLIC.PRODUCTS (
+CREATE TABLE "PUBLIC"."PRODUCTS" (
     "PRODUCT_ID" VARCHAR, "NAME" VARCHAR, "CATEGORY" VARCHAR
 );
-INSERT INTO PUBLIC.PRODUCTS VALUES
+INSERT INTO "PUBLIC"."PRODUCTS" VALUES
     ('P1', 'Widget', 'Hardware'),
     ('P2', 'Gadget', 'Software');
 
-CREATE TABLE PUBLIC.ORDERS (
+CREATE TABLE "PUBLIC"."ORDERS" (
     "ORDER_ID" VARCHAR, "ORDER_DATE" DATE, "CUSTOMER_ID" VARCHAR,
     "PRODUCT_ID" VARCHAR, "QUANTITY" INTEGER, "PRICE" DOUBLE PRECISION
 );
-INSERT INTO PUBLIC.ORDERS VALUES
+INSERT INTO "PUBLIC"."ORDERS" VALUES
     ('O1', '2024-01-15', 'C1', 'P1', 10,  5.0),
     ('O2', '2024-01-20', 'C1', 'P2',  2, 25.0),
     ('O3', '2024-02-10', 'C2', 'P1',  5,  5.0),
@@ -224,8 +225,8 @@ class TestPostgresStarSchema:
         rows = _execute_dict(postgres_conn, sql)
 
         by_country = {r["Customer Country"]: r["Average Order Value"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 3, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(20.0)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(20.0)
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +318,8 @@ class TestPostgresMetrics:
         rows = _execute_dict(postgres_conn, sql)
 
         by_country = {r["Customer Country"]: r["Revenue per Order"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 3, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(20.0)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(20.0)
 
     def test_revenue_share(self, postgres_conn, sales_model, pipeline) -> None:
         query = QueryObject(
@@ -331,5 +332,5 @@ class TestPostgresMetrics:
         rows = _execute_dict(postgres_conn, sql)
 
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 240.0, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(40.0 / 240.0, rel=1e-3)
+        assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
+        assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)

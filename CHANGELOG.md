@@ -2,6 +2,24 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.8.0] - 2026-04-22
+
+### Added
+
+- **Grain override** — per-measure `grain:` property controls aggregation grain independently from query dimensions. Supports `FIXED` (start empty) and `RELATIVE` (inherit query dims) modes with `exclude`, `include`, and `keepOnly` operators. Compiled as `AGG(x) OVER (PARTITION BY ...)` window functions. 40 new tests.
+- **Filter context** — per-measure `filterContext:` property controls which query WHERE filters apply. Supports `FIXED` (ignore all) and `RELATIVE` (inherit and modify) modes with `exclude`, `keepOnly`, and structured `include` filters. Compiled as isolated CTEs with LEFT/CROSS JOIN. 59 new tests.
+- **Grain & filter context guide** — dedicated MkDocs guide page with OBML syntax, properties, examples (percent of total, percent of parent, unfiltered grand total, selective filter exclusion), and compilation strategy.
+- **OBSL ontology update** — 12 new datatype properties: `grainMode`, `grainExclude`, `grainInclude`, `grainKeepOnly`, `filterContextMode`, `filterContextExclude`, `filterContextKeepOnly`, `filterContextInclude`, `owner`, `dataType`, `format`. Exporter emits triples for all new properties across data objects, columns, dimensions, measures, and metrics.
+- **OSI converter roundtrip** — `grain` and `filterContext` preserved through OBML → OSI → OBML conversion via `custom_extensions`. 13 new roundtrip tests.
+
+### Changed
+
+- Version bumped to 1.8.0
+- `total: true` is now documented as shorthand for `grain: { mode: FIXED }`
+- README roadmap: grain & filter context moved from "Planned" to "Shipped"
+
+---
+
 ## [1.7.1] - 2026-04-22
 
 ### Fixed

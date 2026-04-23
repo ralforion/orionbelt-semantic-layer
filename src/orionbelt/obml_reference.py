@@ -53,12 +53,28 @@ measures:
         column: Amount
     resultType: float
     aggregation: sum              # see aggregation values below
-    total: false                  # optional: use total (unfiltered) value in metrics
+    total: false                  # optional: grand total shorthand (= grain: { mode: FIXED })
 
   Profit:                         # expression-based measure
     resultType: float
     aggregation: sum
     expression: '{[Orders].[Amount]} - {[Orders].[Cost]}'  # {[DataObject].[Column]} syntax
+
+  Revenue by Region:              # grain override — aggregate at region level
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Amount]}'
+    grain:
+      mode: FIXED                 # FIXED or RELATIVE (default)
+      include: [Region]           # aggregate at region level only
+
+  Unfiltered Revenue:             # filter context — ignore query filters
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Amount]}'
+    filterContext:
+      mode: FIXED                 # FIXED: ignore all query filters
+                                  # RELATIVE: inherit and modify
 
   Filtered Measure:               # measure with a filter
     columns:

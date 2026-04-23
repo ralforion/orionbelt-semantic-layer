@@ -15,8 +15,8 @@ class MySQLDialect(Dialect):
     _MAX_DECIMAL_PRECISION: int = 65
 
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
-        "bigint": "BIGINT",
-        "integer": "INT",
+        "bigint": "SIGNED",
+        "integer": "SIGNED",
         "double": "DOUBLE",
         "date": "DATE",
         "timestamp": "TIMESTAMP",

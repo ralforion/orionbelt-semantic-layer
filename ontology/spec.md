@@ -185,6 +185,17 @@ Optional:
 - `obsl:total`
 - `obsl:allowFanOut`
 - `obsl:filterExpression`
+- `obsl:grainMode` — grain override mode: `FIXED` or `RELATIVE`
+- `obsl:grainExclude` — dimension names excluded from inherited grain (multi-valued)
+- `obsl:grainInclude` — dimension names added to grain (multi-valued)
+- `obsl:grainKeepOnly` — adaptive grain dimension names (multi-valued)
+- `obsl:filterContextMode` — filter context override mode: `FIXED` or `RELATIVE`
+- `obsl:filterContextExclude` — dimension names whose query filters are excluded (multi-valued)
+- `obsl:filterContextKeepOnly` — dimension names whose query filters are kept (multi-valued)
+- `obsl:filterContextInclude` — static filter conditions as expression strings (multi-valued)
+- `obsl:owner` — responsible team or person
+- `obsl:dataType` — explicit data type for CAST wrapping
+- `obsl:format` — display format pattern
 
 Cardinality:
 - exactly one `rdfs:label`
@@ -192,6 +203,8 @@ Cardinality:
 - exactly one `obsl:resultType`
 - either one or more `obsl:sourceColumn`, or exactly one `obsl:expressionSource`
 - at most one `obsl:filterExpression`
+- at most one `obsl:grainMode`
+- at most one `obsl:filterContextMode`
 
 Out of scope for Core:
 - `obsl:hasExpression`
