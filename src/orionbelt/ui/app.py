@@ -1871,18 +1871,21 @@ def create_blocks(
                         with gr.Row(elem_classes=["picker-row"]):
                             dim_picker = gr.Dropdown(
                                 choices=init_dims,
+                                value=None,
                                 label="Dimensions",
                                 scale=1,
                                 interactive=True,
                             )
                             meas_picker = gr.Dropdown(
                                 choices=init_meas,
+                                value=None,
                                 label="Measures / Metrics",
                                 scale=1,
                                 interactive=True,
                             )
                             field_picker = gr.Dropdown(
                                 choices=init_fields,
+                                value=None,
                                 label="Columns",
                                 scale=1,
                                 interactive=True,
