@@ -158,6 +158,12 @@ measures:
         column: Refund
     resultType: float
     aggregation: sum
+  Return Count:
+    columns:
+      - dataObject: Returns
+        column: Return ID
+    resultType: int
+    aggregation: count_distinct
 """
 
 _SETUP_CFL_SQL = """\
@@ -619,6 +625,28 @@ class TestCFLExecution:
 
         assert len(rows) == 1
         assert rows[0]["Customer Country"] == "US"
+
+    def test_cfl_count_distinct_null_padding_type(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        cfl_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        """NULL padding for COUNT_DISTINCT must use the source column type (string),
+        not the measure result_type (int), to avoid UNION ALL type mismatch."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Revenue", "Return Count"],
+            ),
+        )
+        result = pipeline.compile(query, cfl_model, "duckdb")
+        assert "composite_01" in result.sql
+        rows = _execute_dict(duckdb_conn, result.sql)
+
+        by_country = {r["Customer Country"]: r for r in rows}
+        assert by_country["US"]["Return Count"] == 1
+        assert by_country["UK"]["Return Count"] == 1
 
 
 # ---------------------------------------------------------------------------

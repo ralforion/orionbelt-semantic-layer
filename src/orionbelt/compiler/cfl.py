@@ -444,7 +444,9 @@ class CFLPlanner:
                     leg_builder.select(AliasedExpr(expr=self._unwrap_aggregation(m), alias=m.name))
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
-                    null_type_name = model_measure.result_type.value if model_measure else None
+                    null_type_name = self._resolve_null_type_for_field(m, 0, model)
+                    if null_type_name is None and model_measure:
+                        null_type_name = model_measure.result_type.value
                     null_expr = (
                         Cast(Literal.null(), type_name=null_type_name)
                         if null_type_name
