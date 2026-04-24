@@ -2,6 +2,13 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [1.8.1] - 2026-04-24
+
+### Fixed
+
+- **CFL NULL padding type mismatch** — UNION ALL legs now use the source column's `abstractType` for NULL padding instead of the measure's `resultType`. Fixes PostgreSQL `UNION types cannot be matched` errors when COUNT_DISTINCT measures reference string columns.
+- **Dropdown pre-selection** — UI picker dropdowns (Dimensions, Measures/Metrics, Columns) no longer auto-select the first value on load, which prevented that value from being selected by the user.
+
 ## [1.8.0] - 2026-04-22
 
 ### Added
