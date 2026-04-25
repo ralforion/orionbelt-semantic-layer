@@ -2364,11 +2364,14 @@ def create_ui() -> None:
     demo = create_blocks(default_api_url=api_url)
 
     if root_path:
+        from pathlib import Path
+
         import gradio as gr
         from fastapi import FastAPI
 
         app = FastAPI()
-        app = gr.mount_gradio_app(app, demo, path=root_path)
+        favicon = str(Path(__file__).resolve().parent / "favicon.png")
+        app = gr.mount_gradio_app(app, demo, path=root_path, favicon_path=favicon)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2380,9 +2383,13 @@ def create_ui() -> None:
             timeout_graceful_shutdown=3,
         )
     else:
+        from pathlib import Path
+
+        favicon = str(Path(__file__).resolve().parent / "favicon.png")
         demo.launch(
             server_name="0.0.0.0",
             server_port=port,
+            favicon_path=favicon,
         )
 
 

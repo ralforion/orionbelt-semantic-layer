@@ -260,6 +260,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if fi:
             ui_settings["flight"] = fi
         demo = create_blocks(default_api_url=api_url, embedded_settings=ui_settings)
+        from pathlib import Path
+
+        from starlette.responses import FileResponse
+
+        _favicon_path = Path(__file__).resolve().parents[1] / "ui" / "favicon.png"
+
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def _favicon() -> FileResponse:
+            return FileResponse(_favicon_path, media_type="image/png")
+
         app = gr.mount_gradio_app(app, demo, path="/ui")
         logger.info("Gradio UI mounted at %s/ui", api_url)
     except Exception:
