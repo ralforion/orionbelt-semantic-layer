@@ -515,27 +515,23 @@ dimensions:
     resultType: string
     via: Purchases
 
-  # Client/Country/Region scoped through Sales (the primary client relationship)
+  # Client/Country/Region (child of Sales only — no via needed)
   ClientName:
     dataObject: Clients
     column: clientname
     resultType: string
-    via: Sales
   ClientGender:
     dataObject: Clients
     column: clientgender
     resultType: string
-    via: Sales
   CountryName:
     dataObject: Countries
     column: countryname
     resultType: string
-    via: Sales
   RegionName:
     dataObject: Regions
     column: regionname
     resultType: string
-    via: Sales
 
   # Product/Supplier — scoped through Sales
   ProductName:

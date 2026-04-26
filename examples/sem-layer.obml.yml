@@ -243,6 +243,9 @@ dataObjects:
       Return YM:
         code: return_ym
         abstractType: string
+      Return Employee:
+        code: return_emp_id
+        abstractType: string
       Return Quantity:
         code: return_quantity
         abstractType: int
@@ -261,6 +264,18 @@ dataObjects:
           - Return Sales ID
         columnsTo:
           - Sales ID
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - Return Employee
+        columnsTo:
+          - Employee ID
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - Return YM
+        columnsTo:
+          - Year Month
 
   Shipments:
     code: shipments
@@ -281,6 +296,9 @@ dataObjects:
         abstractType: string
       Shipment Product:
         code: shipment_product
+        abstractType: string
+      Shipment Employee:
+        code: shipment_emp_id
         abstractType: string
       Shipment Quantity:
         code: shipment_quantity
@@ -306,6 +324,18 @@ dataObjects:
           - Shipment Product
         columnsTo:
           - Product ID
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - Shipment Employee
+        columnsTo:
+          - Employee ID
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - Shipment YM
+        columnsTo:
+          - Year Month
 
   Purchases:
     code: purchases
@@ -357,11 +387,17 @@ dataObjects:
           - Purchase Supplier
         columnsTo:
           - Supplier ID
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - Purchase YM
+        columnsTo:
+          - Year Month
 
 # ── Dimensions ─────────────────────────────────────────────────────
 
 dimensions:
-  # ── Direct fact-table dimensions (no via needed) ──────────────────
+  # ── Sales fact-table dimensions (on the fact table itself) ─────────
   Sales Date:
     dataObject: Sales
     column: Sales Date
@@ -371,7 +407,7 @@ dimensions:
     column: Sales Payment Type
     resultType: string
 
-  # ── Calendar (only joined from Sales — unambiguous) ───────────────
+  # ── Calendar — role-playing by fact table ─────────────────────────
   Year Month:
     dataObject: Calendar
     column: Year Month
@@ -382,25 +418,37 @@ dimensions:
     column: Weekday
     resultType: string
     via: Sales
+  Return Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+    via: Returns
+  Shipment Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+    via: Shipments
+  Purchase Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+    via: Purchases
 
-  # ── Client / Country (only reachable via Sales — unambiguous) ─────
+  # ── Client / Country (child of Sales only — no via needed) ────────
   Client Name:
     dataObject: Clients
     column: Client Name
     resultType: string
-    via: Sales
   Client Gender:
     dataObject: Clients
     column: Client Gender
     resultType: string
-    via: Sales
   Country Name:
     dataObject: Countries
     column: Country Name
     resultType: string
-    via: Sales
 
-  # ── Product — scoped through Sales (primary) ─────────────────────
+  # ── Product — role-playing by fact table ──────────────────────────
   Product Name:
     dataObject: Products
     column: Product Name
@@ -411,8 +459,6 @@ dimensions:
     column: Product Category
     resultType: string
     via: Sales
-
-  # ── Product — scoped through Purchases ────────────────────────────
   Purchase Product Name:
     dataObject: Products
     column: Product Name
@@ -423,15 +469,13 @@ dimensions:
     column: Product Category
     resultType: string
     via: Purchases
-
-  # ── Product — scoped through Shipments ────────────────────────────
   Shipment Product Name:
     dataObject: Products
     column: Product Name
     resultType: string
     via: Shipments
 
-  # ── Employee — scoped through Sales (primary) ────────────────────
+  # ── Employee — role-playing by fact table ─────────────────────────
   Employee Name:
     dataObject: Employees
     column: Employee Name
@@ -442,8 +486,16 @@ dimensions:
     column: Department Name
     resultType: string
     via: Sales
-
-  # ── Employee — scoped through Purchases ──────────────────────────
+  Return Employee:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+    via: Returns
+  Shipment Employee:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+    via: Shipments
   Purchase Employee:
     dataObject: Employees
     column: Employee Name
@@ -455,14 +507,12 @@ dimensions:
     resultType: string
     via: Purchases
 
-  # ── Supplier — scoped through Sales (via Products) ───────────────
+  # ── Supplier — role-playing by fact table ─────────────────────────
   Supplier Name:
     dataObject: Suppliers
     column: Supplier Name
     resultType: string
     via: Sales
-
-  # ── Supplier — scoped through Purchases ──────────────────────────
   Purchase Supplier:
     dataObject: Suppliers
     column: Supplier Name

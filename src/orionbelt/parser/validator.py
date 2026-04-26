@@ -491,12 +491,14 @@ class SemanticValidator:
         return errors
 
     def _check_missing_via(self, model: SemanticModel) -> list[SemanticError]:
-        """Warn when a dimension's target is reachable from multiple fact tables.
+        """Warn when a dimension's target has direct joins from multiple fact tables.
 
         A fact table is a data object that is the source of at least one measure.
-        If the dimension has no ``via`` and multiple fact tables can reach it
-        through different join paths, the planner will pick the shortest path,
-        which may not match the user's intent.
+        Only direct joins (one hop) from a fact table to the dimension's target
+        count — transitive reachability through other fact tables does not create
+        real ambiguity and should not trigger a warning.  Dimensions whose target
+        IS a fact table (e.g. Sales Date on Sales) are also skipped because the
+        column lives on the fact table itself.
         """
         warnings: list[SemanticError] = []
 
@@ -511,22 +513,26 @@ class SemanticValidator:
         g = self._build_directed_graph(model)
         fact_tables = sorted(measure_sources & set(g.nodes))
 
+        direct_children: dict[str, set[str]] = {}
+        for ft in fact_tables:
+            direct_children[ft] = set(g.successors(ft))
+
         for dim_name, dim in model.dimensions.items():
             if dim.via:
                 continue
             target = dim.view
             if not target or target not in g:
                 continue
-            reaching_facts = [
-                ft for ft in fact_tables if ft == target or target in nx.descendants(g, ft)
-            ]
+            if target in measure_sources:
+                continue
+            reaching_facts = [ft for ft in fact_tables if target in direct_children[ft]]
             if len(reaching_facts) > 1:
                 warnings.append(
                     SemanticError(
                         code="MISSING_VIA",
                         message=(
-                            f"Dimension '{dim_name}' on '{target}' is reachable "
-                            f"from multiple fact tables "
+                            f"Dimension '{dim_name}' on '{target}' has direct "
+                            f"joins from multiple fact tables "
                             f"({', '.join(reaching_facts)}). "
                             f"Consider adding role-playing dimensions with 'via' "
                             f"to disambiguate join paths."
