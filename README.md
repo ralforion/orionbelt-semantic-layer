@@ -38,7 +38,7 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 ## Table of Contents
 
-- [Try it in 30 Seconds](#try-it-in-30-seconds) — Live Demo | Colab | PyPI | Docker
+- [Try it in 30 Seconds](#try-it-in-30-seconds) — Live Demo | Colab | PyPI | uv | Docker
 - [Claude Desktop / MCP](#claude-desktop--mcp)
 - [Why OrionBelt?](#why-orionbelt)
 - [Features](#features)
@@ -118,6 +118,26 @@ GROUP BY "Orders"."COUNTRY"
 ```
 
 No env file needed — the compilation pipeline is stateless.
+
+**Start the servers:**
+
+```bash
+orionbelt-api                              # REST API on :8000 (Swagger UI at /docs, Gradio UI at /ui)
+orionbelt-ui                               # standalone Gradio UI on :7860 (connects to API on :8000)
+FLIGHT_ENABLED=true orionbelt-api          # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
+```
+
+### Option C2: Install with uv
+
+```bash
+uv pip install orionbelt-semantic-layer
+```
+
+```bash
+uv run orionbelt-api                       # REST API on :8000 (Swagger UI at /docs, Gradio UI at /ui)
+uv run orionbelt-ui                        # standalone Gradio UI on :7860 (connects to API on :8000)
+FLIGHT_ENABLED=true uv run orionbelt-api   # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
+```
 
 ### Option D: Docker
 

@@ -1794,7 +1794,7 @@ def create_blocks(
         saved_query = gr.BrowserState("", storage_key="ob_query_yaml")
         saved_api = gr.BrowserState(api_base, storage_key="ob_api_url")
         saved_dialect = gr.BrowserState(default_dialect, storage_key="ob_dialect")
-        saved_zoom = gr.BrowserState(100, storage_key="ob_zoom")
+        saved_zoom = gr.BrowserState(80, storage_key="ob_zoom")
         saved_sql = gr.BrowserState("", storage_key="ob_sql_output")
 
         # ── Stateful API session (avoids re-creating per compile) ──
@@ -2179,7 +2179,7 @@ def create_blocks(
                     zoom_slider = gr.Slider(
                         minimum=10,
                         maximum=200,
-                        value=100,
+                        value=80,
                         step=10,
                         label="Zoom %",
                         scale=1,
@@ -2241,6 +2241,24 @@ def create_blocks(
                 )
 
                 er_tab.select(
+                    fn=_fetch_diagram_er,
+                    inputs=[
+                        model_input,
+                        show_columns_cb,
+                        api_url,
+                        session_state,
+                        model_state,
+                        theme_input,
+                    ],
+                    outputs=[mermaid_output, mermaid_raw, session_state, model_state],
+                    js=_DETECT_THEME_JS,
+                ).then(
+                    fn=None,
+                    inputs=[zoom_slider],
+                    js=_apply_zoom_deferred_js,
+                )
+
+                show_columns_cb.change(
                     fn=_fetch_diagram_er,
                     inputs=[
                         model_input,
