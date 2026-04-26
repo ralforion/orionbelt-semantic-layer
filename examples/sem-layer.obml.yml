@@ -361,54 +361,113 @@ dataObjects:
 # ── Dimensions ─────────────────────────────────────────────────────
 
 dimensions:
-  Product Name:
-    dataObject: Products
-    column: Product Name
-    resultType: string
-  Product Category:
-    dataObject: Products
-    column: Product Category
-    resultType: string
-  Client Name:
-    dataObject: Clients
-    column: Client Name
-    resultType: string
-  Client Gender:
-    dataObject: Clients
-    column: Client Gender
-    resultType: string
-  Country Name:
-    dataObject: Countries
-    column: Country Name
-    resultType: string
-  Employee Name:
-    dataObject: Employees
-    column: Employee Name
-    resultType: string
-  Department:
-    dataObject: Employees
-    column: Department Name
-    resultType: string
-  Supplier Name:
-    dataObject: Suppliers
-    column: Supplier Name
-    resultType: string
+  # ── Direct fact-table dimensions (no via needed) ──────────────────
   Sales Date:
     dataObject: Sales
     column: Sales Date
     resultType: date
-  Year Month:
-    dataObject: Calendar
-    column: Year Month
-    resultType: string
-  Weekday:
-    dataObject: Calendar
-    column: Weekday
-    resultType: string
   Payment Type:
     dataObject: Sales
     column: Sales Payment Type
     resultType: string
+
+  # ── Calendar (only joined from Sales — unambiguous) ───────────────
+  Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+    via: Sales
+  Weekday:
+    dataObject: Calendar
+    column: Weekday
+    resultType: string
+    via: Sales
+
+  # ── Client / Country (only reachable via Sales — unambiguous) ─────
+  Client Name:
+    dataObject: Clients
+    column: Client Name
+    resultType: string
+    via: Sales
+  Client Gender:
+    dataObject: Clients
+    column: Client Gender
+    resultType: string
+    via: Sales
+  Country Name:
+    dataObject: Countries
+    column: Country Name
+    resultType: string
+    via: Sales
+
+  # ── Product — scoped through Sales (primary) ─────────────────────
+  Product Name:
+    dataObject: Products
+    column: Product Name
+    resultType: string
+    via: Sales
+  Product Category:
+    dataObject: Products
+    column: Product Category
+    resultType: string
+    via: Sales
+
+  # ── Product — scoped through Purchases ────────────────────────────
+  Purchase Product Name:
+    dataObject: Products
+    column: Product Name
+    resultType: string
+    via: Purchases
+  Purchase Product Category:
+    dataObject: Products
+    column: Product Category
+    resultType: string
+    via: Purchases
+
+  # ── Product — scoped through Shipments ────────────────────────────
+  Shipment Product Name:
+    dataObject: Products
+    column: Product Name
+    resultType: string
+    via: Shipments
+
+  # ── Employee — scoped through Sales (primary) ────────────────────
+  Employee Name:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+    via: Sales
+  Department:
+    dataObject: Employees
+    column: Department Name
+    resultType: string
+    via: Sales
+
+  # ── Employee — scoped through Purchases ──────────────────────────
+  Purchase Employee:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+    via: Purchases
+  Purchase Department:
+    dataObject: Employees
+    column: Department Name
+    resultType: string
+    via: Purchases
+
+  # ── Supplier — scoped through Sales (via Products) ───────────────
+  Supplier Name:
+    dataObject: Suppliers
+    column: Supplier Name
+    resultType: string
+    via: Sales
+
+  # ── Supplier — scoped through Purchases ──────────────────────────
+  Purchase Supplier:
+    dataObject: Suppliers
+    column: Supplier Name
+    resultType: string
+    via: Purchases
 
 # ── Measures ───────────────────────────────────────────────────────
 
