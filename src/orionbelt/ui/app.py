@@ -113,10 +113,58 @@ _CSS = """\
 /* compact settings row */
 .settings-row { min-height: 0 !important; }
 
-/* Code editors + SQL output: fixed heights */
-.code-editor .cm-editor { height: 45dvh !important; }
-#ob-query .cm-editor { height: calc(45dvh - 90px) !important; }
-.sql-output .cm-editor { max-height: 20dvh !important; }
+/* ── Vertically responsive editors (viewport-relative) ──
+   Constrain ROW height; make .code-editor a flex column so CodeMirror's
+   wrapper (last child) absorbs all remaining space inside its block. */
+.editor-row {
+  height: 32dvh !important;
+  max-height: 32dvh !important;
+  min-height: 200px !important;
+}
+.output-row {
+  height: 36dvh !important;
+  max-height: 36dvh !important;
+  min-height: 120px !important;
+}
+
+/* gr.Code blocks become flex columns; their CodeMirror child fills remaining space */
+.editor-row .code-editor,
+.output-row .code-editor {
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.editor-row .code-editor > *,
+.output-row .code-editor > * {
+  min-height: 0 !important;
+}
+.editor-row .code-editor > *:last-child,
+.output-row .code-editor > *:last-child {
+  flex: 1 1 0 !important;
+}
+.editor-row .cm-editor,
+.output-row .cm-editor {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+}
+.editor-row .cm-scroller,
+.output-row .cm-scroller { max-height: none !important; }
+
+/* Picker col: dropdowns auto-height on top, query editor fills rest */
+.picker-col {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden;
+}
+.picker-col > .picker-row { flex: 0 0 auto !important; }
+.picker-col > .code-editor {
+  flex: 1 1 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
 
 /* purple primary button — compact */
 .purple-btn {
@@ -216,10 +264,11 @@ _CSS = """\
 /* ── ER Diagram tab ── */
 #er-diagram {
   overflow: auto;
-  max-height: calc(100dvh - 220px);
   border: 1px solid var(--border-color-primary);
   border-radius: 8px;
   padding: 8px;
+  height: calc(100dvh - 220px);
+  min-height: 400px;
 }
 #er-diagram svg {
   transform-origin: top left;
@@ -230,11 +279,20 @@ _CSS = """\
   overflow: auto;
   border-radius: 8px;
 }
-.ob-cb-do label span::before { content: '● '; color: #4CAF50; }
-.ob-cb-dim label span::before { content: '● '; color: #2196F3; }
-.ob-cb-meas label span::before { content: '● '; color: #FF9800; }
+.ob-cb-do label span::before { content: '● '; color: #9E9E9E; }
+.ob-cb-dim label span::before { content: '● '; color: #4CAF50; }
+.ob-cb-meas label span::before { content: '● '; color: #2196F3; }
 .ob-cb-met label span::before { content: '● '; color: #9C27B0; }
-.ob-cb-joins label span::before { content: '◆ '; color: #4CAF50; }
+.ob-cb-joins label span::before { content: '◆ '; color: #9E9E9E; }
+
+/* ── Responsive: narrower viewports ── */
+@media (max-width: 900px) {
+  .settings-row { flex-wrap: wrap !important; }
+  .picker-row { flex-wrap: wrap !important; }
+  .picker-row > div { flex-wrap: wrap !important; }
+  .header-bar .header-links { gap: 8px; }
+  .header-bar .header-title { font-size: 18px; }
+}
 """
 
 _ALIGN_HEADERS_JS = """
@@ -1002,7 +1060,6 @@ def _generate_ontology_graph_html(
     show_measures: bool = True,
     show_metrics: bool = True,
     show_joins: bool = True,
-    graph_height: int = 800,
     node_spacing: int = 150,
 ) -> str:
     """Build a self-contained vis-network HTML graph from OBML model YAML."""
@@ -1050,7 +1107,7 @@ def _generate_ontology_graph_html(
                 nid,
                 label=obj_name,
                 title=title,
-                color={"background": "#4CAF50", "border": "#388E3C"},
+                color={"background": "#9E9E9E", "border": "#757575"},
                 shape="box",
                 size=30,
             )
@@ -1061,7 +1118,7 @@ def _generate_ontology_graph_html(
                     style: dict[str, object] = {
                         "label": join.join_type.value,
                         "title": f"{obj_name} → {join.join_to}\n{join.join_type.value}",
-                        "color": "#81C784",
+                        "color": "#BDBDBD",
                         "arrows": "to",
                     }
                     if join.secondary:
@@ -1086,7 +1143,7 @@ def _generate_ontology_graph_html(
                 nid,
                 label=dim_name,
                 title=title,
-                color={"background": "#2196F3", "border": "#1976D2"},
+                color={"background": "#4CAF50", "border": "#388E3C"},
                 shape="box",
                 size=20,
             )
@@ -1096,7 +1153,7 @@ def _generate_ontology_graph_html(
                     f"do_{dim.view}",
                     label="dataObject",
                     title=f"{dim_name} → {dim.view}",
-                    color="#2196F3",
+                    color="#4CAF50",
                     arrows="to",
                 )
             if dim.via and show_data_objects and f"do_{dim.via}" in node_ids:
@@ -1105,7 +1162,7 @@ def _generate_ontology_graph_html(
                     f"do_{dim.via}",
                     label="via",
                     title=f"{dim_name} via {dim.via}",
-                    color="#64B5F6",
+                    color="#81C784",
                     arrows="to",
                     dashes=True,
                 )
@@ -1125,7 +1182,7 @@ def _generate_ontology_graph_html(
                 nid,
                 label=meas_name,
                 title=title,
-                color={"background": "#FF9800", "border": "#F57C00"},
+                color={"background": "#2196F3", "border": "#1976D2"},
                 shape="box",
                 size=20,
             )
@@ -1139,7 +1196,7 @@ def _generate_ontology_graph_html(
                             f"do_{ref.view}",
                             label="sourceColumn",
                             title=f"{meas_name} → {ref.view}.{ref.column}",
-                            color="#FFB74D",
+                            color="#64B5F6",
                             arrows="to",
                         )
 
@@ -1230,17 +1287,6 @@ def _generate_ontology_graph_html(
         },
     }
 
-    legend_items: list[str] = []
-    if show_data_objects:
-        legend_items.append('<span class="dot" style="background:#4CAF50"></span> DataObjects')
-    if show_dimensions:
-        legend_items.append('<span class="dot" style="background:#2196F3"></span> Dimensions')
-    if show_measures:
-        legend_items.append('<span class="dot" style="background:#FF9800"></span> Measures')
-    if show_metrics:
-        legend_items.append('<span class="dot" style="background:#9C27B0"></span> Metrics')
-    legend_html = " &nbsp; ".join(legend_items)
-
     nodes_json = json.dumps(nodes)
     edges_json = json.dumps(edges)
     options_json = json.dumps(options)
@@ -1249,16 +1295,14 @@ def _generate_ontology_graph_html(
 
     inner_html = f"""<!DOCTYPE html>
 <html><head><style>
-html,body{{margin:0;padding:0;overflow:hidden;background:#1a1a2e}}
-#dl-btn{{position:absolute;top:8px;right:8px;z-index:10;background:rgba(30,30,50,0.85);
-border:1px solid #555;border-radius:6px;padding:5px 8px;cursor:pointer;
-color:#ccc;font-size:16px;line-height:1}}
-#dl-btn:hover{{background:rgba(60,60,90,0.95);color:#fff}}
+html,body{{margin:0;padding:0;overflow:hidden;background:transparent;width:100%;height:100%}}
+#g{{width:100%;height:100%}}
+#dl-btn{{position:absolute;top:8px;right:8px;z-index:10;background:rgba(128,128,128,0.15);
+border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:5px 8px;cursor:pointer;
+color:inherit;font-size:16px;line-height:1}}
+#dl-btn:hover{{background:rgba(128,128,128,0.3)}}
 </style></head><body>
-<div id="g" style="width:100%;height:{graph_height}px"></div>
-<div style="position:absolute;top:8px;left:8px;background:rgba(30,30,50,0.9);
-padding:6px 12px;border-radius:6px;font-size:12px;color:#ccc;
-pointer-events:none;z-index:10">{legend_html}</div>
+<div id="g"></div>
 <button id="dl-btn" title="Download as PNG">&#11123;</button>
 <script>
 var s=document.createElement('script');
@@ -1270,8 +1314,10 @@ var o={options_json};
 var nw=new vis.Network(document.getElementById('g'),
   {{nodes:n,edges:e}},o);
 nw.once('stabilizationIterationsDone',function(){{
+  nw.fit({{animation:false,padding:15}});
   setTimeout(function(){{nw.setOptions({{physics:{{enabled:false}}}});}},500);
 }});
+window.addEventListener('resize',function(){{nw.redraw();nw.fit({{padding:15}});}});
 document.getElementById('dl-btn').onclick=function(){{
   var cv=document.querySelector('canvas');
   if(!cv)return;
@@ -1285,8 +1331,9 @@ document.getElementById('dl-btn').onclick=function(){{
     srcdoc = inner_html.replace("&", "&amp;").replace('"', "&quot;")
     return (
         f'<iframe srcdoc="{srcdoc}" '
-        f'style="width:100%;height:{graph_height + 10}px;border:1px solid #555;'
-        f'border-radius:8px" sandbox="allow-scripts"></iframe>'
+        f'style="width:100%;height:calc(100dvh - 310px);'
+        f"border:1px solid #555;"
+        f'border-radius:8px" sandbox="allow-scripts allow-downloads"></iframe>'
     )
 
 
@@ -1297,7 +1344,6 @@ def _render_ontology_graph(
     show_measures: bool,
     show_metrics: bool,
     show_joins: bool,
-    graph_height: int = 800,
     node_spacing: int = 150,
 ) -> str:
     """Gradio callback for the Ontology Graph tab."""
@@ -1308,7 +1354,6 @@ def _render_ontology_graph(
         show_measures,
         show_metrics,
         show_joins,
-        graph_height=int(graph_height),
         node_spacing=int(node_spacing),
     )
 
@@ -2205,7 +2250,7 @@ def create_blocks(
 
                 init_dims, init_meas, init_fields = _extract_model_items(example_model)
 
-                with gr.Row():
+                with gr.Row(elem_classes=["editor-row"]):
                     model_label = (
                         "OBML Model (YAML) \u2014 read-only (single-model mode)"
                         if single_model
@@ -2215,7 +2260,8 @@ def create_blocks(
                         value=example_model,
                         language="yaml",
                         label=model_label,
-                        lines=11,
+                        lines=8,
+                        max_lines=10000,
                         scale=3,
                         interactive=not single_model,
                         elem_classes=["code-editor"],
@@ -2248,7 +2294,8 @@ def create_blocks(
                             value=_DEFAULT_QUERY,
                             language="yaml",
                             label="Query (YAML) \u2014 schema/query-schema.json",
-                            lines=11,
+                            lines=6,
+                            max_lines=10000,
                             interactive=True,
                             elem_classes=["code-editor"],
                             elem_id="ob-query",
@@ -2344,21 +2391,23 @@ def create_blocks(
                         min_width=140,
                     )
 
-                with gr.Row():
+                with gr.Row(elem_classes=["output-row"]):
                     sql_output = gr.Code(
                         language="sql",
                         label="Generated SQL",
                         interactive=False,
-                        lines=3,
-                        elem_classes=["sql-output"],
+                        lines=4,
+                        max_lines=10000,
+                        elem_classes=["sql-output", "code-editor"],
                         elem_id="ob-sql",
                     )
                     explain_output = gr.Code(
                         language="yaml",
                         label="Query Explain",
                         interactive=False,
-                        lines=3,
-                        elem_classes=["sql-output"],
+                        lines=4,
+                        max_lines=10000,
+                        elem_classes=["sql-output", "code-editor"],
                         elem_id="ob-explain",
                     )
 
@@ -2654,25 +2703,21 @@ def create_blocks(
                     show_joins_cb = gr.Checkbox(
                         value=True, label="Joins", elem_classes=["ob-cb-joins"]
                     )
-                    ontology_btn = gr.Button(
-                        "Render Graph",
-                        variant="primary",
-                        elem_classes=["purple-btn"],
-                    )
-                with gr.Row():
-                    graph_height_slider = gr.Slider(
-                        minimum=400,
-                        maximum=1600,
-                        value=800,
-                        step=10,
-                        label="Graph Height",
-                    )
                     node_spacing_slider = gr.Slider(
                         minimum=50,
                         maximum=400,
                         value=150,
                         step=10,
                         label="Node Spacing",
+                        scale=2,
+                        min_width=240,
+                    )
+                    ontology_btn = gr.Button(
+                        "Render Graph",
+                        variant="primary",
+                        elem_classes=["purple-btn"],
+                        scale=1,
+                        min_width=160,
                     )
 
                 ontology_output = gr.HTML(
@@ -2691,7 +2736,6 @@ def create_blocks(
                     show_meas_cb,
                     show_met_cb,
                     show_joins_cb,
-                    graph_height_slider,
                     node_spacing_slider,
                 ]
 
@@ -2714,12 +2758,11 @@ def create_blocks(
                         outputs=[ontology_output],
                     )
 
-                for _sl in [graph_height_slider, node_spacing_slider]:
-                    _sl.release(
-                        fn=_render_ontology_graph,
-                        inputs=_ontology_inputs,
-                        outputs=[ontology_output],
-                    )
+                node_spacing_slider.release(
+                    fn=_render_ontology_graph,
+                    inputs=_ontology_inputs,
+                    outputs=[ontology_output],
+                )
 
             with gr.Tab("Settings", id=4) as settings_tab:
                 settings_output = gr.Code(

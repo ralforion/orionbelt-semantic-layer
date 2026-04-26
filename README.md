@@ -11,7 +11,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 1.8.2](https://img.shields.io/badge/version-1.8.2-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 1.9.0](https://img.shields.io/badge/version-1.9.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -155,7 +155,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:1.8.2
+    image: ralforion/orionbelt-api:1.9.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -164,7 +164,7 @@ services:
       MODEL_FILE: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:1.8.2
+    image: ralforion/orionbelt-ui:1.9.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -180,7 +180,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
-> - For production, pin a version tag (`:1.8.2`) rather than `:latest`.
+> - For production, pin a version tag (`:1.9.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -348,9 +348,14 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 - **SQL Compiler** — side-by-side OBML model and query editors with syntax highlighting, 8 dialect selector, one-click compilation with formatted SQL output and query explain
 - **Query Execution** — execute compiled queries against a connected database, view results with locale-aware number formatting, response metadata panel, TSV download and clipboard copy (requires `QUERY_EXECUTE=true`)
 - **ER Diagram** — interactive Mermaid ER diagram with zoom, column toggle, and download (MD/PNG/Turtle)
+- **Ontology Graph** — interactive vis-network visualization of the OBML graph (data objects, dimensions, measures, metrics, joins) with toggleable layers and adjustable node spacing
 - **Editor Toolbar** — clear, undo, redo, upload, download, and copy buttons on all code editors
 - **OSI Import/Export** — convert between OBML and OSI formats
 - **Dark/Light Mode** — toggle via header button, state persisted across sessions
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-ontology-graph-dark.png" alt="OrionBelt Ontology Graph tab showing the semantic model as an interactive network of data objects, dimensions, measures, metrics, and join relationships" width="900">
+</p>
 
 **Embedded mode** — the UI is mounted at `/ui` on the API server:
 
