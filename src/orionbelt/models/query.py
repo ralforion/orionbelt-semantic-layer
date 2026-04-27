@@ -129,10 +129,27 @@ class QueryOrderBy(BaseModel):
     direction: SortDirection = SortDirection.ASC
 
 
+class CoalesceDimension(BaseModel):
+    """Combines multiple role-playing dimensions into a single output column.
+
+    Each named dimension must already exist in the model and resolve to the same
+    abstract column type.  In CFL queries, each leg projects only the
+    constituent dimension whose ``via:`` matches its fact (others NULL); the
+    outer wrapper emits ``COALESCE(d1, d2, ...) AS <alias>`` and groups by the
+    alias, collapsing same-person rows that would otherwise stay split across
+    role-playing roles.
+    """
+
+    coalesce: list[str]
+    alias: str = Field(alias="as")
+
+    model_config = {"populate_by_name": True}
+
+
 class QuerySelect(BaseModel):
     """The SELECT part of a query: dimensions + measures."""
 
-    dimensions: list[str] = []
+    dimensions: list[str | CoalesceDimension] = []
     measures: list[str] = []
 
 

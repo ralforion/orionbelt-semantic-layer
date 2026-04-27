@@ -7,7 +7,6 @@ from typing import Any
 
 import gradio as gr
 import httpx
-import sqlparse
 import yaml
 
 _DEFAULT_API_URL = "http://localhost:8000"
@@ -950,25 +949,8 @@ def _fetch_obsl_turtle(
 
 
 def _format_sql(sql: str) -> str:
-    """Pretty-print SQL with keyword-per-line formatting."""
-    import re
-
-    formatted = sqlparse.format(
-        sql,
-        reindent=True,
-        keyword_case="upper",
-        indent_width=2,
-        wrap_after=80,
-    )
-    # sqlparse doesn't break after UNION ALL — ensure newline before next SELECT
-    # Capture leading indentation so the new SELECT line keeps alignment
-    formatted = re.sub(
-        r"^(\s*)(UNION ALL(?:\s+BY NAME)?)\s+(SELECT\b)",
-        r"\1\2\n\1\3",
-        formatted,
-        flags=re.MULTILINE,
-    )
-    return formatted
+    """Return SQL unchanged — the API now pretty-prints with sqlglot."""
+    return sql
 
 
 def _fetch_diagram_er(

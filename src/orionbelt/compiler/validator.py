@@ -1,4 +1,4 @@
-"""Post-generation SQL validation using sqlglot."""
+"""Post-generation SQL validation and pretty-printing using sqlglot."""
 
 from __future__ import annotations
 
@@ -35,3 +35,18 @@ def validate_sql(sql: str, dialect_name: str) -> list[str]:
     except SqlglotError as exc:
         errors.append(str(exc))
     return errors
+
+
+def format_sql(sql: str, dialect_name: str) -> str:
+    """Pretty-print SQL with sqlglot, one expression per line.
+
+    Falls back to the original SQL string on unknown dialect or parse error,
+    matching the non-blocking philosophy of :func:`validate_sql`.
+    """
+    sg_dialect = _DIALECT_MAP.get(dialect_name)
+    if sg_dialect is None:
+        return sql
+    try:
+        return sqlglot.transpile(sql, read=sg_dialect, write=sg_dialect, pretty=True)[0]
+    except SqlglotError:
+        return sql

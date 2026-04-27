@@ -30,7 +30,7 @@ class PostgresDialect(Dialect):
         if isinstance(obml_type, DecimalType):
             p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
             s = min(obml_type.scale, p)
-            return f"NUMERIC({p}, {s})"
+            return f"DECIMAL({p}, {s})"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:

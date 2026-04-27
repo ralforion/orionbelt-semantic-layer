@@ -39,6 +39,7 @@ from orionbelt.api.schemas import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
+from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import (
@@ -372,7 +373,7 @@ async def compile_query(
             ],
         )
     return QueryCompileResponse(
-        sql=result.sql,
+        sql=format_sql(result.sql, result.dialect),
         dialect=result.dialect,
         resolved=ResolvedInfoResponse(
             fact_tables=result.resolved.fact_tables,
@@ -560,7 +561,7 @@ async def execute_query(
     type_map = _build_type_map(model)
     fmt_map = _build_format_map(model)
     return QueryExecuteResponse(
-        sql=result.sql,
+        sql=format_sql(result.sql, result.dialect),
         dialect=result.dialect,
         columns=[
             ColumnMetadata(

@@ -28,6 +28,7 @@ from orionbelt.compiler.filters import (
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
+    CoalesceDimension,
     DimensionRef,
     QueryFilter,
     QueryFilterGroup,
@@ -60,6 +61,8 @@ class ResolvedDimension:
     column_name: str
     source_column: str
     grain: TimeGrain | None = None
+    via: str | None = None  # Role-playing waypoint (data object the join must traverse)
+    coalesce_alias: str | None = None  # Set when this dim is part of a coalesce group
 
 
 @dataclass
@@ -124,6 +127,7 @@ class ResolvedQuery:
     use_path_names: list[UsePathName] = field(default_factory=list)
     via_constraints: dict[str, str] = field(default_factory=dict)
     dimensions_exclude: bool = False
+    coalesce_aliases: set[str] = field(default_factory=set)
 
     @property
     def fact_tables(self) -> list[str]:
@@ -213,17 +217,15 @@ class QueryResolver:
             for col_name, col_obj in obj.columns.items():
                 ctx.global_columns[col_name] = (obj_name, col_obj.code)
 
-        # 1. Resolve dimensions
-        for dim_str in query.select.dimensions:
-            dim_ref = DimensionRef.parse(dim_str)
-            resolved_dim = self._resolve_dimension(ctx, dim_ref)
-            if resolved_dim:
-                ctx.result.dimensions.append(resolved_dim)
-                ctx.result.required_objects.add(resolved_dim.object_name)
-                dim_def = ctx.model.dimensions.get(dim_ref.name)
-                if dim_def and dim_def.via:
-                    ctx.result.required_objects.add(dim_def.via)
-                    ctx.result.via_constraints[resolved_dim.object_name] = dim_def.via
+        # 1. Resolve dimensions (string or coalesce group).
+        # Coalesce groups expand into their constituent dimensions, each
+        # tagged with the same coalesce_alias so the CFL outer wrapper can
+        # emit COALESCE(d1, d2, ...) AS <alias>.
+        for dim_entry in query.select.dimensions:
+            if isinstance(dim_entry, CoalesceDimension):
+                self._resolve_coalesce_dimension(ctx, dim_entry, ctx.result.coalesce_aliases)
+            else:
+                self._append_resolved_dimension(ctx, dim_entry)
 
         # 2. Resolve measures and track their source objects
         for measure_name in query.select.measures:
@@ -304,6 +306,30 @@ class QueryResolver:
         for step in ctx.result.join_steps:
             ctx.joined_objects.add(step.to_object)
 
+        # Detect required objects that the star-schema planner cannot reach.
+        # Many-to-one joins are forward-only (reverse traversal would inflate
+        # the base table), so a required object that's only reachable via a
+        # reverse m-to-1 hop is unreachable.  Raise a clear error rather than
+        # silently producing wrong SQL.  CFL legs are validated separately.
+        if ctx.result.base_object and not ctx.result.requires_cfl:
+            unreachable = ctx.result.required_objects - ctx.joined_objects
+            for unreachable_name in sorted(unreachable):
+                ctx.errors.append(
+                    SemanticError(
+                        code="UNREACHABLE_REQUIRED_OBJECT",
+                        message=(
+                            f"Data object '{unreachable_name}' is required by the query but "
+                            f"cannot be reached from base '{ctx.result.base_object}' via "
+                            f"directed joins. Many-to-one joins are forward-only; reverse "
+                            f"traversal would inflate row counts. Add an explicit join from "
+                            f"'{ctx.result.base_object}' (or an intermediate object) to "
+                            f"'{unreachable_name}', or split the query so each fact is "
+                            f"queried independently."
+                        ),
+                        path="select",
+                    )
+                )
+
         # 5b. Inject static model filters — always applied as WHERE conditions
         static_exprs: list[Expr] = []
         for mf in model.filters:
@@ -336,6 +362,105 @@ class QueryResolver:
         return ctx.result
 
     # -- dimensions ----------------------------------------------------------
+
+    def _append_resolved_dimension(
+        self,
+        ctx: _ResolutionContext,
+        dim_str: str,
+        coalesce_alias: str | None = None,
+    ) -> ResolvedDimension | None:
+        """Resolve a single dimension string and append it to the result."""
+        dim_ref = DimensionRef.parse(dim_str)
+        resolved_dim = self._resolve_dimension(ctx, dim_ref)
+        if resolved_dim is None:
+            return None
+        dim_def = ctx.model.dimensions.get(dim_ref.name)
+        if dim_def and dim_def.via:
+            resolved_dim.via = dim_def.via
+            ctx.result.required_objects.add(dim_def.via)
+            ctx.result.via_constraints[resolved_dim.object_name] = dim_def.via
+        if coalesce_alias is not None:
+            resolved_dim.coalesce_alias = coalesce_alias
+        ctx.result.dimensions.append(resolved_dim)
+        ctx.result.required_objects.add(resolved_dim.object_name)
+        return resolved_dim
+
+    def _resolve_coalesce_dimension(
+        self,
+        ctx: _ResolutionContext,
+        coalesce: CoalesceDimension,
+        seen_aliases: set[str],
+    ) -> None:
+        """Expand a coalesce group into its constituent resolved dimensions.
+
+        Validates: at least 2 members, alias is unique within the query and
+        does not collide with an existing dimension/measure name, all members
+        resolve to the same abstract column type.
+        """
+        alias = coalesce.alias
+        if not alias:
+            ctx.errors.append(
+                SemanticError(
+                    code="COALESCE_MISSING_ALIAS",
+                    message="Coalesce dimension requires a non-empty 'as' alias",
+                    path="select.dimensions",
+                )
+            )
+            return
+        if alias in seen_aliases:
+            ctx.errors.append(
+                SemanticError(
+                    code="DUPLICATE_COALESCE_ALIAS",
+                    message=f"Duplicate coalesce alias '{alias}' in this query",
+                    path="select.dimensions",
+                )
+            )
+            return
+        if alias in ctx.model.dimensions or alias in ctx.model.measures:
+            ctx.errors.append(
+                SemanticError(
+                    code="COALESCE_ALIAS_COLLISION",
+                    message=(
+                        f"Coalesce alias '{alias}' collides with an existing "
+                        f"model dimension or measure name"
+                    ),
+                    path="select.dimensions",
+                )
+            )
+            return
+        if len(coalesce.coalesce) < 2:
+            ctx.errors.append(
+                SemanticError(
+                    code="COALESCE_TOO_FEW_MEMBERS",
+                    message=(
+                        f"Coalesce '{alias}' requires at least 2 dimensions "
+                        f"(got {len(coalesce.coalesce)})"
+                    ),
+                    path="select.dimensions",
+                )
+            )
+            return
+        seen_aliases.add(alias)
+
+        # Resolve each member with the alias tag; verify type compatibility.
+        member_types: set[str] = set()
+        for member in coalesce.coalesce:
+            resolved = self._append_resolved_dimension(ctx, member, coalesce_alias=alias)
+            if resolved:
+                dim_def = ctx.model.dimensions.get(member)
+                if dim_def:
+                    member_types.add(dim_def.result_type.value)
+        if len(member_types) > 1:
+            ctx.errors.append(
+                SemanticError(
+                    code="COALESCE_TYPE_MISMATCH",
+                    message=(
+                        f"Coalesce '{alias}' members have incompatible result types: "
+                        f"{sorted(member_types)}"
+                    ),
+                    path="select.dimensions",
+                )
+            )
 
     def _resolve_dimension(
         self, ctx: _ResolutionContext, ref: DimensionRef
@@ -1069,6 +1194,11 @@ class QueryResolver:
         self, ctx: _ResolutionContext, field_name: str, select_count: int
     ) -> Expr | None:
         """Resolve an order-by field to its expression."""
+        # Coalesce alias: outer SELECT exposes it as a bare alias column,
+        # so a table-less ColumnRef is the right form for both star and CFL.
+        if field_name in ctx.result.coalesce_aliases:
+            return ColumnRef(name=field_name)
+
         for dim in ctx.result.dimensions:
             if dim.name == field_name:
                 return ColumnRef(name=dim.source_column, table=dim.object_name)

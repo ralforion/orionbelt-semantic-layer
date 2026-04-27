@@ -36,6 +36,9 @@ class JoinGraph:
     ) -> None:
         self._graph: nx.Graph[str] = nx.Graph()
         self._directed: nx.DiGraph[str] = nx.DiGraph()
+        # Path-finding graph: many-to-one is forward-only (would cause fanout
+        # in reverse); one-to-one and many-to-many are bidirectional.
+        self._traversable: nx.DiGraph[str] = nx.DiGraph()
         self._model = model
         self._build(model, use_path_names)
 
@@ -53,6 +56,7 @@ class JoinGraph:
         for name in model.data_objects:
             self._graph.add_node(name)
             self._directed.add_node(name)
+            self._traversable.add_node(name)
 
         # Build a lookup: (source, target) → pathName for active overrides
         active_overrides: dict[tuple[str, str], str] = {}
@@ -76,7 +80,14 @@ class JoinGraph:
                         self._add_edge(obj_name, join)
 
     def _add_edge(self, obj_name: str, join: object) -> None:
-        """Add an edge to both the undirected and directed graphs."""
+        """Add an edge to the undirected, directed, and traversable graphs.
+
+        The traversable graph is used by :meth:`find_join_path` to enforce
+        the rule "many-to-one is never bidirectional": walking such a join
+        backwards would multiply rows of the source table, so only forward
+        traversal is allowed.  One-to-one and many-to-many joins remain
+        bidirectional in the traversable graph.
+        """
         from orionbelt.models.semantic import DataObjectJoin
 
         assert isinstance(join, DataObjectJoin)
@@ -95,6 +106,10 @@ class JoinGraph:
             columns_to=join.columns_to,
             cardinality=join.join_type,
         )
+        self._traversable.add_edge(obj_name, join.join_to)
+        if join.join_type != Cardinality.MANY_TO_ONE:
+            # Safe to walk backwards: row count is preserved.
+            self._traversable.add_edge(join.join_to, obj_name)
 
     def descendants(self, node: str) -> set[str]:
         """Return all nodes reachable from *node* via directed join paths."""
@@ -194,7 +209,7 @@ class JoinGraph:
             sources = [via[target]] if target in via and via[target] in source_list else source_list
             for source in sources:
                 try:
-                    path = nx.shortest_path(self._graph, source, target)
+                    path = nx.shortest_path(self._traversable, source, target)
                     if best_path is None or len(path) < len(best_path):
                         best_path = path
                 except nx.NetworkXNoPath:

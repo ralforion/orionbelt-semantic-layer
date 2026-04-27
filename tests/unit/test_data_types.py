@@ -159,7 +159,7 @@ class TestResolveMetricDataType:
 class TestDialectRendering:
     def test_postgres_decimal(self) -> None:
         d = PostgresDialect()
-        assert d.render_obml_type(DecimalType(18, 2)) == "NUMERIC(18, 2)"
+        assert d.render_obml_type(DecimalType(18, 2)) == "DECIMAL(18, 2)"
 
     def test_postgres_bigint(self) -> None:
         d = PostgresDialect()
@@ -273,7 +273,7 @@ measures:
         query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Revenue"]))
         result = pipeline.compile(query, model, "postgres")
         assert "CAST(" in result.sql
-        assert "NUMERIC(18, 2)" in result.sql
+        assert "DECIMAL(18, 2)" in result.sql
 
     def test_count_gets_no_cast(self, model: SemanticModel) -> None:
         pipeline = CompilationPipeline()
@@ -287,7 +287,7 @@ measures:
         pipeline = CompilationPipeline()
         query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Avg Price"]))
         result = pipeline.compile(query, model, "postgres")
-        assert "NUMERIC(18, 6)" in result.sql
+        assert "DECIMAL(18, 6)" in result.sql
 
     def test_snowflake_uses_number(self, model: SemanticModel) -> None:
         pipeline = CompilationPipeline()
@@ -306,7 +306,7 @@ measures:
         pipeline = CompilationPipeline()
         query = QueryObject(select=QuerySelect(dimensions=["Country"], measures=["Revenue"]))
         result = pipeline.compile(query, model, "postgres")
-        assert "NUMERIC(38, 8)" in result.sql
+        assert "DECIMAL(38, 8)" in result.sql
 
     def test_model_settings_default(self) -> None:
         yaml = """
@@ -339,4 +339,4 @@ measures:
         pipeline = CompilationPipeline()
         query = QueryObject(select=QuerySelect(dimensions=["Dim"], measures=["Total"]))
         result = pipeline.compile(query, model, "postgres")
-        assert "NUMERIC(18, 4)" in result.sql
+        assert "DECIMAL(18, 4)" in result.sql

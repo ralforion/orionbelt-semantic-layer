@@ -407,10 +407,14 @@ class CFLPlanner:
             reachable = graph.descendants(obj_name) | {obj_name}
 
             # SELECT conformed dimensions — only emit real column refs for
-            # dimensions reachable from this leg's fact; skip unreachable
-            # ones when the dialect supports UNION ALL BY NAME.
+            # dimensions reachable from this leg's fact AND whose `via:`
+            # waypoint (if any) is also reachable from this leg's fact.
+            # Role-playing dimensions tied to a different fact via `via:`
+            # are NULL-padded so each leg only projects the values that
+            # belong to its own fact.
             for dim in resolved.dimensions:
-                if dim.object_name in reachable:
+                via_ok = dim.via is None or dim.via in reachable
+                if dim.object_name in reachable and via_ok:
                     col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
                     if dim.grain and dialect:
                         col = dialect.render_time_grain(col, dim.grain)
@@ -527,14 +531,37 @@ class CFLPlanner:
         # Build outer query: aggregate over the composite CTE
         outer_builder = QueryBuilder()
 
-        # SELECT dimensions
+        # SELECT dimensions.  Coalesce groups emit COALESCE(d1, d2, ...) once
+        # under the alias; plain dims keep their original column reference.
+        emitted_coalesce_aliases: set[str] = set()
+        coalesce_groups: dict[str, list[str]] = {}
+        for d in resolved.dimensions:
+            if d.coalesce_alias:
+                coalesce_groups.setdefault(d.coalesce_alias, []).append(d.name)
         for dim in resolved.dimensions:
-            outer_builder.select(
-                AliasedExpr(
-                    expr=ColumnRef(name=dim.name),
-                    alias=dim.name,
+            if dim.coalesce_alias:
+                if dim.coalesce_alias in emitted_coalesce_aliases:
+                    continue
+                emitted_coalesce_aliases.add(dim.coalesce_alias)
+                outer_builder.select(
+                    AliasedExpr(
+                        expr=FunctionCall(
+                            name="COALESCE",
+                            args=[
+                                ColumnRef(name=member)
+                                for member in coalesce_groups[dim.coalesce_alias]
+                            ],
+                        ),
+                        alias=dim.coalesce_alias,
+                    )
                 )
-            )
+            else:
+                outer_builder.select(
+                    AliasedExpr(
+                        expr=ColumnRef(name=dim.name),
+                        alias=dim.name,
+                    )
+                )
 
         # SELECT aggregated measures and metrics
         # First, add all component measures (from UNION ALL legs)
@@ -587,9 +614,25 @@ class CFLPlanner:
 
         outer_builder.from_(cte_name, alias=cte_name)
 
-        # GROUP BY dimensions
+        # GROUP BY dimensions.  Coalesce groups group by the COALESCE expression
+        # itself (most dialects accept either the alias or the expression; the
+        # expression is portable across all eight supported dialects).
+        grouped_coalesce_aliases: set[str] = set()
         for dim in resolved.dimensions:
-            outer_builder.group_by(ColumnRef(name=dim.name))
+            if dim.coalesce_alias:
+                if dim.coalesce_alias in grouped_coalesce_aliases:
+                    continue
+                grouped_coalesce_aliases.add(dim.coalesce_alias)
+                outer_builder.group_by(
+                    FunctionCall(
+                        name="COALESCE",
+                        args=[
+                            ColumnRef(name=member) for member in coalesce_groups[dim.coalesce_alias]
+                        ],
+                    )
+                )
+            else:
+                outer_builder.group_by(ColumnRef(name=dim.name))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:

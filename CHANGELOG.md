@@ -2,6 +2,42 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.0.0] - 2026-04-27
+
+### Breaking
+
+- **Many-to-one joins are now strictly forward-only.** The query planner refuses to walk a `many-to-one` join in reverse (which would silently inflate fact-table row counts). Queries that previously compiled by traversing such a reverse hop now raise `UNREACHABLE_REQUIRED_OBJECT`. **Migration:** declare bridge tables as `many-to-many` (already supported by OBML); see `examples/movies.obml.yml` for the canonical pattern.
+- **CFL leg projection now honors per-dimension `via:` waypoints.** Role-playing dimensions (e.g., `Sales Employee` and `Purchase Employee`) no longer leak across UNION ALL legs — each leg projects only its own role and NULL-pads the others. Query results CHANGE for any model that had role-playing dimensions where the previous (incorrect) behavior was being relied on. **Migration:** the new output is the correct one; verify and update downstream code accordingly.
+- **PostgreSQL renderer now emits `DECIMAL(p, s)`** instead of `NUMERIC(p, s)`. The two are SQL-standard synonyms in Postgres and every other supported dialect (canonical name in sqlglot is `DECIMAL`). **Migration:** consumers comparing exact SQL strings need an update; query semantics are unchanged.
+- **`sqlparse` removed from dependencies.** The UI and API now use sqlglot's pretty-printer for all SQL formatting. Anyone transitively importing `sqlparse` from this project must add it to their own dependencies.
+
+### Added
+
+- **Query-level `coalesce` dimensions.** `select.dimensions` now accepts a `{coalesce: [...], as: <alias>}` group that merges role-playing dimensions into a single output column via `COALESCE(d1, d2, ...)`. ORDER BY may reference the alias directly. Validation: 5 new error codes (`COALESCE_MISSING_ALIAS`, `DUPLICATE_COALESCE_ALIAS`, `COALESCE_ALIAS_COLLISION`, `COALESCE_TOO_FEW_MEMBERS`, `COALESCE_TYPE_MISMATCH`).
+- **`primaryKey` column property.** Optional informational marker on data object columns. Renders as `PK` in the Mermaid ER diagram (precedence over `FK`) and emits `obsl:primaryKey true` triples in the OBSL graph. Composite keys: set `primaryKey: true` on multiple columns.
+- **`UNREACHABLE_REQUIRED_OBJECT` error.** Resolution-time error raised when a required dimension's source object cannot be reached from the query base via directed joins. Replaces silently-wrong SQL with a clear migration hint.
+- **`examples/movies.obml.yml`** — bundled junction-table example (Movies / Directors / Producers with `many-to-many` bridges) demonstrating the recommended OBML pattern for many-to-many relationships.
+- **Vertically responsive Gradio UI layout.** SQL Compiler, ER Diagram, and Ontology Graph tabs scale with viewport height via `dvh`-based CSS. Editor and output rows resize fluidly without overflow.
+- **Ontology Graph tab.** Interactive vis-network visualization (data objects, dimensions, measures, metrics, joins) with toggleable layers and adjustable node spacing. vis-network v9.1.2 ships as a static asset (no CDN dependency), loaded via base64-encoded iframe srcdoc.
+- **API responses now return sqlglot-pretty SQL.** Every `/v1/.../query/sql` and `/v1/.../query/execute` endpoint formats SQL with one expression per line. Consumers (gradio_client, MCP, AI agents, dashboards) get readable SQL by default with no flag required.
+
+### Fixed
+
+- **CFL planner via-aware leg construction** (see Breaking).
+- **Join graph reverse-traversal silent fanout** (see Breaking).
+- **MISSING_VIA validator** — only warns when a dimension table has direct joins from multiple fact tables, not transitive reachability. Fact-table dimensions (columns on the fact table itself) no longer trigger false warnings.
+- **Example model `via` cleanup** — removed unnecessary `via` from dimensions on tables that are only direct children of one fact table (Clients, Countries, Regions) and from fact-table-local dimensions (Sales Date, Payment Type).
+
+### Removed
+
+- `sqlparse` runtime dependency.
+- Unused `Graph Height` slider on the Ontology Graph tab (the iframe is now viewport-height driven).
+
+### Security
+
+- New Cloud Armor rules for the public demo block `/ui/gradio_api/info`, `/ui/monitoring/*`, and `/ui/openapi.json` (admin/discovery endpoints not used by the browser UI).
+- `main` branch protection enabled on the public repo and the four sibling repos: PR required, force-push and deletion blocked, linear history enforced.
+
 ## [1.8.2] - 2026-04-25
 
 _Release notes pending._

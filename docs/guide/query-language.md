@@ -97,6 +97,32 @@ select:
     - Revenue per Order    # metric
 ```
 
+### Coalesce (Merging Role-Playing Dimensions)
+
+Role-playing dimensions (e.g. `Sales Employee` and `Purchase Employee`, both pointing to `Employees.Employee Name` via different facts) appear as separate columns in CFL output — one row per role per person. To collapse them into a single output column, use a coalesce group inside `dimensions`:
+
+```yaml
+select:
+  dimensions:
+    - coalesce: [Employee Name, Purchase Employee]
+      as: Employee
+  measures:
+    - Total Sales
+    - Total Purchase Qty
+```
+
+Each leg still projects only its own role-playing dimension (others NULL); the outer wrapper emits `COALESCE("Employee Name", "Purchase Employee") AS "Employee"` and groups by it. A person who is both a sales rep and a purchase employee shows up as one row with totals on both sides.
+
+**Rules:**
+
+- At least 2 members; all must be existing model dimensions
+- All members must share the same `resultType`
+- The `as` alias must not collide with any model dimension or measure name
+- `order_by` may reference the alias directly (`field: Employee`) — ordering happens in the outer wrapper where the alias is in scope
+- `where` filters belong on the underlying dimension names (filtering is applied per leg, before the COALESCE collapses the values)
+
+**Error codes:** `COALESCE_MISSING_ALIAS`, `DUPLICATE_COALESCE_ALIAS`, `COALESCE_ALIAS_COLLISION`, `COALESCE_TOO_FEW_MEMBERS`, `COALESCE_TYPE_MISMATCH`.
+
 ## Secondary Join Paths
 
 When a model defines secondary joins (e.g., `Flights` → `Airports` via departure and arrival), use `usePathNames` to select which join path to use:

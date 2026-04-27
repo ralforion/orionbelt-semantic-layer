@@ -9,7 +9,12 @@ from orionbelt.ast.nodes import JoinType as ASTJoinType
 from orionbelt.compiler.fanout import FanoutError, _step_causes_fanout, detect_fanout
 from orionbelt.compiler.graph import JoinStep
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.resolution import ResolvedDimension, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedDimension,
+    ResolvedMeasure,
+    ResolvedQuery,
+)
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     Cardinality,
@@ -350,137 +355,21 @@ class TestJunctionTableFanout:
 
     @staticmethod
     def _make_movies_model() -> SemanticModel:
-        """Build the movies model: Movies ← MovieDirectors → Directors,
-        Movies ← MovieProducers → Producers."""
-        movies = DataObject(
-            label="Movies",
-            code="movies",
-            database="demo",
-            schema_name="movies",
-            columns={
-                "Movie ID": DataObjectColumn(
-                    label="Movie ID", code="movie_id", abstract_type=DataType.INT
-                ),
-                "Title": DataObjectColumn(
-                    label="Title", code="title", abstract_type=DataType.STRING
-                ),
-            },
-        )
-        directors = DataObject(
-            label="Directors",
-            code="directors",
-            database="demo",
-            schema_name="movies",
-            columns={
-                "Director ID": DataObjectColumn(
-                    label="Director ID", code="director_id", abstract_type=DataType.INT
-                ),
-                "Director Name": DataObjectColumn(
-                    label="Director Name", code="name", abstract_type=DataType.STRING
-                ),
-            },
-        )
-        producers = DataObject(
-            label="Producers",
-            code="producers",
-            database="demo",
-            schema_name="movies",
-            columns={
-                "Producer ID": DataObjectColumn(
-                    label="Producer ID", code="producer_id", abstract_type=DataType.INT
-                ),
-                "Producer Name": DataObjectColumn(
-                    label="Producer Name", code="name", abstract_type=DataType.STRING
-                ),
-            },
-        )
-        movie_directors = DataObject(
-            label="Movie Directors",
-            code="movie_directors",
-            database="demo",
-            schema_name="movies",
-            columns={
-                "Movie ID": DataObjectColumn(
-                    label="Movie ID", code="movie_id", abstract_type=DataType.INT
-                ),
-                "Director ID": DataObjectColumn(
-                    label="Director ID", code="director_id", abstract_type=DataType.INT
-                ),
-            },
-            joins=[
-                DataObjectJoin(
-                    join_type=Cardinality.MANY_TO_ONE,
-                    join_to="Movies",
-                    columns_from=["Movie ID"],
-                    columns_to=["Movie ID"],
-                ),
-                DataObjectJoin(
-                    join_type=Cardinality.MANY_TO_ONE,
-                    join_to="Directors",
-                    columns_from=["Director ID"],
-                    columns_to=["Director ID"],
-                ),
-            ],
-        )
-        movie_producers = DataObject(
-            label="Movie Producers",
-            code="movie_producers",
-            database="demo",
-            schema_name="movies",
-            columns={
-                "Movie ID": DataObjectColumn(
-                    label="Movie ID", code="movie_id", abstract_type=DataType.INT
-                ),
-                "Producer ID": DataObjectColumn(
-                    label="Producer ID", code="producer_id", abstract_type=DataType.INT
-                ),
-            },
-            joins=[
-                DataObjectJoin(
-                    join_type=Cardinality.MANY_TO_ONE,
-                    join_to="Movies",
-                    columns_from=["Movie ID"],
-                    columns_to=["Movie ID"],
-                ),
-                DataObjectJoin(
-                    join_type=Cardinality.MANY_TO_ONE,
-                    join_to="Producers",
-                    columns_from=["Producer ID"],
-                    columns_to=["Producer ID"],
-                ),
-            ],
-        )
-        return SemanticModel(
-            data_objects={
-                "Movies": movies,
-                "Directors": directors,
-                "Producers": producers,
-                "Movie Directors": movie_directors,
-                "Movie Producers": movie_producers,
-            },
-            dimensions={
-                "Director": Dimension(
-                    label="Director",
-                    view="Directors",
-                    column="Director Name",
-                    result_type=DataType.STRING,
-                ),
-                "Producer": Dimension(
-                    label="Producer",
-                    view="Producers",
-                    column="Producer Name",
-                    result_type=DataType.STRING,
-                ),
-            },
-            measures={
-                "Movies Cnt": Measure(
-                    label="Movies Cnt",
-                    columns=[{"dataObject": "Movies", "column": "Movie ID"}],
-                    result_type=DataType.INT,
-                    aggregation="count",
-                ),
-            },
-        )
+        """Load the bundled movies model (Movies/Directors/Producers with
+        many-to-many bridges Movie Directors and Movie Producers).
+
+        The YAML lives in ``examples/movies.obml.yml`` so it can also be
+        loaded into the UI for hand-testing junction-table fanout.
+        """
+        from pathlib import Path
+
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        path = Path(__file__).resolve().parents[2] / "examples" / "movies.obml.yml"
+        raw, src = TrackedLoader().load(path)
+        model, _ = ReferenceResolver().resolve(raw, src)
+        return model
 
     def test_junction_fanout_resolved_both_dims(self) -> None:
         """Director + Producer + Movies Cnt: fanout through both junctions
@@ -698,14 +587,17 @@ class TestJunctionTableFanout:
 
 
 class TestPipelineFanout:
-    def test_pipeline_raises_fanout_error(self) -> None:
-        """CompilationPipeline should propagate FanoutError.
+    def test_pipeline_raises_unreachable_error(self) -> None:
+        """CompilationPipeline should refuse to compile when a required object
+        is unreachable via directed joins.
 
-        The join is declared as Orders many-to-one Customers.
-        The measure is on Customers (dimension table) and the dimension
-        is on Orders (fact table).  Resolution selects Customers as the
-        base object (measure source).  The join path Customers→Orders
-        reverses the declared direction, creating a one-to-many fanout.
+        The join is declared as Orders many-to-one Customers.  The measure is
+        on Customers (dimension table) and the dimension is on Orders (fact
+        table).  Resolution selects Customers as the base object (measure
+        source).  Reaching Orders from Customers would require walking the
+        many-to-one in reverse, which would inflate row counts — so the
+        resolver raises UNREACHABLE_REQUIRED_OBJECT instead of generating
+        silently-wrong SQL.
         """
         orders = DataObject(
             label="Orders",
@@ -772,5 +664,7 @@ class TestPipelineFanout:
         )
 
         pipeline = CompilationPipeline()
-        with pytest.raises(FanoutError, match="fanout"):
+        with pytest.raises(ResolutionError) as exc_info:
             pipeline.compile(query, model, "postgres")
+        codes = {e.code for e in exc_info.value.errors}
+        assert "UNREACHABLE_REQUIRED_OBJECT" in codes

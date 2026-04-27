@@ -1,0 +1,120 @@
+# Movies / Directors / Producers — junction-table modelling example.
+#
+# Demonstrates the recommended OBML pattern for many-to-many relationships
+# via bridge tables.  Each bridge declares its joins as `many-to-many`
+# rather than `many-to-one` so the join graph can traverse Movies ↔ Directors
+# (and Movies ↔ Producers) in both directions without raising
+# UNREACHABLE_REQUIRED_OBJECT.
+#
+# Usage:
+#   - "Movies Cnt" alone           → simple count over the fact
+#   - "Director" + "Movies Cnt"    → fanout via Movie Directors, resolved by GROUP BY
+#   - "Director" + "Producer"
+#       + "Movies Cnt"             → fanout via both junctions, resolved by GROUP BY
+
+version: "1.0"
+
+dataObjects:
+  # ── Fact table ─────────────────────────────────────────────────────
+  Movies:
+    code: movies
+    database: demo
+    schema: movies
+    columns:
+      Movie ID:
+        code: movie_id
+        abstractType: int
+        primaryKey: true
+      Title:
+        code: title
+        abstractType: string
+
+  # ── Dimension tables ──────────────────────────────────────────────
+  Directors:
+    code: directors
+    database: demo
+    schema: movies
+    columns:
+      Director ID:
+        code: director_id
+        abstractType: int
+        primaryKey: true
+      Director Name:
+        code: name
+        abstractType: string
+
+  Producers:
+    code: producers
+    database: demo
+    schema: movies
+    columns:
+      Producer ID:
+        code: producer_id
+        abstractType: int
+        primaryKey: true
+      Producer Name:
+        code: name
+        abstractType: string
+
+  # ── Bridge tables (declared many-to-many) ─────────────────────────
+  Movie Directors:
+    code: movie_directors
+    database: demo
+    schema: movies
+    columns:
+      Movie ID:
+        code: movie_id
+        abstractType: int
+        primaryKey: true
+      Director ID:
+        code: director_id
+        abstractType: int
+        primaryKey: true
+    joins:
+      - joinType: many-to-many
+        joinTo: Movies
+        columnsFrom: [Movie ID]
+        columnsTo: [Movie ID]
+      - joinType: many-to-many
+        joinTo: Directors
+        columnsFrom: [Director ID]
+        columnsTo: [Director ID]
+
+  Movie Producers:
+    code: movie_producers
+    database: demo
+    schema: movies
+    columns:
+      Movie ID:
+        code: movie_id
+        abstractType: int
+        primaryKey: true
+      Producer ID:
+        code: producer_id
+        abstractType: int
+        primaryKey: true
+    joins:
+      - joinType: many-to-many
+        joinTo: Movies
+        columnsFrom: [Movie ID]
+        columnsTo: [Movie ID]
+      - joinType: many-to-many
+        joinTo: Producers
+        columnsFrom: [Producer ID]
+        columnsTo: [Producer ID]
+
+dimensions:
+  Director:
+    dataObject: Directors
+    column: Director Name
+    resultType: string
+  Producer:
+    dataObject: Producers
+    column: Producer Name
+    resultType: string
+
+measures:
+  Movies Cnt:
+    resultType: int
+    aggregation: count
+    expression: "{[Movies].[Movie ID]}"
