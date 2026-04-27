@@ -109,21 +109,88 @@ _CSS = """\
 }
 .header-bar .header-links a:hover { opacity: 1; }
 .header-bar .header-links a svg { width: 18px; height: 18px; fill: currentColor; }
-/* compact settings row */
-.settings-row { min-height: 0 !important; }
+/* compact settings row — label inline with input via .settings-pair */
+.settings-row {
+  min-height: 0 !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+}
+.settings-pair {
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  padding: 0 !important;
+}
+.settings-pair > * {
+  align-self: center !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+/* Gradio wraps gr.HTML in a div — collapse it to its content width */
+.settings-pair > div:has(> .settings-label),
+.settings-pair > .prose,
+.settings-pair > .html-container {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+}
+/* Constrain dropdown/textbox wrappers so they don't fill the row */
+.settings-pair .wrap,
+.settings-pair .form,
+.settings-pair .block {
+  width: auto !important;
+  min-width: 0 !important;
+}
+.settings-pair input,
+.settings-pair textarea {
+  min-width: 360px !important;
+  white-space: nowrap !important;
+  overflow-x: auto !important;
+}
+.settings-pair textarea {
+  resize: none !important;
+  overflow-y: hidden !important;
+  height: 32px !important;
+  line-height: 1.4 !important;
+}
+.settings-pair .secondary-wrap,
+.settings-pair .options { min-width: 160px !important; }
+.settings-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0.85;
+  line-height: 32px;
+  display: inline-block !important;
+}
+.settings-spacer {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
 
 /* ── Vertically responsive editors (viewport-relative) ──
    Constrain ROW height; make .code-editor a flex column so CodeMirror's
    wrapper (last child) absorbs all remaining space inside its block. */
 .editor-row {
-  height: 32dvh !important;
-  max-height: 32dvh !important;
-  min-height: 200px !important;
+  height: 42dvh !important;
+  max-height: 42dvh !important;
+  min-height: 240px !important;
 }
 .output-row {
-  height: 36dvh !important;
-  max-height: 36dvh !important;
-  min-height: 120px !important;
+  height: 32dvh !important;
+  max-height: 32dvh !important;
+  min-height: 140px !important;
 }
 
 /* gr.Code blocks become flex columns; their CodeMirror child fills remaining space */
@@ -2208,18 +2275,37 @@ def create_blocks(
         with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
-                    dialect = gr.Dropdown(
-                        choices=dialects,
-                        value=default_dialect,
-                        label="SQL Dialect",
-                        scale=1,
-                    )
-                    api_url = gr.Textbox(
-                        value=api_base,
-                        label="API Base URL",
-                        scale=2,
-                        interactive=not cohosted,
-                    )
+                    with gr.Row(elem_classes=["settings-pair"]):
+                        gr.HTML(
+                            '<span class="settings-label">SQL Dialect</span>',
+                            padding=False,
+                        )
+                        dialect = gr.Dropdown(
+                            choices=dialects,
+                            value=default_dialect,
+                            label="SQL Dialect",
+                            show_label=False,
+                            container=False,
+                            scale=0,
+                            min_width=160,
+                        )
+                    with gr.Row(elem_classes=["settings-pair"]):
+                        gr.HTML(
+                            '<span class="settings-label">API Base URL</span>',
+                            padding=False,
+                        )
+                        api_url = gr.Textbox(
+                            value=api_base,
+                            label="API Base URL",
+                            show_label=False,
+                            container=False,
+                            scale=0,
+                            min_width=360,
+                            lines=1,
+                            max_lines=1,
+                            interactive=not cohosted,
+                        )
+                    gr.HTML("", elem_classes=["settings-spacer"])
                     import_osi_btn = gr.Button(
                         "Import OSI",
                         size="sm",
