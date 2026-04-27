@@ -177,6 +177,8 @@ class FlightSettingsInfo(BaseModel):
 class SettingsResponse(BaseModel):
     """Response for GET /settings — public configuration for clients."""
 
+    version: str = Field(default="", description="OrionBelt Semantic Layer release version")
+    api_version: str = Field(default="v1", description="REST API version prefix")
     single_model_mode: bool = False
     model_yaml: str | None = Field(
         default=None,

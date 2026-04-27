@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from orionbelt import __version__
 from orionbelt.api.deps import (
     get_flight_info,
     get_preload_model_yaml,
@@ -24,6 +25,8 @@ async def get_settings(
     """Return public configuration for API clients (UI, MCP, etc.)."""
     fi = get_flight_info()
     return SettingsResponse(
+        version=__version__,
+        api_version="v1",
         single_model_mode=is_single_model_mode(),
         model_yaml=get_preload_model_yaml() if is_single_model_mode() else None,
         session_ttl_seconds=mgr.ttl,
