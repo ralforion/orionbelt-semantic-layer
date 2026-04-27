@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 
+import networkx as nx
+
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     DataType,
@@ -29,6 +31,8 @@ class SemanticValidator:
         errors.extend(self._check_references_resolve(model))
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
+        errors.extend(self._check_via_reachability(model))
+        errors.extend(self._check_missing_via(model))
         return errors
 
     def _check_unique_identifiers(self, model: SemanticModel) -> list[SemanticError]:
@@ -438,3 +442,103 @@ class SemanticValidator:
         elif isinstance(item, MeasureFilterGroup):
             for child in item.filters:
                 self._validate_filter_item(child, model, meas_name, errors)
+
+    def _build_directed_graph(self, model: SemanticModel) -> nx.DiGraph[str]:
+        """Build a directed graph from primary (non-secondary) joins."""
+        g: nx.DiGraph[str] = nx.DiGraph()
+        for name in model.data_objects:
+            g.add_node(name)
+        for obj_name, obj in model.data_objects.items():
+            for join in obj.joins:
+                if not join.secondary and join.join_to in model.data_objects:
+                    g.add_edge(obj_name, join.join_to)
+        return g
+
+    def _check_via_reachability(self, model: SemanticModel) -> list[SemanticError]:
+        """Validate that each dimension's dataObject is reachable from its via."""
+        errors: list[SemanticError] = []
+        dims_with_via = [(name, dim) for name, dim in model.dimensions.items() if dim.via]
+        if not dims_with_via:
+            return errors
+
+        g = self._build_directed_graph(model)
+        for name, dim in dims_with_via:
+            if dim.via not in model.data_objects:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_VIA_DATA_OBJECT",
+                        message=(
+                            f"Dimension '{name}': via references unknown data object '{dim.via}'"
+                        ),
+                        path=f"dimensions.{name}",
+                    )
+                )
+                continue
+            if dim.via == dim.view:
+                continue
+            reachable = nx.descendants(g, dim.via) if dim.via in g else set()
+            if dim.view not in reachable:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_VIA_DATA_OBJECT",
+                        message=(
+                            f"Dimension '{name}': data object '{dim.view}' is not "
+                            f"reachable from via data object '{dim.via}'"
+                        ),
+                        path=f"dimensions.{name}",
+                    )
+                )
+        return errors
+
+    def _check_missing_via(self, model: SemanticModel) -> list[SemanticError]:
+        """Warn when a dimension's target has direct joins from multiple fact tables.
+
+        A fact table is a data object that is the source of at least one measure.
+        Only direct joins (one hop) from a fact table to the dimension's target
+        count — transitive reachability through other fact tables does not create
+        real ambiguity and should not trigger a warning.  Dimensions whose target
+        IS a fact table (e.g. Sales Date on Sales) are also skipped because the
+        column lives on the fact table itself.
+        """
+        warnings: list[SemanticError] = []
+
+        measure_sources: set[str] = set()
+        for meas in model.measures.values():
+            for col_ref in meas.columns:
+                if col_ref.view:
+                    measure_sources.add(col_ref.view)
+        if len(measure_sources) < 2:
+            return warnings
+
+        g = self._build_directed_graph(model)
+        fact_tables = sorted(measure_sources & set(g.nodes))
+
+        direct_children: dict[str, set[str]] = {}
+        for ft in fact_tables:
+            direct_children[ft] = set(g.successors(ft))
+
+        for dim_name, dim in model.dimensions.items():
+            if dim.via:
+                continue
+            target = dim.view
+            if not target or target not in g:
+                continue
+            if target in measure_sources:
+                continue
+            reaching_facts = [ft for ft in fact_tables if target in direct_children[ft]]
+            if len(reaching_facts) > 1:
+                warnings.append(
+                    SemanticError(
+                        code="MISSING_VIA",
+                        message=(
+                            f"Dimension '{dim_name}' on '{target}' has direct "
+                            f"joins from multiple fact tables "
+                            f"({', '.join(reaching_facts)}). "
+                            f"Consider adding role-playing dimensions with 'via' "
+                            f"to disambiguate join paths."
+                        ),
+                        path=f"dimensions.{dim_name}",
+                        severity="warning",
+                    )
+                )
+        return warnings

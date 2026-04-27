@@ -1,0 +1,669 @@
+version: 1.0
+
+# OrionBelt_1 Commercial Analytics Model
+# Covers: Sales, Purchases, Returns, Shipments, ClientComplaints, AccountBalances
+# Join pattern: star-schema with CFL (Composite Fact Layer) for cross-fact queries
+#   to prevent the known sales <-> shipments fan-trap.
+
+dataObjects:
+  Sales:
+    code: sales
+    schema: orionbelt_1
+    columns:
+      salesid:
+        code: salesid
+        abstractType: string
+        primaryKey: true
+      salesdate:
+        code: salesdate
+        abstractType: date
+      salesclient:
+        code: salesclient
+        abstractType: string
+      product:
+        code: product
+        abstractType: string
+      salesempid:
+        code: salesempid
+        abstractType: string
+      salespaymenttype:
+        code: salespaymenttype
+        abstractType: string
+      saleschanid:
+        code: saleschanid
+        abstractType: string
+      salesquantity:
+        code: salesquantity
+        abstractType: float
+      salesamount:
+        code: salesamount
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Clients
+        columnsFrom:
+          - salesclient
+        columnsTo:
+          - clientid
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom:
+          - product
+        columnsTo:
+          - productid
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - salesempid
+        columnsTo:
+          - employeeid
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom:
+          - saleschanid
+        columnsTo:
+          - channelid
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - salesdate
+        columnsTo:
+          - date
+
+  Purchases:
+    code: purchases
+    schema: orionbelt_1
+    columns:
+      purchaseid:
+        code: purchaseid
+        abstractType: string
+        primaryKey: true
+      purchasedate:
+        code: purchasedate
+        abstractType: date
+      purchaseproduct:
+        code: purchaseproduct
+        abstractType: string
+      purchaseempid:
+        code: purchaseempid
+        abstractType: string
+      purchasesupplier:
+        code: purchasesupplier
+        abstractType: string
+      purchasechanid:
+        code: purchasechanid
+        abstractType: string
+      purchasequantity:
+        code: purchasequantity
+        abstractType: float
+      purchaseprice:
+        code: purchaseprice
+        abstractType: float
+      purchaseamount:
+        code: purchaseamount
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom:
+          - purchaseproduct
+        columnsTo:
+          - productid
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - purchaseempid
+        columnsTo:
+          - employeeid
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom:
+          - purchasechanid
+        columnsTo:
+          - channelid
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - purchasedate
+        columnsTo:
+          - date
+      - joinType: many-to-one
+        joinTo: Suppliers
+        columnsFrom:
+          - purchasesupplier
+        columnsTo:
+          - supplierid
+
+  Returns:
+    code: returns
+    schema: orionbelt_1
+    columns:
+      returnid:
+        code: returnid
+        abstractType: string
+        primaryKey: true
+      returnsalesid:
+        code: returnsalesid
+        abstractType: string
+      returndate:
+        code: returndate
+        abstractType: date
+      returnempid:
+        code: returnempid
+        abstractType: string
+      returnquantity:
+        code: returnquantity
+        abstractType: float
+      returnamount:
+        code: returnamount
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Sales
+        columnsFrom:
+          - returnsalesid
+        columnsTo:
+          - salesid
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - returnempid
+        columnsTo:
+          - employeeid
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - returndate
+        columnsTo:
+          - date
+
+  Shipments:
+    code: shipments
+    schema: orionbelt_1
+    columns:
+      shipmentid:
+        code: shipmentid
+        abstractType: string
+        primaryKey: true
+      shipmentsalesid:
+        code: shipmentsalesid
+        abstractType: string
+      shipmentdate:
+        code: shipmentdate
+        abstractType: date
+      shipmentempid:
+        code: shipmentempid
+        abstractType: string
+      shipmenttype:
+        code: shipmenttype
+        abstractType: string
+      shipmentquantity:
+        code: shipmentquantity
+        abstractType: float
+      shipmentamount:
+        code: shipmentamount
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Sales
+        columnsFrom:
+          - shipmentsalesid
+        columnsTo:
+          - salesid
+      - joinType: many-to-one
+        joinTo: Employees
+        columnsFrom:
+          - shipmentempid
+        columnsTo:
+          - employeeid
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom:
+          - shipmentdate
+        columnsTo:
+          - date
+
+  ClientComplaints:
+    code: clientcomplaints
+    schema: orionbelt_1
+    columns:
+      complid:
+        code: complid
+        abstractType: string
+        primaryKey: true
+      complclientid:
+        code: complclientid
+        abstractType: string
+      compltext:
+        code: compltext
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Clients
+        columnsFrom:
+          - complclientid
+        columnsTo:
+          - clientid
+
+  AccountBalances:
+    code: acctbal
+    schema: orionbelt_1
+    columns:
+      accountid:
+        code: accountid
+        abstractType: string
+        primaryKey: true
+      iban:
+        code: iban
+        abstractType: string
+      bankid:
+        code: bankid
+        abstractType: string
+      balanceamt:
+        code: balanceamt
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Banks
+        columnsFrom:
+          - bankid
+        columnsTo:
+          - bankid
+
+  # Dimensions
+  Clients:
+    code: clients
+    schema: orionbelt_1
+    columns:
+      clientid:
+        code: clientid
+        abstractType: string
+        primaryKey: true
+      clientname:
+        code: clientname
+        abstractType: string
+      clientgender:
+        code: clientgender
+        abstractType: string
+      clientemail:
+        code: clientemail
+        abstractType: string
+      clientcountryid:
+        code: clientcountryid
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Countries
+        columnsFrom:
+          - clientcountryid
+        columnsTo:
+          - countryid
+
+  Products:
+    code: products
+    schema: orionbelt_1
+    columns:
+      productid:
+        code: productid
+        abstractType: string
+        primaryKey: true
+      productname:
+        code: productname
+        abstractType: string
+      productcat:
+        code: productcat
+        abstractType: string
+      productsuppl:
+        code: productsuppl
+        abstractType: string
+      unitcost:
+        code: unitcost
+        abstractType: float
+      unitprice:
+        code: unitprice
+        abstractType: float
+      curr:
+        code: curr
+        abstractType: string
+      unitsinstock:
+        code: unitsinstock
+        abstractType: float
+    joins:
+      - joinType: many-to-one
+        joinTo: Suppliers
+        columnsFrom:
+          - productsuppl
+        columnsTo:
+          - supplierid
+
+  Employees:
+    code: employees
+    schema: orionbelt_1
+    columns:
+      employeeid:
+        code: employeeid
+        abstractType: string
+        primaryKey: true
+      employeename:
+        code: employeename
+        abstractType: string
+      department:
+        code: department
+        abstractType: string
+
+  Channels:
+    code: channels
+    schema: orionbelt_1
+    columns:
+      channelid:
+        code: channelid
+        abstractType: string
+        primaryKey: true
+      channelname:
+        code: channelname
+        abstractType: string
+
+  Suppliers:
+    code: suppliers
+    schema: orionbelt_1
+    columns:
+      supplierid:
+        code: supplierid
+        abstractType: string
+        primaryKey: true
+      suppliername:
+        code: suppliername
+        abstractType: string
+      suppliercountryid:
+        code: suppliercountryid
+        abstractType: string
+
+  Countries:
+    code: countries
+    schema: orionbelt_1
+    columns:
+      countryid:
+        code: countryid
+        abstractType: string
+        primaryKey: true
+      countryname:
+        code: countryname
+        abstractType: string
+      region:
+        code: region
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Regions
+        columnsFrom:
+          - region
+        columnsTo:
+          - regionid
+
+  Regions:
+    code: regions
+    schema: orionbelt_1
+    columns:
+      regionid:
+        code: regionid
+        abstractType: string
+        primaryKey: true
+      regionname:
+        code: regionname
+        abstractType: string
+
+  Banks:
+    code: banks
+    schema: orionbelt_1
+    columns:
+      bankid:
+        code: bankid
+        abstractType: string
+        primaryKey: true
+      bankname:
+        code: bankname
+        abstractType: string
+
+  Calendar:
+    code: calendar
+    schema: orionbelt_1
+    columns:
+      date:
+        code: date
+        abstractType: date
+        primaryKey: true
+      ym:
+        code: ym
+        abstractType: string
+      weekday:
+        code: weekday
+        abstractType: string
+      publicholiday:
+        code: publicholiday
+        abstractType: string
+
+dimensions:
+  # Shared dimensions (no via — join path is unambiguous)
+  BankName:
+    dataObject: Banks
+    column: bankname
+    resultType: string
+  ShipmentType:
+    dataObject: Shipments
+    column: shipmenttype
+    resultType: string
+  PaymentType:
+    dataObject: Sales
+    column: salespaymenttype
+    resultType: string
+
+  # Role-playing: Employee by fact table
+  SalesEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Sales
+  PurchaseEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Purchases
+  ReturnEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Returns
+  ShipmentEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Shipments
+
+  # Role-playing: Department by fact table
+  SalesDepartment:
+    dataObject: Employees
+    column: department
+    resultType: string
+    via: Sales
+  PurchaseDepartment:
+    dataObject: Employees
+    column: department
+    resultType: string
+    via: Purchases
+
+  # Role-playing: Calendar by fact table
+  SalesYearMonth:
+    dataObject: Calendar
+    column: ym
+    resultType: string
+    via: Sales
+  SalesWeekday:
+    dataObject: Calendar
+    column: weekday
+    resultType: string
+    via: Sales
+  PurchaseYearMonth:
+    dataObject: Calendar
+    column: ym
+    resultType: string
+    via: Purchases
+  ReturnYearMonth:
+    dataObject: Calendar
+    column: ym
+    resultType: string
+    via: Returns
+  ShipmentYearMonth:
+    dataObject: Calendar
+    column: ym
+    resultType: string
+    via: Shipments
+
+  # Role-playing: Channel by fact table
+  SalesChannel:
+    dataObject: Channels
+    column: channelname
+    resultType: string
+    via: Sales
+  PurchaseChannel:
+    dataObject: Channels
+    column: channelname
+    resultType: string
+    via: Purchases
+
+  # Client/Country/Region (child of Sales only — no via needed)
+  ClientName:
+    dataObject: Clients
+    column: clientname
+    resultType: string
+  ClientGender:
+    dataObject: Clients
+    column: clientgender
+    resultType: string
+  CountryName:
+    dataObject: Countries
+    column: countryname
+    resultType: string
+  RegionName:
+    dataObject: Regions
+    column: regionname
+    resultType: string
+
+  # Product/Supplier — scoped through Sales
+  ProductName:
+    dataObject: Products
+    column: productname
+    resultType: string
+    via: Sales
+  ProductCategory:
+    dataObject: Products
+    column: productcat
+    resultType: string
+    via: Sales
+  SupplierName:
+    dataObject: Suppliers
+    column: suppliername
+    resultType: string
+    via: Sales
+
+  # Product/Supplier — scoped through Purchases
+  PurchaseProductName:
+    dataObject: Products
+    column: productname
+    resultType: string
+    via: Purchases
+  PurchaseSupplier:
+    dataObject: Suppliers
+    column: suppliername
+    resultType: string
+    via: Purchases
+
+measures:
+  SalesAmount:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Sales
+        column: salesamount
+  SalesQuantity:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Sales
+        column: salesquantity
+  SalesOrderCount:
+    aggregation: count_distinct
+    resultType: int
+    columns:
+      - dataObject: Sales
+        column: salesid
+  PurchaseAmount:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Purchases
+        column: purchaseamount
+  PurchaseQuantity:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Purchases
+        column: purchasequantity
+  ReturnAmount:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Returns
+        column: returnamount
+  ReturnQuantity:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Returns
+        column: returnquantity
+  ReturnCount:
+    aggregation: count_distinct
+    resultType: int
+    columns:
+      - dataObject: Returns
+        column: returnid
+  ShipmentAmount:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Shipments
+        column: shipmentamount
+  ShipmentQuantity:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Shipments
+        column: shipmentquantity
+  ComplaintCount:
+    aggregation: count_distinct
+    resultType: int
+    columns:
+      - dataObject: ClientComplaints
+        column: complid
+  AccountBalanceTotal:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: AccountBalances
+        column: balanceamt
+  UnitsInStockTotal:
+    aggregation: sum
+    resultType: float
+    columns:
+      - dataObject: Products
+        column: unitsinstock
+
+metrics:
+  AvgSaleAmount:
+    expression: "{[SalesAmount]} / NULLIF({[SalesOrderCount]}, 0)"
+    resultType: float
+  ReturnRatePct:
+    expression: "({[ReturnAmount]} / NULLIF({[SalesAmount]}, 0)) * 100"
+    resultType: float
+  GrossMargin:
+    expression: "{[SalesAmount]} - {[PurchaseAmount]}"
+    resultType: float

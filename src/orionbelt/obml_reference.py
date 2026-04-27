@@ -41,6 +41,20 @@ dimensions:
     column: Country               # column within that data object
     resultType: string            # data type of the result (informative only)
     timeGrain: month              # optional: year | quarter | month | week | day | hour
+    via: Orders                   # optional: force join path through this data object
+
+  # Role-playing dimensions — same target, different join paths
+  SalesEmployee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Sales                    # reach Employees through Sales
+
+  ReturnEmployee:
+    dataObject: Employees
+    column: Name
+    resultType: string
+    via: Returns                  # reach Employees through Returns
 ```
 
 ## 3. measures — aggregations
@@ -171,6 +185,9 @@ OrionBelt preserves these during parsing but does not interpret them.
 4. Joins are defined on fact tables pointing to dimension tables \
 (many-to-one or one-to-one).
 5. A dimension references exactly one `dataObject` + `column` pair.
+6. A dimension may set `via` to force the join path through a specific \
+intermediate data object (role-playing dimensions). The dimension's \
+`dataObject` must be reachable from `via` in the directed join graph.
 
 ## Complete Minimal Example
 

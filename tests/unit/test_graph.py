@@ -59,14 +59,18 @@ class TestJoinGraph:
         assert len(steps) == 1
         assert steps[0].reversed is False
 
-    def test_find_join_path_reverse_sets_reversed(self) -> None:
-        """Reverse traversal (against declared direction) sets reversed=True."""
+    def test_find_join_path_refuses_to_reverse_many_to_one(self) -> None:
+        """Reverse traversal of many-to-one is forbidden (would inflate row counts).
+
+        Walking the Orders→Customers (many-to-one) join from Customers back to
+        Orders is not a valid traversal direction, so ``find_join_path`` returns
+        no steps.  Callers (the resolver) detect the unreachable required
+        object and raise UNREACHABLE_REQUIRED_OBJECT.
+        """
         model = _load_model()
         graph = JoinGraph(model)
-        # Traverse from Customers to Orders — opposite of declared direction (Orders→Customers)
         steps = graph.find_join_path({"Customers"}, {"Customers", "Orders"})
-        assert len(steps) == 1
-        assert steps[0].reversed is True
+        assert steps == []
 
     def test_no_cycles_in_simple_model(self) -> None:
         model = _load_model()

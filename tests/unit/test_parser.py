@@ -125,6 +125,30 @@ dimensions:
         assert dim.view == "Products"
         assert dim.column == "Category"
 
+    def test_primary_key_field_round_trip(self, resolver: ReferenceResolver) -> None:
+        yaml_content = """
+version: "1.0"
+dataObjects:
+  Customers:
+    code: customers
+    columns:
+      Customer ID:
+        code: customer_id
+        abstractType: string
+        primaryKey: true
+      Customer Name:
+        code: name
+        abstractType: string
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, result = resolver.resolve(raw, source_map)
+        assert result.valid, f"Errors: {[e.message for e in result.errors]}"
+        cols = model.data_objects["Customers"].columns
+        assert cols["Customer ID"].primary_key is True
+        # Default is False when omitted
+        assert cols["Customer Name"].primary_key is False
+
 
 class TestSemanticValidator:
     def test_valid_model(self, sales_model) -> None:

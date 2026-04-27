@@ -111,9 +111,12 @@
       "properties": {
         "dimensions": {
           "type": "array",
-          "description": "List of dimension names. Use 'name:grain' notation for time grain (e.g. 'Order Date:month').",
+          "description": "List of dimension names (string) or coalesce groups. Use 'name:grain' notation for time grain (e.g. 'Order Date:month').",
           "items": {
-            "type": "string"
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/definitions/coalesceDimension" }
+            ]
           }
         },
         "measures": {
@@ -124,6 +127,24 @@
           }
         }
       },
+      "additionalProperties": false
+    },
+    "coalesceDimension": {
+      "type": "object",
+      "description": "Combines multiple role-playing dimensions into a single output column via COALESCE. All members must resolve to the same abstract column type. The 'as' alias must be unique within the query and must not collide with an existing model dimension or measure name.",
+      "properties": {
+        "coalesce": {
+          "type": "array",
+          "description": "Two or more dimension names to coalesce, in priority order (first non-null wins).",
+          "items": { "type": "string" },
+          "minItems": 2
+        },
+        "as": {
+          "type": "string",
+          "description": "Output column alias. Used in SELECT and GROUP BY of the outer wrapper."
+        }
+      },
+      "required": ["coalesce", "as"],
       "additionalProperties": false
     },
     "usePathName": {

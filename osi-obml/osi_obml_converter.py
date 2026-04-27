@@ -449,6 +449,8 @@ class OSItoOBML:
                                 dim_def["description"] = ext_data["obml_dimension_description"]
                             if ext_data.get("obml_dimension_owner"):
                                 dim_def["owner"] = ext_data["obml_dimension_owner"]
+                            if ext_data.get("obml_dimension_via"):
+                                dim_def["via"] = ext_data["obml_dimension_via"]
                         except (json.JSONDecodeError, TypeError):
                             pass
                         break
@@ -1140,6 +1142,8 @@ class OBMLtoOSI:
                     ext_data["obml_dimension_description"] = dim_obj["description"]
                 if dim_obj.get("owner"):
                     ext_data["obml_dimension_owner"] = dim_obj["owner"]
+                if dim_obj.get("via"):
+                    ext_data["obml_dimension_via"] = dim_obj["via"]
                 break
         field["custom_extensions"] = [
             {

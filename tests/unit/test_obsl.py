@@ -71,6 +71,18 @@ class TestExporterColumns:
         col = URIRef(f"{BASE}t1/data-object/customers/column/country")
         assert (obj, OBSL.hasColumn, col) in g
 
+    def test_primary_key_triple_emitted(self, sales_model: SemanticModel) -> None:
+        # Sales fixture marks Customer ID as primary key.
+        g = export_obsl(sales_model, "t1")
+        pk_col = URIRef(f"{BASE}t1/data-object/customers/column/customer-id")
+        assert (pk_col, OBSL.primaryKey, Literal(True)) in g
+
+    def test_primary_key_omitted_for_non_pk(self, sales_model: SemanticModel) -> None:
+        # Customer Name is not a primary key — no triple should be emitted.
+        g = export_obsl(sales_model, "t1")
+        non_pk = URIRef(f"{BASE}t1/data-object/customers/column/customer-name")
+        assert (non_pk, OBSL.primaryKey, Literal(True)) not in g
+
 
 class TestExporterJoins:
     def test_join_type(self, sales_model: SemanticModel) -> None:

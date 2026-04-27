@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "1.8.1"
+version = "2.0.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -49,7 +49,6 @@ dependencies = [
     "structlog>=25.1,<26.0",
     "opentelemetry-api>=1.39,<2.0",
     "httpx>=0.28,<1.0",
-    "sqlparse>=0.5,<1.0",
     "sqlglot>=26.0,<27.0",
     "jsonschema>=4.23,<5.0",
     "rdflib>=7.0,<8.0",

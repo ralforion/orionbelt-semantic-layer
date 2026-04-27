@@ -16,6 +16,7 @@ dataObjects:
       Customer ID:
         code: CUSTOMER_ID
         abstractType: string
+        primaryKey: true
       Customer Name:
         code: NAME
         abstractType: string
@@ -34,6 +35,7 @@ dataObjects:
       Product ID:
         code: PRODUCT_ID
         abstractType: string
+        primaryKey: true
       Product Name:
         code: NAME
         abstractType: string
@@ -49,6 +51,7 @@ dataObjects:
       Order ID:
         code: ORDER_ID
         abstractType: string
+        primaryKey: true
       Order Date:
         code: ORDER_DATE
         abstractType: date

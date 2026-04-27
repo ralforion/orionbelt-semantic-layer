@@ -20,6 +20,7 @@ dataObjects:
       Region Key:
         code: r_regionkey
         abstractType: int
+        primaryKey: true
       Region Name:
         code: r_name
         abstractType: string
@@ -31,6 +32,7 @@ dataObjects:
       Nation Key:
         code: n_nationkey
         abstractType: int
+        primaryKey: true
       Nation Name:
         code: n_name
         abstractType: string
@@ -52,6 +54,7 @@ dataObjects:
       Customer Key:
         code: c_custkey
         abstractType: int
+        primaryKey: true
       Customer Name:
         code: c_name
         abstractType: string
@@ -80,6 +83,7 @@ dataObjects:
       Supplier Key:
         code: s_suppkey
         abstractType: int
+        primaryKey: true
       Supplier Name:
         code: s_name
         abstractType: string
@@ -104,6 +108,7 @@ dataObjects:
       Part Key:
         code: p_partkey
         abstractType: int
+        primaryKey: true
       Part Name:
         code: p_name
         abstractType: string
@@ -136,6 +141,7 @@ dataObjects:
       Order Key:
         code: o_orderkey
         abstractType: int
+        primaryKey: true
       Order Customer Key:
         code: o_custkey
         abstractType: int
@@ -167,6 +173,7 @@ dataObjects:
       Line Order Key:
         code: l_orderkey
         abstractType: int
+        primaryKey: true
       Line Part Key:
         code: l_partkey
         abstractType: int
@@ -176,6 +183,7 @@ dataObjects:
       Line Number:
         code: l_linenumber
         abstractType: int
+        primaryKey: true
       Quantity:
         code: l_quantity
         abstractType: float
@@ -241,9 +249,11 @@ dataObjects:
       PS Part Key:
         code: ps_partkey
         abstractType: int
+        primaryKey: true
       PS Supplier Key:
         code: ps_suppkey
         abstractType: int
+        primaryKey: true
       Available Qty:
         code: ps_availqty
         abstractType: int

@@ -23,6 +23,7 @@ class SemanticError(BaseModel):
     path: str | None = None
     span: SourceSpan | None = None
     suggestions: list[str] = []
+    severity: str = "error"
 
 
 class ValidationResult(BaseModel):

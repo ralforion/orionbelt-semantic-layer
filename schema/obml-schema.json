@@ -132,6 +132,11 @@
         "numClass": {
           "$ref": "#/definitions/numClass"
         },
+        "primaryKey": {
+          "type": "boolean",
+          "description": "Marks this column as part of the data object's primary key (informational; multiple columns may set true to express composite keys)",
+          "default": false
+        },
         "description": {
           "type": "string",
           "description": "Business description of this column (semantic layer metadata)"
@@ -476,6 +481,10 @@
             "$ref": "#/definitions/queryColumn"
           },
           "minItems": 2
+        },
+        "via": {
+          "type": "string",
+          "description": "Intermediate data object name. Forces the join path through this data object to reach the dimension's dataObject. Used for role-playing dimensions (e.g., SalesEmployee vs ReturnEmployee)."
         },
         "owner": {
           "type": "string",

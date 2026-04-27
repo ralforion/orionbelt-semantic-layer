@@ -47,8 +47,14 @@ def generate_mermaid_er(
             obj_fks = fk_cols.get(obj_name, set())
             for col_name, col in obj.columns.items():
                 safe_col = _sanitize_id(col_name)
-                fk_marker = " FK" if col_name in obj_fks else ""
-                lines.append(f"        {col.abstract_type.value} {safe_col}{fk_marker}")
+                # PK takes precedence over FK when a column is both
+                if col.primary_key:
+                    marker = " PK"
+                elif col_name in obj_fks:
+                    marker = " FK"
+                else:
+                    marker = ""
+                lines.append(f"        {col.abstract_type.value} {safe_col}{marker}")
             lines.append("    }")
 
     lines.append("")

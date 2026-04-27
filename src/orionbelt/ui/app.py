@@ -7,7 +7,6 @@ from typing import Any
 
 import gradio as gr
 import httpx
-import sqlparse
 import yaml
 
 _DEFAULT_API_URL = "http://localhost:8000"
@@ -110,13 +109,128 @@ _CSS = """\
 }
 .header-bar .header-links a:hover { opacity: 1; }
 .header-bar .header-links a svg { width: 18px; height: 18px; fill: currentColor; }
-/* compact settings row */
-.settings-row { min-height: 0 !important; }
+/* compact settings row — label inline with input via .settings-pair */
+.settings-row {
+  min-height: 0 !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+}
+.settings-pair {
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  padding: 0 !important;
+}
+.settings-pair > * {
+  align-self: center !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+/* Gradio wraps gr.HTML in a div — collapse it to its content width */
+.settings-pair > div:has(> .settings-label),
+.settings-pair > .prose,
+.settings-pair > .html-container {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+}
+/* Constrain dropdown/textbox wrappers so they don't fill the row */
+.settings-pair .wrap,
+.settings-pair .form,
+.settings-pair .block {
+  width: auto !important;
+  min-width: 0 !important;
+}
+.settings-pair input,
+.settings-pair textarea {
+  min-width: 360px !important;
+  white-space: nowrap !important;
+  overflow-x: auto !important;
+}
+.settings-pair textarea {
+  resize: none !important;
+  overflow-y: hidden !important;
+  height: 32px !important;
+  line-height: 1.4 !important;
+}
+.settings-pair .secondary-wrap,
+.settings-pair .options { min-width: 160px !important; }
+.settings-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0.85;
+  line-height: 32px;
+  display: inline-block !important;
+}
+.settings-spacer {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
 
-/* Code editors + SQL output: fixed heights */
-.code-editor .cm-editor { height: 45dvh !important; }
-#ob-query .cm-editor { height: calc(45dvh - 90px) !important; }
-.sql-output .cm-editor { max-height: 20dvh !important; }
+/* ── Vertically responsive editors (viewport-relative) ──
+   Constrain ROW height; make .code-editor a flex column so CodeMirror's
+   wrapper (last child) absorbs all remaining space inside its block. */
+.editor-row {
+  height: 42dvh !important;
+  max-height: 42dvh !important;
+  min-height: 240px !important;
+}
+.output-row {
+  height: 32dvh !important;
+  max-height: 32dvh !important;
+  min-height: 140px !important;
+}
+
+/* gr.Code blocks become flex columns; their CodeMirror child fills remaining space */
+.editor-row .code-editor,
+.output-row .code-editor {
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.editor-row .code-editor > *,
+.output-row .code-editor > * {
+  min-height: 0 !important;
+}
+.editor-row .code-editor > *:last-child,
+.output-row .code-editor > *:last-child {
+  flex: 1 1 0 !important;
+}
+.editor-row .cm-editor,
+.output-row .cm-editor {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+}
+.editor-row .cm-scroller,
+.output-row .cm-scroller { max-height: none !important; }
+
+/* Picker col: dropdowns auto-height on top, query editor fills rest */
+.picker-col {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden;
+}
+.picker-col > .picker-row { flex: 0 0 auto !important; }
+.picker-col > .code-editor {
+  flex: 1 1 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
 
 /* purple primary button — compact */
 .purple-btn {
@@ -216,14 +330,34 @@ _CSS = """\
 /* ── ER Diagram tab ── */
 #er-diagram {
   overflow: auto;
-  max-height: calc(100dvh - 220px);
   border: 1px solid var(--border-color-primary);
   border-radius: 8px;
   padding: 8px;
+  height: calc(100dvh - 220px);
+  min-height: 400px;
 }
 #er-diagram svg {
   transform-origin: top left;
   transition: transform 0.15s ease;
+}
+/* ── Ontology Graph tab ── */
+#ob-ontology-graph-container {
+  overflow: auto;
+  border-radius: 8px;
+}
+.ob-cb-do label span::before { content: '● '; color: #9E9E9E; }
+.ob-cb-dim label span::before { content: '● '; color: #4CAF50; }
+.ob-cb-meas label span::before { content: '● '; color: #2196F3; }
+.ob-cb-met label span::before { content: '● '; color: #9C27B0; }
+.ob-cb-joins label span::before { content: '◆ '; color: #9E9E9E; }
+
+/* ── Responsive: narrower viewports ── */
+@media (max-width: 900px) {
+  .settings-row { flex-wrap: wrap !important; }
+  .picker-row { flex-wrap: wrap !important; }
+  .picker-row > div { flex-wrap: wrap !important; }
+  .header-bar .header-links { gap: 8px; }
+  .header-bar .header-title { font-size: 18px; }
 }
 """
 
@@ -341,6 +475,23 @@ _DARK_MODE_INIT_JS = """
     }, true);
 }
 """
+
+
+_VIS_NETWORK_B64: str | None = None
+
+
+def _get_vis_network_b64() -> str:
+    """Return base64-encoded vis-network.min.js (cached)."""
+    import base64
+    from pathlib import Path
+
+    global _VIS_NETWORK_B64  # noqa: PLW0603
+    if _VIS_NETWORK_B64 is None:
+        js_path = Path(__file__).parent / "static" / "vis-network.min.js"
+        js_bytes = js_path.read_bytes()
+        _VIS_NETWORK_B64 = base64.b64encode(js_bytes).decode("ascii")
+    return _VIS_NETWORK_B64
+
 
 # Simple redirect — used as .then() after saving state.
 _THEME_REDIRECT_JS = """
@@ -865,25 +1016,8 @@ def _fetch_obsl_turtle(
 
 
 def _format_sql(sql: str) -> str:
-    """Pretty-print SQL with keyword-per-line formatting."""
-    import re
-
-    formatted = sqlparse.format(
-        sql,
-        reindent=True,
-        keyword_case="upper",
-        indent_width=2,
-        wrap_after=80,
-    )
-    # sqlparse doesn't break after UNION ALL — ensure newline before next SELECT
-    # Capture leading indentation so the new SELECT line keeps alignment
-    formatted = re.sub(
-        r"^(\s*)(UNION ALL(?:\s+BY NAME)?)\s+(SELECT\b)",
-        r"\1\2\n\1\3",
-        formatted,
-        flags=re.MULTILINE,
-    )
-    return formatted
+    """Return SQL unchanged — the API now pretty-prints with sqlglot."""
+    return sql
 
 
 def _fetch_diagram_er(
@@ -966,6 +1100,311 @@ def _generate_mermaid_er_local(
         return f"```mermaid\n{mermaid}\n```", mermaid
     except Exception as exc:
         return f"**Error:** {exc}", ""
+
+
+def _generate_ontology_graph_html(
+    model_yaml: str,
+    show_data_objects: bool = True,
+    show_dimensions: bool = True,
+    show_measures: bool = True,
+    show_metrics: bool = True,
+    show_joins: bool = True,
+    node_spacing: int = 150,
+) -> str:
+    """Build a self-contained vis-network HTML graph from OBML model YAML."""
+    import json
+    import re
+    from collections import defaultdict
+
+    from orionbelt.parser.loader import TrackedLoader
+    from orionbelt.parser.resolver import ReferenceResolver
+
+    if not model_yaml or not model_yaml.strip():
+        return "<p style='padding:16px;opacity:0.6'>No model loaded.</p>"
+
+    try:
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        if not result.valid:
+            msgs = "; ".join(e.message for e in result.errors)
+            return f"<p style='color:#F44336;padding:16px'>Model validation failed: {msgs}</p>"
+    except Exception as exc:
+        return f"<p style='color:#F44336;padding:16px'>Error: {exc}</p>"
+
+    nodes: list[dict[str, object]] = []
+    edges: list[dict[str, object]] = []
+    node_ids: set[str] = set()
+
+    def add_node(nid: str, **kwargs: object) -> None:
+        if nid not in node_ids:
+            node_ids.add(nid)
+            kwargs["id"] = nid
+            nodes.append(kwargs)
+
+    def add_edge(src: str, tgt: str, **kwargs: object) -> None:
+        kwargs["from"] = src
+        kwargs["to"] = tgt
+        edges.append(kwargs)
+
+    if show_data_objects:
+        for obj_name, obj in model.data_objects.items():
+            nid = f"do_{obj_name}"
+            title = f"DataObject: {obj_name}\nTable: {obj.qualified_code}"
+            if obj.description:
+                title += f"\n{obj.description}"
+            add_node(
+                nid,
+                label=obj_name,
+                title=title,
+                color={"background": "#9E9E9E", "border": "#757575"},
+                shape="box",
+                size=30,
+            )
+
+        if show_joins:
+            for obj_name, obj in model.data_objects.items():
+                for join in obj.joins:
+                    style: dict[str, object] = {
+                        "label": join.join_type.value,
+                        "title": f"{obj_name} → {join.join_to}\n{join.join_type.value}",
+                        "color": "#BDBDBD",
+                        "arrows": "to",
+                    }
+                    if join.secondary:
+                        style["dashes"] = True
+                        lbl = join.path_name or "secondary"
+                        style["label"] = lbl
+                        style["title"] = f"{obj_name} → {join.join_to}\n{lbl} (secondary)"
+                    add_edge(f"do_{obj_name}", f"do_{join.join_to}", **style)
+
+    if show_dimensions:
+        for dim_name, dim in model.dimensions.items():
+            nid = f"dim_{dim_name}"
+            title = (
+                f"Dimension: {dim_name}\nDataObject: {dim.view}"
+                f"\nColumn: {dim.column}\nType: {dim.result_type.value}"
+            )
+            if dim.via:
+                title += f"\nVia: {dim.via}"
+            if dim.description:
+                title += f"\n{dim.description}"
+            add_node(
+                nid,
+                label=dim_name,
+                title=title,
+                color={"background": "#4CAF50", "border": "#388E3C"},
+                shape="box",
+                size=20,
+            )
+            if show_data_objects and f"do_{dim.view}" in node_ids:
+                add_edge(
+                    nid,
+                    f"do_{dim.view}",
+                    label="dataObject",
+                    title=f"{dim_name} → {dim.view}",
+                    color="#4CAF50",
+                    arrows="to",
+                )
+            if dim.via and show_data_objects and f"do_{dim.via}" in node_ids:
+                add_edge(
+                    nid,
+                    f"do_{dim.via}",
+                    label="via",
+                    title=f"{dim_name} via {dim.via}",
+                    color="#81C784",
+                    arrows="to",
+                    dashes=True,
+                )
+
+    if show_measures:
+        for meas_name, meas in model.measures.items():
+            nid = f"meas_{meas_name}"
+            title = (
+                f"Measure: {meas_name}\nAggregation: {meas.aggregation}"
+                f"\nType: {meas.result_type.value}"
+            )
+            if meas.expression:
+                title += f"\nExpression: {meas.expression}"
+            if meas.description:
+                title += f"\n{meas.description}"
+            add_node(
+                nid,
+                label=meas_name,
+                title=title,
+                color={"background": "#2196F3", "border": "#1976D2"},
+                shape="box",
+                size=20,
+            )
+            seen: set[str] = set()
+            for ref in meas.columns:
+                if ref.view and ref.view not in seen:
+                    seen.add(ref.view)
+                    if show_data_objects and f"do_{ref.view}" in node_ids:
+                        add_edge(
+                            nid,
+                            f"do_{ref.view}",
+                            label="sourceColumn",
+                            title=f"{meas_name} → {ref.view}.{ref.column}",
+                            color="#64B5F6",
+                            arrows="to",
+                        )
+
+    if show_metrics:
+        for met_name, met in model.metrics.items():
+            nid = f"met_{met_name}"
+            title = f"Metric: {met_name}\nType: {met.type.value}"
+            if met.expression:
+                title += f"\nExpression: {met.expression}"
+            if met.description:
+                title += f"\n{met.description}"
+            add_node(
+                nid,
+                label=met_name,
+                title=title,
+                color={"background": "#9C27B0", "border": "#7B1FA2"},
+                shape="box",
+                size=20,
+            )
+            if met.expression and show_measures:
+                refs = re.findall(r"\{\[([^\]]+)\]\}", met.expression)
+                for ref_name in refs:
+                    if f"meas_{ref_name}" in node_ids:
+                        add_edge(
+                            nid,
+                            f"meas_{ref_name}",
+                            label="referencesMeasure",
+                            title=f"{met_name} → {ref_name}",
+                            color="#CE93D8",
+                            arrows="to",
+                        )
+            if met.measure and show_measures and f"meas_{met.measure}" in node_ids:
+                add_edge(
+                    nid,
+                    f"meas_{met.measure}",
+                    label="baseMeasure",
+                    title=f"{met_name} → {met.measure}",
+                    color="#CE93D8",
+                    arrows="to",
+                )
+
+    edge_groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    for edge in edges:
+        a, b = sorted((str(edge["from"]), str(edge["to"])))
+        edge_groups[(a, b)].append(edge)
+    for group in edge_groups.values():
+        if len(group) < 2:
+            continue
+        for i, edge in enumerate(group):
+            if i == 0:
+                edge["smooth"] = {"enabled": True, "type": "curvedCW", "roundness": 0.2}
+            elif i % 2 == 1:
+                edge["smooth"] = {
+                    "enabled": True,
+                    "type": "curvedCCW",
+                    "roundness": 0.2 * ((i + 1) // 2),
+                }
+            else:
+                edge["smooth"] = {
+                    "enabled": True,
+                    "type": "curvedCW",
+                    "roundness": 0.2 * ((i + 1) // 2),
+                }
+
+    n_count = len(nodes)
+    iters = min(max(n_count * 3, 150), 500)
+    options = {
+        "physics": {
+            "enabled": True,
+            "barnesHut": {
+                "gravitationalConstant": -5000,
+                "centralGravity": 0.3,
+                "springLength": node_spacing,
+                "springConstant": 0.04,
+                "avoidOverlap": 0.3,
+            },
+            "stabilization": {"enabled": True, "iterations": iters},
+        },
+        "nodes": {"font": {"color": "#f0f0f0", "size": 12}},
+        "edges": {
+            "font": {
+                "color": "#cccccc",
+                "size": 10,
+                "strokeWidth": 2,
+                "strokeColor": "#222222",
+            },
+            "smooth": {"enabled": True, "type": "curvedCW", "roundness": 0.2},
+        },
+    }
+
+    nodes_json = json.dumps(nodes)
+    edges_json = json.dumps(edges)
+    options_json = json.dumps(options)
+
+    vis_b64 = _get_vis_network_b64()
+
+    inner_html = f"""<!DOCTYPE html>
+<html><head><style>
+html,body{{margin:0;padding:0;overflow:hidden;background:transparent;width:100%;height:100%}}
+#g{{width:100%;height:100%}}
+#dl-btn{{position:absolute;top:8px;right:8px;z-index:10;background:rgba(128,128,128,0.15);
+border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:5px 8px;cursor:pointer;
+color:inherit;font-size:16px;line-height:1}}
+#dl-btn:hover{{background:rgba(128,128,128,0.3)}}
+</style></head><body>
+<div id="g"></div>
+<button id="dl-btn" title="Download as PNG">&#11123;</button>
+<script>
+var s=document.createElement('script');
+s.textContent=atob('{vis_b64}');
+document.head.appendChild(s);
+var n=new vis.DataSet({nodes_json});
+var e=new vis.DataSet({edges_json});
+var o={options_json};
+var nw=new vis.Network(document.getElementById('g'),
+  {{nodes:n,edges:e}},o);
+nw.once('stabilizationIterationsDone',function(){{
+  nw.fit({{animation:false,padding:15}});
+  setTimeout(function(){{nw.setOptions({{physics:{{enabled:false}}}});}},500);
+}});
+window.addEventListener('resize',function(){{nw.redraw();nw.fit({{padding:15}});}});
+document.getElementById('dl-btn').onclick=function(){{
+  var cv=document.querySelector('canvas');
+  if(!cv)return;
+  var a=document.createElement('a');
+  a.href=cv.toDataURL('image/png');
+  a.download='ontology-graph.png';
+  a.click();
+}};
+</script></body></html>"""
+
+    srcdoc = inner_html.replace("&", "&amp;").replace('"', "&quot;")
+    return (
+        f'<iframe srcdoc="{srcdoc}" '
+        f'style="width:100%;height:calc(100dvh - 310px);'
+        f"border:1px solid #555;"
+        f'border-radius:8px" sandbox="allow-scripts allow-downloads"></iframe>'
+    )
+
+
+def _render_ontology_graph(
+    model_yaml: str,
+    show_data_objects: bool,
+    show_dimensions: bool,
+    show_measures: bool,
+    show_metrics: bool,
+    show_joins: bool,
+    node_spacing: int = 150,
+) -> str:
+    """Gradio callback for the Ontology Graph tab."""
+    return _generate_ontology_graph_html(
+        model_yaml,
+        show_data_objects,
+        show_dimensions,
+        show_measures,
+        show_metrics,
+        show_joins,
+        node_spacing=int(node_spacing),
+    )
 
 
 def _load_example_model() -> str:
@@ -1635,7 +2074,9 @@ def validate_model(
         return f"Error: {exc}", ""
 
 
-def _extract_model_items(model_yaml: str) -> tuple[list[str], list[str], list[str]]:
+def _extract_model_items(
+    model_yaml: str,
+) -> tuple[list[str | tuple[str, str]], list[str], list[str]]:
     """Extract dimension names, measure/metric names, and field names from model YAML.
 
     Returns ``(dimensions, measures_metrics, fields)``.
@@ -1645,7 +2086,14 @@ def _extract_model_items(model_yaml: str) -> tuple[list[str], list[str], list[st
     except Exception:
         return [], [], []
     raw_dims = raw.get("dimensions", {})
-    dims = sorted(raw_dims.keys()) if isinstance(raw_dims, dict) else []
+    dims: list[str | tuple[str, str]] = []
+    if isinstance(raw_dims, dict):
+        for name, dobj in sorted(raw_dims.items()):
+            via = dobj.get("via") if isinstance(dobj, dict) else None
+            if via:
+                dims.append((f"{name} (via {via})", name))
+            else:
+                dims.append(name)
     raw_meas = raw.get("measures", {})
     measures = list(raw_meas.keys()) if isinstance(raw_meas, dict) else []
     raw_mets = raw.get("metrics", {})
@@ -1785,7 +2233,7 @@ def create_blocks(
         saved_query = gr.BrowserState("", storage_key="ob_query_yaml")
         saved_api = gr.BrowserState(api_base, storage_key="ob_api_url")
         saved_dialect = gr.BrowserState(default_dialect, storage_key="ob_dialect")
-        saved_zoom = gr.BrowserState(100, storage_key="ob_zoom")
+        saved_zoom = gr.BrowserState(80, storage_key="ob_zoom")
         saved_sql = gr.BrowserState("", storage_key="ob_sql_output")
 
         # ── Stateful API session (avoids re-creating per compile) ──
@@ -1827,18 +2275,37 @@ def create_blocks(
         with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
-                    dialect = gr.Dropdown(
-                        choices=dialects,
-                        value=default_dialect,
-                        label="SQL Dialect",
-                        scale=1,
-                    )
-                    api_url = gr.Textbox(
-                        value=api_base,
-                        label="API Base URL",
-                        scale=2,
-                        interactive=not cohosted,
-                    )
+                    with gr.Row(elem_classes=["settings-pair"]):
+                        gr.HTML(
+                            '<span class="settings-label">SQL Dialect</span>',
+                            padding=False,
+                        )
+                        dialect = gr.Dropdown(
+                            choices=dialects,
+                            value=default_dialect,
+                            label="SQL Dialect",
+                            show_label=False,
+                            container=False,
+                            scale=0,
+                            min_width=160,
+                        )
+                    with gr.Row(elem_classes=["settings-pair"]):
+                        gr.HTML(
+                            '<span class="settings-label">API Base URL</span>',
+                            padding=False,
+                        )
+                        api_url = gr.Textbox(
+                            value=api_base,
+                            label="API Base URL",
+                            show_label=False,
+                            container=False,
+                            scale=0,
+                            min_width=360,
+                            lines=1,
+                            max_lines=1,
+                            interactive=not cohosted,
+                        )
+                    gr.HTML("", elem_classes=["settings-spacer"])
                     import_osi_btn = gr.Button(
                         "Import OSI",
                         size="sm",
@@ -1851,7 +2318,7 @@ def create_blocks(
 
                 init_dims, init_meas, init_fields = _extract_model_items(example_model)
 
-                with gr.Row():
+                with gr.Row(elem_classes=["editor-row"]):
                     model_label = (
                         "OBML Model (YAML) \u2014 read-only (single-model mode)"
                         if single_model
@@ -1861,7 +2328,8 @@ def create_blocks(
                         value=example_model,
                         language="yaml",
                         label=model_label,
-                        lines=11,
+                        lines=8,
+                        max_lines=10000,
                         scale=3,
                         interactive=not single_model,
                         elem_classes=["code-editor"],
@@ -1894,7 +2362,8 @@ def create_blocks(
                             value=_DEFAULT_QUERY,
                             language="yaml",
                             label="Query (YAML) \u2014 schema/query-schema.json",
-                            lines=11,
+                            lines=6,
+                            max_lines=10000,
                             interactive=True,
                             elem_classes=["code-editor"],
                             elem_id="ob-query",
@@ -1990,21 +2459,23 @@ def create_blocks(
                         min_width=140,
                     )
 
-                with gr.Row():
+                with gr.Row(elem_classes=["output-row"]):
                     sql_output = gr.Code(
                         language="sql",
                         label="Generated SQL",
                         interactive=False,
-                        lines=3,
-                        elem_classes=["sql-output"],
+                        lines=4,
+                        max_lines=10000,
+                        elem_classes=["sql-output", "code-editor"],
                         elem_id="ob-sql",
                     )
                     explain_output = gr.Code(
                         language="yaml",
                         label="Query Explain",
                         interactive=False,
-                        lines=3,
-                        elem_classes=["sql-output"],
+                        lines=4,
+                        max_lines=10000,
+                        elem_classes=["sql-output", "code-editor"],
                         elem_id="ob-explain",
                     )
 
@@ -2170,7 +2641,7 @@ def create_blocks(
                     zoom_slider = gr.Slider(
                         minimum=10,
                         maximum=200,
-                        value=100,
+                        value=80,
                         step=10,
                         label="Zoom %",
                         scale=1,
@@ -2249,6 +2720,24 @@ def create_blocks(
                     js=_apply_zoom_deferred_js,
                 )
 
+                show_columns_cb.change(
+                    fn=_fetch_diagram_er,
+                    inputs=[
+                        model_input,
+                        show_columns_cb,
+                        api_url,
+                        session_state,
+                        model_state,
+                        theme_input,
+                    ],
+                    outputs=[mermaid_output, mermaid_raw, session_state, model_state],
+                    js=_DETECT_THEME_JS,
+                ).then(
+                    fn=None,
+                    inputs=[zoom_slider],
+                    js=_apply_zoom_deferred_js,
+                )
+
                 zoom_slider.change(
                     fn=None,
                     inputs=[zoom_slider],
@@ -2265,7 +2754,85 @@ def create_blocks(
                     js=_DOWNLOAD_PNG_JS,
                 )
 
-            with gr.Tab("Settings", id=3) as settings_tab:
+            with gr.Tab("Ontology Graph", id=3) as ontology_tab:
+                with gr.Row():
+                    show_do_cb = gr.Checkbox(
+                        value=True, label="DataObjects", elem_classes=["ob-cb-do"]
+                    )
+                    show_dim_cb = gr.Checkbox(
+                        value=True, label="Dimensions", elem_classes=["ob-cb-dim"]
+                    )
+                    show_meas_cb = gr.Checkbox(
+                        value=True, label="Measures", elem_classes=["ob-cb-meas"]
+                    )
+                    show_met_cb = gr.Checkbox(
+                        value=True, label="Metrics", elem_classes=["ob-cb-met"]
+                    )
+                    show_joins_cb = gr.Checkbox(
+                        value=True, label="Joins", elem_classes=["ob-cb-joins"]
+                    )
+                    node_spacing_slider = gr.Slider(
+                        minimum=50,
+                        maximum=400,
+                        value=150,
+                        step=10,
+                        label="Node Spacing",
+                        scale=2,
+                        min_width=240,
+                    )
+                    ontology_btn = gr.Button(
+                        "Render Graph",
+                        variant="primary",
+                        elem_classes=["purple-btn"],
+                        scale=1,
+                        min_width=160,
+                    )
+
+                ontology_output = gr.HTML(
+                    value=(
+                        "<p style='padding:16px;opacity:0.6'>"
+                        "Click 'Render Graph' to generate the ontology graph "
+                        "from the model YAML.</p>"
+                    ),
+                    elem_id="ob-ontology-graph-container",
+                )
+
+                _ontology_inputs = [
+                    model_input,
+                    show_do_cb,
+                    show_dim_cb,
+                    show_meas_cb,
+                    show_met_cb,
+                    show_joins_cb,
+                    node_spacing_slider,
+                ]
+
+                ontology_btn.click(
+                    fn=_render_ontology_graph,
+                    inputs=_ontology_inputs,
+                    outputs=[ontology_output],
+                )
+
+                ontology_tab.select(
+                    fn=_render_ontology_graph,
+                    inputs=_ontology_inputs,
+                    outputs=[ontology_output],
+                )
+
+                for _cb in [show_do_cb, show_dim_cb, show_meas_cb, show_met_cb, show_joins_cb]:
+                    _cb.change(
+                        fn=_render_ontology_graph,
+                        inputs=_ontology_inputs,
+                        outputs=[ontology_output],
+                    )
+
+                node_spacing_slider.release(
+                    fn=_render_ontology_graph,
+                    inputs=_ontology_inputs,
+                    outputs=[ontology_output],
+                )
+
+            with gr.Tab("Settings", id=4) as settings_tab:
                 settings_output = gr.Code(
                     language="yaml",
                     label="API Settings",
@@ -2364,11 +2931,14 @@ def create_ui() -> None:
     demo = create_blocks(default_api_url=api_url)
 
     if root_path:
+        from pathlib import Path
+
         import gradio as gr
         from fastapi import FastAPI
 
         app = FastAPI()
-        app = gr.mount_gradio_app(app, demo, path=root_path)
+        favicon = str(Path(__file__).resolve().parent / "favicon.png")
+        app = gr.mount_gradio_app(app, demo, path=root_path, favicon_path=favicon)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2380,9 +2950,13 @@ def create_ui() -> None:
             timeout_graceful_shutdown=3,
         )
     else:
+        from pathlib import Path
+
+        favicon = str(Path(__file__).resolve().parent / "favicon.png")
         demo.launch(
             server_name="0.0.0.0",
             server_port=port,
+            favicon_path=favicon,
         )
 
 

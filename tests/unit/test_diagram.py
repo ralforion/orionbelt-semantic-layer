@@ -111,6 +111,26 @@ class TestGenerateMermaidER:
         # Non-FK columns should NOT have FK marker
         assert "string Order_ID FK" not in result
 
+    def test_pk_annotation(self) -> None:
+        model = _sample_model()
+        # Mark Order ID as primary key on Orders, Cust ID on Customers
+        model.data_objects["Orders"].columns["Order ID"].primary_key = True
+        model.data_objects["Customers"].columns["Cust ID"].primary_key = True
+        result = generate_mermaid_er(model)
+        assert "string Order_ID PK" in result
+        assert "string Cust_ID PK" in result
+        # Plain columns stay unmarked
+        assert "float Amount PK" not in result
+        assert "float Amount FK" not in result
+
+    def test_pk_takes_precedence_over_fk(self) -> None:
+        # When a column is both PK (declared) and FK (used in join), PK wins.
+        model = _sample_model()
+        model.data_objects["Orders"].columns["Customer ID"].primary_key = True
+        result = generate_mermaid_er(model)
+        assert "string Customer_ID PK" in result
+        assert "string Customer_ID FK" not in result
+
     def test_relationship_present(self) -> None:
         model = _sample_model()
         result = generate_mermaid_er(model)

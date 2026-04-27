@@ -22,6 +22,7 @@ dataObjects:
       Customer ID:
         code: CUSTOMER_ID
         abstractType: string
+        primaryKey: true
       Country:
         code: COUNTRY
         abstractType: string
@@ -37,6 +38,7 @@ dataObjects:
       Order ID:
         code: ORDER_ID
         abstractType: string
+        primaryKey: true
       Customer ID:
         code: CUSTOMER_ID
         abstractType: string

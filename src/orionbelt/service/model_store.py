@@ -275,14 +275,16 @@ class ModelStore:
         # 3. Semantic validation
         sem_errors = self._validator.validate(model)
         for e in sem_errors:
-            errors.append(
-                ErrorInfo(
-                    code=e.code,
-                    message=e.message,
-                    path=e.path,
-                    suggestions=list(e.suggestions),
-                )
+            info = ErrorInfo(
+                code=e.code,
+                message=e.message,
+                path=e.path,
+                suggestions=list(e.suggestions),
             )
+            if e.severity == "warning":
+                warnings.append(info)
+            else:
+                errors.append(info)
 
         return model, errors, warnings
 

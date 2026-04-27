@@ -379,6 +379,7 @@ class DimensionDetail(BaseModel):
     column: str
     result_type: str
     time_grain: str | None = None
+    via: str | None = None
     description: str | None = None
     format: str | None = None
     owner: str | None = None

@@ -112,6 +112,7 @@ dataObjects:
 | `sqlPrecision` | int | No | Informational: numeric precision |
 | `sqlScale` | int | No | Informational: numeric scale |
 | `numClass` | enum | No | Classification of numeric columns to control aggregation behavior. `categorical` (IDs/codes), `additive` (sum-safe), `non-additive` (rates/ratios) |
+| `primaryKey` | bool | No | Marks the column as part of the data object's primary key. Informational only — set on multiple columns for composite keys. Rendered as `PK` in the ER diagram and emitted as `obsl:primaryKey` in the OBSL graph. |
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
@@ -214,9 +215,43 @@ dimensions:
 | `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
 | `label` | string | No | Display label |
 | `timeGrain` | enum | No | Time grain: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` |
+| `via` | string | No | Force join path through this intermediate data object (role-playing dimensions) |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+
+### Role-Playing Dimensions (via)
+
+When multiple fact tables join to the same dimension table, use `via` to scope a dimension to a specific join path. This is called a **role-playing dimension** — the same physical table serves different business roles depending on which fact table provides the context.
+
+```yaml
+dimensions:
+  # Without via: the compiler picks the shortest path (may be ambiguous)
+  EmployeeName:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+
+  # With via: scoped to Sales context — joins Sales → Employees
+  SalesEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Sales
+
+  # With via: scoped to Returns context — joins Returns → Employees
+  ReturnEmployee:
+    dataObject: Employees
+    column: employeename
+    resultType: string
+    via: Returns
+```
+
+The `via` data object must be reachable from the query's base object, and the dimension's `dataObject` must be reachable from `via` in the directed join graph. The compiler validates this at model load time.
+
+The `via` object can be any ancestor on the path — it doesn't have to be the immediate parent. For example, `via: Sales` on a dimension targeting `Regions` would force the path `Sales → Clients → Countries → Regions`.
+
+The validator will emit `MISSING_VIA` warnings when a dimension's target is reachable from multiple fact tables without `via` set.
 
 ### Time Dimensions
 

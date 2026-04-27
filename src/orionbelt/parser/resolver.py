@@ -143,6 +143,7 @@ class ReferenceResolver:
                         sql_precision=fdata.get("sqlPrecision"),
                         sql_scale=fdata.get("sqlScale"),
                         num_class=fdata.get("numClass"),
+                        primary_key=bool(fdata.get("primaryKey", False)),
                         comment=fdata.get("comment"),
                         owner=fdata.get("owner"),
                         synonyms=fdata.get("synonyms", []),
@@ -240,12 +241,28 @@ class ReferenceResolver:
                         )
                     )
 
+                via = raw_dim.get("via")
+                if via and via not in data_objects:
+                    span = source_map.get(f"dimensions.{name}") if source_map else None
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_DATA_OBJECT",
+                            message=(
+                                f"Dimension '{name}' via references unknown data object '{via}'"
+                            ),
+                            path=f"dimensions.{name}",
+                            span=span,
+                            suggestions=_suggest_similar(via, list(data_objects.keys())),
+                        )
+                    )
+
                 dimensions[name] = Dimension(
                     label=name,
                     view=data_object or "",
                     column=column or "",
                     result_type=raw_dim.get("resultType", "string"),
                     time_grain=raw_dim.get("timeGrain"),
+                    via=via,
                     format=raw_dim.get("format"),
                     owner=raw_dim.get("owner"),
                     synonyms=raw_dim.get("synonyms", []),
