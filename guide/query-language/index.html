@@ -820,10 +820,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#measures" class="md-nav__link">
+  <a href="#coalesce-merging-role-playing-dimensions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Measures
+        Coalesce (Merging Role-Playing Dimensions)
       
     </span>
   </a>
@@ -831,10 +831,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#coalesce-merging-role-playing-dimensions" class="md-nav__link">
+  <a href="#measures" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coalesce (Merging Role-Playing Dimensions)
+        Measures
       
     </span>
   </a>
@@ -1985,10 +1985,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#measures" class="md-nav__link">
+  <a href="#coalesce-merging-role-playing-dimensions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Measures
+        Coalesce (Merging Role-Playing Dimensions)
       
     </span>
   </a>
@@ -1996,10 +1996,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#coalesce-merging-role-playing-dimensions" class="md-nav__link">
+  <a href="#measures" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coalesce (Merging Role-Playing Dimensions)
+        Measures
       
     </span>
   </a>
@@ -2418,23 +2418,15 @@
 </span></code></pre></div>
 <p>Supported grains: <code>year</code>, <code>quarter</code>, <code>month</code>, <code>week</code>, <code>day</code>, <code>hour</code>, <code>minute</code>, <code>second</code>.</p>
 <p>This overrides any <code>timeGrain</code> set on the dimension definition.</p>
-<h3 id="measures">Measures<a class="headerlink" href="#measures" title="Permanent link">&para;</a></h3>
-<p>Measures are referenced by name. They can be simple aggregations, expression-based measures, or metrics.</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">select</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">measures</span><span class="p">:</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Count</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue per Order</span><span class="w">    </span><span class="c1"># metric</span>
-</span></code></pre></div>
 <h3 id="coalesce-merging-role-playing-dimensions">Coalesce (Merging Role-Playing Dimensions)<a class="headerlink" href="#coalesce-merging-role-playing-dimensions" title="Permanent link">&para;</a></h3>
 <p>Role-playing dimensions (e.g. <code>Sales Employee</code> and <code>Purchase Employee</code>, both pointing to <code>Employees.Employee Name</code> via different facts) appear as separate columns in CFL output — one row per role per person. To collapse them into a single output column, use a coalesce group inside <code>dimensions</code>:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">select</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">dimensions</span><span class="p">:</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">coalesce</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">Employee Name</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">Purchase Employee</span><span class="p p-Indicator">]</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">      </span><span class="nt">as</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Employee</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="nt">measures</span><span class="p">:</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Total Sales</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Total Purchase Qty</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">select</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">dimensions</span><span class="p">:</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">coalesce</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">Employee Name</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">Purchase Employee</span><span class="p p-Indicator">]</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">      </span><span class="nt">as</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Employee</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">measures</span><span class="p">:</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Total Sales</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Total Purchase Qty</span>
 </span></code></pre></div>
 <p>Each leg still projects only its own role-playing dimension (others NULL); the outer wrapper emits <code>COALESCE("Employee Name", "Purchase Employee") AS "Employee"</code> and groups by it. A person who is both a sales rep and a purchase employee shows up as one row with totals on both sides.</p>
 <p><strong>Rules:</strong></p>
@@ -2446,6 +2438,14 @@
 <li><code>where</code> filters belong on the underlying dimension names (filtering is applied per leg, before the COALESCE collapses the values)</li>
 </ul>
 <p><strong>Error codes:</strong> <code>COALESCE_MISSING_ALIAS</code>, <code>DUPLICATE_COALESCE_ALIAS</code>, <code>COALESCE_ALIAS_COLLISION</code>, <code>COALESCE_TOO_FEW_MEMBERS</code>, <code>COALESCE_TYPE_MISMATCH</code>.</p>
+<h3 id="measures">Measures<a class="headerlink" href="#measures" title="Permanent link">&para;</a></h3>
+<p>Measures are referenced by name. They can be simple aggregations, expression-based measures, or metrics.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">select</span><span class="p">:</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">measures</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order Count</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue per Order</span><span class="w">    </span><span class="c1"># metric</span>
+</span></code></pre></div>
 <h2 id="secondary-join-paths">Secondary Join Paths<a class="headerlink" href="#secondary-join-paths" title="Permanent link">&para;</a></h2>
 <p>When a model defines secondary joins (e.g., <code>Flights</code> → <code>Airports</code> via departure and arrival), use <code>usePathNames</code> to select which join path to use:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">select</span><span class="p">:</span>
