@@ -85,18 +85,6 @@ Supported grains: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `
 
 This overrides any `timeGrain` set on the dimension definition.
 
-### Measures
-
-Measures are referenced by name. They can be simple aggregations, expression-based measures, or metrics.
-
-```yaml
-select:
-  measures:
-    - Revenue
-    - Order Count
-    - Revenue per Order    # metric
-```
-
 ### Coalesce (Merging Role-Playing Dimensions)
 
 Role-playing dimensions (e.g. `Sales Employee` and `Purchase Employee`, both pointing to `Employees.Employee Name` via different facts) appear as separate columns in CFL output — one row per role per person. To collapse them into a single output column, use a coalesce group inside `dimensions`:
@@ -122,6 +110,18 @@ Each leg still projects only its own role-playing dimension (others NULL); the o
 - `where` filters belong on the underlying dimension names (filtering is applied per leg, before the COALESCE collapses the values)
 
 **Error codes:** `COALESCE_MISSING_ALIAS`, `DUPLICATE_COALESCE_ALIAS`, `COALESCE_ALIAS_COLLISION`, `COALESCE_TOO_FEW_MEMBERS`, `COALESCE_TYPE_MISMATCH`.
+
+### Measures
+
+Measures are referenced by name. They can be simple aggregations, expression-based measures, or metrics.
+
+```yaml
+select:
+  measures:
+    - Revenue
+    - Order Count
+    - Revenue per Order    # metric
+```
 
 ## Secondary Join Paths
 
