@@ -10,13 +10,23 @@ from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
 from orionbelt.compiler.fanout import detect_fanout
 from orionbelt.compiler.filter_wrap import wrap_with_filter_context
 from orionbelt.compiler.pop_wrap import wrap_with_pop
+from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+
+
+class RawModeUnsupportedError(Exception):
+    """Raised when a raw-mode query needs CFL (multi-fact union); not yet supported."""
+
+    def __init__(self, errors: list[SemanticError]) -> None:
+        self.errors = errors
+        super().__init__("; ".join(e.message for e in errors))
 
 
 @dataclass
@@ -87,6 +97,7 @@ class CompilationPipeline:
         self._resolver = QueryResolver()
         self._star_planner = StarSchemaPlanner()
         self._cfl_planner = CFLPlanner()
+        self._raw_planner = RawPlanner()
 
     def compile(
         self,
@@ -98,6 +109,22 @@ class CompilationPipeline:
         # Phase 1: Resolution
         resolved = self._resolver.resolve(query, model)
 
+        # Raw mode: reject multi-fact queries — raw CFL is a planned follow-up.
+        if resolved.is_raw and resolved.requires_cfl:
+            raise RawModeUnsupportedError(
+                [
+                    SemanticError(
+                        code="RAW_MODE_MULTI_FACT_NOT_SUPPORTED",
+                        message=(
+                            "Raw mode does not yet support fields spanning independent "
+                            "fact tables (would require UNION ALL with NULL padding). "
+                            "Split the query so each fact is queried separately."
+                        ),
+                        path="select.fields",
+                    )
+                ]
+            )
+
         # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
         if not resolved.requires_cfl:
             detect_fanout(resolved, model)
@@ -108,9 +135,13 @@ class CompilationPipeline:
             obj.database, obj.schema_name, obj.code
         )
 
-        # Phase 2: Planning (star schema or CFL)
+        # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
-        if use_cfl:
+        if resolved.is_raw:
+            plan = self._raw_planner.plan(
+                resolved, model, qualify_table=qualify_table, dialect=dialect
+            )
+        elif use_cfl:
             plan = self._cfl_planner.plan(
                 resolved,
                 model,
@@ -123,26 +154,34 @@ class CompilationPipeline:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
-        # Phase 2.3: Wrap with filter context CTEs if needed
-        wrapped_ast = wrap_with_filter_context(plan.ast, resolved, model, dialect, qualify_table)
-
-        # Phase 2.4: Wrap with PoP CTEs if needed
-        wrapped_ast = wrap_with_pop(wrapped_ast, resolved, model, dialect, qualify_table)
-
-        # Phase 2.5: Wrap with totals CTE if needed
-        # Skip totals wrap when PoP or cumulative is active — the combination
-        # produces invalid SQL because totals rewrites the AST structure that
-        # PoP/cumulative wrappers depend on.
-        if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
-            resolved.warnings.append(
-                "total=True measures are ignored when combined with "
-                "period-over-period or cumulative metrics in the same query"
-            )
+        # Phase 2.3 – 2.6: Aggregate-mode wrappers (filter context, PoP,
+        # totals, cumulative). Raw mode has no measures, so these are no-ops
+        # and skipped entirely for clarity.
+        if resolved.is_raw:
+            wrapped_ast = plan.ast
         else:
-            wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
+            # Wrap with filter context CTEs if needed
+            wrapped_ast = wrap_with_filter_context(
+                plan.ast, resolved, model, dialect, qualify_table
+            )
 
-        # Phase 2.6: Wrap with cumulative CTE if needed
-        wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)
+            # Wrap with PoP CTEs if needed
+            wrapped_ast = wrap_with_pop(wrapped_ast, resolved, model, dialect, qualify_table)
+
+            # Wrap with totals CTE if needed
+            # Skip totals wrap when PoP or cumulative is active — the combination
+            # produces invalid SQL because totals rewrites the AST structure that
+            # PoP/cumulative wrappers depend on.
+            if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
+                resolved.warnings.append(
+                    "total=True measures are ignored when combined with "
+                    "period-over-period or cumulative metrics in the same query"
+                )
+            else:
+                wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
+
+            # Wrap with cumulative CTE if needed
+            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)
 
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)
@@ -187,7 +226,14 @@ class CompilationPipeline:
         q = self._q
 
         # Planner choice
-        if use_cfl:
+        if resolved.is_raw:
+            planner = "Raw"
+            distinct_note = " with DISTINCT" if resolved.distinct else ""
+            planner_reason = (
+                f"Raw-mode projection of physical columns{distinct_note} — "
+                f"no aggregation, no GROUP BY"
+            )
+        elif use_cfl:
             if resolved.dimensions_exclude:
                 planner = "CFL"
                 planner_reason = (

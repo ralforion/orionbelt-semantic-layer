@@ -38,6 +38,7 @@ from orionbelt.api.schemas import (
     ValidateResponse,
 )
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.pipeline import RawModeUnsupportedError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import UnsupportedAggregationError
@@ -332,6 +333,16 @@ async def compile_query(
             status_code=422,
             detail={"error": "Query fanout detected", "message": exc.message},
         ) from None
+    except RawModeUnsupportedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Raw-mode query not supported",
+                "errors": [
+                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
+                ],
+            },
+        ) from None
     except UnsupportedAggregationError as exc:
         raise HTTPException(
             status_code=422,
@@ -525,6 +536,16 @@ async def execute_query(
         raise HTTPException(
             status_code=422,
             detail={"error": "Query fanout detected", "message": exc.message},
+        ) from None
+    except RawModeUnsupportedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Raw-mode query not supported",
+                "errors": [
+                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
+                ],
+            },
         ) from None
     except UnsupportedAggregationError as exc:
         raise HTTPException(
