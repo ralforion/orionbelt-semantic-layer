@@ -1,4 +1,13 @@
-"""Raw-mode planner: project physical columns without aggregation."""
+"""Raw-mode planner: project physical columns without aggregation.
+
+Two strategies:
+
+* Single-fact: all field source objects reachable from one base via directed
+  joins → flat ``SELECT [DISTINCT] ... FROM base LEFT JOIN ... WHERE ...``.
+* Multi-fact (raw CFL): fields span independent facts → one UNION ALL leg
+  per leg-root with NULL-padding for fields not reachable from that leg.
+  Outer wrapper: ``SELECT [DISTINCT] * FROM (composite) ORDER BY ... LIMIT ...``.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +15,19 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.builder import QueryBuilder
-from orionbelt.ast.nodes import AliasedExpr, ColumnRef
+from orionbelt.ast.nodes import (
+    CTE,
+    AliasedExpr,
+    Cast,
+    ColumnRef,
+    Expr,
+    Literal,
+    Select,
+    UnionAll,
+)
 from orionbelt.compiler.graph import JoinGraph
-from orionbelt.compiler.resolution import ResolvedQuery
-from orionbelt.compiler.star import QueryPlan
+from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery
+from orionbelt.compiler.star import CflLegInfo, QueryPlan
 from orionbelt.models.semantic import DataObject, SemanticModel
 
 if TYPE_CHECKING:
@@ -19,10 +37,7 @@ if TYPE_CHECKING:
 class RawPlanner:
     """Plans raw-mode queries: flat projection of physical columns.
 
-    Emits ``SELECT [DISTINCT] field1, field2, ... FROM base [LEFT JOIN ...]
-    [WHERE ...] [ORDER BY ...] [LIMIT n]`` with no GROUP BY and no aggregates.
-    Multi-fact queries (fields spanning independent fact tables) are rejected
-    by the pipeline; raw CFL is a planned follow-up.
+    Routes to single-fact or CFL strategy based on ``resolved.requires_cfl``.
     """
 
     def plan(
@@ -31,6 +46,20 @@ class RawPlanner:
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
         dialect: Dialect | None = None,  # noqa: ARG002 — kept for parity with other planners
+    ) -> QueryPlan:
+        if resolved.requires_cfl:
+            return self._plan_cfl(resolved, model, qualify_table)
+        return self._plan_single_fact(resolved, model, qualify_table)
+
+    # ------------------------------------------------------------------
+    # Single-fact path
+    # ------------------------------------------------------------------
+
+    def _plan_single_fact(
+        self,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        qualify_table: Callable[[DataObject], str] | None,
     ) -> QueryPlan:
         builder = QueryBuilder()
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
@@ -44,7 +73,6 @@ class RawPlanner:
 
         base_alias = resolved.base_object
 
-        # SELECT — one aliased ColumnRef per field, in declaration order.
         for f in resolved.fields:
             builder.select(
                 AliasedExpr(
@@ -56,10 +84,8 @@ class RawPlanner:
         if resolved.distinct:
             builder.distinct(True)
 
-        # FROM
         builder.from_(qualify(base_object), alias=base_alias)
 
-        # JOINs (same logic as star schema; raw mode reuses join_steps).
         joined = {base_alias}
         for step in resolved.join_steps:
             if step.to_object not in joined:
@@ -80,18 +106,280 @@ class RawPlanner:
             )
             joined.add(new_object)
 
-        # WHERE
         for wf in resolved.where_filters:
             builder.where(wf.expression)
 
-        # ORDER BY
         for expr, desc in resolved.order_by_exprs:
             builder.order_by(expr, desc=desc)
 
-        # LIMIT / OFFSET
         if resolved.limit is not None:
             builder.limit(resolved.limit)
         if resolved.offset is not None:
             builder.offset(resolved.offset)
 
         return QueryPlan(ast=builder.build())
+
+    # ------------------------------------------------------------------
+    # Multi-fact (raw CFL) path
+    # ------------------------------------------------------------------
+
+    def _plan_cfl(
+        self,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        qualify_table: Callable[[DataObject], str] | None,
+    ) -> QueryPlan:
+        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+
+        def qualify(obj: DataObject) -> str:
+            return qualify_table(obj) if qualify_table else obj.qualified_code
+
+        # Field source objects are the candidate set. A "leg root" is one
+        # that is not a directed descendant of any other source — i.e. it
+        # cannot be reached from another field's source via m:1 joins.
+        field_objects = {f.object_name for f in resolved.fields}
+        leg_roots = self._identify_leg_roots(field_objects, graph)
+
+        # Filter-referenced objects: each leg must include them so WHERE
+        # predicates compile. Use the same collector as aggregate CFL.
+        filter_objects: set[str] = set()
+        for wf in resolved.where_filters:
+            self._collect_table_refs(wf.expression, filter_objects)
+
+        union_legs: list[Select] = []
+        leg_infos: list[CflLegInfo] = []
+
+        for root in sorted(leg_roots):
+            reachable = graph.descendants(root) | {root}
+            leg_required = {f.object_name for f in resolved.fields if f.object_name in reachable}
+            leg_required.add(root)
+            leg_required.update(filter_objects & reachable)
+
+            leg = self._build_cfl_leg(
+                root,
+                leg_required,
+                resolved,
+                model,
+                graph,
+                qualify,
+            )
+            union_legs.append(leg)
+
+            steps = graph.find_join_path({root}, leg_required) if len(leg_required) > 1 else []
+            leg_infos.append(
+                CflLegInfo(
+                    measure_source=root,
+                    common_root=root,
+                    reason=(
+                        f'"{root}" is a leg root — fields from this fact + '
+                        f"reachable dim objects projected; non-reachable fields NULL-padded"
+                    ),
+                    measures=[],
+                    joins=[f"{s.from_object} → {s.to_object}" for s in steps],
+                )
+            )
+
+        # Build the composite CTE and the outer wrapper.
+        cte_name = "composite_raw_01"
+        union_cte = CTE(name=cte_name, query=UnionAll(queries=union_legs))
+
+        outer = QueryBuilder()
+        # Re-emit fields by alias from the CTE
+        for f in resolved.fields:
+            outer.select(AliasedExpr(expr=ColumnRef(name=f.alias), alias=f.alias))
+        if resolved.distinct:
+            outer.distinct(True)
+        outer.from_(cte_name, alias=cte_name)
+
+        # ORDER BY remapped to alias-only refs (CTE has no table qualifier).
+        for expr, desc in resolved.order_by_exprs:
+            outer.order_by(self._remap_order_by(expr, resolved), desc=desc)
+
+        if resolved.limit is not None:
+            outer.limit(resolved.limit)
+        if resolved.offset is not None:
+            outer.offset(resolved.offset)
+
+        outer_select = outer.build()
+        final = Select(
+            columns=outer_select.columns,
+            from_=outer_select.from_,
+            joins=outer_select.joins,
+            where=outer_select.where,
+            group_by=outer_select.group_by,
+            having=outer_select.having,
+            order_by=outer_select.order_by,
+            limit=outer_select.limit,
+            offset=outer_select.offset,
+            ctes=[union_cte],
+            distinct=outer_select.distinct,
+        )
+        return QueryPlan(ast=final, cfl_legs=leg_infos)
+
+    # ------------------------------------------------------------------
+    # CFL helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _identify_leg_roots(field_objects: set[str], graph: JoinGraph) -> set[str]:
+        """Maximal elements under directed reachability.
+
+        A source is a leg root iff no other source can reach it via directed
+        m:1 joins. With strict m:1 joins, leg roots are the "deepest fact"
+        nodes — they have descendants but no field-set ancestors.
+        """
+        roots = set(field_objects)
+        for src in field_objects:
+            for other in field_objects:
+                if other != src and src in graph.descendants(other):
+                    roots.discard(src)
+                    break
+        return roots
+
+    def _build_cfl_leg(
+        self,
+        root: str,
+        leg_required: set[str],
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        graph: JoinGraph,
+        qualify: Callable[[DataObject], str],
+    ) -> Select:
+        """Construct a single UNION ALL leg rooted at *root*."""
+        builder = QueryBuilder()
+
+        # SELECT: one entry per declared field, in original order.
+        # Fields whose source is reachable → real ColumnRef.
+        # Otherwise → typed NULL cast so UNION ALL line-up is unambiguous.
+        for f in resolved.fields:
+            if f.object_name in leg_required:
+                builder.select(
+                    AliasedExpr(
+                        expr=ColumnRef(name=f.source_column, table=f.object_name),
+                        alias=f.alias,
+                    )
+                )
+            else:
+                builder.select(
+                    AliasedExpr(
+                        expr=self._null_cast_for_field(f, model),
+                        alias=f.alias,
+                    )
+                )
+
+        # FROM the leg root
+        root_obj = model.data_objects.get(root)
+        if root_obj is not None:
+            builder.from_(qualify(root_obj), alias=root)
+
+        # JOINs to all other required objects in this leg
+        if len(leg_required) > 1:
+            steps = graph.find_join_path({root}, leg_required)
+            for step in steps:
+                target = model.data_objects.get(step.to_object)
+                if target is None:
+                    continue
+                on_expr = graph.build_join_condition(step)
+                builder.join(
+                    table=qualify(target),
+                    on=on_expr,
+                    join_type=step.join_type,
+                    alias=step.to_object,
+                )
+
+        # WHERE — apply filters whose referenced objects are in this leg.
+        # Filters that touch objects unreachable from this leg are skipped
+        # because the columns they reference don't exist here.
+        leg_objects = self._compute_leg_objects(root, resolved, model, graph)
+        for wf in resolved.where_filters:
+            ref_objects: set[str] = set()
+            self._collect_table_refs(wf.expression, ref_objects)
+            if ref_objects.issubset(leg_objects):
+                builder.where(wf.expression)
+
+        return builder.build()
+
+    @staticmethod
+    def _compute_leg_objects(
+        root: str,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        graph: JoinGraph,
+    ) -> set[str]:
+        """Return the set of data objects this leg actually JOINs."""
+        reachable = graph.descendants(root) | {root}
+        required = {f.object_name for f in resolved.fields if f.object_name in reachable}
+        required.add(root)
+        if len(required) > 1:
+            steps = graph.find_join_path({root}, required)
+            for s in steps:
+                required.add(s.to_object)
+                required.add(s.from_object)
+        # Drop objects not in the model (defensive; resolution should have caught these)
+        return {o for o in required if o in model.data_objects}
+
+    @staticmethod
+    def _null_cast_for_field(field: ResolvedField, model: SemanticModel) -> Expr:
+        """Return a typed ``CAST(NULL AS <type>)`` for the column's abstract type.
+
+        Falls back to a bare NULL when the column or its type cannot be
+        resolved — keeps codegen working without a hard error.
+        """
+        obj = model.data_objects.get(field.object_name)
+        if obj is None:
+            return Literal.null()
+        column = obj.columns.get(field.column_name)
+        if column is None:
+            return Literal.null()
+        type_name = column.abstract_type.value
+        return Cast(Literal.null(), type_name=type_name)
+
+    @staticmethod
+    def _remap_order_by(expr: Expr, resolved: ResolvedQuery) -> Expr:
+        """Convert table-qualified column refs to alias-only refs.
+
+        The CFL outer query selects from the composite CTE — original
+        ``"DataObject"."COLUMN"`` references are out of scope. Map them
+        back to the field alias instead.
+        """
+        if isinstance(expr, ColumnRef) and expr.table is not None:
+            for f in resolved.fields:
+                if f.object_name == expr.table and f.source_column == expr.name:
+                    return ColumnRef(name=f.alias)
+        return expr
+
+    @staticmethod
+    def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
+        """Walk an expression tree collecting referenced table names.
+
+        Mirrors ``CFLPlanner._collect_table_refs`` for the subset of node
+        types raw-mode WHERE filters can produce. Imported lazily to avoid
+        a circular import with ``compiler/cfl.py``.
+        """
+        from orionbelt.ast.nodes import (
+            Between,
+            BinaryOp,
+            FunctionCall,
+            InList,
+            IsNull,
+            RelativeDateRange,
+            UnaryOp,
+        )
+
+        if isinstance(expr, ColumnRef) and expr.table:
+            tables.add(expr.table)
+        elif isinstance(expr, BinaryOp):
+            RawPlanner._collect_table_refs(expr.left, tables)
+            RawPlanner._collect_table_refs(expr.right, tables)
+        elif isinstance(expr, UnaryOp):
+            RawPlanner._collect_table_refs(expr.operand, tables)
+        elif isinstance(expr, (InList, IsNull, Between)):
+            RawPlanner._collect_table_refs(expr.expr, tables)
+        elif isinstance(expr, RelativeDateRange):
+            RawPlanner._collect_table_refs(expr.column, tables)
+        elif isinstance(expr, FunctionCall):
+            for arg in expr.args:
+                RawPlanner._collect_table_refs(arg, tables)
+
+
+__all__ = ["RawPlanner"]

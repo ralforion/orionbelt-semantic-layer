@@ -16,17 +16,8 @@ from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-
-
-class RawModeUnsupportedError(Exception):
-    """Raised when a raw-mode query needs CFL (multi-fact union); not yet supported."""
-
-    def __init__(self, errors: list[SemanticError]) -> None:
-        self.errors = errors
-        super().__init__("; ".join(e.message for e in errors))
 
 
 @dataclass
@@ -108,22 +99,6 @@ class CompilationPipeline:
         """Compile a query to SQL for the specified dialect."""
         # Phase 1: Resolution
         resolved = self._resolver.resolve(query, model)
-
-        # Raw mode: reject multi-fact queries — raw CFL is a planned follow-up.
-        if resolved.is_raw and resolved.requires_cfl:
-            raise RawModeUnsupportedError(
-                [
-                    SemanticError(
-                        code="RAW_MODE_MULTI_FACT_NOT_SUPPORTED",
-                        message=(
-                            "Raw mode does not yet support fields spanning independent "
-                            "fact tables (would require UNION ALL with NULL padding). "
-                            "Split the query so each fact is queried separately."
-                        ),
-                        path="select.fields",
-                    )
-                ]
-            )
 
         # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
         if not resolved.requires_cfl:

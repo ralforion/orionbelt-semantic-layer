@@ -174,9 +174,44 @@ Raw mode is mutually exclusive with aggregate features. The following are reject
 
 Raw mode reuses the model's directed join graph: when fields span multiple data objects connected by many-to-one joins, the planner walks the graph and emits the necessary `LEFT JOIN`s. Fanout protection still applies — reversed many-to-one joins (which would multiply rows on the "one" side) are rejected.
 
-### Multi-fact raw queries (not yet supported)
+### Multi-fact raw queries (raw CFL)
 
-If `select.fields` references columns from independent fact tables (i.e. fact tables that share a common dimension but are not connected to each other via directed joins), the request is rejected with `RAW_MODE_MULTI_FACT_NOT_SUPPORTED`. Until raw-mode CFL lands, split such queries so each fact is queried separately.
+When `select.fields` references columns from **independent fact tables** — facts that share a common dimension via reverse many-to-one joins but are not connected to each other directly — the planner emits a Composite Fact Layer: one `UNION ALL` leg per leg-root fact, with NULL-padding for fields not reachable from that leg. The outer query selects from the composite CTE.
+
+```yaml
+# Customers ← Orders (m:1)
+# Customers ← Returns (m:1)
+select:
+  fields:
+    - Customers.Name
+    - Orders.Order ID
+    - Orders.Amount
+    - Returns.Return ID
+    - Returns.Refund
+  distinct: true
+```
+
+Compiles roughly to:
+
+```sql
+WITH composite_raw_01 AS (
+  SELECT c.NAME AS "Customers.Name",
+         o.ORDER_ID AS "Orders.Order ID",
+         o.AMOUNT AS "Orders.Amount",
+         CAST(NULL AS VARCHAR) AS "Returns.Return ID",
+         CAST(NULL AS FLOAT)   AS "Returns.Refund"
+  FROM ORDERS o LEFT JOIN CUSTOMERS c ON o.CUSTOMER_ID = c.CUSTOMER_ID
+  UNION ALL
+  SELECT c.NAME, CAST(NULL AS VARCHAR), CAST(NULL AS FLOAT),
+         r.RETURN_ID, r.REFUND
+  FROM RETURNS r LEFT JOIN CUSTOMERS c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+)
+SELECT DISTINCT * FROM composite_raw_01
+```
+
+A "leg root" is a fact data object referenced by some field that is not reachable from another field's source via directed joins — i.e. it is maximal under reachability. Each leg root yields one `UNION ALL` leg. Conformed dim columns (those reachable from every leg) project the same value across legs and line up; fact-specific columns are typed `CAST(NULL AS …)` in legs that don't cover them. `distinct: true` is applied once at the outer query — the most portable place.
+
+WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level.
 
 ## Secondary Join Paths
 

@@ -9,6 +9,7 @@ from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
     ColumnRef,
+    Except,
     Expr,
     From,
     FunctionCall,
@@ -16,7 +17,9 @@ from orionbelt.ast.nodes import (
     JoinType,
     Literal,
     OrderByItem,
+    RawSQL,
     Select,
+    UnionAll,
 )
 
 
@@ -92,7 +95,7 @@ class QueryBuilder:
         self._offset = n
         return self
 
-    def with_cte(self, name: str, query: Select) -> Self:
+    def with_cte(self, name: str, query: Select | UnionAll | Except | RawSQL) -> Self:
         self._ctes.append(CTE(name=name, query=query))
         return self
 

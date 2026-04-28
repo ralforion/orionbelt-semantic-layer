@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 # Make sure all dialects are registered
 import orionbelt.dialect  # noqa: F401
-from orionbelt.compiler.pipeline import CompilationPipeline, RawModeUnsupportedError
+from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import QueryResolver, ResolutionError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import (
@@ -277,7 +277,7 @@ class TestRawModeCompilation:
 
 
 class TestRawModeMultiFact:
-    """Multi-fact raw queries are rejected for now (raw CFL is a follow-up)."""
+    """Multi-fact raw queries (raw CFL) — UNION ALL with NULL padding."""
 
     MULTI_FACT_YAML = """\
 version: 1.0
@@ -336,15 +336,119 @@ dimensions:
     resultType: string
 """
 
-    def test_multi_fact_raw_query_rejected(self) -> None:
+    def test_multi_fact_resolution_marks_cfl(self) -> None:
         model = _load_model(self.MULTI_FACT_YAML)
-        # Orders and Returns are independent facts — both reverse-reach Customers.
         query = QueryObject(
             select=QuerySelect(
                 fields=["Customers.Name", "Orders.Order ID", "Returns.Return ID"],
             ),
         )
-        with pytest.raises(RawModeUnsupportedError) as exc_info:
-            CompilationPipeline().compile(query, model, dialect_name="postgres")
-        codes = [e.code for e in exc_info.value.errors]
-        assert "RAW_MODE_MULTI_FACT_NOT_SUPPORTED" in codes
+        resolved = QueryResolver().resolve(query, model)
+        assert resolved.is_raw is True
+        assert resolved.requires_cfl is True
+
+    def test_multi_fact_compiles_as_union_all(self) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=[
+                    "Customers.Name",
+                    "Orders.Order ID",
+                    "Orders.Amount",
+                    "Returns.Return ID",
+                    "Returns.Refund",
+                ],
+            ),
+        )
+        result = CompilationPipeline().compile(query, model, dialect_name="postgres")
+        sql = result.sql
+        assert "WITH" in sql
+        assert "composite_raw_01" in sql
+        assert "UNION ALL" in sql
+        # Each leg projects every field — non-applicable ones as typed NULL casts.
+        # The Orders leg can't project Returns columns; the Returns leg can't
+        # project Orders columns.
+        assert sql.count("NULL") >= 4
+        # GROUP BY must be absent — raw mode never aggregates.
+        assert "GROUP BY" not in sql
+
+    def test_multi_fact_distinct_emits_outer_select_distinct(self) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=["Customers.Name", "Orders.Order ID", "Returns.Return ID"],
+                distinct=True,
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name="postgres").sql
+        # Outer query carries the DISTINCT, not each leg.
+        assert "SELECT DISTINCT" in sql
+        assert "UNION ALL" in sql
+
+    def test_multi_fact_explain_reports_legs(self) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=["Customers.Name", "Orders.Order ID", "Returns.Return ID"],
+            ),
+        )
+        result = CompilationPipeline().compile(query, model, dialect_name="postgres")
+        assert result.explain is not None
+        assert result.explain.planner == "Raw"
+        leg_sources = {leg.measure_source for leg in result.explain.cfl_legs}
+        assert leg_sources == {"Orders", "Returns"}
+
+    @pytest.mark.parametrize(
+        "dialect_name",
+        [
+            "bigquery",
+            "clickhouse",
+            "databricks",
+            "dremio",
+            "duckdb",
+            "mysql",
+            "postgres",
+            "snowflake",
+        ],
+    )
+    def test_multi_fact_compiles_on_all_dialects(self, dialect_name: str) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=["Customers.Name", "Orders.Amount", "Returns.Refund"],
+                distinct=True,
+            ),
+            limit=10,
+        )
+        result = CompilationPipeline().compile(query, model, dialect_name=dialect_name)
+        sql = result.sql
+        assert "UNION ALL" in sql
+        assert "GROUP BY" not in sql
+        assert "LIMIT 10" in sql
+
+    def test_multi_fact_with_where_and_order_by(self) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=[
+                    "Customers.Name",
+                    "Orders.Amount",
+                    "Returns.Refund",
+                ],
+            ),
+            where=[
+                QueryFilter(field="Customer Name", op=FilterOperator.EQ, value="Alice"),
+            ],
+            order_by=[
+                QueryOrderBy(field="Customers.Name", direction=SortDirection.ASC),
+            ],
+            limit=50,
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name="postgres").sql
+        # Filter on Customers.Name applies to both legs (Customers is reachable from each).
+        assert "WHERE" in sql
+        assert "'Alice'" in sql
+        # ORDER BY must reference the CTE alias, not the underlying table.
+        assert "ORDER BY" in sql
+        assert '"Customers.Name"' in sql
+        assert "LIMIT 50" in sql
