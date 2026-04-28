@@ -254,6 +254,7 @@ class Select:
     limit: int | None = None
     offset: int | None = None
     ctes: list[CTE] = field(default_factory=list)
+    distinct: bool = False
 
 
 @dataclass(frozen=True)

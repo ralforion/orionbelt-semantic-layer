@@ -123,6 +123,61 @@ select:
     - Revenue per Order    # metric
 ```
 
+## Raw Mode (`select.fields`)
+
+**Raw mode** returns un-aggregated rows from one or more data objects, projecting physical columns directly. It is the right choice when you need detail rows rather than aggregated metrics — e.g., exporting a transaction list, building a row-level export, or feeding a downstream tool that does its own aggregation.
+
+```yaml
+select:
+  fields:
+    - Customers.Country
+    - Orders.Order ID
+    - Orders.Amount
+  distinct: false
+where:
+  - field: Orders.Amount
+    op: gt
+    value: 100
+order_by:
+  - field: Orders.Amount
+    direction: desc
+limit: 100
+```
+
+Compiles to a flat `SELECT field1, field2, ... FROM base [LEFT JOIN ...] [WHERE ...] [ORDER BY ...] [LIMIT n]` — no `GROUP BY`, no aggregates.
+
+### Field references
+
+Each entry in `fields` is a qualified `DataObject.Column` reference to a physical column in the model. Logical dimension/measure names are **not** accepted in raw mode — use `dimensions` / `measures` for those.
+
+The output column is aliased to the original `"DataObject.Column"` reference so result rows are self-describing.
+
+### `distinct`
+
+Set `select.distinct: true` to emit `SELECT DISTINCT`, deduplicating rows after projection. Outside raw mode this flag is rejected.
+
+### What's excluded in raw mode
+
+Raw mode is mutually exclusive with aggregate features. The following are rejected at validation time:
+
+- `select.dimensions`
+- `select.measures`
+- `having` (HAVING references measures, which raw mode doesn't have)
+- `dimensionsExclude`
+
+### Filters and ordering in raw mode
+
+- **WHERE**: same operators as aggregate mode. Filter fields can reference a dimension name (resolved to its physical column) or a qualified `DataObject.Column`.
+- **ORDER BY**: must reference a `DataObject.Column` alias from `select.fields`, or a 1-based numeric position.
+
+### Joins and fanout
+
+Raw mode reuses the model's directed join graph: when fields span multiple data objects connected by many-to-one joins, the planner walks the graph and emits the necessary `LEFT JOIN`s. Fanout protection still applies — reversed many-to-one joins (which would multiply rows on the "one" side) are rejected.
+
+### Multi-fact raw queries (not yet supported)
+
+If `select.fields` references columns from independent fact tables (i.e. fact tables that share a common dimension but are not connected to each other via directed joins), the request is rejected with `RAW_MODE_MULTI_FACT_NOT_SUPPORTED`. Until raw-mode CFL lands, split such queries so each fact is queried separately.
+
 ## Secondary Join Paths
 
 When a model defines secondary joins (e.g., `Flights` → `Airports` via departure and arrival), use `usePathNames` to select which join path to use:

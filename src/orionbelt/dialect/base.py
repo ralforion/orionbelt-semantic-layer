@@ -278,11 +278,12 @@ class Dialect(ABC):
             parts.append("WITH " + ",\n".join(cte_parts))
 
         # SELECT
+        keyword = "SELECT DISTINCT" if node.distinct else "SELECT"
         if node.columns:
             cols = ", ".join(self.compile_expr(c) for c in node.columns)
-            parts.append(f"SELECT {cols}")
+            parts.append(f"{keyword} {cols}")
         else:
-            parts.append("SELECT *")
+            parts.append(f"{keyword} *")
 
         # FROM
         if node.from_:

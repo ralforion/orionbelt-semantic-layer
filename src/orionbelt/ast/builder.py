@@ -34,6 +34,7 @@ class QueryBuilder:
         self._limit: int | None = None
         self._offset: int | None = None
         self._ctes: list[CTE] = []
+        self._distinct: bool = False
 
     def select(self, *columns: Expr) -> Self:
         self._columns.extend(columns)
@@ -95,6 +96,10 @@ class QueryBuilder:
         self._ctes.append(CTE(name=name, query=query))
         return self
 
+    def distinct(self, value: bool = True) -> Self:
+        self._distinct = value
+        return self
+
     def build(self) -> Select:
         return Select(
             columns=self._columns,
@@ -107,6 +112,7 @@ class QueryBuilder:
             limit=self._limit,
             offset=self._offset,
             ctes=self._ctes,
+            distinct=self._distinct,
         )
 
 
