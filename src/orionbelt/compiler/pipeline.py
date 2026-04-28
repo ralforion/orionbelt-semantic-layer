@@ -114,7 +114,11 @@ class CompilationPipeline:
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
         if resolved.is_raw:
             plan = self._raw_planner.plan(
-                resolved, model, qualify_table=qualify_table, dialect=dialect
+                resolved,
+                model,
+                qualify_table=qualify_table,
+                dialect=dialect,
+                union_by_name=dialect.capabilities.supports_union_all_by_name,
             )
         elif use_cfl:
             plan = self._cfl_planner.plan(

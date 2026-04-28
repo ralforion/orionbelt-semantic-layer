@@ -452,3 +452,67 @@ dimensions:
         assert "ORDER BY" in sql
         assert '"Customers.Name"' in sql
         assert "LIMIT 50" in sql
+
+
+class TestRawModeUnionByName:
+    """DuckDB / Snowflake skip per-leg NULL padding via UNION ALL BY NAME."""
+
+    MULTI_FACT_YAML = TestRawModeMultiFact.MULTI_FACT_YAML
+
+    @pytest.mark.parametrize("dialect_name", ["duckdb", "snowflake"])
+    def test_legs_omit_null_padding(self, dialect_name: str) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=[
+                    "Customers.Name",
+                    "Orders.Order ID",
+                    "Orders.Amount",
+                    "Returns.Return ID",
+                    "Returns.Refund",
+                ],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name=dialect_name).sql
+        assert "UNION ALL BY NAME" in sql
+        # Optimized legs do not emit CAST(NULL AS ...) — the database fills
+        # missing columns with NULL automatically.
+        assert "CAST(NULL" not in sql
+        # And there's no bare NULL projection either (we just omit those columns).
+        assert "AS NULL" not in sql
+
+    @pytest.mark.parametrize(
+        "dialect_name",
+        ["bigquery", "clickhouse", "databricks", "dremio", "mysql", "postgres"],
+    )
+    def test_legs_keep_null_padding_when_unsupported(self, dialect_name: str) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=[
+                    "Customers.Name",
+                    "Orders.Order ID",
+                    "Orders.Amount",
+                    "Returns.Return ID",
+                    "Returns.Refund",
+                ],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name=dialect_name).sql
+        assert "UNION ALL BY NAME" not in sql
+        # Two fact legs × two missing fields each = at least 4 typed NULL casts.
+        assert sql.count("CAST(NULL") >= 4
+
+    def test_explain_reason_reflects_strategy(self) -> None:
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(
+                fields=["Customers.Name", "Orders.Order ID", "Returns.Return ID"],
+            ),
+        )
+        # DuckDB → "fills them" wording
+        result = CompilationPipeline().compile(query, model, dialect_name="duckdb")
+        assert any("UNION ALL BY NAME fills" in leg.reason for leg in result.explain.cfl_legs)
+        # Postgres → "NULL-padded" wording
+        result = CompilationPipeline().compile(query, model, dialect_name="postgres")
+        assert any("NULL-padded" in leg.reason for leg in result.explain.cfl_legs)

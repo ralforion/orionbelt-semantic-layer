@@ -213,6 +213,24 @@ A "leg root" is a fact data object referenced by some field that is not reachabl
 
 WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level.
 
+#### `UNION ALL BY NAME` optimization (DuckDB, Snowflake)
+
+DuckDB and Snowflake both support `UNION ALL BY NAME`, which aligns columns by name across legs and auto-fills any missing columns with `NULL`. On these dialects the planner skips the per-leg `CAST(NULL AS …)` padding entirely and emits only the columns each leg actually has — the database does the rest:
+
+```sql
+-- DuckDB / Snowflake
+WITH composite_raw_01 AS (
+  SELECT c.NAME AS "Customers.Name", o.ORDER_ID AS "Orders.Order ID", o.AMOUNT AS "Orders.Amount"
+  FROM ORDERS o LEFT JOIN CUSTOMERS c ON o.CUSTOMER_ID = c.CUSTOMER_ID
+  UNION ALL BY NAME
+  SELECT c.NAME, r.RETURN_ID AS "Returns.Return ID", r.REFUND AS "Returns.Refund"
+  FROM RETURNS r LEFT JOIN CUSTOMERS c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+)
+SELECT DISTINCT * FROM composite_raw_01
+```
+
+The other six dialects (BigQuery, ClickHouse, Databricks, Dremio, MySQL, Postgres) keep the explicit typed-NULL padding shown above. Output rows are identical either way; the optimization is purely about leg readability and slightly less SQL the database has to parse.
+
 ## Secondary Join Paths
 
 When a model defines secondary joins (e.g., `Flights` → `Airports` via departure and arrival), use `usePathNames` to select which join path to use:

@@ -46,9 +46,10 @@ class RawPlanner:
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
         dialect: Dialect | None = None,  # noqa: ARG002 — kept for parity with other planners
+        union_by_name: bool = False,
     ) -> QueryPlan:
         if resolved.requires_cfl:
-            return self._plan_cfl(resolved, model, qualify_table)
+            return self._plan_cfl(resolved, model, qualify_table, union_by_name=union_by_name)
         return self._plan_single_fact(resolved, model, qualify_table)
 
     # ------------------------------------------------------------------
@@ -128,6 +129,8 @@ class RawPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None,
+        *,
+        union_by_name: bool = False,
     ) -> QueryPlan:
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
 
@@ -162,17 +165,23 @@ class RawPlanner:
                 model,
                 graph,
                 qualify,
+                union_by_name=union_by_name,
             )
             union_legs.append(leg)
 
             steps = graph.find_join_path({root}, leg_required) if len(leg_required) > 1 else []
+            null_strategy = (
+                "non-reachable fields omitted (UNION ALL BY NAME fills them)"
+                if union_by_name
+                else "non-reachable fields NULL-padded"
+            )
             leg_infos.append(
                 CflLegInfo(
                     measure_source=root,
                     common_root=root,
                     reason=(
                         f'"{root}" is a leg root — fields from this fact + '
-                        f"reachable dim objects projected; non-reachable fields NULL-padded"
+                        f"reachable dim objects projected; {null_strategy}"
                     ),
                     measures=[],
                     joins=[f"{s.from_object} → {s.to_object}" for s in steps],
@@ -244,13 +253,19 @@ class RawPlanner:
         model: SemanticModel,
         graph: JoinGraph,
         qualify: Callable[[DataObject], str],
+        *,
+        union_by_name: bool = False,
     ) -> Select:
-        """Construct a single UNION ALL leg rooted at *root*."""
+        """Construct a single UNION ALL leg rooted at *root*.
+
+        When *union_by_name* is True (DuckDB, Snowflake) the leg only emits
+        the fields it actually has — the database fills missing columns with
+        NULL automatically via ``UNION ALL BY NAME``. Otherwise each leg
+        emits a typed ``CAST(NULL AS <type>)`` for non-reachable fields so
+        positional UNION ALL line-up is unambiguous.
+        """
         builder = QueryBuilder()
 
-        # SELECT: one entry per declared field, in original order.
-        # Fields whose source is reachable → real ColumnRef.
-        # Otherwise → typed NULL cast so UNION ALL line-up is unambiguous.
         for f in resolved.fields:
             if f.object_name in leg_required:
                 builder.select(
@@ -259,7 +274,7 @@ class RawPlanner:
                         alias=f.alias,
                     )
                 )
-            else:
+            elif not union_by_name:
                 builder.select(
                     AliasedExpr(
                         expr=self._null_cast_for_field(f, model),
