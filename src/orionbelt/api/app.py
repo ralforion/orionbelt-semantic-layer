@@ -194,6 +194,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         version=__version__,
         lifespan=lifespan,
+        docs_url="/docs" if settings.expose_api_docs else None,
+        redoc_url="/redoc" if settings.expose_api_docs else None,
+        openapi_url="/openapi.json" if settings.expose_openapi_schema else None,
     )
     app.state.settings = settings
 

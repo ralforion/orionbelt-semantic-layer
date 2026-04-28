@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     api_server_port: int = 8000
     port: int | None = None  # Cloud Run injects PORT; takes precedence over api_server_port
 
+    # Public-doc surfaces. Default True preserves current public-demo behaviour.
+    # Set EXPOSE_API_DOCS=false on non-demo deployments to disable Swagger UI,
+    # ReDoc, and the OpenAPI schema endpoint. EXPOSE_OPENAPI_SCHEMA can be
+    # toggled independently to keep /openapi.json live (e.g. for client codegen)
+    # while hiding the human-facing /docs and /redoc pages.
+    expose_api_docs: bool = True
+    expose_openapi_schema: bool = True
+
     @property
     def effective_port(self) -> int:
         """Return the port to listen on (Cloud Run PORT takes precedence)."""

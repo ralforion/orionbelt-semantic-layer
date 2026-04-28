@@ -205,6 +205,8 @@ Environment variables or `.env` file (via pydantic-settings):
 | `API_SERVER_HOST` | `localhost` | REST API bind host |
 | `API_SERVER_PORT` | `8000` | REST API port |
 | `DISABLE_SESSION_LIST` | `false` | Disable `GET /sessions` endpoint (security) |
+| `EXPOSE_API_DOCS` | `true` | Serve Swagger UI at `/docs` and ReDoc at `/redoc` (hide on non-demo deploys) |
+| `EXPOSE_OPENAPI_SCHEMA` | `true` | Serve OpenAPI schema at `/openapi.json` (independent of `EXPOSE_API_DOCS`) |
 | `SESSION_TTL_SECONDS` | `1800` | Session timeout |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Cleanup sweep interval |
 | `MODEL_FILE` | — | Path to OBML YAML for single-model mode |
