@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.0.1] - 2026-04-27
+
+### Added
+
+- **`/v1/settings` now returns `version` and `api_version`.** Clients can negotiate features from a single call instead of also hitting `/health`. `version` matches the `__version__` constant; `api_version` is the REST URL prefix (`"v1"`).
+
+### Docs
+
+- Reordered `query-language.md`: the **Coalesce (Merging Role-Playing Dimensions)** section now sits between **Time Grain Override** and **Measures** so it reads next to the other dimension subsections.
+
 ## [2.0.0] - 2026-04-27
 
 ### Breaking
