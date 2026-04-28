@@ -2112,6 +2112,7 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
 def create_blocks(
     default_api_url: str | None = None,
     embedded_settings: dict[str, Any] | None = None,
+    head_html: str | None = None,
 ) -> Any:
     """Build and return a ``gr.Blocks`` instance (without launching).
 
@@ -2150,6 +2151,7 @@ def create_blocks(
         title="OrionBelt Semantic Layer",
         css=_CSS,
         js=_DARK_MODE_INIT_JS,
+        head=head_html,
     ) as demo:
         # ── Browser-persisted state (localStorage via Gradio BrowserState) ──
         saved_model = gr.BrowserState("", storage_key="ob_model_yaml")
@@ -2851,17 +2853,31 @@ def create_ui() -> None:
     api_url = os.environ.get("API_BASE_URL") or None
     port = int(os.environ.get("PORT", "7860"))
     root_path = os.environ.get("ROOT_PATH", "")
-    demo = create_blocks(default_api_url=api_url)
+
+    from pathlib import Path
+
+    favicon_file = Path(__file__).resolve().parent / "favicon.png"
 
     if root_path:
-        from pathlib import Path
-
+        # Behind a reverse proxy / load balancer mounting Gradio under
+        # ``root_path``. Gradio ignores ``favicon_path`` here (its default
+        # head template uses absolute "/favicon.ico"), so we serve the
+        # favicon ourselves and inject a <link> tag into the head.
         import gradio as gr
         from fastapi import FastAPI
+        from fastapi.responses import FileResponse
+
+        favicon_url = f"{root_path.rstrip('/')}/favicon.png"
+        head_html = f'<link rel="icon" type="image/png" href="{favicon_url}">'
+        demo = create_blocks(default_api_url=api_url, head_html=head_html)
 
         app = FastAPI()
-        favicon = str(Path(__file__).resolve().parent / "favicon.png")
-        app = gr.mount_gradio_app(app, demo, path=root_path, favicon_path=favicon)
+
+        @app.get(favicon_url, include_in_schema=False)
+        async def _favicon() -> FileResponse:
+            return FileResponse(favicon_file, media_type="image/png")
+
+        app = gr.mount_gradio_app(app, demo, path=root_path)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2873,13 +2889,12 @@ def create_ui() -> None:
             timeout_graceful_shutdown=3,
         )
     else:
-        from pathlib import Path
-
-        favicon = str(Path(__file__).resolve().parent / "favicon.png")
+        # Standalone — Gradio mounts at "/", so favicon_path works as designed.
+        demo = create_blocks(default_api_url=api_url)
         demo.launch(
             server_name="0.0.0.0",
             server_port=port,
-            favicon_path=favicon,
+            favicon_path=str(favicon_file),
         )
 
 
