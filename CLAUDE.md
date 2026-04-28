@@ -175,7 +175,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | DELETE | `/v1/sessions/{id}/models/{mid}` | Remove model |
 | POST | `/v1/sessions/{id}/validate` | Validate YAML |
 | POST | `/v1/sessions/{id}/query/sql` | Compile query (includes explain) |
-| POST | `/v1/sessions/{id}/query/execute` | Compile and execute query (requires FLIGHT_ENABLED) |
+| POST | `/v1/sessions/{id}/query/execute` | Compile and execute query. Supports `?format=tsv`, `?format_values=true`, `?locale=`, `?timezone=` |
 | GET | `/v1/sessions/{id}/models/{mid}/diagram/er` | Mermaid ER diagram |
 | GET | `/v1/sessions/{id}/models/{mid}/schema` | Full model as JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions` | List dimensions |
@@ -207,6 +207,7 @@ Environment variables or `.env` file (via pydantic-settings):
 | `DISABLE_SESSION_LIST` | `false` | Disable `GET /sessions` endpoint (security) |
 | `EXPOSE_API_DOCS` | `true` | Serve Swagger UI at `/docs` and ReDoc at `/redoc` (hide on non-demo deploys) |
 | `EXPOSE_OPENAPI_SCHEMA` | `true` | Serve OpenAPI schema at `/openapi.json` (independent of `EXPOSE_API_DOCS`) |
+| `DEFAULT_LOCALE` | — | BCP-47 locale used by `/v1/query/execute?format_values=true` when no `locale` query param is supplied |
 | `SESSION_TTL_SECONDS` | `1800` | Session timeout |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Cleanup sweep interval |
 | `MODEL_FILE` | — | Path to OBML YAML for single-model mode |

@@ -9,6 +9,10 @@ import gradio as gr
 import httpx
 import yaml
 
+# Number / locale formatting lives in service.value_formatting so the API
+# can apply identical rules when ``format_values`` is requested.
+from orionbelt.service.value_formatting import format_number as _format_number
+
 _DEFAULT_API_URL = "http://localhost:8000"
 _FALLBACK_DIALECTS = [
     "bigquery",
@@ -378,87 +382,6 @@ _ALIGN_HEADERS_JS = """
     document.head.appendChild(tag);
 }
 """
-
-
-def _parse_number_format(fmt: str | None) -> tuple[bool, int, bool]:
-    """Parse a display format pattern into (use_thousands, decimals, is_percent).
-
-    Supported patterns: ``#,##0.00``, ``#,##0``, ``0.00%``, etc.
-    Returns ``(use_thousands_separator, decimal_places, is_percentage)``.
-    """
-    if not fmt:
-        return (False, -1, False)
-    is_pct = fmt.endswith("%")
-    body = fmt.rstrip("%").strip()
-    use_thousands = "," in body
-    decimals = -1
-    if "." in body:
-        after_dot = body.split(".")[-1]
-        decimals = len(after_dot)
-    elif is_pct:
-        decimals = 0
-    return (use_thousands, decimals, is_pct)
-
-
-_COMMA_DECIMAL_LANGS = frozenset(
-    {
-        "de",
-        "fr",
-        "it",
-        "es",
-        "pt",
-        "nl",
-        "da",
-        "nb",
-        "nn",
-        "sv",
-        "fi",
-        "pl",
-        "cs",
-        "sk",
-        "hu",
-        "ro",
-        "bg",
-        "hr",
-        "sl",
-        "sr",
-        "tr",
-        "el",
-        "ru",
-        "uk",
-        "be",
-        "ca",
-        "id",
-    }
-)
-
-
-def _locale_separators(locale: str) -> tuple[str, str]:
-    """Return ``(thousands_sep, decimal_sep)`` for a browser locale tag."""
-    lang = locale.split("-")[0].lower() if locale else "en"
-    if lang in _COMMA_DECIMAL_LANGS:
-        return (".", ",")
-    return (",", ".")
-
-
-def _format_number(val: float, fmt: str | None, locale: str = "") -> str:
-    """Format a numeric value using a display format pattern and locale.
-
-    When no format is provided, falls back to Python's default ``str()``.
-    Locale controls the thousands/decimal separators (e.g. ``de`` → ``.`` / ``,``).
-    """
-    use_thousands, decimals, is_pct = _parse_number_format(fmt)
-    if decimals < 0 and not use_thousands and not is_pct:
-        return str(val)
-    if is_pct:
-        val = val * 100
-    if decimals < 0:
-        decimals = 0
-    raw = f"{val:,.{decimals}f}" if use_thousands else f"{val:.{decimals}f}"
-    tsep, dsep = _locale_separators(locale)
-    if tsep != "," or dsep != ".":
-        raw = raw.replace(",", "\x00").replace(".", dsep).replace("\x00", tsep)
-    return raw + ("%" if is_pct else "")
 
 
 _DARK_MODE_INIT_JS = """

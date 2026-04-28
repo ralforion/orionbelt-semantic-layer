@@ -6,6 +6,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Added
 
+- **`/v1/query/execute` formatted output.** Four new query parameters on both the session-scoped and shortcut execute endpoints:
+  - `format=tsv` returns `text/tab-separated-values` with RFC 4180-style quoting for cells containing tab/newline/CR/double-quote. Implies `format_values=true`.
+  - `format_values=true` renders numeric cells in the JSON response as locale-aware display strings using each column's `format` pattern (matches the Gradio UI exactly).
+  - `locale` (BCP-47) overrides the default locale for thousand/decimal separators; falls back to the new `DEFAULT_LOCALE` env when omitted.
+  - `timezone` (IANA TZ) overrides the model's `default_timezone` per-request.
+- **Shared formatting module** `service/value_formatting.py`. The UI and the API now use the same `format_number` / `parse_number_format` / `locale_separators` / `format_row` / `to_tsv` helpers, so what you see in Gradio is exactly what `?format_values=true` returns.
+- **`DEFAULT_LOCALE` env / `default_locale` setting** (default empty → en-style separators).
 - **Raw query mode (`select.fields`).** Returns un-aggregated rows by projecting physical columns directly. Mutually exclusive with `dimensions`/`measures`/`having`/`dimensionsExclude`. New `select.distinct` flag emits `SELECT DISTINCT`. Field references must be qualified `DataObject.Column`. Single-fact queries compile to a flat star-schema-style SELECT; fanout protection still applies (reversed many-to-one joins are rejected).
 - **Raw CFL — multi-fact `UNION ALL` with NULL padding.** When `select.fields` references columns from independent fact tables, the planner emits one leg per leg-root fact, with typed `CAST(NULL AS <type>)` for fields not reachable from a given leg. Outer wrapper applies `DISTINCT` (when set), `ORDER BY` (remapped to field aliases), and `LIMIT`. New error codes: `RAW_FIELD_INVALID_REF`, `RAW_FIELD_UNKNOWN_OBJECT`, `RAW_FIELD_UNKNOWN_COLUMN`.
 - **`UNION ALL BY NAME` optimization for raw CFL on DuckDB and Snowflake.** On dialects that support it, per-leg NULL padding is skipped — each leg only emits the columns it has, and the database fills missing columns automatically. Output rows are identical; SQL is shorter and more readable.

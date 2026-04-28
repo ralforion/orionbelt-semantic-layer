@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     query_default_limit: int = 1000  # max rows when query has no LIMIT
     db_pool_size: int = 5  # connection pool size per dialect
 
+    # Default locale for /v1/query/execute?format_values=true (and TSV output).
+    # Used when the request omits the ``locale`` query param. BCP-47 tag
+    # (e.g. "de", "en-US"). Empty → en-style separators ("," / ".").
+    default_locale: str = ""
+
     # Arrow Flight SQL server (requires ob-flight-extension)
     flight_enabled: bool = False  # start gRPC Flight server on FLIGHT_PORT (implies query_execute)
     flight_port: int = 8815

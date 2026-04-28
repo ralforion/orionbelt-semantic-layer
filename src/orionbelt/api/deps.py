@@ -12,6 +12,7 @@ _flight_info: dict[str, object] | None = None
 _query_execute_enabled: bool = False
 _db_vendor: str = "duckdb"
 _query_default_limit: int = 1000
+_default_locale: str = ""
 
 
 def init_session_manager(
@@ -23,11 +24,13 @@ def init_session_manager(
     query_execute_enabled: bool = False,
     db_vendor: str = "duckdb",
     query_default_limit: int = 1000,
+    default_locale: str = "",
 ) -> None:
     """Set the global SessionManager (called at app startup)."""
     global _session_manager, _disable_session_list  # noqa: PLW0603
     global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
     global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
+    global _default_locale  # noqa: PLW0603
     _session_manager = manager
     _disable_session_list = disable_session_list
     _single_model_mode = preload_model_yaml is not None
@@ -36,6 +39,7 @@ def init_session_manager(
     _query_execute_enabled = query_execute_enabled
     _db_vendor = db_vendor
     _query_default_limit = query_default_limit
+    _default_locale = default_locale
 
 
 def get_session_manager() -> SessionManager:
@@ -91,11 +95,17 @@ def get_query_default_limit() -> int:
     return _query_default_limit
 
 
+def get_default_locale() -> str:
+    """Return the configured default locale for value formatting."""
+    return _default_locale
+
+
 def reset_session_manager() -> None:
     """Clear the global SessionManager (for tests)."""
     global _session_manager, _disable_session_list  # noqa: PLW0603
     global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
     global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
+    global _default_locale  # noqa: PLW0603
     _session_manager = None
     _disable_session_list = False
     _single_model_mode = False
@@ -104,3 +114,4 @@ def reset_session_manager() -> None:
     _query_execute_enabled = False
     _db_vendor = "duckdb"
     _query_default_limit = 1000
+    _default_locale = ""

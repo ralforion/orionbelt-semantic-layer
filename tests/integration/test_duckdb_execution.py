@@ -873,6 +873,14 @@ class TestPoPExecution:
 # ---------------------------------------------------------------------------
 
 
+def _add_revenue_format(yaml_text: str) -> str:
+    """Append ``format: '#,##0.00'`` to the Total Revenue measure block."""
+    # Match the closing line of that block; YAML pairs are unique so a
+    # plain str.replace on this anchor is safe enough for the fixture.
+    end = "    resultType: float\n    aggregation: sum"
+    return yaml_text.replace(end + "\n", end + "\n    format: '#,##0.00'\n", 1)
+
+
 class TestAPIExecuteEndpoint:
     """POST /query/execute against a real DuckDB via mocked execute_sql."""
 
@@ -976,6 +984,154 @@ class TestAPIExecuteEndpoint:
             by_country = {r["Customer Country"]: r for r in rows_as_dicts}
             assert by_country["US"]["Order Count"] == 2
             assert by_country["UK"]["Order Count"] == 1
+        finally:
+            reset_session_manager()
+
+    async def test_execute_format_values_returns_formatted_strings(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """?format_values=true renders numeric cells as locale-aware strings."""
+        # Model with an explicit format pattern so the locale path is exercised.
+        model_yaml_with_format = _add_revenue_format(SAMPLE_MODEL_YAML)
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": model_yaml_with_format},
+                    )
+                    mid = load.json()["model_id"]
+                    response = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format_values=true&locale=de",
+                        json={
+                            "model_id": mid,
+                            "query": {
+                                "select": {
+                                    "dimensions": ["Customer Country"],
+                                    "measures": ["Total Revenue"],
+                                },
+                            },
+                            "dialect": "duckdb",
+                        },
+                    )
+            assert response.status_code == 200
+            data = response.json()
+            col_names = [c["name"] for c in data["columns"]]
+            idx = col_names.index("Total Revenue")
+            for row in data["rows"]:
+                assert isinstance(row[idx], str)
+                # de locale → comma is the decimal separator
+                assert "," in row[idx]
+        finally:
+            reset_session_manager()
+
+    async def test_execute_format_values_default_locale_from_settings(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """When ``locale`` is omitted the configured DEFAULT_LOCALE is used."""
+        model_yaml_with_format = _add_revenue_format(SAMPLE_MODEL_YAML)
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        # Configure default_locale at startup to "de"
+        init_session_manager(
+            mgr,
+            query_execute_enabled=True,
+            db_vendor="duckdb",
+            default_locale="de",
+        )
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": model_yaml_with_format},
+                    )
+                    mid = load.json()["model_id"]
+                    response = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format_values=true",  # no locale param
+                        json={
+                            "model_id": mid,
+                            "query": {
+                                "select": {
+                                    "dimensions": ["Customer Country"],
+                                    "measures": ["Total Revenue"],
+                                },
+                            },
+                            "dialect": "duckdb",
+                        },
+                    )
+            assert response.status_code == 200
+            data = response.json()
+            col_names = [c["name"] for c in data["columns"]]
+            idx = col_names.index("Total Revenue")
+            # de locale fell through from settings → comma decimal separator
+            for row in data["rows"]:
+                assert "," in row[idx]
+        finally:
+            reset_session_manager()
+
+    async def test_execute_format_tsv_returns_tab_separated_body(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """?format=tsv returns text/tab-separated-values, not JSON."""
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": SAMPLE_MODEL_YAML},
+                    )
+                    mid = load.json()["model_id"]
+                    response = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format=tsv",
+                        json={
+                            "model_id": mid,
+                            "query": {
+                                "select": {
+                                    "dimensions": ["Customer Country"],
+                                    "measures": ["Total Revenue"],
+                                },
+                            },
+                            "dialect": "duckdb",
+                        },
+                    )
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/tab-separated-values")
+            body = response.text
+            lines = body.rstrip("\n").split("\n")
+            # Header + at least one row
+            assert lines[0] == "Customer Country\tTotal Revenue"
+            assert len(lines) >= 2
+            # Each data line has exactly one tab
+            for line in lines[1:]:
+                assert line.count("\t") == 1
         finally:
             reset_session_manager()
 

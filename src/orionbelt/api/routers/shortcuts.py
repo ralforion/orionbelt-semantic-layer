@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import cast
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -25,7 +25,6 @@ from orionbelt.api.routers.model_api import (
     _search_model,
 )
 from orionbelt.api.schemas import (
-    ColumnMetadata,
     DiagramResponse,
     DimensionDetail,
     ErrorDetail,
@@ -467,15 +466,37 @@ class ShortcutQueryExecuteRequest(QueryObject):
 async def shortcut_execute_query(
     body: ShortcutQueryExecuteRequest,
     dialect: str | None = None,
+    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    format_values: bool = False,
+    locale: str | None = None,
+    timezone: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
-) -> QueryExecuteResponse:
+) -> QueryExecuteResponse | Response:
     """Compile and execute a query (auto-resolves session/model).
 
-    Requires QUERY_EXECUTE=true (or FLIGHT_ENABLED=true). If ``dialect`` is omitted,
-    uses ``DB_VENDOR``. Enforces a configurable default row limit if the query has
-    no explicit limit.
+    Requires ``QUERY_EXECUTE=true`` (or ``FLIGHT_ENABLED=true``). If ``dialect``
+    is omitted, uses ``DB_VENDOR``. Enforces a configurable default row limit
+    if the query has no explicit limit.
+
+    Query parameters
+    ----------------
+    * ``format`` — ``json`` (default) or ``tsv``. ``tsv`` returns a tab-
+      separated body; cells with tab/newline/CR/double-quote are RFC 4180
+      quoted. ``tsv`` implies ``format_values=true``.
+    * ``format_values`` — when true, numeric cells in the JSON response are
+      rendered as locale-aware display strings using each column's
+      ``format`` pattern (matches the Gradio UI). Default false.
+    * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
+      to ``DEFAULT_LOCALE`` env when omitted.
+    * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the
+      model's ``default_timezone`` for naive timestamp coercion.
     """
-    from orionbelt.api.deps import get_db_vendor, get_query_default_limit, is_query_execute_enabled
+    from orionbelt.api.deps import (
+        get_db_vendor,
+        get_default_locale,
+        get_query_default_limit,
+        is_query_execute_enabled,
+    )
 
     if not is_query_execute_enabled():
         raise HTTPException(
@@ -527,13 +548,14 @@ async def shortcut_execute_query(
             },
         ) from None
 
-    # Resolve timezone from model settings for naive timestamp coercion
+    # Resolve timezone — request override → model default → host TZ → UTC.
     model = store.get_model(model_id)
-    tz = None
+    model_default_tz: str | None = None
     override_db_tz = False
     if model.settings:
-        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        model_default_tz = model.settings.default_timezone
         override_db_tz = model.settings.override_database_timezone
+    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
 
     try:
         exec_result = await asyncio.to_thread(
@@ -548,35 +570,14 @@ async def shortcut_execute_query(
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
-    from orionbelt.api.routers.sessions import (
-        _build_explain_response,
-        _build_format_map,
-        _build_type_map,
-    )
+    from orionbelt.api.routers.sessions import _build_execute_response
 
-    type_map = _build_type_map(model)
-    fmt_map = _build_format_map(model)
-    return QueryExecuteResponse(
-        sql=format_sql(result.sql, result.dialect),
-        dialect=result.dialect,
-        columns=[
-            ColumnMetadata(
-                name=c.name,
-                type=type_map.get(c.name, c.type_hint),
-                format=fmt_map.get(c.name),
-            )
-            for c in exec_result.columns
-        ],
-        rows=exec_result.rows,
-        row_count=exec_result.row_count,
-        execution_time_ms=exec_result.execution_time_ms,
-        timezone=exec_result.timezone,
-        resolved=ResolvedInfoResponse(
-            fact_tables=result.resolved.fact_tables,
-            dimensions=result.resolved.dimensions,
-            measures=result.resolved.measures,
-        ),
-        warnings=result.warnings,
-        sql_valid=result.sql_valid,
-        explain=_build_explain_response(result),
+    effective_locale = locale if locale is not None else get_default_locale()
+    return _build_execute_response(
+        compile_result=result,
+        exec_result=exec_result,
+        model=model,
+        response_format=format,
+        format_values=format_values,
+        locale=effective_locale,
     )

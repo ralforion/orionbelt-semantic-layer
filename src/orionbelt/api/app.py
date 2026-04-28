@@ -124,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         query_execute_enabled=query_execute_enabled,
         db_vendor=settings.db_vendor,
         query_default_limit=settings.query_default_limit,
+        default_locale=settings.default_locale,
     )
 
     # Start Arrow Flight SQL server if ob-flight-extension is installed
