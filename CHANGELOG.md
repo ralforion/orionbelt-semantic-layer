@@ -2,6 +2,20 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.0] - 2026-04-28
+
+### Added
+
+- **Raw query mode (`select.fields`).** Returns un-aggregated rows by projecting physical columns directly. Mutually exclusive with `dimensions`/`measures`/`having`/`dimensionsExclude`. New `select.distinct` flag emits `SELECT DISTINCT`. Field references must be qualified `DataObject.Column`. Single-fact queries compile to a flat star-schema-style SELECT; fanout protection still applies (reversed many-to-one joins are rejected).
+- **Raw CFL — multi-fact `UNION ALL` with NULL padding.** When `select.fields` references columns from independent fact tables, the planner emits one leg per leg-root fact, with typed `CAST(NULL AS <type>)` for fields not reachable from a given leg. Outer wrapper applies `DISTINCT` (when set), `ORDER BY` (remapped to field aliases), and `LIMIT`. New error codes: `RAW_FIELD_INVALID_REF`, `RAW_FIELD_UNKNOWN_OBJECT`, `RAW_FIELD_UNKNOWN_COLUMN`.
+- **`UNION ALL BY NAME` optimization for raw CFL on DuckDB and Snowflake.** On dialects that support it, per-leg NULL padding is skipped — each leg only emits the columns it has, and the database fills missing columns automatically. Output rows are identical; SQL is shorter and more readable.
+- **Public-doc gating flags** (`EXPOSE_API_DOCS`, `EXPOSE_OPENAPI_SCHEMA`). Default `true` to preserve the public-demo behaviour. Set `EXPOSE_API_DOCS=false` to hide `/docs` and `/redoc`; `EXPOSE_OPENAPI_SCHEMA` toggles `/openapi.json` independently. The Dockerfile and `deploy-gcloud.sh` pin both to `true` explicitly so the demo stays exposed even if defaults flip later.
+- **`/v1/settings` now returns `version` and `api_version`.** Clients can negotiate features from a single call instead of also hitting `/health`.
+
+### Changed
+
+- `Select` AST node gains a `distinct: bool` field; codegen emits `SELECT DISTINCT` when set. `QueryBuilder.distinct()` and a widened `with_cte()` signature support raw CFL composite construction.
+
 ## [2.0.1] - 2026-04-27
 
 ### Added
