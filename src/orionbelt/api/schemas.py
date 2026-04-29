@@ -391,6 +391,8 @@ class DimensionDetail(BaseModel):
 class MeasureDetail(BaseModel):
     """Detail of a measure."""
 
+    model_config = {"populate_by_name": True}
+
     name: str
     result_type: str
     aggregation: str
@@ -400,6 +402,7 @@ class MeasureDetail(BaseModel):
     total: bool = False
     description: str | None = None
     format: str | None = None
+    data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
 
@@ -415,6 +418,7 @@ class MetricDetail(BaseModel):
     component_measures: list[str] = Field(default_factory=list)
     description: str | None = None
     format: str | None = None
+    data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
 

@@ -125,6 +125,70 @@ dimensions:
         assert dim.view == "Products"
         assert dim.column == "Category"
 
+    def test_description_format_data_type_round_trip(self, resolver: ReferenceResolver) -> None:
+        """description / format / dataType must survive YAML → SemanticModel.
+
+        Regression for a parser bug where the Measure / Dimension constructors
+        in resolver.py silently dropped ``description`` (raw_meas / raw_dim
+        had it but it was never passed to the model). dataType + format were
+        wired up but description was missed; we now assert all three round-trip
+        for measures, dimensions, and metrics.
+        """
+        yaml_content = """
+version: "1.0"
+dataObjects:
+  Orders:
+    code: orders
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+  Customers:
+    code: customers
+    columns:
+      Country:
+        code: country
+        abstractType: string
+dimensions:
+  Country:
+    dataObject: Customers
+    column: Country
+    description: 'Customer country (ISO 3166)'
+    format: '@'
+measures:
+  Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    resultType: float
+    aggregation: sum
+    description: 'Total revenue across all orders'
+    format: '#,##0.00'
+    dataType: 'decimal(18, 2)'
+metrics:
+  AvgRevenue:
+    expression: '{[Revenue]}'
+    description: 'Average revenue'
+    format: '#,##0.00'
+    dataType: 'decimal(18, 2)'
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, result = resolver.resolve(raw, source_map)
+        assert result.valid, f"Errors: {[e.message for e in result.errors]}"
+
+        meas = model.measures["Revenue"]
+        assert meas.description == "Total revenue across all orders"
+        assert meas.format == "#,##0.00"
+        assert meas.data_type == "decimal(18, 2)"
+
+        dim = model.dimensions["Country"]
+        assert dim.description == "Customer country (ISO 3166)"
+        assert dim.format == "@"
+
+        met = model.metrics["AvgRevenue"]
+        assert met.description == "Average revenue"
+        assert met.format == "#,##0.00"
+        assert met.data_type == "decimal(18, 2)"
+
     def test_primary_key_field_round_trip(self, resolver: ReferenceResolver) -> None:
         yaml_content = """
 version: "1.0"

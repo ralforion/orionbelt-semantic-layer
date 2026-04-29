@@ -223,7 +223,9 @@ async def shortcut_measure(
         columns=[{"dataObject": c.view or "", "column": c.column or ""} for c in m.columns],
         distinct=m.distinct,
         total=m.total,
+        description=m.description,
         format=m.format,
+        data_type=m.data_type,
         owner=m.owner,
         synonyms=m.synonyms,
     )
@@ -256,7 +258,9 @@ async def shortcut_metric(
         measure=met.measure,
         time_dimension=met.time_dimension,
         component_measures=component_names,
+        description=met.description,
         format=met.format,
+        data_type=met.data_type,
         owner=met.owner,
         synonyms=met.synonyms,
     )
