@@ -26,8 +26,10 @@ from orionbelt.api.schemas import (
 from orionbelt.models.semantic import ModelSettings, SemanticModel
 from orionbelt.service.db_executor import (
     _DB_SESSION_TZ,
+    _DB_TZ_DETECTED,
     _get_host_timezone,
     resolve_timezone,
+    warm_db_tz_cache,
 )
 from orionbelt.service.session_manager import SessionManager
 
@@ -215,6 +217,16 @@ async def get_settings(
 
     # `timezone` is always present so clients can show the wall clock /
     # effective TZ even without a loaded model.
+    # Pre-warm the DB session TZ cache on first hit when a model is bound
+    # — otherwise the first request after a restart sees `effective` based
+    # on model TZ alone (because no query has populated the cache yet).
+    if (
+        is_query_execute_enabled()
+        and db_vendor
+        and db_vendor not in _DB_TZ_DETECTED
+        and (model is not None or single_mode)
+    ):
+        warm_db_tz_cache(db_vendor)
     host_tz = _get_host_timezone()
     db_tz = _DB_SESSION_TZ.get(db_vendor)
     effective_tz_name = _resolve_effective_timezone(settings_block, db_vendor)
@@ -237,6 +249,8 @@ async def get_settings(
         ),
         now=local_iso,
         utc=utc_iso,
+        database_detected=db_vendor in _DB_TZ_DETECTED,
+        database_raw=str(db_tz) if db_tz else None,
     )
 
     dialect_info = DialectResolutionInfo(

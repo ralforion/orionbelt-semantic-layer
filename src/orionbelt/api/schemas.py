@@ -233,6 +233,18 @@ class TimezoneResolutionInfo(BaseModel):
     )
     now: str = Field(description="Current wall-clock time in the effective TZ (ISO 8601)")
     utc: str = Field(description="Current UTC time (ISO 8601, Z suffix) for reference")
+    database_detected: bool = Field(
+        default=False,
+        description="Whether DB session TZ detection has run for this dialect",
+    )
+    database_raw: str | None = Field(
+        default=None,
+        description=(
+            "Raw cached DB session TZ value (for diagnostics). "
+            "When `database_detected` is true and this is null, detection ran "
+            "but did not store a value (query failed or returned SYSTEM)."
+        ),
+    )
 
 
 class DialectResolutionInfo(BaseModel):

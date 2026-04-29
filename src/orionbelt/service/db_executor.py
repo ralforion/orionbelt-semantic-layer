@@ -312,6 +312,51 @@ def _reset_db_tz_cache() -> None:
     _DB_TZ_DETECTED.clear()
 
 
+def warm_db_tz_cache(dialect: str) -> ZoneInfo | None:
+    """Probe the DB session timezone for ``dialect`` and cache the result.
+
+    Idempotent: returns the cached value if detection has already run.
+    Opens a short-lived connection (DuckDB read-only or pooled connection
+    for other dialects) only when needed, so callers can pre-warm the
+    cache from request handlers without waiting for the first query.
+
+    Returns ``None`` (without raising) if the connection cannot be
+    established or the detection query fails — leaves the cache in the
+    same state ``_detect_db_timezone`` would on failure.
+    """
+    if dialect in _DB_TZ_DETECTED:
+        return _DB_SESSION_TZ.get(dialect)
+
+    try:
+        if dialect == "duckdb":
+            import duckdb
+            from ob_flight.db_router import (  # type: ignore[import-untyped]
+                get_credentials,
+            )
+
+            creds = get_credentials("duckdb")
+            database = creds.get("database", ":memory:")
+            conn = duckdb.connect(database=database, read_only=True)
+            try:
+                return _detect_db_timezone(conn, "duckdb")
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+        from ob_flight.db_router import get_connection
+
+        with get_connection(dialect) as conn:
+            cursor = conn.cursor()
+            try:
+                return _detect_db_timezone(cursor, dialect)
+            finally:
+                with contextlib.suppress(Exception):
+                    cursor.close()
+    except Exception:
+        logger.debug("warm_db_tz_cache failed for %s", dialect, exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Value serialisation (for non-Arrow fallback path)
 # ---------------------------------------------------------------------------
@@ -479,7 +524,7 @@ def execute_sql(
         ExecutionError: if the database connection or query fails.
     """
     try:
-        from ob_flight.db_router import get_credentials  # type: ignore[import-untyped]
+        from ob_flight.db_router import get_credentials
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
