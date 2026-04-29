@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
-from datetime import timezone as tz_mod
+from datetime import UTC, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -103,7 +102,7 @@ class TestSerializeTemporalValues:
         assert "+02:00" in result or "+01:00" in result
 
     def test_datetime_utc_uses_z(self) -> None:
-        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=tz_mod.utc)
+        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=UTC)
         result = _serialize_value(dt)
         assert result.endswith("Z")
 
@@ -120,7 +119,7 @@ class TestSerializeTemporalValues:
         assert "2026-04-19T14:30:00" in result
 
     def test_datetime_aware_ignores_passed_tz(self) -> None:
-        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=tz_mod.utc)
+        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=UTC)
         tz = ZoneInfo("Europe/Zagreb")
         result = _serialize_value(dt, tz=tz)
         # Already tz-aware — don't override

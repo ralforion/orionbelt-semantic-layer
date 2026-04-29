@@ -2325,14 +2325,36 @@ def create_blocks(
                 )
                 import_osi_btn.click(fn=None, js=_IMPORT_OSI_JS)
 
-                def _update_pickers(model_yaml: str) -> tuple[object, ...]:
+                def _update_pickers(model_yaml: str, current_dialect: str) -> tuple[object, ...]:
                     dims, meas_met, fields = _extract_model_items(model_yaml)
                     import gradio as gr
+
+                    # Auto-pick the dialect from the model's
+                    # ``settings.defaultDialect`` if present and registered.
+                    # The user can still change it manually after the auto-pick.
+                    dialect_update = gr.update()
+                    try:
+                        import yaml as _pyyaml
+
+                        raw = _pyyaml.safe_load(model_yaml or "") or {}
+                        if isinstance(raw, dict):
+                            settings_block = raw.get("settings") or {}
+                            if isinstance(settings_block, dict):
+                                model_dialect = settings_block.get("defaultDialect")
+                                if (
+                                    isinstance(model_dialect, str)
+                                    and model_dialect in dialects
+                                    and model_dialect != current_dialect
+                                ):
+                                    dialect_update = gr.update(value=model_dialect)
+                    except Exception:  # noqa: BLE001 — dialect auto-pick is best-effort
+                        pass
 
                     return (
                         gr.update(choices=dims, value=None),
                         gr.update(choices=meas_met, value=None),
                         gr.update(choices=fields, value=None),
+                        dialect_update,
                     )
 
                 def _make_inserter(section: str) -> object:  # noqa: E501
@@ -2350,8 +2372,8 @@ def create_blocks(
 
                 model_input.change(
                     fn=_update_pickers,
-                    inputs=[model_input],
-                    outputs=[dim_picker, meas_picker, field_picker],
+                    inputs=[model_input, dialect],
+                    outputs=[dim_picker, meas_picker, field_picker, dialect],
                 )
 
                 for picker, sec in (

@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 _CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
 if _CONVERTER_DIR not in sys.path:
     sys.path.insert(0, _CONVERTER_DIR)
