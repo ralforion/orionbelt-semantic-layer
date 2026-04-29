@@ -462,17 +462,26 @@ def _build_execute_response(
     ``format_values`` is forced True for TSV; numeric cells are rendered with
     each column's display ``format`` pattern using locale-aware separators.
     """
-    type_map = _build_type_map(model)
+    model_type_map = _build_type_map(model)
     fmt_map = _build_format_map(model)
     column_names = [c.name for c in exec_result.columns]
     columns_meta = [
         ColumnMetadata(
             name=c.name,
-            type=type_map.get(c.name, c.type_hint),
+            type=model_type_map.get(c.name, c.type_hint),
             format=fmt_map.get(c.name),
         )
         for c in exec_result.columns
     ]
+    # Merge the executor's type_hint as a fallback for columns that aren't
+    # exposed via the dimension/measure/metric layer — notably raw-mode
+    # ``select.fields`` projections, which reference physical columns the
+    # model-level type_map doesn't list. Without this merge, a numeric raw
+    # column ("decimal(18, 2)" from the driver) wouldn't be classified as
+    # numeric in format_row.
+    type_map: dict[str, str] = {
+        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_result.columns
+    }
 
     if response_format == "tsv":
         formatted = [

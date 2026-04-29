@@ -1135,6 +1135,62 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_execute_raw_mode_format_values_uses_executor_type_hint(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Raw-mode field cells get classified via the executor's type_hint.
+
+        Raw-mode ``select.fields`` references physical columns that aren't
+        exposed via the dimension/measure/metric layer, so the model-level
+        type_map has no entry for them. The merged type_map (model +
+        executor hints) lets ``format_row`` still classify them — and
+        crucially, integer keys without a format pattern come back as
+        ``"52965"`` not ``"52965.0"``.
+        """
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": SAMPLE_MODEL_YAML},
+                    )
+                    mid = load.json()["model_id"]
+                    response = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format_values=true&locale=de",
+                        json={
+                            "model_id": mid,
+                            "query": {
+                                "select": {
+                                    "fields": ["Orders.Order ID", "Orders.Amount"],
+                                },
+                            },
+                            "dialect": "duckdb",
+                        },
+                    )
+            assert response.status_code == 200
+            data = response.json()
+            # Both raw-field columns come back; format_values=true was honored
+            # for raw mode (numeric cells render as strings even though the
+            # fields aren't in the model's type_map).
+            assert len(data["rows"]) > 0
+            col_names = [c["name"] for c in data["columns"]]
+            assert col_names == ["Orders.Order ID", "Orders.Amount"]
+            for row in data["rows"]:
+                assert isinstance(row[0], str)  # Order ID — string column
+                assert isinstance(row[1], str)  # Amount — numeric, now stringified
+        finally:
+            reset_session_manager()
+
     async def test_execute_with_limit(self, api_duckdb: duckdb.DuckDBPyConnection) -> None:
         """Default limit is applied when query has no explicit limit."""
         settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)

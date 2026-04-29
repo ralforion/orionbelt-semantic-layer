@@ -85,8 +85,16 @@ def locale_separators(locale: str) -> tuple[str, str]:
     return (",", ".")
 
 
-def format_number(val: float, fmt: str | None, locale: str = "") -> str:
-    """Format a numeric value using a display format pattern and locale."""
+def format_number(val: int | float | Decimal, fmt: str | None, locale: str = "") -> str:
+    """Format a numeric value using a display format pattern and locale.
+
+    Accepts int / float / Decimal so callers don't have to pre-cast to
+    ``float`` — that pre-cast was producing ``"52965.0"`` for integer
+    columns with no format pattern, since ``str(float(52965))`` keeps the
+    trailing ``.0``. Forwarding the original type preserves
+    ``str(52965) == "52965"`` while the ``f"{:,.{n}f}"`` format string
+    still works on all three types when a pattern is supplied.
+    """
     use_thousands, decimals, is_pct = parse_number_format(fmt)
     if decimals < 0 and not use_thousands and not is_pct:
         return str(val)
@@ -158,7 +166,9 @@ def format_row(
         is_numeric = is_numeric_type_hint(type_map.get(name)) or is_numeric_value
         if is_numeric:
             try:
-                out.append(format_number(float(cell), fmt_map.get(name), locale))  # type: ignore[arg-type]
+                # Preserve int / Decimal so unformatted integer columns stay
+                # ``"52965"`` rather than ``"52965.0"``.
+                out.append(format_number(cell, fmt_map.get(name), locale))  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 out.append(str(cell))
         else:

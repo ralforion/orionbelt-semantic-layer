@@ -80,9 +80,9 @@ class TestFormatRow:
         assert out == ["1.234,50", "Germany", None]
 
     def test_int_detected_as_numeric_without_type_map(self) -> None:
-        # No format pattern → numeric cells fall through to str(float(v)).
-        # Without a pattern there's no way to tell "integer" from "float", so
-        # the trailing ``.0`` is expected.
+        # No format pattern + no type hint: cell is detected as numeric via
+        # ``isinstance``, and ``format_number`` preserves the original type
+        # in the early-return path (no float coercion).
         out = format_row(
             row=[42],
             column_names=["X"],
@@ -90,7 +90,7 @@ class TestFormatRow:
             type_map={},
             locale="en",
         )
-        assert out == ["42.0"]
+        assert out == ["42"]
 
     def test_bool_not_treated_as_numeric(self) -> None:
         out = format_row(
@@ -128,6 +128,23 @@ class TestFormatRow:
             locale="de",
         )
         assert out == ["75,00"]
+
+    def test_integer_without_format_keeps_no_decimal_suffix(self) -> None:
+        """Regression: int cells with no format pattern shouldn't render as ``"X.0"``.
+
+        Previously ``format_row`` did ``float(cell)`` before delegating to
+        ``format_number``, so the early-return path returned ``str(52965.0)``
+        — i.e. ``"52965.0"``. Raw-mode integer keys (``Order Key``) showed
+        the trailing ``.0`` even though no format pattern was declared.
+        """
+        out = format_row(
+            row=[52965, 100, 0],
+            column_names=["Order Key", "Qty", "Z"],
+            fmt_map={},
+            type_map={"Order Key": "int", "Qty": "bigint", "Z": "number"},
+            locale="de",
+        )
+        assert out == ["52965", "100", "0"]
 
     def test_bigint_type_hint_treated_as_numeric(self) -> None:
         out = format_row(
