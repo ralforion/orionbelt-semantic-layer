@@ -8,9 +8,12 @@ when ``format_values`` is requested.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 __all__ = [
     "format_number",
     "format_row",
+    "is_numeric_type_hint",
     "locale_separators",
     "parse_number_format",
     "to_tsv",
@@ -98,6 +101,34 @@ def format_number(val: float, fmt: str | None, locale: str = "") -> str:
     return raw + ("%" if is_pct else "")
 
 
+# Substrings that mark a column type hint as numeric. ``_build_type_map``
+# can return either the high-level enum hint ("number", "int", "float") or
+# the measure's raw ``data_type`` string ("decimal(18, 2)", "bigint", etc.),
+# so the check has to be lexical rather than an equality test.
+_NUMERIC_TYPE_TOKENS = (
+    "number",
+    "int",  # int, bigint, smallint, tinyint
+    "float",
+    "decimal",
+    "numeric",
+    "double",
+    "real",
+)
+
+
+def is_numeric_type_hint(type_hint: str | None) -> bool:
+    """Return True when *type_hint* designates a numeric column type.
+
+    Accepts both the curated hints from ``_build_type_map`` ("number",
+    "int", "float") and raw OBML / SQL ``data_type`` strings such as
+    ``"decimal(18, 2)"`` or ``"bigint"``.
+    """
+    if not type_hint:
+        return False
+    h = type_hint.lower()
+    return any(tok in h for tok in _NUMERIC_TYPE_TOKENS)
+
+
 def format_row(
     row: list[object],
     column_names: list[str],
@@ -107,19 +138,24 @@ def format_row(
 ) -> list[str | None]:
     """Apply UI-style formatting to a single row of result data.
 
-    Numeric cells (per ``type_map`` "number" or detected via ``isinstance``)
-    are rendered through ``format_number`` using their column's pattern.
-    Other cells are stringified; ``None`` is preserved so the caller can
-    decide how to render missing values.
+    A cell is treated as numeric when **either** its column's type hint
+    matches a numeric token (see :func:`is_numeric_type_hint`) **or** its
+    Python value is an int / float / Decimal (booleans excluded). The
+    Decimal branch matters in production: psycopg, snowflake-connector and
+    several other drivers return ``decimal.Decimal`` for SQL ``NUMERIC`` /
+    ``DECIMAL`` columns, which would otherwise fall through ``isinstance``
+    against ``(int, float)`` and never reach ``format_number``.
+
+    ``None`` cells pass through unchanged so the caller decides how to
+    render missing values.
     """
     out: list[str | None] = []
     for cell, name in zip(row, column_names, strict=False):
         if cell is None:
             out.append(None)
             continue
-        is_numeric = type_map.get(name) == "number" or (
-            isinstance(cell, (int, float)) and not isinstance(cell, bool)
-        )
+        is_numeric_value = isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
+        is_numeric = is_numeric_type_hint(type_map.get(name)) or is_numeric_value
         if is_numeric:
             try:
                 out.append(format_number(float(cell), fmt_map.get(name), locale))  # type: ignore[arg-type]

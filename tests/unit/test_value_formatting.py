@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from orionbelt.service.value_formatting import (
     format_number,
     format_row,
+    is_numeric_type_hint,
     locale_separators,
     parse_number_format,
     to_tsv,
@@ -99,6 +102,43 @@ class TestFormatRow:
         )
         assert out == ["True", "False"]
 
+    def test_decimal_cell_with_decimal_type_hint(self) -> None:
+        """Postgres / Snowflake return Decimal for NUMERIC/DECIMAL columns.
+
+        Regression: ``isinstance(cell, (int, float))`` missed Decimal AND
+        ``type_map["X"] == "number"`` missed "decimal(18, 2)" — both
+        branches failed and the cell fell through to ``str(cell)`` with
+        no formatting.
+        """
+        out = format_row(
+            row=[Decimal("2045134942.09")],
+            column_names=["Revenue"],
+            fmt_map={"Revenue": "#,##0.00"},
+            type_map={"Revenue": "decimal(18, 2)"},
+            locale="de",
+        )
+        assert out == ["2.045.134.942,09"]
+
+    def test_decimal_cell_without_type_hint(self) -> None:
+        out = format_row(
+            row=[Decimal("75.00")],
+            column_names=["X"],
+            fmt_map={"X": "#,##0.00"},
+            type_map={},
+            locale="de",
+        )
+        assert out == ["75,00"]
+
+    def test_bigint_type_hint_treated_as_numeric(self) -> None:
+        out = format_row(
+            row=[42],
+            column_names=["Count"],
+            fmt_map={"Count": "#,##0"},
+            type_map={"Count": "bigint"},
+            locale="en",
+        )
+        assert out == ["42"]
+
     def test_unparseable_numeric_falls_back_to_str(self) -> None:
         # type_map says "number" but cell is a string that can't be parsed.
         out = format_row(
@@ -109,6 +149,36 @@ class TestFormatRow:
             locale="en",
         )
         assert out == ["not-a-number"]
+
+
+class TestIsNumericTypeHint:
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            "number",
+            "int",
+            "bigint",
+            "smallint",
+            "tinyint",
+            "float",
+            "double",
+            "double precision",
+            "real",
+            "decimal",
+            "decimal(18, 2)",
+            "numeric(10, 4)",
+            "DECIMAL(38,9)",
+        ],
+    )
+    def test_recognises_numeric_hints(self, hint: str) -> None:
+        assert is_numeric_type_hint(hint) is True
+
+    @pytest.mark.parametrize(
+        "hint",
+        [None, "", "string", "varchar(255)", "boolean", "date", "datetime", "timestamp"],
+    )
+    def test_rejects_non_numeric_hints(self, hint: str | None) -> None:
+        assert is_numeric_type_hint(hint) is False
 
 
 class TestToTsv:
