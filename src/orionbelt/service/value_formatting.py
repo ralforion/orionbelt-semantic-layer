@@ -8,7 +8,7 @@ when ``format_values`` is requested.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 __all__ = [
     "format_number",
@@ -154,6 +154,11 @@ def format_row(
     ``DECIMAL`` columns, which would otherwise fall through ``isinstance``
     against ``(int, float)`` and never reach ``format_number``.
 
+    **String numerics** (e.g. ADBC postgres returns ``NUMERIC`` as Arrow
+    string-extension types, preserving precision beyond ``decimal128``)
+    are parsed to ``Decimal`` when the column's type hint says numeric,
+    so they format the same as native Decimal cells.
+
     ``None`` cells pass through unchanged so the caller decides how to
     render missing values.
     """
@@ -162,13 +167,27 @@ def format_row(
         if cell is None:
             out.append(None)
             continue
+        type_is_numeric = is_numeric_type_hint(type_map.get(name))
         is_numeric_value = isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
-        is_numeric = is_numeric_type_hint(type_map.get(name)) or is_numeric_value
+
+        # ADBC postgres delivers NUMERIC as a Python string. When the column
+        # is annotated as numeric, parse the string to Decimal so format_row
+        # can emit a locale-aware display string instead of falling through
+        # to a bare str(cell) via the except branch.
+        value: object = cell
+        if isinstance(cell, str) and type_is_numeric:
+            try:
+                value = Decimal(cell)
+                is_numeric_value = True
+            except (InvalidOperation, ValueError):
+                pass
+
+        is_numeric = type_is_numeric or is_numeric_value
         if is_numeric:
             try:
                 # Preserve int / Decimal so unformatted integer columns stay
                 # ``"52965"`` rather than ``"52965.0"``.
-                out.append(format_number(cell, fmt_map.get(name), locale))  # type: ignore[arg-type]
+                out.append(format_number(value, fmt_map.get(name), locale))  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 out.append(str(cell))
         else:

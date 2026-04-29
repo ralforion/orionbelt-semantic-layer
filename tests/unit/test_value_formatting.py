@@ -102,6 +102,45 @@ class TestFormatRow:
         )
         assert out == ["True", "False"]
 
+    def test_string_numeric_cell_with_decimal_type_hint(self) -> None:
+        """ADBC postgres returns NUMERIC as a Python string (Arrow's
+        ``opaque[storage_type=string]`` extension), to preserve precision
+        beyond ``decimal128``. format_row must parse it to Decimal when
+        the column hint says numeric, otherwise the format spec
+        ``f"{val:,.2f}"`` raises and the cell falls through to
+        ``str(cell)`` — exactly the live bug we hit.
+        """
+        out = format_row(
+            row=["2045134942.09"],
+            column_names=["Revenue"],
+            fmt_map={"Revenue": "#,##0.00"},
+            type_map={"Revenue": "decimal(18, 2)"},
+            locale="de",
+        )
+        assert out == ["2.045.134.942,09"]
+
+    def test_string_numeric_passes_through_when_type_hint_not_numeric(self) -> None:
+        """Strings on non-numeric columns aren't auto-parsed to Decimal."""
+        out = format_row(
+            row=["12345"],
+            column_names=["Code"],
+            fmt_map={},
+            type_map={"Code": "string"},
+            locale="de",
+        )
+        assert out == ["12345"]
+
+    def test_string_unparseable_falls_back_to_str(self) -> None:
+        """Numeric type hint but a non-parseable string → unchanged."""
+        out = format_row(
+            row=["NaN-ish"],
+            column_names=["Revenue"],
+            fmt_map={"Revenue": "#,##0.00"},
+            type_map={"Revenue": "decimal(18, 2)"},
+            locale="de",
+        )
+        assert out == ["NaN-ish"]
+
     def test_decimal_cell_with_decimal_type_hint(self) -> None:
         """Postgres / Snowflake return Decimal for NUMERIC/DECIMAL columns.
 
