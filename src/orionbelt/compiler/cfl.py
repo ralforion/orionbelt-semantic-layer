@@ -27,7 +27,12 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
-from orionbelt.compiler.resolution import ResolvedDimension, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolvedDimension,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.compiler.star import CflLegInfo, QueryPlan
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect
@@ -415,7 +420,7 @@ class CFLPlanner:
             for dim in resolved.dimensions:
                 via_ok = dim.via is None or dim.via in reachable
                 if dim.object_name in reachable and via_ok:
-                    col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+                    col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
                     if dim.grain and dialect:
                         col = dialect.render_time_grain(col, dim.grain)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
@@ -820,7 +825,7 @@ class CFLPlanner:
 
         builder = QueryBuilder()
         for dim in dims:
-            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
             builder.group_by(col)
 
@@ -875,7 +880,7 @@ class CFLPlanner:
 
         builder = QueryBuilder()
         for dim in resolved.dimensions:
-            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
             builder.group_by(col)
 

@@ -16,7 +16,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.graph import JoinGraph
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.models.semantic import DataObject, SemanticModel
 
@@ -94,7 +94,7 @@ class StarSchemaPlanner:
 
         # SELECT: dimensions (apply time grain truncation if specified)
         for dim in resolved.dimensions:
-            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain and dialect:
                 col = dialect.render_time_grain(col, dim.grain)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
@@ -156,7 +156,7 @@ class StarSchemaPlanner:
 
         # GROUP BY (all dimension columns, with time grain if applicable)
         for dim in resolved.dimensions:
-            gb_col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain and dialect:
                 gb_col = dialect.render_time_grain(gb_col, dim.grain)
             builder.group_by(gb_col)

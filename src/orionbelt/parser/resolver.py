@@ -139,15 +139,17 @@ class ReferenceResolver:
                 for fname, fdata in raw_obj.get("columns", {}).items():
                     obj_columns[fname] = DataObjectColumn(
                         label=fname,
-                        code=fdata.get("code", fname),
+                        code=fdata.get("code", fname if not fdata.get("expression") else ""),
                         abstract_type=fdata.get("abstractType", "string"),
                         sql_type=fdata.get("sqlType"),
                         sql_precision=fdata.get("sqlPrecision"),
                         sql_scale=fdata.get("sqlScale"),
                         num_class=fdata.get("numClass"),
                         primary_key=bool(fdata.get("primaryKey", False)),
+                        description=fdata.get("description"),
                         comment=fdata.get("comment"),
                         owner=fdata.get("owner"),
+                        expression=fdata.get("expression"),
                         synonyms=fdata.get("synonyms", []),
                         custom_extensions=_parse_extensions(fdata),
                     )

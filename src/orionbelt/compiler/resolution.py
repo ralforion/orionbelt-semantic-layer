@@ -38,6 +38,8 @@ from orionbelt.models.query import (
 )
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    DataObject,
+    DataObjectColumn,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -50,6 +52,55 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
 )
+
+_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
+
+
+def _build_computed_column_expr(
+    column: DataObjectColumn, obj: DataObject, model: SemanticModel
+) -> Expr:
+    """Parse a computed column's ``expression`` into an AST.
+
+    ``{name}`` placeholders are substituted with ``{[obj.label].[name]}`` so
+    the existing measure-expression tokenizer resolves them to physical
+    table-qualified column refs. Falls back to a column ref to the column's
+    own ``code`` if parsing fails — defensive: never block compilation on
+    an expression-parse error in a single column.
+    """
+    expr_str = column.expression or ""
+
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        if name in obj.columns:
+            return f"{{[{obj.label}].[{name}]}}"
+        return match.group(0)
+
+    rewritten = _COMPUTED_PLACEHOLDER.sub(_sub, expr_str)
+    try:
+        tokens = tokenize_measure_expression(rewritten, model)
+        return parse_expression(tokens)
+    except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
+        return ColumnRef(name=column.code or column.label, table=obj.label)
+
+
+def make_column_expr(model: SemanticModel, object_name: str, column_label: str) -> Expr:
+    """Build the AST expression that represents a column reference.
+
+    For plain columns, returns ``ColumnRef(name=col.code, table=object_name)``.
+    For computed columns (those with an ``expression``), parses and
+    substitutes placeholders so the returned AST already inlines the
+    expression. Used by planners and filter resolution alike — the
+    single source of truth for "render this column reference as SQL".
+    """
+    obj = model.data_objects.get(object_name)
+    if obj is None:
+        return ColumnRef(name=column_label, table=object_name)
+    column = obj.columns.get(column_label)
+    if column is None:
+        return ColumnRef(name=column_label, table=object_name)
+    if column.expression:
+        return _build_computed_column_expr(column, obj, model)
+    return ColumnRef(name=column.code, table=object_name)
 
 
 @dataclass
@@ -1225,9 +1276,7 @@ class QueryResolver:
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
             col_name = dim.column
-            obj = ctx.model.data_objects.get(obj_name)
-            source = obj.columns[col_name].code if obj and col_name in obj.columns else col_name
-            col_expr: Expr = ColumnRef(name=source, table=obj_name)
+            col_expr: Expr = make_column_expr(ctx.model, obj_name, col_name)
 
         # 2. HAVING: try measure or metric name
         elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
@@ -1261,8 +1310,7 @@ class QueryResolver:
                 return None
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
-            source = obj.columns[col_name].code
-            col_expr = ColumnRef(name=source, table=obj_name)
+            col_expr = make_column_expr(ctx.model, obj_name, col_name)
 
         else:
             ctx.errors.append(

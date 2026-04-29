@@ -177,10 +177,31 @@ class DataColumnRef(BaseModel):
 
 
 class DataObjectColumn(BaseModel):
-    """A column within a data object (maps to a database column or expression)."""
+    """A column within a data object (maps to a database column or expression).
+
+    When ``expression`` is set, the column is **computed** — the column's
+    ``code`` is ignored and the SQL expression is inlined wherever the
+    column is referenced. ``{name}`` placeholders inside the expression
+    refer to other columns of the same data object (by their label) and
+    are substituted with the referenced column's physical ``code``,
+    table-qualified at codegen time.
+
+    Example::
+
+        columns:
+          reportingdateyear:  { code: reportingdateyear, abstractType: int }
+          reportingdatemonth: { code: reportingdatemonth, abstractType: int }
+          reporting_period:
+            expression: "({reportingdateyear} * 100 + {reportingdatemonth})"
+            abstractType: int
+
+    Note that an expression is dialect-leaky — pin the model's
+    ``settings.defaultDialect`` if your expression uses vendor-specific
+    syntax (``regexp_replace``, ``btrim``, etc.).
+    """
 
     label: str
-    code: str
+    code: str = ""
     abstract_type: DataType = Field(alias="abstractType")
     sql_type: str | None = Field(None, alias="sqlType")
     sql_precision: int | None = Field(None, alias="sqlPrecision")
@@ -190,10 +211,16 @@ class DataObjectColumn(BaseModel):
     description: str | None = None
     comment: str | None = None
     owner: str | None = None
+    expression: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True}
+
+    @property
+    def is_computed(self) -> bool:
+        """True when the column is defined by an inline SQL expression."""
+        return self.expression is not None
 
 
 class DataObjectJoin(BaseModel):

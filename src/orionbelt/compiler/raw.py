@@ -26,7 +26,7 @@ from orionbelt.ast.nodes import (
     UnionAll,
 )
 from orionbelt.compiler.graph import JoinGraph
-from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery
+from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
 from orionbelt.compiler.star import CflLegInfo, QueryPlan
 from orionbelt.models.semantic import DataObject, SemanticModel
 
@@ -77,7 +77,7 @@ class RawPlanner:
         for f in resolved.fields:
             builder.select(
                 AliasedExpr(
-                    expr=ColumnRef(name=f.source_column, table=f.object_name),
+                    expr=make_column_expr(model, f.object_name, f.column_name),
                     alias=f.alias,
                 )
             )
@@ -270,7 +270,7 @@ class RawPlanner:
             if f.object_name in leg_required:
                 builder.select(
                     AliasedExpr(
-                        expr=ColumnRef(name=f.source_column, table=f.object_name),
+                        expr=make_column_expr(model, f.object_name, f.column_name),
                         alias=f.alias,
                     )
                 )
