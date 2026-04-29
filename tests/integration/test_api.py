@@ -82,13 +82,20 @@ class TestSettingsEndpoint:
         assert "model_yaml" not in data  # omitted when not in single-model mode
         assert data["session_ttl_seconds"] == 3600  # from fixture
         assert "flight" not in data  # omitted when not enabled
-        # Multi-model mode: model_settings + timezone are omitted; only the
-        # dialect resolution chain is exposed (no `model` field on it).
+        # Multi-model mode: model_settings is omitted; timezone + dialect
+        # are always present (no `model` field on either when no model
+        # has been resolved).
         assert "model_settings" not in data
-        assert "timezone" not in data
+        assert "timezone" in data
+        assert "model" not in data["timezone"]
+        assert data["timezone"]["effective"]
+        # Wall-clock fields are populated regardless of model state.
+        assert data["timezone"]["now"]
+        assert data["timezone"]["utc"]
+        assert data["timezone"]["utc"].endswith("Z")
         assert "dialect" in data
         assert "model" not in data["dialect"]
-        assert data["dialect"]["effective"]  # always populated
+        assert data["dialect"]["effective"]
 
     async def test_settings_single_model(self, single_model_client: AsyncClient) -> None:
         response = await single_model_client.get("/v1/settings")
@@ -257,6 +264,11 @@ class TestSettingsEndpoint:
             assert tz["model"] == "Europe/Berlin"
             assert tz["override_database_timezone"] is True
             assert tz["effective"] == "Europe/Berlin"
+            # `now` is in the effective TZ; `utc` is UTC.
+            # Berlin is UTC+1 (CET) or UTC+2 (CEST) — either way not 'Z'.
+            assert tz["utc"].endswith("Z")
+            assert not tz["now"].endswith("Z")
+            assert "+01:00" in tz["now"] or "+02:00" in tz["now"]
 
             dl = data["dialect"]
             assert dl["model"] == "snowflake"

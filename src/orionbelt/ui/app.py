@@ -2859,9 +2859,7 @@ def create_blocks(
                             )
                         if "effective" not in tz:
                             tz["effective"] = (
-                                local_settings.get("defaultTimezone")
-                                or tz.get("host")
-                                or "UTC"
+                                local_settings.get("defaultTimezone") or tz.get("host") or "UTC"
                             )
                         data["timezone"] = tz
 

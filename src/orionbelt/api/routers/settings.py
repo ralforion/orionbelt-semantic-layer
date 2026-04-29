@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from orionbelt import __version__
@@ -202,25 +205,39 @@ async def get_settings(
     if single_mode and settings_block is None and not session_id and not model_id:
         settings_block = _settings_from_preload_yaml(get_preload_model_yaml())
 
-    expose_model_blocks = settings_block is not None or model is not None or single_mode
+    expose_model_settings = settings_block is not None or model is not None or single_mode
 
     model_settings_info: ModelSettingsInfo | None = None
-    timezone_info: TimezoneResolutionInfo | None = None
-    if expose_model_blocks:
+    if expose_model_settings:
         model_settings_info = ModelSettingsInfo(
             **(settings_block.model_dump(by_alias=False) if settings_block else {})
         )
-        host_tz = _get_host_timezone()
-        db_tz = _DB_SESSION_TZ.get(db_vendor)
-        timezone_info = TimezoneResolutionInfo(
-            model=settings_block.default_timezone if settings_block else None,
-            host=str(host_tz) if host_tz else None,
-            database=str(db_tz) if db_tz else None,
-            effective=_resolve_effective_timezone(settings_block, db_vendor),
-            override_database_timezone=bool(
-                settings_block and settings_block.override_database_timezone
-            ),
-        )
+
+    # `timezone` is always present so clients can show the wall clock /
+    # effective TZ even without a loaded model.
+    host_tz = _get_host_timezone()
+    db_tz = _DB_SESSION_TZ.get(db_vendor)
+    effective_tz_name = _resolve_effective_timezone(settings_block, db_vendor)
+    now_utc = datetime.now(UTC)
+    try:
+        local_now = now_utc.astimezone(ZoneInfo(effective_tz_name))
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        local_now = now_utc
+    utc_iso = now_utc.isoformat().replace("+00:00", "Z")
+    local_iso = local_now.isoformat()
+    if local_iso.endswith("+00:00"):
+        local_iso = local_iso[:-6] + "Z"
+    timezone_info = TimezoneResolutionInfo(
+        model=settings_block.default_timezone if settings_block else None,
+        host=str(host_tz) if host_tz else None,
+        database=str(db_tz) if db_tz else None,
+        effective=effective_tz_name,
+        override_database_timezone=bool(
+            settings_block and settings_block.override_database_timezone
+        ),
+        now=local_iso,
+        utc=utc_iso,
+    )
 
     dialect_info = DialectResolutionInfo(
         model=settings_block.default_dialect if settings_block else None,

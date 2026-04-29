@@ -773,7 +773,9 @@ Return public configuration for API clients (UI, MCP, etc.).
     "host": "Europe/Berlin",
     "database": null,
     "effective": "Europe/Berlin",
-    "override_database_timezone": false
+    "override_database_timezone": false,
+    "now": "2026-04-29T15:30:00+02:00",
+    "utc": "2026-04-29T13:30:00Z"
   },
   "dialect": {
     "model": "snowflake",
@@ -801,12 +803,12 @@ Return public configuration for API clients (UI, MCP, etc.).
 
 **`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultTimezone`, `defaultDialect`, `overrideDatabaseTimezone`, `defaultNumericDataType`. Any key the model omits is also omitted from the response.
 
-**`timezone`** is the chain `db_executor.resolve_timezone()` walks at execute time:
+**`timezone`** is the chain `db_executor.resolve_timezone()` walks at execute time. Always present so clients can show the wall clock even without a loaded model:
 
 - `override_database_timezone: true` → `model` wins, falling back to `host` then `UTC`.
 - otherwise → cached `database` session timezone wins (when known), then `model`, then `host`, then `UTC`.
 
-The endpoint never probes the database — `database` is `null` until a query has run for that dialect. `effective` is the timezone that will be applied right now.
+The endpoint never probes the database — `database` is `null` until a query has run for that dialect. `effective` is the timezone that will be applied right now. `now` is the current wall-clock time in the effective TZ (ISO 8601 with offset suffix); `utc` is the same instant in UTC.
 
 **`dialect`** mirrors how the planner resolves the dialect when the request body omits `dialect`: `model.defaultDialect` → `DB_VENDOR` env → `postgres`. `effective` is what would be used for a dialect-less request.
 

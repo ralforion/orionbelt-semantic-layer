@@ -231,6 +231,8 @@ class TimezoneResolutionInfo(BaseModel):
         default=False,
         description="Whether the model overrides the DB session timezone",
     )
+    now: str = Field(description="Current wall-clock time in the effective TZ (ISO 8601)")
+    utc: str = Field(description="Current UTC time (ISO 8601, Z suffix) for reference")
 
 
 class DialectResolutionInfo(BaseModel):
