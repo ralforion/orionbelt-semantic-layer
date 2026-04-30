@@ -453,6 +453,23 @@ dimensions:
         assert '"Customers.Name"' in sql
         assert "LIMIT 50" in sql
 
+    def test_multi_fact_filter_on_join_only_object_applies(self) -> None:
+        # Regression: WHERE Customer Name = 'Alice' must still apply when
+        # Customers is only joined to satisfy the filter (no Customers.* in
+        # the projected fields). Each leg JOINs Customers and emits the WHERE.
+        model = _load_model(self.MULTI_FACT_YAML)
+        query = QueryObject(
+            select=QuerySelect(fields=["Orders.Amount", "Returns.Refund"]),
+            where=[
+                QueryFilter(field="Customer Name", op=FilterOperator.EQ, value="Alice"),
+            ],
+        )
+        sql = CompilationPipeline().compile(query, model, dialect_name="postgres").sql
+        # Each leg must JOIN Customers (otherwise the WHERE references a missing table).
+        assert sql.count('"CUSTOMERS"') >= 2
+        # And each leg must emit the WHERE — the filter should appear in both legs.
+        assert sql.count("'Alice'") == 2
+
 
 class TestRawModeUnionByName:
     """DuckDB / Snowflake skip per-leg NULL padding via UNION ALL BY NAME."""

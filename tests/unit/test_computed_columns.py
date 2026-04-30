@@ -13,7 +13,9 @@ from orionbelt.models.query import (
     FilterOperator,
     QueryFilter,
     QueryObject,
+    QueryOrderBy,
     QuerySelect,
+    SortDirection,
 )
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -159,3 +161,43 @@ class TestComputedColumnInRawMode:
         assert 'AS "Orders.Reporting Period"' in sql
         # Plain raw field unchanged.
         assert '"Orders"."ORDER_ID" AS "Orders.Order ID"' in sql
+
+
+class TestComputedColumnInOrderBy:
+    """Regression: ORDER BY on a computed column must inline its expression.
+
+    Computed columns have an empty ``code`` — the previous resolver emitted
+    ``ColumnRef(name="", table=...)``, which renders as ``ORDER BY "Orders".""``
+    (invalid SQL).
+    """
+
+    def test_aggregate_order_by_computed_dimension_inlines_expression(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Reporting Period"], measures=["Order Count"]),
+            order_by=[QueryOrderBy(field="Reporting Period", direction=SortDirection.DESC)],
+        )
+        sql = CompilationPipeline().compile(query, _model(), dialect_name="postgres").sql
+        ob_idx = sql.upper().rfind("ORDER BY")
+        assert ob_idx > 0
+        ob_clause = sql[ob_idx:]
+        # No dangling empty-name reference.
+        assert '""' not in ob_clause
+        # Expression inlined — both physical columns appear in the ORDER BY clause.
+        assert "REPORTINGDATEYEAR" in ob_clause
+        assert "REPORTINGDATEMONTH" in ob_clause
+        assert "DESC" in ob_clause
+
+    def test_raw_order_by_computed_field_inlines_expression(self) -> None:
+        query = QueryObject(
+            select=QuerySelect(fields=["Orders.Reporting Period", "Orders.Order ID"]),
+            order_by=[
+                QueryOrderBy(field="Orders.Reporting Period", direction=SortDirection.ASC),
+            ],
+        )
+        sql = CompilationPipeline().compile(query, _model(), dialect_name="postgres").sql
+        ob_idx = sql.upper().rfind("ORDER BY")
+        assert ob_idx > 0
+        ob_clause = sql[ob_idx:]
+        assert '""' not in ob_clause
+        assert "REPORTINGDATEYEAR" in ob_clause
+        assert "REPORTINGDATEMONTH" in ob_clause

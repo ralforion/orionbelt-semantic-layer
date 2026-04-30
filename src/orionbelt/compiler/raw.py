@@ -202,7 +202,7 @@ class RawPlanner:
 
         # ORDER BY remapped to alias-only refs (CTE has no table qualifier).
         for expr, desc in resolved.order_by_exprs:
-            outer.order_by(self._remap_order_by(expr, resolved), desc=desc)
+            outer.order_by(self._remap_order_by(expr, resolved, model), desc=desc)
 
         if resolved.limit is not None:
             outer.limit(resolved.limit)
@@ -287,7 +287,12 @@ class RawPlanner:
         if root_obj is not None:
             builder.from_(qualify(root_obj), alias=root)
 
-        # JOINs to all other required objects in this leg
+        # JOINs to all other required objects in this leg. Track every object
+        # that ends up in the leg's FROM/JOIN graph so filter applicability is
+        # judged against what's actually available — this includes objects
+        # joined solely to satisfy a WHERE filter (e.g. a dim object referenced
+        # by a filter but not by any projected field).
+        leg_objects: set[str] = {root} | {o for o in leg_required if o in model.data_objects}
         if len(leg_required) > 1:
             steps = graph.find_join_path({root}, leg_required)
             for step in steps:
@@ -301,11 +306,12 @@ class RawPlanner:
                     join_type=step.join_type,
                     alias=step.to_object,
                 )
+                leg_objects.add(step.from_object)
+                leg_objects.add(step.to_object)
 
         # WHERE — apply filters whose referenced objects are in this leg.
         # Filters that touch objects unreachable from this leg are skipped
         # because the columns they reference don't exist here.
-        leg_objects = self._compute_leg_objects(root, resolved, model, graph)
         for wf in resolved.where_filters:
             ref_objects: set[str] = set()
             self._collect_table_refs(wf.expression, ref_objects)
@@ -313,25 +319,6 @@ class RawPlanner:
                 builder.where(wf.expression)
 
         return builder.build()
-
-    @staticmethod
-    def _compute_leg_objects(
-        root: str,
-        resolved: ResolvedQuery,
-        model: SemanticModel,
-        graph: JoinGraph,
-    ) -> set[str]:
-        """Return the set of data objects this leg actually JOINs."""
-        reachable = graph.descendants(root) | {root}
-        required = {f.object_name for f in resolved.fields if f.object_name in reachable}
-        required.add(root)
-        if len(required) > 1:
-            steps = graph.find_join_path({root}, required)
-            for s in steps:
-                required.add(s.to_object)
-                required.add(s.from_object)
-        # Drop objects not in the model (defensive; resolution should have caught these)
-        return {o for o in required if o in model.data_objects}
 
     @staticmethod
     def _null_cast_for_field(field: ResolvedField, model: SemanticModel) -> Expr:
@@ -350,17 +337,18 @@ class RawPlanner:
         return Cast(Literal.null(), type_name=type_name)
 
     @staticmethod
-    def _remap_order_by(expr: Expr, resolved: ResolvedQuery) -> Expr:
-        """Convert table-qualified column refs to alias-only refs.
+    def _remap_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
+        """Convert column references to the field alias for the CTE outer query.
 
         The CFL outer query selects from the composite CTE — original
-        ``"DataObject"."COLUMN"`` references are out of scope. Map them
-        back to the field alias instead.
+        ``"DataObject"."COLUMN"`` references (and inlined computed-column
+        expressions) are out of scope. Match each field by structural equality
+        with its column expression so plain *and* computed columns map back
+        to the field alias.
         """
-        if isinstance(expr, ColumnRef) and expr.table is not None:
-            for f in resolved.fields:
-                if f.object_name == expr.table and f.source_column == expr.name:
-                    return ColumnRef(name=f.alias)
+        for f in resolved.fields:
+            if expr == make_column_expr(model, f.object_name, f.column_name):
+                return ColumnRef(name=f.alias)
         return expr
 
     @staticmethod

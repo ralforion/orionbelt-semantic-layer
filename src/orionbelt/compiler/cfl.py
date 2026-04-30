@@ -317,18 +317,19 @@ class CFLPlanner:
                 CFLPlanner._collect_table_refs(arg, tables)
 
     @staticmethod
-    def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery) -> Expr:
+    def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
         """Remap ORDER BY expressions to use CTE aliases for the outer query.
 
         In CFL, the outer query selects from the composite CTE — original
         table-qualified refs are out of scope.  Remap dimension and measure
-        expressions to their CTE alias names.
+        expressions to their CTE alias names. Matches by structural equality
+        with each dimension's column expression so computed columns (where
+        the source AST is an inlined expression, not a bare ColumnRef) also
+        remap correctly.
         """
-        # Dimension: ColumnRef(name=source_col, table=obj) → ColumnRef(name=dim.name)
-        if isinstance(expr, ColumnRef) and expr.table is not None:
-            for dim in resolved.dimensions:
-                if expr.name == dim.source_column and expr.table == dim.object_name:
-                    return ColumnRef(name=dim.name)
+        for dim in resolved.dimensions:
+            if expr == make_column_expr(model, dim.object_name, dim.column_name):
+                return ColumnRef(name=dim.name)
         # Measure: match by identity (same expression object)
         for meas in resolved.measures:
             if expr is meas.expression:
@@ -645,7 +646,7 @@ class CFLPlanner:
 
         # ORDER BY and LIMIT — remap to CTE aliases
         for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved), desc=desc)
+            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:
@@ -741,7 +742,7 @@ class CFLPlanner:
         outer_builder.from_("non_combinations", alias="non_combinations")
 
         for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved), desc=desc)
+            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:

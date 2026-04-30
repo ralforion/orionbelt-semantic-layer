@@ -1193,7 +1193,7 @@ class QueryResolver:
         ctx: _ResolutionContext,
         obj_name: str,
         filter_path: str,
-        field_label: str,
+        _field_label: str,
     ) -> bool:
         """Ensure *obj_name* is joined; auto-extend if reachable.
 
@@ -1344,7 +1344,10 @@ class QueryResolver:
 
         for dim in ctx.result.dimensions:
             if dim.name == field_name:
-                return ColumnRef(name=dim.source_column, table=dim.object_name)
+                # Use make_column_expr so computed columns (which have empty
+                # ``code``) inline their expression instead of producing an
+                # empty column ref like ``"Orders"."" ``.
+                return make_column_expr(ctx.model, dim.object_name, dim.column_name)
 
         for meas in ctx.result.measures:
             if meas.name == field_name:
@@ -1353,7 +1356,7 @@ class QueryResolver:
         # Raw mode: order by the field's "DataObject.Column" alias.
         for f in ctx.result.fields:
             if f.alias == field_name:
-                return ColumnRef(name=f.source_column, table=f.object_name)
+                return make_column_expr(ctx.model, f.object_name, f.column_name)
 
         if field_name.isdigit():
             pos = int(field_name)
