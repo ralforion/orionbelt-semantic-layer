@@ -106,7 +106,8 @@ dataObjects:
 
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
-| `code` | string | Yes | Physical column name in the database |
+| `code` | string | Yes (or `expression`) | Physical column name in the database. Mutually exclusive with `expression` |
+| `expression` | string | Yes (or `code`) | SQL-style expression that references sibling columns via single-brace `{Column}` placeholders. Defines a **computed column** — see below. Mutually exclusive with `code` |
 | `abstractType` | enum | Yes | `string`, `int`, `float`, `date`, `time`, `time_tz`, `timestamp`, `timestamp_tz`, `boolean`, `json` |
 | `sqlType` | string | No | Informational: SQL data type (e.g. `VARCHAR`, `INTEGER`, `NUMERIC(10,2)`) |
 | `sqlPrecision` | int | No | Informational: numeric precision |
@@ -116,6 +117,64 @@ dataObjects:
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
+
+#### Computed Columns
+
+A column with `expression` instead of `code` defines a **computed column**: a column-level SQL expression that references *sibling columns of the same data object* via single-brace `{Column}` placeholders. The expression is inlined wherever the column is referenced — there's no materialization, no extra join.
+
+```yaml
+dataObjects:
+  Date:
+    code: date_dim
+    columns:
+      Year:
+        code: d_year
+        abstractType: int
+      Month of Year:
+        code: d_moy
+        abstractType: int
+      Year-Month:
+        # Combines year and month-of-year into one int like 200011 — useful
+        # as a sortable, single-column time bucket.
+        expression: "({Year} * 100 + {Month of Year})"
+        abstractType: int
+```
+
+The `Year-Month` column behaves like any other column afterwards: surface it through a dimension, group by it, sort by it.
+
+```yaml
+dimensions:
+  Year-Month:
+    dataObject: Date
+    column: Year-Month
+    resultType: int
+```
+
+Generated SQL substitutes the expression in place of the column reference:
+
+```sql
+SELECT (("Date"."d_year" * 100) + "Date"."d_moy") AS "Year-Month",
+       SUM("Store Sales"."ss_ext_sales_price") AS "Store Sales Amount"
+FROM   "tpcds"."store_sales" AS "Store Sales"
+LEFT JOIN "tpcds"."date_dim" AS "Date" ON ...
+GROUP BY (("Date"."d_year" * 100) + "Date"."d_moy")
+ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
+```
+
+**Reference syntax recap:**
+
+| Syntax | Where used | What it references |
+|---|---|---|
+| `{Column}` (single brace) | column-level `expression`, `Date.columns.Year-Month` | a sibling column in the **same** data object |
+| `{[DataObject].[Column]}` (double brace + brackets) | measure-level `expression` | any physical column anywhere in the model |
+| `{[Measure Name]}` (double brace + brackets) | metric-level `expression` | a measure by name |
+
+**Constraints:**
+
+- `expression` and `code` are mutually exclusive on a single column.
+- The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node, so dialect-specific functions are dialect-portable only insofar as they appear in OBML's expression grammar (arithmetic, `CASE WHEN`, function calls).
+- A computed column may not reference another computed column on the same data object (no recursive resolution today).
+- ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).
 
 ### Joins
 
@@ -760,6 +819,7 @@ settings:
 |---------|------|---------|-------------|
 | `defaultTimezone` | string | — | IANA timezone (e.g. `Europe/Zagreb`, `America/New_York`, `UTC`) |
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
+| `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
 
 ### Resolution Order
 

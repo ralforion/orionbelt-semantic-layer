@@ -22,6 +22,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     RawSQL,
+    RegexMatch,
     RelativeDateRange,
     Select,
     Star,
@@ -241,6 +242,11 @@ class Dialect(ABC):
             result += f" WITHIN GROUP (ORDER BY {ob})"
         return result
 
+    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+        """Render ``CAST(expr AS type)``. Dialects override to handle nullability."""
+        resolved_type = self._resolve_type_name(type_name)
+        return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Compile COUNT with multiple fields by concatenating with ``||``.
 
@@ -278,11 +284,12 @@ class Dialect(ABC):
             parts.append("WITH " + ",\n".join(cte_parts))
 
         # SELECT
+        keyword = "SELECT DISTINCT" if node.distinct else "SELECT"
         if node.columns:
             cols = ", ".join(self.compile_expr(c) for c in node.columns)
-            parts.append(f"SELECT {cols}")
+            parts.append(f"{keyword} {cols}")
         else:
-            parts.append("SELECT *")
+            parts.append(f"{keyword} *")
 
         # FROM
         if node.from_:
@@ -435,8 +442,7 @@ class Dialect(ABC):
                 parts.append("END")
                 return " ".join(parts)
             case Cast(expr=inner, type_name=type_name):
-                resolved_type = self._resolve_type_name(type_name)
-                return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
+                return self._compile_cast(inner, type_name)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"
             case RawSQL(sql=sql):
@@ -447,6 +453,8 @@ class Dialect(ABC):
                     f"({self.compile_expr(inner)} {op} "
                     f"{self.compile_expr(low)} AND {self.compile_expr(high)})"
                 )
+            case RegexMatch(column=column, pattern=pattern, negated=negated):
+                return self.compile_regex_match(column, pattern, negated=negated)
             case RelativeDateRange(
                 column=column,
                 unit=unit,
@@ -484,6 +492,19 @@ class Dialect(ABC):
                 return f"{func_sql} OVER ({over_clause})"
             case _:
                 raise ValueError(f"Unknown AST node type: {type(expr).__name__}")
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Compile a regex predicate. Default uses ``REGEXP_LIKE`` — overridden
+        per dialect that needs a different syntax (Postgres ``~``, MySQL
+        ``REGEXP``, ClickHouse ``match`` etc.).
+
+        The pattern is rendered as a SQL string literal; callers pass it
+        as ``RegexMatch.pattern`` (already a Python ``str``).
+        """
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op_sql = f"REGEXP_LIKE({col_sql}, {pat_sql})"
+        return f"NOT {op_sql}" if negated else op_sql
 
     def compile_relative_date_range(
         self,

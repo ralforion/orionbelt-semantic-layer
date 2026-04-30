@@ -33,4 +33,5 @@ blog/
 review*
 design/
 examples/test*
+examples/tpcds_queries/
 semantic-layer-spec.md

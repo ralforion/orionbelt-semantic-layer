@@ -13,14 +13,25 @@ from orionbelt.service.session_manager import SessionManager
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip docker-marked tests unless ``-m docker`` is explicitly requested."""
-    marker_expr = config.getoption("-m", default="")
-    if "docker" in str(marker_expr):
-        return  # user explicitly asked for docker tests
-    skip_docker = pytest.mark.skip(reason="Docker tests not selected — run with: pytest -m docker")
-    for item in items:
-        if "docker" in item.keywords:
-            item.add_marker(skip_docker)
+    """Skip ``docker`` and ``adbc`` marked tests unless explicitly selected.
+
+    ``adbc`` tests need a real Postgres reachable via ``OB_PG_URI`` (default
+    ``postgresql://postgres:postgres@localhost:5432/postgres``). Run with
+    ``pytest -m adbc`` to opt in.
+    """
+    marker_expr = str(config.getoption("-m", default=""))
+    if "docker" not in marker_expr:
+        skip_docker = pytest.mark.skip(
+            reason="Docker tests not selected — run with: pytest -m docker"
+        )
+        for item in items:
+            if "docker" in item.keywords:
+                item.add_marker(skip_docker)
+    if "adbc" not in marker_expr:
+        skip_adbc = pytest.mark.skip(reason="ADBC tests not selected — run with: pytest -m adbc")
+        for item in items:
+            if "adbc" in item.keywords:
+                item.add_marker(skip_adbc)
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

@@ -97,7 +97,13 @@ class SessionQueryExecuteRequest(BaseModel):
 
     model_id: str
     query: QueryObject
-    dialect: str = Field(default="postgres")
+    dialect: str | None = Field(
+        default=None,
+        description=(
+            "SQL dialect. Resolution: explicit value → model.settings.defaultDialect → "
+            "DB_VENDOR env → 'postgres'."
+        ),
+    )
 
 
 class ValidateRequest(BaseModel):
@@ -174,9 +180,91 @@ class FlightSettingsInfo(BaseModel):
     db_vendor: str = "duckdb"
 
 
+class ModelSettingsInfo(BaseModel):
+    """Model-level ``settings:`` block from the loaded OBML model."""
+
+    model_config = {"populate_by_name": True}
+
+    default_numeric_data_type: str | None = Field(
+        default=None,
+        alias="defaultNumericDataType",
+        description="Default decimal(p, s) type used when a column omits dataType",
+    )
+    default_timezone: str | None = Field(
+        default=None,
+        alias="defaultTimezone",
+        description="IANA timezone applied to naive timestamps in results",
+    )
+    override_database_timezone: bool = Field(
+        default=False,
+        alias="overrideDatabaseTimezone",
+        description="When true, model timezone wins over the DB session timezone",
+    )
+    default_dialect: str | None = Field(
+        default=None,
+        alias="defaultDialect",
+        description="SQL dialect used when callers omit `dialect` on query requests",
+    )
+
+
+class TimezoneResolutionInfo(BaseModel):
+    """Timezone resolution chain for naive timestamp coercion at execute time.
+
+    Effective timezone (in priority order):
+    - ``override_database_timezone`` true: ``model`` → ``host`` → UTC
+    - else: ``database`` (if detected) → ``model`` → ``host`` → UTC
+
+    ``database`` is populated lazily on first query execution per dialect; it
+    is ``null`` until then. Reading this endpoint never probes the database.
+    """
+
+    model: str | None = Field(default=None, description="settings.defaultTimezone")
+    host: str | None = Field(default=None, description="OS / process timezone")
+    database: str | None = Field(
+        default=None,
+        description="Detected database session timezone (null if not probed yet)",
+    )
+    effective: str = Field(
+        description="The timezone that resolve_timezone() returns at this moment"
+    )
+    override_database_timezone: bool = Field(
+        default=False,
+        description="Whether the model overrides the DB session timezone",
+    )
+    now: str = Field(description="Current wall-clock time in the effective TZ (ISO 8601)")
+    utc: str = Field(description="Current UTC time (ISO 8601, Z suffix) for reference")
+    database_detected: bool = Field(
+        default=False,
+        description="Whether DB session TZ detection has run for this dialect",
+    )
+    database_raw: str | None = Field(
+        default=None,
+        description=(
+            "Raw cached DB session TZ value (for diagnostics). "
+            "When `database_detected` is true and this is null, detection ran "
+            "but did not store a value (query failed or returned SYSTEM)."
+        ),
+    )
+
+
+class DialectResolutionInfo(BaseModel):
+    """Dialect resolution chain for query compilation.
+
+    Order on each request: explicit ``dialect`` body field →
+    ``settings.defaultDialect`` → ``DB_VENDOR`` env → ``"postgres"``.
+    ``effective`` here is what gets used when a caller omits ``dialect``.
+    """
+
+    model: str | None = Field(default=None, description="settings.defaultDialect")
+    env: str | None = Field(default=None, description="DB_VENDOR env (server config)")
+    effective: str = Field(description="Dialect used when request omits `dialect`")
+
+
 class SettingsResponse(BaseModel):
     """Response for GET /settings — public configuration for clients."""
 
+    version: str = Field(default="", description="OrionBelt Semantic Layer release version")
+    api_version: str = Field(default="v1", description="REST API version prefix")
     single_model_mode: bool = False
     model_yaml: str | None = Field(
         default=None,
@@ -202,6 +290,18 @@ class SettingsResponse(BaseModel):
     flight: FlightSettingsInfo | None = Field(
         default=None,
         description="Arrow Flight SQL server info (present only when Flight is enabled)",
+    )
+    model_settings: ModelSettingsInfo | None = Field(
+        default=None,
+        description="Loaded model's `settings:` block (single-model mode only)",
+    )
+    timezone: TimezoneResolutionInfo | None = Field(
+        default=None,
+        description="Timezone resolution chain (single-model mode only)",
+    )
+    dialect: DialectResolutionInfo | None = Field(
+        default=None,
+        description="SQL dialect resolution chain",
     )
 
 
@@ -288,7 +388,13 @@ class SessionQueryRequest(BaseModel):
 
     model_id: str
     query: QueryObject
-    dialect: str = Field(default="postgres")
+    dialect: str | None = Field(
+        default=None,
+        description=(
+            "SQL dialect. Resolution: explicit value → model.settings.defaultDialect → "
+            "DB_VENDOR env → 'postgres'."
+        ),
+    )
 
 
 class DiagramResponse(BaseModel):
@@ -389,6 +495,8 @@ class DimensionDetail(BaseModel):
 class MeasureDetail(BaseModel):
     """Detail of a measure."""
 
+    model_config = {"populate_by_name": True}
+
     name: str
     result_type: str
     aggregation: str
@@ -398,6 +506,7 @@ class MeasureDetail(BaseModel):
     total: bool = False
     description: str | None = None
     format: str | None = None
+    data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
 
@@ -413,6 +522,7 @@ class MetricDetail(BaseModel):
     component_measures: list[str] = Field(default_factory=list)
     description: str | None = None
     format: str | None = None
+    data_type: str | None = Field(default=None, alias="dataType")
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
 

@@ -189,3 +189,10 @@ class MySQLDialect(Dialect):
             f"  SELECT spine_date FROM dates\n"
             f") AS spine"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """MySQL uses ``REGEXP`` / ``NOT REGEXP``."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op = "NOT REGEXP" if negated else "REGEXP"
+        return f"({col_sql} {op} {pat_sql})"

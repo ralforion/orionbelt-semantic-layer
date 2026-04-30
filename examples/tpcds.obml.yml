@@ -1,0 +1,1027 @@
+# yaml-language-server: $schema=../schema/obml-schema.json
+#
+# TPC-DS Semantic Model — focused subset for ClickHouse.
+#
+# ClickHouse maps the OBML `schema` to its own database namespace, so set
+# `schema: tpcds` on every data object. The `database` field is required by
+# OBML but unused for ClickHouse table refs (it produces "schema"."code").
+#
+# Covers three conformed-dimension fact tables:
+#   - Store Sales / Store Returns / Web Sales
+# plus the dimensions needed to answer the questions behind queries Q1, Q3,
+# Q6, Q7 of the TPC-DS suite.
+#
+version: 1.0
+
+settings:
+  defaultDialect: clickhouse
+  defaultNumericDataType: "decimal(18, 2)"
+
+dataObjects:
+
+  # ── Conformed dimensions ───────────────────────────────────────────
+
+  Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Date:
+        code: d_date
+        abstractType: date
+      Year:
+        code: d_year
+        abstractType: int
+      Month of Year:
+        code: d_moy
+        abstractType: int
+      Day of Month:
+        code: d_dom
+        abstractType: int
+      Quarter of Year:
+        code: d_qoy
+        abstractType: int
+      Day Name:
+        code: d_day_name
+        abstractType: string
+      Month Sequence:
+        code: d_month_seq
+        abstractType: int
+      Week Sequence:
+        code: d_week_seq
+        abstractType: int
+      Year-Month:
+        # Computed column: combines year and month-of-year into one int
+        # like 200011 — exercises the recent ORDER-BY-on-computed-column fix.
+        expression: "({Year} * 100 + {Month of Year})"
+        abstractType: int
+
+  Customer:
+    code: customer
+    database: tpcds
+    schema: tpcds
+    columns:
+      Customer Key:
+        code: c_customer_sk
+        abstractType: int
+        primaryKey: true
+      Customer ID:
+        code: c_customer_id
+        abstractType: string
+      First Name:
+        code: c_first_name
+        abstractType: string
+      Last Name:
+        code: c_last_name
+        abstractType: string
+      Email:
+        code: c_email_address
+        abstractType: string
+      Preferred Flag:
+        code: c_preferred_cust_flag
+        abstractType: string
+      Birth Country:
+        code: c_birth_country
+        abstractType: string
+      Customer Address Key:
+        code: c_current_addr_sk
+        abstractType: int
+      Customer Demographics Key:
+        code: c_current_cdemo_sk
+        abstractType: int
+    joins:
+      - joinType: many-to-one
+        joinTo: Customer Address
+        columnsFrom: [Customer Address Key]
+        columnsTo: [Address Key]
+      - joinType: many-to-one
+        joinTo: Customer Demographics
+        columnsFrom: [Customer Demographics Key]
+        columnsTo: [Demographics Key]
+
+  Customer Address:
+    code: customer_address
+    database: tpcds
+    schema: tpcds
+    columns:
+      Address Key:
+        code: ca_address_sk
+        abstractType: int
+        primaryKey: true
+      City:
+        code: ca_city
+        abstractType: string
+      County:
+        code: ca_county
+        abstractType: string
+      State:
+        code: ca_state
+        abstractType: string
+      Zip:
+        code: ca_zip
+        abstractType: string
+      Country:
+        code: ca_country
+        abstractType: string
+
+  Customer Demographics:
+    code: customer_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demographics Key:
+        code: cd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Gender:
+        code: cd_gender
+        abstractType: string
+      Marital Status:
+        code: cd_marital_status
+        abstractType: string
+      Education Status:
+        code: cd_education_status
+        abstractType: string
+      Purchase Estimate:
+        code: cd_purchase_estimate
+        abstractType: int
+
+  Item:
+    code: item
+    database: tpcds
+    schema: tpcds
+    columns:
+      Item Key:
+        code: i_item_sk
+        abstractType: int
+        primaryKey: true
+      Item ID:
+        code: i_item_id
+        abstractType: string
+      Item Description:
+        code: i_item_desc
+        abstractType: string
+      Brand ID:
+        code: i_brand_id
+        abstractType: int
+      Brand:
+        code: i_brand
+        abstractType: string
+      Category:
+        code: i_category
+        abstractType: string
+      Class:
+        code: i_class
+        abstractType: string
+      Manufacturer ID:
+        code: i_manufact_id
+        abstractType: int
+      Manager ID:
+        code: i_manager_id
+        abstractType: int
+      Current Price:
+        code: i_current_price
+        abstractType: float
+        numClass: non-additive
+
+  Store:
+    code: store
+    database: tpcds
+    schema: tpcds
+    columns:
+      Store Key:
+        code: s_store_sk
+        abstractType: int
+        primaryKey: true
+      Store ID:
+        code: s_store_id
+        abstractType: string
+      Store Name:
+        code: s_store_name
+        abstractType: string
+      Store City:
+        code: s_city
+        abstractType: string
+      Store County:
+        code: s_county
+        abstractType: string
+      Store State:
+        code: s_state
+        abstractType: string
+      Store Zip:
+        code: s_zip
+        abstractType: string
+
+  Promotion:
+    code: promotion
+    database: tpcds
+    schema: tpcds
+    columns:
+      Promo Key:
+        code: p_promo_sk
+        abstractType: int
+        primaryKey: true
+      Promo Name:
+        code: p_promo_name
+        abstractType: string
+      Channel Email:
+        code: p_channel_email
+        abstractType: string
+      Channel Event:
+        code: p_channel_event
+        abstractType: string
+
+  Warehouse:
+    code: warehouse
+    database: tpcds
+    schema: tpcds
+    columns:
+      Warehouse Key:
+        code: w_warehouse_sk
+        abstractType: int
+        primaryKey: true
+      Warehouse ID:
+        code: w_warehouse_id
+        abstractType: string
+      Warehouse Name:
+        code: w_warehouse_name
+        abstractType: string
+      Warehouse Sq Ft:
+        code: w_warehouse_sq_ft
+        abstractType: int
+        numClass: non-additive
+      Warehouse City:
+        code: w_city
+        abstractType: string
+      Warehouse State:
+        code: w_state
+        abstractType: string
+      Warehouse Country:
+        code: w_country
+        abstractType: string
+
+  Ship Mode:
+    code: ship_mode
+    database: tpcds
+    schema: tpcds
+    columns:
+      Ship Mode Key:
+        code: sm_ship_mode_sk
+        abstractType: int
+        primaryKey: true
+      Ship Mode ID:
+        code: sm_ship_mode_id
+        abstractType: string
+      Ship Type:
+        code: sm_type
+        abstractType: string
+      Ship Carrier:
+        code: sm_carrier
+        abstractType: string
+
+  Reason:
+    code: reason
+    database: tpcds
+    schema: tpcds
+    columns:
+      Reason Key:
+        code: r_reason_sk
+        abstractType: int
+        primaryKey: true
+      Reason ID:
+        code: r_reason_id
+        abstractType: string
+      Reason Description:
+        code: r_reason_desc
+        abstractType: string
+
+  # ── Fact tables ────────────────────────────────────────────────────
+
+  Store Sales:
+    code: store_sales
+    database: tpcds
+    schema: tpcds
+    columns:
+      Sold Date Key:
+        code: ss_sold_date_sk
+        abstractType: int
+      Item Key:
+        code: ss_item_sk
+        abstractType: int
+      Customer Key:
+        code: ss_customer_sk
+        abstractType: int
+      CDemo Key:
+        code: ss_cdemo_sk
+        abstractType: int
+      Store Key:
+        code: ss_store_sk
+        abstractType: int
+      Promo Key:
+        code: ss_promo_sk
+        abstractType: int
+      Ticket Number:
+        code: ss_ticket_number
+        abstractType: int
+      Quantity:
+        code: ss_quantity
+        abstractType: int
+        numClass: additive
+      Sales Price:
+        code: ss_sales_price
+        abstractType: float
+        numClass: non-additive
+      List Price:
+        code: ss_list_price
+        abstractType: float
+        numClass: non-additive
+      Coupon Amount:
+        code: ss_coupon_amt
+        abstractType: float
+        numClass: additive
+      Ext Sales Price:
+        code: ss_ext_sales_price
+        abstractType: float
+        numClass: additive
+      Net Profit:
+        code: ss_net_profit
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Customer Key]
+        columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Customer Demographics
+        columnsFrom: [CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Store
+        columnsFrom: [Store Key]
+        columnsTo: [Store Key]
+      - joinType: many-to-one
+        joinTo: Promotion
+        columnsFrom: [Promo Key]
+        columnsTo: [Promo Key]
+
+  Store Returns:
+    code: store_returns
+    database: tpcds
+    schema: tpcds
+    columns:
+      Returned Date Key:
+        code: sr_returned_date_sk
+        abstractType: int
+      Item Key:
+        code: sr_item_sk
+        abstractType: int
+      Customer Key:
+        code: sr_customer_sk
+        abstractType: int
+      Store Key:
+        code: sr_store_sk
+        abstractType: int
+      Ticket Number:
+        code: sr_ticket_number
+        abstractType: int
+      Return Quantity:
+        code: sr_return_quantity
+        abstractType: int
+        numClass: additive
+      Return Amount:
+        code: sr_return_amt
+        abstractType: float
+        numClass: additive
+      Net Loss:
+        code: sr_net_loss
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Returned Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Customer Key]
+        columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Store
+        columnsFrom: [Store Key]
+        columnsTo: [Store Key]
+
+  Web Sales:
+    code: web_sales
+    database: tpcds
+    schema: tpcds
+    columns:
+      Sold Date Key:
+        code: ws_sold_date_sk
+        abstractType: int
+      Item Key:
+        code: ws_item_sk
+        abstractType: int
+      Bill Customer Key:
+        code: ws_bill_customer_sk
+        abstractType: int
+      Order Number:
+        code: ws_order_number
+        abstractType: int
+      Quantity:
+        code: ws_quantity
+        abstractType: int
+        numClass: additive
+      Sales Price:
+        code: ws_sales_price
+        abstractType: float
+        numClass: non-additive
+      Ext Sales Price:
+        code: ws_ext_sales_price
+        abstractType: float
+        numClass: additive
+      Net Profit:
+        code: ws_net_profit
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Bill Customer Key]
+        columnsTo: [Customer Key]
+
+  Catalog Sales:
+    code: catalog_sales
+    database: tpcds
+    schema: tpcds
+    columns:
+      Sold Date Key:
+        code: cs_sold_date_sk
+        abstractType: int
+      Item Key:
+        code: cs_item_sk
+        abstractType: int
+      Bill Customer Key:
+        code: cs_bill_customer_sk
+        abstractType: int
+      Bill CDemo Key:
+        code: cs_bill_cdemo_sk
+        abstractType: int
+      Promo Key:
+        code: cs_promo_sk
+        abstractType: int
+      Warehouse Key:
+        code: cs_warehouse_sk
+        abstractType: int
+      Ship Mode Key:
+        code: cs_ship_mode_sk
+        abstractType: int
+      Order Number:
+        code: cs_order_number
+        abstractType: int
+      Quantity:
+        code: cs_quantity
+        abstractType: int
+        numClass: additive
+      Sales Price:
+        code: cs_sales_price
+        abstractType: float
+        numClass: non-additive
+      List Price:
+        code: cs_list_price
+        abstractType: float
+        numClass: non-additive
+      Ext Sales Price:
+        code: cs_ext_sales_price
+        abstractType: float
+        numClass: additive
+      Net Profit:
+        code: cs_net_profit
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Bill Customer Key]
+        columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Customer Demographics
+        columnsFrom: [Bill CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Promotion
+        columnsFrom: [Promo Key]
+        columnsTo: [Promo Key]
+      - joinType: many-to-one
+        joinTo: Warehouse
+        columnsFrom: [Warehouse Key]
+        columnsTo: [Warehouse Key]
+      - joinType: many-to-one
+        joinTo: Ship Mode
+        columnsFrom: [Ship Mode Key]
+        columnsTo: [Ship Mode Key]
+
+  Catalog Returns:
+    code: catalog_returns
+    database: tpcds
+    schema: tpcds
+    columns:
+      Returned Date Key:
+        code: cr_returned_date_sk
+        abstractType: int
+      Item Key:
+        code: cr_item_sk
+        abstractType: int
+      Refunded Customer Key:
+        code: cr_refunded_customer_sk
+        abstractType: int
+      Reason Key:
+        code: cr_reason_sk
+        abstractType: int
+      Order Number:
+        code: cr_order_number
+        abstractType: int
+      Return Quantity:
+        code: cr_return_quantity
+        abstractType: int
+        numClass: additive
+      Return Amount:
+        code: cr_return_amount
+        abstractType: float
+        numClass: additive
+      Net Loss:
+        code: cr_net_loss
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Returned Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Refunded Customer Key]
+        columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Reason
+        columnsFrom: [Reason Key]
+        columnsTo: [Reason Key]
+
+  Web Returns:
+    code: web_returns
+    database: tpcds
+    schema: tpcds
+    columns:
+      Returned Date Key:
+        code: wr_returned_date_sk
+        abstractType: int
+      Item Key:
+        code: wr_item_sk
+        abstractType: int
+      Returning Customer Key:
+        code: wr_returning_customer_sk
+        abstractType: int
+      Reason Key:
+        code: wr_reason_sk
+        abstractType: int
+      Order Number:
+        code: wr_order_number
+        abstractType: int
+      Return Quantity:
+        code: wr_return_quantity
+        abstractType: int
+        numClass: additive
+      Return Amount:
+        code: wr_return_amt
+        abstractType: float
+        numClass: additive
+      Net Loss:
+        code: wr_net_loss
+        abstractType: float
+        numClass: additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Returned Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Returning Customer Key]
+        columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Reason
+        columnsFrom: [Reason Key]
+        columnsTo: [Reason Key]
+
+  Inventory:
+    code: inventory
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: inv_date_sk
+        abstractType: int
+      Item Key:
+        code: inv_item_sk
+        abstractType: int
+      Warehouse Key:
+        code: inv_warehouse_sk
+        abstractType: int
+      Quantity On Hand:
+        code: inv_quantity_on_hand
+        abstractType: int
+        numClass: non-additive
+    joins:
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Item
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
+      - joinType: many-to-one
+        joinTo: Warehouse
+        columnsFrom: [Warehouse Key]
+        columnsTo: [Warehouse Key]
+
+# ── Dimensions ─────────────────────────────────────────────────────
+
+dimensions:
+
+  # Date dimension — exposes a time-grained Order Date plus useful parts.
+  Order Date:
+    dataObject: Date
+    column: Date
+    resultType: date
+
+  Year:
+    dataObject: Date
+    column: Year
+    resultType: int
+
+  Month of Year:
+    dataObject: Date
+    column: Month of Year
+    resultType: int
+
+  Quarter of Year:
+    dataObject: Date
+    column: Quarter of Year
+    resultType: int
+
+  Year-Month:
+    # Surfaces the computed column from Date — sorting on this exercises
+    # the recent computed-column ORDER BY fix.
+    dataObject: Date
+    column: Year-Month
+    resultType: int
+
+  # Customer
+  Customer Name:
+    dataObject: Customer
+    column: Last Name
+    resultType: string
+
+  Customer State:
+    dataObject: Customer Address
+    column: State
+    resultType: string
+
+  Customer County:
+    dataObject: Customer Address
+    column: County
+    resultType: string
+
+  Customer Country:
+    dataObject: Customer Address
+    column: Country
+    resultType: string
+
+  Gender:
+    dataObject: Customer Demographics
+    column: Gender
+    resultType: string
+
+  Marital Status:
+    dataObject: Customer Demographics
+    column: Marital Status
+    resultType: string
+
+  Education Status:
+    dataObject: Customer Demographics
+    column: Education Status
+    resultType: string
+
+  # Item
+  Brand:
+    dataObject: Item
+    column: Brand
+    resultType: string
+
+  Brand ID:
+    dataObject: Item
+    column: Brand ID
+    resultType: int
+
+  Category:
+    dataObject: Item
+    column: Category
+    resultType: string
+
+  Class:
+    dataObject: Item
+    column: Class
+    resultType: string
+
+  Manufacturer ID:
+    dataObject: Item
+    column: Manufacturer ID
+    resultType: int
+
+  Manager ID:
+    dataObject: Item
+    column: Manager ID
+    resultType: int
+
+  Item ID:
+    dataObject: Item
+    column: Item ID
+    resultType: string
+
+  Item Description:
+    dataObject: Item
+    column: Item Description
+    resultType: string
+
+  Current Price:
+    dataObject: Item
+    column: Current Price
+    resultType: float
+
+  # Date — additional
+  Day Name:
+    dataObject: Date
+    column: Day Name
+    resultType: string
+
+  # Store
+  Store Name:
+    dataObject: Store
+    column: Store Name
+    resultType: string
+
+  Store State:
+    dataObject: Store
+    column: Store State
+    resultType: string
+
+  # Warehouse
+  Warehouse Name:
+    dataObject: Warehouse
+    column: Warehouse Name
+    resultType: string
+
+  Warehouse State:
+    dataObject: Warehouse
+    column: Warehouse State
+    resultType: string
+
+  Warehouse Country:
+    dataObject: Warehouse
+    column: Warehouse Country
+    resultType: string
+
+  # Ship Mode
+  Ship Type:
+    dataObject: Ship Mode
+    column: Ship Type
+    resultType: string
+
+  Ship Carrier:
+    dataObject: Ship Mode
+    column: Ship Carrier
+    resultType: string
+
+  # Reason
+  Reason Description:
+    dataObject: Reason
+    column: Reason Description
+    resultType: string
+
+# ── Measures ───────────────────────────────────────────────────────
+
+measures:
+
+  # Store-channel measures
+  Store Sales Amount:
+    expression: "{[Store Sales].[Ext Sales Price]}"
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Net Profit:
+    columns:
+      - dataObject: Store Sales
+        column: Net Profit
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Sale Count:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    format: "#,##0"
+
+  Store Quantity:
+    columns:
+      - dataObject: Store Sales
+        column: Quantity
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Avg Sales Price:
+    columns:
+      - dataObject: Store Sales
+        column: Sales Price
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Avg List Price:
+    columns:
+      - dataObject: Store Sales
+        column: List Price
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  # Returns
+  Return Amount:
+    columns:
+      - dataObject: Store Returns
+        column: Return Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Return Count:
+    columns:
+      - dataObject: Store Returns
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    format: "#,##0"
+
+  # Web channel
+  Web Sales Amount:
+    columns:
+      - dataObject: Web Sales
+        column: Ext Sales Price
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Web Net Profit:
+    columns:
+      - dataObject: Web Sales
+        column: Net Profit
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Web Returns Amount:
+    columns:
+      - dataObject: Web Returns
+        column: Return Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  # Catalog channel
+  Catalog Sales Amount:
+    columns:
+      - dataObject: Catalog Sales
+        column: Ext Sales Price
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Catalog Net Profit:
+    columns:
+      - dataObject: Catalog Sales
+        column: Net Profit
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Catalog Quantity:
+    columns:
+      - dataObject: Catalog Sales
+        column: Quantity
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Catalog Returns Amount:
+    columns:
+      - dataObject: Catalog Returns
+        column: Return Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  # Inventory
+  Inventory On Hand:
+    columns:
+      - dataObject: Inventory
+        column: Quantity On Hand
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+    format: "#,##0"
+
+  Avg Inventory:
+    columns:
+      - dataObject: Inventory
+        column: Quantity On Hand
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+# ── Metrics (cross-measure formulas) ──────────────────────────────
+
+metrics:
+
+  Net Margin %:
+    expression: "{[Store Net Profit]} / {[Store Sales Amount]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Store-channel net profit divided by sales amount
+
+  Return Rate %:
+    expression: "{[Return Amount]} / {[Store Sales Amount]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Returned amount as percentage of store sales

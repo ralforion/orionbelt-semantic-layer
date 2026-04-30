@@ -123,6 +123,114 @@ select:
     - Revenue per Order    # metric
 ```
 
+## Raw Mode (`select.fields`)
+
+**Raw mode** returns un-aggregated rows from one or more data objects, projecting physical columns directly. It is the right choice when you need detail rows rather than aggregated metrics — e.g., exporting a transaction list, building a row-level export, or feeding a downstream tool that does its own aggregation.
+
+```yaml
+select:
+  fields:
+    - Customers.Country
+    - Orders.Order ID
+    - Orders.Amount
+  distinct: false
+where:
+  - field: Orders.Amount
+    op: gt
+    value: 100
+order_by:
+  - field: Orders.Amount
+    direction: desc
+limit: 100
+```
+
+Compiles to a flat `SELECT field1, field2, ... FROM base [LEFT JOIN ...] [WHERE ...] [ORDER BY ...] [LIMIT n]` — no `GROUP BY`, no aggregates.
+
+### Field references
+
+Each entry in `fields` is a qualified `DataObject.Column` reference to a physical column in the model. Logical dimension/measure names are **not** accepted in raw mode — use `dimensions` / `measures` for those.
+
+The output column is aliased to the original `"DataObject.Column"` reference so result rows are self-describing.
+
+### `distinct`
+
+Set `select.distinct: true` to emit `SELECT DISTINCT`, deduplicating rows after projection. Outside raw mode this flag is rejected.
+
+### What's excluded in raw mode
+
+Raw mode is mutually exclusive with aggregate features. The following are rejected at validation time:
+
+- `select.dimensions`
+- `select.measures`
+- `having` (HAVING references measures, which raw mode doesn't have)
+- `dimensionsExclude`
+
+### Filters and ordering in raw mode
+
+- **WHERE**: same operators as aggregate mode. Filter fields can reference a dimension name (resolved to its physical column) or a qualified `DataObject.Column`.
+- **ORDER BY**: must reference a `DataObject.Column` alias from `select.fields`, or a 1-based numeric position.
+
+### Joins and fanout
+
+Raw mode reuses the model's directed join graph: when fields span multiple data objects connected by many-to-one joins, the planner walks the graph and emits the necessary `LEFT JOIN`s. Fanout protection still applies — reversed many-to-one joins (which would multiply rows on the "one" side) are rejected.
+
+### Multi-fact raw queries (raw CFL)
+
+When `select.fields` references columns from **independent fact tables** — facts that share a common dimension via reverse many-to-one joins but are not connected to each other directly — the planner emits a Composite Fact Layer: one `UNION ALL` leg per leg-root fact, with NULL-padding for fields not reachable from that leg. The outer query selects from the composite CTE.
+
+```yaml
+# Customers ← Orders (m:1)
+# Customers ← Returns (m:1)
+select:
+  fields:
+    - Customers.Name
+    - Orders.Order ID
+    - Orders.Amount
+    - Returns.Return ID
+    - Returns.Refund
+  distinct: true
+```
+
+Compiles roughly to:
+
+```sql
+WITH composite_raw_01 AS (
+  SELECT c.NAME AS "Customers.Name",
+         o.ORDER_ID AS "Orders.Order ID",
+         o.AMOUNT AS "Orders.Amount",
+         CAST(NULL AS VARCHAR) AS "Returns.Return ID",
+         CAST(NULL AS FLOAT)   AS "Returns.Refund"
+  FROM ORDERS o LEFT JOIN CUSTOMERS c ON o.CUSTOMER_ID = c.CUSTOMER_ID
+  UNION ALL
+  SELECT c.NAME, CAST(NULL AS VARCHAR), CAST(NULL AS FLOAT),
+         r.RETURN_ID, r.REFUND
+  FROM RETURNS r LEFT JOIN CUSTOMERS c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+)
+SELECT DISTINCT * FROM composite_raw_01
+```
+
+A "leg root" is a fact data object referenced by some field that is not reachable from another field's source via directed joins — i.e. it is maximal under reachability. Each leg root yields one `UNION ALL` leg. Conformed dim columns (those reachable from every leg) project the same value across legs and line up; fact-specific columns are typed `CAST(NULL AS …)` in legs that don't cover them. `distinct: true` is applied once at the outer query — the most portable place.
+
+WHERE filters are applied to legs whose joined objects contain all the filter's referenced data objects; ORDER BY is remapped to the field aliases at the outer level.
+
+#### `UNION ALL BY NAME` optimization (DuckDB, Snowflake)
+
+DuckDB and Snowflake both support `UNION ALL BY NAME`, which aligns columns by name across legs and auto-fills any missing columns with `NULL`. On these dialects the planner skips the per-leg `CAST(NULL AS …)` padding entirely and emits only the columns each leg actually has — the database does the rest:
+
+```sql
+-- DuckDB / Snowflake
+WITH composite_raw_01 AS (
+  SELECT c.NAME AS "Customers.Name", o.ORDER_ID AS "Orders.Order ID", o.AMOUNT AS "Orders.Amount"
+  FROM ORDERS o LEFT JOIN CUSTOMERS c ON o.CUSTOMER_ID = c.CUSTOMER_ID
+  UNION ALL BY NAME
+  SELECT c.NAME, r.RETURN_ID AS "Returns.Return ID", r.REFUND AS "Returns.Refund"
+  FROM RETURNS r LEFT JOIN CUSTOMERS c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+)
+SELECT DISTINCT * FROM composite_raw_01
+```
+
+The other six dialects (BigQuery, ClickHouse, Databricks, Dremio, MySQL, Postgres) keep the explicit typed-NULL padding shown above. Output rows are identical either way; the optimization is purely about leg readability and slightly less SQL the database has to parse.
+
 ## Secondary Join Paths
 
 When a model defines secondary joins (e.g., `Flights` → `Airports` via departure and arrival), use `usePathNames` to select which join path to use:
@@ -268,7 +376,7 @@ Multiple top-level filters are combined with **AND**. For **OR** logic or more c
 }
 ```
 
-### Filter Groups (AND / OR / NOT)
+### Filter Groups (AND / OR / NOT) { #filter-groups }
 
 A **filter group** combines multiple filters with `and` or `or` logic. Groups can be nested recursively for complex boolean expressions.
 
@@ -398,6 +506,10 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 |-----------|-----------|------------|------------|
 | `set` | `is_not_null` | `IS NOT NULL` | none |
 | `notset` | `is_null` | `IS NULL` | none |
+| `blank` | — | `(col IS NULL OR TRIM(col) = '')` | none |
+| `notblank` | — | `(col IS NOT NULL AND TRIM(col) <> '')` | none |
+
+`blank` / `notblank` go beyond `is_null`: they also treat a string of whitespace-only characters as empty, which is the practical "missing value" check for free-text columns.
 
 #### String Operators
 
@@ -409,6 +521,37 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 | `ends_with` | `LIKE '%value'` | string |
 | `like` | `LIKE 'pattern'` | string |
 | `notlike` | `NOT LIKE 'pattern'` | string |
+
+#### Regex Operators
+
+| Operator | Value Type | Notes |
+|----------|------------|-------|
+| `regex` | string (regex pattern) | Match values against a regular expression |
+| `notregex` | string (regex pattern) | Inverse of `regex` |
+
+Regex syntax is delegated to the target dialect's native regex engine, so the *flavour* of regex differs per dialect. The compiler emits dialect-appropriate SQL:
+
+| Dialect | Generated SQL |
+|---------|---------------|
+| Postgres | `(col ~ 'pattern')` / `(col !~ 'pattern')` (POSIX) |
+| DuckDB | `regexp_matches(col, 'pattern')` (RE2) |
+| ClickHouse | `match(col, 'pattern')` (RE2) |
+| BigQuery | `REGEXP_CONTAINS(col, 'pattern')` (RE2) |
+| MySQL | `(col REGEXP 'pattern')` (POSIX-extended via ICU) |
+| Databricks | `(col RLIKE 'pattern')` (Java regex) |
+| Snowflake, Dremio | `REGEXP_LIKE(col, 'pattern')` (POSIX-extended) |
+
+Use only the common subset of regex features (anchors, character classes, alternation, basic quantifiers) if a query has to be portable across dialects. Backreferences, lookarounds, and named groups are not portable.
+
+#### String Length Operators
+
+| Operator | SQL Output | Value Type |
+|----------|------------|------------|
+| `length_eq` | `LENGTH(col) = N` | integer |
+| `length_gt` | `LENGTH(col) > N` | integer |
+| `length_lt` | `LENGTH(col) < N` | integer |
+
+Useful for filtering on padded codes, fixed-width identifiers, or detecting truncated strings. The value must be a non-negative integer.
 
 #### Range Operators
 

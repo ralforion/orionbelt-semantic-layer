@@ -70,8 +70,6 @@ def start_api(
     """Start the OrionBelt API and return ``(session_id, model_id)``."""
     global _api_base, _api_process  # noqa: PLW0603
 
-    import yaml as _yaml  # noqa: F811 — deferred to avoid import-time dep
-
     repo_root = os.path.abspath("..")
     _api_base = f"http://localhost:{port}"
 
@@ -308,7 +306,7 @@ def show_yaml(yaml_str: str) -> str:
     class _IndentedDumper(_yaml.Dumper):
         """Indent list items under their parent key."""
 
-        def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        def increase_indent(self, flow: bool = False, _indentless: bool = False) -> None:
             return super().increase_indent(flow, False)
 
     _pg.init()

@@ -16,7 +16,7 @@ import logging
 import time
 from datetime import UTC, date, datetime
 from datetime import time as dt_time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,13 +32,20 @@ class ExecutionError(Exception):
 
 
 class ColumnMeta:
-    """Metadata for a single result column."""
+    """Metadata for a single result column.
 
-    __slots__ = ("name", "type_hint")
+    ``default_format`` is the executor-suggested display pattern based on
+    the column's Arrow / driver type. The API uses it as a fallback when
+    the model has no explicit ``format`` for the column — typically raw-
+    mode ``select.fields`` projections of physical columns.
+    """
 
-    def __init__(self, name: str, type_hint: str) -> None:
+    __slots__ = ("name", "type_hint", "default_format")
+
+    def __init__(self, name: str, type_hint: str, default_format: str | None = None) -> None:
         self.name = name
         self.type_hint = type_hint
+        self.default_format = default_format
 
 
 class ExecutionResult:
@@ -119,22 +126,19 @@ def _map_type_code(type_code: Any) -> str:
     return "string"
 
 
-_DUCKDB_NUMERIC_PREFIXES = (
+_DUCKDB_INT_PREFIXES = (
     "TINYINT",
     "SMALLINT",
     "INTEGER",
     "BIGINT",
     "HUGEINT",
-    "FLOAT",
-    "DOUBLE",
-    "DECIMAL",
-    "NUMERIC",
-    "NUMBER",
     "UTINYINT",
     "USMALLINT",
     "UINTEGER",
     "UBIGINT",
 )
+_DUCKDB_FLOAT_DECIMAL_PREFIXES = ("FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "NUMBER")
+_DUCKDB_NUMERIC_PREFIXES = _DUCKDB_INT_PREFIXES + _DUCKDB_FLOAT_DECIMAL_PREFIXES
 _DUCKDB_DATETIME_PREFIXES = ("DATE", "TIME", "TIMESTAMP", "INTERVAL")
 
 
@@ -148,6 +152,19 @@ def _duckdb_type_hint(type_obj: Any) -> str:
     if s in ("BLOB",):
         return "binary"
     return "string"
+
+
+def _default_format_for_duckdb_type(type_obj: Any) -> str | None:
+    """Companion to ``_default_format_for_arrow_type`` for the DuckDB local
+    execution path (PEP 249 fetchall). Same policy: ints stay unformatted,
+    floats and decimals default to ``"#,##0.00"``.
+    """
+    s = str(type_obj).upper()
+    if s.startswith(_DUCKDB_INT_PREFIXES):
+        return None
+    if s.startswith(_DUCKDB_FLOAT_DECIMAL_PREFIXES):
+        return "#,##0.00"
+    return None
 
 
 def _arrow_type_to_hint(arrow_type: Any) -> str:
@@ -295,6 +312,51 @@ def _reset_db_tz_cache() -> None:
     _DB_TZ_DETECTED.clear()
 
 
+def warm_db_tz_cache(dialect: str) -> ZoneInfo | None:
+    """Probe the DB session timezone for ``dialect`` and cache the result.
+
+    Idempotent: returns the cached value if detection has already run.
+    Opens a short-lived connection (DuckDB read-only or pooled connection
+    for other dialects) only when needed, so callers can pre-warm the
+    cache from request handlers without waiting for the first query.
+
+    Returns ``None`` (without raising) if the connection cannot be
+    established or the detection query fails — leaves the cache in the
+    same state ``_detect_db_timezone`` would on failure.
+    """
+    if dialect in _DB_TZ_DETECTED:
+        return _DB_SESSION_TZ.get(dialect)
+
+    try:
+        if dialect == "duckdb":
+            import duckdb
+            from ob_flight.db_router import (  # type: ignore[import-untyped]
+                get_credentials,
+            )
+
+            creds = get_credentials("duckdb")
+            database = creds.get("database", ":memory:")
+            conn = duckdb.connect(database=database, read_only=True)
+            try:
+                return _detect_db_timezone(conn, "duckdb")
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+        from ob_flight.db_router import get_connection
+
+        with get_connection(dialect) as conn:
+            cursor = conn.cursor()
+            try:
+                return _detect_db_timezone(cursor, dialect)
+            finally:
+                with contextlib.suppress(Exception):
+                    cursor.close()
+    except Exception:
+        logger.debug("warm_db_tz_cache failed for %s", dialect, exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Value serialisation (for non-Arrow fallback path)
 # ---------------------------------------------------------------------------
@@ -336,14 +398,96 @@ def _serialize_row(row: Any, tz: ZoneInfo | None = None) -> list[Any]:
     return [_serialize_value(v, tz) for v in row]
 
 
+def _default_format_for_arrow_type(arrow_type: Any) -> str | None:
+    """Suggest a display ``format`` pattern based on the column's Arrow type.
+
+    Used as a fallback for columns that lack an explicit ``format`` on the
+    model (raw-mode ``select.fields`` projections, measures that simply
+    forgot to declare one). Integer columns deliberately get **no** default
+    so IDs / keys render as plain digits (``"52965"``); floats and decimals
+    get ``"#,##0.00"`` so monetary-style numbers come back locale-aware.
+
+    For ADBC-style string-extension numerics the SQL ``type_name`` carried
+    on the extension distinguishes int from decimal — int variants stay
+    unformatted, others default to ``"#,##0.00"``.
+    """
+    try:
+        import pyarrow as pa
+
+        if pa.types.is_integer(arrow_type):
+            return None  # plain str(val) — keeps IDs/keys clean
+        if pa.types.is_floating(arrow_type) or pa.types.is_decimal(arrow_type):
+            return "#,##0.00"
+        if _is_string_stored_numeric_arrow_type(arrow_type):
+            type_name = str(getattr(arrow_type, "type_name", "")).lower()
+            return None if "int" in type_name else "#,##0.00"
+        return None
+    except Exception:  # noqa: BLE001 — never block row delivery on a type probe
+        return None
+
+
+def _is_string_stored_numeric_arrow_type(arrow_type: Any) -> bool:
+    """Detect Arrow extension types that wrap a numeric SQL type as a string.
+
+    ADBC's PostgreSQL driver (and similar high-precision-aware ADBC drivers)
+    represents NUMERIC as ``arrow.opaque[storage_type=string, type_name=numeric]``
+    to preserve precision beyond Arrow's ``decimal128`` limits. ``to_pydict()``
+    then yields Python ``str`` rather than ``Decimal``. Without this detection
+    every downstream consumer (UI, format_row, JSON, TSV, charts, runner) has
+    to know to re-parse — easier to normalise once at the executor layer.
+    """
+    try:
+        import pyarrow as pa
+
+        # ADBC's ``OpaqueType`` (and other Arrow extension wrappers we care
+        # about) carry both ``storage_type`` and ``type_name``. Plain Arrow
+        # types (string, decimal128, etc.) carry neither — duck-type the
+        # attribute pair rather than relying on a typecheck against
+        # ``pa.ExtensionType`` which OpaqueType is not an instance of.
+        storage = getattr(arrow_type, "storage_type", None)
+        type_name = getattr(arrow_type, "type_name", None)
+        if storage is None or type_name is None:
+            return False
+        if not pa.types.is_string(storage):
+            return False
+        if isinstance(type_name, bytes):
+            type_name = type_name.decode("utf-8", "ignore")
+        # Lazy import to avoid a circular dependency: db_executor is imported
+        # by routers, which import schemas, which would otherwise pull this in.
+        from orionbelt.service.value_formatting import is_numeric_type_hint
+
+        return is_numeric_type_hint(str(type_name))
+    except Exception:  # noqa: BLE001 — defensive: never block row delivery on a type probe
+        return False
+
+
 def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
-    """Convert an Arrow Table to a list of JSON-serializable rows."""
+    """Convert an Arrow Table to a list of JSON-serializable rows.
+
+    String-stored numeric extension types are parsed to ``Decimal`` before
+    the per-cell serialiser runs, so every downstream consumer sees the
+    same shape regardless of driver. ``_serialize_value`` then handles the
+    Decimal in its existing branch.
+    """
     pydict = table.to_pydict()
     col_names = list(pydict.keys())
     n_rows = table.num_rows
+
+    # Pre-compute which columns need string→Decimal parsing.
+    string_numeric_cols: set[str] = {
+        field.name for field in table.schema if _is_string_stored_numeric_arrow_type(field.type)
+    }
+
     result: list[list[Any]] = []
     for i in range(n_rows):
-        result.append([_serialize_value(pydict[name][i], tz) for name in col_names])
+        row: list[Any] = []
+        for name in col_names:
+            val = pydict[name][i]
+            if name in string_numeric_cols and isinstance(val, str):
+                with contextlib.suppress(TypeError, ValueError, InvalidOperation):
+                    val = Decimal(val)
+            row.append(_serialize_value(val, tz))
+        result.append(row)
     return result
 
 
@@ -380,7 +524,7 @@ def execute_sql(
         ExecutionError: if the database connection or query fails.
     """
     try:
-        from ob_flight.db_router import get_credentials  # type: ignore[import-untyped]
+        from ob_flight.db_router import get_credentials
     except ImportError:
         raise ExecutionUnavailableError(
             "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
@@ -445,7 +589,11 @@ def _execute_duckdb(
         rows_raw = result.fetchall()
         desc = result.description or []
         columns = [
-            ColumnMeta(name=d[0], type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string")
+            ColumnMeta(
+                name=d[0],
+                type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string",
+                default_format=(_default_format_for_duckdb_type(d[1]) if len(d) > 1 else None),
+            )
             for d in desc
         ]
         rows = [_serialize_row(r, effective_tz) for r in rows_raw]
@@ -467,7 +615,11 @@ def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> Exec
     arrow_table = _try_fetch_arrow(cursor)
     if arrow_table is not None:
         columns = [
-            ColumnMeta(name=f.name, type_hint=_arrow_type_to_hint(f.type))
+            ColumnMeta(
+                name=f.name,
+                type_hint=_arrow_type_to_hint(f.type),
+                default_format=_default_format_for_arrow_type(f.type),
+            )
             for f in arrow_table.schema
         ]
         elapsed_ms = (time.monotonic() - t0) * 1000

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
-from datetime import timezone as tz_mod
+from datetime import UTC, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -38,6 +37,23 @@ class TestModelSettingsTimezone:
     def test_override_database_timezone_true(self) -> None:
         s = ModelSettings(override_database_timezone=True)
         assert s.override_database_timezone is True
+
+    def test_default_dialect_accepts_registered_name(self) -> None:
+        s = ModelSettings(default_dialect="postgres")
+        assert s.default_dialect == "postgres"
+
+    def test_default_dialect_alias_camel_case(self) -> None:
+        # YAML key is ``defaultDialect``; Python alias path must work too.
+        s = ModelSettings.model_validate({"defaultDialect": "snowflake"})
+        assert s.default_dialect == "snowflake"
+
+    def test_default_dialect_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="defaultDialect must be one of"):
+            ModelSettings(default_dialect="sqlserver")
+
+    def test_default_dialect_optional(self) -> None:
+        s = ModelSettings()
+        assert s.default_dialect is None
 
     def test_combined_settings(self) -> None:
         s = ModelSettings(
@@ -86,7 +102,7 @@ class TestSerializeTemporalValues:
         assert "+02:00" in result or "+01:00" in result
 
     def test_datetime_utc_uses_z(self) -> None:
-        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=tz_mod.utc)
+        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=UTC)
         result = _serialize_value(dt)
         assert result.endswith("Z")
 
@@ -103,7 +119,7 @@ class TestSerializeTemporalValues:
         assert "2026-04-19T14:30:00" in result
 
     def test_datetime_aware_ignores_passed_tz(self) -> None:
-        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=tz_mod.utc)
+        dt = datetime(2026, 4, 19, 14, 30, 0, tzinfo=UTC)
         tz = ZoneInfo("Europe/Zagreb")
         result = _serialize_value(dt, tz=tz)
         # Already tz-aware — don't override

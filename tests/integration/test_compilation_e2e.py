@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -330,6 +332,11 @@ measures:
         column: Refund
     resultType: float
     aggregation: sum
+
+metrics:
+  Refund Ratio:
+    expression: "{[Total Refunds]} / {[Revenue]}"
+    dataType: "decimal(5, 4)"
 """
 
 
@@ -411,3 +418,34 @@ class TestCFLWithFilters:
         sql = result.sql
         assert "composite_01" in sql
         assert "UNION ALL" in sql
+
+    @pytest.mark.parametrize(
+        "dialect",
+        ["bigquery", "clickhouse", "databricks", "dremio", "duckdb", "postgres", "snowflake"],
+    )
+    def test_cfl_metric_qualifies_inner_refs_with_cte_alias(self, dialect: str) -> None:
+        """CFL outer-aggregate ColumnRefs are qualified with the CTE alias.
+
+        Regression: ClickHouse rejects ``SUM("Total Refunds") / SUM("Revenue")``
+        in the outer SELECT as ILLEGAL_AGGREGATION when those bare identifiers
+        shadow sibling SELECT aliases that are themselves aggregates. The
+        planner now qualifies every ColumnRef inside outer aggregates with
+        the composite CTE name (``composite_01``) so the inner refs resolve
+        to raw CTE columns instead of sibling aggregate aliases.
+        """
+        model = _load_cfl_model()
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Revenue", "Total Refunds", "Refund Ratio"],
+            ),
+        )
+        result = pipeline.compile(query, model, dialect)
+        sql = result.sql
+        assert "composite_01" in sql
+        # Every reference inside an outer SUM(...) must be qualified with the
+        # CTE alias. Identifier quoting differs per dialect, so match on the
+        # quote-agnostic shape: SUM( <quote>composite_01<quote>.<quote>...
+        assert re.search(r"SUM\(\W?composite_01\W?\.\W?Revenue\W?\)", sql), sql
+        assert re.search(r"SUM\(\W?composite_01\W?\.\W?Total Refunds\W?\)", sql), sql

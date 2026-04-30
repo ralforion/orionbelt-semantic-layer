@@ -9,6 +9,10 @@ import gradio as gr
 import httpx
 import yaml
 
+# Number / locale formatting lives in service.value_formatting so the API
+# can apply identical rules when ``format_values`` is requested.
+from orionbelt.service.value_formatting import format_number as _format_number
+
 _DEFAULT_API_URL = "http://localhost:8000"
 _FALLBACK_DIALECTS = [
     "bigquery",
@@ -378,87 +382,6 @@ _ALIGN_HEADERS_JS = """
     document.head.appendChild(tag);
 }
 """
-
-
-def _parse_number_format(fmt: str | None) -> tuple[bool, int, bool]:
-    """Parse a display format pattern into (use_thousands, decimals, is_percent).
-
-    Supported patterns: ``#,##0.00``, ``#,##0``, ``0.00%``, etc.
-    Returns ``(use_thousands_separator, decimal_places, is_percentage)``.
-    """
-    if not fmt:
-        return (False, -1, False)
-    is_pct = fmt.endswith("%")
-    body = fmt.rstrip("%").strip()
-    use_thousands = "," in body
-    decimals = -1
-    if "." in body:
-        after_dot = body.split(".")[-1]
-        decimals = len(after_dot)
-    elif is_pct:
-        decimals = 0
-    return (use_thousands, decimals, is_pct)
-
-
-_COMMA_DECIMAL_LANGS = frozenset(
-    {
-        "de",
-        "fr",
-        "it",
-        "es",
-        "pt",
-        "nl",
-        "da",
-        "nb",
-        "nn",
-        "sv",
-        "fi",
-        "pl",
-        "cs",
-        "sk",
-        "hu",
-        "ro",
-        "bg",
-        "hr",
-        "sl",
-        "sr",
-        "tr",
-        "el",
-        "ru",
-        "uk",
-        "be",
-        "ca",
-        "id",
-    }
-)
-
-
-def _locale_separators(locale: str) -> tuple[str, str]:
-    """Return ``(thousands_sep, decimal_sep)`` for a browser locale tag."""
-    lang = locale.split("-")[0].lower() if locale else "en"
-    if lang in _COMMA_DECIMAL_LANGS:
-        return (".", ",")
-    return (",", ".")
-
-
-def _format_number(val: float, fmt: str | None, locale: str = "") -> str:
-    """Format a numeric value using a display format pattern and locale.
-
-    When no format is provided, falls back to Python's default ``str()``.
-    Locale controls the thousands/decimal separators (e.g. ``de`` → ``.`` / ``,``).
-    """
-    use_thousands, decimals, is_pct = _parse_number_format(fmt)
-    if decimals < 0 and not use_thousands and not is_pct:
-        return str(val)
-    if is_pct:
-        val = val * 100
-    if decimals < 0:
-        decimals = 0
-    raw = f"{val:,.{decimals}f}" if use_thousands else f"{val:.{decimals}f}"
-    tsep, dsep = _locale_separators(locale)
-    if tsep != "," or dsep != ".":
-        raw = raw.replace(",", "\x00").replace(".", dsep).replace("\x00", tsep)
-    return raw + ("%" if is_pct else "")
 
 
 _DARK_MODE_INIT_JS = """
@@ -2189,6 +2112,7 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
 def create_blocks(
     default_api_url: str | None = None,
     embedded_settings: dict[str, Any] | None = None,
+    head_html: str | None = None,
 ) -> Any:
     """Build and return a ``gr.Blocks`` instance (without launching).
 
@@ -2227,6 +2151,7 @@ def create_blocks(
         title="OrionBelt Semantic Layer",
         css=_CSS,
         js=_DARK_MODE_INIT_JS,
+        head=head_html,
     ) as demo:
         # ── Browser-persisted state (localStorage via Gradio BrowserState) ──
         saved_model = gr.BrowserState("", storage_key="ob_model_yaml")
@@ -2400,14 +2325,36 @@ def create_blocks(
                 )
                 import_osi_btn.click(fn=None, js=_IMPORT_OSI_JS)
 
-                def _update_pickers(model_yaml: str) -> tuple[object, ...]:
+                def _update_pickers(model_yaml: str, current_dialect: str) -> tuple[object, ...]:
                     dims, meas_met, fields = _extract_model_items(model_yaml)
                     import gradio as gr
+
+                    # Auto-pick the dialect from the model's
+                    # ``settings.defaultDialect`` if present and registered.
+                    # The user can still change it manually after the auto-pick.
+                    dialect_update = gr.update()
+                    try:
+                        import yaml as _pyyaml
+
+                        raw = _pyyaml.safe_load(model_yaml or "") or {}
+                        if isinstance(raw, dict):
+                            settings_block = raw.get("settings") or {}
+                            if isinstance(settings_block, dict):
+                                model_dialect = settings_block.get("defaultDialect")
+                                if (
+                                    isinstance(model_dialect, str)
+                                    and model_dialect in dialects
+                                    and model_dialect != current_dialect
+                                ):
+                                    dialect_update = gr.update(value=model_dialect)
+                    except Exception:  # noqa: BLE001 — dialect auto-pick is best-effort
+                        pass
 
                     return (
                         gr.update(choices=dims, value=None),
                         gr.update(choices=meas_met, value=None),
                         gr.update(choices=fields, value=None),
+                        dialect_update,
                     )
 
                 def _make_inserter(section: str) -> object:  # noqa: E501
@@ -2425,8 +2372,8 @@ def create_blocks(
 
                 model_input.change(
                     fn=_update_pickers,
-                    inputs=[model_input],
-                    outputs=[dim_picker, meas_picker, field_picker],
+                    inputs=[model_input, dialect],
+                    outputs=[dim_picker, meas_picker, field_picker, dialect],
                 )
 
                 for picker, sec in (
@@ -2840,23 +2787,94 @@ def create_blocks(
                     lines=10,
                 )
 
-                def _fetch_settings_yaml(api_url_val: str) -> str:
+                def _fetch_settings_yaml(
+                    api_url_val: str,
+                    sess_state: dict[str, str] | None,
+                    mdl_state: dict[str, str] | None,
+                    model_yaml_val: str,
+                ) -> str:
+                    """Fetch /v1/settings, scoped to the active session+model
+                    when one has been compiled in this UI session so the
+                    returned ``model_settings`` / ``timezone`` blocks reflect
+                    the model the user actually loaded.
+
+                    If the user has typed/pasted a model but not compiled
+                    yet, the server doesn't know about it. Parse the local
+                    YAML's ``settings:`` block and overlay it on the response
+                    so the model's TZ/dialect choices are visible without
+                    needing a compile round-trip. Server-resolved fields
+                    (host TZ, DB session TZ, effective values) still come
+                    from the API.
+                    """
                     url = api_url_val.rstrip("/") if api_url_val else _DEFAULT_API_URL
+                    params: dict[str, str] = {}
+                    sid = (sess_state or {}).get("session_id")
+                    mid = (mdl_state or {}).get("model_id")
+                    if sid:
+                        params["session_id"] = sid
+                        if mid:
+                            params["model_id"] = mid
                     try:
-                        resp = httpx.get(f"{url}/v1/settings", timeout=5, headers=_API_HEADERS)
+                        resp = httpx.get(
+                            f"{url}/v1/settings",
+                            params=params or None,
+                            timeout=5,
+                            headers=_API_HEADERS,
+                        )
                         resp.raise_for_status()
                         data = resp.json()
-                        # Remove model_yaml from display (too large)
-                        data.pop("model_yaml", None)
-                        return yaml.dump(data, default_flow_style=False, sort_keys=False)
                     except httpx.ConnectError:
                         return f"# Error: Cannot connect to API at {url}"
                     except Exception as exc:
                         return f"# Error: {exc}"
 
+                    # Remove model_yaml from display (too large)
+                    data.pop("model_yaml", None)
+
+                    # Overlay the locally-edited model's settings block when
+                    # the API response is missing it (no compile yet).
+                    local_settings: dict[str, Any] = {}
+                    try:
+                        raw = yaml.safe_load(model_yaml_val or "") or {}
+                        if isinstance(raw, dict):
+                            block = raw.get("settings")
+                            if isinstance(block, dict):
+                                local_settings = block
+                    except Exception:  # noqa: BLE001 — best-effort overlay
+                        local_settings = {}
+
+                    if local_settings:
+                        # Only overwrite fields the API didn't supply, so a
+                        # truly compiled session keeps the server's view.
+                        existing_ms = data.get("model_settings") or {}
+                        merged_ms = {**local_settings, **existing_ms}
+                        data["model_settings"] = merged_ms
+
+                        tz = data.get("timezone") or {}
+                        if "model" not in tz and local_settings.get("defaultTimezone"):
+                            tz["model"] = local_settings["defaultTimezone"]
+                        if "override_database_timezone" not in tz:
+                            tz["override_database_timezone"] = bool(
+                                local_settings.get("overrideDatabaseTimezone", False)
+                            )
+                        if "effective" not in tz:
+                            tz["effective"] = (
+                                local_settings.get("defaultTimezone") or tz.get("host") or "UTC"
+                            )
+                        data["timezone"] = tz
+
+                        dl = data.get("dialect") or {}
+                        if "model" not in dl and local_settings.get("defaultDialect"):
+                            dl["model"] = local_settings["defaultDialect"]
+                        if dl.get("model") and "effective" not in dl:
+                            dl["effective"] = dl["model"]
+                        data["dialect"] = dl
+
+                    return yaml.dump(data, default_flow_style=False, sort_keys=False)
+
                 settings_tab.select(
                     fn=_fetch_settings_yaml,
-                    inputs=[api_url],
+                    inputs=[api_url, session_state, model_state, model_input],
                     outputs=[settings_output],
                 )
 
@@ -2928,17 +2946,31 @@ def create_ui() -> None:
     api_url = os.environ.get("API_BASE_URL") or None
     port = int(os.environ.get("PORT", "7860"))
     root_path = os.environ.get("ROOT_PATH", "")
-    demo = create_blocks(default_api_url=api_url)
+
+    from pathlib import Path
+
+    favicon_file = Path(__file__).resolve().parent / "favicon.png"
 
     if root_path:
-        from pathlib import Path
-
+        # Behind a reverse proxy / load balancer mounting Gradio under
+        # ``root_path``. Gradio ignores ``favicon_path`` here (its default
+        # head template uses absolute "/favicon.ico"), so we serve the
+        # favicon ourselves and inject a <link> tag into the head.
         import gradio as gr
         from fastapi import FastAPI
+        from fastapi.responses import FileResponse
+
+        favicon_url = f"{root_path.rstrip('/')}/favicon.png"
+        head_html = f'<link rel="icon" type="image/png" href="{favicon_url}">'
+        demo = create_blocks(default_api_url=api_url, head_html=head_html)
 
         app = FastAPI()
-        favicon = str(Path(__file__).resolve().parent / "favicon.png")
-        app = gr.mount_gradio_app(app, demo, path=root_path, favicon_path=favicon)
+
+        @app.get(favicon_url, include_in_schema=False)
+        async def _favicon() -> FileResponse:
+            return FileResponse(favicon_file, media_type="image/png")
+
+        app = gr.mount_gradio_app(app, demo, path=root_path)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2950,13 +2982,12 @@ def create_ui() -> None:
             timeout_graceful_shutdown=3,
         )
     else:
-        from pathlib import Path
-
-        favicon = str(Path(__file__).resolve().parent / "favicon.png")
+        # Standalone — Gradio mounts at "/", so favicon_path works as designed.
+        demo = create_blocks(default_api_url=api_url)
         demo.launch(
             server_name="0.0.0.0",
             server_port=port,
-            favicon_path=favicon,
+            favicon_path=str(favicon_file),
         )
 
 

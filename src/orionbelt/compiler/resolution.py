@@ -38,6 +38,8 @@ from orionbelt.models.query import (
 )
 from orionbelt.models.semantic import (
     CumulativeAggType,
+    DataObject,
+    DataObjectColumn,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -50,6 +52,71 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
 )
+
+_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
+
+
+def _build_computed_column_expr(
+    column: DataObjectColumn, obj: DataObject, model: SemanticModel
+) -> Expr:
+    """Parse a computed column's ``expression`` into an AST.
+
+    ``{name}`` placeholders are substituted with ``{[obj.label].[name]}`` so
+    the existing measure-expression tokenizer resolves them to physical
+    table-qualified column refs. Falls back to a column ref to the column's
+    own ``code`` if parsing fails — defensive: never block compilation on
+    an expression-parse error in a single column.
+    """
+    expr_str = column.expression or ""
+
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        if name in obj.columns:
+            return f"{{[{obj.label}].[{name}]}}"
+        return match.group(0)
+
+    rewritten = _COMPUTED_PLACEHOLDER.sub(_sub, expr_str)
+    try:
+        tokens = tokenize_measure_expression(rewritten, model)
+        return parse_expression(tokens)
+    except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
+        return ColumnRef(name=column.code or column.label, table=obj.label)
+
+
+def make_column_expr(model: SemanticModel, object_name: str, column_label: str) -> Expr:
+    """Build the AST expression that represents a column reference.
+
+    For plain columns, returns ``ColumnRef(name=col.code, table=object_name)``.
+    For computed columns (those with an ``expression``), parses and
+    substitutes placeholders so the returned AST already inlines the
+    expression. Used by planners and filter resolution alike — the
+    single source of truth for "render this column reference as SQL".
+    """
+    obj = model.data_objects.get(object_name)
+    if obj is None:
+        return ColumnRef(name=column_label, table=object_name)
+    column = obj.columns.get(column_label)
+    if column is None:
+        return ColumnRef(name=column_label, table=object_name)
+    if column.expression:
+        return _build_computed_column_expr(column, obj, model)
+    return ColumnRef(name=column.code, table=object_name)
+
+
+@dataclass
+class ResolvedField:
+    """A resolved raw-mode field reference: ``DataObject.Column`` → physical column.
+
+    Raw mode (``select.fields``) bypasses the semantic dimension/measure layer
+    and projects physical columns directly. The ``alias`` defaults to the
+    original ``"DataObject.Column"`` reference so result columns are
+    self-describing.
+    """
+
+    object_name: str  # logical data object name (table alias)
+    column_name: str  # logical column name
+    source_column: str  # physical column name in the source table
+    alias: str  # output column name (defaults to "object_name.column_name")
 
 
 @dataclass
@@ -112,6 +179,9 @@ class ResolvedQuery:
 
     dimensions: list[ResolvedDimension] = field(default_factory=list)
     measures: list[ResolvedMeasure] = field(default_factory=list)
+    fields: list[ResolvedField] = field(default_factory=list)
+    is_raw: bool = False
+    distinct: bool = False
     base_object: str = ""
     required_objects: set[str] = field(default_factory=set)
     join_steps: list[JoinStep] = field(default_factory=list)
@@ -209,6 +279,8 @@ class QueryResolver:
                 limit=query.limit,
                 offset=query.offset,
                 use_path_names=list(query.use_path_names),
+                is_raw=query.select.is_raw,
+                distinct=query.select.distinct,
             ),
         )
 
@@ -217,24 +289,30 @@ class QueryResolver:
             for col_name, col_obj in obj.columns.items():
                 ctx.global_columns[col_name] = (obj_name, col_obj.code)
 
-        # 1. Resolve dimensions (string or coalesce group).
-        # Coalesce groups expand into their constituent dimensions, each
-        # tagged with the same coalesce_alias so the CFL outer wrapper can
-        # emit COALESCE(d1, d2, ...) AS <alias>.
-        for dim_entry in query.select.dimensions:
-            if isinstance(dim_entry, CoalesceDimension):
-                self._resolve_coalesce_dimension(ctx, dim_entry, ctx.result.coalesce_aliases)
-            else:
-                self._append_resolved_dimension(ctx, dim_entry)
+        if query.select.is_raw:
+            # Raw mode: project physical columns, no aggregation.
+            for ref in query.select.fields:
+                self._resolve_raw_field(ctx, ref)
+        else:
+            # Aggregate mode (default).
+            # 1. Resolve dimensions (string or coalesce group).
+            # Coalesce groups expand into their constituent dimensions, each
+            # tagged with the same coalesce_alias so the CFL outer wrapper can
+            # emit COALESCE(d1, d2, ...) AS <alias>.
+            for dim_entry in query.select.dimensions:
+                if isinstance(dim_entry, CoalesceDimension):
+                    self._resolve_coalesce_dimension(ctx, dim_entry, ctx.result.coalesce_aliases)
+                else:
+                    self._append_resolved_dimension(ctx, dim_entry)
 
-        # 2. Resolve measures and track their source objects
-        for measure_name in query.select.measures:
-            resolved_meas = self._resolve_measure(ctx, measure_name)
-            if resolved_meas:
-                ctx.result.measures.append(resolved_meas)
-                source_objs = self._get_measure_source_objects(ctx, measure_name)
-                ctx.result.measure_source_objects.update(source_objs)
-                ctx.result.required_objects.update(source_objs)
+            # 2. Resolve measures and track their source objects
+            for measure_name in query.select.measures:
+                resolved_meas = self._resolve_measure(ctx, measure_name)
+                if resolved_meas:
+                    ctx.result.measures.append(resolved_meas)
+                    source_objs = self._get_measure_source_objects(ctx, measure_name)
+                    ctx.result.measure_source_objects.update(source_objs)
+                    ctx.result.required_objects.update(source_objs)
 
         # 3. Determine base object (the one with most joins / most measures)
         ctx.result.base_object = self._select_base_object(ctx)
@@ -266,6 +344,18 @@ class QueryResolver:
                 for step in steps:
                     ctx.result.required_objects.add(step.from_object)
                     ctx.result.required_objects.add(step.to_object)
+
+        # Raw mode: detect multi-fact (fields span objects unreachable from
+        # the base via directed joins). The pipeline rejects this case for
+        # now — raw CFL is a planned follow-up.
+        if ctx.result.is_raw and ctx.result.base_object:
+            field_objects = {f.object_name for f in ctx.result.fields}
+            if len(field_objects) > 1:
+                graph = JoinGraph(model, use_path_names=query.use_path_names or None)
+                reachable = graph.descendants(ctx.result.base_object)
+                unreachable = field_objects - reachable - {ctx.result.base_object}
+                if unreachable:
+                    ctx.result.requires_cfl = True
 
         # Validate dimensionsExclude constraints
         if query.dimensions_exclude:
@@ -360,6 +450,62 @@ class QueryResolver:
             raise ResolutionError(ctx.errors)
 
         return ctx.result
+
+    # -- raw mode fields -----------------------------------------------------
+
+    def _resolve_raw_field(self, ctx: _ResolutionContext, ref: str) -> None:
+        """Resolve a ``DataObject.Column`` reference for raw-mode projection.
+
+        Errors are accumulated in the resolution context (raised at the end).
+        """
+        if "." not in ref:
+            ctx.errors.append(
+                SemanticError(
+                    code="RAW_FIELD_INVALID_REF",
+                    message=(
+                        f"Raw-mode field '{ref}' must be a qualified 'DataObject.Column' reference"
+                    ),
+                    path="select.fields",
+                )
+            )
+            return
+
+        obj_name, col_name = ref.split(".", 1)
+        obj_name = obj_name.strip()
+        col_name = col_name.strip()
+        obj = ctx.model.data_objects.get(obj_name)
+        if obj is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="RAW_FIELD_UNKNOWN_OBJECT",
+                    message=f"Raw-mode field '{ref}' references unknown data object '{obj_name}'",
+                    path="select.fields",
+                )
+            )
+            return
+        column = obj.columns.get(col_name)
+        if column is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="RAW_FIELD_UNKNOWN_COLUMN",
+                    message=(
+                        f"Raw-mode field '{ref}' references unknown column "
+                        f"'{col_name}' on data object '{obj_name}'"
+                    ),
+                    path="select.fields",
+                )
+            )
+            return
+
+        ctx.result.fields.append(
+            ResolvedField(
+                object_name=obj_name,
+                column_name=col_name,
+                source_column=column.code,
+                alias=ref,
+            )
+        )
+        ctx.result.required_objects.add(obj_name)
 
     # -- dimensions ----------------------------------------------------------
 
@@ -1047,7 +1193,7 @@ class QueryResolver:
         ctx: _ResolutionContext,
         obj_name: str,
         filter_path: str,
-        field_label: str,
+        _field_label: str,
     ) -> bool:
         """Ensure *obj_name* is joined; auto-extend if reachable.
 
@@ -1130,9 +1276,7 @@ class QueryResolver:
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
             col_name = dim.column
-            obj = ctx.model.data_objects.get(obj_name)
-            source = obj.columns[col_name].code if obj and col_name in obj.columns else col_name
-            col_expr: Expr = ColumnRef(name=source, table=obj_name)
+            col_expr: Expr = make_column_expr(ctx.model, obj_name, col_name)
 
         # 2. HAVING: try measure or metric name
         elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
@@ -1166,8 +1310,7 @@ class QueryResolver:
                 return None
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
-            source = obj.columns[col_name].code
-            col_expr = ColumnRef(name=source, table=obj_name)
+            col_expr = make_column_expr(ctx.model, obj_name, col_name)
 
         else:
             ctx.errors.append(
@@ -1201,11 +1344,19 @@ class QueryResolver:
 
         for dim in ctx.result.dimensions:
             if dim.name == field_name:
-                return ColumnRef(name=dim.source_column, table=dim.object_name)
+                # Use make_column_expr so computed columns (which have empty
+                # ``code``) inline their expression instead of producing an
+                # empty column ref like ``"Orders"."" ``.
+                return make_column_expr(ctx.model, dim.object_name, dim.column_name)
 
         for meas in ctx.result.measures:
             if meas.name == field_name:
                 return meas.expression
+
+        # Raw mode: order by the field's "DataObject.Column" alias.
+        for f in ctx.result.fields:
+            if f.alias == field_name:
+                return make_column_expr(ctx.model, f.object_name, f.column_name)
 
         if field_name.isdigit():
             pos = int(field_name)

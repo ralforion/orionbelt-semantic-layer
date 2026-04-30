@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import cast
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
-from orionbelt.api.deps import get_session_manager, is_single_model_mode
+from orionbelt.api.deps import get_db_vendor, get_session_manager, is_single_model_mode
 from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
@@ -25,7 +25,6 @@ from orionbelt.api.routers.model_api import (
     _search_model,
 )
 from orionbelt.api.schemas import (
-    ColumnMetadata,
     DiagramResponse,
     DimensionDetail,
     ErrorDetail,
@@ -224,7 +223,9 @@ async def shortcut_measure(
         columns=[{"dataObject": c.view or "", "column": c.column or ""} for c in m.columns],
         distinct=m.distinct,
         total=m.total,
+        description=m.description,
         format=m.format,
+        data_type=m.data_type,
         owner=m.owner,
         synonyms=m.synonyms,
     )
@@ -257,7 +258,9 @@ async def shortcut_metric(
         measure=met.measure,
         time_dimension=met.time_dimension,
         component_measures=component_names,
+        description=met.description,
         format=met.format,
+        data_type=met.data_type,
         owner=met.owner,
         synonyms=met.synonyms,
     )
@@ -376,11 +379,16 @@ class ShortcutQueryRequest(QueryObject):
 @router.post("/query/sql", response_model=QueryCompileResponse, tags=["query"])
 async def shortcut_compile_query(
     body: ShortcutQueryRequest,
-    dialect: str = "postgres",
+    dialect: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> QueryCompileResponse:
-    """Compile a query (auto-resolves session/model)."""
+    """Compile a query (auto-resolves session/model). When ``dialect`` is
+    omitted, falls back to ``model.settings.defaultDialect`` then ``DB_VENDOR``."""
+    from orionbelt.api.routers.sessions import _resolve_dialect
+
     store, model_id = _resolve_store_and_model(mgr)
+    model = store.get_model(model_id)
+    dialect = _resolve_dialect(request_dialect=dialect, model=model, fallback=get_db_vendor())
     try:
         result = store.compile_query(model_id, body, dialect)
     except KeyError:
@@ -467,15 +475,37 @@ class ShortcutQueryExecuteRequest(QueryObject):
 async def shortcut_execute_query(
     body: ShortcutQueryExecuteRequest,
     dialect: str | None = None,
+    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    format_values: bool = False,
+    locale: str | None = None,
+    timezone: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
-) -> QueryExecuteResponse:
+) -> QueryExecuteResponse | Response:
     """Compile and execute a query (auto-resolves session/model).
 
-    Requires QUERY_EXECUTE=true (or FLIGHT_ENABLED=true). If ``dialect`` is omitted,
-    uses ``DB_VENDOR``. Enforces a configurable default row limit if the query has
-    no explicit limit.
+    Requires ``QUERY_EXECUTE=true`` (or ``FLIGHT_ENABLED=true``). If ``dialect``
+    is omitted, uses ``DB_VENDOR``. Enforces a configurable default row limit
+    if the query has no explicit limit.
+
+    Query parameters
+    ----------------
+    * ``format`` — ``json`` (default) or ``tsv``. ``tsv`` returns a tab-
+      separated body; cells with tab/newline/CR/double-quote are RFC 4180
+      quoted. ``tsv`` implies ``format_values=true``.
+    * ``format_values`` — when true, numeric cells in the JSON response are
+      rendered as locale-aware display strings using each column's
+      ``format`` pattern (matches the Gradio UI). Default false.
+    * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
+      to ``DEFAULT_LOCALE`` env when omitted.
+    * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the
+      model's ``default_timezone`` for naive timestamp coercion.
     """
-    from orionbelt.api.deps import get_db_vendor, get_query_default_limit, is_query_execute_enabled
+    from orionbelt.api.deps import (
+        get_default_locale,
+        get_query_default_limit,
+        is_query_execute_enabled,
+    )
+    from orionbelt.api.routers.sessions import _resolve_dialect
 
     if not is_query_execute_enabled():
         raise HTTPException(
@@ -485,10 +515,10 @@ async def shortcut_execute_query(
         )
 
     store, model_id = _resolve_store_and_model(mgr)
+    model = store.get_model(model_id)
 
-    # Auto-detect dialect from DB_VENDOR when not provided
-    if dialect is None:
-        dialect = get_db_vendor()
+    # Resolve dialect: explicit param → model.settings.defaultDialect → DB_VENDOR.
+    dialect = _resolve_dialect(request_dialect=dialect, model=model, fallback=get_db_vendor())
 
     # Enforce a configurable default limit if the query has none
     query: QueryObject = body
@@ -527,13 +557,14 @@ async def shortcut_execute_query(
             },
         ) from None
 
-    # Resolve timezone from model settings for naive timestamp coercion
-    model = store.get_model(model_id)
-    tz = None
+    # Resolve timezone — request override → model default → host TZ → UTC.
+    # ``model`` was already loaded above for dialect resolution; reuse it.
+    model_default_tz: str | None = None
     override_db_tz = False
     if model.settings:
-        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        model_default_tz = model.settings.default_timezone
         override_db_tz = model.settings.override_database_timezone
+    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
 
     try:
         exec_result = await asyncio.to_thread(
@@ -548,35 +579,14 @@ async def shortcut_execute_query(
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
-    from orionbelt.api.routers.sessions import (
-        _build_explain_response,
-        _build_format_map,
-        _build_type_map,
-    )
+    from orionbelt.api.routers.sessions import _build_execute_response
 
-    type_map = _build_type_map(model)
-    fmt_map = _build_format_map(model)
-    return QueryExecuteResponse(
-        sql=format_sql(result.sql, result.dialect),
-        dialect=result.dialect,
-        columns=[
-            ColumnMetadata(
-                name=c.name,
-                type=type_map.get(c.name, c.type_hint),
-                format=fmt_map.get(c.name),
-            )
-            for c in exec_result.columns
-        ],
-        rows=exec_result.rows,
-        row_count=exec_result.row_count,
-        execution_time_ms=exec_result.execution_time_ms,
-        timezone=exec_result.timezone,
-        resolved=ResolvedInfoResponse(
-            fact_tables=result.resolved.fact_tables,
-            dimensions=result.resolved.dimensions,
-            measures=result.resolved.measures,
-        ),
-        warnings=result.warnings,
-        sql_valid=result.sql_valid,
-        explain=_build_explain_response(result),
+    effective_locale = locale if locale is not None else get_default_locale()
+    return _build_execute_response(
+        compile_result=result,
+        exec_result=exec_result,
+        model=model,
+        response_format=format,
+        format_values=format_values,
+        locale=effective_locale,
     )

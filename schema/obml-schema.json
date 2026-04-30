@@ -149,6 +149,10 @@
           "type": "string",
           "description": "Owner or responsible party for this column"
         },
+        "expression": {
+          "type": "string",
+          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky — pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
+        },
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this column (LLM hints)",
@@ -160,7 +164,7 @@
           "items": { "$ref": "#/definitions/customExtension" }
         }
       },
-      "required": ["code", "abstractType"],
+      "required": ["abstractType"],
       "additionalProperties": false,
       "if": {
         "not": {
@@ -1078,6 +1082,20 @@
           "type": "boolean",
           "description": "If true, use defaultTimezone instead of the auto-detected database session timezone. Use when naive timestamps are stored in a known timezone that differs from the DB session. Default: false.",
           "default": false
+        },
+        "defaultDialect": {
+          "type": "string",
+          "description": "Default SQL dialect for queries that omit the 'dialect' field. Resolution order at request time: explicit dialect → model.settings.defaultDialect → DB_VENDOR env. Must be one of the registered OrionBelt dialects.",
+          "enum": [
+            "bigquery",
+            "clickhouse",
+            "databricks",
+            "dremio",
+            "duckdb",
+            "mysql",
+            "postgres",
+            "snowflake"
+          ]
         }
       },
       "additionalProperties": false

@@ -2,6 +2,62 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.0] - 2026-04-30
+
+### Added
+
+- **Column-level computed columns on `DataObjectColumn`.** A column with `expression:` instead of `code:` defines a computed column inlined wherever the column is referenced. Single-brace `{Column}` placeholders refer to *sibling columns of the same data object*. Distinct from measure-level expressions (which use `{[DataObject].[Column]}` and can cross data objects). Example: `Year-Month: expression: "({Year} * 100 + {Month of Year})"`. Constraints: mutually exclusive with `code`, no recursive resolution. ORDER BY on a computed column is correctly emitted as the inlined expression.
+- **Regex, blank, and string-length filter operators** in `QueryFilter`. Per-dialect regex SQL: Postgres `~`/`!~`, DuckDB `regexp_matches`, ClickHouse `match`, BigQuery `REGEXP_CONTAINS`, MySQL `REGEXP`, Databricks `RLIKE`, Snowflake/Dremio `REGEXP_LIKE`. New operators:
+  - `regex` / `notregex` — match against a regular-expression pattern (string value)
+  - `blank` / `notblank` — `(col IS NULL OR TRIM(col) = '')` and its inverse, for whitespace-aware empty checks on free-text columns
+  - `length_eq` / `length_gt` / `length_lt` — `LENGTH(col) {= | > | <} N` (integer value), for fixed-width / padded-code filtering
+- **`settings.defaultDialect` on the OBML model.** Optional top-level `settings.defaultDialect` lets a model pin its preferred SQL dialect so callers can omit `dialect` on every `/v1/query/sql` and `/v1/query/execute` request. Resolution chain at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. Validated against the 8 registered dialects at parse time. The session and shortcut endpoints both honor it; `dialect` on the request body is now `Optional`.
+- **`/v1/query/execute` formatted output.** Four new query parameters on both the session-scoped and shortcut execute endpoints:
+  - `format=tsv` returns `text/tab-separated-values` with RFC 4180-style quoting for cells containing tab/newline/CR/double-quote. Implies `format_values=true`.
+  - `format_values=true` renders numeric cells in the JSON response as locale-aware display strings using each column's `format` pattern (matches the Gradio UI exactly).
+  - `locale` (BCP-47) overrides the default locale for thousand/decimal separators; falls back to the new `DEFAULT_LOCALE` env when omitted.
+  - `timezone` (IANA TZ) overrides the model's `default_timezone` per-request.
+- **Shared formatting module** `service/value_formatting.py`. The UI and the API now use the same `format_number` / `parse_number_format` / `locale_separators` / `format_row` / `to_tsv` helpers, so what you see in Gradio is exactly what `?format_values=true` returns.
+- **`DEFAULT_LOCALE` env / `default_locale` setting** (default empty → en-style separators).
+- **Raw query mode (`select.fields`).** Returns un-aggregated rows by projecting physical columns directly. Mutually exclusive with `dimensions`/`measures`/`having`/`dimensionsExclude`. New `select.distinct` flag emits `SELECT DISTINCT`. Field references must be qualified `DataObject.Column`. Single-fact queries compile to a flat star-schema-style SELECT; fanout protection still applies (reversed many-to-one joins are rejected).
+- **Raw CFL — multi-fact `UNION ALL` with NULL padding.** When `select.fields` references columns from independent fact tables, the planner emits one leg per leg-root fact, with typed `CAST(NULL AS <type>)` for fields not reachable from a given leg. Outer wrapper applies `DISTINCT` (when set), `ORDER BY` (remapped to field aliases), and `LIMIT`. New error codes: `RAW_FIELD_INVALID_REF`, `RAW_FIELD_UNKNOWN_OBJECT`, `RAW_FIELD_UNKNOWN_COLUMN`.
+- **`UNION ALL BY NAME` optimization for raw CFL on DuckDB and Snowflake.** On dialects that support it, per-leg NULL padding is skipped — each leg only emits the columns it has, and the database fills missing columns automatically. Output rows are identical; SQL is shorter and more readable.
+- **Public-doc gating flags** (`EXPOSE_API_DOCS`, `EXPOSE_OPENAPI_SCHEMA`). Default `true` to preserve the public-demo behaviour. Set `EXPOSE_API_DOCS=false` to hide `/docs` and `/redoc`; `EXPOSE_OPENAPI_SCHEMA` toggles `/openapi.json` independently. The Dockerfile and `deploy-gcloud.sh` pin both to `true` explicitly so the demo stays exposed even if defaults flip later.
+- **`/v1/settings` now returns `version` and `api_version`.** Clients can negotiate features from a single call instead of also hitting `/health`.
+- **`/v1/settings` exposes the loaded model's `settings:` block plus the timezone and dialect resolution chains.** New optional sub-objects on the response:
+  - `model_settings` — every key from the model's `settings:` block (`defaultTimezone`, `defaultDialect`, `overrideDatabaseTimezone`, `defaultNumericDataType`), in OBML camelCase to mirror the YAML.
+  - `timezone` — `{model, host, database, effective, override_database_timezone, now, utc, database_detected, database_raw}`. Always present so clients can show the wall clock even without a loaded model. The chain matches what `db_executor.resolve_timezone()` does at execute time: when `overrideDatabaseTimezone` is true the model wins; otherwise the cached DB session timezone (if any) takes priority. **The endpoint now warms the DB session-TZ cache on first hit when a model is bound and `query_execute` is enabled** — so the report runner / UI sees the correct `effective` immediately, instead of falling through to the model TZ until the first query happens to populate the cache. `database_detected` reports whether the probe has run, `database_raw` exposes the cached value for diagnostics. `now` is the current wall-clock time in the effective TZ (ISO 8601 with offset); `utc` is the same instant in UTC for reference.
+  - `dialect` — `{model, env, effective}`. `effective` is what the planner uses when a request omits `dialect`: model.defaultDialect → DB_VENDOR → `postgres`. Always present.
+- **`/v1/settings` accepts `?session_id=...&model_id=...` to scope the model-specific blocks in multi-model mode.** Resolution: single-model mode → preloaded model; both params → explicit lookup (404 on miss); `session_id` only → auto-pick when that session has exactly one model; no params in multi-model mode → auto-pick if a single model is loaded across all sessions, else the model blocks are omitted (no error). `model_id` without `session_id` → 400.
+
+### Changed
+
+- `Select` AST node gains a `distinct: bool` field; codegen emits `SELECT DISTINCT` when set. `QueryBuilder.distinct()` and a widened `with_cte()` signature support raw CFL composite construction.
+
+### Fixed
+
+- **CFL outer-aggregate ColumnRef alias shadowing on ClickHouse** (`ILLEGAL_AGGREGATION`). When a multi-fact CFL query mixed a measure with a metric referencing the same measure (e.g. `SUM(net_profit)` plus `SUM(net_profit)/SUM(sales) AS margin`), the metric's bare `SUM("Net Profit")` resolved to the sibling SELECT alias — itself an aggregate — and ClickHouse rejected the resulting nested aggregate. The planner now qualifies every ColumnRef inside outer-query aggregate functions with the composite CTE alias (`composite_01`), forcing resolution to the raw CTE column. Universally safe across all 7 dialects.
+- **CFL NULL-padding dialect threading on ClickHouse** (`ILLEGAL_TYPE_OF_ARGUMENT — Variant(Decimal, Float64)`). The single-/zero-column path in `_resolve_null_type_for_field` was missing the `dialect` argument, so it bypassed `resolve_measure_data_type` and fell back to `result_type.value` (`'float'`) — emitting `CAST(NULL AS Nullable(Float64))` while the actual ClickHouse columns are `Decimal(7, 2)`. The `UNION ALL` widened to a `Variant` that `SUM` couldn't consume. Threading `dialect` through aligns NULL padding with the outer CAST target.
+- **Raw CFL filter drop & ORDER BY on computed columns.** WHERE filters on data objects unreachable from a leg are now silently skipped per leg (instead of failing the entire query), matching the agg-mode semantics. ORDER BY on a column whose source AST is an inlined expression (computed column) now correctly remaps to the CTE alias in the outer query via structural-equality matching.
+- **`/v1/settings` warms the DB session-TZ cache on first hit** when a model is bound and `query_execute` is enabled — and now also without a model bound when the cache is empty. Eliminates the previous one-request lag where the report runner / UI saw `effective: <model TZ>` until a real query happened to populate the probe.
+
+### Docs
+
+- New "Computed Columns" subsection in `guide/model-format.md` covering the column-level `expression:` field, single-brace `{Column}` syntax, the inlining semantics, and a reference-syntax cheat-sheet distinguishing column- vs measure- vs metric-level expressions.
+- New "Regex Operators" and "String Length Operators" tables in `guide/query-language.md`, plus `blank` / `notblank` rows added to "Null Operators". Each includes per-dialect generated SQL for portability planning.
+- Pinned an explicit `{ #filter-groups }` anchor on the Filter Groups heading so the in-page link `[filter groups](#filter-groups)` survives future heading-text edits.
+- Expanded the bundled `examples/tpcds.obml.yml` model with `catalog_sales`, `catalog_returns`, `web_returns`, `inventory`, `warehouse`, `ship_mode`, and `reason` data objects, plus `Manager ID`, `Day Name`, and matching dimensions/measures. Demonstrates multi-fact CFL across three sales channels and exercises the new computed-column dim (`Year-Month`).
+
+## [2.0.1] - 2026-04-27
+
+### Added
+
+- **`/v1/settings` now returns `version` and `api_version`.** Clients can negotiate features from a single call instead of also hitting `/health`. `version` matches the `__version__` constant; `api_version` is the REST URL prefix (`"v1"`).
+
+### Docs
+
+- Reordered `query-language.md`: the **Coalesce (Merging Role-Playing Dimensions)** section now sits between **Time Grain Override** and **Measures** so it reads next to the other dimension subsections.
+
 ## [2.0.0] - 2026-04-27
 
 ### Breaking

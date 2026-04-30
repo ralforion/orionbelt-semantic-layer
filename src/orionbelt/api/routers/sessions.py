@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from orionbelt.api.deps import (
+    get_default_locale,
     get_preload_model_yaml,
     get_query_default_limit,
     get_session_manager,
@@ -57,6 +58,7 @@ from orionbelt.service.session_manager import (
     SessionManager,
     SessionNotFoundError,
 )
+from orionbelt.service.value_formatting import format_row, to_tsv
 
 router = APIRouter()
 
@@ -310,13 +312,16 @@ async def compile_query(
     """Compile a query against a model loaded in a session."""
     store = _get_store(session_id, mgr)
     try:
-        result = store.compile_query(body.model_id, body.query, body.dialect)
+        model_for_dialect = store.get_model(body.model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
+    dialect = _resolve_dialect(request_dialect=body.dialect, model=model_for_dialect)
+    try:
+        result = store.compile_query(body.model_id, body.query, dialect)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
     except UnsupportedDialectError:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported dialect: '{body.dialect}'"
-        ) from None
+        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
     except ResolutionError as exc:
         raise HTTPException(
             status_code=422,
@@ -446,6 +451,119 @@ def _build_format_map(model: Any) -> dict[str, str | None]:
     return fmt
 
 
+def _resolve_dialect(
+    *, request_dialect: str | None, model: Any, fallback: str | None = None
+) -> str:
+    """Resolve the dialect for a query.
+
+    Order: explicit request dialect → model.settings.default_dialect →
+    ``fallback`` (typically ``DB_VENDOR``) → ``"postgres"``.
+    """
+    if request_dialect:
+        return request_dialect
+    settings = getattr(model, "settings", None)
+    model_default = getattr(settings, "default_dialect", None) if settings else None
+    if model_default:
+        return str(model_default)
+    if fallback:
+        return fallback
+    return "postgres"
+
+
+def _build_execute_response(
+    *,
+    compile_result: Any,
+    exec_result: Any,
+    model: Any,
+    response_format: Literal["json", "tsv"],
+    format_values: bool,
+    locale: str,
+) -> QueryExecuteResponse | Response:
+    """Build the JSON QueryExecuteResponse, or a TSV Response.
+
+    ``format_values`` is forced True for TSV; numeric cells are rendered with
+    each column's display ``format`` pattern using locale-aware separators.
+    """
+    model_type_map = _build_type_map(model)
+    fmt_map = _build_format_map(model)
+    # Auto-default for columns without an explicit model-side format — the
+    # executor proposes a pattern based on the column's Arrow / driver type
+    # (None for ints/strings/dates so they stay as bare ``str(val)``;
+    # ``"#,##0.00"`` for floats and decimals). Raw-mode ``select.fields``
+    # projections benefit most: physical columns no longer need a measure
+    # to inherit a sensible locale-aware render.
+    for c in exec_result.columns:
+        if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
+            fmt_map[c.name] = c.default_format
+    column_names = [c.name for c in exec_result.columns]
+    columns_meta = [
+        ColumnMetadata(
+            name=c.name,
+            type=model_type_map.get(c.name, c.type_hint),
+            format=fmt_map.get(c.name),
+        )
+        for c in exec_result.columns
+    ]
+    # Merge the executor's type_hint as a fallback for columns that aren't
+    # exposed via the dimension/measure/metric layer — notably raw-mode
+    # ``select.fields`` projections, which reference physical columns the
+    # model-level type_map doesn't list. Without this merge, a numeric raw
+    # column ("decimal(18, 2)" from the driver) wouldn't be classified as
+    # numeric in format_row.
+    type_map: dict[str, str] = {
+        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_result.columns
+    }
+
+    if response_format == "tsv":
+        formatted = [
+            format_row(
+                row,
+                column_names=column_names,
+                fmt_map=fmt_map,
+                type_map=type_map,
+                locale=locale,
+            )
+            for row in exec_result.rows
+        ]
+        body = to_tsv(column_names, formatted)
+        return Response(content=body, media_type="text/tab-separated-values")
+
+    if format_values:
+        rows: list[list[Any]] = [
+            cast(
+                list[Any],
+                format_row(
+                    row,
+                    column_names=column_names,
+                    fmt_map=fmt_map,
+                    type_map=type_map,
+                    locale=locale,
+                ),
+            )
+            for row in exec_result.rows
+        ]
+    else:
+        rows = exec_result.rows
+
+    return QueryExecuteResponse(
+        sql=format_sql(compile_result.sql, compile_result.dialect),
+        dialect=compile_result.dialect,
+        columns=columns_meta,
+        rows=rows,
+        row_count=exec_result.row_count,
+        execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
+        resolved=ResolvedInfoResponse(
+            fact_tables=compile_result.resolved.fact_tables,
+            dimensions=compile_result.resolved.dimensions,
+            measures=compile_result.resolved.measures,
+        ),
+        warnings=compile_result.warnings,
+        sql_valid=compile_result.sql_valid,
+        explain=_build_explain_response(compile_result),
+    )
+
+
 def _build_explain_response(result: Any) -> ExplainPlanResponse | None:
     """Build an ExplainPlanResponse from a CompilationResult, if explain exists."""
     if not result.explain:
@@ -484,11 +602,29 @@ def _build_explain_response(result: Any) -> ExplainPlanResponse | None:
 async def execute_query(
     session_id: str,
     body: SessionQueryExecuteRequest,
+    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    format_values: bool = False,
+    locale: str | None = None,
+    timezone: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
-) -> QueryExecuteResponse:
+) -> QueryExecuteResponse | Response:
     """Compile and execute a query against the configured database.
 
-    Requires QUERY_EXECUTE=true (or FLIGHT_ENABLED=true) and DB_VENDOR + credentials.
+    Requires ``QUERY_EXECUTE=true`` (or ``FLIGHT_ENABLED=true``) and
+    ``DB_VENDOR`` + credentials.
+
+    Query parameters
+    ----------------
+    * ``format`` — ``json`` (default) or ``tsv``. ``tsv`` returns a tab-
+      separated body; cells with tab/newline/CR/double-quote are RFC 4180
+      quoted. ``tsv`` implies ``format_values=true``.
+    * ``format_values`` — when true, numeric cells in the JSON response are
+      rendered as locale-aware display strings using each column's
+      ``format`` pattern (matches the Gradio UI). Default false.
+    * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
+      to ``DEFAULT_LOCALE`` env when omitted.
+    * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the
+      model's ``default_timezone`` for naive timestamp coercion.
     """
     if not is_query_execute_enabled():
         raise HTTPException(
@@ -504,13 +640,18 @@ async def execute_query(
         query = query.model_copy(update={"limit": get_query_default_limit()})
 
     try:
-        result = store.compile_query(body.model_id, query, body.dialect)
+        model = store.get_model(body.model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
+    from orionbelt.api.deps import get_db_vendor
+
+    dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
+    try:
+        result = store.compile_query(body.model_id, query, dialect)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
     except UnsupportedDialectError:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported dialect: '{body.dialect}'"
-        ) from None
+        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
     except ResolutionError as exc:
         raise HTTPException(
             status_code=422,
@@ -537,19 +678,20 @@ async def execute_query(
             },
         ) from None
 
-    # Resolve timezone from model settings for naive timestamp coercion
-    model = store.get_model(body.model_id)
-    tz = None
+    # Resolve timezone — request override → model default → host TZ → UTC.
+    # ``model`` was already loaded above for dialect resolution; reuse it.
+    model_default_tz: str | None = None
     override_db_tz = False
     if model.settings:
-        tz = resolve_timezone(default_timezone=model.settings.default_timezone)
+        model_default_tz = model.settings.default_timezone
         override_db_tz = model.settings.override_database_timezone
+    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
 
     try:
         exec_result = await asyncio.to_thread(
             execute_sql,
             result.sql,
-            dialect=body.dialect,
+            dialect=dialect,
             tz=tz,
             override_db_tz=override_db_tz,
         )
@@ -558,29 +700,12 @@ async def execute_query(
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
-    type_map = _build_type_map(model)
-    fmt_map = _build_format_map(model)
-    return QueryExecuteResponse(
-        sql=format_sql(result.sql, result.dialect),
-        dialect=result.dialect,
-        columns=[
-            ColumnMetadata(
-                name=c.name,
-                type=type_map.get(c.name, c.type_hint),
-                format=fmt_map.get(c.name),
-            )
-            for c in exec_result.columns
-        ],
-        rows=exec_result.rows,
-        row_count=exec_result.row_count,
-        execution_time_ms=exec_result.execution_time_ms,
-        timezone=exec_result.timezone,
-        resolved=ResolvedInfoResponse(
-            fact_tables=result.resolved.fact_tables,
-            dimensions=result.resolved.dimensions,
-            measures=result.resolved.measures,
-        ),
-        warnings=result.warnings,
-        sql_valid=result.sql_valid,
-        explain=_build_explain_response(result),
+    effective_locale = locale if locale is not None else get_default_locale()
+    return _build_execute_response(
+        compile_result=result,
+        exec_result=exec_result,
+        model=model,
+        response_format=format,
+        format_values=format_values,
+        locale=effective_locale,
     )

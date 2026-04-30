@@ -146,3 +146,10 @@ class BigQueryDialect(Dialect):
             f"FROM UNNEST(GENERATE_DATE_ARRAY("
             f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """BigQuery uses ``REGEXP_CONTAINS(col, pattern)``."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        result = f"REGEXP_CONTAINS({col_sql}, {pat_sql})"
+        return f"NOT {result}" if negated else result

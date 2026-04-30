@@ -109,3 +109,10 @@ class DuckDBDialect(Dialect):
             f"FROM generate_series({min_date}::timestamp, "
             f"{max_date}::timestamp, INTERVAL '1 {grain}') AS t(d)"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """DuckDB uses ``regexp_matches(col, pattern)``."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        result = f"regexp_matches({col_sql}, {pat_sql})"
+        return f"NOT {result}" if negated else result

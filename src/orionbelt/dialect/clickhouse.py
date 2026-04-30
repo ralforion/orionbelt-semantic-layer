@@ -85,6 +85,20 @@ class ClickHouseDialect(Dialect):
             return FunctionCall(name=func_name, args=[column])
         return column
 
+    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+        """ClickHouse: wrap target type in ``Nullable(...)``.
+
+        ClickHouse base types (Float64, Int64, Decimal, Date, ...) are
+        non-nullable by default and reject ``NULL`` values, e.g. CFL
+        UNION-ALL legs that pad missing measures with ``CAST(NULL AS Float64)``
+        or outer aggregations whose group has no rows in a given leg.
+        Wrapping in ``Nullable`` accepts both NULL and non-NULL values.
+        """
+        resolved_type = self._resolve_type_name(type_name)
+        if not resolved_type.startswith("Nullable("):
+            resolved_type = f"Nullable({resolved_type})"
+        return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
+
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         # ClickHouse uses toType functions for common casts
         type_map: dict[str, str] = {
@@ -222,3 +236,10 @@ class ClickHouseDialect(Dialect):
             f"            THEN {prev_date} END AS spine_date_prev\n"
             f"FROM (SELECT arrayJoin(range(0, toUInt32({n_expr}) + 1)) AS n)"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """ClickHouse uses ``match(col, pattern)``."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        result = f"match({col_sql}, {pat_sql})"
+        return f"NOT {result}" if negated else result

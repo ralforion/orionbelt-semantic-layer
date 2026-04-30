@@ -122,3 +122,10 @@ class PostgresDialect(Dialect):
             f"FROM generate_series({min_date}::timestamp, "
             f"{max_date}::timestamp, INTERVAL '1 {grain}') AS d"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Postgres uses the ``~`` and ``!~`` operators for regex match."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op = "!~" if negated else "~"
+        return f"({col_sql} {op} {pat_sql})"

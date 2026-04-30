@@ -45,12 +45,14 @@ def _parse_settings(raw: dict[str, Any] | None) -> ModelSettings | None:
     default_type = raw.get("defaultNumericDataType")
     default_tz = raw.get("defaultTimezone")
     override_db_tz = raw.get("overrideDatabaseTimezone", False)
-    if not default_type and not default_tz and not override_db_tz:
+    default_dialect = raw.get("defaultDialect")
+    if not default_type and not default_tz and not override_db_tz and not default_dialect:
         return None
     return ModelSettings(
         default_numeric_data_type=default_type,
         default_timezone=default_tz,
         override_database_timezone=override_db_tz,
+        default_dialect=default_dialect,
     )
 
 
@@ -137,15 +139,17 @@ class ReferenceResolver:
                 for fname, fdata in raw_obj.get("columns", {}).items():
                     obj_columns[fname] = DataObjectColumn(
                         label=fname,
-                        code=fdata.get("code", fname),
+                        code=fdata.get("code", fname if not fdata.get("expression") else ""),
                         abstract_type=fdata.get("abstractType", "string"),
                         sql_type=fdata.get("sqlType"),
                         sql_precision=fdata.get("sqlPrecision"),
                         sql_scale=fdata.get("sqlScale"),
                         num_class=fdata.get("numClass"),
                         primary_key=bool(fdata.get("primaryKey", False)),
+                        description=fdata.get("description"),
                         comment=fdata.get("comment"),
                         owner=fdata.get("owner"),
+                        expression=fdata.get("expression"),
                         synonyms=fdata.get("synonyms", []),
                         custom_extensions=_parse_extensions(fdata),
                     )
@@ -263,6 +267,7 @@ class ReferenceResolver:
                     result_type=raw_dim.get("resultType", "string"),
                     time_grain=raw_dim.get("timeGrain"),
                     via=via,
+                    description=raw_dim.get("description"),
                     format=raw_dim.get("format"),
                     owner=raw_dim.get("owner"),
                     synonyms=raw_dim.get("synonyms", []),
@@ -427,6 +432,7 @@ class ReferenceResolver:
                     filter_context=filter_ctx,
                     filters=measure_filters,
                     data_type=raw_meas.get("dataType"),
+                    description=raw_meas.get("description"),
                     format=raw_meas.get("format"),
                     allow_fan_out=raw_meas.get("allowFanOut", False),
                     delimiter=raw_meas.get("delimiter"),

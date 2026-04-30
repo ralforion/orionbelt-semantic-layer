@@ -29,7 +29,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | `/v1/schema`, `/v1/dimensions`, ... | model-discovery | Top-level shortcuts (auto-resolve single session/model) |
 | `/v1/convert` | convert | OSI ↔ OBML format conversion with validation |
 | `/v1/dialects` | dialects | Available SQL dialect info |
-| `/v1/settings` | settings | Public configuration (single-model mode, TTL) |
+| `/v1/settings` | settings | Public configuration: version, single-model mode, TTL, model settings, timezone & dialect resolution |
 | `/health` | health | Health check (no prefix) |
 
 ### Session-Based Workflow

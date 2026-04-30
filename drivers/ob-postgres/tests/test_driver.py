@@ -13,7 +13,6 @@ import pytest
 
 import ob_postgres
 from ob_postgres.connection import Connection
-from ob_postgres.cursor import Cursor
 from ob_postgres.exceptions import NotSupportedError, ProgrammingError
 from ob_postgres.type_codes import DATETIME, NUMBER, STRING
 

@@ -121,3 +121,10 @@ class DatabricksDialect(Dialect):
             f"FROM (SELECT EXPLODE(SEQUENCE("
             f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d)"
         )
+
+    def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
+        """Databricks uses ``RLIKE`` / ``NOT RLIKE``."""
+        col_sql = self.compile_expr(column)
+        pat_sql = self.compile_expr(Literal.string(pattern))
+        op = "NOT RLIKE" if negated else "RLIKE"
+        return f"({col_sql} {op} {pat_sql})"

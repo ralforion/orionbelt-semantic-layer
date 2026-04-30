@@ -139,6 +139,58 @@ class TestMeasures:
         resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/measures/Nonexistent")
         assert resp.status_code == 404
 
+    async def test_measure_description_format_data_type_round_trip(
+        self, client: AsyncClient
+    ) -> None:
+        """description / format / dataType set in OBML must reach the API.
+
+        Regression for two pre-existing bugs:
+        1) ``parser/resolver.py`` Measure() call dropped ``description``.
+        2) ``MeasureDetail`` was missing a ``data_type`` field, so even when
+           the model held it the response never carried it.
+        """
+        annotated = """\
+version: "1.0"
+dataObjects:
+  Orders:
+    code: orders
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+measures:
+  Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    resultType: float
+    aggregation: sum
+    description: 'Total revenue'
+    format: '#,##0.00'
+    dataType: 'decimal(18, 2)'
+"""
+        resp = await client.post("/v1/sessions")
+        sid = resp.json()["session_id"]
+        resp = await client.post(
+            f"/v1/sessions/{sid}/models",
+            json={"model_yaml": annotated},
+        )
+        mid = resp.json()["model_id"]
+
+        # Listing endpoint
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/measures")
+        assert resp.status_code == 200
+        revenue_list = next(m for m in resp.json() if m["name"] == "Revenue")
+        assert revenue_list["description"] == "Total revenue"
+        assert revenue_list["format"] == "#,##0.00"
+        assert revenue_list["dataType"] == "decimal(18, 2)"
+
+        # Single-name endpoint (different code path)
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/measures/Revenue")
+        assert resp.status_code == 200
+        revenue_single = resp.json()
+        assert revenue_single["description"] == "Total revenue"
+        assert revenue_single["format"] == "#,##0.00"
+        assert revenue_single["dataType"] == "decimal(18, 2)"
+
 
 class TestMetrics:
     async def test_list_metrics(

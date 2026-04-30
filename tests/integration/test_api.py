@@ -82,6 +82,20 @@ class TestSettingsEndpoint:
         assert "model_yaml" not in data  # omitted when not in single-model mode
         assert data["session_ttl_seconds"] == 3600  # from fixture
         assert "flight" not in data  # omitted when not enabled
+        # Multi-model mode: model_settings is omitted; timezone + dialect
+        # are always present (no `model` field on either when no model
+        # has been resolved).
+        assert "model_settings" not in data
+        assert "timezone" in data
+        assert "model" not in data["timezone"]
+        assert data["timezone"]["effective"]
+        # Wall-clock fields are populated regardless of model state.
+        assert data["timezone"]["now"]
+        assert data["timezone"]["utc"]
+        assert data["timezone"]["utc"].endswith("Z")
+        assert "dialect" in data
+        assert "model" not in data["dialect"]
+        assert data["dialect"]["effective"]
 
     async def test_settings_single_model(self, single_model_client: AsyncClient) -> None:
         response = await single_model_client.get("/v1/settings")
@@ -91,6 +105,178 @@ class TestSettingsEndpoint:
         assert data["model_yaml"] is not None
         assert "dataObjects" in data["model_yaml"]
         assert data["session_ttl_seconds"] == 3600  # from fixture
+        # Single-model mode adds the model_settings + timezone blocks.
+        # SAMPLE_MODEL_YAML may not declare a `settings:` block — the
+        # block must still appear with default values, and the timezone
+        # chain must always have an `effective` value.
+        assert "model_settings" in data
+        assert "timezone" in data
+        assert data["timezone"]["effective"]
+        assert "dialect" in data
+        assert data["dialect"]["effective"]
+
+    async def test_settings_session_scope_unique_model(self, client: AsyncClient) -> None:
+        """In multi-model mode, ``?session_id=...`` resolves the model when
+        the session holds exactly one. Returned model_settings reflect that
+        model's `settings:` block."""
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        yaml_text = (
+            "version: 1.0\n"
+            "settings:\n"
+            "  defaultDialect: postgres\n"
+            "  defaultTimezone: America/New_York\n"
+            "dataObjects:\n"
+            "  Orders: {code: ORDERS, columns: {Id: {code: ID, abstractType: string}}}\n"
+            "dimensions:\n"
+            "  Order Id: {dataObject: Orders, column: Id, resultType: string}\n"
+            "measures:\n"
+            "  Order Count: {columns: [{dataObject: Orders, column: Id}],"
+            " resultType: int, aggregation: count}\n"
+        )
+        await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": yaml_text})
+        # Without scope: no auto-resolve in this client (no session pre-populated).
+        # With ?session_id=...: model blocks appear.
+        r = await client.get(f"/v1/settings?session_id={sid}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["model_settings"]["defaultDialect"] == "postgres"
+        assert data["model_settings"]["defaultTimezone"] == "America/New_York"
+        assert data["timezone"]["model"] == "America/New_York"
+        assert data["dialect"]["model"] == "postgres"
+        assert data["dialect"]["effective"] == "postgres"
+
+    async def test_settings_explicit_model_id(self, client: AsyncClient) -> None:
+        """``?session_id=...&model_id=...`` pins the response to one model."""
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        yaml_a = (
+            "version: 1.0\n"
+            "settings: {defaultDialect: snowflake}\n"
+            "dataObjects:\n"
+            "  Orders: {code: ORDERS, columns: {Id: {code: ID, abstractType: string}}}\n"
+            "dimensions:\n"
+            "  Order Id: {dataObject: Orders, column: Id, resultType: string}\n"
+            "measures:\n"
+            "  Order Count: {columns: [{dataObject: Orders, column: Id}],"
+            " resultType: int, aggregation: count}\n"
+        )
+        yaml_b = (
+            "version: 1.0\n"
+            "settings: {defaultDialect: bigquery}\n"
+            "dataObjects:\n"
+            "  Orders: {code: ORDERS, columns: {Id: {code: ID, abstractType: string}}}\n"
+            "dimensions:\n"
+            "  Order Id: {dataObject: Orders, column: Id, resultType: string}\n"
+            "measures:\n"
+            "  Order Count: {columns: [{dataObject: Orders, column: Id}],"
+            " resultType: int, aggregation: count}\n"
+        )
+        mid_a = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": yaml_a})
+        ).json()["model_id"]
+        mid_b = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": yaml_b})
+        ).json()["model_id"]
+
+        # Session has 2 models — session_id alone omits the model blocks.
+        r = await client.get(f"/v1/settings?session_id={sid}")
+        assert r.status_code == 200
+        data = r.json()
+        # In multi-model mode (no preload) the model blocks are absent on
+        # ambiguity. dialect.model is also absent.
+        assert "model" not in data.get("dialect", {})
+
+        # Pinning model_id resolves unambiguously.
+        r = await client.get(f"/v1/settings?session_id={sid}&model_id={mid_a}")
+        assert r.json()["dialect"]["model"] == "snowflake"
+        r = await client.get(f"/v1/settings?session_id={sid}&model_id={mid_b}")
+        assert r.json()["dialect"]["model"] == "bigquery"
+
+    async def test_settings_unknown_session(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/settings?session_id=not-a-real-session-id")
+        assert r.status_code == 404
+
+    async def test_settings_unknown_model(self, client: AsyncClient) -> None:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        r = await client.get(f"/v1/settings?session_id={sid}&model_id=missing")
+        assert r.status_code == 404
+
+    async def test_settings_model_id_without_session_id(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/settings?model_id=any")
+        assert r.status_code == 400
+
+    async def test_settings_single_model_with_settings_block(self, tmp_path) -> None:
+        """When the OBML model declares `settings:`, all four sub-fields
+        plus the timezone/dialect chains are populated and reflect the
+        model's choices."""
+        from orionbelt.api.app import _read_model_file, create_app
+
+        yaml_text = (
+            "version: 1.0\n"
+            "settings:\n"
+            "  defaultTimezone: Europe/Berlin\n"
+            "  defaultDialect: snowflake\n"
+            "  overrideDatabaseTimezone: true\n"
+            "  defaultNumericDataType: decimal(38, 4)\n"
+            "dataObjects:\n"
+            "  Orders:\n"
+            "    code: ORDERS\n"
+            "    columns:\n"
+            "      Id: {code: ID, abstractType: string}\n"
+            "dimensions:\n"
+            "  Order Id: {dataObject: Orders, column: Id, resultType: string}\n"
+            "measures:\n"
+            "  Order Count:\n"
+            "    columns: [{dataObject: Orders, column: Id}]\n"
+            "    resultType: int\n"
+            "    aggregation: count\n"
+        )
+        model_file = tmp_path / "model.yaml"
+        model_file.write_text(yaml_text)
+
+        settings = Settings(
+            session_ttl_seconds=3600,
+            session_cleanup_interval=9999,
+            model_file=str(model_file),
+        )
+        app = create_app(settings=settings)
+        preload = _read_model_file(str(model_file))
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, preload_model_yaml=preload, db_vendor="duckdb")
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                response = await c.get("/v1/settings")
+            assert response.status_code == 200
+            data = response.json()
+
+            # ModelSettingsInfo uses OBML-style camelCase keys so the block
+            # mirrors the YAML the user wrote.
+            ms = data["model_settings"]
+            assert ms["defaultTimezone"] == "Europe/Berlin"
+            assert ms["defaultDialect"] == "snowflake"
+            assert ms["overrideDatabaseTimezone"] is True
+            assert ms["defaultNumericDataType"] == "decimal(38, 4)"
+
+            tz = data["timezone"]
+            assert tz["model"] == "Europe/Berlin"
+            assert tz["override_database_timezone"] is True
+            assert tz["effective"] == "Europe/Berlin"
+            # `now` is in the effective TZ; `utc` is UTC.
+            # Berlin is UTC+1 (CET) or UTC+2 (CEST) — either way not 'Z'.
+            assert tz["utc"].endswith("Z")
+            assert not tz["now"].endswith("Z")
+            assert "+01:00" in tz["now"] or "+02:00" in tz["now"]
+
+            dl = data["dialect"]
+            assert dl["model"] == "snowflake"
+            assert dl["env"] == "duckdb"
+            # When request omits `dialect`, model.defaultDialect wins.
+            assert dl["effective"] == "snowflake"
+        finally:
+            reset_session_manager()
 
     async def test_settings_flight_enabled(self) -> None:
         """When flight_info is passed, GET /settings includes the flight block."""

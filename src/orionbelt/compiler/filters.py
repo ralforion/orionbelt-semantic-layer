@@ -9,9 +9,11 @@ from orionbelt.ast.nodes import (
     BinaryOp,
     ColumnRef,
     Expr,
+    FunctionCall,
     InList,
     IsNull,
     Literal,
+    RegexMatch,
     RelativeDateRange,
     UnaryOp,
 )
@@ -117,6 +119,58 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
                     negated=True,
                 )
             return BinaryOp(left=col, op="<>", right=Literal(value=val))
+        case FilterOperator.REGEX | FilterOperator.NOT_REGEX:
+            if not isinstance(val, str):
+                errors.append(
+                    SemanticError(
+                        code="INVALID_FILTER_VALUE",
+                        message=f"'{op}' requires a string pattern, got {type(val).__name__}",
+                        path="filters",
+                    )
+                )
+                return None
+            return RegexMatch(column=col, pattern=val, negated=(op == FilterOperator.NOT_REGEX))
+        case FilterOperator.BLANK:
+            # NULL OR TRIM(col) = ''
+            return BinaryOp(
+                left=IsNull(expr=col),
+                op="OR",
+                right=BinaryOp(
+                    left=FunctionCall(name="TRIM", args=[col]),
+                    op="=",
+                    right=Literal.string(""),
+                ),
+            )
+        case FilterOperator.NOT_BLANK:
+            return BinaryOp(
+                left=IsNull(expr=col, negated=True),
+                op="AND",
+                right=BinaryOp(
+                    left=FunctionCall(name="TRIM", args=[col]),
+                    op="<>",
+                    right=Literal.string(""),
+                ),
+            )
+        case FilterOperator.LENGTH_EQ | FilterOperator.LENGTH_GT | FilterOperator.LENGTH_LT:
+            if not isinstance(val, int) or isinstance(val, bool):
+                errors.append(
+                    SemanticError(
+                        code="INVALID_FILTER_VALUE",
+                        message=f"'{op}' requires an integer length, got {type(val).__name__}",
+                        path="filters",
+                    )
+                )
+                return None
+            cmp = {
+                FilterOperator.LENGTH_EQ: "=",
+                FilterOperator.LENGTH_GT: ">",
+                FilterOperator.LENGTH_LT: "<",
+            }[op]
+            return BinaryOp(
+                left=FunctionCall(name="LENGTH", args=[col]),
+                op=cmp,
+                right=Literal.number(val),
+            )
         case FilterOperator.RELATIVE:
             relative = parse_relative_filter(val, errors, field=qf.field)
             if relative is None:

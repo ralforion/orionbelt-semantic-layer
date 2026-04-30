@@ -116,6 +116,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             total=m.total,
             description=m.description,
             format=m.format,
+            data_type=m.data_type,
             owner=m.owner,
             synonyms=m.synonyms,
         )
@@ -135,6 +136,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
                 component_measures=component_names,
                 description=met.description,
                 format=met.format,
+                data_type=met.data_type,
                 owner=met.owner,
                 synonyms=met.synonyms,
             )
@@ -417,6 +419,7 @@ async def get_measure(
         total=m.total,
         description=m.description,
         format=m.format,
+        data_type=m.data_type,
         owner=m.owner,
         synonyms=m.synonyms,
     )
@@ -461,7 +464,9 @@ async def get_metric(
         measure=met.measure,
         time_dimension=met.time_dimension,
         component_measures=component_names,
+        description=met.description,
         format=met.format,
+        data_type=met.data_type,
         owner=met.owner,
         synonyms=met.synonyms,
     )

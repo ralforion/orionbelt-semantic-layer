@@ -35,7 +35,14 @@
         "is_not_null",
         "starts_with",
         "ends_with",
-        "relative"
+        "relative",
+        "regex",
+        "notregex",
+        "blank",
+        "notblank",
+        "length_eq",
+        "length_gt",
+        "length_lt"
       ]
     },
     "sortDirection": {
@@ -91,11 +98,11 @@
     },
     "queryOrderBy": {
       "type": "object",
-      "description": "Order-by clause. Field must reference a dimension or measure in the query's SELECT, or a numeric position (1-based).",
+      "description": "Order-by clause. In aggregate mode the field must reference a dimension or measure in the query's SELECT; in raw mode it must reference a 'DataObject.Column' alias from select.fields. Numeric positions (1-based) are accepted in both modes.",
       "properties": {
         "field": {
           "type": "string",
-          "description": "Dimension or measure name from the query's SELECT, or a numeric position (e.g. \"1\")"
+          "description": "Aggregate mode: dimension/measure name. Raw mode: 'DataObject.Column' alias from select.fields. Either: numeric position (e.g. \"1\")."
         },
         "direction": {
           "$ref": "#/definitions/sortDirection",
@@ -107,11 +114,11 @@
     },
     "querySelect": {
       "type": "object",
-      "description": "The SELECT part: dimensions and measures to retrieve",
+      "description": "The SELECT part. Two mutually exclusive modes: aggregate mode uses 'dimensions' + 'measures' (GROUP BY + aggregates); raw mode uses 'fields' for un-aggregated row-level projection of physical columns. 'distinct' is only valid in raw mode and 'having' is rejected in raw mode.",
       "properties": {
         "dimensions": {
           "type": "array",
-          "description": "List of dimension names (string) or coalesce groups. Use 'name:grain' notation for time grain (e.g. 'Order Date:month').",
+          "description": "Aggregate mode. List of dimension names (string) or coalesce groups. Use 'name:grain' notation for time grain (e.g. 'Order Date:month'). Mutually exclusive with 'fields'.",
           "items": {
             "oneOf": [
               { "type": "string" },
@@ -121,10 +128,23 @@
         },
         "measures": {
           "type": "array",
-          "description": "List of measure or metric names",
+          "description": "Aggregate mode. List of measure or metric names. Mutually exclusive with 'fields'.",
           "items": {
             "type": "string"
           }
+        },
+        "fields": {
+          "type": "array",
+          "description": "Raw mode. List of qualified physical-column references in 'DataObject.Column' form. Returns un-aggregated rows; no GROUP BY is emitted. Mutually exclusive with 'dimensions', 'measures', and 'having'.",
+          "items": {
+            "type": "string",
+            "pattern": "^[^.]+\\.[^.]+$"
+          }
+        },
+        "distinct": {
+          "type": "boolean",
+          "description": "Raw mode only. Emit SELECT DISTINCT to deduplicate rows. Ignored (and rejected) in aggregate mode.",
+          "default": false
         }
       },
       "additionalProperties": false

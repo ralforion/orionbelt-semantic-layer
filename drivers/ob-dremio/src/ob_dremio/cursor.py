@@ -151,7 +151,7 @@ class Cursor:
         self._check_open()
         if is_obml(operation):
             raise NotSupportedError("executemany() is not supported for OBML queries.")
-        for params in seq_of_parameters:
+        for _params in seq_of_parameters:
             self._execute_sql(operation)
         self._description = None
         self._rows = []
@@ -202,7 +202,7 @@ class Cursor:
 
     # -- PEP 249 no-ops -------------------------------------------------------
 
-    def setinputsizes(self, sizes: Any) -> None:
+    def setinputsizes(self, _sizes: Any) -> None:
         """No-op — required by PEP 249."""
 
     def setoutputsize(self, size: int, column: int | None = None) -> None:

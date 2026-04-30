@@ -6,12 +6,9 @@ roundtrip via custom_extensions preservation.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 _CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
 if _CONVERTER_DIR not in sys.path:
@@ -27,6 +24,7 @@ _OBML_FULL: dict[str, Any] = {
         "defaultNumericDataType": "NUMERIC(18,4)",
         "defaultTimezone": "UTC",
         "overrideDatabaseTimezone": True,
+        "defaultDialect": "snowflake",
     },
     "dataObjects": {
         "Orders": {
@@ -103,6 +101,7 @@ class TestModelSettings:
         assert settings["defaultNumericDataType"] == "NUMERIC(18,4)"
         assert settings["defaultTimezone"] == "UTC"
         assert settings["overrideDatabaseTimezone"] is True
+        assert settings["defaultDialect"] == "snowflake"
 
     def test_no_settings_no_key(self):
         obml = {**_OBML_FULL, "settings": None}

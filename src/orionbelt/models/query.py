@@ -6,7 +6,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orionbelt.models.semantic import FilterLogic, TimeGrain
 
@@ -42,6 +42,16 @@ class FilterOperator(StrEnum):
     STARTS_WITH = "starts_with"
     ENDS_WITH = "ends_with"
     RELATIVE = "relative"
+    # Regex match (per-dialect implementation; pattern is the value).
+    REGEX = "regex"
+    NOT_REGEX = "notregex"
+    # Blank check: NULL or empty after trimming whitespace.
+    BLANK = "blank"
+    NOT_BLANK = "notblank"
+    # String length comparisons; value is an int.
+    LENGTH_EQ = "length_eq"
+    LENGTH_GT = "length_gt"
+    LENGTH_LT = "length_lt"
 
 
 class SortDirection(StrEnum):
@@ -147,10 +157,27 @@ class CoalesceDimension(BaseModel):
 
 
 class QuerySelect(BaseModel):
-    """The SELECT part of a query: dimensions + measures."""
+    """The SELECT part of a query.
+
+    Two mutually exclusive modes:
+
+    * **Aggregate mode** (default): ``dimensions`` + ``measures`` produce a
+      grouped, aggregated result (GROUP BY dimensions, aggregate measures).
+    * **Raw mode**: ``fields`` returns un-aggregated rows from one or more
+      data objects joined per the model. Set ``distinct: true`` for
+      ``SELECT DISTINCT``. Raw mode rejects ``dimensions``, ``measures``,
+      ``metrics``, and ``HAVING``.
+    """
 
     dimensions: list[str | CoalesceDimension] = []
     measures: list[str] = []
+    fields: list[str] = []
+    distinct: bool = False
+
+    @property
+    def is_raw(self) -> bool:
+        """True when this select is in raw mode (fields-based projection)."""
+        return bool(self.fields)
 
 
 class UsePathName(BaseModel):
@@ -176,3 +203,25 @@ class QueryObject(BaseModel):
     dimensions_exclude: bool = Field(False, alias="dimensionsExclude")
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_raw_mode_exclusivity(self) -> QueryObject:
+        """Raw mode (``select.fields``) is mutually exclusive with aggregate
+        features. Catch misuse early so the resolver can assume a clean shape.
+        """
+        if self.select.is_raw:
+            if self.select.dimensions:
+                raise ValueError(
+                    "select.fields (raw mode) cannot be combined with select.dimensions"
+                )
+            if self.select.measures:
+                raise ValueError("select.fields (raw mode) cannot be combined with select.measures")
+            if self.having:
+                raise ValueError("select.fields (raw mode) cannot be combined with having")
+            if self.dimensions_exclude:
+                raise ValueError(
+                    "select.fields (raw mode) cannot be combined with dimensionsExclude"
+                )
+        elif self.select.distinct:
+            raise ValueError("select.distinct is only valid in raw mode (with select.fields)")
+        return self

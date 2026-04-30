@@ -27,7 +27,12 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
-from orionbelt.compiler.resolution import ResolvedDimension, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolvedDimension,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.compiler.star import CflLegInfo, QueryPlan
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect
@@ -224,15 +229,32 @@ class CFLPlanner:
         measure: ResolvedMeasure,
         field_idx: int,
         model: SemanticModel,
+        dialect: Dialect | None = None,
     ) -> str | None:
-        """Look up the abstract type for a multi-field measure's *field_idx*-th column.
+        """Resolve the SQL type for NULL padding in CFL UNION ALL legs.
 
-        Falls back to the measure's ``result_type`` if the column cannot be found.
+        For single- or zero-column measures, prefers the measure's resolved
+        ``data_type`` rendered through *dialect* so the NULL padding type
+        aligns with what the outer aggregation will CAST to. This avoids
+        cross-family widening in dialects with strict numeric typing — most
+        notably ClickHouse, where mixing ``Decimal`` (the source column's
+        actual database type) and ``Float64`` (its declared OBML
+        ``abstractType``) inside a UNION ALL produces a ``Variant`` that
+        SUM cannot consume (``ILLEGAL_TYPE_OF_ARGUMENT``).
+
+        For multi-field measures (e.g. ``COUNT(a, b)``), falls back to the
+        per-column ``abstract_type`` so each NULL slot matches its
+        corresponding column's underlying type.
         """
         model_measure = model.measures.get(measure.name)
         if not model_measure:
             return None
-        # Try to find the column's abstract_type from the data object
+        # Single-/zero-column measures: align NULL padding with outer CAST target
+        if dialect is not None and len(model_measure.columns) <= 1:
+            resolved = resolve_measure_data_type(model_measure, model.settings)
+            if resolved is not None:
+                return dialect.render_obml_type(resolved)
+        # Multi-field measures: per-column abstract_type
         if field_idx < len(model_measure.columns):
             ref = model_measure.columns[field_idx]
             obj = model.data_objects.get(ref.view) if ref.view else None
@@ -261,15 +283,22 @@ class CFLPlanner:
         self,
         metric: ResolvedMeasure,
         resolved: ResolvedQuery,
+        cte_name: str,
     ) -> Expr:
         """Build the outer query expression for a metric.
 
         Walks the metric's AST tree and replaces each ColumnRef(measure_name)
-        with ``AGG("measure_name")`` using the component measure's aggregation.
+        with ``AGG("cte_name"."measure_name")`` using the component measure's
+        aggregation. The CTE qualification matters: when the outer SELECT
+        also aliases its column ``measure_name`` to ``AGG(...)``, ClickHouse
+        resolves a bare ``"measure_name"`` to the sibling alias (the
+        aggregate itself) and rejects the resulting nested aggregate as
+        ``ILLEGAL_AGGREGATION``. Qualifying with the CTE name forces the
+        inner ref to resolve to the raw CTE column.
         """
-        return self._substitute_outer_refs(metric.expression, resolved)
+        return self._substitute_outer_refs(metric.expression, resolved, cte_name)
 
-    def _substitute_outer_refs(self, expr: Expr, resolved: ResolvedQuery) -> Expr:
+    def _substitute_outer_refs(self, expr: Expr, resolved: ResolvedQuery, cte_name: str) -> Expr:
         """Recursively substitute measure refs with outer aggregations."""
         if isinstance(expr, ColumnRef) and expr.table is None:
             comp = resolved.metric_components.get(expr.name)
@@ -283,12 +312,12 @@ class CFLPlanner:
                     distinct = True
                 return FunctionCall(
                     name=agg,
-                    args=[ColumnRef(name=comp.name)],
+                    args=[ColumnRef(name=comp.name, table=cte_name)],
                     distinct=distinct,
                 )
         if isinstance(expr, BinaryOp):
-            new_left = self._substitute_outer_refs(expr.left, resolved)
-            new_right = self._substitute_outer_refs(expr.right, resolved)
+            new_left = self._substitute_outer_refs(expr.left, resolved, cte_name)
+            new_right = self._substitute_outer_refs(expr.right, resolved, cte_name)
             if new_left is not expr.left or new_right is not expr.right:
                 return BinaryOp(left=new_left, op=expr.op, right=new_right)
         return expr
@@ -312,18 +341,19 @@ class CFLPlanner:
                 CFLPlanner._collect_table_refs(arg, tables)
 
     @staticmethod
-    def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery) -> Expr:
+    def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
         """Remap ORDER BY expressions to use CTE aliases for the outer query.
 
         In CFL, the outer query selects from the composite CTE — original
         table-qualified refs are out of scope.  Remap dimension and measure
-        expressions to their CTE alias names.
+        expressions to their CTE alias names. Matches by structural equality
+        with each dimension's column expression so computed columns (where
+        the source AST is an inlined expression, not a bare ColumnRef) also
+        remap correctly.
         """
-        # Dimension: ColumnRef(name=source_col, table=obj) → ColumnRef(name=dim.name)
-        if isinstance(expr, ColumnRef) and expr.table is not None:
-            for dim in resolved.dimensions:
-                if expr.name == dim.source_column and expr.table == dim.object_name:
-                    return ColumnRef(name=dim.name)
+        for dim in resolved.dimensions:
+            if expr == make_column_expr(model, dim.object_name, dim.column_name):
+                return ColumnRef(name=dim.name)
         # Measure: match by identity (same expression object)
         for meas in resolved.measures:
             if expr is meas.expression:
@@ -337,11 +367,20 @@ class CFLPlanner:
         n_fields: int,
         agg: str,
         distinct: bool,
+        cte_name: str,
     ) -> Expr:
-        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query."""
+        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query.
+
+        Each field reference is qualified with *cte_name* so it resolves to
+        the raw CTE column rather than any sibling SELECT alias (see
+        ``_substitute_outer_refs`` for the alias-shadowing rationale).
+        """
         parts: list[Expr] = [
             Cast(
-                expr=ColumnRef(name=self._multi_field_cte_alias(measure_name, i)),
+                expr=ColumnRef(
+                    name=self._multi_field_cte_alias(measure_name, i),
+                    table=cte_name,
+                ),
                 type_name="VARCHAR",
             )
             for i in range(n_fields)
@@ -415,7 +454,7 @@ class CFLPlanner:
             for dim in resolved.dimensions:
                 via_ok = dim.via is None or dim.via in reachable
                 if dim.object_name in reachable and via_ok:
-                    col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+                    col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
                     if dim.grain and dialect:
                         col = dialect.render_time_grain(col, dim.grain)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
@@ -448,7 +487,7 @@ class CFLPlanner:
                     leg_builder.select(AliasedExpr(expr=self._unwrap_aggregation(m), alias=m.name))
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
-                    null_type_name = self._resolve_null_type_for_field(m, 0, model)
+                    null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
                     if null_type_name is None and model_measure:
                         null_type_name = model_measure.result_type.value
                     null_expr = (
@@ -527,6 +566,13 @@ class CFLPlanner:
         # Create the UNION ALL CTE
         cte_name = "composite_01"
         union_cte = CTE(name=cte_name, query=UnionAll(queries=union_legs))
+        # All ColumnRefs that resolve to raw CTE columns inside outer-query
+        # aggregate functions are qualified with *cte_name*. ClickHouse otherwise
+        # resolves bare identifiers to sibling SELECT aliases first — when those
+        # aliases are themselves aggregates (the case for measures and metrics
+        # in the outer SELECT), it rejects the resulting nested aggregate as
+        # ``ILLEGAL_AGGREGATION``. The qualification is harmless on dialects
+        # that resolve column-first.
 
         # Build outer query: aggregate over the composite CTE
         outer_builder = QueryBuilder()
@@ -582,11 +628,13 @@ class CFLPlanner:
                 # Multi-field: concat CTE columns in outer query
                 assert isinstance(m.expression, FunctionCall)
                 n_fields = len(m.expression.args)
-                agg_expr: Expr = self._build_outer_concat_count(m.name, n_fields, agg, distinct)
+                agg_expr: Expr = self._build_outer_concat_count(
+                    m.name, n_fields, agg, distinct, cte_name
+                )
             else:
                 agg_expr = FunctionCall(
                     name=agg,
-                    args=[ColumnRef(name=m.name)],
+                    args=[ColumnRef(name=m.name, table=cte_name)],
                     distinct=distinct,
                 )
             # Apply CAST for resolved data_type
@@ -602,7 +650,7 @@ class CFLPlanner:
         # Then, add metric expressions that combine component measures
         for m in resolved.measures:
             if m.component_measures and m.name not in seen_measure_names:
-                metric_expr: Expr = self._build_outer_metric_expr(m, resolved)
+                metric_expr: Expr = self._build_outer_metric_expr(m, resolved, cte_name)
                 metric = model.metrics.get(m.name)
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)
@@ -640,7 +688,7 @@ class CFLPlanner:
 
         # ORDER BY and LIMIT — remap to CTE aliases
         for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved), desc=desc)
+            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:
@@ -736,7 +784,7 @@ class CFLPlanner:
         outer_builder.from_("non_combinations", alias="non_combinations")
 
         for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved), desc=desc)
+            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:
@@ -820,7 +868,7 @@ class CFLPlanner:
 
         builder = QueryBuilder()
         for dim in dims:
-            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
             builder.group_by(col)
 
@@ -875,7 +923,7 @@ class CFLPlanner:
 
         builder = QueryBuilder()
         for dim in resolved.dimensions:
-            col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
             builder.group_by(col)
 

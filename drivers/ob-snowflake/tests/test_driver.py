@@ -13,7 +13,6 @@ import pytest
 
 import ob_snowflake
 from ob_snowflake.connection import Connection
-from ob_snowflake.cursor import Cursor
 from ob_snowflake.exceptions import NotSupportedError, ProgrammingError
 from ob_snowflake.type_codes import DATETIME, NUMBER, STRING
 

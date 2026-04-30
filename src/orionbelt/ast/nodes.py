@@ -153,6 +153,20 @@ class Between:
 
 
 @dataclass(frozen=True)
+class RegexMatch:
+    """Regex match predicate. Each dialect renders its native syntax.
+
+    Postgres uses the ``~`` / ``!~`` operators; Snowflake / BigQuery /
+    Dremio / DuckDB use ``REGEXP_LIKE`` (or ``REGEXP_CONTAINS``);
+    MySQL / Databricks use ``REGEXP`` / ``RLIKE``; ClickHouse uses ``match``.
+    """
+
+    column: Expr
+    pattern: str
+    negated: bool = False
+
+
+@dataclass(frozen=True)
 class RelativeDateRange:
     """Relative date range predicate on a column (half-open interval)."""
 
@@ -200,6 +214,7 @@ Expr = (
     | SubqueryExpr
     | RawSQL
     | Between
+    | RegexMatch
     | RelativeDateRange
     | WindowFunction
 )
@@ -254,6 +269,7 @@ class Select:
     limit: int | None = None
     offset: int | None = None
     ctes: list[CTE] = field(default_factory=list)
+    distinct: bool = False
 
 
 @dataclass(frozen=True)

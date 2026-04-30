@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     api_server_port: int = 8000
     port: int | None = None  # Cloud Run injects PORT; takes precedence over api_server_port
 
+    # Public-doc surfaces. Default True preserves current public-demo behaviour.
+    # Set EXPOSE_API_DOCS=false on non-demo deployments to disable Swagger UI,
+    # ReDoc, and the OpenAPI schema endpoint. EXPOSE_OPENAPI_SCHEMA can be
+    # toggled independently to keep /openapi.json live (e.g. for client codegen)
+    # while hiding the human-facing /docs and /redoc pages.
+    expose_api_docs: bool = True
+    expose_openapi_schema: bool = True
+
     @property
     def effective_port(self) -> int:
         """Return the port to listen on (Cloud Run PORT takes precedence)."""
@@ -55,6 +63,11 @@ class Settings(BaseSettings):
     query_execute: bool = False  # enable POST /v1/query/execute
     query_default_limit: int = 1000  # max rows when query has no LIMIT
     db_pool_size: int = 5  # connection pool size per dialect
+
+    # Default locale for /v1/query/execute?format_values=true (and TSV output).
+    # Used when the request omits the ``locale`` query param. BCP-47 tag
+    # (e.g. "de", "en-US"). Empty → en-style separators ("," / ".").
+    default_locale: str = ""
 
     # Arrow Flight SQL server (requires ob-flight-extension)
     flight_enabled: bool = False  # start gRPC Flight server on FLIGHT_PORT (implies query_execute)
