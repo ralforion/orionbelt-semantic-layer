@@ -26,6 +26,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Install IANA tzdata so Python's zoneinfo can resolve names like
+# Europe/Berlin. python:3.12-slim has no /usr/share/zoneinfo, and without
+# it ZoneInfo("Europe/Berlin") raises ZoneInfoNotFoundError — the timezone
+# resolver then silently falls back to UTC. Belt-and-suspenders alongside
+# the tzdata Python dep.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 RUN groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
 
