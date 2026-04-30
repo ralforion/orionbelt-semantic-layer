@@ -2,6 +2,12 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.2] - 2026-04-30
+
+### Fixed
+
+- **Settings tab in the Gradio UI showed stale `effective` values** for `timezone` and `dialect` when the user had a model YAML pasted/loaded but had not yet compiled. The UI's `_fetch_settings_yaml` overlay only populated `tz["effective"]` and `dl["effective"]` when the API response was *missing* those keys — but the API always returns them (with no-model fallbacks: `UTC` / `DB_VENDOR`). The result: the overlay correctly added `model_settings` and `timezone.model` from the local YAML, but `effective` stayed at the API's no-model fallback. Now the overlay detects "API has no loaded model" by checking whether `model_settings` was returned by the API, and when absent, fully overlays the local YAML's TZ and dialect — including `effective` — so the Settings tab mirrors what compiling will produce.
+
 ## [2.1.1] - 2026-04-30
 
 ### Fixed
