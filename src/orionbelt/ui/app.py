@@ -2844,30 +2844,44 @@ def create_blocks(
                         local_settings = {}
 
                     if local_settings:
-                        # Only overwrite fields the API didn't supply, so a
-                        # truly compiled session keeps the server's view.
+                        # If the API didn't return ``model_settings`` the
+                        # server has no loaded model — the user has typed
+                        # the YAML but not compiled yet, and the API's
+                        # ``timezone.effective`` / ``dialect.effective``
+                        # are no-model fallbacks (UTC / DB_VENDOR). In
+                        # that case the local YAML is the source of
+                        # truth: overlay its values onto the response,
+                        # including ``effective``, so the Settings tab
+                        # mirrors what compiling will produce.
+                        #
+                        # When the API DOES return ``model_settings``
+                        # (compiled session), only fill in the ``model``
+                        # fields if the API didn't supply them — the
+                        # server is authoritative for everything else.
+                        api_has_model = bool(data.get("model_settings"))
+
                         existing_ms = data.get("model_settings") or {}
                         merged_ms = {**local_settings, **existing_ms}
                         data["model_settings"] = merged_ms
 
                         tz = data.get("timezone") or {}
-                        if "model" not in tz and local_settings.get("defaultTimezone"):
-                            tz["model"] = local_settings["defaultTimezone"]
+                        local_tz = local_settings.get("defaultTimezone")
+                        if local_tz and (not api_has_model or "model" not in tz):
+                            tz["model"] = local_tz
                         if "override_database_timezone" not in tz:
                             tz["override_database_timezone"] = bool(
                                 local_settings.get("overrideDatabaseTimezone", False)
                             )
-                        if "effective" not in tz:
-                            tz["effective"] = (
-                                local_settings.get("defaultTimezone") or tz.get("host") or "UTC"
-                            )
+                        if not api_has_model and local_tz:
+                            tz["effective"] = local_tz
                         data["timezone"] = tz
 
                         dl = data.get("dialect") or {}
-                        if "model" not in dl and local_settings.get("defaultDialect"):
-                            dl["model"] = local_settings["defaultDialect"]
-                        if dl.get("model") and "effective" not in dl:
-                            dl["effective"] = dl["model"]
+                        local_dl = local_settings.get("defaultDialect")
+                        if local_dl and (not api_has_model or "model" not in dl):
+                            dl["model"] = local_dl
+                        if not api_has_model and local_dl:
+                            dl["effective"] = local_dl
                         data["dialect"] = dl
 
                     return yaml.dump(data, default_flow_style=False, sort_keys=False)
