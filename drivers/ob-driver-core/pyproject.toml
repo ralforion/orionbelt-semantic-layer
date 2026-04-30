@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-driver-core"
-version = "0.1.0"
+version = "2.1.0"
 description = "Shared foundation for OrionBelt DB-API 2.0 drivers (PEP 249 types, OBML detection, compilation bridge)"
 license = { text = "BSL-1.1" }
 readme = "README.md"

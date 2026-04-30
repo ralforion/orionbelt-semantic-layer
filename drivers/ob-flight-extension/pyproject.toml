@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-flight-extension"
-version = "0.1.0"
+version = "2.1.0"
 description = "Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)"
 license = { text = "BSL-1.1" }
 readme = "README.md"
