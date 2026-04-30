@@ -2,10 +2,15 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
-## [2.1.0] - 2026-04-28
+## [2.1.0] - 2026-04-30
 
 ### Added
 
+- **Column-level computed columns on `DataObjectColumn`.** A column with `expression:` instead of `code:` defines a computed column inlined wherever the column is referenced. Single-brace `{Column}` placeholders refer to *sibling columns of the same data object*. Distinct from measure-level expressions (which use `{[DataObject].[Column]}` and can cross data objects). Example: `Year-Month: expression: "({Year} * 100 + {Month of Year})"`. Constraints: mutually exclusive with `code`, no recursive resolution. ORDER BY on a computed column is correctly emitted as the inlined expression.
+- **Regex, blank, and string-length filter operators** in `QueryFilter`. Per-dialect regex SQL: Postgres `~`/`!~`, DuckDB `regexp_matches`, ClickHouse `match`, BigQuery `REGEXP_CONTAINS`, MySQL `REGEXP`, Databricks `RLIKE`, Snowflake/Dremio `REGEXP_LIKE`. New operators:
+  - `regex` / `notregex` — match against a regular-expression pattern (string value)
+  - `blank` / `notblank` — `(col IS NULL OR TRIM(col) = '')` and its inverse, for whitespace-aware empty checks on free-text columns
+  - `length_eq` / `length_gt` / `length_lt` — `LENGTH(col) {= | > | <} N` (integer value), for fixed-width / padded-code filtering
 - **`settings.defaultDialect` on the OBML model.** Optional top-level `settings.defaultDialect` lets a model pin its preferred SQL dialect so callers can omit `dialect` on every `/v1/query/sql` and `/v1/query/execute` request. Resolution chain at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. Validated against the 8 registered dialects at parse time. The session and shortcut endpoints both honor it; `dialect` on the request body is now `Optional`.
 - **`/v1/query/execute` formatted output.** Four new query parameters on both the session-scoped and shortcut execute endpoints:
   - `format=tsv` returns `text/tab-separated-values` with RFC 4180-style quoting for cells containing tab/newline/CR/double-quote. Implies `format_values=true`.
@@ -28,6 +33,20 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 ### Changed
 
 - `Select` AST node gains a `distinct: bool` field; codegen emits `SELECT DISTINCT` when set. `QueryBuilder.distinct()` and a widened `with_cte()` signature support raw CFL composite construction.
+
+### Fixed
+
+- **CFL outer-aggregate ColumnRef alias shadowing on ClickHouse** (`ILLEGAL_AGGREGATION`). When a multi-fact CFL query mixed a measure with a metric referencing the same measure (e.g. `SUM(net_profit)` plus `SUM(net_profit)/SUM(sales) AS margin`), the metric's bare `SUM("Net Profit")` resolved to the sibling SELECT alias — itself an aggregate — and ClickHouse rejected the resulting nested aggregate. The planner now qualifies every ColumnRef inside outer-query aggregate functions with the composite CTE alias (`composite_01`), forcing resolution to the raw CTE column. Universally safe across all 7 dialects.
+- **CFL NULL-padding dialect threading on ClickHouse** (`ILLEGAL_TYPE_OF_ARGUMENT — Variant(Decimal, Float64)`). The single-/zero-column path in `_resolve_null_type_for_field` was missing the `dialect` argument, so it bypassed `resolve_measure_data_type` and fell back to `result_type.value` (`'float'`) — emitting `CAST(NULL AS Nullable(Float64))` while the actual ClickHouse columns are `Decimal(7, 2)`. The `UNION ALL` widened to a `Variant` that `SUM` couldn't consume. Threading `dialect` through aligns NULL padding with the outer CAST target.
+- **Raw CFL filter drop & ORDER BY on computed columns.** WHERE filters on data objects unreachable from a leg are now silently skipped per leg (instead of failing the entire query), matching the agg-mode semantics. ORDER BY on a column whose source AST is an inlined expression (computed column) now correctly remaps to the CTE alias in the outer query via structural-equality matching.
+- **`/v1/settings` warms the DB session-TZ cache on first hit** when a model is bound and `query_execute` is enabled — and now also without a model bound when the cache is empty. Eliminates the previous one-request lag where the report runner / UI saw `effective: <model TZ>` until a real query happened to populate the probe.
+
+### Docs
+
+- New "Computed Columns" subsection in `guide/model-format.md` covering the column-level `expression:` field, single-brace `{Column}` syntax, the inlining semantics, and a reference-syntax cheat-sheet distinguishing column- vs measure- vs metric-level expressions.
+- New "Regex Operators" and "String Length Operators" tables in `guide/query-language.md`, plus `blank` / `notblank` rows added to "Null Operators". Each includes per-dialect generated SQL for portability planning.
+- Pinned an explicit `{ #filter-groups }` anchor on the Filter Groups heading so the in-page link `[filter groups](#filter-groups)` survives future heading-text edits.
+- Expanded the bundled `examples/tpcds.obml.yml` model with `catalog_sales`, `catalog_returns`, `web_returns`, `inventory`, `warehouse`, `ship_mode`, and `reason` data objects, plus `Manager ID`, `Day Name`, and matching dimensions/measures. Demonstrates multi-fact CFL across three sales channels and exercises the new computed-column dim (`Year-Month`).
 
 ## [2.0.1] - 2026-04-27
 
