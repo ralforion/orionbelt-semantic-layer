@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q68 — Web vs Store sales by year & category (multi-fact CFL)
+
+select:
+  dimensions: [Year, Category]
+  measures: [Store Sales Amount, Web Sales Amount]
+where:
+  - {field: Year, op: in, value: [2000, 2001]}
+order_by:
+  - {field: Year, direction: asc}
+  - {field: Category, direction: asc}
+limit: 100

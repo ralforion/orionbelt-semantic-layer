@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q34 — Sale ticket count by store / gender / marital status
+
+select:
+  dimensions: [Store Name, Gender, Marital Status]
+  measures: [Store Sale Count]
+where:
+  - {field: Year, op: in, value: [2000, 2001]}
+  - {field: Month of Year, op: in, value: [1, 3, 11]}
+order_by:
+  - {field: Store Sale Count, direction: desc}
+limit: 100

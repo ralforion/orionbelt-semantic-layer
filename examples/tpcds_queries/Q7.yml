@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q7 — Avg quantity / list / sales price by item for M+S+College in 2000
+
+select:
+  dimensions: [Item ID]
+  measures: [Store Quantity, Avg List Price, Avg Sales Price]
+where:
+  - {field: Year, op: "=", value: 2000}
+  - {field: Gender, op: "=", value: M}
+  - {field: Marital Status, op: "=", value: S}
+  - {field: Education Status, op: "=", value: College}
+order_by:
+  - {field: Item ID, direction: asc}
+limit: 100

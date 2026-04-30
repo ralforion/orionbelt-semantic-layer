@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q20 — Catalog sales by item attributes for selected categories, Manager 7, 2001
+
+select:
+  dimensions: [Item ID, Category, Class, Brand]
+  measures: [Catalog Sales Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+  - {field: Manager ID, op: "=", value: 7}
+  - {field: Category, op: in, value: [Sports, Books, Home]}
+order_by:
+  - {field: Category, direction: asc}
+  - {field: Class, direction: asc}
+  - {field: Catalog Sales Amount, direction: desc}
+limit: 100

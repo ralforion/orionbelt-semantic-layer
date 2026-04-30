@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# DEMO-YearMonth — Store sales by computed Year-Month dim, sorted on the computed col
+
+select:
+  dimensions: [Year-Month]
+  measures: [Store Sales Amount]
+where:
+  - {field: Year, op: "=", value: 2000}
+order_by:
+  - {field: Year-Month, direction: asc}
+limit: 20

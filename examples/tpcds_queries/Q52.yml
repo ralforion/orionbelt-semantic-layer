@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q52 — Brand sales in November 2000 for Manager ID = 1
+
+select:
+  dimensions: [Year, Brand ID, Brand]
+  measures: [Store Sales Amount]
+where:
+  - {field: Manager ID, op: "=", value: 1}
+  - {field: Month of Year, op: "=", value: 11}
+  - {field: Year, op: "=", value: 2000}
+order_by:
+  - {field: Store Sales Amount, direction: desc}
+  - {field: Brand ID, direction: asc}
+limit: 100

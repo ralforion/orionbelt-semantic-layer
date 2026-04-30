@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q15 — Catalog sales by customer state for Q1 2001
+
+select:
+  dimensions: [Customer State]
+  measures: [Catalog Sales Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+  - {field: Quarter of Year, op: "=", value: 1}
+order_by:
+  - {field: Catalog Sales Amount, direction: desc}
+  - {field: Customer State, direction: asc}
+limit: 100

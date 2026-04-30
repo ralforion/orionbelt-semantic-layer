@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q72 — Catalog sales by ship type and warehouse state (2001)
+
+select:
+  dimensions: [Warehouse State, Ship Type]
+  measures: [Catalog Sales Amount, Catalog Quantity]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Warehouse State, direction: asc}
+  - {field: Catalog Sales Amount, direction: desc}
+limit: 100

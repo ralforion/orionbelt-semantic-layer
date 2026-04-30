@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q27 — Avg quantity/price by item, restricted to TN/AL/SD stores in 2002
+
+select:
+  dimensions: [Item ID]
+  measures: [Store Quantity, Avg List Price, Avg Sales Price]
+where:
+  - {field: Year, op: "=", value: 2002}
+  - {field: Store State, op: in, value: [TN, AL, SD]}
+order_by:
+  - {field: Item ID, direction: asc}
+limit: 100

@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# DEMO-3way — Cross-channel sales by year & category (Store + Catalog + Web — CFL)
+
+select:
+  dimensions: [Year, Category]
+  measures: [Store Sales Amount, Catalog Sales Amount, Web Sales Amount]
+where:
+  - {field: Year, op: in, value: [2000, 2001]}
+order_by:
+  - {field: Year, direction: asc}
+  - {field: Category, direction: asc}
+limit: 100

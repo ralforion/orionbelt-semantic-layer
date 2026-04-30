@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# DEMO-AllReturns — All-channel returns by year & category (Store + Catalog + Web — CFL)
+
+select:
+  dimensions: [Year, Category]
+  measures: [Return Amount, Catalog Returns Amount, Web Returns Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Year, direction: asc}
+  - {field: Category, direction: asc}
+limit: 100

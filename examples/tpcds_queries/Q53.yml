@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q53 — Manufacturer sales by quarter for selected categories (1999-2001)
+
+select:
+  dimensions: [Year, Quarter of Year, Manufacturer ID]
+  measures: [Store Sales Amount]
+where:
+  - {field: Year, op: in, value: [1999, 2000, 2001]}
+  - {field: Category, op: in, value: [Books, Children, Electronics]}
+order_by:
+  - {field: Store Sales Amount, direction: desc}
+  - {field: Year, direction: asc}
+  - {field: Manufacturer ID, direction: asc}
+limit: 100

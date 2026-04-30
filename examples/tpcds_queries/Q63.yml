@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q63 — Store sales by manufacturer (Nov 2000)
+
+select:
+  dimensions: [Manufacturer ID]
+  measures: [Store Sales Amount]
+where:
+  - {field: Year, op: "=", value: 2000}
+  - {field: Month of Year, op: "=", value: 11}
+order_by:
+  - {field: Store Sales Amount, direction: desc}
+  - {field: Manufacturer ID, direction: asc}
+limit: 100

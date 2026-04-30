@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q65 — Per-store, per-item sales for 2001
+
+select:
+  dimensions: [Store Name, Item ID]
+  measures: [Store Sales Amount, Avg Sales Price]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Store Name, direction: asc}
+  - {field: Store Sales Amount, direction: desc}
+limit: 100

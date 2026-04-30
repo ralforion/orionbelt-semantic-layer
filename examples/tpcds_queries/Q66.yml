@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q66 — Catalog sales by warehouse and quarter (2001)
+
+select:
+  dimensions: [Warehouse Name, Warehouse State, Year, Quarter of Year]
+  measures: [Catalog Sales Amount, Catalog Quantity]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Warehouse Name, direction: asc}
+  - {field: Catalog Sales Amount, direction: desc}
+limit: 100

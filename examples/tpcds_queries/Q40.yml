@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q40 — Catalog sales + returns by warehouse state and item (CFL)
+
+select:
+  dimensions: [Warehouse State, Item ID]
+  measures: [Catalog Sales Amount, Catalog Returns Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+  - {field: Quarter of Year, op: "=", value: 1}
+order_by:
+  - {field: Warehouse State, direction: asc}
+  - {field: Catalog Sales Amount, direction: desc}
+limit: 100

@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# DEMO-Inventory — Avg inventory by warehouse and category, 2001
+
+select:
+  dimensions: [Warehouse Name, Warehouse State, Category]
+  measures: [Avg Inventory, Inventory On Hand]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Warehouse Name, direction: asc}
+  - {field: Avg Inventory, direction: desc}
+limit: 100

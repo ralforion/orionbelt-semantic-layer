@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q83 — Catalog returns by reason description, 2001
+
+select:
+  dimensions: [Reason Description]
+  measures: [Catalog Returns Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Catalog Returns Amount, direction: desc}
+limit: 100

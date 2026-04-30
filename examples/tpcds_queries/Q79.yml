@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q79 — Profit and net margin by customer state, 2001
+
+select:
+  dimensions: [Customer State]
+  measures: [Store Sales Amount, Store Net Profit, Net Margin %]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Store Net Profit, direction: desc}
+limit: 100

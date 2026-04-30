@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q22 — Avg inventory by item / category / class
+
+select:
+  dimensions: [Item ID, Brand, Category, Class]
+  measures: [Avg Inventory]
+order_by:
+  - {field: Avg Inventory, direction: desc}
+  - {field: Item ID, direction: asc}
+limit: 100

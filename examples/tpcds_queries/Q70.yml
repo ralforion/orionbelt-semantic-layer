@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q70 — Store-level sales by state for 2001
+
+select:
+  dimensions: [Store State, Store Name]
+  measures: [Store Sales Amount, Store Net Profit]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Store State, direction: asc}
+  - {field: Store Sales Amount, direction: desc}
+limit: 100

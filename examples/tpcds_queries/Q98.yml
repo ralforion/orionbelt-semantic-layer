@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q98 — Item revenue by category and class, November 2000
+
+select:
+  dimensions: [Category, Class, Item ID]
+  measures: [Store Sales Amount]
+where:
+  - {field: Year, op: "=", value: 2000}
+  - {field: Month of Year, op: "=", value: 11}
+  - {field: Category, op: in, value: [Sports, Books, Home]}
+order_by:
+  - {field: Category, direction: asc}
+  - {field: Class, direction: asc}
+  - {field: Store Sales Amount, direction: desc}
+limit: 100

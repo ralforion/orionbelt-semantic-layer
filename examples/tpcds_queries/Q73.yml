@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q73 — Ticket count and quantity per store / state (2001)
+
+select:
+  dimensions: [Store State, Store Name]
+  measures: [Store Sale Count, Store Quantity]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Store Sale Count, direction: desc}
+limit: 100

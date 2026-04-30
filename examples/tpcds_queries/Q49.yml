@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q49 — Catalog returns by reason and item (high return-quantity items)
+
+select:
+  dimensions: [Reason Description, Item ID]
+  measures: [Catalog Returns Amount]
+where:
+  - {field: Year, op: "=", value: 2001}
+order_by:
+  - {field: Catalog Returns Amount, direction: desc}
+limit: 100
