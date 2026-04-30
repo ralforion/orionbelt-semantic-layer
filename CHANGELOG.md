@@ -2,6 +2,12 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.3] - 2026-04-30
+
+### Fixed
+
+- **Settings tab `timezone.now` showed UTC even after the v2.1.2 overlay set `timezone.effective: Europe/Berlin`.** The API had computed `now` server-side against its own (no-model) `effective` (UTC), and the v2.1.2 overlay only updated `effective` — leaving `now` stale. The overlay now also recomputes `now` as the current wall clock in the overlaid TZ when the API had no loaded model, so `now` and `effective` agree.
+
 ## [2.1.2] - 2026-04-30
 
 ### Fixed

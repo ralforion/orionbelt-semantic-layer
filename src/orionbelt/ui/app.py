@@ -2874,6 +2874,18 @@ def create_blocks(
                             )
                         if not api_has_model and local_tz:
                             tz["effective"] = local_tz
+                            # The API computed ``now`` server-side against
+                            # its own (no-model) effective TZ — UTC. After
+                            # overlaying the local TZ as effective, recompute
+                            # ``now`` so the wall clock matches.
+                            try:
+                                from datetime import UTC, datetime
+                                from zoneinfo import ZoneInfo
+
+                                now_local = datetime.now(UTC).astimezone(ZoneInfo(local_tz))
+                                tz["now"] = now_local.isoformat()
+                            except Exception:  # noqa: BLE001 — best-effort
+                                pass
                         data["timezone"] = tz
 
                         dl = data.get("dialect") or {}
