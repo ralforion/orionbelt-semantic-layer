@@ -376,7 +376,7 @@ Multiple top-level filters are combined with **AND**. For **OR** logic or more c
 }
 ```
 
-### Filter Groups (AND / OR / NOT)
+### Filter Groups (AND / OR / NOT) { #filter-groups }
 
 A **filter group** combines multiple filters with `and` or `or` logic. Groups can be nested recursively for complex boolean expressions.
 
