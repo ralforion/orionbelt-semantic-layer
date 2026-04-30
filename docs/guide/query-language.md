@@ -506,6 +506,10 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 |-----------|-----------|------------|------------|
 | `set` | `is_not_null` | `IS NOT NULL` | none |
 | `notset` | `is_null` | `IS NULL` | none |
+| `blank` | — | `(col IS NULL OR TRIM(col) = '')` | none |
+| `notblank` | — | `(col IS NOT NULL AND TRIM(col) <> '')` | none |
+
+`blank` / `notblank` go beyond `is_null`: they also treat a string of whitespace-only characters as empty, which is the practical "missing value" check for free-text columns.
 
 #### String Operators
 
@@ -517,6 +521,37 @@ OrionBelt supports two operator naming conventions — OBML style and SQL style.
 | `ends_with` | `LIKE '%value'` | string |
 | `like` | `LIKE 'pattern'` | string |
 | `notlike` | `NOT LIKE 'pattern'` | string |
+
+#### Regex Operators
+
+| Operator | Value Type | Notes |
+|----------|------------|-------|
+| `regex` | string (regex pattern) | Match values against a regular expression |
+| `notregex` | string (regex pattern) | Inverse of `regex` |
+
+Regex syntax is delegated to the target dialect's native regex engine, so the *flavour* of regex differs per dialect. The compiler emits dialect-appropriate SQL:
+
+| Dialect | Generated SQL |
+|---------|---------------|
+| Postgres | `(col ~ 'pattern')` / `(col !~ 'pattern')` (POSIX) |
+| DuckDB | `regexp_matches(col, 'pattern')` (RE2) |
+| ClickHouse | `match(col, 'pattern')` (RE2) |
+| BigQuery | `REGEXP_CONTAINS(col, 'pattern')` (RE2) |
+| MySQL | `(col REGEXP 'pattern')` (POSIX-extended via ICU) |
+| Databricks | `(col RLIKE 'pattern')` (Java regex) |
+| Snowflake, Dremio | `REGEXP_LIKE(col, 'pattern')` (POSIX-extended) |
+
+Use only the common subset of regex features (anchors, character classes, alternation, basic quantifiers) if a query has to be portable across dialects. Backreferences, lookarounds, and named groups are not portable.
+
+#### String Length Operators
+
+| Operator | SQL Output | Value Type |
+|----------|------------|------------|
+| `length_eq` | `LENGTH(col) = N` | integer |
+| `length_gt` | `LENGTH(col) > N` | integer |
+| `length_lt` | `LENGTH(col) < N` | integer |
+
+Useful for filtering on padded codes, fixed-width identifiers, or detecting truncated strings. The value must be a non-negative integer.
 
 #### Range Operators
 
