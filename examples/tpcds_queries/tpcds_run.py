@@ -21,10 +21,10 @@ ClickHouse install)::
 
 Usage::
 
-    uv run python examples/tpcds_run.py            # run all queries
-    uv run python examples/tpcds_run.py Q3 Q42     # run only the named ones
-    uv run python examples/tpcds_run.py --dry      # compile only, do not execute
-    uv run python examples/tpcds_run.py --compare  # compare numeric totals to reference CSVs
+    uv run python examples/tpcds_queries/tpcds_run.py            # run all queries
+    uv run python examples/tpcds_queries/tpcds_run.py Q3 Q42     # run only the named ones
+    uv run python examples/tpcds_queries/tpcds_run.py --dry      # compile only, do not execute
+    uv run python examples/tpcds_queries/tpcds_run.py --compare  # compare to reference CSVs
 
 When --compare is set, each ``Qnn`` query is matched to ``qnn.csv`` in
 ``REF_RESULTS_DIR`` (default ``../clickhouse-tpcds-uss/results-tpcds`` relative
@@ -52,12 +52,12 @@ from orionbelt.models.query import QueryObject
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
-MODEL_PATH = Path(__file__).parent / "tpcds.obml.yml"
-QUERIES_DIR = Path(__file__).parent / "tpcds_queries"
+MODEL_PATH = Path(__file__).parent.parent / "tpcds.obml.yml"
+QUERIES_DIR = Path(__file__).parent
 DEFAULT_REF_DIR = Path(
     os.environ.get(
         "REF_RESULTS_DIR",
-        Path(__file__).resolve().parents[2] / "clickhouse-tpcds-uss" / "results-tpcds",
+        Path(__file__).resolve().parents[3] / "clickhouse-tpcds-uss" / "results-tpcds",
     )
 )
 
