@@ -1130,7 +1130,7 @@ class OBMLtoOSI:
         if col_obj.get("owner"):
             ext_data["obml_owner"] = col_obj["owner"]
         # Preserve OBML-only dimension properties (timeGrain, format, resultType, etc.)
-        for dim_name, dim_obj in obml_dimensions.items():
+        for _dim_name, dim_obj in obml_dimensions.items():
             if dim_obj.get("dataObject") == do_name and dim_obj.get("column") == col_name:
                 if dim_obj.get("timeGrain"):
                     ext_data["obml_time_grain"] = dim_obj["timeGrain"]
@@ -1155,7 +1155,7 @@ class OBMLtoOSI:
         return field
 
     def _convert_join_to_relationship(
-        self, osi_from_name: str, obml_from_name: str, from_do: dict, join: dict, index: int
+        self, osi_from_name: str, _obml_from_name: str, from_do: dict, join: dict, index: int
     ) -> dict | None:
         """Convert an OBML join to an OSI relationship."""
         join_to_display = join.get("joinTo", "")

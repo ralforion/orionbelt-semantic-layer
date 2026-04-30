@@ -242,6 +242,11 @@ class Dialect(ABC):
             result += f" WITHIN GROUP (ORDER BY {ob})"
         return result
 
+    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+        """Render ``CAST(expr AS type)``. Dialects override to handle nullability."""
+        resolved_type = self._resolve_type_name(type_name)
+        return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Compile COUNT with multiple fields by concatenating with ``||``.
 
@@ -437,8 +442,7 @@ class Dialect(ABC):
                 parts.append("END")
                 return " ".join(parts)
             case Cast(expr=inner, type_name=type_name):
-                resolved_type = self._resolve_type_name(type_name)
-                return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
+                return self._compile_cast(inner, type_name)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"
             case RawSQL(sql=sql):
