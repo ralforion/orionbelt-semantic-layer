@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.1.0"
+version = "2.1.1"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -52,6 +52,11 @@ dependencies = [
     "sqlglot>=26.0,<27.0",
     "jsonschema>=4.23,<5.0",
     "rdflib>=7.0,<8.0",
+    # IANA timezone database for Python's zoneinfo on systems without
+    # /usr/share/zoneinfo (e.g. python:3.12-slim Docker images). Without it,
+    # ZoneInfo("Europe/Berlin") raises ZoneInfoNotFoundError and the
+    # timezone resolver silently falls back to UTC.
+    "tzdata>=2025.1",
 ]
 
 [project.scripts]

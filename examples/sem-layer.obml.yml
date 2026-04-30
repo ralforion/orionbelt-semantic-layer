@@ -2,6 +2,7 @@
 version: 1.0
 
 settings:
+  defaultDialect: postgres
   defaultNumericDataType: "decimal(18, 2)"
   defaultTimezone: "Europe/Berlin"
 

@@ -25,6 +25,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Install IANA tzdata (see Dockerfile for rationale).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 RUN groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
 

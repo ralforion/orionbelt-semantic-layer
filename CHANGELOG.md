@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.1] - 2026-04-30
+
+### Fixed
+
+- **`/v1/settings.timezone.effective` falls back to UTC instead of the model's `defaultTimezone` on slim Linux Docker images.** Root cause: `python:3.12-slim` has no `/usr/share/zoneinfo`, so `ZoneInfo("Europe/Berlin")` (or any IANA name) raises `ZoneInfoNotFoundError`. The resolver caught the exception, walked the fallback chain (host TZ on Cloud Run is UTC and skipped), and ended at `UTC`. Now `tzdata>=2025.1` is a runtime dependency of `orionbelt-semantic-layer`, and both `Dockerfile` / `Dockerfile.ui` also `apt-get install tzdata` for defense in depth.
+
+### Changed
+
+- `examples/sem-layer.obml.yml` (the UI's default preloaded model) now declares `settings.defaultDialect: postgres`. Aligns the UI dialect dropdown and `/v1/settings.dialect.effective` for users loading the bundled demo — previously they could diverge when `DB_VENDOR` differed from the UI's hardcoded `postgres` fallback.
+
 ## [2.1.0] - 2026-04-30
 
 ### Added
