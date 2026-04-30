@@ -144,7 +144,7 @@ class TestGetFlightInfo:
         compiled_sql = "SELECT region, SUM(amount) FROM orders GROUP BY region"
         with patch.object(server, "_compile_obml", return_value=compiled_sql):
             with patch.object(server, "_probe_schema", return_value=self._mock_probe()):
-                info = server.get_flight_info(context, descriptor)
+                server.get_flight_info(context, descriptor)
         assert len(server._pending) == 1
         ticket_id = list(server._pending.keys())[0]
         pending = server._pending[ticket_id]

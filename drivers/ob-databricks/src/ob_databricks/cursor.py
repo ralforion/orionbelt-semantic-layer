@@ -126,7 +126,7 @@ class Cursor:
             self._native.close()
             self._closed = True
 
-    def setinputsizes(self, sizes: Any) -> None:  # noqa: ANN401
+    def setinputsizes(self, _sizes: Any) -> None:  # noqa: ANN401
         """No-op — required by PEP 249."""
 
     def setoutputsize(self, size: int, column: int | None = None) -> None:
