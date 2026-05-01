@@ -4,6 +4,8 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 
 ## At a glance
 
+<div class="compact-table" markdown>
+
 | | OBSL | dbt SL | Malloy | LookML | Cube | AtScale |
 |---|---|---|---|---|---|---|
 | License | Source-available (BSL) | Definitions OSS; runtime in dbt Cloud | Open source | Proprietary | Apache 2.0 (core) + Cube Cloud | Proprietary; **free Developer Community Edition** for non-prod |
@@ -29,6 +31,8 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Row-level security in model | ❌ | Via dbt | ❌ | ✅ | ✅ (`query_rewrite`) | ✅ enterprise |
 | Multi-tenancy primitives | Sessions only | Cloud-managed | ❌ | ❌ | ✅ first-class | ✅ enterprise |
 | OSI interoperability | ✅ converter | ❌ | ❌ | ❌ | ❌ | ✅ founding contributor |
+
+</div>
 
 ## Detailed comparisons
 
