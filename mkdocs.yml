@@ -110,6 +110,13 @@ nav:
       - Multi-Dialect Output: examples/multi-dialect.md
       - "Multi-Fact: Sales & Returns": examples/multi-fact.md
       - TPC-DS Benchmark: examples/tpcds.md
+  - Comparison:
+      - Overview: comparison/index.md
+      - vs. dbt Semantic Layer: comparison/dbt.md
+      - vs. Malloy: comparison/malloy.md
+      - vs. LookML / Looker: comparison/lookml.md
+      - vs. Cube: comparison/cube.md
+      - vs. AtScale: comparison/atscale.md
   - Reference:
       - Python API: reference/python-api.md
       - Architecture: reference/architecture.md

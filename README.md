@@ -401,6 +401,12 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 | Multi-Fact: Sales & Returns | [examples/multi-fact](https://ralforion.com/orionbelt-semantic-layer/examples/multi-fact/) |
 | TPC-DS Benchmark | [examples/tpcds](https://ralforion.com/orionbelt-semantic-layer/examples/tpcds/) |
 | Quickstart Notebook | [examples/quickstart.ipynb](examples/quickstart.ipynb) |
+| **Comparison: Overview** | [comparison/](https://ralforion.com/orionbelt-semantic-layer/comparison/) |
+| Comparison: vs. dbt Semantic Layer | [comparison/dbt](https://ralforion.com/orionbelt-semantic-layer/comparison/dbt/) |
+| Comparison: vs. Malloy | [comparison/malloy](https://ralforion.com/orionbelt-semantic-layer/comparison/malloy/) |
+| Comparison: vs. LookML / Looker | [comparison/lookml](https://ralforion.com/orionbelt-semantic-layer/comparison/lookml/) |
+| Comparison: vs. Cube | [comparison/cube](https://ralforion.com/orionbelt-semantic-layer/comparison/cube/) |
+| Comparison: vs. AtScale | [comparison/atscale](https://ralforion.com/orionbelt-semantic-layer/comparison/atscale/) |
 
 ---
 
