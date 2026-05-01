@@ -23,6 +23,7 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | RDF/SPARQL graph view | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | MCP server | ✅ | ✅ (dbt-mcp) | ✅ (Publisher) | ❌ | ✅ | Limited |
 | Interactive playground / UI | ✅ Gradio (incl. RDF ontology graph) | dbt Cloud Studio (paid) | VS Code + Publisher | ✅ Looker IDE | Cube Playground / Studio | ✅ Design Center |
+| Notebook authoring (VS Code / Colab) | ✅ `quickstart.ipynb` runs natively in VS Code or Colab | Via dbt-cli in any notebook | Notebook tutorials | ❌ | ❌ | ❌ |
 | Built-in BI dashboards | ❌ | ❌ | VS Code | ✅ Looker | ❌ | Via MDX in Tableau/Excel |
 | Pre-aggregations / materialization | ❌ | Via dbt models | ❌ | ✅ (PDTs) | ✅ flagship | ✅ autonomous |
 | Row-level security in model | ❌ | Via dbt | ❌ | ✅ | ✅ (`query_rewrite`) | ✅ enterprise |

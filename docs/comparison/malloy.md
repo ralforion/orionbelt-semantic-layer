@@ -6,7 +6,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 
 ## TL;DR
 
-- **Malloy wins on**: expressive query language (pipeline operator `->`, refinements, nesting), **symmetric aggregates** that handle fanout automatically, hierarchical query results via `nest:`, and a polished VS Code-native developer experience.
+- **Malloy wins on**: expressive query language (pipeline operator `->`, refinements, nesting), **symmetric aggregates** that handle fanout automatically, hierarchical query results via `nest:`, and a polished VS Code extension with autocomplete and inline visualizations (OBSL has a different VS Code path via its Jupyter notebook, but it's a Python-driven loop rather than a language-aware editor).
 - **OBSL wins on**: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, **first-class metric types** for cumulative and period-over-period (Malloy expresses these ad-hoc per query), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.
 - **Different niches**: Malloy is "a new query language with semantic modeling baked in" — best for analyst-driven exploration and BI development. OBSL is "an API-first semantic compiler" — best for embedding into SaaS products and exposing metrics to LLMs/agents/external apps without teaching them a DSL.
 
@@ -183,11 +183,15 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 | MCP | Yes — first-party server | Yes — via Publisher |
 | GraphQL | No | No |
 | Native SDK | Python (FastAPI client) | TypeScript (`@malloydata/malloy`, `@malloydata/malloy-query-builder`) |
-| UI / Playground | Interactive Gradio playground: SQL Compiler, Query Results table, auto-generated Mermaid ER diagrams, interactive RDF/OBSL ontology graph (vis-network), OSI import/export, settings panel | VS Code extension (very polished) + Publisher web UI |
+| UI / Playground | Interactive Gradio playground (SQL Compiler, Query Results, Mermaid ER, interactive RDF ontology graph, OSI import/export) **plus** a Jupyter notebook (`examples/quickstart.ipynb`) that runs natively in VS Code or in **Google Colab** with one click | VS Code extension (very polished) + Publisher web UI |
 | RDF graph + SPARQL | Yes (`/graph`, `/sparql`) | No |
 | Format conversion | OSI ↔ OBML (`/convert/*`) | n/a |
 
-Both projects converge on REST + MCP for serving models. OBSL additionally exposes Arrow Flight SQL (JDBC-compatible) for BI tool integration; Malloy doesn't have a comparable BI-tool wire protocol. The experiential difference: **Malloy's VS Code extension** is stronger for analyst authoring (it's a full editor with autocomplete and inline visualizations); **OBSL's Gradio playground** is stronger for ad-hoc model exploration (interactive ER + ontology graphs, OSI conversion in-browser).
+Both projects converge on REST + MCP for serving models. OBSL additionally exposes Arrow Flight SQL (JDBC-compatible) for BI tool integration; Malloy doesn't have a comparable BI-tool wire protocol.
+
+The authoring story differs more than it looks at first glance:
+- **Malloy's VS Code extension** is a language-aware editor with autocomplete, inline visualizations, and a model-design feel. Strong for analysts writing `.malloy` files by hand.
+- **OBSL's Jupyter notebook** (`examples/quickstart.ipynb`, also one-click in **Google Colab**) gives a Python-driven authoring loop that runs natively inside VS Code without any extension. Edit OBML, compile, execute, inspect results, iterate. Different shape, same goal: a real editor-resident dev loop. Plus the Gradio playground for browser-based model exploration with interactive ER and ontology graphs.
 
 ---
 
@@ -218,7 +222,7 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 | First-class cumulative metric type | ✅ | ❌ (calculations) |
 | Dialect breadth (ClickHouse/Databricks/Dremio) | ✅ | ❌ |
 | Trino/Presto | ❌ | ✅ |
-| VS Code-native authoring | ❌ | ✅ |
+| VS Code-native authoring | ✅ via Jupyter notebook (also one-click in Colab) | ✅ first-party extension with autocomplete + inline viz |
 | Visualization renderer | ❌ (Gradio is ad-hoc) | ✅ first-class chart/dashboard renderer |
 | LLM/agent-friendly query API | ✅ JSON, no DSL to learn | Possible via Publisher MCP, but Malloy's expressiveness asks more of the agent |
 
@@ -232,7 +236,7 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 - You need **hierarchical / nested** result shapes for dashboards (this is the killer feature).
 - You want **symmetric aggregates** to remove fanout as a class of bug without thinking about it.
 - You're heavy on Trino/Presto.
-- VS Code-native authoring + visualization matters to you.
+- You want a **language-aware** VS Code editor with autocomplete and inline visualizations (OBSL has a Jupyter-notebook path in VS Code / Colab, which is a great Python-driven loop but not a language-aware editor for OBML itself).
 
 ### Pick **OBSL** when:
 
@@ -257,7 +261,7 @@ It's plausible to use both: Malloy as the analyst-facing modeling/exploration la
 2. **Symmetric aggregates** — as an alternative to (or in addition to) the current static fanout + CFL approach. Would let users join across fanout without thinking.
 3. **Trino/Presto dialect** — straightforward to add given the existing dialect plugin system.
 4. **Named views with refinements** — a way to register a parameterized query template and apply per-call overrides.
-5. **A polished authoring experience** — VS Code extension or rich web IDE (Gradio is functional but not in the same league).
+5. **A language-aware authoring experience** — a VS Code extension for `.obml` with autocomplete, inline diagnostics, and inline visualizations. The Jupyter notebook + Colab + Gradio playground combination covers the dev loop, but a first-class editor extension would close the polish gap.
 
 ### To match OBSL, Malloy would need:
 
