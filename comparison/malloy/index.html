@@ -2400,7 +2400,7 @@
 <hr />
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Malloy wins on</strong>: expressive query language (pipeline operator <code>-&gt;</code>, refinements, nesting), <strong>symmetric aggregates</strong> that handle fanout automatically, hierarchical query results via <code>nest:</code>, and a polished VS Code-native developer experience.</li>
+<li><strong>Malloy wins on</strong>: expressive query language (pipeline operator <code>-&gt;</code>, refinements, nesting), <strong>symmetric aggregates</strong> that handle fanout automatically, hierarchical query results via <code>nest:</code>, and a polished VS Code extension with autocomplete and inline visualizations (OBSL has a different VS Code path via its Jupyter notebook, but it's a Python-driven loop rather than a language-aware editor).</li>
 <li><strong>OBSL wins on</strong>: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), <strong>richer modeling topologies</strong> (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, <strong>first-class metric types</strong> for cumulative and period-over-period (Malloy expresses these ad-hoc per query), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.</li>
 <li><strong>Different niches</strong>: Malloy is "a new query language with semantic modeling baked in" — best for analyst-driven exploration and BI development. OBSL is "an API-first semantic compiler" — best for embedding into SaaS products and exposing metrics to LLMs/agents/external apps without teaching them a DSL.</li>
 </ul>
@@ -2734,7 +2734,7 @@
 </tr>
 <tr>
 <td>UI / Playground</td>
-<td>Interactive Gradio playground: SQL Compiler, Query Results table, auto-generated Mermaid ER diagrams, interactive RDF/OBSL ontology graph (vis-network), OSI import/export, settings panel</td>
+<td>Interactive Gradio playground (SQL Compiler, Query Results, Mermaid ER, interactive RDF ontology graph, OSI import/export) <strong>plus</strong> a Jupyter notebook (<code>examples/quickstart.ipynb</code>) that runs natively in VS Code or in <strong>Google Colab</strong> with one click</td>
 <td>VS Code extension (very polished) + Publisher web UI</td>
 </tr>
 <tr>
@@ -2749,7 +2749,10 @@
 </tr>
 </tbody>
 </table>
-<p>Both projects converge on REST + MCP for serving models. OBSL additionally exposes Arrow Flight SQL (JDBC-compatible) for BI tool integration; Malloy doesn't have a comparable BI-tool wire protocol. The experiential difference: <strong>Malloy's VS Code extension</strong> is stronger for analyst authoring (it's a full editor with autocomplete and inline visualizations); <strong>OBSL's Gradio playground</strong> is stronger for ad-hoc model exploration (interactive ER + ontology graphs, OSI conversion in-browser).</p>
+<p>Both projects converge on REST + MCP for serving models. OBSL additionally exposes Arrow Flight SQL (JDBC-compatible) for BI tool integration; Malloy doesn't have a comparable BI-tool wire protocol.</p>
+<p>The authoring story differs more than it looks at first glance:
+- <strong>Malloy's VS Code extension</strong> is a language-aware editor with autocomplete, inline visualizations, and a model-design feel. Strong for analysts writing <code>.malloy</code> files by hand.
+- <strong>OBSL's Jupyter notebook</strong> (<code>examples/quickstart.ipynb</code>, also one-click in <strong>Google Colab</strong>) gives a Python-driven authoring loop that runs natively inside VS Code without any extension. Edit OBML, compile, execute, inspect results, iterate. Different shape, same goal: a real editor-resident dev loop. Plus the Gradio playground for browser-based model exploration with interactive ER and ontology graphs.</p>
 <hr />
 <h2 id="9-time-handling">9. Time handling<a class="headerlink" href="#9-time-handling" title="Permanent link">&para;</a></h2>
 <table>
@@ -2847,8 +2850,8 @@
 </tr>
 <tr>
 <td>VS Code-native authoring</td>
-<td>❌</td>
-<td>✅</td>
+<td>✅ via Jupyter notebook (also one-click in Colab)</td>
+<td>✅ first-party extension with autocomplete + inline viz</td>
 </tr>
 <tr>
 <td>Visualization renderer</td>
@@ -2870,7 +2873,7 @@
 <li>You need <strong>hierarchical / nested</strong> result shapes for dashboards (this is the killer feature).</li>
 <li>You want <strong>symmetric aggregates</strong> to remove fanout as a class of bug without thinking about it.</li>
 <li>You're heavy on Trino/Presto.</li>
-<li>VS Code-native authoring + visualization matters to you.</li>
+<li>You want a <strong>language-aware</strong> VS Code editor with autocomplete and inline visualizations (OBSL has a Jupyter-notebook path in VS Code / Colab, which is a great Python-driven loop but not a language-aware editor for OBML itself).</li>
 </ul>
 <h3 id="pick-obsl-when">Pick <strong>OBSL</strong> when:<a class="headerlink" href="#pick-obsl-when" title="Permanent link">&para;</a></h3>
 <ul>
@@ -2891,7 +2894,7 @@
 <li><strong>Symmetric aggregates</strong> — as an alternative to (or in addition to) the current static fanout + CFL approach. Would let users join across fanout without thinking.</li>
 <li><strong>Trino/Presto dialect</strong> — straightforward to add given the existing dialect plugin system.</li>
 <li><strong>Named views with refinements</strong> — a way to register a parameterized query template and apply per-call overrides.</li>
-<li><strong>A polished authoring experience</strong> — VS Code extension or rich web IDE (Gradio is functional but not in the same league).</li>
+<li><strong>A language-aware authoring experience</strong> — a VS Code extension for <code>.obml</code> with autocomplete, inline diagnostics, and inline visualizations. The Jupyter notebook + Colab + Gradio playground combination covers the dev loop, but a first-class editor extension would close the polish gap.</li>
 </ol>
 <h3 id="to-match-obsl-malloy-would-need">To match OBSL, Malloy would need:<a class="headerlink" href="#to-match-obsl-malloy-would-need" title="Permanent link">&para;</a></h3>
 <ol>
