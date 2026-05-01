@@ -70,6 +70,7 @@ theme:
     - content.code.copy
     - content.tabs.link
     - toc.follow
+    - announce.dismiss
   icon:
     repo: fontawesome/brands/github
 
