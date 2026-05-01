@@ -3,6 +3,30 @@ td code {
   white-space: nowrap;
 }
 
+/* Widen the docs content area so wide comparison matrices have room.
+   Default Material is 61rem; 80rem (~1280px) gives the 7-column at-a-glance table room without horizontal scroll on standard screens. */
+.md-grid {
+  max-width: 80rem;
+}
+
+/* Compact comparison matrix tables — opt in by wrapping the table in
+   <div class="compact-table" markdown>. Smaller font + tight padding +
+   horizontal scroll fallback keeps very wide matrices readable. */
+.compact-table {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.compact-table table {
+  font-size: 0.7rem !important;
+  margin: 0 !important;
+}
+.compact-table th,
+.compact-table td {
+  padding: 0.45em 0.55em !important;
+  vertical-align: top;
+  line-height: 1.4;
+}
+
 /* Version badge — only visible in the right (TOC) sidebar */
 .obml-version-badge {
   display: none;
