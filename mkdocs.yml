@@ -10,6 +10,34 @@ dev_addr: 127.0.0.1:8080
 extra:
   obml_version: "1.0"
   project_version: "2.1.3"
+  analytics:
+    provider: google
+    property: G-X19K4GX3EX
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: material/emoticon-happy-outline
+          name: This page was helpful
+          data: 1
+          note: >-
+            Thanks for your feedback!
+        - icon: material/emoticon-sad-outline
+          name: This page could be improved
+          data: 0
+          note: >-
+            Thanks for your feedback! Help us improve by
+            <a href="https://github.com/ralfbecher/orionbelt-semantic-layer/issues/new?labels=docs&template=docs-feedback.md" target="_blank" rel="noopener">opening a docs issue</a>.
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to recognize your repeated visits and preferences, as well
+      as to measure the effectiveness of our documentation and whether users
+      find what they're searching for. With your consent, you're helping us
+      to make our documentation better.
+    actions:
+      - accept
+      - reject
+      - manage
 
 extra_css:
   - stylesheets/extra.css
