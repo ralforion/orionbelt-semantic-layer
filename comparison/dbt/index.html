@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://ralfbecher.github.io/orionbelt-semantic-layer/api/overview/">
+        <link rel="canonical" href="https://ralfbecher.github.io/orionbelt-semantic-layer/comparison/dbt/">
       
       
-        <link rel="prev" href="../../guide/osi/">
+        <link rel="prev" href="../">
       
       
-        <link rel="next" href="../endpoints/">
+        <link rel="next" href="../malloy/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Overview - OrionBelt Semantic Layer</title>
+        <title>vs. dbt Semantic Layer - OrionBelt Semantic Layer</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#api-overview" class="md-skip">
+        <a href="#obsl-vs-dbt-semantic-layer-metricflow" class="md-skip">
           Skip to content
         </a>
       
@@ -115,7 +115,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Overview
+              vs. dbt Semantic Layer
             
           </span>
         </div>
@@ -285,13 +285,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../api/overview/" class="md-tabs__link">
           
   
   
@@ -327,11 +325,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../comparison/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -971,31 +971,28 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
             
   
   
@@ -1013,7 +1010,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1028,37 +1025,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Overview
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../api/overview/" class="md-nav__link">
         
   
   
@@ -1074,169 +1044,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#rest-api" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        REST API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="REST API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#base-url" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Base URL
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#content-type" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Content Type
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#routers" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routers
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#session-based-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Session-Based Workflow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-Model Mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#error-responses" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Error Responses
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Error Responses">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#status-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Status Codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#middleware" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Middleware
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Middleware">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#request-timing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Request Timing
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#interactive-documentation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Interactive Documentation
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-<div class="obml-version-badge">
-  OBML v1.0<br>
-  OrionBelt v2.1.3
-</div>
-      
     </li>
   
 
@@ -1249,7 +1056,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../endpoints/" class="md-nav__link">
+      <a href="../../api/endpoints/" class="md-nav__link">
         
   
   
@@ -1277,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../openapi/" class="md-nav__link">
+      <a href="../../api/openapi/" class="md-nav__link">
         
   
   
@@ -1482,28 +1289,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
             
   
   
@@ -1521,7 +1331,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1539,7 +1349,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../comparison/" class="md-nav__link">
+      <a href="../" class="md-nav__link">
         
   
   
@@ -1564,10 +1374,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../comparison/dbt/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vs. dbt Semantic Layer
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1583,6 +1420,173 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#tldr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TL;DR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-modeling-philosophy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Modeling philosophy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Metric types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-cumulative-metrics-parity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Cumulative metrics (parity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-period-over-period-obsl-advantage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Period-over-Period (OBSL advantage)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-multi-fact-fanout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Multi-fact / fanout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-data-modeling-topology-a-major-differentiator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Data modeling topology (a major differentiator)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-joins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Joins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-dialects-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Dialects / execution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-apis-interfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. APIs / interfaces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-other-distinctives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Other distinctives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-gap-analysis-obsl-dbt-parity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Gap analysis (OBSL → dbt parity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+<div class="obml-version-badge">
+  OBML v1.0<br>
+  OrionBelt v2.1.3
+</div>
+      
     </li>
   
 
@@ -1595,7 +1599,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../comparison/malloy/" class="md-nav__link">
+      <a href="../malloy/" class="md-nav__link">
         
   
   
@@ -1623,7 +1627,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../comparison/lookml/" class="md-nav__link">
+      <a href="../lookml/" class="md-nav__link">
         
   
   
@@ -1651,7 +1655,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../comparison/cube/" class="md-nav__link">
+      <a href="../cube/" class="md-nav__link">
         
   
   
@@ -1679,7 +1683,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../comparison/atscale/" class="md-nav__link">
+      <a href="../atscale/" class="md-nav__link">
         
   
   
@@ -1906,138 +1910,142 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#rest-api" class="md-nav__link">
+  <a href="#tldr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        REST API
+        TL;DR
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="REST API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#base-url" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Base URL
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#content-type" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Content Type
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#routers" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routers
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#session-based-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Session-Based Workflow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-Model Mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#error-responses" class="md-nav__link">
+  <a href="#1-modeling-philosophy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Error Responses
+        1. Modeling philosophy
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Error Responses">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#status-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Status Codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#middleware" class="md-nav__link">
+  <a href="#2-metric-types" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Middleware
+        2. Metric types
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Middleware">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#request-timing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Request Timing
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#interactive-documentation" class="md-nav__link">
+  <a href="#3-cumulative-metrics-parity" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Interactive Documentation
+        3. Cumulative metrics (parity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-period-over-period-obsl-advantage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Period-over-Period (OBSL advantage)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-multi-fact-fanout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Multi-fact / fanout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-data-modeling-topology-a-major-differentiator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Data modeling topology (a major differentiator)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-joins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Joins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-dialects-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Dialects / execution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-apis-interfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. APIs / interfaces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-other-distinctives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Other distinctives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-gap-analysis-obsl-dbt-parity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Gap analysis (OBSL → dbt parity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
       
     </span>
   </a>
@@ -2068,157 +2076,430 @@
   
 
 
-<h1 id="api-overview">API Overview<a class="headerlink" href="#api-overview" title="Permanent link">&para;</a></h1>
-<p>OrionBelt exposes a REST API — FastAPI-powered HTTP endpoints for session-based model management, validation, query compilation, and query execution.</p>
-<h2 id="rest-api">REST API<a class="headerlink" href="#rest-api" title="Permanent link">&para;</a></h2>
-<h3 id="base-url">Base URL<a class="headerlink" href="#base-url" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>http://127.0.0.1:8000
-</span></code></pre></div>
-<h3 id="content-type">Content Type<a class="headerlink" href="#content-type" title="Permanent link">&para;</a></h3>
-<p>All endpoints accept and return JSON:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Content-Type: application/json
-</span></code></pre></div>
-<h3 id="routers">Routers<a class="headerlink" href="#routers" title="Permanent link">&para;</a></h3>
-<p>All API routes are prefixed with <code>/v1/</code> except <code>/health</code> and <code>/robots.txt</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Prefix</th>
-<th>Tag</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>/v1/sessions</code></td>
-<td>sessions</td>
-<td>Session-scoped model management, validation, query compilation, and execution</td>
-</tr>
-<tr>
-<td><code>/v1/sessions/.../models/.../</code></td>
-<td>model-discovery</td>
-<td>Schema, dimensions, measures, metrics, explain, find, join-graph</td>
-</tr>
-<tr>
-<td><code>/v1/schema</code>, <code>/v1/dimensions</code>, ...</td>
-<td>model-discovery</td>
-<td>Top-level shortcuts (auto-resolve single session/model)</td>
-</tr>
-<tr>
-<td><code>/v1/convert</code></td>
-<td>convert</td>
-<td>OSI ↔ OBML format conversion with validation</td>
-</tr>
-<tr>
-<td><code>/v1/dialects</code></td>
-<td>dialects</td>
-<td>Available SQL dialect info</td>
-</tr>
-<tr>
-<td><code>/v1/settings</code></td>
-<td>settings</td>
-<td>Public configuration: version, single-model mode, TTL, model settings, timezone &amp; dialect resolution</td>
-</tr>
-<tr>
-<td><code>/health</code></td>
-<td>health</td>
-<td>Health check (no prefix)</td>
-</tr>
-</tbody>
-</table>
-<h3 id="session-based-workflow">Session-Based Workflow<a class="headerlink" href="#session-based-workflow" title="Permanent link">&para;</a></h3>
-<p>The primary API workflow uses sessions to manage model state:</p>
-<ol>
-<li><strong>Create a session</strong> — <code>POST /v1/sessions</code> returns a <code>session_id</code></li>
-<li><strong>Load models</strong> — <code>POST /v1/sessions/{id}/models</code> with OBML YAML</li>
-<li><strong>Compile</strong> — <code>POST /v1/sessions/{id}/query/sql</code> to compile OBML to SQL</li>
-<li><strong>Execute</strong> — <code>POST /v1/sessions/{id}/query/execute</code> to compile and execute against the database (requires <code>FLIGHT_ENABLED=true</code>)</li>
-<li><strong>Close</strong> — <code>DELETE /v1/sessions/{id}</code> when done (or let TTL expire)</li>
-</ol>
-<p>Sessions expire after 30 minutes of inactivity (configurable via <code>SESSION_TTL_SECONDS</code>) or after an absolute maximum lifetime of 24 hours (<code>SESSION_MAX_AGE_SECONDS</code>). The server enforces a global concurrent session cap (<code>MAX_SESSIONS</code>, default 500) and a per-session model cap (<code>MAX_MODELS_PER_SESSION</code>, default 10). Session creation is rate-limited per IP (<code>SESSION_RATE_LIMIT</code>, default 10/min). When limits are exceeded, the API returns <strong>429 Too Many Requests</strong> with a <code>Retry-After</code> header. Expired sessions return <strong>410 Gone</strong> (not 404) so clients can distinguish expiry from unknown IDs.</p>
-<h3 id="single-model-mode">Single-Model Mode<a class="headerlink" href="#single-model-mode" title="Permanent link">&para;</a></h3>
-<p>When the <code>MODEL_FILE</code> environment variable is set, the server runs in <strong>single-model mode</strong>:</p>
-<ol>
-<li><strong>Create a session</strong> — <code>POST /v1/sessions</code> returns a <code>session_id</code> with the model already loaded (<code>model_count: 1</code>)</li>
-<li><strong>List the model</strong> — <code>GET /v1/sessions/{id}/models</code> to get the pre-loaded <code>model_id</code></li>
-<li><strong>Compile</strong> — <code>POST /v1/sessions/{id}/query/sql</code> to compile OBML to SQL</li>
-<li><strong>Execute</strong> — <code>POST /v1/sessions/{id}/query/execute</code> to compile and execute (requires <code>FLIGHT_ENABLED=true</code>)</li>
-<li><strong>Close</strong> — <code>DELETE /v1/sessions/{id}</code> when done (or let TTL expire)</li>
-</ol>
-<p>Model upload (<code>POST /v1/sessions/{id}/models</code>) and removal (<code>DELETE /v1/sessions/{id}/models/{mid}</code>) return <strong>403 Forbidden</strong> in this mode. All other endpoints work normally.</p>
-<h2 id="error-responses">Error Responses<a class="headerlink" href="#error-responses" title="Permanent link">&para;</a></h2>
-<p>All errors follow a consistent format:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">&quot;detail&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Session &#39;abc123&#39; not found&quot;</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="p">}</span>
-</span></code></pre></div>
-<h3 id="status-codes">Status Codes<a class="headerlink" href="#status-codes" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Code</th>
-<th>Meaning</th>
-<th>When</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>200</td>
-<td>OK</td>
-<td>Successful GET or compilation</td>
-</tr>
-<tr>
-<td>201</td>
-<td>Created</td>
-<td>Session or model created (POST)</td>
-</tr>
-<tr>
-<td>204</td>
-<td>No Content</td>
-<td>Session or model deleted</td>
-</tr>
-<tr>
-<td>400</td>
-<td>Bad Request</td>
-<td>Invalid YAML, unknown dialect, bad operator</td>
-</tr>
-<tr>
-<td>403</td>
-<td>Forbidden</td>
-<td>Model upload/removal in single-model mode</td>
-</tr>
-<tr>
-<td>404</td>
-<td>Not Found</td>
-<td>Session expired/missing, model not found</td>
-</tr>
-<tr>
-<td>422</td>
-<td>Unprocessable Entity</td>
-<td>Model validation failure, resolution error</td>
-</tr>
-<tr>
-<td>502</td>
-<td>Bad Gateway</td>
-<td>Database execution failed (query/execute)</td>
-</tr>
-<tr>
-<td>503</td>
-<td>Service Unavailable</td>
-<td>Query execution not available (FLIGHT_ENABLED not set)</td>
-</tr>
-</tbody>
-</table>
-<h2 id="middleware">Middleware<a class="headerlink" href="#middleware" title="Permanent link">&para;</a></h2>
-<h3 id="request-timing">Request Timing<a class="headerlink" href="#request-timing" title="Permanent link">&para;</a></h3>
-<p>The <code>RequestTimingMiddleware</code> adds <code>X-Request-Duration-Ms</code> headers for performance monitoring.</p>
-<h2 id="interactive-documentation">Interactive Documentation<a class="headerlink" href="#interactive-documentation" title="Permanent link">&para;</a></h2>
-<p>When the server is running, interactive API docs are available at:</p>
+<h1 id="obsl-vs-dbt-semantic-layer-metricflow">OBSL vs dbt Semantic Layer (MetricFlow)<a class="headerlink" href="#obsl-vs-dbt-semantic-layer-metricflow" title="Permanent link">&para;</a></h1>
+<p>A feature comparison between <strong>OrionBelt Semantic Layer (OBSL)</strong> and the <strong>dbt Semantic Layer</strong> (powered by MetricFlow). Captured 2026-05-01.</p>
+<hr />
+<h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Swagger UI</strong>: <code>http://127.0.0.1:8000/docs</code></li>
-<li><strong>ReDoc</strong>: <code>http://127.0.0.1:8000/redoc</code></li>
+<li><strong>dbt SL wins on</strong>: conversion metrics, the <code>metric_time</code> virtual dimension, ecosystem maturity, and governance/lineage tied to the dbt transformation pipeline.</li>
+<li><strong>OBSL wins on</strong>: being a self-hostable, warehouse-agnostic, transformation-tool-agnostic engine; <strong>richer modeling topologies</strong> (multi-rooted DAG, named alternative join paths) where dbt assumes single-rooted star/snowflake; explicit multi-fact CFL planning; an RDF/SPARQL view of the model; a clean REST surface; and a more ergonomic period-over-period metric type.</li>
+<li><strong>Different niches</strong>: dbt SL is "metrics on top of your dbt project, served by dbt Cloud." OBSL is "drop-in semantic compiler you can embed anywhere, modeling-tool independent."</li>
 </ul>
-<p>Both are auto-generated from the FastAPI route definitions and Pydantic schemas.</p>
+<hr />
+<h2 id="1-modeling-philosophy">1. Modeling philosophy<a class="headerlink" href="#1-modeling-philosophy" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OBSL (OBML)</th>
+<th>dbt Semantic Layer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source of truth</td>
+<td>Standalone YAML (<code>OBML</code>) — independent of any transformation tool</td>
+<td>YAML coupled to dbt models; semantic models reference dbt <code>ref()</code>s</td>
+</tr>
+<tr>
+<td>Top-level objects</td>
+<td><code>dataObjects</code>, <code>dimensions</code>, <code>measures</code>, <code>metrics</code>, <code>filters</code></td>
+<td><code>semantic_models</code> (entities, measures, dimensions) + <code>metrics</code></td>
+</tr>
+<tr>
+<td>Object scoping</td>
+<td>Each <code>DataObject</code> has its own <code>columns:</code>; dimensions/measures/metrics live at model scope and reference <code>{[DataObject].[Column]}</code></td>
+<td>Dimensions/measures/entities are scoped <em>inside</em> each <code>semantic_model</code>; metrics reference measures</td>
+</tr>
+<tr>
+<td>Identity for joins</td>
+<td>Explicit <code>joins</code> between data objects with <code>columnsFrom</code>/<code>columnsTo</code>, <code>joinType</code>, <code>secondary</code>, <code>pathName</code></td>
+<td>Implicit: <code>entities</code> of type <code>primary</code>/<code>foreign</code>/<code>unique</code>/<code>natural</code>; MetricFlow auto-resolves joins by matching entity names</td>
+</tr>
+<tr>
+<td>Deployment</td>
+<td>Self-hosted FastAPI service, MCP server, Gradio UI; OSS</td>
+<td>Definitions in dbt Core OSS; <strong>query API gated behind dbt Cloud</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-metric-types">2. Metric types<a class="headerlink" href="#2-metric-types" title="Permanent link">&para;</a></h2>
+<p>OBSL <code>MetricType</code> enum (<code>src/orionbelt/models/semantic.py</code>):</p>
+<table>
+<thead>
+<tr>
+<th>OBSL</th>
+<th>dbt SL</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Measure</code> (sum/avg/count/min/max, <code>total: bool</code> for grand totals)</td>
+<td><code>simple</code> metric over a <code>measure</code></td>
+<td>Both first-class</td>
+</tr>
+<tr>
+<td><code>Metric</code> <code>type: derived</code> with <code>{[Measure A]}/{[Measure B]}</code> expression</td>
+<td><code>ratio</code>, <code>derived</code></td>
+<td>Both first-class</td>
+</tr>
+<tr>
+<td><code>Metric</code> <code>type: cumulative</code> (running total, rolling window, grain-to-date)</td>
+<td><code>cumulative</code> (running, period-to-date, rolling)</td>
+<td>Both first-class — see §3</td>
+</tr>
+<tr>
+<td><code>Metric</code> <code>type: period_over_period</code> with 4 comparison modes</td>
+<td>Approximated via <code>offset_window</code> and <code>metric_time</code></td>
+<td>OBSL has a dedicated metric type — see §4</td>
+</tr>
+<tr>
+<td>—</td>
+<td><code>conversion</code></td>
+<td><strong>Gap in OBSL</strong></td>
+</tr>
+</tbody>
+</table>
+<p>OBSL coverage: ~95% of dbt's metric expressivity, missing only <code>conversion</code>.</p>
+<hr />
+<h2 id="3-cumulative-metrics-parity">3. Cumulative metrics (parity)<a class="headerlink" href="#3-cumulative-metrics-parity" title="Permanent link">&para;</a></h2>
+<p>Implementation: <code>src/orionbelt/compiler/cumulative_wrap.py</code> (~230 lines), pipeline phase placed after PoP wrap so it operates on already-compared data when needed.</p>
+<p>Three patterns supported, all dbt-equivalent:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">metrics</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="c1"># 1. Running total (unbounded cumulative sum)</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue_running_total</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cumulative</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">measure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">timeDimension</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">order_date</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">cumulativeType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sum</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">  </span><span class="c1"># 2. Rolling window (e.g. last 7 days)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue_7d_avg</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cumulative</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">measure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">timeDimension</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">order_date</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">cumulativeType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">avg</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">cumulativeWindow</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">7</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">  </span><span class="c1"># 3. Grain-to-date (e.g. month-to-date, resets each month)</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue_mtd</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cumulative</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nt">measure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="nt">timeDimension</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">order_date</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="nt">cumulativeType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sum</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">    </span><span class="nt">grainToDate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span>
+</span></code></pre></div>
+<p>Window functions used:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>SQL produced</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Running total</td>
+<td><code>SUM(x) OVER (ORDER BY time)</code></td>
+</tr>
+<tr>
+<td>Rolling window</td>
+<td><code>SUM(x) OVER (ORDER BY time ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)</code></td>
+</tr>
+<tr>
+<td>Grain-to-date</td>
+<td><code>SUM(x) OVER (PARTITION BY DATE_TRUNC(grain, time) ORDER BY time)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Aggregations: <code>sum</code>, <code>avg</code>, <code>min</code>, <code>max</code>, <code>count</code> (<code>CumulativeAggType</code>).
+Grains for grain-to-date: <code>year</code>, <code>quarter</code>, <code>month</code>, <code>week</code> (<code>GrainToDate</code>).</p>
+<hr />
+<h2 id="4-period-over-period-obsl-advantage">4. Period-over-Period (OBSL advantage)<a class="headerlink" href="#4-period-over-period-obsl-advantage" title="Permanent link">&para;</a></h2>
+<p>Implementation: <code>src/orionbelt/compiler/pop_wrap.py</code> (~510 lines).</p>
+<p>OBSL exposes PoP as a <strong>first-class metric type</strong> with a comparison-mode enum, where dbt requires composing <code>offset_window</code> + <code>metric_time</code> + a derived metric.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">metrics</span><span class="p">:</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue_yoy</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">period_over_period</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">measure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">revenue</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">periodOverPeriod</span><span class="p">:</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="nt">grain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span><span class="w">            </span><span class="c1"># bucket grain</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">offset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-1</span><span class="w">              </span><span class="c1"># compare vs. previous period</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="nt">offsetGrain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">year</span><span class="w">       </span><span class="c1"># one year earlier</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">comparison</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">percentChange</span><span class="w">   </span><span class="c1"># ratio | difference | previousValue | percentChange</span>
+</span></code></pre></div>
+<p>Comparison modes (<code>PeriodOverPeriodComparison</code>):</p>
+<ul>
+<li><code>ratio</code> — current / prior</li>
+<li><code>difference</code> — current − prior</li>
+<li><code>previousValue</code> — just the prior period's value</li>
+<li><code>percentChange</code> — (current − prior) / prior</li>
+</ul>
+<p>Internally builds a synthetic date range and joins current vs. comparison period.</p>
+<p><strong>vs. dbt</strong>: dbt typically requires:
+1. Define a <code>simple</code> metric.
+2. Reference it in a <code>derived</code> metric using <code>metric_time</code> and <code>offset_window</code> parameters.
+3. Compose ratio/percent-change manually in <code>expr</code>.</p>
+<p>OBSL's single-declaration approach is more ergonomic for the common case.</p>
+<hr />
+<h2 id="5-multi-fact-fanout">5. Multi-fact / fanout<a class="headerlink" href="#5-multi-fact-fanout" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>OBSL</th>
+<th>dbt SL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fanout detection</td>
+<td>Explicit <code>compiler/fanout.py</code> raises <code>FanoutError</code></td>
+<td>Avoided implicitly via entity types</td>
+</tr>
+<tr>
+<td>Multi-fact strategy</td>
+<td>Dedicated <strong>CFL (Composite Fact Layer)</strong> planner — <code>compiler/cfl.py</code> — emits <code>UNION ALL</code> legs with per-leg common-root resolution via <code>JoinGraph.find_common_root()</code></td>
+<td>MetricFlow join planner traverses entity graph; strategy is internal/opaque</td>
+</tr>
+<tr>
+<td>User control</td>
+<td>Explicit star-vs-CFL switch surfaces in compilation</td>
+<td>Not exposed</td>
+</tr>
+<tr>
+<td>Snowflake optimization</td>
+<td>Uses <code>UNION ALL BY NAME</code></td>
+<td>n/a</td>
+</tr>
+</tbody>
+</table>
+<p>OBSL's CFL is more transparent and inspectable; dbt's approach is more declarative but harder to reason about for complex join graphs.</p>
+<h2 id="6-data-modeling-topology-a-major-differentiator">6. Data modeling topology (a major differentiator)<a class="headerlink" href="#6-data-modeling-topology-a-major-differentiator" title="Permanent link">&para;</a></h2>
+<p>dbt SL is fundamentally <strong>single-rooted, tree-shaped</strong> in practice: each query resolves a base measure to a primary entity and traverses outward via matching entity names. Multi-fact queries work, but the topology is implicit and ambiguous multi-paths are a smell rather than a feature.</p>
+<p>OBSL is built on a <strong>directed join graph (DAG)</strong> with explicit support for richer topologies:</p>
+<table>
+<thead>
+<tr>
+<th>Topology</th>
+<th>Star (single fact + dims)</th>
+<th>Snowflake (chained dims)</th>
+<th>Multi-rooted (multiple facts)</th>
+<th>Multi-path (alt. joins between same pair)</th>
+<th>Cycles</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OBSL</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>✅ via CFL <code>UNION ALL</code> legs with per-leg common root</td>
+<td>✅ first-class via <code>secondary: true</code> + <code>pathName</code> + per-query <code>usePathNames</code></td>
+<td>Detected and rejected</td>
+</tr>
+<tr>
+<td><strong>dbt SL</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>Partial — works if entities line up, but no explicit multi-fact planner</td>
+<td>Workaround: define alternate entities and pick by relationship</td>
+<td>Implicit</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why this matters</strong>: Real-world warehouses are messy. You routinely need a customer→order→order_item path <em>and</em> a customer→returns path queryable in one model, or to choose between "ship_address_id" and "billing_address_id" joins to the same address dimension on a per-query basis. dbt expects you to flatten these into well-shaped entities upstream; OBSL lets you model them as-is and resolve at query time.</p>
+<hr />
+<h2 id="7-joins">7. Joins<a class="headerlink" href="#7-joins" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>OBSL</th>
+<th>dbt SL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Definition</td>
+<td>Directed <code>join</code> declarations with <code>columnsFrom</code>/<code>columnsTo</code>, <code>joinType</code>, <code>secondary</code>, <code>pathName</code></td>
+<td>Inferred by matching <code>entity</code> names across semantic models</td>
+</tr>
+<tr>
+<td>Multiple paths between same objects</td>
+<td>First-class via <code>secondary: true</code> + named <code>pathName</code>, selected per-query via <code>usePathNames: [{source, target, pathName}]</code></td>
+<td>Express via additional entities — no path naming primitive</td>
+</tr>
+<tr>
+<td>Cycle / multi-path validation</td>
+<td>Built into resolver; <code>pathName</code> required for secondary</td>
+<td>n/a (graph traversal handles)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-dialects-execution">8. Dialects / execution<a class="headerlink" href="#8-dialects-execution" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>OBSL</th>
+<th>dbt SL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dialect coverage</td>
+<td>8: BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres, Snowflake</td>
+<td>All warehouses dbt supports (broader)</td>
+</tr>
+<tr>
+<td>SQL generation</td>
+<td>Full custom AST → SQL with per-dialect codegen (<code>dialect/*.py</code>)</td>
+<td>MetricFlow → SQL</td>
+</tr>
+<tr>
+<td>Execution surface</td>
+<td>Self-hosted, runs anywhere</td>
+<td>Query API (JDBC/GraphQL/Python SDK/MCP) <strong>dbt Cloud only</strong></td>
+</tr>
+<tr>
+<td>dbt Core query API</td>
+<td>n/a</td>
+<td>Definitions only — no built-in runtime serving</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-apis-interfaces">9. APIs / interfaces<a class="headerlink" href="#9-apis-interfaces" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>OBSL</th>
+<th>dbt SL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>REST API</td>
+<td>Yes — full session lifecycle, validate/compile/execute, ER diagram, <code>find</code>, lineage <code>explain</code>, OSI conversion</td>
+<td>No (REST not offered)</td>
+</tr>
+<tr>
+<td>Arrow Flight SQL</td>
+<td>Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau JDBC, Power BI ODBC) connect natively</td>
+<td>No</td>
+</tr>
+<tr>
+<td>DB-API 2.0 drivers</td>
+<td>Yes — 8 drivers (<code>ob-bigquery</code>, <code>ob-snowflake</code>, <code>ob-postgres</code>, <code>ob-mysql</code>, <code>ob-duckdb</code>, <code>ob-clickhouse</code>, <code>ob-databricks</code>, <code>ob-dremio</code>)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>GraphQL</td>
+<td>No</td>
+<td>Yes (dbt Cloud)</td>
+</tr>
+<tr>
+<td>JDBC</td>
+<td>Via Arrow Flight SQL JDBC driver</td>
+<td>Yes (dbt Cloud)</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>Yes (in-tree thin client + standalone repo <code>orionbelt-semantic-layer-mcp</code>)</td>
+<td>Yes (<code>dbt-mcp</code>)</td>
+</tr>
+<tr>
+<td>Python SDK</td>
+<td>Via FastAPI client</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>UI / Playground</td>
+<td>Yes — interactive Gradio playground: SQL Compiler, Query Results table, auto-generated Mermaid ER diagrams, interactive RDF/OBSL ontology graph (vis-network), OSI import/export, settings panel</td>
+<td>dbt Cloud Studio (paid)</td>
+</tr>
+<tr>
+<td>RDF graph + SPARQL</td>
+<td>Yes (<code>/graph</code>, <code>/sparql</code>)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Format conversion</td>
+<td>OSI ↔ OBML round-trip (<code>/convert/*</code>)</td>
+<td>n/a</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-other-distinctives">10. Other distinctives<a class="headerlink" href="#10-other-distinctives" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>OBSL</th>
+<th>dbt SL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sessions / multi-tenant runtime</td>
+<td>TTL, max-age, rate limits, 410/429</td>
+<td>Cloud-managed</td>
+</tr>
+<tr>
+<td>Caching</td>
+<td>None built-in</td>
+<td>dbt Cloud query cache</td>
+</tr>
+<tr>
+<td>Versioned governance, lineage to upstream models</td>
+<td>No (model is standalone)</td>
+<td>Strong — inherits dbt's lineage, tests, docs, exposures</td>
+</tr>
+<tr>
+<td>Filter ergonomics</td>
+<td><code>MeasureFilter</code>, <code>FilterContext</code>, <code>GrainOverride</code>, query-level <code>where</code>/<code>having</code></td>
+<td>Per-metric <code>filter:</code>, <code>metric_time</code></td>
+</tr>
+<tr>
+<td>Vendor-agnostic</td>
+<td>Yes — pure OSS</td>
+<td>Practical lock-in: production query APIs require dbt Cloud</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-gap-analysis-obsl-dbt-parity">11. Gap analysis (OBSL → dbt parity)<a class="headerlink" href="#11-gap-analysis-obsl-dbt-parity" title="Permanent link">&para;</a></h2>
+<p>To match dbt SL feature-for-feature, OBSL would need:</p>
+<ol>
+<li><strong><code>conversion</code> metric type</strong> — funnel-style metric: count of base events that converted to a target event within a window.</li>
+<li><strong><code>metric_time</code> virtual dimension</strong> — a unified time axis across heterogeneous fact tables, abstracting per-table date columns. (Partially achievable today via dimensions on each data object, but not as a single canonical handle.)</li>
+<li><strong>(Nice to have) Caching layer</strong> — query result cache keyed on (model version, query, filters).</li>
+<li><strong>(Nice to have) GraphQL or JDBC surface</strong> — for BI tool integration parity.</li>
+</ol>
+<p>Conversely, dbt SL would need to add to match OBSL's strengths:</p>
+<ol>
+<li><strong>Self-hostable query runtime</strong> (currently dbt Cloud only).</li>
+<li><strong>RDF/SPARQL graph view</strong> of the model.</li>
+<li><strong>Named secondary join paths</strong> for non-trivial multi-path scenarios.</li>
+<li><strong>Explicit fanout detection / CFL planner exposure</strong>.</li>
+</ol>
+<hr />
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>OBSL <code>MetricType</code> enum: <code>src/orionbelt/models/semantic.py</code></li>
+<li>OBSL cumulative wrap: <code>src/orionbelt/compiler/cumulative_wrap.py</code></li>
+<li>OBSL PoP wrap: <code>src/orionbelt/compiler/pop_wrap.py</code></li>
+<li>OBSL CFL planner: <code>src/orionbelt/compiler/cfl.py</code></li>
+<li>OBSL docs: <a href="../../guide/model-format/">Model Format</a>, <a href="../../guide/period-over-period/">Period-over-Period Metrics</a>, <a href="../../guide/compilation/">Compilation Pipeline</a></li>
+<li>dbt SL: https://docs.getdbt.com/docs/build/about-metricflow</li>
+<li>dbt SL GraphQL API: https://docs.getdbt.com/docs/dbt-cloud-apis/sl-graphql</li>
+</ul>
 
 
 
