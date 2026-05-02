@@ -134,7 +134,8 @@ Bottom line: LookML's **breadth of aggregate types** is wider; OBSL's **time-awa
 | | OBSL | LookML |
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` (model-level) | `join:` blocks inside an `explore` (explore-level) |
-| Cardinality | `joinType` (inner/left/right) | `relationship:` (`one_to_one`/`many_to_one`/etc.) drives symmetric aggregates |
+| Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `many_to_one`, `one_to_many`, `many_to_many` |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql_on: ${a.id} = ${b.a_id} ;;` (free-form SQL) |
 | Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | Multiple aliased joins via `from:` keyword + different names — no path naming primitive |
 | Multiple "starting points" | Each query picks a base data object | Each `explore` is a separate starting point with its own join tree |

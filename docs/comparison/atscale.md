@@ -112,7 +112,7 @@ For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML f
 | | OBSL | AtScale |
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` | Relationships in Design Center between dimensions and facts |
-| Cardinality | `joinType` (inner/left/right) | Relationship cardinality + role-playing dimensions |
+| Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | Relationship cardinality + role-playing dimensions |
 | Multiple paths | First-class via `secondary: true` + `pathName` + per-query `usePathNames` | **Role-playing dimensions** (a dimension joined multiple ways with different roles) — the OLAP-native way |
 | Cycle / multi-path validation | Built into resolver | Engine-level checks |
 
