@@ -149,7 +149,8 @@ Beyond pre-aggregations, Cube has a tiered caching architecture: in-memory query
 | | OBSL | Cube |
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` | `joins:` block inside each `cube` |
-| Cardinality | `joinType` (inner/left/right) | `relationship: one_to_one`/`one_to_many`/`many_to_one` — drives symmetric aggregates |
+| Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `one_to_many`, `many_to_one` |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql: "{CUBE}.id = {other.foo_id}"` (free-form SQL with `{CUBE}` reference) |
 | Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | No path-name primitive; workaround via `view`s exposing one path or aliased cubes |
 | Join direction | Directed, declared per data object | Bidirectional inference based on `relationship:` |

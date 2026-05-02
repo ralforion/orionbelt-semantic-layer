@@ -133,7 +133,8 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 | | OBSL | Malloy |
 |---|---|---|
 | Definition site | YAML `joins:` array on each `DataObject` | `join_one:`, `join_many:`, `join_cross:` inside `source extend { ... }` |
-| Cardinality | `joinType` (inner/left/right) | Cardinality is part of the join keyword (`join_one` vs `join_many`) — drives symmetric aggregate logic |
+| Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | Cardinality is part of the join keyword: `join_one`, `join_many`, `join_cross` |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregate logic |
 | Multiple paths between same tables | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]` | Multiple `join_one`/`join_many` declarations with different aliases — no path-name primitive |
 | Cycle / multi-path validation | Built into resolver | Compiler-level checks |
 
