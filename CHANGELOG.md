@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.1.4] - 2026-05-03
+
+### Fixed
+
+- **`timeGrain` on a non-temporal column is now rejected at validation time** instead of producing a runtime SQL error. Previously a dimension like `{ column: YearMonth, resultType: string, timeGrain: month }` passed validation but compiled to `date_trunc('month', "Calendar"."ym")`, which Postgres (and other strict dialects) reject with `function date_trunc(unknown, text) does not exist`. The new check inspects the underlying `DataObject.columns[col].abstractType` and emits `TIME_GRAIN_ON_NON_TEMPORAL` unless the type is `date`, `timestamp`, or `timestamp_tz`. Error message includes a remediation hint (drop `timeGrain`, fix the column's `abstractType`, or define a computed column with `to_date()`). Particularly relevant for LLM-generated models, which were the most common source of this mistake.
+
+### Documentation
+
+- `docs/guide/model-format.md` and the `OBML_REFERENCE` resource now document the `timeGrain` constraint inline so LLMs generating OBML have the rule in their prompt context.
+
 ## [2.1.3] - 2026-04-30
 
 ### Fixed
