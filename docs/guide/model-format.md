@@ -273,7 +273,7 @@ dimensions:
 | `column` | string | Yes | Column name in the data object |
 | `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
 | `label` | string | No | Display label |
-| `timeGrain` | enum | No | Time grain: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` |
+| `timeGrain` | enum | No | Time grain: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`. The underlying column's `abstractType` must be `date`, `timestamp`, or `timestamp_tz` — validation rejects `timeGrain` on string/numeric columns (error code `TIME_GRAIN_ON_NON_TEMPORAL`). For text columns that encode dates (e.g. `'2024-03'`), define a computed column with `to_date()` first and point the dimension at that. |
 | `via` | string | No | Force join path through this intermediate data object (role-playing dimensions) |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |

@@ -41,6 +41,12 @@ dimensions:
     column: Country               # column within that data object
     resultType: string            # data type of the result (informative only)
     timeGrain: month              # optional: year | quarter | month | week | day | hour
+                                  # REQUIRES the underlying column's abstractType to be
+                                  # date, timestamp, or timestamp_tz. Setting timeGrain on
+                                  # a string/int column is rejected at validation time
+                                  # (error code TIME_GRAIN_ON_NON_TEMPORAL). For text columns
+                                  # encoding dates (e.g. '2024-03'), define a computed column
+                                  # with to_date() and point the dimension at that.
     via: Orders                   # optional: force join path through this data object
 
   # Role-playing dimensions — same target, different join paths

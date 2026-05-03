@@ -30,6 +30,7 @@ class SemanticValidator:
         errors.extend(self._check_join_targets_exist(model))
         errors.extend(self._check_references_resolve(model))
         errors.extend(self._check_num_class_on_numeric_columns(model))
+        errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
@@ -376,6 +377,46 @@ class SemanticValidator:
         return errors
 
     _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
+    _TIME_GRAIN_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ}
+
+    def _check_time_grain_on_temporal_columns(self, model: SemanticModel) -> list[SemanticError]:
+        """Ensure timeGrain is only set when the underlying column is temporal.
+
+        ``timeGrain`` compiles to ``date_trunc(grain, column)``, which fails at
+        runtime if the column's abstractType is not date/timestamp/timestamp_tz.
+        Reject at model-load time so the error surfaces during validation rather
+        than during the first query.
+        """
+        errors: list[SemanticError] = []
+        for name, dim in model.dimensions.items():
+            if dim.time_grain is None:
+                continue
+            obj_name = dim.view
+            col_name = dim.column
+            if not obj_name or not col_name:
+                continue
+            obj = model.data_objects.get(obj_name)
+            if obj is None or col_name not in obj.columns:
+                # Caught by _check_references_resolve.
+                continue
+            col = obj.columns[col_name]
+            if col.abstract_type not in self._TIME_GRAIN_TYPES:
+                errors.append(
+                    SemanticError(
+                        code="TIME_GRAIN_ON_NON_TEMPORAL",
+                        message=(
+                            f"Dimension '{name}' has timeGrain "
+                            f"'{dim.time_grain.value}' but underlying column "
+                            f"'{obj_name}.{col_name}' has abstractType "
+                            f"'{col.abstract_type.value}'. timeGrain requires "
+                            f"the column to be date, timestamp, or timestamp_tz. "
+                            f"Drop timeGrain, fix the column's abstractType, or "
+                            f"define a computed column with to_date()."
+                        ),
+                        path=f"dimensions.{name}",
+                    )
+                )
+        return errors
 
     def _check_num_class_on_numeric_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure numClass is only set on numeric columns (int or float)."""

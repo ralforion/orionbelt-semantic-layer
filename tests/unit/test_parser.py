@@ -1183,6 +1183,81 @@ dataObjects:
         errors = validator.validate(model)
         assert not any(e.code == "NUM_CLASS_ON_NON_NUMERIC" for e in errors)
 
+    def test_time_grain_on_string_column_rejected(self, resolver: ReferenceResolver) -> None:
+        """timeGrain on a string-typed column should produce TIME_GRAIN_ON_NON_TEMPORAL."""
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Calendar:
+    code: calendar
+    database: DB
+    schema: SCH
+    columns:
+      YearMonth:
+        code: ym
+        abstractType: string
+dimensions:
+  Date (Month):
+    dataObject: Calendar
+    column: YearMonth
+    resultType: string
+    timeGrain: month
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, _result = resolver.resolve(raw, source_map)
+        validator = SemanticValidator()
+        errors = validator.validate(model)
+        assert any(e.code == "TIME_GRAIN_ON_NON_TEMPORAL" for e in errors), (
+            f"Expected TIME_GRAIN_ON_NON_TEMPORAL, got: {[e.code for e in errors]}"
+        )
+
+    def test_time_grain_on_date_column_ok(self, resolver: ReferenceResolver) -> None:
+        """timeGrain on a date/timestamp/timestamp_tz column should not produce errors."""
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Calendar:
+    code: calendar
+    database: DB
+    schema: SCH
+    columns:
+      OrderDate:
+        code: order_date
+        abstractType: date
+      OrderedAt:
+        code: ordered_at
+        abstractType: timestamp
+      OrderedAtTz:
+        code: ordered_at_tz
+        abstractType: timestamp_tz
+dimensions:
+  Order Date (Month):
+    dataObject: Calendar
+    column: OrderDate
+    resultType: date
+    timeGrain: month
+  Ordered At (Day):
+    dataObject: Calendar
+    column: OrderedAt
+    resultType: timestamp
+    timeGrain: day
+  Ordered At TZ (Hour):
+    dataObject: Calendar
+    column: OrderedAtTz
+    resultType: timestamp_tz
+    timeGrain: hour
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, _result = resolver.resolve(raw, source_map)
+        validator = SemanticValidator()
+        errors = validator.validate(model)
+        assert not any(e.code == "TIME_GRAIN_ON_NON_TEMPORAL" for e in errors), (
+            f"Did not expect TIME_GRAIN_ON_NON_TEMPORAL, got: "
+            f"{[(e.code, e.message) for e in errors]}"
+        )
+
     def test_malformed_metric_ref_missing_close_bracket(self, resolver: ReferenceResolver) -> None:
         yaml_content = """\
 version: 1.0
