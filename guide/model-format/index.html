@@ -1504,7 +1504,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.1.3
+  OrionBelt v2.1.4
 </div>
       
     </li>
@@ -3242,7 +3242,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.1.3
+  OrionBelt v2.1.4
 </div>
                   </div>
                 </div>
@@ -3698,7 +3698,7 @@
 <td><code>timeGrain</code></td>
 <td>enum</td>
 <td>No</td>
-<td>Time grain: <code>year</code>, <code>quarter</code>, <code>month</code>, <code>week</code>, <code>day</code>, <code>hour</code>, <code>minute</code>, <code>second</code></td>
+<td>Time grain: <code>year</code>, <code>quarter</code>, <code>month</code>, <code>week</code>, <code>day</code>, <code>hour</code>, <code>minute</code>, <code>second</code>. The underlying column's <code>abstractType</code> must be <code>date</code>, <code>timestamp</code>, or <code>timestamp_tz</code> — validation rejects <code>timeGrain</code> on string/numeric columns (error code <code>TIME_GRAIN_ON_NON_TEMPORAL</code>). For text columns that encode dates (e.g. <code>'2024-03'</code>), define a computed column with <code>to_date()</code> first and point the dimension at that.</td>
 </tr>
 <tr>
 <td><code>via</code></td>
