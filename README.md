@@ -7,7 +7,7 @@
 <p align="center"><strong>Compile and execute YAML semantic models as analytical SQL across multiple database dialects</strong></p>
 
 <!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](http://35.187.174.102/ui/?__theme=dark)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](https://orionbelt.ralforion.com/ui/?__theme=dark)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
@@ -55,9 +55,9 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 ### Option A: Live Demo (no install)
 
-**[Open the Live Demo](http://35.187.174.102/ui/?__theme=dark)** — Gradio UI with a pre-loaded example model. Paste a query, pick a dialect, see SQL instantly.
+**[Open the Live Demo](https://orionbelt.ralforion.com/ui/?__theme=dark)** — Gradio UI with a pre-loaded example model. Paste a query, pick a dialect, see SQL instantly.
 
-API explorer: [Swagger UI](http://35.187.174.102/docs) | [ReDoc](http://35.187.174.102/redoc)
+API explorer: [Swagger UI](https://orionbelt.ralforion.com/docs) | [ReDoc](https://orionbelt.ralforion.com/redoc)
 
 ### Option B: Google Colab (no install)
 

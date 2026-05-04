@@ -48,6 +48,6 @@ API_BASE_URL=http://remote-api:8080 uv run orionbelt-ui # point to remote API
 
 The hosted demo is available at:
 
-> **[http://35.187.174.102/ui](http://35.187.174.102/ui/?__theme=dark)**
+> **[https://orionbelt.ralforion.com/ui](https://orionbelt.ralforion.com/ui/?__theme=dark)**
 
-API endpoint: `http://35.187.174.102` — Interactive docs: [Swagger UI](http://35.187.174.102/docs) | [ReDoc](http://35.187.174.102/redoc)
+API endpoint: `https://orionbelt.ralforion.com` — Interactive docs: [Swagger UI](https://orionbelt.ralforion.com/docs) | [ReDoc](https://orionbelt.ralforion.com/redoc)
