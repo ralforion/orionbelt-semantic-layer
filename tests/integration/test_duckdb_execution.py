@@ -975,10 +975,9 @@ class TestAPIExecuteEndpoint:
         )
         try:
             mock_exec = _make_execute_sql(api_duckdb)
-            with (
-                patch("orionbelt.api.routers.sessions.execute_sql", mock_exec),
-                patch("orionbelt.api.routers.shortcuts.execute_sql", mock_exec),
-            ):
+            # Only sessions.execute_sql needs patching now; the shortcut
+            # delegates to _run_with_cache → sessions.execute_sql.
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as c:
                     # Create a session so the shortcut can auto-resolve

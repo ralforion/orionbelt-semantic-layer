@@ -1078,6 +1078,12 @@ class OneshotBatchQueryResult(BaseModel):
     )
     warnings: list[StructuredWarning] = Field(default_factory=list)
     error: OneshotBatchQueryError | None = None
+    physical_tables: list[str] = Field(default_factory=list)
+    cached: bool = False
+    cached_at: str | None = None
+    ttl_seconds: int | None = None
+    ttl_source: str | None = None
+    ttl_limiting_table: str | None = None
 
 
 class OneshotBatchResponse(BaseModel):

@@ -849,34 +849,72 @@ async def execute_query(
             },
         ) from None
 
-    # Resolve timezone — request override → model default → host TZ → UTC.
-    # ``model`` was already loaded above for dialect resolution; reuse it.
+    return await _run_with_cache(
+        store=store,
+        model=model,
+        compile_result=result,
+        query=query,
+        session_id=session_id,
+        model_id=body.model_id,
+        dialect=dialect,
+        cache=cache,
+        cache_config=cache_config,
+        response_format=format,
+        format_values=format_values,
+        locale=locale,
+        timezone_override=timezone,
+    )
+
+
+# -- cache helpers ----------------------------------------------------------
+
+
+async def _run_with_cache(
+    *,
+    store: ModelStore,
+    model: Any,
+    compile_result: Any,
+    query: Any,
+    session_id: str,
+    model_id: str,
+    dialect: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+    response_format: Literal["json", "tsv"],
+    format_values: bool,
+    locale: str | None,
+    timezone_override: str | None,
+) -> QueryExecuteResponse | Response:
+    """Cache-aware execute pipeline shared by session and shortcut endpoints.
+
+    Looks up the cache before executing, stores on miss, and surfaces the
+    ``cached`` / ``ttl_*`` metadata. Only the canonical JSON shape is
+    cached (TSV + value-formatted JSON skip caching to avoid locale-keyed
+    proliferation).
+    """
     model_default_tz: str | None = None
     override_db_tz = False
     if model.settings:
         model_default_tz = model.settings.default_timezone
         override_db_tz = model.settings.override_database_timezone
-    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
+    tz = resolve_timezone(default_timezone=timezone_override or model_default_tz)
 
-    # Freshness-driven cache lookup. Only the canonical JSON shape is cached
-    # — TSV and value-formatted JSON depend on locale/format, so we skip
-    # those to keep cache keys deterministic. PLAN_freshness_driven_cache.md.
-    cacheable = format == "json" and not format_values
+    cacheable = response_format == "json" and not format_values
     cache_key: str | None = None
     ttl_outcome = None
     if cacheable:
         cache_key = build_cache_key(
             session_id=session_id,
-            model_id=body.model_id,
+            model_id=model_id,
             dialect=dialect,
             query=query.model_dump(by_alias=True, mode="json"),
         )
         ttl_outcome = _resolve_ttl(
             store=store,
-            model_id=body.model_id,
+            model_id=model_id,
             cache=cache,
             cache_config=cache_config,
-            physical_tables=result.physical_tables,
+            physical_tables=compile_result.physical_tables,
         )
         cached_envelope = await _try_cache_get(cache, cache_key)
         if cached_envelope is not None:
@@ -889,7 +927,7 @@ async def execute_query(
     try:
         exec_result = await asyncio.to_thread(
             execute_sql,
-            result.sql,
+            compile_result.sql,
             dialect=dialect,
             tz=tz,
             override_db_tz=override_db_tz,
@@ -901,10 +939,10 @@ async def execute_query(
 
     effective_locale = locale if locale is not None else get_default_locale()
     response = _build_execute_response(
-        compile_result=result,
+        compile_result=compile_result,
         exec_result=exec_result,
         model=model,
-        response_format=format,
+        response_format=response_format,
         format_values=format_values,
         locale=effective_locale,
     )
@@ -922,16 +960,13 @@ async def execute_query(
             response=response,
             ttl_seconds=ttl_outcome.ttl.seconds,
             session_id=session_id,
-            model_id=body.model_id,
+            model_id=model_id,
             dialect=dialect,
             query=query,
         )
     elif cacheable and ttl_outcome is not None and isinstance(response, QueryExecuteResponse):
         _apply_no_cache_metadata(response, ttl_outcome)
     return response
-
-
-# -- cache helpers ----------------------------------------------------------
 
 
 def _resolve_ttl(

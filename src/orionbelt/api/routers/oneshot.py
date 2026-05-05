@@ -36,6 +36,10 @@ from orionbelt.api.schemas import (
     StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
+from orionbelt.cache import build_cache_key, compute_effective_ttl
+from orionbelt.cache.parquet_codec import decode as cache_decode
+from orionbelt.cache.parquet_codec import encode as cache_encode
+from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -187,12 +191,15 @@ def _compile(
 async def _run_query(
     *,
     store: ModelStore,
+    session_id: str,
     model_id: str,
     item: OneshotBatchQueryItem,
     default_dialect: str | None,
     execute: bool,
     semaphore: asyncio.Semaphore,
     per_query_timeout_s: float,
+    cache: Cache,
+    cache_config: Any,
 ) -> OneshotBatchQueryResult:
     """Compile + optionally execute a single query under a semaphore."""
     async with semaphore:
@@ -206,6 +213,7 @@ async def _run_query(
         sql_str = format_sql(compile_result.sql, compile_result.dialect)
         explain = _build_explain_response(compile_result)
         warnings = [semantic_error_to_warning(w) for w in compile_result.warnings]
+        physical_tables = list(compile_result.physical_tables)
 
         # Per-query execute decides on the merged flag (explicit override > batch default).
         wants_execute = item.execute if item.execute is not None else execute
@@ -219,6 +227,7 @@ async def _run_query(
                 explain=explain,
                 executed=False,
                 warnings=warnings,
+                physical_tables=physical_tables,
             )
 
         if not is_query_execute_enabled():
@@ -241,6 +250,55 @@ async def _run_query(
             model_default_tz = model.settings.default_timezone
             override_db_tz = model.settings.override_database_timezone
         tz = resolve_timezone(default_timezone=model_default_tz)
+
+        # Freshness-driven cache lookup. Cacheable here is always True
+        # because oneshot batch produces canonical JSON only.
+        cache_key = build_cache_key(
+            session_id=session_id,
+            model_id=model_id,
+            dialect=dialect,
+            query=item.query.model_dump(by_alias=True, mode="json"),
+        )
+        ttl_outcome = _resolve_oneshot_ttl(
+            store=store,
+            model_id=model_id,
+            cache=cache,
+            cache_config=cache_config,
+            physical_tables=physical_tables,
+        )
+        cached_hit = await _try_oneshot_cache_get(cache, cache_key)
+        if cached_hit is not None:
+            envelope, cached_at_iso = cached_hit
+            from orionbelt.api.schemas import ColumnMetadata as _ColMeta
+
+            cached_columns = [
+                _ColMeta(
+                    name=c.get("name", ""),
+                    type=c.get("type", "string"),
+                    format=c.get("format"),
+                )
+                for c in envelope.columns
+            ]
+            return OneshotBatchQueryResult(
+                id=item.id,
+                status="ok",
+                sql=envelope.sql or sql_str,
+                dialect=envelope.dialect or dialect,
+                sql_valid=envelope.sql_valid,
+                explain=explain,
+                columns=cached_columns,
+                rows=envelope.rows,
+                row_count=envelope.row_count,
+                execution_time_ms=envelope.execution_time_ms,
+                executed=True,
+                warnings=warnings,
+                physical_tables=physical_tables,
+                cached=True,
+                cached_at=cached_at_iso,
+                ttl_seconds=ttl_outcome.ttl.seconds if ttl_outcome.ttl else None,
+                ttl_source=ttl_outcome.ttl.source if ttl_outcome.ttl else None,
+                ttl_limiting_table=(ttl_outcome.ttl.limiting_table if ttl_outcome.ttl else None),
+            )
 
         try:
             exec_result = await asyncio.wait_for(
@@ -290,6 +348,33 @@ async def _run_query(
         # wants the narrowing.
         assert isinstance(envelope, QueryExecuteResponse)
 
+        # Cache the fresh result when TTL composition succeeded.
+        ttl_seconds: int | None = None
+        ttl_source: str | None = None
+        ttl_limiting_table: str | None = None
+        if ttl_outcome.ttl is not None:
+            ttl_seconds = ttl_outcome.ttl.seconds
+            ttl_source = ttl_outcome.ttl.source
+            ttl_limiting_table = ttl_outcome.ttl.limiting_table
+            await _try_oneshot_cache_set(
+                cache=cache,
+                key=cache_key,
+                envelope=envelope,
+                ttl_seconds=ttl_outcome.ttl.seconds,
+                session_id=session_id,
+                model_id=model_id,
+                dialect=dialect,
+                query=item.query,
+                physical_tables=physical_tables,
+            )
+        elif ttl_outcome.no_cache_reason is not None:
+            ttl_source = (
+                "no_cache"
+                if ttl_outcome.no_cache_reason.value == "unknown_freshness"
+                else f"no_cache:{ttl_outcome.no_cache_reason.value}"
+            )
+            ttl_limiting_table = ttl_outcome.no_cache_table
+
         return OneshotBatchQueryResult(
             id=item.id,
             status="ok",
@@ -303,6 +388,11 @@ async def _run_query(
             execution_time_ms=envelope.execution_time_ms,
             executed=True,
             warnings=warnings,
+            physical_tables=physical_tables,
+            cached=False,
+            ttl_seconds=ttl_seconds,
+            ttl_source=ttl_source,
+            ttl_limiting_table=ttl_limiting_table,
         )
 
 
@@ -366,18 +456,26 @@ async def oneshot_batch(
     per_query_timeout_s = cfg.default_timeout_ms / 1000.0
     batch_timeout_s = cfg.batch_timeout_ms / 1000.0
 
+    from orionbelt.api.deps import get_cache, get_cache_config
+
+    cache = get_cache()
+    cache_config = get_cache_config()
+
     # Pre-allocate result slots so we can keep stable ordering by id.
     results: list[OneshotBatchQueryResult | None] = [None] * len(body.queries)
 
     async def _run_indexed(idx: int, item: OneshotBatchQueryItem) -> None:
         results[idx] = await _run_query(
             store=store,
+            session_id=session_id,
             model_id=model_id,
             item=item,
             default_dialect=body.dialect,
             execute=body.execute,
             semaphore=semaphore,
             per_query_timeout_s=per_query_timeout_s,
+            cache=cache,
+            cache_config=cache_config,
         )
 
     if body.fail_fast:
@@ -441,3 +539,101 @@ async def oneshot_batch(
         results=final_results,
         batch_warnings=batch_warnings,
     )
+
+
+# -- cache helpers ----------------------------------------------------------
+
+
+def _resolve_oneshot_ttl(
+    *,
+    store: ModelStore,
+    model_id: str,
+    cache: Cache,
+    cache_config: Any,
+    physical_tables: list[str],
+) -> Any:
+    """Compose the effective TTL for one batch query."""
+    contracts: dict[str, Any] = {}
+    try:
+        contracts = store.refresh_contracts(model_id)
+    except Exception:
+        logger.debug("oneshot refresh_contracts failed", exc_info=True)
+    heartbeats: dict[str, Any] = {}
+    snapshot = getattr(cache, "heartbeats_snapshot", None)
+    if callable(snapshot):
+        try:
+            heartbeats = snapshot()
+        except Exception:
+            heartbeats = {}
+    return compute_effective_ttl(
+        physical_tables=physical_tables,
+        contracts=contracts,
+        heartbeats=heartbeats,
+        min_ttl_seconds=cache_config.min_ttl_seconds,
+        max_ttl_seconds=cache_config.max_ttl_seconds,
+        unknown_policy=cache_config.unknown_policy,
+        unknown_default_ttl_seconds=cache_config.unknown_default_ttl_seconds,
+    )
+
+
+async def _try_oneshot_cache_get(cache: Cache, key: str) -> tuple[Any, str] | None:
+    """Best-effort cache get for oneshot. Returns (envelope, cached_at_iso) or None."""
+    try:
+        result = await cache.get(key)
+    except Exception:
+        logger.debug("oneshot cache.get error", exc_info=True)
+        return None
+    if result is None:
+        return None
+    try:
+        envelope = cache_decode(result.payload)
+    except Exception:
+        logger.debug("oneshot cache decode failed", exc_info=True)
+        return None
+    return envelope, result.cached_at.isoformat()
+
+
+async def _try_oneshot_cache_set(
+    *,
+    cache: Cache,
+    key: str,
+    envelope: Any,
+    ttl_seconds: int,
+    session_id: str,
+    model_id: str,
+    dialect: str,
+    query: Any,
+    physical_tables: list[str],
+) -> None:
+    """Best-effort cache set for oneshot batch entries."""
+    try:
+        payload = cache_encode(
+            columns=[c.model_dump() for c in envelope.columns],
+            rows=envelope.rows,
+            sql=envelope.sql,
+            dialect=envelope.dialect,
+            explain=envelope.explain.model_dump() if envelope.explain else None,
+            warnings=[w.model_dump() for w in envelope.warnings],
+            sql_valid=envelope.sql_valid,
+            execution_time_ms=envelope.execution_time_ms,
+            timezone=envelope.timezone,
+            resolved=envelope.resolved.model_dump(),
+            physical_tables=physical_tables,
+        )
+    except Exception:
+        logger.debug("oneshot cache encode failed", exc_info=True)
+        return
+    try:
+        await cache.set(
+            key,
+            payload,
+            ttl_seconds=ttl_seconds,
+            physical_tables=physical_tables,
+            session_id=session_id,
+            model_id=model_id,
+            query_hash=key[:16],
+            dialect=dialect,
+            row_count=envelope.row_count,
+        )
+    except Exception:
+        logger.debug("oneshot cache.set error", exc_info=True)
