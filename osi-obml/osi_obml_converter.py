@@ -205,7 +205,7 @@ class OSItoOBML:
                     }
                 ]
 
-        # Restore DataObject owner/comment from custom_extensions
+        # Restore DataObject owner / comment / refresh from custom_extensions
         for ext in ds.get("custom_extensions", []):
             if ext.get("vendor_name") == "COMMON":
                 try:
@@ -214,6 +214,8 @@ class OSItoOBML:
                         do["owner"] = ext_data["obml_owner"]
                     if ext_data.get("obml_comment"):
                         do["comment"] = ext_data["obml_comment"]
+                    if ext_data.get("obml_refresh"):
+                        do["refresh"] = ext_data["obml_refresh"]
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
@@ -1015,12 +1017,17 @@ class OBMLtoOSI:
             if rel:
                 relationships.append(rel)
 
-        # ── Preserve DataObject owner/comment in custom_extensions ────
+        # ── Preserve DataObject owner/comment + refresh in custom_extensions ──
         do_extras: dict[str, Any] = {}
         if do_obj.get("owner"):
             do_extras["obml_owner"] = do_obj["owner"]
         if do_obj.get("comment"):
             do_extras["obml_comment"] = do_obj["comment"]
+        # OBML-only freshness contract — round-tripped through OSI
+        # custom_extensions since OSI has no native equivalent. See
+        # design/PLAN_freshness_driven_cache.md §5.
+        if do_obj.get("refresh"):
+            do_extras["obml_refresh"] = do_obj["refresh"]
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
             ds_exts.append(

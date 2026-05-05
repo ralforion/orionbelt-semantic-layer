@@ -283,6 +283,29 @@ class HeartbeatResponse(BaseModel):
     affected_data_objects: list[str] = Field(default_factory=list)
 
 
+class CacheSettingsInfo(BaseModel):
+    """Public view of result-cache configuration (GET /v1/settings).
+
+    Always present so clients can see whether caching is on. Sensitive
+    fields (heartbeat token) are reported as a flag, not the value.
+    """
+
+    backend: str = Field(description="'noop' (disabled) or 'file' (enabled)")
+    enabled: bool = Field(description="True when ``backend != 'noop'``")
+    min_ttl_seconds: int
+    max_ttl_seconds: int
+    max_value_bytes: int
+    max_disk_bytes: int
+    sweep_interval_seconds: int
+    unknown_freshness_policy: str = Field(
+        description="'no_cache' or 'default_ttl' — how to treat tables without a refresh: block"
+    )
+    unknown_freshness_default_ttl: int
+    heartbeat_endpoint_enabled: bool = Field(
+        description="True when HEARTBEAT_AUTH_TOKEN is configured (POST /v1/heartbeat live)"
+    )
+
+
 class FlightSettingsInfo(BaseModel):
     """Arrow Flight SQL server status (included when FLIGHT_ENABLED=true)."""
 
@@ -427,6 +450,10 @@ class SettingsResponse(BaseModel):
     oneshot_batch: OneshotBatchLimits | None = Field(
         default=None,
         description="Limits for POST /v1/oneshot/batch",
+    )
+    cache: CacheSettingsInfo | None = Field(
+        default=None,
+        description="Result-cache configuration. Always present.",
     )
 
 

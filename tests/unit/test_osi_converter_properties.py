@@ -146,6 +146,67 @@ class TestMetricDataType:
         assert result["metrics"]["Revenue Growth"].get("format") == "#,##0.00%"
 
 
+class TestRefreshPolicy:
+    """OBML refresh: block round-trips through OSI custom_extensions."""
+
+    def test_static_refresh_roundtrip(self):
+        obml = {
+            **_OBML_FULL,
+            "dataObjects": {
+                **_OBML_FULL["dataObjects"],
+                "Orders": {
+                    **_OBML_FULL["dataObjects"]["Orders"],
+                    "refresh": {"mode": "static"},
+                },
+            },
+        }
+        result = _roundtrip(obml)
+        assert result["dataObjects"]["Orders"].get("refresh") == {"mode": "static"}
+
+    def test_interval_refresh_roundtrip(self):
+        obml = {
+            **_OBML_FULL,
+            "dataObjects": {
+                **_OBML_FULL["dataObjects"],
+                "Orders": {
+                    **_OBML_FULL["dataObjects"]["Orders"],
+                    "refresh": {
+                        "mode": "interval",
+                        "interval": "1h",
+                        "anchor": "00:00",
+                        "timezone": "UTC",
+                    },
+                },
+            },
+        }
+        result = _roundtrip(obml)
+        rt = result["dataObjects"]["Orders"]["refresh"]
+        assert rt["mode"] == "interval"
+        assert rt["interval"] == "1h"
+        assert rt["anchor"] == "00:00"
+        assert rt["timezone"] == "UTC"
+
+    def test_heartbeat_refresh_roundtrip(self):
+        obml = {
+            **_OBML_FULL,
+            "dataObjects": {
+                **_OBML_FULL["dataObjects"],
+                "Orders": {
+                    **_OBML_FULL["dataObjects"]["Orders"],
+                    "refresh": {"mode": "heartbeat", "maxStaleness": "5m"},
+                },
+            },
+        }
+        result = _roundtrip(obml)
+        rt = result["dataObjects"]["Orders"]["refresh"]
+        assert rt["mode"] == "heartbeat"
+        assert rt["maxStaleness"] == "5m"
+
+    def test_no_refresh_no_key(self):
+        result = _roundtrip(_OBML_FULL)
+        assert "refresh" not in result["dataObjects"]["Orders"]
+
+
 class TestColumnProperties:
     """Column properties roundtrip.
 

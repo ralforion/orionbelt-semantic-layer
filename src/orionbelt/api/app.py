@@ -139,6 +139,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             cache.start_sweep_task()  # type: ignore[attr-defined]
         except Exception:
             logger.exception("Failed to start cache sweep task")
+        logger.info(
+            "Cache enabled: backend=%s dir=%s min_ttl=%ds max_ttl=%ds "
+            "max_value=%dB max_disk=%dB sweep=%ds unknown_policy=%s "
+            "unknown_default_ttl=%ds heartbeat_auth=%s",
+            cache.backend_name,
+            settings.cache_dir,
+            settings.cache_min_ttl_seconds,
+            settings.cache_max_ttl_seconds,
+            settings.cache_max_value_bytes,
+            settings.cache_max_disk_bytes,
+            settings.cache_sweep_interval_seconds,
+            settings.cache_unknown_freshness_policy,
+            settings.cache_unknown_freshness_default_ttl,
+            "configured" if settings.heartbeat_auth_token else "disabled (404)",
+        )
+    elif cache.backend_name != "noop":
+        # Unknown backend selected via env — still useful to log
+        logger.info("Cache enabled: backend=%s", cache.backend_name)
 
     init_session_manager(
         mgr,

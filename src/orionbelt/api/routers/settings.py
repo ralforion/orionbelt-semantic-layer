@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from orionbelt import __version__
 from orionbelt.api.deps import (
+    get_cache,
+    get_cache_config,
     get_db_vendor,
     get_flight_info,
     get_oneshot_batch_config,
@@ -18,6 +20,7 @@ from orionbelt.api.deps import (
     is_single_model_mode,
 )
 from orionbelt.api.schemas import (
+    CacheSettingsInfo,
     DialectResolutionInfo,
     FlightSettingsInfo,
     ModelSettingsInfo,
@@ -34,6 +37,7 @@ from orionbelt.service.db_executor import (
     warm_db_tz_cache,
 )
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.settings import Settings
 
 router = APIRouter()
 
@@ -267,6 +271,26 @@ async def get_settings(
         batch_timeout_ms=batch_cfg.batch_timeout_ms,
     )
 
+    # Result-cache surface: backend-aware so callers can see whether caching
+    # is on without inspecting env. Sourced from runtime config (cache backend,
+    # heartbeat token presence) plus :class:`Settings` for the static numeric
+    # bounds.
+    raw_settings = Settings()
+    cache_runtime = get_cache_config()
+    cache_backend_name = get_cache().backend_name
+    cache_info = CacheSettingsInfo(
+        backend=cache_backend_name,
+        enabled=cache_backend_name != "noop",
+        min_ttl_seconds=raw_settings.cache_min_ttl_seconds,
+        max_ttl_seconds=raw_settings.cache_max_ttl_seconds,
+        max_value_bytes=raw_settings.cache_max_value_bytes,
+        max_disk_bytes=raw_settings.cache_max_disk_bytes,
+        sweep_interval_seconds=raw_settings.cache_sweep_interval_seconds,
+        unknown_freshness_policy=raw_settings.cache_unknown_freshness_policy,
+        unknown_freshness_default_ttl=raw_settings.cache_unknown_freshness_default_ttl,
+        heartbeat_endpoint_enabled=cache_runtime.heartbeat_auth_token is not None,
+    )
+
     return SettingsResponse(
         version=__version__,
         api_version="v1",
@@ -282,4 +306,5 @@ async def get_settings(
         timezone=timezone_info,
         dialect=dialect_info,
         oneshot_batch=batch_limits,
+        cache=cache_info,
     )
