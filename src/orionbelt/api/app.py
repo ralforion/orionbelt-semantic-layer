@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import shutil
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,6 +48,35 @@ from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
 logger = logging.getLogger("orionbelt.api")
+
+
+def _wipe_file_cache_state(backend: str, cache_dir: str) -> None:
+    """Delete persisted FileCache artifacts (``meta.duckdb`` + ``results/``).
+
+    No-op when ``backend != "file"`` or the directory doesn't exist. Touches
+    only the known cache files; sibling files (other tools sharing the same
+    parent dir) are left alone.
+    """
+    if (backend or "noop").strip().lower() != "file":
+        return
+    if not os.path.isdir(cache_dir):
+        return
+    removed_files = 0
+    try:
+        for entry in os.listdir(cache_dir):
+            if entry == "meta.duckdb" or entry.startswith("meta.duckdb."):
+                with __import__("contextlib").suppress(Exception):
+                    os.remove(os.path.join(cache_dir, entry))
+                    removed_files += 1
+        results_dir = os.path.join(cache_dir, "results")
+        if os.path.isdir(results_dir):
+            shutil.rmtree(results_dir, ignore_errors=True)
+            removed_files += 1
+    except Exception:
+        logger.exception("Failed wiping cache state at %s", cache_dir)
+        return
+    if removed_files:
+        logger.info("Cache wiped on startup: %s", cache_dir)
 
 
 def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
@@ -124,6 +155,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         default_store = mgr.get_or_create_default()
         default_store.load_model(preload_yaml)
         logger.info("Preloaded model into __default__ session")
+
+    # Wipe persisted cache state on startup. ``model_id`` is regenerated as
+    # a fresh UUID on every model load, so any entries from a previous
+    # process run are orphans by construction (their cache keys reference
+    # model_ids that no longer exist). Starting empty avoids accumulating
+    # dead state between restarts. See PLAN_freshness_driven_cache.md §7.
+    _wipe_file_cache_state(settings.cache_backend, settings.cache_dir)
 
     cache = build_cache(settings)
     cache_config = CacheRuntimeConfig(

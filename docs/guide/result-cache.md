@@ -106,6 +106,14 @@ The file backend uses two layers:
 
 Capacity eviction is LRU (`last_hit_at NULLS FIRST, created_at ASC`); TTL eviction is lazy on read plus a periodic sweep every `CACHE_SWEEP_INTERVAL_SECONDS` (default 15 minutes).
 
+## Cache lifecycle across restarts
+
+The persisted cache state (`meta.duckdb` + `results/`) is **wiped on every server startup**. The reason is structural: `model_id` is generated as a fresh UUID on every model load, so any cache entries from a previous process run reference model_ids that no longer exist — they're orphans by construction. Starting empty avoids accumulating dead state between restarts.
+
+If your deployment restarts frequently and you'd rather keep warm cache across restarts, the cache key would need to switch from `model_id` to a content hash. Not done in v1; revisit if real demand emerges.
+
+Sibling files in `CACHE_DIR` (anything not under `meta.duckdb*` or `results/`) are not touched.
+
 ## Failure semantics
 
 The cache **fails closed**: any error (DuckDB failure, missing file, decode error) degrades to a cache miss and the query is executed normally. Cached results never produce wrong data — at worst they're skipped.
