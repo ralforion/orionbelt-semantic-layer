@@ -383,6 +383,14 @@ class TestSessionModelFlow:
         assert data["data_objects"] == 2
         assert data["dimensions"] == 1
         assert data["measures"] == 3
+        # Phase 2: structural health is always present on a fresh load
+        assert "health" in data
+        health = data["health"]
+        assert health["status"] == "ok"
+        assert health["data_objects"] == 2
+        assert health["joins"] == 1
+        assert health["orphan_data_objects"] == []
+        assert health["fan_trap_risks"] == []
 
     async def test_load_model_json(self, client: AsyncClient) -> None:
         sid = (await client.post("/v1/sessions")).json()["session_id"]
@@ -533,6 +541,94 @@ class TestSessionModelFlow:
             json={"model_yaml": "}{bad"},
         )
         assert response.status_code == 422
+
+
+class TestQueryPlanEndpoint:
+    """POST /v1/sessions/{sid}/query/plan — see PLAN_agent_api_improvements §2."""
+
+    async def _setup(self, client: AsyncClient) -> tuple[str, str]:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        return sid, load.json()["model_id"]
+
+    async def test_plan_default_no_database_explain(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/plan",
+            json={
+                "model_id": mid,
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country"],
+                        "measures": ["Total Revenue"],
+                    },
+                },
+                "dialect": "postgres",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "ok"
+        assert data["would_compile"] is True
+        assert data["planner"] == "Star Schema"
+        assert data["compiled_sql_length_estimate"] > 0
+        assert data["database_explain"] is None
+        # Physical tables include both dataObjects involved
+        assert any("ORDERS" in t for t in data["physical_tables"])
+        assert any("CUSTOMERS" in t for t in data["physical_tables"])
+        # Join path has the expected step
+        assert len(data["join_path"]) >= 1
+        step = data["join_path"][0]
+        assert step["cardinality"] == "many-to-one"
+
+    async def test_plan_invalid_query_returns_error_status(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/plan",
+            json={
+                "model_id": mid,
+                "query": {
+                    "select": {
+                        "dimensions": ["No Such Dim"],
+                        "measures": ["Total Revenue"],
+                    },
+                },
+                "dialect": "postgres",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "error"
+        assert data["would_compile"] is False
+        assert len(data["warnings"]) > 0
+
+    async def test_plan_database_explain_unavailable_emits_warning(
+        self, client: AsyncClient
+    ) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/plan",
+            json={
+                "model_id": mid,
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country"],
+                        "measures": ["Total Revenue"],
+                    },
+                },
+                "dialect": "postgres",
+                "include_database_explain": True,
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "ok"
+        # Without QUERY_EXECUTE the EXPLAIN call surfaces as a warning,
+        # but the OBSL plan is still returned.
+        if data["database_explain"] is None:
+            assert any(w["code"] == "DATABASE_EXPLAIN_FAILED" for w in data["warnings"])
 
 
 # ---------------------------------------------------------------------------

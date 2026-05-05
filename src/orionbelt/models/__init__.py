@@ -11,6 +11,7 @@ from orionbelt.models.semantic import (
     Measure,
     TimeGrain,
 )
+from orionbelt.models.warnings import WarningCode, warning
 
 __all__ = [
     "AggregationType",
@@ -27,4 +28,6 @@ __all__ = [
     "SemanticError",
     "SourceSpan",
     "TimeGrain",
+    "WarningCode",
+    "warning",
 ]

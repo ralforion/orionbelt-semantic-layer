@@ -652,6 +652,57 @@ def _fetch_result(cursor: Any, t0: float, *, tz: ZoneInfo | None = None) -> Exec
     )
 
 
+def explain_sql(sql: str, *, dialect: str) -> str:
+    """Run ``EXPLAIN <sql>`` against the configured warehouse and return raw text.
+
+    Returns the dialect-native EXPLAIN output as opaque text (newline-joined
+    rows). OBSL does not normalize across dialects — callers should treat
+    the output as a string in the named dialect's format.
+
+    Raises:
+        ExecutionUnavailableError: ob-flight or driver missing / not configured.
+        ExecutionError: warehouse rejected the EXPLAIN.
+    """
+    try:
+        from ob_flight.db_router import get_credentials
+    except ImportError:
+        raise ExecutionUnavailableError(
+            "ob-flight-extension package is not installed. Install with: uv sync --extra flight"
+        ) from None
+
+    explain_stmt = f"EXPLAIN {sql}"
+    try:
+        if dialect == "duckdb":
+            import duckdb
+
+            creds = get_credentials(dialect)
+            database = creds.get("database", ":memory:")
+            conn = duckdb.connect(database=database, read_only=True)
+            try:
+                rows = conn.execute(explain_stmt).fetchall()
+            finally:
+                conn.close()
+            return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
+
+        from ob_flight.db_router import get_connection
+
+        with get_connection(dialect) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(explain_stmt)
+                rows = cursor.fetchall() or []
+            finally:
+                with contextlib.suppress(Exception):
+                    cursor.close()
+        return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
+    except ExecutionUnavailableError:
+        raise
+    except KeyError as exc:
+        raise ExecutionUnavailableError(str(exc)) from None
+    except Exception as exc:
+        raise ExecutionError(f"EXPLAIN failed: {exc}") from exc
+
+
 def _try_fetch_arrow(cursor: Any) -> Any:
     """Try to fetch results as an Arrow Table. Returns None on failure.
 

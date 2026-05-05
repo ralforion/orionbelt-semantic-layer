@@ -280,6 +280,59 @@ class TestSearch:
         results = resp.json()["results"]
         assert all(r["type"] == "dimension" for r in results)
 
+    async def test_find_exact_synonym_buckets_present(
+        self, client: AsyncClient, session_with_model: tuple[str, str]
+    ) -> None:
+        """Phase 4: response splits exact / synonym / fuzzy."""
+        sid, mid = session_with_model
+        resp = await client.post(
+            f"/v1/sessions/{sid}/models/{mid}/find",
+            json={"query": "Revenue"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "exact_matches" in data
+        assert "synonym_matches" in data
+        assert "fuzzy_matches" in data
+        # Revenue produces exact name hits — fuzzy is empty
+        assert data["fuzzy_matches"] == []
+        assert len(data["exact_matches"]) >= 2
+
+    async def test_find_fuzzy_fallback_on_misspelling(
+        self, client: AsyncClient, session_with_model: tuple[str, str]
+    ) -> None:
+        """Phase 4: misspelled query with no exact hits returns fuzzy candidates."""
+        sid, mid = session_with_model
+        resp = await client.post(
+            f"/v1/sessions/{sid}/models/{mid}/find",
+            json={"query": "Custmr Cuntry"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exact_matches"] == []
+        assert data["synonym_matches"] == []
+        assert len(data["fuzzy_matches"]) > 0
+        # Each fuzzy match has score and reason
+        m = data["fuzzy_matches"][0]
+        assert "score" in m
+        assert "reason" in m
+        assert 0.0 <= m["score"] <= 1.0
+
+    async def test_find_no_match_no_fuzzy(
+        self, client: AsyncClient, session_with_model: tuple[str, str]
+    ) -> None:
+        """Phase 4: garbage query returns all-empty buckets."""
+        sid, mid = session_with_model
+        resp = await client.post(
+            f"/v1/sessions/{sid}/models/{mid}/find",
+            json={"query": "ZZQQXZ_random_garbage_99"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exact_matches"] == []
+        assert data["synonym_matches"] == []
+        assert data["fuzzy_matches"] == []
+
 
 class TestJoinGraph:
     async def test_join_graph(
@@ -295,6 +348,100 @@ class TestJoinGraph:
         assert edge["from_object"] == "Orders"
         assert edge["to_object"] == "Customers"
         assert edge["cardinality"] == "many-to-one"
+
+
+# ---------------------------------------------------------------------------
+# Examples — PLAN_agent_api_improvements §5
+# ---------------------------------------------------------------------------
+
+
+_MODEL_WITH_EXAMPLES = (
+    SAMPLE_MODEL_YAML
+    + """
+examples:
+  - name: revenue_by_country
+    description: Total completed-order revenue by customer country.
+    intent_tags: [revenue, geography]
+    query:
+      select:
+        dimensions: [Customer Country]
+        measures: [Total Revenue]
+
+  - name: order_count_by_country
+    description: Number of orders per customer country.
+    intent_tags: [orders, geography]
+    query:
+      select:
+        dimensions: [Customer Country]
+        measures: [Order Count]
+"""
+)
+
+
+class TestExamples:
+    async def _load_with_examples(self, client: AsyncClient) -> tuple[str, str]:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": _MODEL_WITH_EXAMPLES}
+        )
+        assert load.status_code == 201, load.text
+        return sid, load.json()["model_id"]
+
+    async def test_list_examples_returns_summaries(self, client: AsyncClient) -> None:
+        sid, mid = await self._load_with_examples(client)
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/examples")
+        assert resp.status_code == 200
+        data = resp.json()
+        names = [e["name"] for e in data["examples"]]
+        assert "revenue_by_country" in names
+        assert "order_count_by_country" in names
+
+    async def test_list_examples_intent_filter_match(self, client: AsyncClient) -> None:
+        sid, mid = await self._load_with_examples(client)
+        resp = await client.get(
+            f"/v1/sessions/{sid}/models/{mid}/examples", params={"intent": "revenue"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["examples"]) == 1
+        assert data["examples"][0]["name"] == "revenue_by_country"
+
+    async def test_list_examples_intent_filter_miss_returns_suggestion(
+        self, client: AsyncClient
+    ) -> None:
+        sid, mid = await self._load_with_examples(client)
+        resp = await client.get(
+            f"/v1/sessions/{sid}/models/{mid}/examples", params={"intent": "xyz_unknown"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["examples"] == []
+        assert data["suggestion"] is not None
+        assert "available tags" in data["suggestion"]
+
+    async def test_get_single_example_returns_compiled_sql(self, client: AsyncClient) -> None:
+        sid, mid = await self._load_with_examples(client)
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/examples/revenue_by_country")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "revenue_by_country"
+        assert "select" in data["query"]
+        # Compiled SQL preview is best-effort but should succeed for the sample model
+        assert data["compiled_sql_preview"] is not None
+        assert "SELECT" in data["compiled_sql_preview"]
+
+    async def test_get_unknown_example_returns_404(self, client: AsyncClient) -> None:
+        sid, mid = await self._load_with_examples(client)
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/examples/no_such_example")
+        assert resp.status_code == 404
+
+    async def test_model_without_examples_returns_empty_list(
+        self, client: AsyncClient, session_with_model: tuple[str, str]
+    ) -> None:
+        sid, mid = session_with_model
+        resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/examples")
+        assert resp.status_code == 200
+        assert resp.json()["examples"] == []
 
 
 # ---------------------------------------------------------------------------

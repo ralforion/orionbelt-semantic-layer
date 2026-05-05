@@ -456,9 +456,10 @@ class TestJunctionTableFanout:
         detect_fanout(resolved, model)  # should NOT raise
         # COUNT is additive — two junctions produce two warnings
         assert len(resolved.warnings) == 2
-        assert all("cross-join" in w for w in resolved.warnings)
-        assert any("Movie Directors" in w for w in resolved.warnings)
-        assert any("Movie Producers" in w for w in resolved.warnings)
+        assert all("cross-join" in w.message for w in resolved.warnings)
+        assert all(w.code == "FAN_TRAP_RISK" for w in resolved.warnings)
+        assert any("Movie Directors" in w.message for w in resolved.warnings)
+        assert any("Movie Producers" in w.message for w in resolved.warnings)
 
     def test_junction_fanout_resolved_single_dim(self) -> None:
         """Director + Movies Cnt (no Producer): fanout through Movie Directors
@@ -509,7 +510,7 @@ class TestJunctionTableFanout:
         )
         detect_fanout(resolved, model)  # should NOT raise
         assert len(resolved.warnings) == 1
-        assert "Movie Directors" in resolved.warnings[0]
+        assert "Movie Directors" in resolved.warnings[0].message
 
     def test_junction_no_warning_for_non_additive(self) -> None:
         """MIN/MAX aggregations don't produce inflated totals — no warning."""

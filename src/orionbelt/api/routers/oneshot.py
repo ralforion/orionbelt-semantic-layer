@@ -33,7 +33,9 @@ from orionbelt.api.schemas import (
     OneshotBatchRequest,
     OneshotBatchResponse,
     QueryExecuteResponse,
+    StructuredWarning,
 )
+from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -203,7 +205,7 @@ async def _run_query(
 
         sql_str = format_sql(compile_result.sql, compile_result.dialect)
         explain = _build_explain_response(compile_result)
-        warnings = list(compile_result.warnings)
+        warnings = [semantic_error_to_warning(w) for w in compile_result.warnings]
 
         # Per-query execute decides on the merged flag (explicit override > batch default).
         wants_execute = item.execute if item.execute is not None else execute
@@ -314,7 +316,7 @@ async def oneshot_batch(
 
     See ``design/PLAN_oneshot_batch.md`` for the full design.
     """
-    batch_warnings: list[str] = []
+    batch_warnings: list[StructuredWarning] = []
 
     # Single-model mode disallows model uploads via this endpoint too.
     if body.model_yaml and is_single_model_mode():
@@ -334,7 +336,19 @@ async def oneshot_batch(
     parallelism = max(1, min(requested, cfg.max_parallelism))
     if body.max_parallelism and body.max_parallelism > cfg.max_parallelism:
         batch_warnings.append(
-            f"max_parallelism reduced from {body.max_parallelism} to {parallelism} (server cap)"
+            StructuredWarning(
+                code="MAX_PARALLELISM_CAPPED",
+                severity="warning",
+                message=(
+                    f"max_parallelism reduced from {body.max_parallelism} to "
+                    f"{parallelism} (server cap)"
+                ),
+                context={
+                    "requested": body.max_parallelism,
+                    "applied": parallelism,
+                    "cap": cfg.max_parallelism,
+                },
+            )
         )
 
     session_id, store, session_created = _resolve_session_and_store(body, mgr)
@@ -385,7 +399,14 @@ async def oneshot_batch(
                 timeout=batch_timeout_s,
             )
         except TimeoutError:
-            batch_warnings.append(f"Batch exceeded {batch_timeout_s}s — partial results returned")
+            batch_warnings.append(
+                StructuredWarning(
+                    code="BATCH_TIMEOUT",
+                    severity="warning",
+                    message=f"Batch exceeded {batch_timeout_s}s — partial results returned",
+                    context={"batch_timeout_s": batch_timeout_s},
+                )
+            )
             for i, q in enumerate(body.queries):
                 if results[i] is None:
                     results[i] = OneshotBatchQueryResult(

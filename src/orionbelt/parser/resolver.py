@@ -24,6 +24,7 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     Metric,
     MetricType,
+    ModelExample,
     ModelFilter,
     ModelSettings,
     PeriodOverPeriod,
@@ -676,6 +677,9 @@ class ReferenceResolver:
 
         settings = _parse_settings(raw.get("settings"))
 
+        # Parse examples block (PLAN_agent_api_improvements §5)
+        examples = self._parse_examples(raw.get("examples"), errors)
+
         model = SemanticModel(
             version=raw.get("version", 1.0),
             data_objects=data_objects,
@@ -683,6 +687,7 @@ class ReferenceResolver:
             measures=measures,
             metrics=metrics,
             filters=model_filters,
+            examples=examples,
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
@@ -697,6 +702,97 @@ class ReferenceResolver:
         )
 
         return model, result
+
+    def _parse_examples(self, raw: object, errors: list[SemanticError]) -> list[ModelExample]:
+        """Parse the model-level ``examples:`` block.
+
+        Accepts a list of mapping entries. Each entry must have ``name``,
+        ``description``, and ``query``. ``intent_tags`` (alias ``intentTags``)
+        is optional. Names must be unique within the block.
+        """
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            errors.append(
+                SemanticError(
+                    code="EXAMPLES_PARSE_ERROR",
+                    message="'examples' must be a YAML list of example entries",
+                    path="examples",
+                )
+            )
+            return []
+
+        out: list[ModelExample] = []
+        seen: set[str] = set()
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}] must be a mapping",
+                        path=f"examples[{i}]",
+                    )
+                )
+                continue
+            name = entry.get("name")
+            description = entry.get("description")
+            query = entry.get("query")
+            intent_tags = entry.get("intent_tags") or entry.get("intentTags") or []
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].name is required and must be a string",
+                        path=f"examples[{i}].name",
+                    )
+                )
+                continue
+            if name in seen:
+                errors.append(
+                    SemanticError(
+                        code="DUPLICATE_EXAMPLE_NAME",
+                        message=f"Duplicate example name '{name}'",
+                        path=f"examples[{i}].name",
+                    )
+                )
+                continue
+            if not isinstance(description, str):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].description is required",
+                        path=f"examples[{i}].description",
+                    )
+                )
+                continue
+            if not isinstance(query, dict):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].query must be a mapping (QueryObject payload)",
+                        path=f"examples[{i}].query",
+                    )
+                )
+                continue
+            if not isinstance(intent_tags, list):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].intent_tags must be a list",
+                        path=f"examples[{i}].intent_tags",
+                    )
+                )
+                continue
+            seen.add(name)
+            out.append(
+                ModelExample(
+                    name=name,
+                    description=description,
+                    intent_tags=[str(t) for t in intent_tags],
+                    query=dict(query),
+                )
+            )
+        return out
 
     def _validate_expression_refs(
         self,

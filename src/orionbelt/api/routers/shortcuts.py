@@ -22,12 +22,11 @@ from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
     _build_schema,
-    _search_model,
+    _build_search_response,
 )
 from orionbelt.api.schemas import (
     DiagramResponse,
     DimensionDetail,
-    ErrorDetail,
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
@@ -46,6 +45,7 @@ from orionbelt.api.schemas import (
     ValidateRequest,
     ValidateResponse,
 )
+from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -283,8 +283,7 @@ async def shortcut_find(
 ) -> SearchResponse:
     """Search model artefacts (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
-    results = _search_model(model, body.query, body.types)
-    return SearchResponse(results=results)
+    return _build_search_response(model, body.query, body.types)
 
 
 @router.get("/join-graph", response_model=JoinGraphResponse, tags=["model-discovery"])
@@ -363,10 +362,8 @@ async def shortcut_validate(
     summary = store.validate(body.model_yaml, raw_dict=raw)
     return ValidateResponse(
         valid=summary.valid,
-        errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
-        warnings=[
-            ErrorDetail(code=w.code, message=w.message, path=w.path) for w in summary.warnings
-        ],
+        errors=[error_info_to_detail(e) for e in summary.errors],
+        warnings=[error_info_to_detail(w) for w in summary.warnings],
     )
 
 
@@ -459,7 +456,7 @@ async def shortcut_compile_query(
             dimensions=result.resolved.dimensions,
             measures=result.resolved.measures,
         ),
-        warnings=result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
     )

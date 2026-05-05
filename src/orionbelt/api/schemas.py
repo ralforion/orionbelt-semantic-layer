@@ -4,10 +4,33 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from orionbelt.models.query import QueryObject
+
+
+class StructuredWarning(BaseModel):
+    """Structured warning shape used uniformly across the API.
+
+    Mirrors ``SemanticError`` from ``models/errors.py`` but is the public-facing
+    API model. Agents can branch on ``code`` (stable identifier from the
+    warning taxonomy in ``models/warnings.py``) without parsing ``message``.
+    """
+
+    code: str = Field(description="Stable identifier from the warning taxonomy")
+    severity: str = Field(default="warning", description="One of: error, warning, info")
+    message: str = Field(description="Human-readable description")
+    path: str | None = Field(
+        default=None,
+        description="JSON path into the request body or model location",
+    )
+    hint: str | None = Field(default=None, description="Optional remediation suggestion")
+    context: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured detail (which measure, dataObject, etc.)",
+    )
 
 
 class ResolvedInfoResponse(BaseModel):
@@ -57,7 +80,7 @@ class QueryCompileResponse(BaseModel):
     sql: str
     dialect: str
     resolved: ResolvedInfoResponse
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[StructuredWarning] = Field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlanResponse | None = None
 
@@ -87,7 +110,7 @@ class QueryExecuteResponse(BaseModel):
         description="IANA timezone used to label naive timestamps in results",
     )
     resolved: ResolvedInfoResponse = Field(default_factory=ResolvedInfoResponse)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[StructuredWarning] = Field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlanResponse | None = None
 
@@ -143,11 +166,19 @@ class ValidateResponse(BaseModel):
 
 
 class ErrorDetail(BaseModel):
-    """A single validation error detail."""
+    """A single validation error or warning detail.
+
+    Same shape as :class:`StructuredWarning`. Used by the validation endpoint
+    so callers see errors and warnings with the same fields.
+    """
 
     code: str
     message: str
     path: str | None = None
+    severity: str = "error"
+    hint: str | None = None
+    context: dict[str, Any] | None = None
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class DialectInfo(BaseModel):
@@ -347,6 +378,36 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionResponse]
 
 
+class FanTrapRisk(BaseModel):
+    """A potential fan-trap: two facts joined to a shared dim via the same FK."""
+
+    tables: list[str] = Field(description="Physical tables involved in the risk")
+    reason: str = Field(description="Plain-text explanation of the risk")
+    suggested_pattern: str = Field(
+        default="composite_fact_layer",
+        description="Recommended OBSL pattern for resolving the risk",
+    )
+
+
+class ModelHealth(BaseModel):
+    """Structural health summary of a loaded model's join graph.
+
+    Fields are computed during model load (no extra round trip needed). See
+    ``design/PLAN_agent_api_improvements.md`` §1.4.
+    """
+
+    status: str = Field(
+        default="ok",
+        description="One of: ok, warnings, errors",
+    )
+    data_objects: int = 0
+    joins: int = 0
+    orphan_data_objects: list[str] = Field(default_factory=list)
+    fan_trap_risks: list[FanTrapRisk] = Field(default_factory=list)
+    unreachable_dimensions: list[str] = Field(default_factory=list)
+    warnings_count: int = 0
+
+
 class ModelLoadRequest(BaseModel):
     """Request body for POST /sessions/{session_id}/models."""
 
@@ -391,12 +452,19 @@ class ModelLoadResponse(BaseModel):
     dimensions: int
     measures: int
     metrics: int
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[StructuredWarning] = Field(default_factory=list)
     model_load: str = Field(
         default="fresh",
         description=(
             "Whether the load parsed a fresh model or reused an existing one. "
             "Values: 'fresh' | 'reused'."
+        ),
+    )
+    health: ModelHealth | None = Field(
+        default=None,
+        description=(
+            "Structural health of the model's join graph: orphan dataObjects, "
+            "fan-trap risks, unreachable dimensions. Always present on a fresh load."
         ),
     )
 
@@ -434,6 +502,104 @@ class DiagramResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # OSI ↔ OBML conversion schemas
 # ---------------------------------------------------------------------------
+
+
+class ExampleSummary(BaseModel):
+    """Short summary of a model example (list endpoint)."""
+
+    name: str
+    description: str
+    intent_tags: list[str] = Field(default_factory=list)
+
+
+class ExampleDetail(BaseModel):
+    """Full detail of a single example, including the query payload."""
+
+    name: str
+    description: str
+    intent_tags: list[str] = Field(default_factory=list)
+    query: dict[str, Any]
+    compiled_sql_preview: str | None = Field(
+        default=None,
+        description=(
+            "Compiled SQL when the example resolves cleanly against the loaded model. "
+            "Null when compilation fails."
+        ),
+    )
+
+
+class ExampleListResponse(BaseModel):
+    """Response body for GET .../examples and GET .../examples?intent=..."""
+
+    examples: list[ExampleSummary] = Field(default_factory=list)
+    suggestion: str | None = Field(
+        default=None,
+        description=(
+            "When ?intent= matches no examples, lists the available tags so callers "
+            "can adjust the query."
+        ),
+    )
+
+
+class JoinPathStep(BaseModel):
+    """A single step in the planner's join path."""
+
+    from_object: str
+    to_object: str
+    cardinality: str = Field(description="many-to-one, one-to-one, or many-to-many")
+    fk: str | None = Field(default=None, description="Join key columns as 'a, b'")
+
+
+class DatabaseExplain(BaseModel):
+    """Raw EXPLAIN output from the warehouse for the compiled SQL.
+
+    OBSL does not normalize across dialects — the ``explain_output`` is
+    opaque text in the dialect's native EXPLAIN format.
+    """
+
+    dialect: str
+    compiled_sql: str
+    explain_output: str
+    explain_format: str = Field(default="text", description="Format of explain_output")
+
+
+class QueryPlanRequest(BaseModel):
+    """Request body for POST /sessions/{sid}/query/plan.
+
+    See ``design/PLAN_agent_api_improvements.md`` §2.
+    """
+
+    model_id: str
+    query: QueryObject
+    dialect: str | None = Field(
+        default=None,
+        description=(
+            "SQL dialect. Resolution: explicit value → model.settings.defaultDialect → "
+            "DB_VENDOR env → 'postgres'."
+        ),
+    )
+    include_database_explain: bool = Field(
+        default=False,
+        description=(
+            "When true, also run EXPLAIN <sql> against the configured warehouse and "
+            "include the raw output. Off by default — opt in costs a warehouse round trip."
+        ),
+    )
+
+
+class QueryPlanResponse(BaseModel):
+    """Response body for POST /sessions/{sid}/query/plan."""
+
+    status: str = Field(default="ok", description="ok | error")
+    planner: str = ""
+    planner_reason: str = ""
+    physical_tables: list[str] = Field(default_factory=list)
+    join_path: list[JoinPathStep] = Field(default_factory=list)
+    filters_applied: int = 0
+    warnings: list[StructuredWarning] = Field(default_factory=list)
+    would_compile: bool = True
+    compiled_sql_length_estimate: int = 0
+    database_explain: DatabaseExplain | None = None
 
 
 class ConvertRequest(BaseModel):
@@ -618,10 +784,40 @@ class SearchResultItem(BaseModel):
     score: float = 1.0
 
 
-class SearchResponse(BaseModel):
-    """Response for POST /find."""
+class FuzzyMatch(BaseModel):
+    """A near-miss fuzzy match (no exact/synonym hit)."""
 
+    name: str
+    kind: str
+    score: float
+    reason: str
+
+
+class SearchResponse(BaseModel):
+    """Response for POST /find.
+
+    When the query produced zero exact and synonym matches, ``fuzzy_matches``
+    surfaces near-miss suggestions ordered by score. See
+    ``design/PLAN_agent_api_improvements.md`` §4.
+    """
+
+    query: str = ""
     results: list[SearchResultItem] = Field(default_factory=list)
+    exact_matches: list[SearchResultItem] = Field(
+        default_factory=list,
+        description="Subset of results matched on name (kept for clarity).",
+    )
+    synonym_matches: list[SearchResultItem] = Field(
+        default_factory=list,
+        description="Subset of results matched on a synonym.",
+    )
+    fuzzy_matches: list[FuzzyMatch] = Field(
+        default_factory=list,
+        description=(
+            "Near-miss candidates returned only when no exact or synonym "
+            "match was found. Ordered by score descending."
+        ),
+    )
 
 
 class JoinEdge(BaseModel):
@@ -799,7 +995,7 @@ class OneshotBatchQueryResult(BaseModel):
         default=None,
         description="Whether this query executed (vs compile-only). Only set when status='ok'.",
     )
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[StructuredWarning] = Field(default_factory=list)
     error: OneshotBatchQueryError | None = None
 
 
@@ -817,4 +1013,4 @@ class OneshotBatchResponse(BaseModel):
         ),
     )
     results: list[OneshotBatchQueryResult] = Field(default_factory=list)
-    batch_warnings: list[str] = Field(default_factory=list)
+    batch_warnings: list[StructuredWarning] = Field(default_factory=list)

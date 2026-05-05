@@ -522,6 +522,28 @@ class ModelFilter(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ModelExample(BaseModel):
+    """Canonical example query authored alongside a model.
+
+    See ``design/PLAN_agent_api_improvements.md`` §5. Stored on the
+    :class:`SemanticModel` and surfaced via the examples endpoints so agents
+    can discover the kinds of questions a model is designed to answer.
+    """
+
+    name: str = Field(description="Snake_case identifier, unique within the model")
+    description: str = Field(description="One- or two-sentence explanation")
+    intent_tags: list[str] = Field(
+        default_factory=list,
+        alias="intentTags",
+        description="Free-form tags used by ?intent= filters",
+    )
+    query: dict[str, object] = Field(
+        description="Full QueryObject payload, valid against this model"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class SemanticModel(BaseModel):
     """Complete semantic model parsed from OBML YAML."""
 
@@ -533,6 +555,7 @@ class SemanticModel(BaseModel):
     measures: dict[str, Measure] = {}
     metrics: dict[str, Metric] = {}
     filters: list[ModelFilter] = Field(default_factory=list)
+    examples: list[ModelExample] = Field(default_factory=list)
     extends_sources: list[str] = Field(default_factory=list)
     inherits_source: str | None = None
     owner: str | None = None

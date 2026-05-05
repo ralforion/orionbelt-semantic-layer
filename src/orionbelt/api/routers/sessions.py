@@ -19,24 +19,34 @@ from orionbelt.api.deps import (
 )
 from orionbelt.api.schemas import (
     ColumnMetadata,
+    DatabaseExplain,
     DiagramResponse,
-    ErrorDetail,
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
+    JoinPathStep,
     ModelLoadRequest,
     ModelLoadResponse,
     ModelSummaryResponse,
     QueryCompileResponse,
     QueryExecuteResponse,
+    QueryPlanRequest,
+    QueryPlanResponse,
     ResolvedInfoResponse,
     SessionCreateRequest,
     SessionListResponse,
     SessionQueryExecuteRequest,
     SessionQueryRequest,
     SessionResponse,
+    StructuredWarning,
     ValidateRequest,
     ValidateResponse,
+)
+from orionbelt.api.warnings_adapter import (
+    error_info_to_detail,
+    error_info_to_warning,
+    health_summary_to_response,
+    semantic_error_to_warning,
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -47,6 +57,7 @@ from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     execute_sql,
+    explain_sql,
     resolve_timezone,
 )
 from orionbelt.service.diagram import generate_mermaid_er
@@ -201,8 +212,9 @@ async def load_model(
         dimensions=result.dimensions,
         measures=result.measures,
         metrics=result.metrics,
-        warnings=result.warnings,
+        warnings=[error_info_to_warning(w) for w in result.warnings],
         model_load=result.model_load,
+        health=health_summary_to_response(result.health),
     )
 
 
@@ -298,10 +310,8 @@ async def validate_model(
     )
     return ValidateResponse(
         valid=summary.valid,
-        errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
-        warnings=[
-            ErrorDetail(code=w.code, message=w.message, path=w.path) for w in summary.warnings
-        ],
+        errors=[error_info_to_detail(e) for e in summary.errors],
+        warnings=[error_info_to_detail(w) for w in summary.warnings],
     )
 
 
@@ -387,7 +397,7 @@ async def compile_query(
             dimensions=result.resolved.dimensions,
             measures=result.resolved.measures,
         ),
-        warnings=result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
     )
@@ -560,7 +570,7 @@ def _build_execute_response(
             dimensions=compile_result.resolved.dimensions,
             measures=compile_result.resolved.measures,
         ),
-        warnings=compile_result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
         sql_valid=compile_result.sql_valid,
         explain=_build_explain_response(compile_result),
     )
@@ -598,6 +608,146 @@ def _build_explain_response(result: Any) -> ExplainPlanResponse | None:
             for leg in result.explain.cfl_legs
         ],
     )
+
+
+@router.post("/{session_id}/query/plan", response_model=QueryPlanResponse)
+async def plan_query(
+    session_id: str,
+    body: QueryPlanRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> QueryPlanResponse:
+    """Return the planner's understanding of a query without executing it.
+
+    Cheap by default (no warehouse round trip). When
+    ``include_database_explain=true`` is set, also runs ``EXPLAIN <sql>``
+    against the configured warehouse and returns the raw text. See
+    ``design/PLAN_agent_api_improvements.md`` §2.
+    """
+    from orionbelt.api.deps import get_db_vendor
+
+    store = _get_store(session_id, mgr)
+    try:
+        model = store.get_model(body.model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
+    dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
+
+    try:
+        result = store.compile_query(body.model_id, body.query, dialect)
+    except UnsupportedDialectError:
+        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
+    except ResolutionError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[semantic_error_to_warning(e) for e in exc.errors],
+            would_compile=False,
+        )
+    except FanoutError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="FANOUT_ERROR",
+                    severity="error",
+                    message=exc.message,
+                )
+            ],
+            would_compile=False,
+        )
+    except UnsupportedAggregationError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="UNSUPPORTED_AGGREGATION",
+                    severity="error",
+                    message=str(exc),
+                    context={"dialect": exc.dialect, "aggregation": exc.aggregation},
+                )
+            ],
+            would_compile=False,
+        )
+
+    physical_tables = _physical_tables_for(model, result)
+    join_path = _join_path_steps(result)
+    plan_warnings = [semantic_error_to_warning(w) for w in result.warnings]
+    explain = result.explain
+    response = QueryPlanResponse(
+        status="ok",
+        planner=explain.planner if explain else "",
+        planner_reason=explain.planner_reason if explain else "",
+        physical_tables=physical_tables,
+        join_path=join_path,
+        filters_applied=(
+            (explain.where_filter_count + explain.having_filter_count) if explain else 0
+        ),
+        warnings=plan_warnings,
+        would_compile=True,
+        compiled_sql_length_estimate=len(result.sql),
+    )
+
+    if body.include_database_explain:
+        try:
+            raw = await asyncio.to_thread(explain_sql, result.sql, dialect=dialect)
+            response.database_explain = DatabaseExplain(
+                dialect=dialect,
+                compiled_sql=result.sql,
+                explain_output=raw,
+                explain_format="text",
+            )
+        except (ExecutionUnavailableError, ExecutionError) as exc:
+            response.warnings = response.warnings + [
+                StructuredWarning(
+                    code="DATABASE_EXPLAIN_FAILED",
+                    severity="warning",
+                    message=str(exc),
+                    hint=(
+                        "Database EXPLAIN is opt-in. Disable include_database_explain "
+                        "or check QUERY_EXECUTE / DB_VENDOR / driver setup."
+                    ),
+                )
+            ]
+
+    return response
+
+
+def _physical_tables_for(model: Any, result: Any) -> list[str]:
+    """Compute qualified physical tables touched by a compilation."""
+    names = list(dict.fromkeys(result.resolved.fact_tables))
+    if result.explain:
+        for j in result.explain.joins:
+            for nm in (j.from_object, j.to_object):
+                if nm not in names:
+                    names.append(nm)
+        for leg in result.explain.cfl_legs:
+            if leg.measure_source and leg.measure_source not in names:
+                names.append(leg.measure_source)
+    out: list[str] = []
+    for nm in names:
+        obj = model.data_objects.get(nm)
+        if obj is None:
+            out.append(nm)
+            continue
+        parts = [p for p in (obj.database, obj.schema_name, obj.code) if p]
+        out.append(".".join(parts) if parts else nm)
+    return out
+
+
+def _join_path_steps(result: Any) -> list[JoinPathStep]:
+    """Convert ExplainPlan joins → API JoinPathStep list."""
+    if not result.explain:
+        return []
+    steps: list[JoinPathStep] = []
+    for j in result.explain.joins:
+        steps.append(
+            JoinPathStep(
+                from_object=j.from_object,
+                to_object=j.to_object,
+                cardinality=j.cardinality or "many-to-one",
+                fk=", ".join(j.join_columns) if j.join_columns else None,
+            )
+        )
+    return steps
 
 
 @router.post("/{session_id}/query/execute", response_model=QueryExecuteResponse)

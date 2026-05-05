@@ -14,6 +14,9 @@ from orionbelt.api.schemas import (
     ColumnDetail,
     DataObjectDetail,
     DimensionDetail,
+    ExampleDetail,
+    ExampleListResponse,
+    ExampleSummary,
     ExplainLineageItem,
     ExplainResponse,
     JoinEdge,
@@ -258,41 +261,70 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
 
 
 def _search_model(model: SemanticModel, query: str, types: list[str]) -> list[SearchResultItem]:
-    """Search across model artefacts by name/synonym."""
-    results: list[SearchResultItem] = []
+    """Search across model artefacts by name/synonym (legacy flat results)."""
+    exact, synonym, _ = _search_model_split(model, query, types)
+    return exact + synonym
+
+
+def _search_model_split(
+    model: SemanticModel,
+    query: str,
+    types: list[str],
+) -> tuple[list[SearchResultItem], list[SearchResultItem], list[tuple[str, str, list[str]]]]:
+    """Search and return (exact, synonym, fuzzy_candidates).
+
+    ``fuzzy_candidates`` is the full ``(name, kind, synonyms)`` corpus across
+    the requested ``types`` so callers can fall back to fuzzy matching when
+    both exact and synonym lists are empty.
+    """
+    exact: list[SearchResultItem] = []
+    synonym: list[SearchResultItem] = []
+    fuzzy_candidates: list[tuple[str, str, list[str]]] = []
     q = query.lower()
+
+    def _consider(name: str, kind: str, synonyms: list[str]) -> None:
+        if q in name.lower():
+            exact.append(SearchResultItem(type=kind, name=name, match_field="name"))
+        elif any(q in s.lower() for s in synonyms):
+            synonym.append(SearchResultItem(type=kind, name=name, match_field="synonym"))
+        fuzzy_candidates.append((name, kind, list(synonyms)))
 
     if "dimension" in types:
         for name, dim in model.dimensions.items():
-            if q in name.lower():
-                results.append(SearchResultItem(type="dimension", name=name, match_field="name"))
-            elif any(q in s.lower() for s in dim.synonyms):
-                results.append(SearchResultItem(type="dimension", name=name, match_field="synonym"))
+            _consider(name, "dimension", list(dim.synonyms))
 
     if "measure" in types:
         for name, m in model.measures.items():
-            if q in name.lower():
-                results.append(SearchResultItem(type="measure", name=name, match_field="name"))
-            elif any(q in s.lower() for s in m.synonyms):
-                results.append(SearchResultItem(type="measure", name=name, match_field="synonym"))
+            _consider(name, "measure", list(m.synonyms))
 
     if "metric" in types:
         for name, met in model.metrics.items():
-            if q in name.lower():
-                results.append(SearchResultItem(type="metric", name=name, match_field="name"))
-            elif any(q in s.lower() for s in met.synonyms):
-                results.append(SearchResultItem(type="metric", name=name, match_field="synonym"))
+            _consider(name, "metric", list(met.synonyms))
 
     if "data_object" in types:
         for name, obj in model.data_objects.items():
-            if q in name.lower():
-                results.append(SearchResultItem(type="data_object", name=name, match_field="name"))
-            elif any(q in s.lower() for s in obj.synonyms):
-                results.append(
-                    SearchResultItem(type="data_object", name=name, match_field="synonym")
-                )
+            _consider(name, "data_object", list(obj.synonyms))
 
-    return results
+    return exact, synonym, fuzzy_candidates
+
+
+def _build_search_response(model: SemanticModel, query: str, types: list[str]) -> SearchResponse:
+    """Run /find with split exact/synonym buckets and fuzzy fallback."""
+    from orionbelt.api.schemas import FuzzyMatch as ApiFuzzyMatch
+    from orionbelt.service.fuzzy import fuzzy_search
+
+    exact, synonym, candidates = _search_model_split(model, query, types)
+    fuzzy: list[ApiFuzzyMatch] = []
+    if not exact and not synonym and query.strip():
+        for m in fuzzy_search(query, candidates):
+            fuzzy.append(ApiFuzzyMatch(name=m.name, kind=m.kind, score=m.score, reason=m.reason))
+    return SearchResponse(
+        query=query,
+        results=exact + synonym,
+        exact_matches=exact,
+        synonym_matches=synonym,
+        fuzzy_matches=fuzzy,
+    )
 
 
 def _build_join_graph(model: SemanticModel) -> JoinGraphResponse:
@@ -499,10 +531,14 @@ async def find_artefacts(
     body: SearchRequest,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> SearchResponse:
-    """Search across model artefacts by name or synonym."""
+    """Search across model artefacts by name or synonym.
+
+    When the search produces zero exact or synonym matches, fuzzy fallback
+    (Levenshtein + trigram overlap) returns near-miss candidates with scores.
+    See ``design/PLAN_agent_api_improvements.md`` §4.
+    """
     model = _get_model(session_id, model_id, mgr)
-    results = _search_model(model, body.query, body.types)
-    return SearchResponse(results=results)
+    return _build_search_response(model, body.query, body.types)
 
 
 @router.get(
@@ -518,3 +554,126 @@ async def get_join_graph(
     """Return the join graph as an adjacency list."""
     model = _get_model(session_id, model_id, mgr)
     return _build_join_graph(model)
+
+
+# -- examples ----------------------------------------------------------------
+
+
+def _all_intent_tags(model: SemanticModel) -> list[str]:
+    """All distinct intent tags across the model's examples."""
+    tags: set[str] = set()
+    for ex in model.examples:
+        for t in ex.intent_tags:
+            tags.add(t)
+    return sorted(tags)
+
+
+def _filter_by_intent(model: SemanticModel, intent: str) -> list[ExampleSummary]:
+    """Return examples whose tags match ``intent`` (case-insensitive)."""
+    from orionbelt.service.fuzzy import fuzzy_search
+
+    target = intent.lower().strip()
+    direct: list[ExampleSummary] = []
+    for ex in model.examples:
+        if any(target == t.lower() for t in ex.intent_tags):
+            direct.append(
+                ExampleSummary(name=ex.name, description=ex.description, intent_tags=ex.intent_tags)
+            )
+    if direct:
+        return direct
+    # Fuzzy fallback: a partial substring still wins (e.g. "rev" matches "revenue")
+    contains: list[ExampleSummary] = []
+    for ex in model.examples:
+        if any(target in t.lower() for t in ex.intent_tags):
+            contains.append(
+                ExampleSummary(name=ex.name, description=ex.description, intent_tags=ex.intent_tags)
+            )
+    if contains:
+        return contains
+    # Final fallback: fuzzy match against the tag corpus
+    candidates: list[tuple[str, str, list[str]]] = [
+        (t, "tag", []) for t in _all_intent_tags(model)
+    ]
+    fuzzy = {m.name for m in fuzzy_search(intent, candidates, threshold=0.6)}
+    if not fuzzy:
+        return []
+    return [
+        ExampleSummary(name=ex.name, description=ex.description, intent_tags=ex.intent_tags)
+        for ex in model.examples
+        if any(t in fuzzy for t in ex.intent_tags)
+    ]
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/examples",
+    response_model=ExampleListResponse,
+    tags=["model-discovery"],
+)
+async def list_examples(
+    session_id: str,
+    model_id: str,
+    intent: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ExampleListResponse:
+    """List canonical example queries authored alongside the model.
+
+    See ``design/PLAN_agent_api_improvements.md`` §5.
+    """
+    model = _get_model(session_id, model_id, mgr)
+    if intent:
+        matches = _filter_by_intent(model, intent)
+        if not matches:
+            tags = _all_intent_tags(model)
+            suggestion = (
+                f"no examples for '{intent}'; available tags: {', '.join(tags)}"
+                if tags
+                else f"no examples for '{intent}'; the model has no intent_tags defined"
+            )
+            return ExampleListResponse(examples=[], suggestion=suggestion)
+        return ExampleListResponse(examples=matches)
+    summaries = [
+        ExampleSummary(name=ex.name, description=ex.description, intent_tags=ex.intent_tags)
+        for ex in model.examples
+    ]
+    return ExampleListResponse(examples=summaries)
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/examples/{example_name}",
+    response_model=ExampleDetail,
+    tags=["model-discovery"],
+)
+async def get_example(
+    session_id: str,
+    model_id: str,
+    example_name: str,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ExampleDetail:
+    """Return a single example by name, with an optional compiled SQL preview."""
+    store = _get_store(session_id, mgr)
+    model = _get_model(session_id, model_id, mgr)
+    example = next((e for e in model.examples if e.name == example_name), None)
+    if example is None:
+        raise HTTPException(status_code=404, detail=f"Example '{example_name}' not found in model")
+
+    compiled_sql_preview: str | None = None
+    try:
+        from orionbelt.api.deps import get_db_vendor
+        from orionbelt.api.routers.sessions import _resolve_dialect
+        from orionbelt.compiler.validator import format_sql
+        from orionbelt.models.query import QueryObject
+
+        dialect = _resolve_dialect(request_dialect=None, model=model, fallback=get_db_vendor())
+        query_obj = QueryObject.model_validate(example.query)
+        result = store.compile_query(model_id, query_obj, dialect)
+        compiled_sql_preview = format_sql(result.sql, result.dialect)
+    except Exception:
+        compiled_sql_preview = None
+
+    return ExampleDetail(
+        name=example.name,
+        description=example.description,
+        intent_tags=list(example.intent_tags),
+        query=dict(example.query),
+        compiled_sql_preview=compiled_sql_preview,
+    )

@@ -394,4 +394,7 @@ class TestOneshotBatchSettings:
         )
         assert r.status_code == 200
         data = r.json()
-        assert any("max_parallelism reduced" in w for w in data["batch_warnings"])
+        assert any(
+            w["code"] == "MAX_PARALLELISM_CAPPED" or "max_parallelism reduced" in w["message"]
+            for w in data["batch_warnings"]
+        )

@@ -16,8 +16,10 @@ from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.warnings import WarningCode, warning
 
 
 @dataclass
@@ -37,6 +39,7 @@ class ExplainJoin:
     to_object: str
     join_columns: list[str]
     reason: str
+    cardinality: str = ""
 
 
 @dataclass
@@ -76,7 +79,7 @@ class CompilationResult:
     sql: str
     dialect: str
     resolved: ResolvedInfo
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[SemanticError] = field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlan | None = None
 
@@ -153,8 +156,22 @@ class CompilationPipeline:
             # PoP/cumulative wrappers depend on.
             if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
                 resolved.warnings.append(
-                    "total=True measures are ignored when combined with "
-                    "period-over-period or cumulative metrics in the same query"
+                    warning(
+                        code=WarningCode.INCOMPATIBLE_COMBINATION,
+                        message=(
+                            "total=True measures are ignored when combined with "
+                            "period-over-period or cumulative metrics in the same query"
+                        ),
+                        hint=(
+                            "Drop total=True from the affected measures, or remove the "
+                            "PoP/cumulative metric from this query."
+                        ),
+                        context={
+                            "has_totals": True,
+                            "has_pop": resolved.has_pop,
+                            "has_cumulative": resolved.has_cumulative,
+                        },
+                    )
                 )
             else:
                 wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
@@ -171,7 +188,13 @@ class CompilationPipeline:
         sql_valid = len(validation_errors) == 0
         warnings = resolved.warnings
         if not sql_valid:
-            warnings = warnings + [f"SQL validation: {e}" for e in validation_errors]
+            warnings = warnings + [
+                warning(
+                    code=WarningCode.SQL_VALIDATION,
+                    message=f"SQL validation: {e}",
+                )
+                for e in validation_errors
+            ]
 
         # Build explain plan
         explain = self._build_explain(resolved, model, use_cfl, plan)
@@ -280,6 +303,7 @@ class CompilationPipeline:
                         to_object=step.to_object,
                         join_columns=join_cols,
                         reason=reason,
+                        cardinality=step.cardinality.value,
                     )
                 )
 

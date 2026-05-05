@@ -10,9 +10,11 @@ from dataclasses import dataclass, field
 
 from rdflib import Graph
 
+from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.warnings import WarningCode
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
 from orionbelt.parser.loader import TrackedLoader, YAMLSafetyError
@@ -34,8 +36,9 @@ class LoadResult:
     dimensions: int
     measures: int
     metrics: int
-    warnings: list[str]
+    warnings: list[ErrorInfo]
     model_load: str = "fresh"  # "fresh" | "reused" — see PLAN_model_load_dedup.md
+    health: ModelHealthSummary | None = None
 
 
 @dataclass
@@ -118,6 +121,34 @@ class ErrorInfo:
     message: str
     path: str | None = None
     suggestions: list[str] = field(default_factory=list)
+    severity: str = "error"
+    hint: str | None = None
+    context: dict[str, object] | None = None
+
+
+@dataclass
+class FanTrapRiskInfo:
+    """Detected fan-trap risk between two facts sharing a dim."""
+
+    tables: list[str]
+    reason: str
+    suggested_pattern: str = "composite_fact_layer"
+
+
+@dataclass
+class ModelHealthSummary:
+    """Structural health of a loaded model's join graph.
+
+    See ``design/PLAN_agent_api_improvements.md`` §1.
+    """
+
+    status: str = "ok"
+    data_objects: int = 0
+    joins: int = 0
+    orphan_data_objects: list[str] = field(default_factory=list)
+    fan_trap_risks: list[FanTrapRiskInfo] = field(default_factory=list)
+    unreachable_dimensions: list[str] = field(default_factory=list)
+    warnings_count: int = 0
 
 
 @dataclass
@@ -196,6 +227,27 @@ class ModelStore:
         return uuid.uuid4().hex[:8]
 
     @staticmethod
+    def _health_for(model: SemanticModel) -> ModelHealthSummary:
+        """Compute structural health for a loaded model."""
+        h = compute_health(model)
+        return ModelHealthSummary(
+            status=h.status,
+            data_objects=h.data_objects,
+            joins=h.joins,
+            orphan_data_objects=h.orphan_data_objects,
+            fan_trap_risks=[
+                FanTrapRiskInfo(
+                    tables=r.tables,
+                    reason=r.reason,
+                    suggested_pattern=r.suggested_pattern,
+                )
+                for r in h.fan_trap_risks
+            ],
+            unreachable_dimensions=h.unreachable_dimensions,
+            warnings_count=h.warnings_count,
+        )
+
+    @staticmethod
     def _content_hash(yaml_str: str) -> str:
         """SHA-256 of the OBML body, with surrounding whitespace stripped.
 
@@ -257,7 +309,13 @@ class ModelStore:
                     inherits_raw=inherits_raw,
                 )
                 for mw in merge_warnings:
-                    warnings.append(ErrorInfo(code="MERGE_WARNING", message=mw))
+                    warnings.append(
+                        ErrorInfo(
+                            code=WarningCode.MERGE_WARNING,
+                            message=mw,
+                            severity="warning",
+                        )
+                    )
                 source_map = None
         except MergeError as exc:
             errors.append(ErrorInfo(code=exc.code, message=exc.message))
@@ -280,6 +338,9 @@ class ModelStore:
                     message=e.message,
                     path=e.path,
                     suggestions=list(e.suggestions),
+                    severity=e.severity,
+                    hint=e.hint,
+                    context=e.context,
                 )
             )
         for w in resolution.warnings:
@@ -289,6 +350,9 @@ class ModelStore:
                     message=w.message,
                     path=w.path,
                     suggestions=list(w.suggestions),
+                    severity=w.severity or "warning",
+                    hint=w.hint,
+                    context=w.context,
                 )
             )
 
@@ -300,6 +364,9 @@ class ModelStore:
                 message=e.message,
                 path=e.path,
                 suggestions=list(e.suggestions),
+                severity=e.severity,
+                hint=e.hint,
+                context=e.context,
             )
             if e.severity == "warning":
                 warnings.append(info)
@@ -443,6 +510,8 @@ class ModelStore:
                 if existing_id is not None and existing_id in self._models:
                     summary = self._summaries.get(existing_id)
                     if summary is not None:
+                        existing_model = self._models[existing_id]
+                        existing_health = self._health_for(existing_model)
                         return LoadResult(
                             model_id=existing_id,
                             data_objects=summary.data_objects,
@@ -451,6 +520,7 @@ class ModelStore:
                             metrics=summary.metrics,
                             warnings=[],
                             model_load="reused",
+                            health=existing_health,
                         )
                 # Stale index entry — drop it and fall through to a fresh load.
                 if existing_id is not None:
@@ -505,8 +575,9 @@ class ModelStore:
             dimensions=summary.dimensions,
             measures=summary.measures,
             metrics=summary.metrics,
-            warnings=[w.message for w in warnings],
+            warnings=warnings,
             model_load="fresh",
+            health=self._health_for(model),
         )
 
     def get_model(self, model_id: str) -> SemanticModel:

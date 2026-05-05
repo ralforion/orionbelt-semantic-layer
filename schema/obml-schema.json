@@ -1056,6 +1056,39 @@
         "additionalProperties": false
       }
     },
+    "examples": {
+      "type": "array",
+      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md §5.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Snake_case identifier, unique within the examples block"
+          },
+          "description": {
+            "type": "string",
+            "description": "One- or two-sentence explanation of what this example shows"
+          },
+          "intent_tags": {
+            "type": "array",
+            "description": "Free-form tags used by the /examples?intent= filter",
+            "items": { "type": "string" }
+          },
+          "intentTags": {
+            "type": "array",
+            "description": "camelCase alias for intent_tags",
+            "items": { "type": "string" }
+          },
+          "query": {
+            "type": "object",
+            "description": "Full QueryObject payload (the same shape accepted by /query/sql)"
+          }
+        },
+        "required": ["name", "description", "query"],
+        "additionalProperties": false
+      }
+    },
     "extends": {
       "type": "array",
       "description": "List of OBML files to merge as analytical layers (dimensions, measures, metrics). Extend files must not contain dataObjects.",
