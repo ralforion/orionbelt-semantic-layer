@@ -121,11 +121,20 @@ Cube has first-class multi-tenancy:
 
 **OBSL** has session-scoped models (TTL, max-age, rate limits) but no first-class user/auth model. Authn/authz is the host application's job.
 
-### 3.5 Pre-aggregations + caching = production-grade serving
+### 3.5 Caching: different goals, different shapes
 
-Beyond pre-aggregations, Cube has a tiered caching architecture: in-memory query cache, Redis (optional), and Cube Store. This is built for the embedded-analytics use case where you serve thousands of dashboard requests per second.
+Both projects have caching, but they're solving adjacent problems with different primitives.
 
-**OBSL** has no built-in caching. It's a stateless query compiler.
+**Cube** has a tiered caching architecture aimed at high-throughput dashboard serving: in-memory query cache, optional Redis, and **Cube Store** (its purpose-built rollup store backing pre-aggregations). TTL is configured on each cube/measure as a refresh-key SQL or interval — the model author decides when entries are stale, and Cube's scheduler refreshes pre-aggs in the background. This is built for embedded-analytics workloads serving thousands of requests per second.
+
+**OBSL** has a **freshness-driven result cache** (`CACHE_BACKEND=file`, off by default). The structural difference is where the freshness contract lives:
+
+- **Cube**: TTL is attached to the *abstraction* (cube / pre-agg / measure). Two cubes reading the same physical table each declare their own TTL — and they can drift.
+- **OBSL**: TTL is derived from the `refresh:` contract on each touched physical `dataObject`. The minimum contribution wins. Two `dataObject` entries on the same warehouse table inherit the same contract automatically. One ETL `POST /v1/heartbeat` invalidates every cached query that depends on the refreshed table — across every dataObject and every session, in one call.
+
+OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1/cache/stats`, `POST /v1/cache/sweep`, `POST /v1/cache/clear` for observability and manual control. The backend is single-process (DuckDB metadata + Parquet sidecars), so it's per-replica — not a tiered store like Cube's. **For multi-replica deployments**, OBSL still recommends `CACHE_BACKEND=noop` until a shared backend (Redis or similar) lands.
+
+**Pre-aggregations are still Cube-only.** OBSL caches *the result of a query that ran against the warehouse*; Cube can additionally pre-materialise rollups in Cube Store and route queries through them, which is a different category of optimisation. If your bottleneck is repeat queries, OBSL's result cache helps. If it's queries that scan billions of rows even on first hit, you still need Cube's pre-aggs (or warehouse-side materialised views, or dbt incremental models).
 
 ---
 
@@ -226,10 +235,10 @@ Both projects ship a free OSS core and offer commercial extensions, but the spli
 | Core license | Source-available (BSL 1.1) | Apache 2.0 |
 | Self-hostable | ✅ (one Python service) | ✅ (Cube Core: Node.js + optional Cube Store + optional Redis) |
 | Commercial offering | Hosted instance (the public demo on Cloud Run) | Cube Cloud — managed runtime, multi-cluster, advanced security, Studio IDE, paid |
-| Operational footprint | Light: one process, in-memory sessions | Heavier: API server + Cube Store + Redis (optional) + scheduler + refresh workers in production |
+| Operational footprint | Light: one process, in-memory sessions, optional file-backed result cache (DuckDB metadata + Parquet) on local disk | Heavier: API server + Cube Store + Redis (optional) + scheduler + refresh workers in production |
 | Self-host parity | Full feature parity in OSS | Many advanced features (Studio, advanced workspaces, AI features) are Cube Cloud-only |
 
-For a small embedded-analytics use case OBSL is operationally simpler. For high-throughput multi-tenant production with heavy caching, Cube's architecture is purpose-built and Cube Cloud provides the managed experience.
+For a small embedded-analytics use case OBSL is operationally simpler. For high-throughput multi-tenant production with heavy caching across replicas, Cube's architecture is purpose-built and Cube Cloud provides the managed experience. OBSL's freshness-driven file cache (v2.2.0) covers single-replica result-caching workloads — agents, dev/staging, modest production — without standing up Redis or a rollup store.
 
 ---
 
@@ -283,7 +292,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 
 ### They could coexist
 
-A workable hybrid: use Cube as the production query gateway with pre-aggregations and a SQL API for BI tools, and OBSL as a complementary modeling/governance surface (RDF graph, OSI export, richer topology modeling) that you can keep authoritative and mirror into Cube definitions. Two semantic surfaces is operationally heavier, but it's defensible if you need both Cube's caching and OBSL's modeling primitives.
+A workable hybrid: use Cube as the production query gateway with pre-aggregations and a SQL API for BI tools, and OBSL as a complementary modeling/governance surface (RDF graph, OSI export, richer topology modeling, freshness-driven result cache for agent workloads) that you can keep authoritative and mirror into Cube definitions. Two semantic surfaces is operationally heavier, but it's defensible if you need both Cube's pre-aggs and OBSL's modeling primitives.
 
 ---
 
@@ -291,14 +300,14 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 
 ### To match Cube, OBSL would need:
 
-1. **Pre-aggregations / materialization** — declarative rollup definitions, refresh strategies, query routing. This is a major piece of infrastructure (a Cube-Store-equivalent or an integration with an external materialization engine like dbt/MaterializedView).
+1. **Pre-aggregations / materialization** — declarative rollup definitions, refresh strategies, query routing. This is a major piece of infrastructure (a Cube-Store-equivalent or an integration with an external materialization engine like dbt/MaterializedView). OBSL's result cache shipped in v2.2.0 (file backend, freshness-derived TTL) addresses the "repeat-query" axis but not the "first-hit on a billion rows" axis pre-aggs cover.
 2. **Postgres-wire SQL API** — Arrow Flight SQL covers the BI-tool-connectivity use case via JDBC/ODBC drivers, but Postgres wire still has broader native tool support today (Tableau, Superset, Metabase, plain `psql`, etc.).
 3. **GraphQL API** — modest effort given the existing FastAPI surface.
 4. **Templating in the model** — Jinja2 or similar for compile-time dynamism.
 5. **Multi-tenancy primitives** — compile-time per-tenant model generation, runtime RLS hooks, JWT integration.
 6. **Field-level masking and access grants** — analogous to LookML's `required_access_grants`.
 7. **More dialects** — Trino/Presto, Redshift, MSSQL, Oracle if those markets matter.
-8. **Built-in caching** — at minimum, an in-memory query result cache.
+8. **Shared cache backend** for multi-replica deployments — current file backend is per-replica; Cube's Redis/Cube-Store layer is shared across the cluster.
 
 ### To match OBSL, Cube would need:
 

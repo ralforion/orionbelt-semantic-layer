@@ -190,7 +190,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 | Feature | OBSL | dbt SL |
 |---|---|---|
 | Sessions / multi-tenant runtime | TTL, max-age, rate limits, 410/429 | Cloud-managed |
-| Caching | None built-in | dbt Cloud query cache |
+| Caching | Freshness-driven result cache (file backend, off by default): TTL derived from per-`dataObject` `refresh:` contract; ETL `POST /v1/heartbeat` invalidates dependent entries by physical table | dbt Cloud query cache |
 | Versioned governance, lineage to upstream models | No (model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
 | Filter ergonomics | `MeasureFilter`, `FilterContext`, `GrainOverride`, query-level `where`/`having` | Per-metric `filter:`, `metric_time` |
 | Vendor-agnostic | Yes — pure OSS | Practical lock-in: production query APIs require dbt Cloud |
@@ -203,8 +203,7 @@ To match dbt SL feature-for-feature, OBSL would need:
 
 1. **`conversion` metric type** — funnel-style metric: count of base events that converted to a target event within a window.
 2. **`metric_time` virtual dimension** — a unified time axis across heterogeneous fact tables, abstracting per-table date columns. (Partially achievable today via dimensions on each data object, but not as a single canonical handle.)
-3. **(Nice to have) Caching layer** — query result cache keyed on (model version, query, filters).
-4. **(Nice to have) GraphQL or JDBC surface** — for BI tool integration parity.
+3. **(Nice to have) GraphQL or JDBC surface** — for BI tool integration parity.
 
 Conversely, dbt SL would need to add to match OBSL's strengths:
 
