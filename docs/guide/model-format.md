@@ -1076,6 +1076,45 @@ filters:
 
 Produces: `WHERE "STATUS" = 'completed' AND "COUNTRY" = 'Germany'`
 
+## Examples
+
+The optional top-level `examples:` block lists canonical queries authored alongside the model — the kinds of questions the model is designed to answer. Surfaced through `GET /v1/sessions/{sid}/models/{mid}/examples` so agents can ground on the model in one round trip without guessing from dimension and measure names alone.
+
+```yaml
+examples:
+  - name: revenue_by_country
+    description: "Total completed-order revenue, broken down by customer country, last 90 days."
+    intent_tags: [revenue, geography, "trailing window"]
+    query:
+      select:
+        dimensions: ["Customer Country"]
+        measures: ["Total Revenue"]
+      where:
+        - field: "Order Date"
+          op: ">="
+          value: "2026-01-01"
+      order_by:
+        - { field: "Total Revenue", direction: "desc" }
+      limit: 100
+
+  - name: refund_rate_by_product
+    description: "Returns as percentage of sales, by product."
+    intent_tags: [returns, rate, product]
+    query:
+      select:
+        dimensions: ["Product Name"]
+        measures: ["Refund Rate"]
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Snake_case identifier, unique within the examples block. |
+| `description` | string | yes | One- or two-sentence explanation of what this example shows. |
+| `intent_tags` | list of strings | no | Free-form tags. The `?intent=` query parameter on the examples list endpoint matches against these (exact → contains → fuzzy fallback). camelCase alias `intentTags` is accepted. |
+| `query` | object | yes | Full QueryObject payload — same shape accepted by `/query/sql`. |
+
+The single-example endpoint (`GET .../examples/{name}`) returns the full query plus a best-effort `compiled_sql_preview` so agents can inspect what the example would produce without executing it.
+
 ## Validation Rules
 
 OrionBelt validates models against these rules:

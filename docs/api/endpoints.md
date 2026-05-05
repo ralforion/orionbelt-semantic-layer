@@ -125,11 +125,51 @@ Load an OBML semantic model into a session. The model is parsed, validated, and 
   "measures": 2,
   "metrics": 1,
   "warnings": [],
-  "model_load": "fresh"
+  "model_load": "fresh",
+  "health": {
+    "status": "ok",
+    "data_objects": 2,
+    "joins": 1,
+    "orphan_data_objects": [],
+    "fan_trap_risks": [],
+    "unreachable_dimensions": [],
+    "warnings_count": 0
+  }
 }
 ```
 
 `model_load` is `"fresh"` when the OBML was parsed and loaded normally, `"reused"` when an identical model was already present in the session (no parsing/validation work was done; the existing `model_id` is returned). Dedup applies only to plain `model_yaml` loads — supplying `extends` or `inherits` always loads fresh.
+
+#### `health` block
+
+Structural health of the model's join graph, computed during load (no extra round trip required). Always present on `fresh` loads and on `reused` dedup hits. Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `ok` when nothing surfaced, `warnings` when one or more risks were detected. |
+| `data_objects` | int | Count of dataObjects in the model. |
+| `joins` | int | Count of (non-secondary) joins detected. |
+| `orphan_data_objects` | array of strings | DataObjects with no incoming or outgoing joins. May be intentional in single-table models. |
+| `fan_trap_risks` | array of objects | Pairs of facts that share a dimension via the same FK columns. Each entry has `tables` (qualified physical names), `reason`, and `suggested_pattern` (typically `"composite_fact_layer"`). |
+| `unreachable_dimensions` | array of strings | Dimensions whose dataObject is not reachable from any fact via directed joins. |
+| `warnings_count` | int | Total warnings across orphans, fan-traps, and unreachable dims. |
+
+#### Structured `warnings`
+
+Every `warnings` list in this API uses the same shape so agents can branch on stable codes without parsing message text:
+
+```json
+{
+  "code": "FAN_TRAP_RISK",
+  "severity": "warning",
+  "message": "Measure 'Revenue' (SUM): cross-join through 'Movie Directors' …",
+  "path": "select.measures[0]",
+  "hint": "Add the junction-table dimension to the GROUP BY, …",
+  "context": { "measure": "Revenue", "junction": "Movie Directors" }
+}
+```
+
+Initial warning code taxonomy: `GRAIN_OVERRIDE_INCOMPATIBLE`, `FILTER_CONTEXT_OVERRIDE_INCOMPATIBLE`, `POP_CONSTRAINT_VIOLATED`, `CUMULATIVE_CONSTRAINT_VIOLATED`, `FAN_TRAP_RISK`, `ORPHAN_DATA_OBJECT`, `SHARED_TABLE_CONTRACT_DISAGREEMENT`, `LARGE_RESULT_SET`, `CACHE_TTL_FLOOR_HIT`, `INCOMPATIBLE_COMBINATION`, `SQL_VALIDATION`, `MERGE_WARNING`. Codes are extended over time, never repurposed.
 
 **Error (403):** Single-model mode: model upload is disabled.
 
@@ -313,6 +353,80 @@ Compile a semantic query against a model loaded in the session.
 | 400 | Unsupported dialect |
 | 404 | Model or session not found |
 | 422 | Resolution error |
+
+### `POST /v1/sessions/{session_id}/query/plan`
+
+Return the planner's understanding of a query without compiling SQL or executing. Cheap by default (no warehouse round trip) — agents use it as a "would this work?" probe in their planning loop.
+
+**Request:**
+
+```json
+{
+  "model_id": "abcd1234",
+  "query": {
+    "select": {
+      "dimensions": ["Customer Country"],
+      "measures": ["Revenue"]
+    }
+  },
+  "dialect": "postgres",
+  "include_database_explain": false
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model_id` | string | — | Loaded model id. |
+| `query` | object | — | QueryObject (same shape as `/query/sql`). |
+| `dialect` | string | model/env default | SQL dialect. |
+| `include_database_explain` | bool | `false` | When `true`, also runs `EXPLAIN <sql>` against the configured warehouse and includes the raw output. Costs one round trip; some warehouses bill compute for `EXPLAIN`. |
+
+**Response (200, OBSL-only plan):**
+
+```json
+{
+  "status": "ok",
+  "planner": "Star Schema",
+  "planner_reason": "All requested objects are reachable from a single base via directed joins",
+  "physical_tables": ["WAREHOUSE.PUBLIC.ORDERS", "WAREHOUSE.PUBLIC.CUSTOMERS"],
+  "join_path": [
+    {
+      "from_object": "Orders",
+      "to_object": "Customers",
+      "cardinality": "many-to-one",
+      "fk": "CUSTOMER_ID = CUSTOMER_ID"
+    }
+  ],
+  "filters_applied": 0,
+  "warnings": [],
+  "would_compile": true,
+  "compiled_sql_length_estimate": 312,
+  "database_explain": null
+}
+```
+
+**Response (200, with `include_database_explain: true`):**
+
+Adds a `database_explain` block. The `explain_output` is opaque text in the dialect's native EXPLAIN format — OBSL does not normalize across dialects.
+
+```json
+{
+  "...": "...",
+  "database_explain": {
+    "dialect": "postgres",
+    "compiled_sql": "SELECT ...",
+    "explain_output": "Hash Join (cost=128.50..1247.30 rows=1042 width=48) ...",
+    "explain_format": "text"
+  }
+}
+```
+
+**Failure modes:**
+
+- Resolution / fanout / unsupported-aggregation errors → `status: "error"`, `would_compile: false`, structured `warnings` with the failure cause.
+- `include_database_explain: true` but the warehouse rejects `EXPLAIN` → OBSL plan still returned with a `DATABASE_EXPLAIN_FAILED` warning describing why; `database_explain` is `null`.
+
+The plan endpoint never executes the actual query, even with `include_database_explain: true`.
 
 ### `POST /v1/sessions/{session_id}/query/execute`
 
@@ -699,7 +813,7 @@ Explain the lineage of a dimension, measure, or metric — traces back through t
 
 ### `POST /v1/sessions/{session_id}/models/{model_id}/find`
 
-Search across model artefacts by name or synonym.
+Search across model artefacts by name or synonym. When the query produces zero exact and zero synonym matches, deterministic fuzzy fallback (Levenshtein + trigram-Jaccard) returns the closest near-miss candidates. Threshold is 0.5; up to 10 results are returned.
 
 **Request:**
 
@@ -712,16 +826,41 @@ Search across model artefacts by name or synonym.
 
 The `types` filter is optional. Valid types: `dimension`, `measure`, `metric`, `data_object`.
 
-**Response (200):**
+**Response (200, exact / synonym hits):**
 
 ```json
 {
+  "query": "Revenue",
   "results": [
-    { "name": "Revenue", "type": "measure", "match": "name" },
-    { "name": "Revenue per Order", "type": "metric", "match": "name" }
+    { "name": "Revenue", "type": "measure", "match_field": "name", "score": 1.0 },
+    { "name": "Revenue per Order", "type": "metric", "match_field": "name", "score": 1.0 }
+  ],
+  "exact_matches": [...],
+  "synonym_matches": [],
+  "fuzzy_matches": []
+}
+```
+
+**Response (200, no exact/synonym hit — fuzzy fallback fires):**
+
+```json
+{
+  "query": "Custmr Cuntry",
+  "results": [],
+  "exact_matches": [],
+  "synonym_matches": [],
+  "fuzzy_matches": [
+    {
+      "name": "Customer Country",
+      "kind": "dimension",
+      "score": 0.78,
+      "reason": "trigram overlap"
+    }
   ]
 }
 ```
+
+`fuzzy_matches` is empty when the query produced exact or synonym hits, and also when nothing scored above the 0.5 threshold (truly no match).
 
 ### `GET /v1/sessions/{session_id}/models/{model_id}/join-graph`
 
@@ -742,6 +881,73 @@ Return the join graph as nodes and edges.
   ]
 }
 ```
+
+---
+
+## Model Examples
+
+Canonical example queries authored alongside the model in OBML's optional `examples:` block. Surfaced through these endpoints so agents can discover what kinds of questions a model is designed to answer in one round trip.
+
+See `docs/guide/model-format.md` for the OBML `examples:` syntax.
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/examples`
+
+List every example summary in the loaded model.
+
+**Query parameters (optional):**
+
+| Param | Description |
+|---|---|
+| `intent` | Filter by intent tag (case-insensitive). Resolution: exact tag match → substring match → fuzzy match against the tag corpus. |
+
+**Response (200):**
+
+```json
+{
+  "examples": [
+    {
+      "name": "revenue_by_country",
+      "description": "Total completed-order revenue, broken down by customer country.",
+      "intent_tags": ["revenue", "geography"]
+    }
+  ],
+  "suggestion": null
+}
+```
+
+**Response (200, `?intent=` did not match anything):**
+
+```json
+{
+  "examples": [],
+  "suggestion": "no examples for 'foo'; available tags: revenue, orders, geography"
+}
+```
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/examples/{example_name}`
+
+Return a single example by name, with the full query payload and a best-effort compiled SQL preview.
+
+**Response (200):**
+
+```json
+{
+  "name": "revenue_by_country",
+  "description": "Total completed-order revenue, broken down by customer country.",
+  "intent_tags": ["revenue", "geography"],
+  "query": {
+    "select": {
+      "dimensions": ["Customer Country"],
+      "measures": ["Total Revenue"]
+    }
+  },
+  "compiled_sql_preview": "SELECT ..."
+}
+```
+
+`compiled_sql_preview` is `null` when the example fails to compile against the current model (e.g. the model has drifted since the example was authored).
+
+**Error (404):** Example name not found in model.
 
 ---
 

@@ -247,6 +247,14 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI
 
+### Agent-Facing API
+
+- **Model Health on Load** — every model load returns a `health` block with orphan dataObjects, fan-trap risks, and unreachable dimensions — agents skip the defensive second round trip
+- **Query Plan Endpoint** — `POST /query/plan` returns the planner's understanding (planner choice, physical tables, join path, `would_compile`) without compiling SQL or executing; opt-in `include_database_explain` adds the warehouse's raw EXPLAIN
+- **Structured Warnings** — every `warnings` list across the API uses a stable `{code, severity, message, path, hint, context}` shape with a documented code taxonomy; agents branch on codes instead of parsing messages
+- **Fuzzy `/find` Recovery** — when a search produces no exact or synonym hits, deterministic Levenshtein + trigram fallback returns near-miss candidates with scores and reasons
+- **Model Examples** — optional OBML `examples:` block of canonical queries; `GET /examples` (with `?intent=` filtering) gives agents one-round-trip discovery of what a model is designed to answer
+
 ### Developer Experience
 
 - **Source-Position Errors** — validation errors report exact YAML line and column
