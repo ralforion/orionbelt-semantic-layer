@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "2.1.4"
+  project_version: "2.2.0"
   analytics:
     provider: google
     property: G-X19K4GX3EX
@@ -127,6 +127,8 @@ nav:
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
       - OBSL Graph & SPARQL: guide/obsl.md
+      - Freshness Contracts: guide/freshness-contracts.md
+      - Result Cache: guide/result-cache.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
       - OSI Interoperability: guide/osi.md

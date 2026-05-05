@@ -2,6 +2,41 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.2.0] - 2026-05-05
+
+### Added
+
+- **`POST /v1/oneshot/batch` — one-shot batch endpoint.** Loads (or references) an OBML model and runs N independent queries against it in a single round trip. Designed for agent workflows where one model + multiple sub-questions is the dominant pattern. Supports `model_yaml` (transient or persisted via `persist_model: true`) or `model_id` (reference an already-loaded model). Queries run concurrently under an `asyncio.Semaphore` capped by `ONESHOT_BATCH_MAX_PARALLELISM` (default 8). Per-query overrides for `dialect` and `execute`. Stable result ordering keyed by caller-provided `id`. Partial failure is the default — each result carries its own `status` (`ok` / `error` / `cancelled`) and `error` envelope. `fail_fast: true` cancels remaining queries on first failure. Whole-batch and per-query timeouts are honored. Server limits surface via `GET /v1/settings.oneshot_batch`. See `design/PLAN_oneshot_batch.md`.
+- **Model load deduplication.** `POST /v1/sessions/{sid}/models` and `POST /v1/oneshot/batch` now reuse an existing `model_id` when the same OBML bytes (whitespace-normalized) are already loaded in the session. The response includes a new `model_load` field (`"fresh"` | `"reused"` | `"referenced"` for batch). Skips parsing, validation, and OBSL graph generation on the dedup path. Disable with `dedup: false`. Index is per-session (session isolation preserved) and is cleared automatically on model removal. See `design/PLAN_model_load_dedup.md`.
+- **Freshness-driven result cache (file backend, off by default).** New `CACHE_BACKEND=file` mode persists `query/execute` results in `{CACHE_DIR}/meta.duckdb` + Parquet sidecars. TTL is derived from the `freshness:` contract on each touched physical `dataObject` — the *minimum* contribution wins, and an ETL `POST /v1/heartbeat` invalidates every cached query that depends on the refreshed table. Cached `query/execute` responses gain `cached`, `cached_at`, `ttl_seconds`, `ttl_source`, `ttl_limiting_table`, and `physical_tables` fields. Per-query TTL caps via `caller_capped`; unknown-freshness queries skip the cache by default (`CACHE_UNKNOWN_FRESHNESS_POLICY=no_cache`) or fall back to a default TTL when explicitly enabled. Fails closed: any cache error degrades to a normal warehouse execution. See `docs/guide/result-cache.md` and `design/PLAN_freshness_driven_cache.md`.
+- **`refresh:` block on dataObjects (OBML + OSI).** New per-dataObject freshness contract with `mode: static | scheduled | heartbeat | unknown`, plus mode-specific fields (`schedule:` cron, `nextRefreshAt:`, `maxStaleness:`, `tolerance:`). Roundtrips through OSI via `osi-obml/osi_obml_converter.py` (custom_extensions) and is declared in the OBSL ontology (`ontology/obsl.ttl`). Surfaced in `GET /v1/settings` and the Settings UI tab.
+- **`GET /v1/cache/stats`, `POST /v1/cache/sweep`, `POST /v1/cache/clear`.** Stats exposes backend, entry count, total bytes, hit/miss counters, hit rate, oldest entry, next sweep, tracked physical tables, and heartbeat invalidations. Sweep runs one TTL + LRU capacity eviction pass on demand (returns `ttl_evicted` / `capacity_evicted`). Clear drops every entry regardless of TTL or dependencies (counters preserved as historical telemetry).
+- **`POST /v1/heartbeat`.** ETL endpoint invalidating every cached query whose dependency set includes the refreshed `database.schema.table`. Bearer-auth via `HEARTBEAT_AUTH_TOKEN` (route returns 404 when unset). Response lists `invalidated_cache_entries` and `affected_data_objects`.
+- **UI Cache panel.** Settings tab now shows a side-by-side **API Settings** + **Cache Stats** view with **Refresh Cache Stats**, **Sweep Cache now**, and **Clear Cache** buttons. Auto-loads on tab open. Query Results tab annotates each execution with `(cache)` or `(database)` next to `execution_time_ms`.
+
+### Changed
+
+- **`execution_time_ms` on cache hits** now reports the actual cache fetch + decode wall time, not the original DB run time persisted in the Parquet sidecar. Combined with the `cached: true` flag, this gives realistic "from cache" durations on the wire. The original DB timing remains on disk for forensic inspection.
+- **`CACHE_SWEEP_INTERVAL_SECONDS` default raised from 900s (15 min) to 86400s (1 day).** Lazy TTL on read keeps user-facing freshness correct; the periodic sweeper only matters for reclaiming disk from entries that expire without being read again, so every 15 min was unnecessarily aggressive.
+- **Persisted cache state (`meta.duckdb` + `results/`) is wiped on every server startup.** Structural reason: `model_id` is regenerated as a fresh UUID on every model load, so any entries from a previous process run reference model_ids that no longer exist — orphans by construction. Starting empty avoids accumulating dead state between restarts.
+- **Cache stats output now uses UTC for both `oldest_entry` and `next_sweep_at`.** Previously `oldest_entry` rendered in the DuckDB session timezone (host local), creating a TZ mismatch with `next_sweep_at` (always UTC). Both are now ISO 8601 with `+00:00`.
+- **Startup logging splits the cache config block into one line per setting** so each field is easy to grep without parsing one long line.
+
+### Fixed
+
+- **Gradio UI mounted in `create_app()` always captured `query_execute=False`** because `is_query_execute_enabled()` reads a deps.py global that's only populated inside the `lifespan` hook (which runs *after* the UI is mounted). UI settings now resolve directly from `Settings`, mirroring the same logic the lifespan uses, so the **Execute Query** button appears as soon as `QUERY_EXECUTE=true` is set.
+- **Query Results dataframe no longer renders Gradio's default `1, 2, 3` placeholder columns** before the first execution. The dataframe is hidden until the post-execute visibility chain flips it on.
+
+### Settings
+
+- New env vars: `ONESHOT_BATCH_MAX_QUERIES` (50), `ONESHOT_BATCH_MAX_PARALLELISM` (8), `ONESHOT_BATCH_DEFAULT_TIMEOUT_MS` (30000), `ONESHOT_BATCH_BATCH_TIMEOUT_MS` (120000). All exposed in `GET /v1/settings.oneshot_batch`.
+- New cache env vars: `CACHE_BACKEND` (`noop` default), `CACHE_DIR`, `CACHE_MIN_TTL_SECONDS` (5), `CACHE_MAX_TTL_SECONDS` (86400), `CACHE_MAX_VALUE_BYTES` (10 MB), `CACHE_MAX_DISK_BYTES` (5 GB), `CACHE_SWEEP_INTERVAL_SECONDS` (86400), `CACHE_UNKNOWN_FRESHNESS_POLICY` (`no_cache`), `CACHE_UNKNOWN_FRESHNESS_DEFAULT_TTL` (300), `HEARTBEAT_AUTH_TOKEN`.
+
+### Behavior change
+
+- Identical OBML loads in the same session now return the same `model_id` instead of minting a new one each time. Disable per-call with `dedup: false`.
+- When the cache is enabled (`CACHE_BACKEND=file`), `query/execute` calls may serve cached results. Distinguish via the new `cached` field on the response. The cache fails closed on any error.
+
 ## [2.1.4] - 2026-05-03
 
 ### Fixed

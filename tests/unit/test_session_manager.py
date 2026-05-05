@@ -206,10 +206,12 @@ class TestModelCap:
 
         from tests.conftest import SAMPLE_MODEL_YAML
 
-        store.load_model(SAMPLE_MODEL_YAML)
-        store.load_model(SAMPLE_MODEL_YAML)
+        # dedup=False so each load creates a fresh model and counts toward
+        # the per-session model cap.
+        store.load_model(SAMPLE_MODEL_YAML, dedup=False)
+        store.load_model(SAMPLE_MODEL_YAML, dedup=False)
         with pytest.raises(ModelCapacityError, match="Maximum"):
-            store.load_model(SAMPLE_MODEL_YAML)
+            store.load_model(SAMPLE_MODEL_YAML, dedup=False)
 
     def test_model_cap_frees_after_remove(self) -> None:
         mgr = SessionManager(
@@ -223,11 +225,11 @@ class TestModelCap:
 
         from tests.conftest import SAMPLE_MODEL_YAML
 
-        result = store.load_model(SAMPLE_MODEL_YAML)
+        result = store.load_model(SAMPLE_MODEL_YAML, dedup=False)
         with pytest.raises(ModelCapacityError):
-            store.load_model(SAMPLE_MODEL_YAML)
+            store.load_model(SAMPLE_MODEL_YAML, dedup=False)
         store.remove_model(result.model_id)
-        store.load_model(SAMPLE_MODEL_YAML)  # should succeed now
+        store.load_model(SAMPLE_MODEL_YAML, dedup=False)  # should succeed now
 
     def test_model_cap_enforced_under_concurrency(self) -> None:
         """Concurrent load_model() calls must not exceed the cap."""
@@ -246,7 +248,8 @@ class TestModelCap:
 
         def _load() -> object:
             try:
-                return store.load_model(SAMPLE_MODEL_YAML)
+                # dedup=False so each request actually competes for a model slot.
+                return store.load_model(SAMPLE_MODEL_YAML, dedup=False)
             except (ModelCapacityError, ModelValidationError) as exc:  # noqa: UP038
                 return exc
 

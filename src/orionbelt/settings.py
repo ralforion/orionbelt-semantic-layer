@@ -75,3 +75,21 @@ class Settings(BaseSettings):
     flight_auth_mode: str = "none"  # "none" or "token"
     flight_api_token: str | None = None
     db_vendor: str = "duckdb"  # default vendor driver for Flight query execution
+
+    # One-shot batch endpoint (POST /v1/oneshot/batch). See PLAN_oneshot_batch.md.
+    oneshot_batch_max_queries: int = 50
+    oneshot_batch_max_parallelism: int = 8
+    oneshot_batch_default_timeout_ms: int = 30000  # per-query
+    oneshot_batch_batch_timeout_ms: int = 120000  # whole batch
+
+    # Freshness-driven result cache. See design/PLAN_freshness_driven_cache.md.
+    cache_backend: str = "noop"  # "noop" or "file"
+    cache_dir: str = "./cache"
+    cache_max_ttl_seconds: int = 86400
+    cache_min_ttl_seconds: int = 5
+    cache_max_value_bytes: int = 10 * 1024 * 1024  # 10 MB
+    cache_max_disk_bytes: int = 5 * 1024 * 1024 * 1024  # 5 GB
+    cache_sweep_interval_seconds: int = 86400
+    cache_unknown_freshness_policy: str = "no_cache"  # or "default_ttl"
+    cache_unknown_freshness_default_ttl: int = 300
+    heartbeat_auth_token: str | None = None  # endpoint disabled (404) when unset

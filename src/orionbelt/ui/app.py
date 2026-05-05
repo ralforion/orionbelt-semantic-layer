@@ -1833,7 +1833,8 @@ def execute_query(
             header_lines.append("")
             formatted = "\n".join(header_lines) + "\n" + formatted
 
-        info = f"{row_count} rows in {exec_time:.0f} ms"
+        source = "cache" if data.get("cached") else "database"
+        info = f"{row_count} rows in {exec_time:.0f} ms ({source})"
         tz_name = data.get("timezone")
         if tz_name:
             info += f" · TZ: {tz_name}"
@@ -2497,6 +2498,7 @@ def create_blocks(
                     max_height=800,
                     datatype="html",
                     elem_classes=["result-table"],
+                    visible=False,
                 )
                 with gr.Accordion("Response Metadata", open=False, visible=False) as meta_acc:
                     meta_code = gr.Code(
@@ -2550,9 +2552,10 @@ def create_blocks(
                     gr.update(visible=bool(info)),
                     gr.update(visible=bool(info)),
                     gr.update(visible=bool(info)),
+                    gr.update(visible=bool(info)),
                 ),
                 inputs=[result_info],
-                outputs=[tabs, tsv_download, copy_data_btn, meta_acc],
+                outputs=[tabs, tsv_download, copy_data_btn, meta_acc, result_table],
             ).then(
                 fn=None,
                 inputs=[num_cols_box],
@@ -2780,11 +2783,109 @@ def create_blocks(
                 )
 
             with gr.Tab("Settings", id=4) as settings_tab:
-                settings_output = gr.Code(
-                    language="yaml",
-                    label="API Settings",
-                    interactive=False,
-                    lines=10,
+                with gr.Row():
+                    with gr.Column():
+                        settings_output = gr.Code(
+                            language="yaml",
+                            label="API Settings",
+                            interactive=False,
+                            lines=10,
+                        )
+                    with gr.Column():
+                        cache_stats_output = gr.Code(
+                            language="yaml",
+                            label="Cache Stats",
+                            interactive=False,
+                            lines=10,
+                        )
+                        with gr.Row(equal_height=True):
+                            cache_stats_refresh = gr.Button(
+                                "Refresh Cache Stats",
+                                variant="secondary",
+                                size="sm",
+                                scale=1,
+                                min_width=180,
+                                elem_classes=["purple-btn"],
+                            )
+                            cache_sweep_btn = gr.Button(
+                                "Sweep Cache now",
+                                variant="secondary",
+                                size="sm",
+                                scale=1,
+                                min_width=180,
+                                elem_classes=["orange-btn"],
+                            )
+                            cache_clear_btn = gr.Button(
+                                "Clear Cache",
+                                variant="stop",
+                                size="sm",
+                                scale=1,
+                                min_width=180,
+                            )
+
+                def _fetch_cache_stats(api_url_val: str) -> str:
+                    url = api_url_val.rstrip("/") if api_url_val else _DEFAULT_API_URL
+                    try:
+                        resp = httpx.get(
+                            f"{url}/v1/cache/stats",
+                            timeout=5,
+                            headers=_API_HEADERS,
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                    except httpx.ConnectError:
+                        return f"# Error: Cannot connect to API at {url}"
+                    except Exception as exc:  # noqa: BLE001 — surface any failure
+                        return f"# Error: {exc}"
+                    return yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+                cache_stats_refresh.click(
+                    fn=_fetch_cache_stats,
+                    inputs=[api_url],
+                    outputs=[cache_stats_output],
+                )
+
+                def _trigger_cache_sweep(api_url_val: str) -> str:
+                    url = api_url_val.rstrip("/") if api_url_val else _DEFAULT_API_URL
+                    try:
+                        resp = httpx.post(
+                            f"{url}/v1/cache/sweep",
+                            timeout=10,
+                            headers=_API_HEADERS,
+                        )
+                        resp.raise_for_status()
+                    except httpx.ConnectError:
+                        return f"# Error: Cannot connect to API at {url}"
+                    except Exception as exc:  # noqa: BLE001 — surface any failure
+                        return f"# Error: {exc}"
+                    # Re-fetch fresh stats so the user sees the post-sweep state.
+                    return _fetch_cache_stats(api_url_val)
+
+                cache_sweep_btn.click(
+                    fn=_trigger_cache_sweep,
+                    inputs=[api_url],
+                    outputs=[cache_stats_output],
+                )
+
+                def _clear_cache(api_url_val: str) -> str:
+                    url = api_url_val.rstrip("/") if api_url_val else _DEFAULT_API_URL
+                    try:
+                        resp = httpx.post(
+                            f"{url}/v1/cache/clear",
+                            timeout=30,
+                            headers=_API_HEADERS,
+                        )
+                        resp.raise_for_status()
+                    except httpx.ConnectError:
+                        return f"# Error: Cannot connect to API at {url}"
+                    except Exception as exc:  # noqa: BLE001 — surface any failure
+                        return f"# Error: {exc}"
+                    return _fetch_cache_stats(api_url_val)
+
+                cache_clear_btn.click(
+                    fn=_clear_cache,
+                    inputs=[api_url],
+                    outputs=[cache_stats_output],
                 )
 
                 def _fetch_settings_yaml(
@@ -2902,6 +3003,10 @@ def create_blocks(
                     fn=_fetch_settings_yaml,
                     inputs=[api_url, session_state, model_state, model_input],
                     outputs=[settings_output],
+                ).then(
+                    fn=_fetch_cache_stats,
+                    inputs=[api_url],
+                    outputs=[cache_stats_output],
                 )
 
         # ── Toggle: Python saves inputs → BrowserState, then JS redirects ──

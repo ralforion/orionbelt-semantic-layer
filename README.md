@@ -11,7 +11,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.1.4](https://img.shields.io/badge/version-2.1.4-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 2.2.0](https://img.shields.io/badge/version-2.2.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -155,7 +155,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:2.1.4
+    image: ralforion/orionbelt-api:2.2.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -164,7 +164,7 @@ services:
       MODEL_FILE: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:2.1.4
+    image: ralforion/orionbelt-ui:2.2.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -180,7 +180,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
-> - For production, pin a version tag (`:2.1.4`) rather than `:latest`.
+> - For production, pin a version tag (`:2.2.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -246,6 +246,21 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI
+
+### Agent-Facing API
+
+- **Model Health on Load** — every model load returns a `health` block with orphan dataObjects, fan-trap risks, and unreachable dimensions — agents skip the defensive second round trip
+- **Query Plan Endpoint** — `POST /query/plan` returns the planner's understanding (planner choice, physical tables, join path, `would_compile`) without compiling SQL or executing; opt-in `include_database_explain` adds the warehouse's raw EXPLAIN
+- **Structured Warnings** — every `warnings` list across the API uses a stable `{code, severity, message, path, hint, context}` shape with a documented code taxonomy; agents branch on codes instead of parsing messages
+- **Fuzzy `/find` Recovery** — when a search produces no exact or synonym hits, deterministic Levenshtein + trigram fallback returns near-miss candidates with scores and reasons
+- **Model Examples** — optional OBML `examples:` block of canonical queries; `GET /examples` (with `?intent=` filtering) gives agents one-round-trip discovery of what a model is designed to answer
+
+### Freshness-Driven Result Cache
+
+- **Source-level freshness contracts** — declare `refresh:` blocks on `dataObject` entries (interval / heartbeat / static); the cache derives query TTLs from the contracts of the physical tables a query touched, not from caller guesses
+- **Heartbeat invalidation** — one `POST /v1/heartbeat` to a physical table invalidates every cached query that depends on it, across every dataObject and session
+- **DuckDB metadata + Parquet results** — file-backed cache with type-precise serialization, lazy expiration, LRU capacity sweep; opt-in via `CACHE_BACKEND=file`
+- **Inverts the Cube/dbt/Looker pattern** — contracts live on the source, not the semantic abstraction; one source of truth across every cube/explore/saved query reading the table
 
 ### Developer Experience
 

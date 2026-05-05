@@ -382,6 +382,55 @@ obsl:comparison a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 
 # =============================================================================
+# 8.5 REFRESH POLICY --- freshness contract on a data object's source table
+# =============================================================================
+# A RefreshPolicy describes how the physical table behind a DataObject
+# refreshes.  It drives the freshness-driven result cache (see
+# design/PLAN_freshness_driven_cache.md).  The policy is authored once per
+# physical source table; OBSL composes per-query TTLs from the policies of
+# every physical table a query touches.
+
+obsl:RefreshPolicy a owl:Class ;
+    rdfs:label "Refresh Policy" ;
+    rdfs:comment "Freshness contract describing how the physical table behind a DataObject refreshes.  Drives result-cache TTL composition." .
+
+obsl:hasRefreshPolicy a owl:ObjectProperty ;
+    rdfs:label "has refresh policy" ;
+    rdfs:comment "Links a data object to the freshness contract for its physical source table." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:RefreshPolicy .
+
+obsl:refreshMode a owl:DatatypeProperty ;
+    rdfs:label "refresh mode" ;
+    rdfs:comment "Refresh mode: 'interval' (fixed cadence), 'heartbeat' (irregular, ETL pings), or 'static' (never changes)." ;
+    rdfs:domain obsl:RefreshPolicy ;
+    rdfs:range xsd:string .
+
+obsl:refreshInterval a owl:DatatypeProperty ;
+    rdfs:label "refresh interval" ;
+    rdfs:comment "Required for mode='interval'.  ISO 8601 duration or shorthand (e.g. PT1H, 1h, 15m, 1d) describing the refresh cadence." ;
+    rdfs:domain obsl:RefreshPolicy ;
+    rdfs:range xsd:string .
+
+obsl:refreshAnchor a owl:DatatypeProperty ;
+    rdfs:label "refresh anchor" ;
+    rdfs:comment "Optional 'HH:MM' time-of-day anchor for interval mode.  Refresh boundaries align to this anchor in the policy's timezone." ;
+    rdfs:domain obsl:RefreshPolicy ;
+    rdfs:range xsd:string .
+
+obsl:refreshTimezone a owl:DatatypeProperty ;
+    rdfs:label "refresh timezone" ;
+    rdfs:comment "IANA timezone name used to interpret refreshAnchor.  Default 'UTC' when omitted." ;
+    rdfs:domain obsl:RefreshPolicy ;
+    rdfs:range xsd:string .
+
+obsl:maxStaleness a owl:DatatypeProperty ;
+    rdfs:label "max staleness" ;
+    rdfs:comment "Required for mode='heartbeat'.  ISO 8601 duration or shorthand bounding the time between heartbeats before the table is considered stale." ;
+    rdfs:domain obsl:RefreshPolicy ;
+    rdfs:range xsd:string .
+
+# =============================================================================
 # 9. OWL AXIOMS
 # =============================================================================
 
@@ -396,7 +445,8 @@ obsl:comparison a owl:DatatypeProperty ;
                   obsl:Join
                   obsl:Dimension
                   obsl:Measure
-                  obsl:Metric ) .
+                  obsl:Metric
+                  obsl:RefreshPolicy ) .
 
 # Metric subtypes are disjoint with each other.
 obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .

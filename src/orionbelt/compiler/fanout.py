@@ -7,6 +7,7 @@ import re
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import ResolvedQuery
 from orionbelt.models.semantic import Cardinality, SemanticModel
+from orionbelt.models.warnings import WarningCode, warning
 
 
 class FanoutError(Exception):
@@ -167,10 +168,24 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
                         agg = model_measure.aggregation.lower()
                         if agg in _ADDITIVE_AGGREGATIONS:
                             resolved.warnings.append(
-                                f"Measure '{measure_name}' ({agg.upper()}): "
-                                f"cross-join through '{junction}' — per-group "
-                                f"values are correct but grand totals may be "
-                                f"inflated"
+                                warning(
+                                    code=WarningCode.FAN_TRAP_RISK,
+                                    message=(
+                                        f"Measure '{measure_name}' ({agg.upper()}): "
+                                        f"cross-join through '{junction}' — per-group "
+                                        f"values are correct but grand totals may be "
+                                        f"inflated"
+                                    ),
+                                    hint=(
+                                        "Add the junction-table dimension to the GROUP BY, "
+                                        "or use the Composite Fact Layer pattern."
+                                    ),
+                                    context={
+                                        "measure": measure_name,
+                                        "aggregation": agg.upper(),
+                                        "junction": junction,
+                                    },
+                                )
                             )
                         continue
 

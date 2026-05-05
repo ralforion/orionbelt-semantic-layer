@@ -10,7 +10,6 @@ Returns 409 Conflict if resolution is ambiguous.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Literal, cast
 
@@ -22,12 +21,13 @@ from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
     _build_schema,
-    _search_model,
+    _build_search_response,
 )
 from orionbelt.api.schemas import (
     DiagramResponse,
     DimensionDetail,
-    ErrorDetail,
+    ExampleDetail,
+    ExampleListResponse,
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
@@ -37,6 +37,8 @@ from orionbelt.api.schemas import (
     MetricDetail,
     QueryCompileResponse,
     QueryExecuteResponse,
+    QueryPlanRequest,
+    QueryPlanResponse,
     ResolvedInfoResponse,
     SchemaResponse,
     SearchRequest,
@@ -46,6 +48,7 @@ from orionbelt.api.schemas import (
     ValidateRequest,
     ValidateResponse,
 )
+from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_to_warning
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -53,12 +56,6 @@ from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-from orionbelt.service.db_executor import (
-    ExecutionError,
-    ExecutionUnavailableError,
-    execute_sql,
-    resolve_timezone,
-)
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import SessionManager
 
@@ -150,6 +147,27 @@ def _resolve_store_and_model(
             detail="Multiple models loaded — use session-scoped endpoints instead",
         )
     return candidates[0]
+
+
+def _session_id_for_store(mgr: SessionManager, store: ModelStore) -> str:
+    """Find the session_id whose store matches ``store``.
+
+    Used by shortcut endpoints so the cache key stays session-scoped (the
+    same session_id the caller would have supplied via the session-scoped
+    endpoint). Falls back to ``__default__`` for single-model mode.
+    """
+    try:
+        if mgr.get_store("__default__") is store:
+            return "__default__"
+    except Exception:
+        pass
+    for sess in mgr.list_sessions():
+        try:
+            if mgr.get_store(sess.session_id) is store:
+                return sess.session_id
+        except Exception:
+            continue
+    return "__default__"
 
 
 # -- top-level endpoints ----------------------------------------------------
@@ -283,8 +301,7 @@ async def shortcut_find(
 ) -> SearchResponse:
     """Search model artefacts (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
-    results = _search_model(model, body.query, body.types)
-    return SearchResponse(results=results)
+    return _build_search_response(model, body.query, body.types)
 
 
 @router.get("/join-graph", response_model=JoinGraphResponse, tags=["model-discovery"])
@@ -363,10 +380,8 @@ async def shortcut_validate(
     summary = store.validate(body.model_yaml, raw_dict=raw)
     return ValidateResponse(
         valid=summary.valid,
-        errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
-        warnings=[
-            ErrorDetail(code=w.code, message=w.message, path=w.path) for w in summary.warnings
-        ],
+        errors=[error_info_to_detail(e) for e in summary.errors],
+        warnings=[error_info_to_detail(w) for w in summary.warnings],
     )
 
 
@@ -459,9 +474,10 @@ async def shortcut_compile_query(
             dimensions=result.resolved.dimensions,
             measures=result.resolved.measures,
         ),
-        warnings=result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
+        physical_tables=list(result.physical_tables),
     )
 
 
@@ -501,7 +517,6 @@ async def shortcut_execute_query(
       model's ``default_timezone`` for naive timestamp coercion.
     """
     from orionbelt.api.deps import (
-        get_default_locale,
         get_query_default_limit,
         is_query_execute_enabled,
     )
@@ -557,36 +572,78 @@ async def shortcut_execute_query(
             },
         ) from None
 
-    # Resolve timezone — request override → model default → host TZ → UTC.
-    # ``model`` was already loaded above for dialect resolution; reuse it.
-    model_default_tz: str | None = None
-    override_db_tz = False
-    if model.settings:
-        model_default_tz = model.settings.default_timezone
-        override_db_tz = model.settings.override_database_timezone
-    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
+    # Resolve the session_id that owns the resolved store so the cache key
+    # remains scoped per session (matching the session-scoped endpoint).
+    from orionbelt.api.deps import get_cache, get_cache_config
+    from orionbelt.api.routers.sessions import _run_with_cache
 
-    try:
-        exec_result = await asyncio.to_thread(
-            execute_sql,
-            result.sql,
-            dialect=dialect,
-            tz=tz,
-            override_db_tz=override_db_tz,
-        )
-    except ExecutionUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-    except ExecutionError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-
-    from orionbelt.api.routers.sessions import _build_execute_response
-
-    effective_locale = locale if locale is not None else get_default_locale()
-    return _build_execute_response(
-        compile_result=result,
-        exec_result=exec_result,
+    session_id = _session_id_for_store(mgr, store)
+    cache = get_cache()
+    cache_config = get_cache_config()
+    return await _run_with_cache(
+        store=store,
         model=model,
+        compile_result=result,
+        query=query,
+        session_id=session_id,
+        model_id=model_id,
+        dialect=dialect,
+        cache=cache,
+        cache_config=cache_config,
         response_format=format,
         format_values=format_values,
-        locale=effective_locale,
+        locale=locale,
+        timezone_override=timezone,
     )
+
+
+@router.post("/query/plan", response_model=QueryPlanResponse, tags=["query"])
+async def shortcut_plan_query(
+    body: QueryPlanRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> QueryPlanResponse:
+    """Return the planner's understanding of a query (auto-resolves session/model).
+
+    The session-scoped form is ``POST /v1/sessions/{sid}/query/plan``. This
+    shortcut auto-resolves when exactly one model is loaded — typical of
+    single-model deployments. The request body's ``model_id`` is ignored
+    here in favor of the resolved one (kept in the schema for shape parity).
+    """
+    from orionbelt.api.routers.sessions import plan_query
+
+    _, model_id, _ = _resolve_single_model(mgr)
+    body.model_id = model_id
+    session_id = _session_id_for_store(mgr, _resolve_store_and_model(mgr)[0])
+    return await plan_query(session_id, body, mgr)
+
+
+@router.get(
+    "/examples",
+    response_model=ExampleListResponse,
+    tags=["model-discovery"],
+)
+async def shortcut_list_examples(
+    intent: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ExampleListResponse:
+    """List canonical example queries (auto-resolves session/model)."""
+    from orionbelt.api.routers.model_api import list_examples
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await list_examples(session_id, model_id, intent, mgr)
+
+
+@router.get(
+    "/examples/{example_name}",
+    response_model=ExampleDetail,
+    tags=["model-discovery"],
+)
+async def shortcut_get_example(
+    example_name: str,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ExampleDetail:
+    """Get a single example by name (auto-resolves session/model)."""
+    from orionbelt.api.routers.model_api import get_example
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await get_example(session_id, model_id, example_name, mgr)

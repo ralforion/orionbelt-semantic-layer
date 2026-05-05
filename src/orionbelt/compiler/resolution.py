@@ -190,7 +190,7 @@ class ResolvedQuery:
     order_by_exprs: list[tuple[Expr, bool]] = field(default_factory=list)
     limit: int | None = None
     offset: int | None = None
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[SemanticError] = field(default_factory=list)
     requires_cfl: bool = False
     measure_source_objects: set[str] = field(default_factory=set)
     metric_components: dict[str, ResolvedMeasure] = field(default_factory=dict)

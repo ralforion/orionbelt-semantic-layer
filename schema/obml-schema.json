@@ -75,6 +75,39 @@
           "type": "array",
           "description": "Vendor-keyed extension data",
           "items": { "$ref": "#/definitions/customExtension" }
+        },
+        "refresh": {
+          "type": "object",
+          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md §5.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["interval", "heartbeat", "static"],
+              "description": "interval: fixed cadence; heartbeat: irregular + ETL pings; static: never changes"
+            },
+            "interval": {
+              "type": "string",
+              "description": "Required for mode=interval. ISO 8601 duration or shorthand (1h, 15m, 1d)"
+            },
+            "anchor": {
+              "type": "string",
+              "description": "Optional HH:MM time-of-day anchor for interval mode"
+            },
+            "timezone": {
+              "type": "string",
+              "description": "IANA TZ name; only used when anchor is set. Default UTC"
+            },
+            "max_staleness": {
+              "type": "string",
+              "description": "Required for mode=heartbeat. Max time between heartbeats before stale"
+            },
+            "maxStaleness": {
+              "type": "string",
+              "description": "camelCase alias for max_staleness"
+            }
+          },
+          "required": ["mode"],
+          "additionalProperties": false
         }
       },
       "required": ["code", "columns"],
@@ -1053,6 +1086,39 @@
           }
         },
         "required": ["dataObject", "column", "operator"],
+        "additionalProperties": false
+      }
+    },
+    "examples": {
+      "type": "array",
+      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md §5.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Snake_case identifier, unique within the examples block"
+          },
+          "description": {
+            "type": "string",
+            "description": "One- or two-sentence explanation of what this example shows"
+          },
+          "intent_tags": {
+            "type": "array",
+            "description": "Free-form tags used by the /examples?intent= filter",
+            "items": { "type": "string" }
+          },
+          "intentTags": {
+            "type": "array",
+            "description": "camelCase alias for intent_tags",
+            "items": { "type": "string" }
+          },
+          "query": {
+            "type": "object",
+            "description": "Full QueryObject payload (the same shape accepted by /query/sql)"
+          }
+        },
+        "required": ["name", "description", "query"],
         "additionalProperties": false
       }
     },

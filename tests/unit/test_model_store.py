@@ -124,8 +124,10 @@ class TestListModels:
         assert store.list_models() == []
 
     def test_list_after_load(self, store: ModelStore) -> None:
-        r1 = store.load_model(SAMPLE_MODEL_YAML)
-        r2 = store.load_model(SAMPLE_MODEL_YAML)
+        # dedup=False so each load creates a new model — needed to verify list semantics.
+        r1 = store.load_model(SAMPLE_MODEL_YAML, dedup=False)
+        r2 = store.load_model(SAMPLE_MODEL_YAML, dedup=False)
+        assert r1.model_id != r2.model_id
         models = store.list_models()
         assert len(models) == 2
         ids = {m.model_id for m in models}
@@ -176,6 +178,61 @@ dimensions:
 # ---------------------------------------------------------------------------
 # compile_query
 # ---------------------------------------------------------------------------
+
+
+class TestDedup:
+    """Cover the dedup behavior added in v2.2.0 (PLAN_model_load_dedup.md)."""
+
+    def test_same_yaml_reuses_model_id(self, store: ModelStore) -> None:
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        r2 = store.load_model(SAMPLE_MODEL_YAML)
+        assert r1.model_id == r2.model_id
+        assert r1.model_load == "fresh"
+        assert r2.model_load == "reused"
+        # Counts on the reused result come from the cached summary.
+        assert r2.data_objects == r1.data_objects
+        assert r2.dimensions == r1.dimensions
+        assert r2.measures == r1.measures
+        assert r2.metrics == r1.metrics
+
+    def test_dedup_false_forces_fresh_load(self, store: ModelStore) -> None:
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        r2 = store.load_model(SAMPLE_MODEL_YAML, dedup=False)
+        assert r1.model_id != r2.model_id
+        assert r2.model_load == "fresh"
+
+    def test_trailing_whitespace_normalized(self, store: ModelStore) -> None:
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        r2 = store.load_model("\n\n" + SAMPLE_MODEL_YAML + "\n\n")
+        assert r1.model_id == r2.model_id
+
+    def test_different_yaml_loads_separately(self, store: ModelStore) -> None:
+        # Add a comment — different bytes, different hash, fresh load.
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        r2 = store.load_model("# variant\n" + SAMPLE_MODEL_YAML)
+        assert r1.model_id != r2.model_id
+        assert r2.model_load == "fresh"
+
+    def test_remove_clears_index(self, store: ModelStore) -> None:
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        store.remove_model(r1.model_id)
+        # No stale index entry — same content loads fresh.
+        r2 = store.load_model(SAMPLE_MODEL_YAML)
+        assert r2.model_id != r1.model_id
+        assert r2.model_load == "fresh"
+
+    def test_dedup_skipped_when_extends_provided(self, store: ModelStore) -> None:
+        # extends/inherits make the effective content depend on input the
+        # YAML bytes don't capture — dedup must not apply.
+        r1 = store.load_model(SAMPLE_MODEL_YAML)
+        r2 = store.load_model(SAMPLE_MODEL_YAML, extends_yaml=[])
+        # Empty extends list still bypasses dedup eligibility check
+        # (see load_model: `not extends_yaml` is True for [], so dedup runs).
+        # Verify the inverse: a non-empty extends bypasses dedup.
+        del r2  # unused
+        r3 = store.load_model(SAMPLE_MODEL_YAML, extends_yaml=["version: 1.0\n"])
+        assert r3.model_id != r1.model_id
+        assert r3.model_load == "fresh"
 
 
 class TestCompileQuery:

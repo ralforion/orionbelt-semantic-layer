@@ -16,8 +16,10 @@ from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.warnings import WarningCode, warning
 
 
 @dataclass
@@ -37,6 +39,7 @@ class ExplainJoin:
     to_object: str
     join_columns: list[str]
     reason: str
+    cardinality: str = ""
 
 
 @dataclass
@@ -76,9 +79,36 @@ class CompilationResult:
     sql: str
     dialect: str
     resolved: ResolvedInfo
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[SemanticError] = field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlan | None = None
+    physical_tables: list[str] = field(default_factory=list)
+    """Deduplicated list of ``DATABASE.SCHEMA.CODE`` triples reached by the
+    query. Drives freshness-cache TTL composition and heartbeat
+    invalidation. See ``design/PLAN_freshness_driven_cache.md`` §8."""
+
+
+def _compute_physical_tables(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
+    """Deduplicate dataObjects to physical ``DATABASE.SCHEMA.CODE`` triples.
+
+    Two dataObjects mapping to the same physical table contribute one entry.
+    See ``design/PLAN_freshness_driven_cache.md`` §10 for why this matters
+    (one source, multiple semantic facets like ``Sales`` + ``Returns``).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in sorted(resolved.required_objects):
+        obj = model.data_objects.get(name)
+        if obj is None:
+            continue
+        parts = [str(p) for p in (obj.database, obj.schema_name, obj.code) if p]
+        if not parts:
+            continue
+        ref = ".".join(parts)
+        if ref not in seen:
+            seen.add(ref)
+            out.append(ref)
+    return out
 
 
 class CompilationPipeline:
@@ -153,8 +183,22 @@ class CompilationPipeline:
             # PoP/cumulative wrappers depend on.
             if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
                 resolved.warnings.append(
-                    "total=True measures are ignored when combined with "
-                    "period-over-period or cumulative metrics in the same query"
+                    warning(
+                        code=WarningCode.INCOMPATIBLE_COMBINATION,
+                        message=(
+                            "total=True measures are ignored when combined with "
+                            "period-over-period or cumulative metrics in the same query"
+                        ),
+                        hint=(
+                            "Drop total=True from the affected measures, or remove the "
+                            "PoP/cumulative metric from this query."
+                        ),
+                        context={
+                            "has_totals": True,
+                            "has_pop": resolved.has_pop,
+                            "has_cumulative": resolved.has_cumulative,
+                        },
+                    )
                 )
             else:
                 wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
@@ -171,14 +215,24 @@ class CompilationPipeline:
         sql_valid = len(validation_errors) == 0
         warnings = resolved.warnings
         if not sql_valid:
-            warnings = warnings + [f"SQL validation: {e}" for e in validation_errors]
+            warnings = warnings + [
+                warning(
+                    code=WarningCode.SQL_VALIDATION,
+                    message=f"SQL validation: {e}",
+                )
+                for e in validation_errors
+            ]
 
         # Build explain plan
         explain = self._build_explain(resolved, model, use_cfl, plan)
 
+        # Compute deduplicated physical tables touched by the query
+        physical_tables = _compute_physical_tables(resolved, model)
+
         return CompilationResult(
             sql=sql,
             dialect=dialect_name,
+            physical_tables=physical_tables,
             resolved=ResolvedInfo(
                 fact_tables=resolved.fact_tables,
                 dimensions=[d.name for d in resolved.dimensions],
@@ -280,6 +334,7 @@ class CompilationPipeline:
                         to_object=step.to_object,
                         join_columns=join_cols,
                         reason=reason,
+                        cardinality=step.cardinality.value,
                     )
                 )
 

@@ -236,6 +236,41 @@ class DataObjectJoin(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RefreshPolicy(BaseModel):
+    """Source-table freshness contract.
+
+    Lives on the :class:`DataObject` that maps to a physical table. See
+    ``design/PLAN_freshness_driven_cache.md`` §5 for the full design and §8
+    for how multiple contracts compose at query time.
+
+    Modes:
+    - ``interval``: table refreshes on a fixed cadence; ``interval`` required.
+    - ``heartbeat``: table refreshes irregularly; ``max_staleness`` required.
+    - ``static``: table effectively never changes (lookup tables).
+    """
+
+    mode: str = Field(description="One of: interval | heartbeat | static")
+    interval: str | None = Field(
+        default=None,
+        description="ISO 8601 duration or shorthand (e.g. '1h', '15m', '1d')",
+    )
+    anchor: str | None = Field(
+        default=None,
+        description="Optional time-of-day anchor 'HH:MM' for interval mode",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="IANA TZ name. Used only when anchor is set. Default UTC.",
+    )
+    max_staleness: str | None = Field(
+        default=None,
+        alias="maxStaleness",
+        description="Max time between heartbeats before the table is stale",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class DataObject(BaseModel):
     """A database table or view with its columns and joins."""
 
@@ -250,6 +285,13 @@ class DataObject(BaseModel):
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    refresh: RefreshPolicy | None = Field(
+        default=None,
+        description=(
+            "Optional freshness contract for the physical table this dataObject maps to. "
+            "Drives result-cache TTL composition. PLAN_freshness_driven_cache.md §5."
+        ),
+    )
 
     @property
     def qualified_code(self) -> str:
@@ -522,6 +564,28 @@ class ModelFilter(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ModelExample(BaseModel):
+    """Canonical example query authored alongside a model.
+
+    See ``design/PLAN_agent_api_improvements.md`` §5. Stored on the
+    :class:`SemanticModel` and surfaced via the examples endpoints so agents
+    can discover the kinds of questions a model is designed to answer.
+    """
+
+    name: str = Field(description="Snake_case identifier, unique within the model")
+    description: str = Field(description="One- or two-sentence explanation")
+    intent_tags: list[str] = Field(
+        default_factory=list,
+        alias="intentTags",
+        description="Free-form tags used by ?intent= filters",
+    )
+    query: dict[str, object] = Field(
+        description="Full QueryObject payload, valid against this model"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class SemanticModel(BaseModel):
     """Complete semantic model parsed from OBML YAML."""
 
@@ -533,6 +597,7 @@ class SemanticModel(BaseModel):
     measures: dict[str, Measure] = {}
     metrics: dict[str, Metric] = {}
     filters: list[ModelFilter] = Field(default_factory=list)
+    examples: list[ModelExample] = Field(default_factory=list)
     extends_sources: list[str] = Field(default_factory=list)
     inherits_source: str | None = None
     owner: str | None = None

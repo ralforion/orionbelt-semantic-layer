@@ -191,6 +191,10 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | POST | `/v1/sessions/{id}/models/{mid}/sparql` | SPARQL query (SELECT/ASK) |
 | POST | `/v1/convert/osi-to-obml` | Convert OSI YAML → OBML YAML |
 | POST | `/v1/convert/obml-to-osi` | Convert OBML YAML → OSI YAML |
+| POST | `/v1/oneshot/batch` | Load (or reference) a model and run N independent queries in one round trip |
+| GET | `/v1/cache/stats` | Result cache summary (entries, size, hit rate, oldest entry, next sweep) |
+| POST | `/v1/cache/sweep` | Trigger one TTL + capacity eviction pass on demand |
+| POST | `/v1/cache/clear` | Drop every cache entry (counters preserved) |
 | GET | `/v1/reference/obml` | OBML reference documentation |
 
 Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`.

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import time
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    get_cache,
+    get_cache_config,
     get_default_locale,
     get_preload_model_yaml,
     get_query_default_limit,
@@ -19,25 +26,38 @@ from orionbelt.api.deps import (
 )
 from orionbelt.api.schemas import (
     ColumnMetadata,
+    DatabaseExplain,
     DiagramResponse,
-    ErrorDetail,
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
+    JoinPathStep,
     ModelLoadRequest,
     ModelLoadResponse,
     ModelSummaryResponse,
     QueryCompileResponse,
     QueryExecuteResponse,
+    QueryPlanRequest,
+    QueryPlanResponse,
     ResolvedInfoResponse,
     SessionCreateRequest,
     SessionListResponse,
     SessionQueryExecuteRequest,
     SessionQueryRequest,
     SessionResponse,
+    StructuredWarning,
     ValidateRequest,
     ValidateResponse,
 )
+from orionbelt.api.warnings_adapter import (
+    error_info_to_detail,
+    error_info_to_warning,
+    health_summary_to_response,
+    semantic_error_to_warning,
+)
+from orionbelt.cache import build_cache_key, compute_effective_ttl
+from orionbelt.cache.parquet_codec import decode as cache_decode
+from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -47,6 +67,7 @@ from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     execute_sql,
+    explain_sql,
     resolve_timezone,
 )
 from orionbelt.service.diagram import generate_mermaid_er
@@ -59,6 +80,8 @@ from orionbelt.service.session_manager import (
     SessionNotFoundError,
 )
 from orionbelt.service.value_formatting import format_row, to_tsv
+
+logger = logging.getLogger("orionbelt.api.sessions")
 
 router = APIRouter()
 
@@ -144,10 +167,14 @@ async def close_session(
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> None:
     """Close a session and release its resources."""
+    from orionbelt.api.deps import get_cache
+
     try:
         mgr.close_session(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
+    with contextlib.suppress(Exception):
+        await get_cache().delete_session(session_id)
 
 
 # -- model management -------------------------------------------------------
@@ -175,6 +202,7 @@ async def load_model(
             raw_dict=cast("dict[str, object] | None", body.model_json),
             extends_yaml=body.extends,
             inherits_model_id=body.inherits,
+            dedup=body.dedup,
         )
     except ModelCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
@@ -200,7 +228,9 @@ async def load_model(
         dimensions=result.dimensions,
         measures=result.measures,
         metrics=result.metrics,
-        warnings=result.warnings,
+        warnings=[error_info_to_warning(w) for w in result.warnings],
+        model_load=result.model_load,
+        health=health_summary_to_response(result.health),
     )
 
 
@@ -296,10 +326,8 @@ async def validate_model(
     )
     return ValidateResponse(
         valid=summary.valid,
-        errors=[ErrorDetail(code=e.code, message=e.message, path=e.path) for e in summary.errors],
-        warnings=[
-            ErrorDetail(code=w.code, message=w.message, path=w.path) for w in summary.warnings
-        ],
+        errors=[error_info_to_detail(e) for e in summary.errors],
+        warnings=[error_info_to_detail(w) for w in summary.warnings],
     )
 
 
@@ -385,9 +413,10 @@ async def compile_query(
             dimensions=result.resolved.dimensions,
             measures=result.resolved.measures,
         ),
-        warnings=result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
+        physical_tables=list(result.physical_tables),
     )
 
 
@@ -558,9 +587,10 @@ def _build_execute_response(
             dimensions=compile_result.resolved.dimensions,
             measures=compile_result.resolved.measures,
         ),
-        warnings=compile_result.warnings,
+        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
         sql_valid=compile_result.sql_valid,
         explain=_build_explain_response(compile_result),
+        physical_tables=list(compile_result.physical_tables),
     )
 
 
@@ -598,6 +628,146 @@ def _build_explain_response(result: Any) -> ExplainPlanResponse | None:
     )
 
 
+@router.post("/{session_id}/query/plan", response_model=QueryPlanResponse)
+async def plan_query(
+    session_id: str,
+    body: QueryPlanRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> QueryPlanResponse:
+    """Return the planner's understanding of a query without executing it.
+
+    Cheap by default (no warehouse round trip). When
+    ``include_database_explain=true`` is set, also runs ``EXPLAIN <sql>``
+    against the configured warehouse and returns the raw text. See
+    ``design/PLAN_agent_api_improvements.md`` §2.
+    """
+    from orionbelt.api.deps import get_db_vendor
+
+    store = _get_store(session_id, mgr)
+    try:
+        model = store.get_model(body.model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
+    dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
+
+    try:
+        result = store.compile_query(body.model_id, body.query, dialect)
+    except UnsupportedDialectError:
+        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
+    except ResolutionError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[semantic_error_to_warning(e) for e in exc.errors],
+            would_compile=False,
+        )
+    except FanoutError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="FANOUT_ERROR",
+                    severity="error",
+                    message=exc.message,
+                )
+            ],
+            would_compile=False,
+        )
+    except UnsupportedAggregationError as exc:
+        return QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="UNSUPPORTED_AGGREGATION",
+                    severity="error",
+                    message=str(exc),
+                    context={"dialect": exc.dialect, "aggregation": exc.aggregation},
+                )
+            ],
+            would_compile=False,
+        )
+
+    physical_tables = _physical_tables_for(model, result)
+    join_path = _join_path_steps(result)
+    plan_warnings = [semantic_error_to_warning(w) for w in result.warnings]
+    explain = result.explain
+    response = QueryPlanResponse(
+        status="ok",
+        planner=explain.planner if explain else "",
+        planner_reason=explain.planner_reason if explain else "",
+        physical_tables=physical_tables,
+        join_path=join_path,
+        filters_applied=(
+            (explain.where_filter_count + explain.having_filter_count) if explain else 0
+        ),
+        warnings=plan_warnings,
+        would_compile=True,
+        compiled_sql_length_estimate=len(result.sql),
+    )
+
+    if body.include_database_explain:
+        try:
+            raw = await asyncio.to_thread(explain_sql, result.sql, dialect=dialect)
+            response.database_explain = DatabaseExplain(
+                dialect=dialect,
+                compiled_sql=result.sql,
+                explain_output=raw,
+                explain_format="text",
+            )
+        except (ExecutionUnavailableError, ExecutionError) as exc:
+            response.warnings = response.warnings + [
+                StructuredWarning(
+                    code="DATABASE_EXPLAIN_FAILED",
+                    severity="warning",
+                    message=str(exc),
+                    hint=(
+                        "Database EXPLAIN is opt-in. Disable include_database_explain "
+                        "or check QUERY_EXECUTE / DB_VENDOR / driver setup."
+                    ),
+                )
+            ]
+
+    return response
+
+
+def _physical_tables_for(model: Any, result: Any) -> list[str]:
+    """Compute qualified physical tables touched by a compilation."""
+    names = list(dict.fromkeys(result.resolved.fact_tables))
+    if result.explain:
+        for j in result.explain.joins:
+            for nm in (j.from_object, j.to_object):
+                if nm not in names:
+                    names.append(nm)
+        for leg in result.explain.cfl_legs:
+            if leg.measure_source and leg.measure_source not in names:
+                names.append(leg.measure_source)
+    out: list[str] = []
+    for nm in names:
+        obj = model.data_objects.get(nm)
+        if obj is None:
+            out.append(nm)
+            continue
+        parts = [p for p in (obj.database, obj.schema_name, obj.code) if p]
+        out.append(".".join(parts) if parts else nm)
+    return out
+
+
+def _join_path_steps(result: Any) -> list[JoinPathStep]:
+    """Convert ExplainPlan joins → API JoinPathStep list."""
+    if not result.explain:
+        return []
+    steps: list[JoinPathStep] = []
+    for j in result.explain.joins:
+        steps.append(
+            JoinPathStep(
+                from_object=j.from_object,
+                to_object=j.to_object,
+                cardinality=j.cardinality or "many-to-one",
+                fk=", ".join(j.join_columns) if j.join_columns else None,
+            )
+        )
+    return steps
+
+
 @router.post("/{session_id}/query/execute", response_model=QueryExecuteResponse)
 async def execute_query(
     session_id: str,
@@ -607,6 +777,8 @@ async def execute_query(
     locale: str | None = None,
     timezone: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
 ) -> QueryExecuteResponse | Response:
     """Compile and execute a query against the configured database.
 
@@ -678,19 +850,87 @@ async def execute_query(
             },
         ) from None
 
-    # Resolve timezone — request override → model default → host TZ → UTC.
-    # ``model`` was already loaded above for dialect resolution; reuse it.
+    return await _run_with_cache(
+        store=store,
+        model=model,
+        compile_result=result,
+        query=query,
+        session_id=session_id,
+        model_id=body.model_id,
+        dialect=dialect,
+        cache=cache,
+        cache_config=cache_config,
+        response_format=format,
+        format_values=format_values,
+        locale=locale,
+        timezone_override=timezone,
+    )
+
+
+# -- cache helpers ----------------------------------------------------------
+
+
+async def _run_with_cache(
+    *,
+    store: ModelStore,
+    model: Any,
+    compile_result: Any,
+    query: Any,
+    session_id: str,
+    model_id: str,
+    dialect: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+    response_format: Literal["json", "tsv"],
+    format_values: bool,
+    locale: str | None,
+    timezone_override: str | None,
+) -> QueryExecuteResponse | Response:
+    """Cache-aware execute pipeline shared by session and shortcut endpoints.
+
+    Looks up the cache before executing, stores on miss, and surfaces the
+    ``cached`` / ``ttl_*`` metadata. Only the canonical JSON shape is
+    cached (TSV + value-formatted JSON skip caching to avoid locale-keyed
+    proliferation).
+    """
     model_default_tz: str | None = None
     override_db_tz = False
     if model.settings:
         model_default_tz = model.settings.default_timezone
         override_db_tz = model.settings.override_database_timezone
-    tz = resolve_timezone(default_timezone=timezone or model_default_tz)
+    tz = resolve_timezone(default_timezone=timezone_override or model_default_tz)
+
+    cacheable = response_format == "json" and not format_values
+    cache_key: str | None = None
+    ttl_outcome = None
+    if cacheable:
+        cache_key = build_cache_key(
+            session_id=session_id,
+            model_id=model_id,
+            dialect=dialect,
+            query=query.model_dump(by_alias=True, mode="json"),
+        )
+        ttl_outcome = _resolve_ttl(
+            store=store,
+            model_id=model_id,
+            cache=cache,
+            cache_config=cache_config,
+            physical_tables=compile_result.physical_tables,
+        )
+        _cache_t0 = time.monotonic()
+        cached_envelope = await _try_cache_get(cache, cache_key)
+        if cached_envelope is not None:
+            return _build_cached_response(
+                envelope=cached_envelope,
+                cache_key=cache_key,
+                ttl_outcome=ttl_outcome,
+                fetch_elapsed_ms=round((time.monotonic() - _cache_t0) * 1000, 2),
+            )
 
     try:
         exec_result = await asyncio.to_thread(
             execute_sql,
-            result.sql,
+            compile_result.sql,
             dialect=dialect,
             tz=tz,
             override_db_tz=override_db_tz,
@@ -701,11 +941,214 @@ async def execute_query(
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
     effective_locale = locale if locale is not None else get_default_locale()
-    return _build_execute_response(
-        compile_result=result,
+    response = _build_execute_response(
+        compile_result=compile_result,
         exec_result=exec_result,
         model=model,
-        response_format=format,
+        response_format=response_format,
         format_values=format_values,
         locale=effective_locale,
     )
+    if (
+        cacheable
+        and cache_key is not None
+        and ttl_outcome is not None
+        and ttl_outcome.ttl is not None
+        and isinstance(response, QueryExecuteResponse)
+    ):
+        _apply_ttl_metadata(response, ttl_outcome)
+        await _try_cache_set(
+            cache=cache,
+            key=cache_key,
+            response=response,
+            ttl_seconds=ttl_outcome.ttl.seconds,
+            session_id=session_id,
+            model_id=model_id,
+            dialect=dialect,
+            query=query,
+        )
+    elif cacheable and ttl_outcome is not None and isinstance(response, QueryExecuteResponse):
+        _apply_no_cache_metadata(response, ttl_outcome)
+    return response
+
+
+def _resolve_ttl(
+    *,
+    store: ModelStore,
+    model_id: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+    physical_tables: list[str],
+) -> Any:
+    """Compose the effective TTL for a query, merging contracts + heartbeats."""
+    contracts = {}
+    try:
+        contracts = store.refresh_contracts(model_id)
+    except Exception:
+        logger.debug("refresh_contracts failed", exc_info=True)
+    heartbeats: dict[str, datetime] = {}
+    snapshot = getattr(cache, "heartbeats_snapshot", None)
+    if callable(snapshot):
+        try:
+            heartbeats = snapshot()
+        except Exception:
+            heartbeats = {}
+    return compute_effective_ttl(
+        physical_tables=physical_tables,
+        contracts=contracts,
+        heartbeats=heartbeats,
+        min_ttl_seconds=cache_config.min_ttl_seconds,
+        max_ttl_seconds=cache_config.max_ttl_seconds,
+        unknown_policy=cache_config.unknown_policy,
+        unknown_default_ttl_seconds=cache_config.unknown_default_ttl_seconds,
+    )
+
+
+async def _try_cache_get(cache: Cache, key: str) -> Any:
+    """Best-effort cache lookup; failures degrade to a miss.
+
+    Returns the decoded envelope with ``cached_at_iso`` attached, or None.
+    """
+    try:
+        result = await cache.get(key)
+    except Exception:
+        logger.debug("cache.get error", exc_info=True)
+        return None
+    if result is None:
+        return None
+    try:
+        envelope = cache_decode(result.payload)
+    except Exception:
+        logger.debug("cache decode failed", exc_info=True)
+        return None
+    envelope.cached_at_iso = result.cached_at.isoformat()
+    return envelope
+
+
+async def _try_cache_set(
+    *,
+    cache: Cache,
+    key: str,
+    response: QueryExecuteResponse,
+    ttl_seconds: int,
+    session_id: str,
+    model_id: str,
+    dialect: str,
+    query: Any,
+) -> None:
+    """Encode and store a response payload. Failures are logged and ignored."""
+    from orionbelt.cache import key as cache_key_mod
+    from orionbelt.cache import parquet_codec
+
+    try:
+        payload = parquet_codec.encode(
+            columns=[c.model_dump() for c in response.columns],
+            rows=response.rows,
+            sql=response.sql,
+            dialect=response.dialect,
+            explain=response.explain.model_dump() if response.explain else None,
+            warnings=[w.model_dump() for w in response.warnings],
+            sql_valid=response.sql_valid,
+            execution_time_ms=response.execution_time_ms,
+            timezone=response.timezone,
+            resolved=response.resolved.model_dump(),
+            physical_tables=list(response.physical_tables),
+        )
+    except Exception:
+        logger.debug("cache encode failed", exc_info=True)
+        return
+    try:
+        await cache.set(
+            key,
+            payload,
+            ttl_seconds=ttl_seconds,
+            physical_tables=list(response.physical_tables),
+            session_id=session_id,
+            model_id=model_id,
+            query_hash=cache_key_mod.query_hash(query.model_dump(by_alias=True, mode="json")),
+            dialect=dialect,
+            row_count=response.row_count,
+        )
+    except Exception:
+        logger.debug("cache.set error", exc_info=True)
+
+
+def _apply_ttl_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
+    """Surface TTL fields on a fresh (non-cached) response."""
+    ttl = ttl_outcome.ttl
+    if ttl is None:
+        return
+    response.ttl_seconds = ttl.seconds
+    response.ttl_source = ttl.source
+    response.ttl_limiting_table = ttl.limiting_table
+
+
+def _apply_no_cache_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
+    """Document why a response was not cached."""
+    reason = ttl_outcome.no_cache_reason
+    if reason is None:
+        return
+    response.ttl_source = (
+        "no_cache" if reason.value == "unknown_freshness" else f"no_cache:{reason.value}"
+    )
+    response.ttl_limiting_table = ttl_outcome.no_cache_table
+
+
+def _build_cached_response(
+    *,
+    envelope: Any,
+    cache_key: str,
+    ttl_outcome: Any,
+    fetch_elapsed_ms: float,
+) -> QueryExecuteResponse:
+    """Reconstruct a :class:`QueryExecuteResponse` from a cached Parquet entry.
+
+    ``fetch_elapsed_ms`` is the wall-clock time spent reading + decoding the
+    cache entry. It replaces the original DB execution time on the wire so
+    callers see a realistic "this came from cache" duration; the original is
+    preserved on disk in the Parquet sidecar for forensic inspection.
+    """
+    from orionbelt.api.schemas import StructuredWarning
+
+    columns = [
+        ColumnMetadata(
+            name=c.get("name", ""),
+            type=c.get("type", "string"),
+            format=c.get("format"),
+        )
+        for c in envelope.columns
+    ]
+    explain_resp: ExplainPlanResponse | None = None
+    if envelope.explain:
+        try:
+            explain_resp = ExplainPlanResponse(**envelope.explain)
+        except Exception:
+            explain_resp = None
+    warnings_resp: list[StructuredWarning] = []
+    for w in envelope.warnings or []:
+        try:
+            warnings_resp.append(StructuredWarning(**w))
+        except Exception:
+            continue
+    cached_at_iso = envelope.cached_at_iso if hasattr(envelope, "cached_at_iso") else None
+    response = QueryExecuteResponse(
+        sql=envelope.sql,
+        dialect=envelope.dialect,
+        columns=columns,
+        rows=envelope.rows,
+        row_count=envelope.row_count,
+        execution_time_ms=fetch_elapsed_ms,
+        timezone=envelope.timezone,
+        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
+        warnings=warnings_resp,
+        sql_valid=envelope.sql_valid,
+        explain=explain_resp,
+        physical_tables=list(envelope.physical_tables),
+        cached=True,
+        cached_at=cached_at_iso,
+    )
+    if ttl_outcome.ttl is not None:
+        response.ttl_seconds = ttl_outcome.ttl.seconds
+        response.ttl_source = ttl_outcome.ttl.source
+        response.ttl_limiting_table = ttl_outcome.ttl.limiting_table
+    return response

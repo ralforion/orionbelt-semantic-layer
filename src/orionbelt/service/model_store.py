@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 import uuid
@@ -9,9 +10,12 @@ from dataclasses import dataclass, field
 
 from rdflib import Graph
 
+from orionbelt.cache.ttl import RefreshContract
+from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.warnings import WarningCode
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
 from orionbelt.parser.loader import TrackedLoader, YAMLSafetyError
@@ -33,7 +37,9 @@ class LoadResult:
     dimensions: int
     measures: int
     metrics: int
-    warnings: list[str]
+    warnings: list[ErrorInfo]
+    model_load: str = "fresh"  # "fresh" | "reused" — see PLAN_model_load_dedup.md
+    health: ModelHealthSummary | None = None
 
 
 @dataclass
@@ -116,6 +122,34 @@ class ErrorInfo:
     message: str
     path: str | None = None
     suggestions: list[str] = field(default_factory=list)
+    severity: str = "error"
+    hint: str | None = None
+    context: dict[str, object] | None = None
+
+
+@dataclass
+class FanTrapRiskInfo:
+    """Detected fan-trap risk between two facts sharing a dim."""
+
+    tables: list[str]
+    reason: str
+    suggested_pattern: str = "composite_fact_layer"
+
+
+@dataclass
+class ModelHealthSummary:
+    """Structural health of a loaded model's join graph.
+
+    See ``design/PLAN_agent_api_improvements.md`` §1.
+    """
+
+    status: str = "ok"
+    data_objects: int = 0
+    joins: int = 0
+    orphan_data_objects: list[str] = field(default_factory=list)
+    fan_trap_risks: list[FanTrapRiskInfo] = field(default_factory=list)
+    unreachable_dimensions: list[str] = field(default_factory=list)
+    warnings_count: int = 0
 
 
 @dataclass
@@ -170,7 +204,15 @@ class ModelStore:
         self._lock = threading.Lock()
         self._models: dict[str, SemanticModel] = {}
         self._graphs: dict[str, GraphArtifact] = {}
+        # Per-store summary cache so dedup hits can return the original
+        # data_objects/dimensions/measures/metrics counts without re-walking
+        # the model.
+        self._summaries: dict[str, ModelSummary] = {}
         self._max_models = max_models
+        # Dedup index: content_hash → model_id. Populated on every successful
+        # load and consulted before parsing on the next load. See
+        # design/PLAN_model_load_dedup.md.
+        self._content_hash_index: dict[str, str] = {}
 
         # Internal pipeline singletons (stateless, safe to share).
         self._loader = TrackedLoader()
@@ -184,6 +226,37 @@ class ModelStore:
     @staticmethod
     def _new_id() -> str:
         return uuid.uuid4().hex[:8]
+
+    @staticmethod
+    def _health_for(model: SemanticModel) -> ModelHealthSummary:
+        """Compute structural health for a loaded model."""
+        h = compute_health(model)
+        return ModelHealthSummary(
+            status=h.status,
+            data_objects=h.data_objects,
+            joins=h.joins,
+            orphan_data_objects=h.orphan_data_objects,
+            fan_trap_risks=[
+                FanTrapRiskInfo(
+                    tables=r.tables,
+                    reason=r.reason,
+                    suggested_pattern=r.suggested_pattern,
+                )
+                for r in h.fan_trap_risks
+            ],
+            unreachable_dimensions=h.unreachable_dimensions,
+            warnings_count=h.warnings_count,
+        )
+
+    @staticmethod
+    def _content_hash(yaml_str: str) -> str:
+        """SHA-256 of the OBML body, with surrounding whitespace stripped.
+
+        Stripping at the boundary makes a trailing newline difference
+        invisible to dedup; everything else (key order, comments, internal
+        whitespace) still produces a different hash.
+        """
+        return hashlib.sha256(yaml_str.strip().encode("utf-8")).hexdigest()
 
     def _parse_and_validate(
         self,
@@ -237,7 +310,13 @@ class ModelStore:
                     inherits_raw=inherits_raw,
                 )
                 for mw in merge_warnings:
-                    warnings.append(ErrorInfo(code="MERGE_WARNING", message=mw))
+                    warnings.append(
+                        ErrorInfo(
+                            code=WarningCode.MERGE_WARNING,
+                            message=mw,
+                            severity="warning",
+                        )
+                    )
                 source_map = None
         except MergeError as exc:
             errors.append(ErrorInfo(code=exc.code, message=exc.message))
@@ -260,6 +339,9 @@ class ModelStore:
                     message=e.message,
                     path=e.path,
                     suggestions=list(e.suggestions),
+                    severity=e.severity,
+                    hint=e.hint,
+                    context=e.context,
                 )
             )
         for w in resolution.warnings:
@@ -269,6 +351,9 @@ class ModelStore:
                     message=w.message,
                     path=w.path,
                     suggestions=list(w.suggestions),
+                    severity=w.severity or "warning",
+                    hint=w.hint,
+                    context=w.context,
                 )
             )
 
@@ -280,11 +365,31 @@ class ModelStore:
                 message=e.message,
                 path=e.path,
                 suggestions=list(e.suggestions),
+                severity=e.severity,
+                hint=e.hint,
+                context=e.context,
             )
             if e.severity == "warning":
                 warnings.append(info)
             else:
                 errors.append(info)
+
+        # 4. Cross-dataObject refresh contract consistency check.
+        from orionbelt.cache.contracts import collect_table_contracts
+
+        _, refresh_warnings = collect_table_contracts(model)
+        for w in refresh_warnings:
+            warnings.append(
+                ErrorInfo(
+                    code=w.code,
+                    message=w.message,
+                    path=w.path,
+                    suggestions=list(w.suggestions),
+                    severity=w.severity or "warning",
+                    hint=w.hint,
+                    context=w.context,
+                )
+            )
 
         return model, errors, warnings
 
@@ -324,6 +429,17 @@ class ModelStore:
                             jd["pathName"] = j.path_name
                         joins.append(jd)
                     obj_raw["joins"] = joins
+                if obj.refresh is not None:
+                    refresh: dict[str, object] = {"mode": obj.refresh.mode}
+                    if obj.refresh.interval:
+                        refresh["interval"] = obj.refresh.interval
+                    if obj.refresh.anchor:
+                        refresh["anchor"] = obj.refresh.anchor
+                    if obj.refresh.timezone:
+                        refresh["timezone"] = obj.refresh.timezone
+                    if obj.refresh.max_staleness:
+                        refresh["maxStaleness"] = obj.refresh.max_staleness
+                    obj_raw["refresh"] = refresh
                 objs[name] = obj_raw
             raw["dataObjects"] = objs
         if model.dimensions:
@@ -389,13 +505,56 @@ class ModelStore:
         raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
+        dedup: bool = True,
     ) -> LoadResult:
         """Parse, validate, and store a model.  Returns id + summary.
 
         Provide either ``yaml_str`` or ``raw_dict``.
         Raises ``ModelValidationError`` if the model has validation errors.
         Raises ``ModelCapacityError`` if the session's model cap is reached.
+
+        When ``dedup`` is True (default) and the same OBML bytes have already
+        been loaded into this store, the existing ``model_id`` is returned
+        and ``model_load`` is set to ``"reused"``. Dedup only applies to
+        plain ``yaml_str`` loads — when ``raw_dict``, ``extends_yaml``, or
+        ``inherits_model_id`` is supplied the load always runs fresh, since
+        the effective content depends on inputs not captured by the YAML
+        bytes alone.
         """
+        # Dedup is meaningful only for a stand-alone YAML body. The other
+        # input shapes either skip the YAML stage (raw_dict) or fold in
+        # additional state (extends/inherits) that the bytes don't capture.
+        dedup_eligible = (
+            dedup
+            and yaml_str is not None
+            and raw_dict is None
+            and not extends_yaml
+            and inherits_model_id is None
+        )
+        content_hash: str | None = None
+        if dedup_eligible:
+            content_hash = self._content_hash(yaml_str or "")
+            with self._lock:
+                existing_id = self._content_hash_index.get(content_hash)
+                if existing_id is not None and existing_id in self._models:
+                    summary = self._summaries.get(existing_id)
+                    if summary is not None:
+                        existing_model = self._models[existing_id]
+                        existing_health = self._health_for(existing_model)
+                        return LoadResult(
+                            model_id=existing_id,
+                            data_objects=summary.data_objects,
+                            dimensions=summary.dimensions,
+                            measures=summary.measures,
+                            metrics=summary.metrics,
+                            warnings=[],
+                            model_load="reused",
+                            health=existing_health,
+                        )
+                # Stale index entry — drop it and fall through to a fresh load.
+                if existing_id is not None:
+                    self._content_hash_index.pop(content_hash, None)
+
         with self._lock:
             if len(self._models) >= self._max_models:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
@@ -416,6 +575,14 @@ class ModelStore:
         turtle = graph.serialize(format="turtle")
         artifact = GraphArtifact(graph=graph, turtle=turtle, generated_at=time.monotonic())
 
+        summary = ModelSummary(
+            model_id=model_id,
+            data_objects=len(model.data_objects),
+            dimensions=len(model.dimensions),
+            measures=len(model.measures),
+            metrics=len(model.metrics),
+        )
+
         with self._lock:
             # Re-check capacity under lock — the first check (above) ran
             # outside the lock while parsing/exporting, so a concurrent
@@ -424,14 +591,22 @@ class ModelStore:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
             self._models[model_id] = model
             self._graphs[model_id] = artifact
+            self._summaries[model_id] = summary
+            if content_hash is not None:
+                # If a concurrent request beat us to it, the last writer wins;
+                # the race is benign (both models work, the older one is just
+                # not reachable via the index). See PLAN_model_load_dedup.md §6.3.
+                self._content_hash_index[content_hash] = model_id
 
         return LoadResult(
             model_id=model_id,
-            data_objects=len(model.data_objects),
-            dimensions=len(model.dimensions),
-            measures=len(model.measures),
-            metrics=len(model.metrics),
-            warnings=[w.message for w in warnings],
+            data_objects=summary.data_objects,
+            dimensions=summary.dimensions,
+            measures=summary.measures,
+            metrics=summary.metrics,
+            warnings=warnings,
+            model_load="fresh",
+            health=self._health_for(model),
         )
 
     def get_model(self, model_id: str) -> SemanticModel:
@@ -507,27 +682,24 @@ class ModelStore:
     def list_models(self) -> list[ModelSummary]:
         """Return a short summary for every loaded model."""
         with self._lock:
-            items = list(self._models.items())
-
-        return [
-            ModelSummary(
-                model_id=mid,
-                data_objects=len(m.data_objects),
-                dimensions=len(m.dimensions),
-                measures=len(m.measures),
-                metrics=len(m.metrics),
-            )
-            for mid, m in items
-        ]
+            return list(self._summaries.values())
 
     def remove_model(self, model_id: str) -> None:
-        """Unload a model and its cached OBSL graph.  Raises ``KeyError`` if not found."""
+        """Unload a model and its cached OBSL graph.  Raises ``KeyError`` if not found.
+
+        Also removes the model's entry from the dedup index so the next load
+        of the same OBML content runs fresh. PLAN_model_load_dedup.md §6.2.
+        """
         with self._lock:
             try:
                 del self._models[model_id]
             except KeyError:
                 raise KeyError(f"No model loaded with id '{model_id}'") from None
             self._graphs.pop(model_id, None)
+            self._summaries.pop(model_id, None)
+            stale_hashes = [h for h, mid in self._content_hash_index.items() if mid == model_id]
+            for h in stale_hashes:
+                del self._content_hash_index[h]
 
     def compile_query(
         self,
@@ -538,6 +710,18 @@ class ModelStore:
         """Compile a query against a loaded model."""
         model = self.get_model(model_id)
         return self._pipeline.compile(query, model, dialect)
+
+    def refresh_contracts(self, model_id: str) -> dict[str, RefreshContract]:
+        """Per-physical-table freshness contracts for the given model.
+
+        Used by the result cache to derive an effective TTL for a query
+        based on the dataObjects it touched.
+        """
+        from orionbelt.cache.contracts import collect_table_contracts
+
+        model = self.get_model(model_id)
+        contracts, _ = collect_table_contracts(model)
+        return contracts
 
     def validate(
         self,

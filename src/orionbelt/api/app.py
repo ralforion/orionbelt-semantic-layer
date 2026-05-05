@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import shutil
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +15,12 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from orionbelt import __version__
-from orionbelt.api.deps import init_session_manager, reset_session_manager
+from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    OneshotBatchConfig,
+    init_session_manager,
+    reset_session_manager,
+)
 from orionbelt.api.logging_config import configure_logging
 from orionbelt.api.middleware import (
     RequestBodyLimitMiddleware,
@@ -23,20 +30,53 @@ from orionbelt.api.middleware import (
     SessionRateLimitMiddleware,
 )
 from orionbelt.api.routers import (
+    cache_stats,
     convert,
     dialects,
     graph,
+    heartbeat,
     model_api,
+    oneshot,
     reference,
     sessions,
     shortcuts,
 )
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
+from orionbelt.cache.factory import build_cache
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
 logger = logging.getLogger("orionbelt.api")
+
+
+def _wipe_file_cache_state(backend: str, cache_dir: str) -> None:
+    """Delete persisted FileCache artifacts (``meta.duckdb`` + ``results/``).
+
+    No-op when ``backend != "file"`` or the directory doesn't exist. Touches
+    only the known cache files; sibling files (other tools sharing the same
+    parent dir) are left alone.
+    """
+    if (backend or "noop").strip().lower() != "file":
+        return
+    if not os.path.isdir(cache_dir):
+        return
+    removed_files = 0
+    try:
+        for entry in os.listdir(cache_dir):
+            if entry == "meta.duckdb" or entry.startswith("meta.duckdb."):
+                with __import__("contextlib").suppress(Exception):
+                    os.remove(os.path.join(cache_dir, entry))
+                    removed_files += 1
+        results_dir = os.path.join(cache_dir, "results")
+        if os.path.isdir(results_dir):
+            shutil.rmtree(results_dir, ignore_errors=True)
+            removed_files += 1
+    except Exception:
+        logger.exception("Failed wiping cache state at %s", cache_dir)
+        return
+    if removed_files:
+        logger.info("Cache wiped on startup: %s", cache_dir)
 
 
 def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
@@ -116,6 +156,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         default_store.load_model(preload_yaml)
         logger.info("Preloaded model into __default__ session")
 
+    # Wipe persisted cache state on startup. ``model_id`` is regenerated as
+    # a fresh UUID on every model load, so any entries from a previous
+    # process run are orphans by construction (their cache keys reference
+    # model_ids that no longer exist). Starting empty avoids accumulating
+    # dead state between restarts. See PLAN_freshness_driven_cache.md §7.
+    _wipe_file_cache_state(settings.cache_backend, settings.cache_dir)
+
+    cache = build_cache(settings)
+    cache_config = CacheRuntimeConfig(
+        backend=cache.backend_name,
+        min_ttl_seconds=settings.cache_min_ttl_seconds,
+        max_ttl_seconds=settings.cache_max_ttl_seconds,
+        unknown_policy=settings.cache_unknown_freshness_policy,
+        unknown_default_ttl_seconds=settings.cache_unknown_freshness_default_ttl,
+        heartbeat_auth_token=settings.heartbeat_auth_token,
+    )
+    if cache.backend_name == "file":
+        try:
+            cache.start_sweep_task()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Failed to start cache sweep task")
+        logger.info("Cache enabled: backend=%s", cache.backend_name)
+        logger.info("Cache dir=%s", settings.cache_dir)
+        logger.info("Cache min_ttl=%ds", settings.cache_min_ttl_seconds)
+        logger.info("Cache max_ttl=%ds", settings.cache_max_ttl_seconds)
+        logger.info("Cache max_value=%dB", settings.cache_max_value_bytes)
+        logger.info("Cache max_disk=%dB", settings.cache_max_disk_bytes)
+        logger.info("Cache sweep=%ds", settings.cache_sweep_interval_seconds)
+        logger.info("Cache unknown_policy=%s", settings.cache_unknown_freshness_policy)
+        logger.info(
+            "Cache unknown_default_ttl=%ds",
+            settings.cache_unknown_freshness_default_ttl,
+        )
+        logger.info(
+            "Cache heartbeat_auth=%s",
+            "configured" if settings.heartbeat_auth_token else "disabled (404)",
+        )
+    elif cache.backend_name != "noop":
+        # Unknown backend selected via env — still useful to log
+        logger.info("Cache enabled: backend=%s", cache.backend_name)
+
     init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
@@ -125,6 +206,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         db_vendor=settings.db_vendor,
         query_default_limit=settings.query_default_limit,
         default_locale=settings.default_locale,
+        oneshot_batch_config=OneshotBatchConfig(
+            max_queries=settings.oneshot_batch_max_queries,
+            max_parallelism=settings.oneshot_batch_max_parallelism,
+            default_timeout_ms=settings.oneshot_batch_default_timeout_ms,
+            batch_timeout_ms=settings.oneshot_batch_batch_timeout_ms,
+        ),
+        cache=cache,
+        cache_config=cache_config,
     )
 
     # Start Arrow Flight SQL server if ob-flight-extension is installed
@@ -179,6 +268,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             close_all_pools()
         except ImportError:
             pass
+        try:
+            await cache.shutdown()
+        except Exception:
+            logger.exception("Cache shutdown failed")
         mgr.stop()
         reset_session_manager()
 
@@ -230,8 +323,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])
     v1.include_router(dialects.router, prefix="/dialects", tags=["dialects"])
+    v1.include_router(oneshot.router, prefix="/oneshot", tags=["oneshot"])
     v1.include_router(reference.router, prefix="/reference", tags=["reference"])
     v1.include_router(settings_router.router, prefix="/settings", tags=["settings"])
+    v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
+    v1.include_router(heartbeat.router, tags=["cache"])
     app.include_router(v1)
 
     # Root-level endpoints (no version prefix — used by load balancers, crawlers)
@@ -247,22 +343,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
-        from orionbelt.api.deps import (
-            get_flight_info,
-            is_query_execute_enabled,
-            is_single_model_mode,
-        )
         from orionbelt.ui.app import create_blocks
 
         api_url = f"http://localhost:{settings.effective_port}"
-        fi = get_flight_info()
+        # Resolve from Settings directly: the UI is mounted in create_app(), which
+        # runs before the lifespan hook initialises deps.py globals, so calling
+        # is_query_execute_enabled()/is_single_model_mode()/get_flight_info() here
+        # would always read defaults. Mirror the same logic used in lifespan().
+        query_execute_enabled = settings.query_execute or settings.flight_enabled
         ui_settings: dict[str, object] = {
-            "single_model_mode": is_single_model_mode(),
-            "query_execute": is_query_execute_enabled(),
+            "single_model_mode": settings.model_file is not None,
+            "query_execute": query_execute_enabled,
             "session_ttl_seconds": settings.session_ttl_seconds,
         }
-        if fi:
-            ui_settings["flight"] = fi
+        if settings.flight_enabled:
+            ui_settings["flight"] = {
+                "enabled": True,
+                "port": settings.flight_port,
+                "auth_mode": settings.flight_auth_mode,
+                "db_vendor": settings.db_vendor,
+            }
         demo = create_blocks(default_api_url=api_url, embedded_settings=ui_settings)
         from pathlib import Path
 

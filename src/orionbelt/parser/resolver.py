@@ -24,9 +24,11 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     Metric,
     MetricType,
+    ModelExample,
     ModelFilter,
     ModelSettings,
     PeriodOverPeriod,
+    RefreshPolicy,
     SemanticModel,
 )
 from orionbelt.parser.loader import SourceMap
@@ -63,6 +65,78 @@ def _coerce_filter_value(v: object) -> str | int | float | bool | None:
     if isinstance(v, date):
         return v.isoformat()
     return v  # type: ignore[return-value]
+
+
+_VALID_REFRESH_MODES = frozenset({"interval", "heartbeat", "static"})
+
+
+def _parse_refresh(
+    raw: object, data_object_name: str, errors: list[SemanticError]
+) -> RefreshPolicy | None:
+    """Parse a dataObject's optional ``refresh:`` block.
+
+    Records structured errors for missing or contradictory fields. Returns
+    ``None`` when the block is absent.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=f"dataObject '{data_object_name}'.refresh must be a mapping",
+                path=f"dataObjects.{data_object_name}.refresh",
+            )
+        )
+        return None
+
+    mode = str(raw.get("mode", "")).strip().lower()
+    if mode not in _VALID_REFRESH_MODES:
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.mode must be one of "
+                    "interval | heartbeat | static"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.mode",
+            )
+        )
+        return None
+
+    if mode == "interval" and not raw.get("interval"):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.interval is required for "
+                    "interval mode"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.interval",
+            )
+        )
+        return None
+
+    if mode == "heartbeat" and not (raw.get("max_staleness") or raw.get("maxStaleness")):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.max_staleness is required "
+                    "for heartbeat mode"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.max_staleness",
+            )
+        )
+        return None
+
+    return RefreshPolicy(
+        mode=mode,
+        interval=raw.get("interval"),
+        anchor=raw.get("anchor"),
+        timezone=raw.get("timezone"),
+        max_staleness=raw.get("max_staleness") or raw.get("maxStaleness"),
+    )
 
 
 def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
@@ -178,6 +252,7 @@ class ReferenceResolver:
                     owner=raw_obj.get("owner"),
                     synonyms=raw_obj.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_obj),
+                    refresh=_parse_refresh(raw_obj.get("refresh"), name, errors),
                 )
             except Exception as e:
                 span = source_map.get(f"dataObjects.{name}") if source_map else None
@@ -676,6 +751,9 @@ class ReferenceResolver:
 
         settings = _parse_settings(raw.get("settings"))
 
+        # Parse examples block (PLAN_agent_api_improvements §5)
+        examples = self._parse_examples(raw.get("examples"), errors)
+
         model = SemanticModel(
             version=raw.get("version", 1.0),
             data_objects=data_objects,
@@ -683,6 +761,7 @@ class ReferenceResolver:
             measures=measures,
             metrics=metrics,
             filters=model_filters,
+            examples=examples,
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
@@ -697,6 +776,97 @@ class ReferenceResolver:
         )
 
         return model, result
+
+    def _parse_examples(self, raw: object, errors: list[SemanticError]) -> list[ModelExample]:
+        """Parse the model-level ``examples:`` block.
+
+        Accepts a list of mapping entries. Each entry must have ``name``,
+        ``description``, and ``query``. ``intent_tags`` (alias ``intentTags``)
+        is optional. Names must be unique within the block.
+        """
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            errors.append(
+                SemanticError(
+                    code="EXAMPLES_PARSE_ERROR",
+                    message="'examples' must be a YAML list of example entries",
+                    path="examples",
+                )
+            )
+            return []
+
+        out: list[ModelExample] = []
+        seen: set[str] = set()
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}] must be a mapping",
+                        path=f"examples[{i}]",
+                    )
+                )
+                continue
+            name = entry.get("name")
+            description = entry.get("description")
+            query = entry.get("query")
+            intent_tags = entry.get("intent_tags") or entry.get("intentTags") or []
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].name is required and must be a string",
+                        path=f"examples[{i}].name",
+                    )
+                )
+                continue
+            if name in seen:
+                errors.append(
+                    SemanticError(
+                        code="DUPLICATE_EXAMPLE_NAME",
+                        message=f"Duplicate example name '{name}'",
+                        path=f"examples[{i}].name",
+                    )
+                )
+                continue
+            if not isinstance(description, str):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].description is required",
+                        path=f"examples[{i}].description",
+                    )
+                )
+                continue
+            if not isinstance(query, dict):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].query must be a mapping (QueryObject payload)",
+                        path=f"examples[{i}].query",
+                    )
+                )
+                continue
+            if not isinstance(intent_tags, list):
+                errors.append(
+                    SemanticError(
+                        code="EXAMPLES_PARSE_ERROR",
+                        message=f"examples[{i}].intent_tags must be a list",
+                        path=f"examples[{i}].intent_tags",
+                    )
+                )
+                continue
+            seen.add(name)
+            out.append(
+                ModelExample(
+                    name=name,
+                    description=description,
+                    intent_tags=[str(t) for t in intent_tags],
+                    query=dict(query),
+                )
+            )
+        return out
 
     def _validate_expression_refs(
         self,
