@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    get_cache,
+    get_cache_config,
     get_default_locale,
     get_preload_model_yaml,
     get_query_default_limit,
@@ -48,6 +54,9 @@ from orionbelt.api.warnings_adapter import (
     health_summary_to_response,
     semantic_error_to_warning,
 )
+from orionbelt.cache import build_cache_key, compute_effective_ttl
+from orionbelt.cache.parquet_codec import decode as cache_decode
+from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -70,6 +79,8 @@ from orionbelt.service.session_manager import (
     SessionNotFoundError,
 )
 from orionbelt.service.value_formatting import format_row, to_tsv
+
+logger = logging.getLogger("orionbelt.api.sessions")
 
 router = APIRouter()
 
@@ -155,10 +166,14 @@ async def close_session(
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> None:
     """Close a session and release its resources."""
+    from orionbelt.api.deps import get_cache
+
     try:
         mgr.close_session(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
+    with contextlib.suppress(Exception):
+        await get_cache().delete_session(session_id)
 
 
 # -- model management -------------------------------------------------------
@@ -400,6 +415,7 @@ async def compile_query(
         warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
+        physical_tables=list(result.physical_tables),
     )
 
 
@@ -573,6 +589,7 @@ def _build_execute_response(
         warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
         sql_valid=compile_result.sql_valid,
         explain=_build_explain_response(compile_result),
+        physical_tables=list(compile_result.physical_tables),
     )
 
 
@@ -759,6 +776,8 @@ async def execute_query(
     locale: str | None = None,
     timezone: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+    cache: Cache = Depends(get_cache),  # noqa: B008
+    cache_config: CacheRuntimeConfig = Depends(get_cache_config),  # noqa: B008
 ) -> QueryExecuteResponse | Response:
     """Compile and execute a query against the configured database.
 
@@ -839,6 +858,34 @@ async def execute_query(
         override_db_tz = model.settings.override_database_timezone
     tz = resolve_timezone(default_timezone=timezone or model_default_tz)
 
+    # Freshness-driven cache lookup. Only the canonical JSON shape is cached
+    # — TSV and value-formatted JSON depend on locale/format, so we skip
+    # those to keep cache keys deterministic. PLAN_freshness_driven_cache.md.
+    cacheable = format == "json" and not format_values
+    cache_key: str | None = None
+    ttl_outcome = None
+    if cacheable:
+        cache_key = build_cache_key(
+            session_id=session_id,
+            model_id=body.model_id,
+            dialect=dialect,
+            query=query.model_dump(by_alias=True, mode="json"),
+        )
+        ttl_outcome = _resolve_ttl(
+            store=store,
+            model_id=body.model_id,
+            cache=cache,
+            cache_config=cache_config,
+            physical_tables=result.physical_tables,
+        )
+        cached_envelope = await _try_cache_get(cache, cache_key)
+        if cached_envelope is not None:
+            return _build_cached_response(
+                envelope=cached_envelope,
+                cache_key=cache_key,
+                ttl_outcome=ttl_outcome,
+            )
+
     try:
         exec_result = await asyncio.to_thread(
             execute_sql,
@@ -853,7 +900,7 @@ async def execute_query(
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
     effective_locale = locale if locale is not None else get_default_locale()
-    return _build_execute_response(
+    response = _build_execute_response(
         compile_result=result,
         exec_result=exec_result,
         model=model,
@@ -861,3 +908,202 @@ async def execute_query(
         format_values=format_values,
         locale=effective_locale,
     )
+    if (
+        cacheable
+        and cache_key is not None
+        and ttl_outcome is not None
+        and ttl_outcome.ttl is not None
+        and isinstance(response, QueryExecuteResponse)
+    ):
+        _apply_ttl_metadata(response, ttl_outcome)
+        await _try_cache_set(
+            cache=cache,
+            key=cache_key,
+            response=response,
+            ttl_seconds=ttl_outcome.ttl.seconds,
+            session_id=session_id,
+            model_id=body.model_id,
+            dialect=dialect,
+            query=query,
+        )
+    elif cacheable and ttl_outcome is not None and isinstance(response, QueryExecuteResponse):
+        _apply_no_cache_metadata(response, ttl_outcome)
+    return response
+
+
+# -- cache helpers ----------------------------------------------------------
+
+
+def _resolve_ttl(
+    *,
+    store: ModelStore,
+    model_id: str,
+    cache: Cache,
+    cache_config: CacheRuntimeConfig,
+    physical_tables: list[str],
+) -> Any:
+    """Compose the effective TTL for a query, merging contracts + heartbeats."""
+    contracts = {}
+    try:
+        contracts = store.refresh_contracts(model_id)
+    except Exception:
+        logger.debug("refresh_contracts failed", exc_info=True)
+    heartbeats: dict[str, datetime] = {}
+    snapshot = getattr(cache, "heartbeats_snapshot", None)
+    if callable(snapshot):
+        try:
+            heartbeats = snapshot()
+        except Exception:
+            heartbeats = {}
+    return compute_effective_ttl(
+        physical_tables=physical_tables,
+        contracts=contracts,
+        heartbeats=heartbeats,
+        min_ttl_seconds=cache_config.min_ttl_seconds,
+        max_ttl_seconds=cache_config.max_ttl_seconds,
+        unknown_policy=cache_config.unknown_policy,
+        unknown_default_ttl_seconds=cache_config.unknown_default_ttl_seconds,
+    )
+
+
+async def _try_cache_get(cache: Cache, key: str) -> Any:
+    """Best-effort cache lookup; failures degrade to a miss.
+
+    Returns the decoded envelope with ``cached_at_iso`` attached, or None.
+    """
+    try:
+        result = await cache.get(key)
+    except Exception:
+        logger.debug("cache.get error", exc_info=True)
+        return None
+    if result is None:
+        return None
+    try:
+        envelope = cache_decode(result.payload)
+    except Exception:
+        logger.debug("cache decode failed", exc_info=True)
+        return None
+    envelope.cached_at_iso = result.cached_at.isoformat()
+    return envelope
+
+
+async def _try_cache_set(
+    *,
+    cache: Cache,
+    key: str,
+    response: QueryExecuteResponse,
+    ttl_seconds: int,
+    session_id: str,
+    model_id: str,
+    dialect: str,
+    query: Any,
+) -> None:
+    """Encode and store a response payload. Failures are logged and ignored."""
+    from orionbelt.cache import key as cache_key_mod
+    from orionbelt.cache import parquet_codec
+
+    try:
+        payload = parquet_codec.encode(
+            columns=[c.model_dump() for c in response.columns],
+            rows=response.rows,
+            sql=response.sql,
+            dialect=response.dialect,
+            explain=response.explain.model_dump() if response.explain else None,
+            warnings=[w.model_dump() for w in response.warnings],
+            sql_valid=response.sql_valid,
+            execution_time_ms=response.execution_time_ms,
+            timezone=response.timezone,
+            resolved=response.resolved.model_dump(),
+            physical_tables=list(response.physical_tables),
+        )
+    except Exception:
+        logger.debug("cache encode failed", exc_info=True)
+        return
+    try:
+        await cache.set(
+            key,
+            payload,
+            ttl_seconds=ttl_seconds,
+            physical_tables=list(response.physical_tables),
+            session_id=session_id,
+            model_id=model_id,
+            query_hash=cache_key_mod.query_hash(query.model_dump(by_alias=True, mode="json")),
+            dialect=dialect,
+            row_count=response.row_count,
+        )
+    except Exception:
+        logger.debug("cache.set error", exc_info=True)
+
+
+def _apply_ttl_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
+    """Surface TTL fields on a fresh (non-cached) response."""
+    ttl = ttl_outcome.ttl
+    if ttl is None:
+        return
+    response.ttl_seconds = ttl.seconds
+    response.ttl_source = ttl.source
+    response.ttl_limiting_table = ttl.limiting_table
+
+
+def _apply_no_cache_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
+    """Document why a response was not cached."""
+    reason = ttl_outcome.no_cache_reason
+    if reason is None:
+        return
+    response.ttl_source = (
+        "no_cache" if reason.value == "unknown_freshness" else f"no_cache:{reason.value}"
+    )
+    response.ttl_limiting_table = ttl_outcome.no_cache_table
+
+
+def _build_cached_response(
+    *,
+    envelope: Any,
+    cache_key: str,
+    ttl_outcome: Any,
+) -> QueryExecuteResponse:
+    """Reconstruct a :class:`QueryExecuteResponse` from a cached Parquet entry."""
+    from orionbelt.api.schemas import StructuredWarning
+
+    columns = [
+        ColumnMetadata(
+            name=c.get("name", ""),
+            type=c.get("type", "string"),
+            format=c.get("format"),
+        )
+        for c in envelope.columns
+    ]
+    explain_resp: ExplainPlanResponse | None = None
+    if envelope.explain:
+        try:
+            explain_resp = ExplainPlanResponse(**envelope.explain)
+        except Exception:
+            explain_resp = None
+    warnings_resp: list[StructuredWarning] = []
+    for w in envelope.warnings or []:
+        try:
+            warnings_resp.append(StructuredWarning(**w))
+        except Exception:
+            continue
+    cached_at_iso = envelope.cached_at_iso if hasattr(envelope, "cached_at_iso") else None
+    response = QueryExecuteResponse(
+        sql=envelope.sql,
+        dialect=envelope.dialect,
+        columns=columns,
+        rows=envelope.rows,
+        row_count=envelope.row_count,
+        execution_time_ms=envelope.execution_time_ms,
+        timezone=envelope.timezone,
+        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
+        warnings=warnings_resp,
+        sql_valid=envelope.sql_valid,
+        explain=explain_resp,
+        physical_tables=list(envelope.physical_tables),
+        cached=True,
+        cached_at=cached_at_iso,
+    )
+    if ttl_outcome.ttl is not None:
+        response.ttl_seconds = ttl_outcome.ttl.seconds
+        response.ttl_source = ttl_outcome.ttl.source
+        response.ttl_limiting_table = ttl_outcome.ttl.limiting_table
+    return response

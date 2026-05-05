@@ -83,6 +83,13 @@ class QueryCompileResponse(BaseModel):
     warnings: list[StructuredWarning] = Field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlanResponse | None = None
+    physical_tables: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Deduplicated DATABASE.SCHEMA.CODE strings the query touches. "
+            "Drives freshness-cache TTL composition and heartbeat invalidation."
+        ),
+    )
 
 
 class ColumnMetadata(BaseModel):
@@ -113,6 +120,33 @@ class QueryExecuteResponse(BaseModel):
     warnings: list[StructuredWarning] = Field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlanResponse | None = None
+    physical_tables: list[str] = Field(
+        default_factory=list,
+        description="Deduplicated DATABASE.SCHEMA.CODE strings the query touched.",
+    )
+    cached: bool = Field(
+        default=False,
+        description="Whether the result came from the freshness-driven cache.",
+    )
+    cached_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp the cached result was first computed.",
+    )
+    ttl_seconds: int | None = Field(
+        default=None,
+        description="Effective TTL applied to this entry, in seconds.",
+    )
+    ttl_source: str | None = Field(
+        default=None,
+        description=(
+            "Where the TTL came from: freshness_derived | caller_capped | "
+            "default_unknown | no_cache | floor_below_min."
+        ),
+    )
+    ttl_limiting_table: str | None = Field(
+        default=None,
+        description="Physical table whose contract drove the effective TTL.",
+    )
 
 
 class SessionQueryExecuteRequest(BaseModel):
@@ -200,6 +234,53 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = ""
+
+
+class CacheStatsResponse(BaseModel):
+    """Response body for GET /v1/cache/stats."""
+
+    backend: str
+    entry_count: int = 0
+    total_size_bytes: int = 0
+    max_size_bytes: int = 0
+    hit_count_total: int = 0
+    miss_count_total: int = 0
+    hit_rate: float = 0.0
+    oldest_entry: str | None = None
+    next_sweep_at: str | None = None
+    tracked_physical_tables: int = 0
+    heartbeat_invalidations_total: int = 0
+
+
+class HeartbeatRequest(BaseModel):
+    """Request body for POST /v1/heartbeat.
+
+    Identifies a *physical* table by its database/schema/code triple. The
+    ETL job knows what it just refreshed; OBSL maps that to every cached
+    query that touched the table. See PLAN_freshness_driven_cache.md §9.
+    """
+
+    database: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255, alias="schema")
+    table: str = Field(min_length=1, max_length=255)
+    timestamp: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 timestamp the refresh completed. Defaults to server "
+            "now() when omitted; clamped to now() when in the future."
+        ),
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class HeartbeatResponse(BaseModel):
+    """Response body for POST /v1/heartbeat."""
+
+    table_ref: str
+    recorded_at: str
+    invalidated_cache_entries: int
+    affected_data_objects: list[str] = Field(default_factory=list)
 
 
 class FlightSettingsInfo(BaseModel):

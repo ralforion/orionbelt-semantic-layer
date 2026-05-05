@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from rdflib import Graph
 
+from orionbelt.cache.ttl import RefreshContract
 from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
@@ -373,6 +374,23 @@ class ModelStore:
             else:
                 errors.append(info)
 
+        # 4. Cross-dataObject refresh contract consistency check.
+        from orionbelt.cache.contracts import collect_table_contracts
+
+        _, refresh_warnings = collect_table_contracts(model)
+        for w in refresh_warnings:
+            warnings.append(
+                ErrorInfo(
+                    code=w.code,
+                    message=w.message,
+                    path=w.path,
+                    suggestions=list(w.suggestions),
+                    severity=w.severity or "warning",
+                    hint=w.hint,
+                    context=w.context,
+                )
+            )
+
         return model, errors, warnings
 
     @staticmethod
@@ -411,6 +429,17 @@ class ModelStore:
                             jd["pathName"] = j.path_name
                         joins.append(jd)
                     obj_raw["joins"] = joins
+                if obj.refresh is not None:
+                    refresh: dict[str, object] = {"mode": obj.refresh.mode}
+                    if obj.refresh.interval:
+                        refresh["interval"] = obj.refresh.interval
+                    if obj.refresh.anchor:
+                        refresh["anchor"] = obj.refresh.anchor
+                    if obj.refresh.timezone:
+                        refresh["timezone"] = obj.refresh.timezone
+                    if obj.refresh.max_staleness:
+                        refresh["maxStaleness"] = obj.refresh.max_staleness
+                    obj_raw["refresh"] = refresh
                 objs[name] = obj_raw
             raw["dataObjects"] = objs
         if model.dimensions:
@@ -681,6 +710,18 @@ class ModelStore:
         """Compile a query against a loaded model."""
         model = self.get_model(model_id)
         return self._pipeline.compile(query, model, dialect)
+
+    def refresh_contracts(self, model_id: str) -> dict[str, RefreshContract]:
+        """Per-physical-table freshness contracts for the given model.
+
+        Used by the result cache to derive an effective TTL for a query
+        based on the dataObjects it touched.
+        """
+        from orionbelt.cache.contracts import collect_table_contracts
+
+        model = self.get_model(model_id)
+        contracts, _ = collect_table_contracts(model)
+        return contracts
 
     def validate(
         self,

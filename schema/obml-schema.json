@@ -75,6 +75,39 @@
           "type": "array",
           "description": "Vendor-keyed extension data",
           "items": { "$ref": "#/definitions/customExtension" }
+        },
+        "refresh": {
+          "type": "object",
+          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md §5.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["interval", "heartbeat", "static"],
+              "description": "interval: fixed cadence; heartbeat: irregular + ETL pings; static: never changes"
+            },
+            "interval": {
+              "type": "string",
+              "description": "Required for mode=interval. ISO 8601 duration or shorthand (1h, 15m, 1d)"
+            },
+            "anchor": {
+              "type": "string",
+              "description": "Optional HH:MM time-of-day anchor for interval mode"
+            },
+            "timezone": {
+              "type": "string",
+              "description": "IANA TZ name; only used when anchor is set. Default UTC"
+            },
+            "max_staleness": {
+              "type": "string",
+              "description": "Required for mode=heartbeat. Max time between heartbeats before stale"
+            },
+            "maxStaleness": {
+              "type": "string",
+              "description": "camelCase alias for max_staleness"
+            }
+          },
+          "required": ["mode"],
+          "additionalProperties": false
         }
       },
       "required": ["code", "columns"],

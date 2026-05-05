@@ -459,6 +459,7 @@ async def shortcut_compile_query(
         warnings=[semantic_error_to_warning(w) for w in result.warnings],
         sql_valid=result.sql_valid,
         explain=explain_resp,
+        physical_tables=list(result.physical_tables),
     )
 
 

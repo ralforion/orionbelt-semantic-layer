@@ -127,6 +127,8 @@ nav:
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
       - OBSL Graph & SPARQL: guide/obsl.md
+      - Freshness Contracts: guide/freshness-contracts.md
+      - Result Cache: guide/result-cache.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
       - OSI Interoperability: guide/osi.md

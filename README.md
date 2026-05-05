@@ -255,6 +255,13 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **Fuzzy `/find` Recovery** — when a search produces no exact or synonym hits, deterministic Levenshtein + trigram fallback returns near-miss candidates with scores and reasons
 - **Model Examples** — optional OBML `examples:` block of canonical queries; `GET /examples` (with `?intent=` filtering) gives agents one-round-trip discovery of what a model is designed to answer
 
+### Freshness-Driven Result Cache
+
+- **Source-level freshness contracts** — declare `refresh:` blocks on `dataObject` entries (interval / heartbeat / static); the cache derives query TTLs from the contracts of the physical tables a query touched, not from caller guesses
+- **Heartbeat invalidation** — one `POST /v1/heartbeat` to a physical table invalidates every cached query that depends on it, across every dataObject and session
+- **DuckDB metadata + Parquet results** — file-backed cache with type-precise serialization, lazy expiration, LRU capacity sweep; opt-in via `CACHE_BACKEND=file`
+- **Inverts the Cube/dbt/Looker pattern** — contracts live on the source, not the semantic abstraction; one source of truth across every cube/explore/saved query reading the table
+
 ### Developer Experience
 
 - **Source-Position Errors** — validation errors report exact YAML line and column

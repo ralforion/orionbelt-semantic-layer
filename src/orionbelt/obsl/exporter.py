@@ -342,6 +342,21 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         for syn in obj.synonyms:
             g.add((obj_uri, OBSL.synonym, Literal(syn)))
 
+        # Refresh policy — PLAN_freshness_driven_cache.md §6
+        if obj.refresh is not None:
+            policy_uri = BNode()
+            g.add((obj_uri, OBSL.hasRefreshPolicy, policy_uri))
+            g.add((policy_uri, RDF.type, OBSL.RefreshPolicy))
+            g.add((policy_uri, OBSL.refreshMode, Literal(obj.refresh.mode)))
+            if obj.refresh.interval:
+                g.add((policy_uri, OBSL.refreshInterval, Literal(obj.refresh.interval)))
+            if obj.refresh.anchor:
+                g.add((policy_uri, OBSL.refreshAnchor, Literal(obj.refresh.anchor)))
+            if obj.refresh.timezone:
+                g.add((policy_uri, OBSL.refreshTimezone, Literal(obj.refresh.timezone)))
+            if obj.refresh.max_staleness:
+                g.add((policy_uri, OBSL.maxStaleness, Literal(obj.refresh.max_staleness)))
+
         # Columns
         for col_name, col in obj.columns.items():
             col_uri = col_uris[(obj_name, col_name)]

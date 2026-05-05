@@ -13,7 +13,12 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from orionbelt import __version__
-from orionbelt.api.deps import OneshotBatchConfig, init_session_manager, reset_session_manager
+from orionbelt.api.deps import (
+    CacheRuntimeConfig,
+    OneshotBatchConfig,
+    init_session_manager,
+    reset_session_manager,
+)
 from orionbelt.api.logging_config import configure_logging
 from orionbelt.api.middleware import (
     RequestBodyLimitMiddleware,
@@ -23,9 +28,11 @@ from orionbelt.api.middleware import (
     SessionRateLimitMiddleware,
 )
 from orionbelt.api.routers import (
+    cache_stats,
     convert,
     dialects,
     graph,
+    heartbeat,
     model_api,
     oneshot,
     reference,
@@ -34,6 +41,7 @@ from orionbelt.api.routers import (
 )
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
+from orionbelt.cache.factory import build_cache
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
@@ -117,6 +125,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         default_store.load_model(preload_yaml)
         logger.info("Preloaded model into __default__ session")
 
+    cache = build_cache(settings)
+    cache_config = CacheRuntimeConfig(
+        backend=cache.backend_name,
+        min_ttl_seconds=settings.cache_min_ttl_seconds,
+        max_ttl_seconds=settings.cache_max_ttl_seconds,
+        unknown_policy=settings.cache_unknown_freshness_policy,
+        unknown_default_ttl_seconds=settings.cache_unknown_freshness_default_ttl,
+        heartbeat_auth_token=settings.heartbeat_auth_token,
+    )
+    if cache.backend_name == "file":
+        try:
+            cache.start_sweep_task()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Failed to start cache sweep task")
+
     init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
@@ -132,6 +155,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             default_timeout_ms=settings.oneshot_batch_default_timeout_ms,
             batch_timeout_ms=settings.oneshot_batch_batch_timeout_ms,
         ),
+        cache=cache,
+        cache_config=cache_config,
     )
 
     # Start Arrow Flight SQL server if ob-flight-extension is installed
@@ -186,6 +211,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             close_all_pools()
         except ImportError:
             pass
+        try:
+            await cache.shutdown()
+        except Exception:
+            logger.exception("Cache shutdown failed")
         mgr.stop()
         reset_session_manager()
 
@@ -240,6 +269,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(oneshot.router, prefix="/oneshot", tags=["oneshot"])
     v1.include_router(reference.router, prefix="/reference", tags=["reference"])
     v1.include_router(settings_router.router, prefix="/settings", tags=["settings"])
+    v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
+    v1.include_router(heartbeat.router, tags=["cache"])
     app.include_router(v1)
 
     # Root-level endpoints (no version prefix — used by load balancers, crawlers)

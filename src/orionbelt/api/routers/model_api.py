@@ -591,9 +591,7 @@ def _filter_by_intent(model: SemanticModel, intent: str) -> list[ExampleSummary]
     if contains:
         return contains
     # Final fallback: fuzzy match against the tag corpus
-    candidates: list[tuple[str, str, list[str]]] = [
-        (t, "tag", []) for t in _all_intent_tags(model)
-    ]
+    candidates: list[tuple[str, str, list[str]]] = [(t, "tag", []) for t in _all_intent_tags(model)]
     fuzzy = {m.name for m in fuzzy_search(intent, candidates, threshold=0.6)}
     if not fuzzy:
         return []

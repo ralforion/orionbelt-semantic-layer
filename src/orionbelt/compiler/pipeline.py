@@ -82,6 +82,33 @@ class CompilationResult:
     warnings: list[SemanticError] = field(default_factory=list)
     sql_valid: bool = True
     explain: ExplainPlan | None = None
+    physical_tables: list[str] = field(default_factory=list)
+    """Deduplicated list of ``DATABASE.SCHEMA.CODE`` triples reached by the
+    query. Drives freshness-cache TTL composition and heartbeat
+    invalidation. See ``design/PLAN_freshness_driven_cache.md`` §8."""
+
+
+def _compute_physical_tables(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
+    """Deduplicate dataObjects to physical ``DATABASE.SCHEMA.CODE`` triples.
+
+    Two dataObjects mapping to the same physical table contribute one entry.
+    See ``design/PLAN_freshness_driven_cache.md`` §10 for why this matters
+    (one source, multiple semantic facets like ``Sales`` + ``Returns``).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in sorted(resolved.required_objects):
+        obj = model.data_objects.get(name)
+        if obj is None:
+            continue
+        parts = [str(p) for p in (obj.database, obj.schema_name, obj.code) if p]
+        if not parts:
+            continue
+        ref = ".".join(parts)
+        if ref not in seen:
+            seen.add(ref)
+            out.append(ref)
+    return out
 
 
 class CompilationPipeline:
@@ -199,9 +226,13 @@ class CompilationPipeline:
         # Build explain plan
         explain = self._build_explain(resolved, model, use_cfl, plan)
 
+        # Compute deduplicated physical tables touched by the query
+        physical_tables = _compute_physical_tables(resolved, model)
+
         return CompilationResult(
             sql=sql,
             dialect=dialect_name,
+            physical_tables=physical_tables,
             resolved=ResolvedInfo(
                 fact_tables=resolved.fact_tables,
                 dimensions=[d.name for d in resolved.dimensions],

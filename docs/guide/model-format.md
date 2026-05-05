@@ -1076,6 +1076,25 @@ filters:
 
 Produces: `WHERE "STATUS" = 'completed' AND "COUNTRY" = 'Germany'`
 
+## Refresh contracts
+
+The optional `refresh:` block on a `dataObject` declares the freshness contract of the physical table that the dataObject maps to. It drives the result-cache TTL: a query's effective TTL is the minimum across the refresh contracts of every physical table it touches. See the dedicated guide page for full details: [Freshness contracts](freshness-contracts.md).
+
+```yaml
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    refresh:
+      mode: interval     # or: heartbeat | static
+      interval: 1h       # required for interval mode
+    columns:
+      ...
+```
+
+Two `dataObject` entries that map to the same physical table should declare equivalent contracts. When they disagree, OBSL emits a `SHARED_TABLE_CONTRACT_DISAGREEMENT` warning at load time and applies the strictest contract.
+
 ## Examples
 
 The optional top-level `examples:` block lists canonical queries authored alongside the model — the kinds of questions the model is designed to answer. Surfaced through `GET /v1/sessions/{sid}/models/{mid}/examples` so agents can ground on the model in one round trip without guessing from dimension and measure names alone.

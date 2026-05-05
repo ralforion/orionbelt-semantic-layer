@@ -1015,6 +1015,87 @@ For `ASK` queries:
 
 ---
 
+## Result cache
+
+See `docs/guide/result-cache.md` for the full design and operational notes. Cache is **off by default** (`CACHE_BACKEND=noop`). Enable with `CACHE_BACKEND=file` and a writable `CACHE_DIR`.
+
+### `GET /v1/cache/stats`
+
+Always responds — when `CACHE_BACKEND=noop` the response shows `backend: "noop"` with zero counters.
+
+**Response (200):**
+
+```json
+{
+  "backend": "file",
+  "entry_count": 1247,
+  "total_size_bytes": 234567890,
+  "max_size_bytes": 5368709120,
+  "hit_count_total": 9821,
+  "miss_count_total": 4203,
+  "hit_rate": 0.700,
+  "oldest_entry": "2026-04-15T12:30:00Z",
+  "next_sweep_at": "2026-04-15T12:45:00Z",
+  "tracked_physical_tables": 8,
+  "heartbeat_invalidations_total": 142
+}
+```
+
+### `POST /v1/heartbeat`
+
+ETL pings this endpoint after refreshing a physical table. The cache invalidates every entry whose dependency set includes that table — across every dataObject and every session.
+
+Authentication: `Authorization: Bearer <HEARTBEAT_AUTH_TOKEN>`. When the env var is unset, the route returns 404.
+
+**Request:**
+
+```json
+{
+  "database": "WAREHOUSE",
+  "schema": "PUBLIC",
+  "table": "ORDERS",
+  "timestamp": "2026-04-29T14:32:15Z"
+}
+```
+
+`timestamp` is optional; defaults to server `now()`. Future timestamps are clamped to `now()`.
+
+**Response (200):**
+
+```json
+{
+  "table_ref": "WAREHOUSE.PUBLIC.ORDERS",
+  "recorded_at": "2026-04-29T14:32:15Z",
+  "invalidated_cache_entries": 47,
+  "affected_data_objects": ["Orders", "OrderReturns", "OrdersPivoted"]
+}
+```
+
+`affected_data_objects` lists every OBML name tied to this physical table at the moment of the heartbeat — useful for verifying your model maps the way you expect.
+
+| Status | Cause |
+|--------|-------|
+| 401 | Missing or invalid bearer token |
+| 404 | Heartbeat endpoint disabled (no `HEARTBEAT_AUTH_TOKEN` configured) |
+| 422 | Invalid timestamp format |
+
+### Per-query response fields
+
+Every `query/execute` JSON response gains a cache observability block:
+
+| Field | Description |
+|---|---|
+| `cached` | Whether this result came from the cache. |
+| `cached_at` | ISO 8601 timestamp the cached result was first computed (null when fresh). |
+| `ttl_seconds` | Effective TTL applied to this entry. |
+| `ttl_source` | `freshness_derived`, `caller_capped`, `default_unknown`, `no_cache:<reason>`. |
+| `ttl_limiting_table` | Physical table whose contract drove the effective TTL. |
+| `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
+
+`physical_tables` is also surfaced on `query/sql` responses for clients that want to inspect plan reach without executing.
+
+---
+
 ## Top-level Shortcuts
 
 These endpoints auto-resolve the session and model when only one exists. They mirror the session-scoped model discovery endpoints without requiring session/model IDs.

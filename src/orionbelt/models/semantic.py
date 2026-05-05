@@ -236,6 +236,41 @@ class DataObjectJoin(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RefreshPolicy(BaseModel):
+    """Source-table freshness contract.
+
+    Lives on the :class:`DataObject` that maps to a physical table. See
+    ``design/PLAN_freshness_driven_cache.md`` §5 for the full design and §8
+    for how multiple contracts compose at query time.
+
+    Modes:
+    - ``interval``: table refreshes on a fixed cadence; ``interval`` required.
+    - ``heartbeat``: table refreshes irregularly; ``max_staleness`` required.
+    - ``static``: table effectively never changes (lookup tables).
+    """
+
+    mode: str = Field(description="One of: interval | heartbeat | static")
+    interval: str | None = Field(
+        default=None,
+        description="ISO 8601 duration or shorthand (e.g. '1h', '15m', '1d')",
+    )
+    anchor: str | None = Field(
+        default=None,
+        description="Optional time-of-day anchor 'HH:MM' for interval mode",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="IANA TZ name. Used only when anchor is set. Default UTC.",
+    )
+    max_staleness: str | None = Field(
+        default=None,
+        alias="maxStaleness",
+        description="Max time between heartbeats before the table is stale",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class DataObject(BaseModel):
     """A database table or view with its columns and joins."""
 
@@ -250,6 +285,13 @@ class DataObject(BaseModel):
     owner: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
+    refresh: RefreshPolicy | None = Field(
+        default=None,
+        description=(
+            "Optional freshness contract for the physical table this dataObject maps to. "
+            "Drives result-cache TTL composition. PLAN_freshness_driven_cache.md §5."
+        ),
+    )
 
     @property
     def qualified_code(self) -> str:

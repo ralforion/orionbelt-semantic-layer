@@ -28,6 +28,7 @@ from orionbelt.models.semantic import (
     ModelFilter,
     ModelSettings,
     PeriodOverPeriod,
+    RefreshPolicy,
     SemanticModel,
 )
 from orionbelt.parser.loader import SourceMap
@@ -64,6 +65,78 @@ def _coerce_filter_value(v: object) -> str | int | float | bool | None:
     if isinstance(v, date):
         return v.isoformat()
     return v  # type: ignore[return-value]
+
+
+_VALID_REFRESH_MODES = frozenset({"interval", "heartbeat", "static"})
+
+
+def _parse_refresh(
+    raw: object, data_object_name: str, errors: list[SemanticError]
+) -> RefreshPolicy | None:
+    """Parse a dataObject's optional ``refresh:`` block.
+
+    Records structured errors for missing or contradictory fields. Returns
+    ``None`` when the block is absent.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=f"dataObject '{data_object_name}'.refresh must be a mapping",
+                path=f"dataObjects.{data_object_name}.refresh",
+            )
+        )
+        return None
+
+    mode = str(raw.get("mode", "")).strip().lower()
+    if mode not in _VALID_REFRESH_MODES:
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.mode must be one of "
+                    "interval | heartbeat | static"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.mode",
+            )
+        )
+        return None
+
+    if mode == "interval" and not raw.get("interval"):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.interval is required for "
+                    "interval mode"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.interval",
+            )
+        )
+        return None
+
+    if mode == "heartbeat" and not (raw.get("max_staleness") or raw.get("maxStaleness")):
+        errors.append(
+            SemanticError(
+                code="REFRESH_PARSE_ERROR",
+                message=(
+                    f"dataObject '{data_object_name}'.refresh.max_staleness is required "
+                    "for heartbeat mode"
+                ),
+                path=f"dataObjects.{data_object_name}.refresh.max_staleness",
+            )
+        )
+        return None
+
+    return RefreshPolicy(
+        mode=mode,
+        interval=raw.get("interval"),
+        anchor=raw.get("anchor"),
+        timezone=raw.get("timezone"),
+        max_staleness=raw.get("max_staleness") or raw.get("maxStaleness"),
+    )
 
 
 def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
@@ -179,6 +252,7 @@ class ReferenceResolver:
                     owner=raw_obj.get("owner"),
                     synonyms=raw_obj.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_obj),
+                    refresh=_parse_refresh(raw_obj.get("refresh"), name, errors),
                 )
             except Exception as e:
                 span = source_map.get(f"dataObjects.{name}") if source_map else None
