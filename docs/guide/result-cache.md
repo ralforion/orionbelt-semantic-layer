@@ -67,6 +67,18 @@ Every `query/execute` JSON response gains:
 | `ttl_limiting_table` | The physical table whose contract drove the TTL. |
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 
+On cache hits, `execution_time_ms` reports the wall-clock time spent reading + decoding the cached entry — *not* the original database run time. The original DB timing is preserved on disk in the Parquet sidecar; combine `cached: true` with `execution_time_ms` to distinguish "fresh from warehouse" vs "served from cache" durations.
+
+## UI controls
+
+The Gradio UI exposes a **Cache Stats** panel in the Settings tab next to the API Settings YAML. It auto-loads when the tab opens and provides three buttons:
+
+- **Refresh Cache Stats** — re-fetches `GET /v1/cache/stats` so you see current counters.
+- **Sweep Cache now** — calls `POST /v1/cache/sweep` then refreshes stats. Useful when you want to reclaim disk from expired entries before the next periodic sweep (default 1 day).
+- **Clear Cache** — calls `POST /v1/cache/clear` then refreshes stats. Drops all entries; counters are preserved.
+
+The Query Results tab also annotates each execution with `(cache)` or `(database)` next to `execution_time_ms` so you can see at a glance which path served the result.
+
 ## Cache stats
 
 ```

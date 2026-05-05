@@ -1041,6 +1041,33 @@ Always responds — when `CACHE_BACKEND=noop` the response shows `backend: "noop
 }
 ```
 
+### `POST /v1/cache/sweep`
+
+Triggers a single TTL + capacity eviction pass on demand — equivalent to one tick of the periodic sweeper. Safe to call at any time. With `CACHE_BACKEND=noop` returns zero counts.
+
+**Response (200):**
+
+```json
+{
+  "backend": "file",
+  "ttl_evicted": 17,
+  "capacity_evicted": 0
+}
+```
+
+### `POST /v1/cache/clear`
+
+Drops every cache entry regardless of TTL or freshness contract. Useful for manual resets and debugging. Counters (`hit_count_total`, `miss_count_total`, `heartbeat_invalidations_total`) are preserved as historical telemetry. With `CACHE_BACKEND=noop` returns zero.
+
+**Response (200):**
+
+```json
+{
+  "backend": "file",
+  "entries_cleared": 1247
+}
+```
+
 ### `POST /v1/heartbeat`
 
 ETL pings this endpoint after refreshing a physical table. The cache invalidates every entry whose dependency set includes that table — across every dataObject and every session.
@@ -1093,6 +1120,8 @@ Every `query/execute` JSON response gains a cache observability block:
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 
 `physical_tables` is also surfaced on `query/sql` responses for clients that want to inspect plan reach without executing.
+
+**`execution_time_ms` on cache hits:** when `cached: true`, this field reports the wall-clock time spent reading and decoding the cached entry — *not* the original database run time. The original DB timing is preserved on disk in the Parquet sidecar for forensic inspection but not surfaced on the wire. Combine with the `cached` flag to distinguish "fresh from warehouse" vs "served from cache" durations.
 
 ---
 
