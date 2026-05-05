@@ -85,7 +85,7 @@ The **multi-fact query plans split three ways**:
 For **multi-path joins** between the same pair of entities (e.g., `Order.ship_address_id` vs `Order.bill_address_id` both pointing to `Address`):
 
 - **OBSL**: declare both with `secondary: true` + `pathName`; pick at query time via `usePathNames`. **Per-query selection — unique here.**
-- **Cube**: graph allows multiple paths; planner resolves with a member-type priority heuristic (measures → dimensions → segments → time dimensions); pin via a `view` for predictability. **Graph-aware but not per-query selectable.**
+- **Cube**: graph allows multiple paths; planner resolves with Dijkstra + a member-type priority heuristic (measures → dimensions → segments → time dimensions); pin via a `view` for predictability. **Graph-aware but not per-query selectable** — and the choice of *shortest path* is a graph-theoretic answer to what is fundamentally a semantic question. When a query asks for "orders by address," shortest-path picks one of `ship_address_id` / `bill_address_id` based on edge weights, not on the consumer's intent. The two paths may yield genuinely different correct answers; Dijkstra picks the one the heuristic prefers. Views can pin the choice, but only at model-design time, not per query.
 - **AtScale**: role-playing dimensions — same dim aliased into multiple roles (`OrderDate`, `ShipDate`). Model-time aliasing.
 - **LookML**: `from:` aliasing — same view declared twice in an explore under different aliases. Model-time.
 - **Malloy**: aliased sources (`source: ship_addr is address`). Model-time.
