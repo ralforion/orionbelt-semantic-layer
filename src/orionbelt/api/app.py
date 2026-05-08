@@ -173,6 +173,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         heartbeat_auth_token=settings.heartbeat_auth_token,
     )
     if cache.backend_name == "file":
+        # Pay the lazy-import tax at startup so the first user-visible
+        # cache hit doesn't include ~100ms of importing pyarrow (native
+        # library, ~60MB), parquet_codec, and the DuckDB tz-binding path
+        # (which lazy-imports pytz on first TIMESTAMPTZ read). After the
+        # first read, hits drop to single-digit ms; without warming, the
+        # first hit can be slower than the warehouse query it replaces.
+        try:
+            import pyarrow  # noqa: F401
+            from orionbelt.cache import parquet_codec  # noqa: F401
+
+            await cache.stats()  # exercises DuckDB meta read + pytz bind
+        except Exception:
+            logger.exception("Cache warm-up failed (non-fatal)")
+
         try:
             cache.start_sweep_task()  # type: ignore[attr-defined]
         except Exception:
