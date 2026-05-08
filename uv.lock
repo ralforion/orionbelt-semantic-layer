@@ -2281,6 +2281,12 @@ flight = [
     { name = "ob-snowflake" },
     { name = "pyarrow" },
 ]
+flight-duckdb-only = [
+    { name = "ob-driver-core" },
+    { name = "ob-duckdb" },
+    { name = "ob-flight-extension" },
+    { name = "pyarrow" },
+]
 ui = [
     { name = "gradio" },
 ]
@@ -2338,8 +2344,11 @@ requires-dist = [
     { name = "ob-databricks", marker = "extra == 'flight'", editable = "drivers/ob-databricks" },
     { name = "ob-dremio", marker = "extra == 'flight'", editable = "drivers/ob-dremio" },
     { name = "ob-driver-core", marker = "extra == 'flight'", editable = "drivers/ob-driver-core" },
+    { name = "ob-driver-core", marker = "extra == 'flight-duckdb-only'", editable = "drivers/ob-driver-core" },
     { name = "ob-duckdb", marker = "extra == 'flight'", editable = "drivers/ob-duckdb" },
+    { name = "ob-duckdb", marker = "extra == 'flight-duckdb-only'", editable = "drivers/ob-duckdb" },
     { name = "ob-flight-extension", marker = "extra == 'flight'", editable = "drivers/ob-flight-extension" },
+    { name = "ob-flight-extension", marker = "extra == 'flight-duckdb-only'", editable = "drivers/ob-flight-extension" },
     { name = "ob-mysql", marker = "extra == 'flight'", editable = "drivers/ob-mysql" },
     { name = "ob-postgres", marker = "extra == 'flight'", editable = "drivers/ob-postgres" },
     { name = "ob-snowflake", marker = "extra == 'flight'", editable = "drivers/ob-snowflake" },
@@ -2347,6 +2356,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5" },
     { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
     { name = "pyarrow", marker = "extra == 'flight'", specifier = ">=16.0,<20.0" },
+    { name = "pyarrow", marker = "extra == 'flight-duckdb-only'", specifier = ">=16.0,<20.0" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.12,<3.0" },
     { name = "pymysql", extras = ["rsa"], marker = "extra == 'dev'", specifier = ">=1.0" },
@@ -2363,7 +2373,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40,<1.0" },
 ]
-provides-extras = ["dev", "docs", "ui", "flight"]
+provides-extras = ["dev", "docs", "ui", "flight", "flight-duckdb-only"]
 
 [package.metadata.requires-dev]
 dev = [

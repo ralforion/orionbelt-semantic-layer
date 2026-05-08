@@ -31,6 +31,9 @@ CLAUDE.md
 LICENSE
 .mcpregistry_github_token
 .mcpregistry_registry_token
-drivers/
+# NOTE: drivers/ used to be excluded because the published image only
+# compiled SQL and never executed it. With the demo DuckDB build we now
+# install --extra flight, which uses the workspace driver members in
+# drivers/, so the directory must be part of the build context.
 Dockerfile
 .dockerignore

@@ -530,6 +530,29 @@ dimensions:
     resultType: string
     via: Purchases
 
+  # Time dimensions on Sales.salesdate — drive cumulative & period-over-period
+  # metrics (which require a date-typed dimension with an explicit timeGrain).
+  SalesDate:
+    dataObject: Sales
+    column: salesdate
+    resultType: date
+    timeGrain: day
+  SalesMonth:
+    dataObject: Sales
+    column: salesdate
+    resultType: date
+    timeGrain: month
+  SalesQuarter:
+    dataObject: Sales
+    column: salesdate
+    resultType: date
+    timeGrain: quarter
+  SalesYear:
+    dataObject: Sales
+    column: salesdate
+    resultType: date
+    timeGrain: year
+
   # Client/Country/Region (child of Sales only — no via needed)
   ClientName:
     dataObject: Clients
@@ -658,6 +681,7 @@ measures:
         column: unitsinstock
 
 metrics:
+  # Derived metrics — algebra over base measures
   AvgSaleAmount:
     expression: "{[SalesAmount]} / NULLIF({[SalesOrderCount]}, 0)"
     resultType: float
@@ -667,3 +691,83 @@ metrics:
   GrossMargin:
     expression: "{[SalesAmount]} - {[PurchaseAmount]}"
     resultType: float
+
+  # Cumulative metrics — window functions over a base measure ordered by a
+  # time dimension. The time dimension must be in the query's SELECT.
+  CumulativeSalesAmount:
+    type: cumulative
+    measure: SalesAmount
+    timeDimension: SalesMonth
+    description: Running total of monthly sales (unbounded preceding)
+  Rolling30DaySales:
+    type: cumulative
+    measure: SalesAmount
+    timeDimension: SalesDate
+    cumulativeType: avg
+    window: 30
+    description: 30-day moving average of daily sales
+  MTDSalesAmount:
+    type: cumulative
+    measure: SalesAmount
+    timeDimension: SalesDate
+    grainToDate: month
+    description: Month-to-date sales (resets at each month boundary)
+  YTDSalesAmount:
+    type: cumulative
+    measure: SalesAmount
+    timeDimension: SalesMonth
+    grainToDate: year
+    description: Year-to-date sales (resets at each year boundary)
+  PeakDailySales30D:
+    type: cumulative
+    measure: SalesAmount
+    timeDimension: SalesDate
+    cumulativeType: max
+    window: 30
+    description: 30-day rolling maximum of daily sales
+
+  # Period-over-period metrics — compare a base measure across time periods.
+  SalesYoYGrowth:
+    type: period_over_period
+    expression: "{[SalesAmount]}"
+    resultType: float
+    periodOverPeriod:
+      timeDimension: SalesMonth
+      grain: month
+      offset: -1
+      offsetGrain: year
+      comparison: percentChange
+    description: Year-over-year sales growth (% change vs same month last year)
+  SalesMoMChange:
+    type: period_over_period
+    expression: "{[SalesAmount]}"
+    resultType: float
+    periodOverPeriod:
+      timeDimension: SalesMonth
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+    description: Month-over-month absolute change in sales
+  SalesPreviousYear:
+    type: period_over_period
+    expression: "{[SalesAmount]}"
+    resultType: float
+    periodOverPeriod:
+      timeDimension: SalesMonth
+      grain: month
+      offset: -1
+      offsetGrain: year
+      comparison: previousValue
+    description: Sales for the same month one year ago (raw prior value)
+  SalesQoQRatio:
+    type: period_over_period
+    expression: "{[SalesAmount]}"
+    resultType: float
+    periodOverPeriod:
+      timeDimension: SalesQuarter
+      grain: quarter
+      offset: -1
+      offsetGrain: quarter
+      comparison: ratio
+    description: Quarter-over-quarter ratio of sales (current / previous)
