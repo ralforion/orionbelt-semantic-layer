@@ -13,6 +13,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **Result cache silently no-op.** Every `cache.get` / `cache.set` against the file backend's DuckDB meta DB raised `Invalid Input Error: Required module 'pytz' failed to import` — DuckDB's Python binding lazily imports pytz when binding tz-aware datetimes (TIMESTAMPTZ columns), and the WARNING-level failure path returns a miss without surfacing the error. Cache stats showed `entry_count: 0` despite `tracked_physical_tables` accumulating on every query. Pin `pytz>=2024.1` as a runtime dep so DuckDB can persist cache entries.
 - **ER diagram label clipping.** Per-attribute right-edge clipping in dense entities is gone: previously a CSS rule injected a 14px font on top of Mermaid's default-12px column-width measurement, so every row's text overflowed its measured rectangle. The override is removed; we now trust Mermaid's measure-equals-render contract.
 - **ER diagram attribute names no longer mangle spaces into underscores.** Identifiers are camelCased from the column label (`Sales ID` → `SalesID`) and the spaced business label is emitted as the attribute's quoted comment column, so the diagram shows the human-readable name alongside the structural identifier. Entity names containing spaces (`Client Complaints`, `Account Balances`) are double-quoted so Mermaid renders them verbatim.
 - **ER diagram join labels keep their business names** (e.g. `"Sales Client"`) instead of being lower-cased and underscored.

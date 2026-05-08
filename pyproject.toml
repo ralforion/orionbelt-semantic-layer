@@ -57,6 +57,12 @@ dependencies = [
     # ZoneInfo("Europe/Berlin") raises ZoneInfoNotFoundError and the
     # timezone resolver silently falls back to UTC.
     "tzdata>=2025.1",
+    # DuckDB's Python binding lazily imports pytz when binding tz-aware
+    # datetimes (TIMESTAMPTZ columns). Without it the result-cache meta
+    # DB writes/reads raise "Required module 'pytz' failed to import" —
+    # cache.get/set silently swallow it at WARNING level, queries never
+    # cache. Pinning ensures it's resolved at install time.
+    "pytz>=2024.1",
 ]
 
 [project.scripts]
