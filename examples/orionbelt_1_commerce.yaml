@@ -17,6 +17,11 @@ dataObjects:
   Sales:
     code: sales
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Sales ID:
         code: salesid
@@ -73,6 +78,11 @@ dataObjects:
   Purchases:
     code: purchases
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Purchase ID:
         code: purchaseid
@@ -130,6 +140,11 @@ dataObjects:
   Returns:
     code: returns
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Return ID:
         code: returnid
@@ -169,6 +184,11 @@ dataObjects:
   Shipments:
     code: shipments
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Shipment ID:
         code: shipmentid
@@ -211,6 +231,11 @@ dataObjects:
   Client Complaints:
     code: clientcomplaints
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Complaint ID:
         code: complid
@@ -231,6 +256,11 @@ dataObjects:
   Account Balances:
     code: acctbal
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Account ID:
         code: accountid
@@ -256,6 +286,11 @@ dataObjects:
   Clients:
     code: clients
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Client ID:
         code: clientid
@@ -282,6 +317,11 @@ dataObjects:
   Products:
     code: products
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Product ID:
         code: productid
@@ -320,6 +360,11 @@ dataObjects:
   Employees:
     code: employees
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Employee ID:
         code: employeeid
@@ -335,6 +380,11 @@ dataObjects:
   Channels:
     code: channels
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Channel ID:
         code: channelid
@@ -347,6 +397,11 @@ dataObjects:
   Suppliers:
     code: suppliers
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Supplier ID:
         code: supplierid
@@ -362,6 +417,11 @@ dataObjects:
   Countries:
     code: countries
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Country ID:
         code: countryid
@@ -382,6 +442,11 @@ dataObjects:
   Regions:
     code: regions
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Region ID:
         code: regionid
@@ -394,6 +459,11 @@ dataObjects:
   Banks:
     code: banks
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Bank ID:
         code: bankid
@@ -406,6 +476,11 @@ dataObjects:
   Calendar:
     code: calendar
     schema: orionbelt_1
+    refresh:
+      # Demo data is baked into the image at build time and never
+      # changes between deploys — declare it static so the result
+      # cache uses CACHE_MAX_TTL_SECONDS as the effective TTL.
+      mode: static
     columns:
       Date:
         code: date
