@@ -17,14 +17,26 @@ def _entity_ref(name: str) -> str:
     return name
 
 
-def _join_label(label: str) -> str:
-    """Sanitize a join-edge label for Mermaid.
+def _attribute_id(name: str) -> str:
+    """Camelcase a business label for use as a Mermaid attribute identifier.
 
-    Mermaid's erDiagram parser treats the post-``:`` label as a quoted
-    string but escapes inside the quotes are limited. Spaces and most
-    punctuation are fine; double-quotes are stripped to avoid breaking
-    the surrounding quoting.
+    Mermaid's ER grammar (the version Gradio ships) only accepts word-style
+    attribute names — no spaces, no quoted strings. Convert "Sales ID" →
+    "SalesID" rather than the underscored "Sales_ID" so the rendered
+    identifier reads naturally. The original spaced label is still shown
+    via the attribute's comment column.
     """
+    cleaned = name.replace("-", " ")
+    parts = [p for p in cleaned.split(" ") if p]
+    if not parts:
+        return "_"
+    joined = "".join(parts)
+    safe = "".join(c for c in joined if c.isalnum() or c == "_")
+    return safe or "_"
+
+
+def _comment(label: str) -> str:
+    """Sanitize a string for use inside a Mermaid double-quoted comment."""
     return label.replace('"', "")
 
 
@@ -45,11 +57,11 @@ def generate_mermaid_er(
 
     Naming strategy: entity references use the model's data-object label
     (double-quoted when they contain spaces). Attribute identifiers use
-    each column's physical ``code`` — those are space-free by definition,
-    so no name munging is needed and the diagram authentically shows the
-    underlying database schema. Mermaid's ER grammar disallows spaces in
-    attribute names, which is why we don't render the business label
-    here; the spaced label still appears in dropdowns and query results.
+    a camelCased form of the column label so the rendered name reads as
+    a single word ("Sales ID" → ``SalesID``) — Mermaid's ER grammar only
+    accepts word-style attribute names. The original spaced label is also
+    emitted as the attribute's comment column so the business name is
+    visible in the rendered diagram.
     """
     # Collect FK columns (used in join columnsFrom)
     fk_cols: dict[str, set[str]] = {}
@@ -81,17 +93,20 @@ def generate_mermaid_er(
             lines.append(f"    {ent_ref} {{")
             obj_fks = fk_cols.get(obj_name, set())
             for col_name, col in obj.columns.items():
-                # Use the physical code as the Mermaid identifier so we
-                # never have to substitute spaces — and the diagram
-                # reflects the underlying DB column.
-                attr_id = col.code or col_name.replace(" ", "")
+                # Identifier: camelCased business label (no spaces). The
+                # comment slot carries the spaced label so the diagram
+                # still shows the human-readable name.
+                attr_id = _attribute_id(col_name)
                 if col.primary_key:
                     marker = " PK"
                 elif col_name in obj_fks:
                     marker = " FK"
                 else:
                     marker = ""
-                lines.append(f"        {col.abstract_type.value} {attr_id}{marker}")
+                comment = f' "{_comment(col_name)}"' if col_name != attr_id else ""
+                lines.append(
+                    f"        {col.abstract_type.value} {attr_id}{marker}{comment}"
+                )
             lines.append("    }")
 
     lines.append("")
@@ -121,6 +136,6 @@ def generate_mermaid_er(
             else:
                 label = "joins"
 
-            lines.append(f'    {from_ref} {rel} {to_ref} : "{_join_label(label)}"')
+            lines.append(f'    {from_ref} {rel} {to_ref} : "{_comment(label)}"')
 
     return "\n".join(lines)

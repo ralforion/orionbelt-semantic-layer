@@ -98,22 +98,23 @@ class TestGenerateMermaidER:
         assert "Customers {" in result
 
     def test_columns_present(self) -> None:
-        # Attribute identifiers use the column's physical `code` (which is
-        # space-free by definition) — Mermaid's ER grammar disallows
-        # spaces in attribute names, and the physical name is the most
-        # honest thing to render.
+        # Attribute identifiers are camelCased from the column label
+        # ("Order ID" → "OrderID") because Mermaid's ER grammar only
+        # accepts word-style attribute names. The original spaced label
+        # is emitted as the attribute's quoted comment column so the
+        # business name is still visible in the rendered diagram.
         model = _sample_model()
         result = generate_mermaid_er(model)
-        assert "string order_id" in result
-        assert "float amount" in result
-        assert "string cust_id" in result
+        assert 'string OrderID "Order ID"' in result
+        assert "float Amount" in result  # single-word labels need no comment
+        assert 'string CustID "Cust ID"' in result
 
     def test_fk_annotation(self) -> None:
         model = _sample_model()
         result = generate_mermaid_er(model)
-        assert "string customer_id FK" in result
+        assert 'string CustomerID FK "Customer ID"' in result
         # Non-FK columns should NOT have FK marker
-        assert "string order_id FK" not in result
+        assert "string OrderID FK" not in result
 
     def test_pk_annotation(self) -> None:
         model = _sample_model()
@@ -121,19 +122,19 @@ class TestGenerateMermaidER:
         model.data_objects["Orders"].columns["Order ID"].primary_key = True
         model.data_objects["Customers"].columns["Cust ID"].primary_key = True
         result = generate_mermaid_er(model)
-        assert "string order_id PK" in result
-        assert "string cust_id PK" in result
+        assert 'string OrderID PK "Order ID"' in result
+        assert 'string CustID PK "Cust ID"' in result
         # Plain columns stay unmarked
-        assert "float amount PK" not in result
-        assert "float amount FK" not in result
+        assert "float Amount PK" not in result
+        assert "float Amount FK" not in result
 
     def test_pk_takes_precedence_over_fk(self) -> None:
         # When a column is both PK (declared) and FK (used in join), PK wins.
         model = _sample_model()
         model.data_objects["Orders"].columns["Customer ID"].primary_key = True
         result = generate_mermaid_er(model)
-        assert "string customer_id PK" in result
-        assert "string customer_id FK" not in result
+        assert 'string CustomerID PK "Customer ID"' in result
+        assert "string CustomerID FK" not in result
 
     def test_relationship_present(self) -> None:
         model = _sample_model()
@@ -244,7 +245,7 @@ class TestGenerateMermaidER:
         )
         result = generate_mermaid_er(model)
         assert '"Account Balances" {' in result
-        assert "string account_id" in result
+        assert 'string AccountID "Account ID"' in result
 
     def test_with_sales_fixture(self, sales_model: SemanticModel) -> None:
         """Integration test with the full sales model fixture."""

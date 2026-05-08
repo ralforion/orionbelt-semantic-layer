@@ -7,6 +7,12 @@ version: 1.0
 # All YAML keys (dataObjects, columns, dimensions, measures, metrics) use
 # business-friendly spaced names. Physical names live in the `code:` fields.
 
+settings:
+  # The bundled demo runs against the baked-in DuckDB seed
+  # (orionbelt_1_commerce.duckdb). Pin the dialect so the UI dropdown
+  # and the compiler agree on duckdb without relying on DB_VENDOR env.
+  defaultDialect: duckdb
+
 dataObjects:
   Sales:
     code: sales
@@ -650,7 +656,7 @@ dimensions:
     via: Purchases
 
 measures:
-  Total Sales Amount:
+  Total Sales:
     aggregation: sum
     resultType: float
     columns:
@@ -668,7 +674,7 @@ measures:
     columns:
       - dataObject: Sales
         column: Sales ID
-  Total Purchase Amount:
+  Total Purchases:
     aggregation: sum
     resultType: float
     columns:
@@ -680,7 +686,7 @@ measures:
     columns:
       - dataObject: Purchases
         column: Purchase Quantity
-  Total Return Amount:
+  Total Returns:
     aggregation: sum
     resultType: float
     columns:
@@ -698,7 +704,7 @@ measures:
     columns:
       - dataObject: Returns
         column: Return ID
-  Total Shipment Amount:
+  Total Shipments:
     aggregation: sum
     resultType: float
     columns:
@@ -731,45 +737,45 @@ measures:
 
 metrics:
   # ── Derived metrics — algebra over base measures ──
-  Average Sale Amount:
-    expression: "{[Total Sales Amount]} / NULLIF({[Sales Order Count]}, 0)"
+  Average Sale:
+    expression: "{[Total Sales]} / NULLIF({[Sales Order Count]}, 0)"
     resultType: float
-  Return Rate Pct:
-    expression: "({[Total Return Amount]} / NULLIF({[Total Sales Amount]}, 0)) * 100"
+  Return Rate:
+    expression: "({[Total Returns]} / NULLIF({[Total Sales]}, 0)) * 100"
     resultType: float
   Gross Margin:
-    expression: "{[Total Sales Amount]} - {[Total Purchase Amount]}"
+    expression: "{[Total Sales]} - {[Total Purchases]}"
     resultType: float
 
   # ── Cumulative metrics — window functions over a base measure ordered by a
   # time dimension. The time dimension must be in the query's SELECT. ──
-  Cumulative Sales Amount:
+  Cumulative Sales:
     type: cumulative
-    measure: Total Sales Amount
+    measure: Total Sales
     timeDimension: Sales Month
     description: Running total of monthly sales (unbounded preceding)
   Rolling 30 Day Sales:
     type: cumulative
-    measure: Total Sales Amount
+    measure: Total Sales
     timeDimension: Sales Date
     cumulativeType: avg
     window: 30
     description: 30-day moving average of daily sales
-  MTD Sales Amount:
+  MTD Sales:
     type: cumulative
-    measure: Total Sales Amount
+    measure: Total Sales
     timeDimension: Sales Date
     grainToDate: month
     description: Month-to-date sales (resets at each month boundary)
-  YTD Sales Amount:
+  YTD Sales:
     type: cumulative
-    measure: Total Sales Amount
+    measure: Total Sales
     timeDimension: Sales Month
     grainToDate: year
     description: Year-to-date sales (resets at each year boundary)
   Peak Daily Sales 30D:
     type: cumulative
-    measure: Total Sales Amount
+    measure: Total Sales
     timeDimension: Sales Date
     cumulativeType: max
     window: 30
@@ -778,7 +784,7 @@ metrics:
   # ── Period-over-period metrics — compare a base measure across time periods. ──
   Sales YoY Growth:
     type: period_over_period
-    expression: "{[Total Sales Amount]}"
+    expression: "{[Total Sales]}"
     resultType: float
     periodOverPeriod:
       timeDimension: Sales Month
@@ -789,7 +795,7 @@ metrics:
     description: Year-over-year sales growth (% change vs same month last year)
   Sales MoM Change:
     type: period_over_period
-    expression: "{[Total Sales Amount]}"
+    expression: "{[Total Sales]}"
     resultType: float
     periodOverPeriod:
       timeDimension: Sales Month
@@ -800,7 +806,7 @@ metrics:
     description: Month-over-month absolute change in sales
   Sales Previous Year:
     type: period_over_period
-    expression: "{[Total Sales Amount]}"
+    expression: "{[Total Sales]}"
     resultType: float
     periodOverPeriod:
       timeDimension: Sales Month
@@ -811,7 +817,7 @@ metrics:
     description: Sales for the same month one year ago (raw prior value)
   Sales QoQ Ratio:
     type: period_over_period
-    expression: "{[Total Sales Amount]}"
+    expression: "{[Total Sales]}"
     resultType: float
     periodOverPeriod:
       timeDimension: Sales Quarter

@@ -1648,6 +1648,27 @@ def compile_sql(
         return f"Error: {exc}", "", session_state, model_state
 
 
+def _resolve_execution_dialect(api_url: str, current: str) -> str:
+    """Snap the SQL Dialect dropdown to the API's effective execution dialect.
+
+    The dropdown is useful for previewing compiled SQL in different
+    dialects, but ``Execute Query`` actually runs against the API's
+    backing database — executing the wrong dialect (e.g. Postgres SQL
+    against the bundled DuckDB) just fails. Force the dropdown to the
+    API's reported ``dialect.effective`` so the user sees what will
+    actually be executed. Falls back silently to the current value if
+    settings cannot be fetched.
+    """
+    try:
+        settings = _fetch_settings(api_url)
+        eff = (settings.get("dialect") or {}).get("effective")
+        if isinstance(eff, str) and eff:
+            return eff
+    except Exception:  # noqa: BLE001 — best-effort UX hint, never block exec
+        pass
+    return current
+
+
 def execute_query(
     model_yaml: str,
     query_yaml: str,
@@ -2535,8 +2556,15 @@ def create_blocks(
                 outputs=[execute_btn, results_tab],
             )
 
-            # Wire execute button after result components are defined
+            # Wire execute button after result components are defined.
+            # Pre-step: snap the dialect dropdown to the API's effective
+            # execution dialect so the user sees what will actually run
+            # (and execute_query itself reads the snapped value).
             execute_btn.click(
+                fn=_resolve_execution_dialect,
+                inputs=[api_url, dialect],
+                outputs=[dialect],
+            ).then(
                 fn=execute_query,
                 inputs=[
                     model_input,
