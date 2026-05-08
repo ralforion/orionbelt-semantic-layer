@@ -100,19 +100,17 @@ class TestGenerateMermaidER:
     def test_columns_present(self) -> None:
         # Attribute identifiers are camelCased from the column label
         # ("Order ID" → "OrderID") because Mermaid's ER grammar only
-        # accepts word-style attribute names. The original spaced label
-        # is emitted as the attribute's quoted comment column so the
-        # business name is still visible in the rendered diagram.
+        # accepts word-style attribute names.
         model = _sample_model()
         result = generate_mermaid_er(model)
-        assert 'string OrderID "Order ID"' in result
-        assert "float Amount" in result  # single-word labels need no comment
-        assert 'string CustID "Cust ID"' in result
+        assert "string OrderID" in result
+        assert "float Amount" in result
+        assert "string CustID" in result
 
     def test_fk_annotation(self) -> None:
         model = _sample_model()
         result = generate_mermaid_er(model)
-        assert 'string CustomerID FK "Customer ID"' in result
+        assert "string CustomerID FK" in result
         # Non-FK columns should NOT have FK marker
         assert "string OrderID FK" not in result
 
@@ -122,8 +120,8 @@ class TestGenerateMermaidER:
         model.data_objects["Orders"].columns["Order ID"].primary_key = True
         model.data_objects["Customers"].columns["Cust ID"].primary_key = True
         result = generate_mermaid_er(model)
-        assert 'string OrderID PK "Order ID"' in result
-        assert 'string CustID PK "Cust ID"' in result
+        assert "string OrderID PK" in result
+        assert "string CustID PK" in result
         # Plain columns stay unmarked
         assert "float Amount PK" not in result
         assert "float Amount FK" not in result
@@ -133,7 +131,7 @@ class TestGenerateMermaidER:
         model = _sample_model()
         model.data_objects["Orders"].columns["Customer ID"].primary_key = True
         result = generate_mermaid_er(model)
-        assert 'string CustomerID PK "Customer ID"' in result
+        assert "string CustomerID PK" in result
         assert "string CustomerID FK" not in result
 
     def test_relationship_present(self) -> None:
@@ -245,7 +243,7 @@ class TestGenerateMermaidER:
         )
         result = generate_mermaid_er(model)
         assert '"Account Balances" {' in result
-        assert 'string AccountID "Account ID"' in result
+        assert "string AccountID" in result
 
     def test_with_sales_fixture(self, sales_model: SemanticModel) -> None:
         """Integration test with the full sales model fixture."""

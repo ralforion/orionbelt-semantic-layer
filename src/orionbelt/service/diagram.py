@@ -59,9 +59,7 @@ def generate_mermaid_er(
     (double-quoted when they contain spaces). Attribute identifiers use
     a camelCased form of the column label so the rendered name reads as
     a single word ("Sales ID" → ``SalesID``) — Mermaid's ER grammar only
-    accepts word-style attribute names. The original spaced label is also
-    emitted as the attribute's comment column so the business name is
-    visible in the rendered diagram.
+    accepts word-style attribute names.
     """
     # Collect FK columns (used in join columnsFrom)
     fk_cols: dict[str, set[str]] = {}
@@ -70,14 +68,15 @@ def generate_mermaid_er(
             for fk_col in join.columns_from:
                 fk_cols.setdefault(obj_name, set()).add(fk_col)
 
-    # Only override useMaxWidth so the SVG can be wider than its container
-    # (the host #er-diagram has overflow:auto for horizontal scroll). Don't
-    # tweak fontSize / entityPadding — Mermaid measures column widths with
-    # the same font config it renders with, so the moment we override one
-    # without matching the other, attribute text clips at the measured
-    # width.
+    # Override useMaxWidth on both the er and flowchart configs (Mermaid
+    # falls back to flowchart's value for some ER layout decisions) so the
+    # SVG renders at its natural width rather than being squashed into
+    # the parent container — the host #er-diagram has overflow:auto for
+    # horizontal scroll, so wider-than-viewport diagrams scroll cleanly
+    # instead of clipping edge labels.
     init_cfg = (
         "{'theme': '" + theme + "', "
+        "'flowchart': {'useMaxWidth': false}, "
         "'er': {'useMaxWidth': false}}"
     )
     lines: list[str] = [
@@ -93,9 +92,7 @@ def generate_mermaid_er(
             lines.append(f"    {ent_ref} {{")
             obj_fks = fk_cols.get(obj_name, set())
             for col_name, col in obj.columns.items():
-                # Identifier: camelCased business label (no spaces). The
-                # comment slot carries the spaced label so the diagram
-                # still shows the human-readable name.
+                # Identifier: camelCased business label (no spaces).
                 attr_id = _attribute_id(col_name)
                 if col.primary_key:
                     marker = " PK"
@@ -103,10 +100,7 @@ def generate_mermaid_er(
                     marker = " FK"
                 else:
                     marker = ""
-                comment = f' "{_comment(col_name)}"' if col_name != attr_id else ""
-                lines.append(
-                    f"        {col.abstract_type.value} {attr_id}{marker}{comment}"
-                )
+                lines.append(f"        {col.abstract_type.value} {attr_id}{marker}")
             lines.append("    }")
 
     lines.append("")
