@@ -352,16 +352,10 @@ _CSS = """\
   width: auto;
   height: auto;
 }
-/* Don't let theme CSS shrink ER attribute text below what the renderer
-   measured — that's the other half of the clipping bug. */
-#er-diagram svg .er.entityLabel,
-#er-diagram svg text.er.entityLabel,
-#er-diagram svg .er.relationshipLabel,
-#er-diagram svg text {
-  font-size: 14px;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-}
+/* Don't override font-size on ER text: Mermaid measures column widths
+   with its own font and clips at the measured width. Inflating the
+   rendered font past the measured width was the cause of the per-row
+   right-edge clipping. */
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {
   overflow: auto;

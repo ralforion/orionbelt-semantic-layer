@@ -5,10 +5,27 @@ from __future__ import annotations
 from orionbelt.models.semantic import Cardinality, SemanticModel
 
 
-def _sanitize_id(name: str) -> str:
-    """Make a name safe for use as a Mermaid ER entity/attribute identifier."""
-    s = name.replace(" ", "_").replace("-", "_")
-    return "".join(c for c in s if c.isalnum() or c == "_")
+def _entity_ref(name: str) -> str:
+    """Render an entity reference for Mermaid's erDiagram.
+
+    Mermaid allows entity names to be double-quoted, so labels containing
+    spaces (e.g. ``Client Complaints``) round-trip without any munging.
+    Plain identifiers stay unquoted.
+    """
+    if any(c in name for c in (" ", "-")):
+        return f'"{name}"'
+    return name
+
+
+def _join_label(label: str) -> str:
+    """Sanitize a join-edge label for Mermaid.
+
+    Mermaid's erDiagram parser treats the post-``:`` label as a quoted
+    string but escapes inside the quotes are limited. Spaces and most
+    punctuation are fine; double-quotes are stripped to avoid breaking
+    the surrounding quoting.
+    """
+    return label.replace('"', "")
 
 
 def generate_mermaid_er(
@@ -25,6 +42,14 @@ def generate_mermaid_er(
 
     *theme* is passed through to the Mermaid ``%%{init}%%`` directive
     (e.g. ``"dark"``, ``"neutral"``, ``"default"``).
+
+    Naming strategy: entity references use the model's data-object label
+    (double-quoted when they contain spaces). Attribute identifiers use
+    each column's physical ``code`` — those are space-free by definition,
+    so no name munging is needed and the diagram authentically shows the
+    underlying database schema. Mermaid's ER grammar disallows spaces in
+    attribute names, which is why we don't render the business label
+    here; the spaced label still appears in dropdowns and query results.
     """
     # Collect FK columns (used in join columnsFrom)
     fk_cols: dict[str, set[str]] = {}
@@ -33,17 +58,15 @@ def generate_mermaid_er(
             for fk_col in join.columns_from:
                 fk_cols.setdefault(obj_name, set()).add(fk_col)
 
-    # Inject ER-specific config to mitigate Mermaid's attribute-column
-    # clipping in dense diagrams: a slightly larger fontSize + explicit
-    # padding give the renderer more headroom when it auto-sizes columns,
-    # and useMaxWidth=false stops the parent container from squashing the
-    # SVG below its natural width (rely on the host element's overflow:auto
-    # for horizontal scroll instead).
+    # Only override useMaxWidth so the SVG can be wider than its container
+    # (the host #er-diagram has overflow:auto for horizontal scroll). Don't
+    # tweak fontSize / entityPadding — Mermaid measures column widths with
+    # the same font config it renders with, so the moment we override one
+    # without matching the other, attribute text clips at the measured
+    # width.
     init_cfg = (
         "{'theme': '" + theme + "', "
-        "'er': {'fontSize': 14, 'entityPadding': 18, "
-        "'minEntityWidth': 220, 'minEntityHeight': 80, "
-        "'useMaxWidth': false}}"
+        "'er': {'useMaxWidth': false}}"
     )
     lines: list[str] = [
         "%%{init: " + init_cfg + "}%%",
@@ -53,29 +76,31 @@ def generate_mermaid_er(
 
     # Entity definitions
     for obj_name, obj in model.data_objects.items():
-        safe_name = _sanitize_id(obj_name)
+        ent_ref = _entity_ref(obj_name)
         if show_columns and obj.columns:
-            lines.append(f"    {safe_name} {{")
+            lines.append(f"    {ent_ref} {{")
             obj_fks = fk_cols.get(obj_name, set())
             for col_name, col in obj.columns.items():
-                safe_col = _sanitize_id(col_name)
-                # PK takes precedence over FK when a column is both
+                # Use the physical code as the Mermaid identifier so we
+                # never have to substitute spaces — and the diagram
+                # reflects the underlying DB column.
+                attr_id = col.code or col_name.replace(" ", "")
                 if col.primary_key:
                     marker = " PK"
                 elif col_name in obj_fks:
                     marker = " FK"
                 else:
                     marker = ""
-                lines.append(f"        {col.abstract_type.value} {safe_col}{marker}")
+                lines.append(f"        {col.abstract_type.value} {attr_id}{marker}")
             lines.append("    }")
 
     lines.append("")
 
     # Relationships from join definitions
     for obj_name, obj in model.data_objects.items():
-        safe_from = _sanitize_id(obj_name)
+        from_ref = _entity_ref(obj_name)
         for join in obj.joins:
-            safe_to = _sanitize_id(join.join_to)
+            to_ref = _entity_ref(join.join_to)
 
             # Dotted line for secondary joins, solid for primary
             sep = ".." if join.secondary else "--"
@@ -87,14 +112,15 @@ def generate_mermaid_er(
             else:  # many-to-one
                 rel = f"}}o{sep}||"
 
-            # Relationship label
+            # Relationship label — keep the business label (with spaces)
+            # so the edge text reads naturally.
             if join.path_name:
-                label = _sanitize_id(join.path_name)
+                label = join.path_name
             elif join.columns_from:
-                label = _sanitize_id(join.columns_from[0])
+                label = join.columns_from[0]
             else:
                 label = "joins"
 
-            lines.append(f'    {safe_from} {rel} {safe_to} : "{label}"')
+            lines.append(f'    {from_ref} {rel} {to_ref} : "{_join_label(label)}"')
 
     return "\n".join(lines)

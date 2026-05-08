@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.2.1] - 2026-05-09
+
+### Changed
+
+- **Bundled demo model rewritten with business-friendly names.** `examples/orionbelt_1_commerce.yaml` now uses spaced YAML keys for every dataObject, column, dimension, measure, and metric (e.g. `Total Sales Amount`, `Product Name`, `Sales Country Name`, `Client Complaints`). Physical column names live unchanged in the `code:` fields, so the bundled DuckDB seed and the demo SQL are unaffected. Generic dimensions (`Client Name`, `Country Name`, …) coexist with explicit role-playing variants (`Sales Client Name` via Sales, `Complaint Client Name` via Client Complaints, etc.) so casual queries get business-named dropdowns and cross-fact queries can pin the join path with `via:` to silence `MISSING_VIA` warnings.
+
+### Fixed
+
+- **ER diagram label clipping.** Per-attribute right-edge clipping in dense entities is gone: previously a CSS rule injected a 14px font on top of Mermaid's default-12px column-width measurement, so every row's text overflowed its measured rectangle. The override is removed; we now trust Mermaid's measure-equals-render contract.
+- **ER diagram attribute names no longer mangle spaces into underscores.** Identifiers now use each column's physical `code:` (which is space-free by construction) instead of `_sanitize_id(label)` — so `Purchase ID` renders as `purchaseid` (the actual DB column) rather than `Purchase_ID`. Entity names containing spaces (`Client Complaints`, `Account Balances`) are double-quoted so Mermaid accepts them verbatim.
+- **ER diagram join labels keep their business names** (e.g. `"Sales Client"`) instead of being lower-cased and underscored.
+
 ## [2.2.0] - 2026-05-05
 
 ### Added

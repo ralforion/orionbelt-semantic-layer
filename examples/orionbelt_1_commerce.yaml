@@ -416,6 +416,59 @@ dataObjects:
         abstractType: string
 
 dimensions:
+  # ── Generic business dimensions (no via — compiler picks the join path
+  # automatically based on which facts are in the query). For cross-fact
+  # queries the validator emits MISSING_VIA hints; use the role-playing
+  # variants below to silence them and pin the join path explicitly. ──
+  Client Name:
+    dataObject: Clients
+    column: Client Name
+    resultType: string
+  Client Gender:
+    dataObject: Clients
+    column: Client Gender
+    resultType: string
+  Client Email:
+    dataObject: Clients
+    column: Client Email
+    resultType: string
+  Country Name:
+    dataObject: Countries
+    column: Country Name
+    resultType: string
+  Region Name:
+    dataObject: Regions
+    column: Region Name
+    resultType: string
+  Currency:
+    dataObject: Products
+    column: Currency
+    resultType: string
+  Employee Name:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+  Department:
+    dataObject: Employees
+    column: Department
+    resultType: string
+  Channel Name:
+    dataObject: Channels
+    column: Channel Name
+    resultType: string
+  Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+  Weekday:
+    dataObject: Calendar
+    column: Weekday
+    resultType: string
+  Public Holiday:
+    dataObject: Calendar
+    column: Public Holiday
+    resultType: string
+
   # ── Shared dimensions (single join path — no via needed) ──
   Bank Name:
     dataObject: Banks
@@ -570,24 +623,21 @@ dimensions:
     resultType: string
     via: Client Complaints
 
-  # ── Product/Supplier — scoped through Sales ──
+  # ── Product/Supplier — generic (default to Sales path) ──
   Product Name:
     dataObject: Products
     column: Product Name
     resultType: string
-    via: Sales
   Product Category:
     dataObject: Products
     column: Product Category
     resultType: string
-    via: Sales
   Supplier Name:
     dataObject: Suppliers
     column: Supplier Name
     resultType: string
-    via: Sales
 
-  # ── Product/Supplier — scoped through Purchases ──
+  # ── Product/Supplier — explicit Purchases path ──
   Purchase Product Name:
     dataObject: Products
     column: Product Name
