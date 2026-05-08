@@ -343,6 +343,24 @@ _CSS = """\
 #er-diagram svg {
   transform-origin: top left;
   transition: transform 0.15s ease;
+  /* Mermaid's ER renderer auto-sizes columns from getBBox(). Gradio's
+     default Markdown CSS sets max-width:100% on inline SVGs, which
+     causes the SVG to scale down and the renderer's pre-measured
+     column widths to clip attribute text. Allow the natural width and
+     let the parent's overflow:auto provide horizontal scroll. */
+  max-width: none !important;
+  width: auto;
+  height: auto;
+}
+/* Don't let theme CSS shrink ER attribute text below what the renderer
+   measured — that's the other half of the clipping bug. */
+#er-diagram svg .er.entityLabel,
+#er-diagram svg text.er.entityLabel,
+#er-diagram svg .er.relationshipLabel,
+#er-diagram svg text {
+  font-size: 14px;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
 }
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {

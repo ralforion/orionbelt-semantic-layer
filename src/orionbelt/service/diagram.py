@@ -33,8 +33,20 @@ def generate_mermaid_er(
             for fk_col in join.columns_from:
                 fk_cols.setdefault(obj_name, set()).add(fk_col)
 
+    # Inject ER-specific config to mitigate Mermaid's attribute-column
+    # clipping in dense diagrams: a slightly larger fontSize + explicit
+    # padding give the renderer more headroom when it auto-sizes columns,
+    # and useMaxWidth=false stops the parent container from squashing the
+    # SVG below its natural width (rely on the host element's overflow:auto
+    # for horizontal scroll instead).
+    init_cfg = (
+        "{'theme': '" + theme + "', "
+        "'er': {'fontSize': 14, 'entityPadding': 18, "
+        "'minEntityWidth': 220, 'minEntityHeight': 80, "
+        "'useMaxWidth': false}}"
+    )
     lines: list[str] = [
-        f"%%{{init: {{'theme': '{theme}'}}}}%%",
+        "%%{init: " + init_cfg + "}%%",
         "erDiagram",
         "    direction LR",
     ]
