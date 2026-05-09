@@ -330,6 +330,19 @@ _CSS = """\
 .picker-row label span {
   font-size: 0.75rem !important;
 }
+/* Magnifier icon hint inside the 3 query-input dropdowns
+   (Dimensions / Measures-Metrics / Columns) so users discover the
+   type-to-search affordance. Gradio's Dropdown renders <input> as
+   the search field; the icon is drawn as a non-interactive
+   background image and the input gets matching left-padding so the
+   glyph doesn't collide with typed text. */
+.picker-dropdown input {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.65' y2='16.65'/></svg>");
+  background-repeat: no-repeat;
+  background-position: 8px center;
+  background-size: 14px 14px;
+  padding-left: 28px !important;
+}
 
 /* ── ER Diagram tab ── */
 #er-diagram {
@@ -2315,6 +2328,7 @@ def create_blocks(
                                 label="Dimensions",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                             meas_picker = gr.Dropdown(
                                 choices=init_meas,
@@ -2322,6 +2336,7 @@ def create_blocks(
                                 label="Measures / Metrics",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                             field_picker = gr.Dropdown(
                                 choices=init_fields,
@@ -2329,6 +2344,7 @@ def create_blocks(
                                 label="Columns",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                         query_input = gr.Code(
                             value=_DEFAULT_QUERY,
