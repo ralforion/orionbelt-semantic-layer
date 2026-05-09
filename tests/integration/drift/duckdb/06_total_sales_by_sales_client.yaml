@@ -1,0 +1,411 @@
+last_verified_by: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[06_total_sales_by_sales_client]
+sql: 'SELECT "Clients"."clientname" AS "Sales Client Name", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  GROUP BY "Clients"."clientname"
+
+  '
+rows:
+- - Alex Bauer
+  - '5321.74'
+- - Alex Costa
+  - '337741.72'
+- - Alex Dvorak
+  - '3648.74'
+- - Alex Hassan
+  - '2288.99'
+- - Alex Ivanov
+  - '6887.08'
+- - Alex Lopez
+  - '26846.29'
+- - Alex Müller
+  - '6034.55'
+- - Alex Nakamura
+  - '45065.47'
+- - Alex O'Brien
+  - '45210.34'
+- - Alex Petrov
+  - '26708.73'
+- - Alex Rossi
+  - '5375.89'
+- - Alex Schmidt
+  - '27709.50'
+- - Alex Tanaka
+  - '2882.46'
+- - Alex Vargas
+  - '5569.77'
+- - Alex Weber
+  - '27332.13'
+- - Alex Xu
+  - '1973.88'
+- - Alex Yamamoto
+  - '18081.54'
+- - Alex Zhang
+  - '15991.16'
+- - Avery Adler
+  - '13777.90'
+- - Avery Bauer
+  - '25366.69'
+- - Avery Dvorak
+  - '69746.05'
+- - Avery Fischer
+  - '1144.29'
+- - Avery Garcia
+  - '10603.19'
+- - Avery Ivanov
+  - '6647.70'
+- - Avery Klein
+  - '123312.56'
+- - Avery Lopez
+  - '64139.77'
+- - Avery Müller
+  - '76877.10'
+- - Avery Nakamura
+  - '486.40'
+- - Avery O'Brien
+  - '23211.63'
+- - Avery Petrov
+  - '29391.44'
+- - Avery Tanaka
+  - '3347.39'
+- - Avery Weber
+  - '41095.73'
+- - Avery Xu
+  - '9984.31'
+- - Avery Zhang
+  - '5943.03'
+- - Bailey Costa
+  - '795.68'
+- - Bailey Dvorak
+  - '10669.45'
+- - Bailey Eriksen
+  - '409659.03'
+- - Bailey Garcia
+  - '125627.80'
+- - Bailey Ivanov
+  - '2663.61'
+- - Bailey Klein
+  - '10022.07'
+- - Bailey Müller
+  - '3030.56'
+- - Bailey Nakamura
+  - '28579.18'
+- - Bailey Petrov
+  - '9487.23'
+- - Bailey Rossi
+  - '50638.31'
+- - Bailey Tanaka
+  - '540.57'
+- - Bailey Weber
+  - '45843.95'
+- - Bailey Xu
+  - '2959.95'
+- - Bailey Yamamoto
+  - '40059.21'
+- - Bailey Zhang
+  - '707.72'
+- - Blake Bauer
+  - '55593.71'
+- - Blake Garcia
+  - '3307.29'
+- - Blake Ivanov
+  - '12275.23'
+- - Blake Klein
+  - '119829.94'
+- - Blake Lopez
+  - '6948.21'
+- - Blake Nakamura
+  - '463401.54'
+- - Blake Rossi
+  - '1435.68'
+- - Blake Schmidt
+  - '2730.48'
+- - Blake Tanaka
+  - '2643.07'
+- - Blake Xu
+  - '2381.43'
+- - Blake Zhang
+  - '199927.71'
+- - Cameron Adler
+  - '45687.46'
+- - Cameron Costa
+  - '598.13'
+- - Cameron Eriksen
+  - '6768.67'
+- - Cameron Garcia
+  - '146688.03'
+- - Cameron Hassan
+  - '11866.66'
+- - Cameron Ivanov
+  - '31790.95'
+- - Cameron Lopez
+  - '1783.42'
+- - Cameron Müller
+  - '4984.48'
+- - Cameron O'Brien
+  - '4069.19'
+- - Cameron Petrov
+  - '2218.44'
+- - Cameron Quinn
+  - '32881.04'
+- - Cameron Tanaka
+  - '24606.26'
+- - Cameron Vargas
+  - '44583.61'
+- - Cameron Weber
+  - '98070.01'
+- - Cameron Xu
+  - '22020.28'
+- - Cameron Yamamoto
+  - '30164.75'
+- - Cameron Zhang
+  - '6668.07'
+- - Casey Adler
+  - '10025.95'
+- - Casey Bauer
+  - '143617.15'
+- - Casey Eriksen
+  - '91727.12'
+- - Casey Hassan
+  - '199237.88'
+- - Casey Klein
+  - '6311.11'
+- - Casey Petrov
+  - '5866.48'
+- - Casey Rossi
+  - '7379.23'
+- - Casey Schmidt
+  - '11256.77'
+- - Casey Ueda
+  - '5154.54'
+- - Casey Weber
+  - '3249.42'
+- - Casey Xu
+  - '24630.95'
+- - Casey Yamamoto
+  - '9169.53'
+- - Casey Zhang
+  - '4623.44'
+- - Dana Adler
+  - '35431.87'
+- - Dana Bauer
+  - '2921.65'
+- - Dana Costa
+  - '12133.76'
+- - Dana Eriksen
+  - '618133.99'
+- - Dana Fischer
+  - '51732.98'
+- - Dana Hassan
+  - '12739.82'
+- - Dana Ivanov
+  - '6329.90'
+- - Dana Klein
+  - '30289.07'
+- - Dana Lopez
+  - '5108.70'
+- - Dana Nakamura
+  - '5822.39'
+- - Dana Quinn
+  - '99565.14'
+- - Dana Ueda
+  - '7318.70'
+- - Dana Vargas
+  - '10358.68'
+- - Dana Weber
+  - '909105.42'
+- - Dana Xu
+  - '29980.20'
+- - Dana Yamamoto
+  - '24066.44'
+- - Dana Zhang
+  - '7485.53'
+- - Drew Costa
+  - '264628.85'
+- - Drew Eriksen
+  - '8578.67'
+- - Drew Fischer
+  - '7069.14'
+- - Drew Hassan
+  - '7965.00'
+- - Drew Ivanov
+  - '81851.17'
+- - Drew Jansen
+  - '237744.44'
+- - Drew Klein
+  - '3307.25'
+- - Drew Lopez
+  - '565597.71'
+- - Drew Müller
+  - '7503.95'
+- - Drew Nakamura
+  - '151515.11'
+- - Drew O'Brien
+  - '2641.67'
+- - Drew Petrov
+  - '19364.48'
+- - Drew Rossi
+  - '11627.04'
+- - Drew Tanaka
+  - '10955.25'
+- - Drew Ueda
+  - '3557.13'
+- - Drew Vargas
+  - '1188.43'
+- - Drew Yamamoto
+  - '3838.48'
+- - Eden Adler
+  - '4321.73'
+- - Eden Bauer
+  - '6583.16'
+- - Eden Costa
+  - '16988.50'
+- - Eden Garcia
+  - '605698.02'
+- - Eden Hassan
+  - '3233.86'
+- - Eden Ivanov
+  - '2224.55'
+- - Eden Jansen
+  - '2916.59'
+- - Eden Müller
+  - '48574.41'
+- - Eden Nakamura
+  - '158464.40'
+- - Eden Quinn
+  - '272135.29'
+- - Eden Schmidt
+  - '3809.22'
+- - Eden Tanaka
+  - '9168.68'
+- - Eden Vargas
+  - '2136.63'
+- - Erin Adler
+  - '51658.36'
+- - Erin Bauer
+  - '15544.59'
+- - Erin Eriksen
+  - '1736.63'
+- - Erin Fischer
+  - '4505610.79'
+- - Erin Garcia
+  - '78987.10'
+- - Erin Ivanov
+  - '6057.77'
+- - Erin Klein
+  - '28934.71'
+- - Erin Nakamura
+  - '32295.63'
+- - Erin O'Brien
+  - '5501.33'
+- - Erin Petrov
+  - '109947.50'
+- - Erin Quinn
+  - '2110.84'
+- - Erin Schmidt
+  - '3810.32'
+- - Erin Weber
+  - '5223.32'
+- - Erin Xu
+  - '24254.53'
+- - Erin Yamamoto
+  - '33960.70'
+- - Finley Costa
+  - '3362.84'
+- - Finley Garcia
+  - '45344.78'
+- - Finley Hassan
+  - '7321.79'
+- - Finley Jansen
+  - '11008.96'
+- - Finley Klein
+  - '94996.04'
+- - Finley Lopez
+  - '5878.71'
+- - Finley Müller
+  - '67419.52'
+- - Finley Quinn
+  - '7660.86'
+- - Finley Rossi
+  - '4041.27'
+- - Finley Ueda
+  - '53409.94'
+- - Finley Vargas
+  - '9109.93'
+- - Fran Bauer
+  - '8703.26'
+- - Fran Costa
+  - '20346.78'
+- - Fran Dvorak
+  - '21916.54'
+- - Fran Eriksen
+  - '8075.14'
+- - Fran Fischer
+  - '4847.08'
+- - Fran Garcia
+  - '31517.62'
+- - Fran Hassan
+  - '9436.81'
+- - Fran Jansen
+  - '19866.64'
+- - Fran Klein
+  - '12002.25'
+- - Fran Müller
+  - '32946.38'
+- - Fran Nakamura
+  - '591.88'
+- - Fran O'Brien
+  - '89636.01'
+- - Fran Rossi
+  - '167620.98'
+- - Fran Ueda
+  - '20184.56'
+- - Fran Vargas
+  - '40222.98'
+- - Fran Yamamoto
+  - '1164.66'
+- - Gale Costa
+  - '51843.99'
+- - Gale Dvorak
+  - '245769.44'
+- - Gale Garcia
+  - '97615.65'
+- - Gale Hassan
+  - '12041.73'
+- - Gale Ivanov
+  - '39960.93'
+- - Gale Lopez
+  - '179853.44'
+- - Gale Nakamura
+  - '2591.35'
+- - Gale Rossi
+  - '6610.27'
+- - Gale Xu
+  - '49872.50'
+- - Gale Yamamoto
+  - '5505.73'
+- - Gale Zhang
+  - '1282.69'
+- - Hayden Costa
+  - '6663.15'
+- - Hayden Dvorak
+  - '2942.80'
+- - Hayden Fischer
+  - '5030.77'
+- - Hayden Garcia
+  - '4142.96'
+- - Hayden Ivanov
+  - '6596.62'
+- - Hayden Jansen
+  - '1328.13'
+- - Hayden Klein
+  - '525491.41'
+- - Hayden Lopez
+  - '3172.84'
+- - Hayden Müller
+  - '7487.78'
+- - Hayden Nakamura
+  - '1767.09'

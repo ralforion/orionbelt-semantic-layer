@@ -1,0 +1,24 @@
+last_verified_by: tests/integration/correctness/test_cfl_split.py::test_sales_purchases_cfl_split_ungrouped
+sql: 'WITH "composite_01" AS (
+
+  SELECT "Sales"."salesamount" AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  UNION ALL BY NAME
+
+  SELECT "Purchases"."purchaseamount" AS "Total Purchases"
+
+  FROM "orionbelt_1"."purchases" AS "Purchases"
+
+  )
+
+  SELECT CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18, 2)) AS "Total Sales", CAST(SUM("composite_01"."Total Purchases")
+  AS DECIMAL(18, 2)) AS "Total Purchases"
+
+  FROM composite_01 AS "composite_01"
+
+  '
+rows:
+- - '42458509.61'
+  - '334906387.28'

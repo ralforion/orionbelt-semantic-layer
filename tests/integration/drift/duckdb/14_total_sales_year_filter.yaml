@@ -1,0 +1,10 @@
+last_verified_by: tests/integration/correctness/test_aggregation_invariance.py::test_total_sales_invariance_under_year_filter
+sql: 'SELECT CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  WHERE ("Sales"."salesdate" = ''2025-01-01'')
+
+  '
+rows:
+- - '19669.27'

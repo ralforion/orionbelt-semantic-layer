@@ -1,0 +1,3 @@
+select:
+  dimensions: [Sales Year, Sales Month]
+  measures: [Total Sales]

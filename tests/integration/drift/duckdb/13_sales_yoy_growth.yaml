@@ -1,0 +1,133 @@
+last_verified_by: tests/integration/correctness/test_pandas_baseline.py::test_sales_yoy_growth
+sql: "WITH \"date_range\" AS (\nSELECT date_trunc('month', MIN(\"Sales\".\"salesdate\")) AS min_date,\n       date_trunc('month',\
+  \ MAX(\"Sales\".\"salesdate\")) AS max_date\n  FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n),\n\"date_spine\" AS (\nSELECT\
+  \ d::date AS spine_date,\n       CASE WHEN (d + INTERVAL '-1 year')::date >= (SELECT min_date FROM date_range)\n       \
+  \     THEN (d + INTERVAL '-1 year')::date END AS spine_date_prev\nFROM generate_series((SELECT min_date FROM date_range)::timestamp,\
+  \ (SELECT max_date FROM date_range)::timestamp, INTERVAL '1 month') AS t(d)\n),\n\"pop_base\" AS (\nSELECT date_spine.spine_date\
+  \ AS \"Sales Month\",\n       SUM(\"Sales\".\"salesamount\") AS \"Total Sales\"\n  FROM date_spine\n  LEFT JOIN \"orionbelt_1\"\
+  .\"sales\" AS \"Sales\"\n    ON date_trunc('month', \"Sales\".\"salesdate\") = date_spine.spine_date\n  GROUP BY 1\n),\n\
+  \"pop_compare\" AS (\nSELECT pop_base.\"Sales Month\" AS \"Sales Month\",\n       pop_base.\"Total Sales\" / NULLIF(prev.\"\
+  Total Sales\", 0) - 1 AS \"Sales YoY Growth\"\n  FROM pop_base\n  LEFT JOIN date_spine ON pop_base.\"Sales Month\" = date_spine.spine_date\n\
+  \  LEFT JOIN pop_base AS prev\n    ON date_spine.spine_date_prev = prev.\"Sales Month\"\n)\nSELECT \"Sales Month\" AS \"\
+  Sales Month\", \"Sales YoY Growth\" AS \"Sales YoY Growth\"\nFROM pop_compare AS \"pop_compare\"\n"
+rows:
+- - '2021-01-01'
+  - null
+- - '2021-02-01'
+  - null
+- - '2021-03-01'
+  - null
+- - '2021-04-01'
+  - null
+- - '2021-05-01'
+  - null
+- - '2021-06-01'
+  - null
+- - '2021-07-01'
+  - null
+- - '2021-08-01'
+  - null
+- - '2021-09-01'
+  - null
+- - '2021-10-01'
+  - null
+- - '2021-11-01'
+  - null
+- - '2021-12-01'
+  - null
+- - '2022-01-01'
+  - 0.9931620307032472
+- - '2022-02-01'
+  - -0.022336288817980665
+- - '2022-03-01'
+  - 1.0022583085474106
+- - '2022-04-01'
+  - -0.17734923909737454
+- - '2022-05-01'
+  - -0.17232280689541113
+- - '2022-06-01'
+  - -0.5309757855302513
+- - '2022-07-01'
+  - -0.11450478622882176
+- - '2022-08-01'
+  - 0.043866131270241526
+- - '2022-09-01'
+  - 0.20325992897523681
+- - '2022-10-01'
+  - 0.4917563005304504
+- - '2022-11-01'
+  - 0.011264110536472138
+- - '2022-12-01'
+  - 0.04725169889213521
+- - '2023-01-01'
+  - -0.30947436707052434
+- - '2023-02-01'
+  - 0.020629718173602596
+- - '2023-03-01'
+  - -0.3243718038147153
+- - '2023-04-01'
+  - 0.11351139606170957
+- - '2023-05-01'
+  - 0.6619535804230248
+- - '2023-06-01'
+  - 0.3210558680356723
+- - '2023-07-01'
+  - -0.07597479773956695
+- - '2023-08-01'
+  - -0.20413555346138046
+- - '2023-09-01'
+  - 0.18397137360327398
+- - '2023-10-01'
+  - 0.7402788427659628
+- - '2023-11-01'
+  - -0.08615905795625356
+- - '2023-12-01'
+  - 0.0518223937327178
+- - '2024-01-01'
+  - 0.4601070417317037
+- - '2024-02-01'
+  - 0.8437272772693942
+- - '2024-03-01'
+  - 0.8103824332229947
+- - '2024-04-01'
+  - 0.1561018005395718
+- - '2024-05-01'
+  - -0.09120741353781714
+- - '2024-06-01'
+  - 1.337096438776347
+- - '2024-07-01'
+  - 0.232941553326103
+- - '2024-08-01'
+  - 0.07700166273871711
+- - '2024-09-01'
+  - 0.04767144091822173
+- - '2024-10-01'
+  - 0.36165295368970063
+- - '2024-11-01'
+  - 1.108567776899207
+- - '2024-12-01'
+  - 0.16057389616021345
+- - '2025-01-01'
+  - 0.4715245863679869
+- - '2025-02-01'
+  - 0.08961881905385605
+- - '2025-03-01'
+  - 0.20159962499396422
+- - '2025-04-01'
+  - 0.5134851613377718
+- - '2025-05-01'
+  - 0.2694077368963739
+- - '2025-06-01'
+  - -0.13351150619751073
+- - '2025-07-01'
+  - 0.4672343595384518
+- - '2025-08-01'
+  - 1.4853561481834534
+- - '2025-09-01'
+  - 0.40749884203821884
+- - '2025-10-01'
+  - -0.015156876721989065
+- - '2025-11-01'
+  - -0.23255164865537237
+- - '2025-12-01'
+  - 0.19650300194857495

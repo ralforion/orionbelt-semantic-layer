@@ -1,0 +1,6 @@
+select:
+  measures: [Total Sales]
+where:
+  - field: Sales Year
+    op: '='
+    value: '2025-01-01'

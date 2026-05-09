@@ -1,0 +1,14 @@
+last_verified_by: tests/integration/correctness/test_filter_additivity.py::test_country_in_filter_additivity
+sql: 'SELECT CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+
+  WHERE ("Countries"."countryname" IN (''Croatia'', ''Austria''))
+
+  '
+rows:
+- - '1006448.13'

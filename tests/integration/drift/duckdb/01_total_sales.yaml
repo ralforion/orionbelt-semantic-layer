@@ -1,0 +1,8 @@
+last_verified_by: tests/integration/correctness/test_aggregation_invariance.py::test_total_sales_equals_sum_by_country
+sql: 'SELECT CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  '
+rows:
+- - '42458509.61'

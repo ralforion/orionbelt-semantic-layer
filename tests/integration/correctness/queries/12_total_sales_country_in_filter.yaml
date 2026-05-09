@@ -1,0 +1,6 @@
+select:
+  measures: [Total Sales]
+where:
+  - field: Sales Country Name
+    op: in
+    value: [Croatia, Austria]

@@ -1,0 +1,64 @@
+last_verified_by: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[02_total_sales_by_country]
+sql: 'SELECT "Countries"."countryname" AS "Sales Country Name", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total
+  Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+
+  GROUP BY "Countries"."countryname"
+
+  '
+rows:
+- - Argentina
+  - '1511486.43'
+- - Australia
+  - '598881.84'
+- - Austria
+  - '431720.11'
+- - Brazil
+  - '887892.21'
+- - Canada
+  - '919955.67'
+- - China
+  - '1238892.00'
+- - Croatia
+  - '574728.02'
+- - Egypt
+  - '161937.92'
+- - France
+  - '2942833.39'
+- - Germany
+  - '1318099.79'
+- - India
+  - '1936466.31'
+- - Italy
+  - '1533318.11'
+- - Japan
+  - '2106985.67'
+- - Mexico
+  - '5142120.39'
+- - Netherlands
+  - '1061394.21'
+- - Poland
+  - '383543.53'
+- - Singapore
+  - '9284889.34'
+- - South Africa
+  - '1440453.10'
+- - South Korea
+  - '578306.63'
+- - Spain
+  - '823097.98'
+- - Sweden
+  - '3077505.53'
+- - Switzerland
+  - '1247370.03'
+- - United Arab Emirates
+  - '1543647.19'
+- - United Kingdom
+  - '631211.21'
+- - United States
+  - '1081773.00'

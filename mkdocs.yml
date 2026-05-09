@@ -126,6 +126,7 @@ nav:
       - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md
       - Compilation Pipeline: guide/compilation.md
+      - Correctness & Drift Tests: guide/correctness-and-drift-tests.md
       - OBSL Graph & SPARQL: guide/obsl.md
       - Freshness Contracts: guide/freshness-contracts.md
       - Result Cache: guide/result-cache.md

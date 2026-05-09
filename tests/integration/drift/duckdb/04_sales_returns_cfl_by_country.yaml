@@ -1,0 +1,109 @@
+last_verified_by: tests/integration/correctness/test_cfl_split.py::test_sales_returns_cfl_split_by_country
+sql: 'WITH "composite_01" AS (
+
+  SELECT "Countries"."countryname" AS "Sales Country Name", "Sales"."salesamount" AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+
+  UNION ALL BY NAME
+
+  SELECT "Countries"."countryname" AS "Sales Country Name", "Returns"."returnamount" AS "Total Returns"
+
+  FROM "orionbelt_1"."returns" AS "Returns"
+
+  LEFT JOIN "orionbelt_1"."sales" AS "Sales" ON ("Returns"."returnsalesid" = "Sales"."salesid")
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+
+  )
+
+  SELECT "Sales Country Name" AS "Sales Country Name", CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18, 2)) AS "Total
+  Sales", CAST(SUM("composite_01"."Total Returns") AS DECIMAL(18, 2)) AS "Total Returns"
+
+  FROM composite_01 AS "composite_01"
+
+  GROUP BY "Sales Country Name"
+
+  '
+rows:
+- - Argentina
+  - '1511486.43'
+  - '27750.33'
+- - Australia
+  - '598881.84'
+  - '3571.78'
+- - Austria
+  - '431720.11'
+  - '1430.66'
+- - Brazil
+  - '887892.21'
+  - '112454.17'
+- - Canada
+  - '919955.67'
+  - '19117.49'
+- - China
+  - '1238892.00'
+  - '28913.87'
+- - Croatia
+  - '574728.02'
+  - '10851.03'
+- - Egypt
+  - '161937.92'
+  - '1428.97'
+- - France
+  - '2942833.39'
+  - '89764.74'
+- - Germany
+  - '1318099.79'
+  - '77187.34'
+- - India
+  - '1936466.31'
+  - '49567.68'
+- - Italy
+  - '1533318.11'
+  - '47168.08'
+- - Japan
+  - '2106985.67'
+  - '181568.80'
+- - Mexico
+  - '5142120.39'
+  - '335089.01'
+- - Netherlands
+  - '1061394.21'
+  - '8111.70'
+- - Poland
+  - '383543.53'
+  - '3546.54'
+- - Singapore
+  - '9284889.34'
+  - '198361.74'
+- - South Africa
+  - '1440453.10'
+  - '29226.10'
+- - South Korea
+  - '578306.63'
+  - '9257.89'
+- - Spain
+  - '823097.98'
+  - '14016.74'
+- - Sweden
+  - '3077505.53'
+  - '177346.37'
+- - Switzerland
+  - '1247370.03'
+  - '17531.87'
+- - United Arab Emirates
+  - '1543647.19'
+  - '67480.45'
+- - United Kingdom
+  - '631211.21'
+  - '4271.22'
+- - United States
+  - '1081773.00'
+  - '36420.30'
