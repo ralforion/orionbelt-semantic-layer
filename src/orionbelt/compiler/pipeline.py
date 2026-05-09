@@ -203,8 +203,12 @@ class CompilationPipeline:
             else:
                 wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
 
-            # Wrap with cumulative CTE if needed
-            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)
+            # Wrap with cumulative CTE if needed.
+            # Pass model + dialect so the wrapper can apply the declared
+            # dataType cast inside cumulative_base and on the outer
+            # window — otherwise cumulative output is silently DOUBLE
+            # regardless of the metric's declared type.
+            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved, model=model, dialect=dialect)
 
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)

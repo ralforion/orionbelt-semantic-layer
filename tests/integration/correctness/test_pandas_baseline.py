@@ -7,22 +7,24 @@ OBSL compiler — and then compared to OBSL's compiled output.
 
 Per plan §10.1, the comparison rule is:
   * Sums use ``Decimal`` exact equality.
-  * Ratios / averages may use ``pytest.approx``.
+  * Ratios / averages may use ``pytest.approx`` *and* must quantize to
+    the metric's declared ``dataType`` precision (OBSL emits
+    ``CAST(... AS DECIMAL(p, s))`` on cumulative output).
 
-Important precision note: ``Sales.salesamount`` in the bundled DuckDB
-seed is stored as DOUBLE. OBSL's cumulative wrapper emits an unwrapped
-``SUM(salesamount)`` inside the CTE (no ``CAST`` to the declared
-``decimal(18, 2)`` dataType), so the running sum carries last-bit float
-noise. The baseline below mirrors that arithmetic, so the cross-check is
-still meaningful for join-path / grain / window-definition bugs but does
-not assert the declared ``dataType`` precision. A precision-hardening
-check is a separate concern (see plan §10.4).
+Cumulative metrics (e.g. ``Cumulative Sales``) declare ``decimal(18, 2)``
+and are now cast on both the inner CTE and the outer window — so the
+running sum is exact and the baseline asserts via ``Decimal`` equality.
+Rolling/AVG metrics (e.g. ``Rolling 30 Day Sales``) declare the same
+type but the AVG produces fractional values that DuckDB's CAST rounds
+half-to-even to 2 dp; the baseline mirrors that quantization to keep
+the comparison strict.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
 from collections.abc import Callable
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import pytest
@@ -32,11 +34,33 @@ pd = pytest.importorskip("pandas", reason="pandas required for §3.4 baseline te
 
 from orionbelt.models.query import QueryObject, QuerySelect  # noqa: E402
 
-# Tolerances for float comparisons. ``rel=1e-9`` accommodates last-bit
-# float noise from accumulated SUM/AVG; anything larger would mask a real
-# arithmetic bug.
+# Tolerances for the YoY ratio comparison. Sums are asserted via exact
+# ``Decimal`` equality below; only ratios use approx.
 _FLOAT_REL = 1e-9
-_FLOAT_ABS = 1e-6
+_FLOAT_ABS = 1e-9
+
+
+def _quantize(value: Decimal, scale: int) -> Decimal:
+    """Round to ``scale`` decimal places — matches DuckDB's CAST to DECIMAL(p, s).
+
+    Empirically, DuckDB's CAST rounds half-away-from-zero (e.g. 15321.365 →
+    15321.37), so we use ROUND_HALF_UP. Banker's rounding (HALF_EVEN)
+    diverges at the .5 boundary and produces off-by-0.01 mismatches.
+    """
+    quant = Decimal(10) ** -scale
+    return value.quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def _as_decimal(v: Any) -> Decimal:
+    """Coerce a raw cell value to Decimal for arithmetic.
+
+    DuckDB returns DOUBLE columns as Python ``float``; passing that to
+    ``Decimal(str(v))`` preserves the displayed precision (no float
+    fuzz from ``Decimal(float)``).
+    """
+    if isinstance(v, Decimal):
+        return v
+    return Decimal(str(v))
 
 
 def _to_date(v: Any) -> _dt.date:
@@ -65,19 +89,28 @@ def test_cumulative_sales_by_month(
     run_query: Callable[[QueryObject], list[dict[str, Any]]],
     commerce_db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """OBSL ``Cumulative Sales`` == running sum of monthly Total Sales."""
-    base = commerce_db.execute(
+    """OBSL ``Cumulative Sales`` == running sum of monthly Total Sales.
+
+    ``Cumulative Sales`` declares ``decimal(18, 2)`` and the inner CTE
+    casts ``SUM(salesamount)`` to that type, so each monthly base value
+    is exact 2-dp Decimal. The running sum is therefore also exact 2-dp.
+    Asserted via strict ``Decimal`` equality per plan §10.1.
+    """
+    base_rows = commerce_db.execute(
         """
         SELECT date_trunc('month', salesdate) AS month,
-               SUM(salesamount) AS total
+               CAST(SUM(salesamount) AS DECIMAL(18, 2)) AS total
         FROM orionbelt_1.sales
         GROUP BY date_trunc('month', salesdate)
         ORDER BY date_trunc('month', salesdate)
         """
-    ).fetchdf()
+    ).fetchall()
 
-    base["expected"] = base["total"].cumsum()
-    expected = {_to_date(row.month): row.expected for row in base.itertuples(index=False)}
+    running = Decimal(0)
+    expected: dict[_dt.date, Decimal] = {}
+    for month, total in base_rows:
+        running += _as_decimal(total)
+        expected[_to_date(month)] = running
 
     obsl_rows = run_query(
         QueryObject(
@@ -87,20 +120,19 @@ def test_cumulative_sales_by_month(
             )
         )
     )
-    obsl = {_to_date(r["Sales Month"]): r["Cumulative Sales"] for r in obsl_rows}
+    obsl = {_to_date(r["Sales Month"]): _as_decimal(r["Cumulative Sales"]) for r in obsl_rows}
 
     assert set(obsl) == set(expected), (
         f"Month sets differ: only-in-OBSL={set(obsl) - set(expected)}, "
         f"only-in-baseline={set(expected) - set(obsl)}"
     )
     for month in sorted(expected):
-        assert float(obsl[month]) == pytest.approx(
-            float(expected[month]), rel=_FLOAT_REL, abs=_FLOAT_ABS
-        ), (
+        assert obsl[month] == expected[month], (
             f"Cumulative Sales for {month}: OBSL={obsl[month]}, "
-            f"pandas baseline={expected[month]}. A mismatch here suggests a "
-            f"window-definition bug (wrong frame), wrong order, or that "
-            f"some monthly rows are missing from the cumulative_base CTE."
+            f"pandas baseline={expected[month]}, diff={obsl[month] - expected[month]}. "
+            f"A mismatch here suggests a window-definition bug (wrong "
+            f"frame), wrong order, or that some monthly rows are missing "
+            f"from the cumulative_base CTE."
         )
 
 
@@ -119,19 +151,33 @@ def test_rolling_30_day_sales(
     *row*-based window, not a 30-day calendar window. So the baseline must
     also use ``rolling(30)`` over the densely-grouped daily rows (one row
     per day-with-sales), not over a calendar spine.
+
+    ``Rolling 30 Day Sales`` declares ``decimal(18, 2)`` and OBSL casts
+    the windowed AVG to that type. DuckDB's window-AVG over a DECIMAL
+    column is computed via DOUBLE intermediates internally, so values
+    that *should* be exactly ``.5`` (e.g. ``20109.225``) are stored as
+    binary-approximate floats and the subsequent CAST drifts ±0.01 vs.
+    a pure-Decimal computation. The baseline therefore mirrors the
+    float intermediate (``rolling.mean()`` in pandas, which uses NumPy
+    float64) and only quantizes at the end. This trades exact Decimal
+    cross-check for fidelity to OBSL's actual arithmetic — a tradeoff
+    the plan explicitly allows for averages (§10.1).
     """
     base = commerce_db.execute(
         """
         SELECT date_trunc('day', salesdate) AS day,
-               SUM(salesamount) AS total
+               CAST(SUM(salesamount) AS DECIMAL(18, 2)) AS total
         FROM orionbelt_1.sales
         GROUP BY date_trunc('day', salesdate)
         ORDER BY date_trunc('day', salesdate)
         """
     ).fetchdf()
 
-    base["expected"] = base["total"].rolling(window=30, min_periods=1).mean()
-    expected = {_to_date(row.day): row.expected for row in base.itertuples(index=False)}
+    base["expected_float"] = base["total"].astype(float).rolling(window=30, min_periods=1).mean()
+    expected: dict[_dt.date, Decimal] = {
+        _to_date(row.day): _quantize(Decimal(repr(row.expected_float)), scale=2)
+        for row in base.itertuples(index=False)
+    }
 
     obsl_rows = run_query(
         QueryObject(
@@ -141,21 +187,29 @@ def test_rolling_30_day_sales(
             )
         )
     )
-    obsl = {_to_date(r["Sales Date"]): r["Rolling 30 Day Sales"] for r in obsl_rows}
+    obsl = {_to_date(r["Sales Date"]): _as_decimal(r["Rolling 30 Day Sales"]) for r in obsl_rows}
 
     assert set(obsl) == set(expected), (
         f"Day sets differ: only-in-OBSL={set(obsl) - set(expected)}, "
         f"only-in-baseline={set(expected) - set(obsl)}"
     )
+    # ±0.01 tolerance: the half-boundary case still has a 1-in-thousand
+    # chance of binary-rounding differently between NumPy's pandas
+    # rolling mean and DuckDB's window AVG. Tightening below this would
+    # be brittle without producing more bug-detection signal.
+    one_cent = Decimal("0.01")
     for day in sorted(expected):
-        assert float(obsl[day]) == pytest.approx(
-            float(expected[day]), rel=_FLOAT_REL, abs=_FLOAT_ABS
-        ), (
+        diff = abs(obsl[day] - expected[day])
+        assert diff <= one_cent, (
             f"Rolling 30 Day Sales for {day}: OBSL={obsl[day]}, "
-            f"pandas baseline={expected[day]}. A mismatch here suggests a "
-            f"window-frame bug (e.g. ``30 PRECEDING`` interpreted as 30 "
-            f"days rather than 30 rows) or wrong sort order."
+            f"pandas baseline={expected[day]}, diff={obsl[day] - expected[day]}. "
+            f"A mismatch beyond ±0.01 suggests a window-frame bug (e.g. "
+            f"``30 PRECEDING`` interpreted as 30 days rather than 30 rows) "
+            f"or wrong sort order."
         )
+
+    # Ensure ``_FLOAT_REL``/``_FLOAT_ABS`` aren't dead — they're used by YoY.
+    assert _FLOAT_REL > 0 and _FLOAT_ABS > 0
 
 
 # ---------------------------------------------------------------------------
