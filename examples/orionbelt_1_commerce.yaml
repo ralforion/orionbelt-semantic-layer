@@ -1,771 +1,906 @@
 version: 1.0
 
 # OrionBelt_1 Commercial Analytics Model
-# Covers: Sales, Purchases, Returns, Shipments, ClientComplaints, AccountBalances
+# Covers: Sales, Purchases, Returns, Shipments, Client Complaints, Account Balances
 # Join pattern: star-schema with CFL (Composite Fact Layer) for cross-fact queries
 #   to prevent the known sales <-> shipments fan-trap.
+# All YAML keys (dataObjects, columns, dimensions, measures, metrics) use
+# business-friendly spaced names. Physical names live in the `code:` fields.
+
+settings:
+  # The bundled demo runs against the baked-in DuckDB seed
+  # (orionbelt_1_commerce.duckdb). Pin the dialect so the UI dropdown
+  # and the compiler agree on duckdb without relying on DB_VENDOR env.
+  defaultDialect: duckdb
+  # Numeric measures default to decimal(18, 2) — money-grade precision
+  # rather than floating-point rounding noise. Individual measures can
+  # still override with their own ``dataType:``.
+  defaultNumericDataType: "decimal(18, 2)"
+  # Naive timestamps in the demo are interpreted as Europe/Zagreb local
+  # time. Queries can still override per-request via the ``timezone``
+  # query parameter on /v1/query/execute. The auto-detected DuckDB
+  # session TZ is Etc/UTC; setting overrideDatabaseTimezone: true
+  # makes ``defaultTimezone`` win in the resolved effective TZ.
+  defaultTimezone: "Europe/Zagreb"
+  overrideDatabaseTimezone: true
 
 dataObjects:
   Sales:
     code: sales
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      salesid:
+      Sales ID:
         code: salesid
         abstractType: string
         primaryKey: true
-      salesdate:
+      Sales Date:
         code: salesdate
         abstractType: date
-      salesclient:
+      Sales Client:
         code: salesclient
         abstractType: string
-      product:
+      Product:
         code: product
         abstractType: string
-      salesempid:
+      Sales Employee ID:
         code: salesempid
         abstractType: string
-      salespaymenttype:
+      Sales Payment Type:
         code: salespaymenttype
         abstractType: string
-      saleschanid:
+      Sales Channel ID:
         code: saleschanid
         abstractType: string
-      salesquantity:
+      Sales Quantity:
         code: salesquantity
         abstractType: float
-      salesamount:
+        numClass: additive
+      Sales Amount:
         code: salesamount
         abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Clients
-        columnsFrom:
-          - salesclient
-        columnsTo:
-          - clientid
+        columnsFrom: [Sales Client]
+        columnsTo: [Client ID]
       - joinType: many-to-one
         joinTo: Products
-        columnsFrom:
-          - product
-        columnsTo:
-          - productid
+        columnsFrom: [Product]
+        columnsTo: [Product ID]
       - joinType: many-to-one
         joinTo: Employees
-        columnsFrom:
-          - salesempid
-        columnsTo:
-          - employeeid
+        columnsFrom: [Sales Employee ID]
+        columnsTo: [Employee ID]
       - joinType: many-to-one
         joinTo: Channels
-        columnsFrom:
-          - saleschanid
-        columnsTo:
-          - channelid
+        columnsFrom: [Sales Channel ID]
+        columnsTo: [Channel ID]
       - joinType: many-to-one
         joinTo: Calendar
-        columnsFrom:
-          - salesdate
-        columnsTo:
-          - date
+        columnsFrom: [Sales Date]
+        columnsTo: [Date]
 
   Purchases:
     code: purchases
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      purchaseid:
+      Purchase ID:
         code: purchaseid
         abstractType: string
         primaryKey: true
-      purchasedate:
+      Purchase Date:
         code: purchasedate
         abstractType: date
-      purchaseproduct:
+      Purchase Product:
         code: purchaseproduct
         abstractType: string
-      purchaseempid:
+      Purchase Employee ID:
         code: purchaseempid
         abstractType: string
-      purchasesupplier:
+      Purchase Supplier:
         code: purchasesupplier
         abstractType: string
-      purchasechanid:
+      Purchase Channel ID:
         code: purchasechanid
         abstractType: string
-      purchasequantity:
+      Purchase Quantity:
         code: purchasequantity
         abstractType: float
-      purchaseprice:
+        numClass: additive
+      Purchase Price:
         code: purchaseprice
         abstractType: float
-      purchaseamount:
+        numClass: non-additive
+      Purchase Amount:
         code: purchaseamount
         abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Products
-        columnsFrom:
-          - purchaseproduct
-        columnsTo:
-          - productid
+        columnsFrom: [Purchase Product]
+        columnsTo: [Product ID]
       - joinType: many-to-one
         joinTo: Employees
-        columnsFrom:
-          - purchaseempid
-        columnsTo:
-          - employeeid
+        columnsFrom: [Purchase Employee ID]
+        columnsTo: [Employee ID]
       - joinType: many-to-one
         joinTo: Channels
-        columnsFrom:
-          - purchasechanid
-        columnsTo:
-          - channelid
+        columnsFrom: [Purchase Channel ID]
+        columnsTo: [Channel ID]
       - joinType: many-to-one
         joinTo: Calendar
-        columnsFrom:
-          - purchasedate
-        columnsTo:
-          - date
+        columnsFrom: [Purchase Date]
+        columnsTo: [Date]
       - joinType: many-to-one
         joinTo: Suppliers
-        columnsFrom:
-          - purchasesupplier
-        columnsTo:
-          - supplierid
+        columnsFrom: [Purchase Supplier]
+        columnsTo: [Supplier ID]
 
   Returns:
     code: returns
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      returnid:
+      Return ID:
         code: returnid
         abstractType: string
         primaryKey: true
-      returnsalesid:
+      Return Sales ID:
         code: returnsalesid
         abstractType: string
-      returndate:
+      Return Date:
         code: returndate
         abstractType: date
-      returnempid:
+      Return Employee ID:
         code: returnempid
         abstractType: string
-      returnquantity:
+      Return Quantity:
         code: returnquantity
         abstractType: float
-      returnamount:
+        numClass: additive
+      Return Amount:
         code: returnamount
         abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Sales
-        columnsFrom:
-          - returnsalesid
-        columnsTo:
-          - salesid
+        columnsFrom: [Return Sales ID]
+        columnsTo: [Sales ID]
       - joinType: many-to-one
         joinTo: Employees
-        columnsFrom:
-          - returnempid
-        columnsTo:
-          - employeeid
+        columnsFrom: [Return Employee ID]
+        columnsTo: [Employee ID]
       - joinType: many-to-one
         joinTo: Calendar
-        columnsFrom:
-          - returndate
-        columnsTo:
-          - date
+        columnsFrom: [Return Date]
+        columnsTo: [Date]
 
   Shipments:
     code: shipments
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      shipmentid:
+      Shipment ID:
         code: shipmentid
         abstractType: string
         primaryKey: true
-      shipmentsalesid:
+      Shipment Sales ID:
         code: shipmentsalesid
         abstractType: string
-      shipmentdate:
+      Shipment Date:
         code: shipmentdate
         abstractType: date
-      shipmentempid:
+      Shipment Employee ID:
         code: shipmentempid
         abstractType: string
-      shipmenttype:
+      Shipment Type:
         code: shipmenttype
         abstractType: string
-      shipmentquantity:
+      Shipment Quantity:
         code: shipmentquantity
         abstractType: float
-      shipmentamount:
+        numClass: additive
+      Shipment Amount:
         code: shipmentamount
         abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Sales
-        columnsFrom:
-          - shipmentsalesid
-        columnsTo:
-          - salesid
+        columnsFrom: [Shipment Sales ID]
+        columnsTo: [Sales ID]
       - joinType: many-to-one
         joinTo: Employees
-        columnsFrom:
-          - shipmentempid
-        columnsTo:
-          - employeeid
+        columnsFrom: [Shipment Employee ID]
+        columnsTo: [Employee ID]
       - joinType: many-to-one
         joinTo: Calendar
-        columnsFrom:
-          - shipmentdate
-        columnsTo:
-          - date
+        columnsFrom: [Shipment Date]
+        columnsTo: [Date]
 
-  ClientComplaints:
+  Client Complaints:
     code: clientcomplaints
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      complid:
+      Complaint ID:
         code: complid
         abstractType: string
         primaryKey: true
-      complclientid:
+      Complaint Client ID:
         code: complclientid
         abstractType: string
-      compltext:
+      Complaint Text:
         code: compltext
         abstractType: string
     joins:
       - joinType: many-to-one
         joinTo: Clients
-        columnsFrom:
-          - complclientid
-        columnsTo:
-          - clientid
+        columnsFrom: [Complaint Client ID]
+        columnsTo: [Client ID]
 
-  AccountBalances:
+  Account Balances:
     code: acctbal
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      accountid:
+      Account ID:
         code: accountid
         abstractType: string
         primaryKey: true
-      iban:
+      IBAN:
         code: iban
         abstractType: string
-      bankid:
+      Bank ID:
         code: bankid
         abstractType: string
-      balanceamt:
+      Balance Amount:
         code: balanceamt
         abstractType: float
+        numClass: non-additive
     joins:
       - joinType: many-to-one
         joinTo: Banks
-        columnsFrom:
-          - bankid
-        columnsTo:
-          - bankid
+        columnsFrom: [Bank ID]
+        columnsTo: [Bank ID]
 
-  # Dimensions
+  # ── Dimension tables ──
   Clients:
     code: clients
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      clientid:
+      Client ID:
         code: clientid
         abstractType: string
         primaryKey: true
-      clientname:
+      Client Name:
         code: clientname
         abstractType: string
-      clientgender:
+      Client Gender:
         code: clientgender
         abstractType: string
-      clientemail:
+      Client Email:
         code: clientemail
         abstractType: string
-      clientcountryid:
+      Client Country ID:
         code: clientcountryid
         abstractType: string
     joins:
       - joinType: many-to-one
         joinTo: Countries
-        columnsFrom:
-          - clientcountryid
-        columnsTo:
-          - countryid
+        columnsFrom: [Client Country ID]
+        columnsTo: [Country ID]
 
   Products:
     code: products
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      productid:
+      Product ID:
         code: productid
         abstractType: string
         primaryKey: true
-      productname:
+      Product Name:
         code: productname
         abstractType: string
-      productcat:
+      Product Category:
         code: productcat
         abstractType: string
-      productsuppl:
+      Product Supplier:
         code: productsuppl
         abstractType: string
-      unitcost:
+      Unit Cost:
         code: unitcost
         abstractType: float
-      unitprice:
+        numClass: non-additive
+      Unit Price:
         code: unitprice
         abstractType: float
-      curr:
+        numClass: non-additive
+      Currency:
         code: curr
         abstractType: string
-      unitsinstock:
+      Units In Stock:
         code: unitsinstock
         abstractType: float
+        numClass: non-additive
     joins:
       - joinType: many-to-one
         joinTo: Suppliers
-        columnsFrom:
-          - productsuppl
-        columnsTo:
-          - supplierid
+        columnsFrom: [Product Supplier]
+        columnsTo: [Supplier ID]
 
   Employees:
     code: employees
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      employeeid:
+      Employee ID:
         code: employeeid
         abstractType: string
         primaryKey: true
-      employeename:
+      Employee Name:
         code: employeename
         abstractType: string
-      department:
+      Department:
         code: department
         abstractType: string
 
   Channels:
     code: channels
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      channelid:
+      Channel ID:
         code: channelid
         abstractType: string
         primaryKey: true
-      channelname:
+      Channel Name:
         code: channelname
         abstractType: string
 
   Suppliers:
     code: suppliers
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      supplierid:
+      Supplier ID:
         code: supplierid
         abstractType: string
         primaryKey: true
-      suppliername:
+      Supplier Name:
         code: suppliername
         abstractType: string
-      suppliercountryid:
+      Supplier Country ID:
         code: suppliercountryid
         abstractType: string
 
   Countries:
     code: countries
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      countryid:
+      Country ID:
         code: countryid
         abstractType: string
         primaryKey: true
-      countryname:
+      Country Name:
         code: countryname
         abstractType: string
-      region:
+      Region ID:
         code: region
         abstractType: string
     joins:
       - joinType: many-to-one
         joinTo: Regions
-        columnsFrom:
-          - region
-        columnsTo:
-          - regionid
+        columnsFrom: [Region ID]
+        columnsTo: [Region ID]
 
   Regions:
     code: regions
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      regionid:
+      Region ID:
         code: regionid
         abstractType: string
         primaryKey: true
-      regionname:
+      Region Name:
         code: regionname
         abstractType: string
 
   Banks:
     code: banks
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      bankid:
+      Bank ID:
         code: bankid
         abstractType: string
         primaryKey: true
-      bankname:
+      Bank Name:
         code: bankname
         abstractType: string
 
   Calendar:
     code: calendar
     schema: orionbelt_1
+    refresh:
+      mode: static
     columns:
-      date:
+      Date:
         code: date
         abstractType: date
         primaryKey: true
-      ym:
+      Year Month:
         code: ym
         abstractType: string
-      weekday:
+      Weekday:
         code: weekday
         abstractType: string
-      publicholiday:
+      Public Holiday:
         code: publicholiday
         abstractType: string
 
 dimensions:
-  # Shared dimensions (no via — join path is unambiguous)
-  BankName:
+  # ── Generic business dimensions (no via — compiler picks the join path
+  # automatically based on which facts are in the query). For cross-fact
+  # queries the validator emits MISSING_VIA hints; use the role-playing
+  # variants below to silence them and pin the join path explicitly. ──
+  Client Name:
+    dataObject: Clients
+    column: Client Name
+    resultType: string
+  Client Gender:
+    dataObject: Clients
+    column: Client Gender
+    resultType: string
+  Client Email:
+    dataObject: Clients
+    column: Client Email
+    resultType: string
+  Country Name:
+    dataObject: Countries
+    column: Country Name
+    resultType: string
+  Region Name:
+    dataObject: Regions
+    column: Region Name
+    resultType: string
+  Currency:
+    dataObject: Products
+    column: Currency
+    resultType: string
+  Employee Name:
+    dataObject: Employees
+    column: Employee Name
+    resultType: string
+  Department:
+    dataObject: Employees
+    column: Department
+    resultType: string
+  Channel Name:
+    dataObject: Channels
+    column: Channel Name
+    resultType: string
+  Year Month:
+    dataObject: Calendar
+    column: Year Month
+    resultType: string
+  Weekday:
+    dataObject: Calendar
+    column: Weekday
+    resultType: string
+  Public Holiday:
+    dataObject: Calendar
+    column: Public Holiday
+    resultType: string
+
+  # ── Shared dimensions (single join path — no via needed) ──
+  Bank Name:
     dataObject: Banks
-    column: bankname
+    column: Bank Name
     resultType: string
-  ShipmentType:
+  Shipment Type:
     dataObject: Shipments
-    column: shipmenttype
+    column: Shipment Type
     resultType: string
-  PaymentType:
+  Payment Type:
     dataObject: Sales
-    column: salespaymenttype
+    column: Sales Payment Type
     resultType: string
 
-  # Role-playing: Employee by fact table
-  SalesEmployee:
+  # ── Role-playing: Employee by fact table ──
+  Sales Employee:
     dataObject: Employees
-    column: employeename
+    column: Employee Name
     resultType: string
     via: Sales
-  PurchaseEmployee:
+  Purchase Employee:
     dataObject: Employees
-    column: employeename
+    column: Employee Name
     resultType: string
     via: Purchases
-  ReturnEmployee:
+  Return Employee:
     dataObject: Employees
-    column: employeename
+    column: Employee Name
     resultType: string
     via: Returns
-  ShipmentEmployee:
+  Shipment Employee:
     dataObject: Employees
-    column: employeename
+    column: Employee Name
     resultType: string
     via: Shipments
 
-  # Role-playing: Department by fact table
-  SalesDepartment:
+  # ── Role-playing: Department by fact table ──
+  Sales Department:
     dataObject: Employees
-    column: department
+    column: Department
     resultType: string
     via: Sales
-  PurchaseDepartment:
+  Purchase Department:
     dataObject: Employees
-    column: department
+    column: Department
     resultType: string
     via: Purchases
 
-  # Role-playing: Calendar by fact table
-  SalesYearMonth:
+  # ── Role-playing: Calendar by fact table ──
+  Sales Year Month:
     dataObject: Calendar
-    column: ym
+    column: Year Month
     resultType: string
     via: Sales
-  SalesWeekday:
+  Sales Weekday:
     dataObject: Calendar
-    column: weekday
+    column: Weekday
     resultType: string
     via: Sales
-  PurchaseYearMonth:
+  Purchase Year Month:
     dataObject: Calendar
-    column: ym
+    column: Year Month
     resultType: string
     via: Purchases
-  ReturnYearMonth:
+  Return Year Month:
     dataObject: Calendar
-    column: ym
+    column: Year Month
     resultType: string
     via: Returns
-  ShipmentYearMonth:
+  Shipment Year Month:
     dataObject: Calendar
-    column: ym
+    column: Year Month
     resultType: string
     via: Shipments
 
-  # Role-playing: Channel by fact table
-  SalesChannel:
+  # ── Role-playing: Channel by fact table ──
+  Sales Channel:
     dataObject: Channels
-    column: channelname
+    column: Channel Name
     resultType: string
     via: Sales
-  PurchaseChannel:
+  Purchase Channel:
     dataObject: Channels
-    column: channelname
+    column: Channel Name
     resultType: string
     via: Purchases
 
-  # Time dimensions on Sales.salesdate — drive cumulative & period-over-period
-  # metrics (which require a date-typed dimension with an explicit timeGrain).
-  SalesDate:
+  # ── Time dimensions on Sales.salesdate — drive cumulative & period-over-period
+  # metrics (which require a date-typed dimension with an explicit timeGrain). ──
+  Sales Date:
     dataObject: Sales
-    column: salesdate
+    column: Sales Date
     resultType: date
     timeGrain: day
-  SalesMonth:
+  Sales Month:
     dataObject: Sales
-    column: salesdate
+    column: Sales Date
     resultType: date
     timeGrain: month
-  SalesQuarter:
+  Sales Quarter:
     dataObject: Sales
-    column: salesdate
+    column: Sales Date
     resultType: date
     timeGrain: quarter
-  SalesYear:
+  Sales Year:
     dataObject: Sales
-    column: salesdate
+    column: Sales Date
     resultType: date
     timeGrain: year
 
-  # Client/Country/Region (child of Sales only — no via needed)
-  ClientName:
+  # ── Role-playing: Client by fact table (Clients reachable from Sales and Client Complaints) ──
+  Sales Client Name:
     dataObject: Clients
-    column: clientname
+    column: Client Name
     resultType: string
-  ClientGender:
+    via: Sales
+  Sales Client Gender:
     dataObject: Clients
-    column: clientgender
+    column: Client Gender
     resultType: string
-  CountryName:
+    via: Sales
+  Complaint Client Name:
+    dataObject: Clients
+    column: Client Name
+    resultType: string
+    via: Client Complaints
+  Complaint Client Gender:
+    dataObject: Clients
+    column: Client Gender
+    resultType: string
+    via: Client Complaints
+
+  # ── Role-playing: Country/Region (reached through Clients — same fan-trap) ──
+  Sales Country Name:
     dataObject: Countries
-    column: countryname
+    column: Country Name
     resultType: string
-  RegionName:
+    via: Sales
+  Sales Region Name:
     dataObject: Regions
-    column: regionname
+    column: Region Name
     resultType: string
+    via: Sales
+  Complaint Country Name:
+    dataObject: Countries
+    column: Country Name
+    resultType: string
+    via: Client Complaints
+  Complaint Region Name:
+    dataObject: Regions
+    column: Region Name
+    resultType: string
+    via: Client Complaints
 
-  # Product/Supplier — scoped through Sales
-  ProductName:
+  # ── Product/Supplier — generic (default to Sales path) ──
+  Product Name:
     dataObject: Products
-    column: productname
+    column: Product Name
     resultType: string
-    via: Sales
-  ProductCategory:
+  Product Category:
     dataObject: Products
-    column: productcat
+    column: Product Category
     resultType: string
-    via: Sales
-  SupplierName:
+  Supplier Name:
     dataObject: Suppliers
-    column: suppliername
+    column: Supplier Name
     resultType: string
-    via: Sales
 
-  # Product/Supplier — scoped through Purchases
-  PurchaseProductName:
+  # ── Product/Supplier — explicit Purchases path ──
+  Purchase Product Name:
     dataObject: Products
-    column: productname
+    column: Product Name
     resultType: string
     via: Purchases
-  PurchaseSupplier:
+  Purchase Supplier Name:
     dataObject: Suppliers
-    column: suppliername
+    column: Supplier Name
     resultType: string
     via: Purchases
 
 measures:
-  SalesAmount:
+  # Amount-typed measures: explicit decimal(18, 2) precision and
+  # thousand-separated 2-decimal display. The default numeric type from
+  # ``settings.defaultNumericDataType`` would already pick decimal(18, 2)
+  # — keeping it on each measure makes the intent grep-able.
+  Total Sales:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     columns:
       - dataObject: Sales
-        column: salesamount
-  SalesQuantity:
+        column: Sales Amount
+  Total Sales Quantity:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
     columns:
       - dataObject: Sales
-        column: salesquantity
-  SalesOrderCount:
+        column: Sales Quantity
+  Sales Order Count:
     aggregation: count_distinct
-    resultType: int
+    dataType: bigint
+    format: "#,##0"
     columns:
       - dataObject: Sales
-        column: salesid
-  PurchaseAmount:
+        column: Sales ID
+  Total Purchases:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     columns:
       - dataObject: Purchases
-        column: purchaseamount
-  PurchaseQuantity:
+        column: Purchase Amount
+  Total Purchase Quantity:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
     columns:
       - dataObject: Purchases
-        column: purchasequantity
-  ReturnAmount:
+        column: Purchase Quantity
+  Total Returns:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     columns:
       - dataObject: Returns
-        column: returnamount
-  ReturnQuantity:
+        column: Return Amount
+  Total Return Quantity:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
     columns:
       - dataObject: Returns
-        column: returnquantity
-  ReturnCount:
+        column: Return Quantity
+  Return Count:
     aggregation: count_distinct
-    resultType: int
+    dataType: bigint
+    format: "#,##0"
     columns:
       - dataObject: Returns
-        column: returnid
-  ShipmentAmount:
+        column: Return ID
+  Total Shipments:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     columns:
       - dataObject: Shipments
-        column: shipmentamount
-  ShipmentQuantity:
+        column: Shipment Amount
+  Total Shipment Quantity:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
     columns:
       - dataObject: Shipments
-        column: shipmentquantity
-  ComplaintCount:
+        column: Shipment Quantity
+  Complaint Count:
     aggregation: count_distinct
-    resultType: int
+    dataType: bigint
+    format: "#,##0"
     columns:
-      - dataObject: ClientComplaints
-        column: complid
-  AccountBalanceTotal:
+      - dataObject: Client Complaints
+        column: Complaint ID
+  Total Account Balance:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     columns:
-      - dataObject: AccountBalances
-        column: balanceamt
-  UnitsInStockTotal:
+      - dataObject: Account Balances
+        column: Balance Amount
+  Total Units In Stock:
     aggregation: sum
-    resultType: float
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
     columns:
       - dataObject: Products
-        column: unitsinstock
+        column: Units In Stock
 
 metrics:
-  # Derived metrics — algebra over base measures
-  AvgSaleAmount:
-    expression: "{[SalesAmount]} / NULLIF({[SalesOrderCount]}, 0)"
-    resultType: float
-  ReturnRatePct:
-    expression: "({[ReturnAmount]} / NULLIF({[SalesAmount]}, 0)) * 100"
-    resultType: float
-  GrossMargin:
-    expression: "{[SalesAmount]} - {[PurchaseAmount]}"
-    resultType: float
+  # ── Derived metrics — algebra over base measures ──
+  Average Sale:
+    expression: "{[Total Sales]} / NULLIF({[Sales Order Count]}, 0)"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+  Return Rate:
+    # Raw ratio (Returns / Sales) — the trailing ``%`` in ``format`` makes
+    # the formatter auto-multiply by 100 at display time, so the stored
+    # value stays a clean ratio (0.123) and the rendered string is
+    # "12.3%". Don't multiply in the expression too, or you get
+    # "1230.0%".
+    expression: "{[Total Returns]} / NULLIF({[Total Sales]}, 0)"
+    dataType: "decimal(18, 4)"
+    format: "#,##0.0%"
+  Gross Margin:
+    expression: "{[Total Sales]} - {[Total Purchases]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
 
-  # Cumulative metrics — window functions over a base measure ordered by a
-  # time dimension. The time dimension must be in the query's SELECT.
-  CumulativeSalesAmount:
+  # ── Cumulative metrics — window functions over a base measure ordered by a
+  # time dimension. The time dimension must be in the query's SELECT. ──
+  Cumulative Sales:
     type: cumulative
-    measure: SalesAmount
-    timeDimension: SalesMonth
+    measure: Total Sales
+    timeDimension: Sales Month
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Running total of monthly sales (unbounded preceding)
-  Rolling30DaySales:
+  Rolling 30 Day Sales:
     type: cumulative
-    measure: SalesAmount
-    timeDimension: SalesDate
+    measure: Total Sales
+    timeDimension: Sales Date
     cumulativeType: avg
     window: 30
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: 30-day moving average of daily sales
-  MTDSalesAmount:
+  MTD Sales:
     type: cumulative
-    measure: SalesAmount
-    timeDimension: SalesDate
+    measure: Total Sales
+    timeDimension: Sales Date
     grainToDate: month
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Month-to-date sales (resets at each month boundary)
-  YTDSalesAmount:
+  YTD Sales:
     type: cumulative
-    measure: SalesAmount
-    timeDimension: SalesMonth
+    measure: Total Sales
+    timeDimension: Sales Month
     grainToDate: year
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: Year-to-date sales (resets at each year boundary)
-  PeakDailySales30D:
+  Peak Daily Sales 30D:
     type: cumulative
-    measure: SalesAmount
-    timeDimension: SalesDate
+    measure: Total Sales
+    timeDimension: Sales Date
     cumulativeType: max
     window: 30
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     description: 30-day rolling maximum of daily sales
 
-  # Period-over-period metrics — compare a base measure across time periods.
-  SalesYoYGrowth:
+  # ── Period-over-period metrics — compare a base measure across time periods. ──
+  Sales YoY Growth:
     type: period_over_period
-    expression: "{[SalesAmount]}"
-    resultType: float
+    expression: "{[Total Sales]}"
+    dataType: "decimal(18, 4)"
+    format: "#,##0.0%"
     periodOverPeriod:
-      timeDimension: SalesMonth
+      timeDimension: Sales Month
       grain: month
       offset: -1
       offsetGrain: year
       comparison: percentChange
     description: Year-over-year sales growth (% change vs same month last year)
-  SalesMoMChange:
+  Sales MoM Change:
     type: period_over_period
-    expression: "{[SalesAmount]}"
-    resultType: float
+    expression: "{[Total Sales]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     periodOverPeriod:
-      timeDimension: SalesMonth
+      timeDimension: Sales Month
       grain: month
       offset: -1
       offsetGrain: month
       comparison: difference
     description: Month-over-month absolute change in sales
-  SalesPreviousYear:
+  Sales Previous Year:
     type: period_over_period
-    expression: "{[SalesAmount]}"
-    resultType: float
+    expression: "{[Total Sales]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
     periodOverPeriod:
-      timeDimension: SalesMonth
+      timeDimension: Sales Month
       grain: month
       offset: -1
       offsetGrain: year
       comparison: previousValue
     description: Sales for the same month one year ago (raw prior value)
-  SalesQoQRatio:
+  Sales QoQ Ratio:
     type: period_over_period
-    expression: "{[SalesAmount]}"
-    resultType: float
+    expression: "{[Total Sales]}"
+    dataType: "decimal(18, 4)"
+    format: "#,##0.000"
     periodOverPeriod:
-      timeDimension: SalesQuarter
+      timeDimension: Sales Quarter
       grain: quarter
       offset: -1
       offsetGrain: quarter

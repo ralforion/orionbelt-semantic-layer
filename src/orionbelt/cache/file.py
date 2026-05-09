@@ -374,9 +374,16 @@ class FileCache(Cache):
         total_lookups = hits + misses
         hit_rate = round(hits / total_lookups, 3) if total_lookups else 0.0
 
+        # Use the canonical "Z" suffix for UTC instead of Python's default
+        # "+00:00", matching the format used elsewhere in the API
+        # (e.g. /v1/settings.timezone.now). datetime.isoformat() doesn't
+        # accept a Z suffix flag, so we substitute after the fact.
+        def _utc_iso(dt: datetime) -> str:
+            return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
         next_sweep = None
         if self._next_sweep_at is not None:
-            next_sweep = datetime.fromtimestamp(self._next_sweep_at, tz=UTC).isoformat()
+            next_sweep = _utc_iso(datetime.fromtimestamp(self._next_sweep_at, tz=UTC))
 
         return CacheStats(
             backend=self.backend_name,
@@ -386,9 +393,7 @@ class FileCache(Cache):
             hit_count_total=hits,
             miss_count_total=misses,
             hit_rate=hit_rate,
-            oldest_entry=(
-                oldest.astimezone(UTC).isoformat() if isinstance(oldest, datetime) else None
-            ),
+            oldest_entry=(_utc_iso(oldest) if isinstance(oldest, datetime) else None),
             next_sweep_at=next_sweep,
             tracked_physical_tables=tracked_count,
             heartbeat_invalidations_total=int(counter_map.get("heartbeat_invalidations", 0)),

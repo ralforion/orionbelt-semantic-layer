@@ -330,6 +330,19 @@ _CSS = """\
 .picker-row label span {
   font-size: 0.75rem !important;
 }
+/* Magnifier icon hint inside the 3 query-input dropdowns
+   (Dimensions / Measures-Metrics / Columns) so users discover the
+   type-to-search affordance. Gradio's Dropdown renders <input> as
+   the search field; the icon is drawn as a non-interactive
+   background image and the input gets matching left-padding so the
+   glyph doesn't collide with typed text. */
+.picker-dropdown input {
+  background-image: url("__SEARCH_GLASS_SVG__");
+  background-repeat: no-repeat;
+  background-position: 8px center;
+  background-size: 14px 14px;
+  padding-left: 28px !important;
+}
 
 /* ── ER Diagram tab ── */
 #er-diagram {
@@ -343,7 +356,19 @@ _CSS = """\
 #er-diagram svg {
   transform-origin: top left;
   transition: transform 0.15s ease;
+  /* Mermaid's ER renderer auto-sizes columns from getBBox(). Gradio's
+     default Markdown CSS sets max-width:100% on inline SVGs, which
+     causes the SVG to scale down and the renderer's pre-measured
+     column widths to clip attribute text. Allow the natural width and
+     let the parent's overflow:auto provide horizontal scroll. */
+  max-width: none !important;
+  width: auto;
+  height: auto;
 }
+/* Don't override font-size on ER text: Mermaid measures column widths
+   with its own font and clips at the measured width. Inflating the
+   rendered font past the measured width was the cause of the per-row
+   right-edge clipping. */
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {
   overflow: auto;
@@ -364,6 +389,20 @@ _CSS = """\
   .header-bar .header-title { font-size: 18px; }
 }
 """
+
+# Inline SVG search-glass for the .picker-dropdown CSS rule. Defined here
+# (not inside _CSS) so the URL doesn't trip ruff E501 — the data: URL is
+# unavoidably long.
+_SEARCH_GLASS_SVG = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' "
+    "fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' "
+    "stroke-linejoin='round'>"
+    "<circle cx='11' cy='11' r='7'/>"
+    "<line x1='21' y1='21' x2='16.65' y2='16.65'/>"
+    "</svg>"
+)
+_CSS = _CSS.replace("__SEARCH_GLASS_SVG__", _SEARCH_GLASS_SVG)
 
 _ALIGN_HEADERS_JS = """
 (indices_str) => {
@@ -1636,6 +1675,27 @@ def compile_sql(
         return f"Error: {exc}", "", session_state, model_state
 
 
+def _resolve_execution_dialect(api_url: str, current: str) -> str:
+    """Snap the SQL Dialect dropdown to the API's effective execution dialect.
+
+    The dropdown is useful for previewing compiled SQL in different
+    dialects, but ``Execute Query`` actually runs against the API's
+    backing database — executing the wrong dialect (e.g. Postgres SQL
+    against the bundled DuckDB) just fails. Force the dropdown to the
+    API's reported ``dialect.effective`` so the user sees what will
+    actually be executed. Falls back silently to the current value if
+    settings cannot be fetched.
+    """
+    try:
+        settings = _fetch_settings(api_url)
+        eff = (settings.get("dialect") or {}).get("effective")
+        if isinstance(eff, str) and eff:
+            return eff
+    except Exception:  # noqa: BLE001 — best-effort UX hint, never block exec
+        pass
+    return current
+
+
 def execute_query(
     model_yaml: str,
     query_yaml: str,
@@ -2135,12 +2195,25 @@ def create_blocks(
     cohosted = default_api_url is not None
     api_base = default_api_url or _DEFAULT_API_URL
     dialects = _fetch_dialects(api_base) if not cohosted else _FALLBACK_DIALECTS
-    default_dialect = (
-        "postgres" if "postgres" in dialects else (dialects[0] if dialects else "postgres")
-    )
 
     # In embedded mode use pre-supplied settings; standalone fetches via HTTP
     api_settings = embedded_settings if embedded_settings is not None else _fetch_settings(api_base)
+
+    # Pick the initial dialect from what the API will *actually* use, not
+    # an alphabetical fallback: dialect.effective reflects the model's
+    # settings.defaultDialect (or DB_VENDOR env). That keeps the dropdown
+    # honest before the user touches it; on Compile they can switch to
+    # any other registered dialect for SQL preview, and Execute Query
+    # snaps back via _resolve_execution_dialect.
+    api_effective_dialect = (api_settings.get("dialect") or {}).get("effective")
+    if isinstance(api_effective_dialect, str) and api_effective_dialect in dialects:
+        default_dialect = api_effective_dialect
+    elif "postgres" in dialects:
+        default_dialect = "postgres"
+    elif dialects:
+        default_dialect = dialects[0]
+    else:
+        default_dialect = "postgres"
     single_model = api_settings.get("single_model_mode", False)
     query_exec_enabled = api_settings.get("query_execute", False)
     if single_model and api_settings.get("model_yaml"):
@@ -2269,6 +2342,7 @@ def create_blocks(
                                 label="Dimensions",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                             meas_picker = gr.Dropdown(
                                 choices=init_meas,
@@ -2276,6 +2350,7 @@ def create_blocks(
                                 label="Measures / Metrics",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                             field_picker = gr.Dropdown(
                                 choices=init_fields,
@@ -2283,6 +2358,7 @@ def create_blocks(
                                 label="Columns",
                                 scale=1,
                                 interactive=True,
+                                elem_classes=["picker-dropdown"],
                             )
                         query_input = gr.Code(
                             value=_DEFAULT_QUERY,
@@ -2523,8 +2599,15 @@ def create_blocks(
                 outputs=[execute_btn, results_tab],
             )
 
-            # Wire execute button after result components are defined
+            # Wire execute button after result components are defined.
+            # Pre-step: snap the dialect dropdown to the API's effective
+            # execution dialect so the user sees what will actually run
+            # (and execute_query itself reads the snapped value).
             execute_btn.click(
+                fn=_resolve_execution_dialect,
+                inputs=[api_url, dialect],
+                outputs=[dialect],
+            ).then(
                 fn=execute_query,
                 inputs=[
                     model_input,

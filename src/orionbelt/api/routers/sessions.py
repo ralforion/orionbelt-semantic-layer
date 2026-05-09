@@ -1021,7 +1021,9 @@ async def _try_cache_get(cache: Cache, key: str) -> Any:
     except Exception:
         logger.debug("cache decode failed", exc_info=True)
         return None
-    envelope.cached_at_iso = result.cached_at.isoformat()
+    # Canonical Z suffix for UTC, matching /v1/settings.timezone.now and
+    # /v1/cache/stats. datetime.isoformat() defaults to "+00:00".
+    envelope.cached_at_iso = result.cached_at.isoformat().replace("+00:00", "Z")
     return envelope
 
 

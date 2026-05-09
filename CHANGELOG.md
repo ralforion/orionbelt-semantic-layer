@@ -2,6 +2,23 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.2.1] - 2026-05-09
+
+### Changed
+
+- **Bundled demo model rewritten with business-friendly names.** `examples/orionbelt_1_commerce.yaml` now uses spaced YAML keys for every dataObject, column, dimension, measure, and metric. Common base measures use short business names (`Total Sales`, `Total Returns`, `Total Purchases`, `Total Shipments`) — the `Amount` suffix is dropped for amount-typed measures since amounts are the default; quantity/count variants keep their explicit suffixes. Derived metrics follow suit (`Return Rate`, `Average Sale`, `Cumulative Sales`, `MTD Sales`). Physical column names live unchanged in the `code:` fields, so the bundled DuckDB seed and the demo SQL are unaffected. Generic dimensions (`Client Name`, `Country Name`, …) coexist with explicit role-playing variants (`Sales Client Name` via Sales, `Complaint Client Name` via Client Complaints, etc.) so casual queries get business-named dropdowns and cross-fact queries can pin the join path with `via:` to silence `MISSING_VIA` warnings.
+- **Demo model pins `settings.defaultDialect: duckdb`.** The bundled image runs against a baked-in DuckDB seed; the dialect is now declared in the model so the UI dropdown auto-selects DuckDB on load instead of falling back to its alphabetical default.
+- **Demo model declares `refresh: { mode: static }` on every dataObject.** The bundled DuckDB seed is built into the image and never changes between deploys, so the freshness-driven result cache now uses `CACHE_MAX_TTL_SECONDS` (default 86400 = 1 day) as the effective TTL instead of falling back to the unknown-freshness 300s default. Also sidesteps the `tracked_physical_tables` / `entry_count: 0` divergence when entries land on Cloud Run's per-instance tmpfs and don't survive cold starts.
+- **Demo model carries proper data types and display formats.** Adds `settings.defaultNumericDataType: "decimal(18, 2)"` and `settings.defaultTimezone: "Europe/Zagreb"`. Amount-typed measures use `dataType: "decimal(18, 2)"` and `format: "#,##0.00"`; counts use `bigint` + `"#,##0"`; ratio metrics use `decimal(18, 4)` + the auto-percent format `"#,##0.0%"` (the formatter multiplies by 100 at display time, so the stored value stays a raw ratio — `Return Rate = Total Returns / Total Sales` renders as `"12.3%"`).
+- **UI: ``Execute Query`` snaps the SQL Dialect dropdown to the API's effective execution dialect** (from `/v1/settings.dialect.effective`) before executing. Lets users explore Postgres/Snowflake/etc. SQL via the Compile preview without accidentally sending a non-DuckDB statement to the underlying database.
+
+### Fixed
+
+- **Result cache silently no-op.** Every `cache.get` / `cache.set` against the file backend's DuckDB meta DB raised `Invalid Input Error: Required module 'pytz' failed to import` — DuckDB's Python binding lazily imports pytz when binding tz-aware datetimes (TIMESTAMPTZ columns), and the WARNING-level failure path returns a miss without surfacing the error. Cache stats showed `entry_count: 0` despite `tracked_physical_tables` accumulating on every query. Pin `pytz>=2024.1` as a runtime dep so DuckDB can persist cache entries.
+- **ER diagram label clipping.** Per-attribute right-edge clipping in dense entities is gone: previously a CSS rule injected a 14px font on top of Mermaid's default-12px column-width measurement, so every row's text overflowed its measured rectangle. The override is removed; we now trust Mermaid's measure-equals-render contract.
+- **ER diagram attribute names no longer mangle spaces into underscores.** Identifiers are camelCased from the column label (`Sales ID` → `SalesID`) and the spaced business label is emitted as the attribute's quoted comment column, so the diagram shows the human-readable name alongside the structural identifier. Entity names containing spaces (`Client Complaints`, `Account Balances`) are double-quoted so Mermaid renders them verbatim.
+- **ER diagram join labels keep their business names** (e.g. `"Sales Client"`) instead of being lower-cased and underscored.
+
 ## [2.2.0] - 2026-05-05
 
 ### Added

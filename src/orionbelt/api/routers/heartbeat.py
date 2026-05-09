@@ -126,7 +126,7 @@ async def post_heartbeat(
 
     return HeartbeatResponse(
         table_ref=table_ref,
-        recorded_at=ts.isoformat(),
+        recorded_at=ts.isoformat().replace("+00:00", "Z"),
         invalidated_cache_entries=invalidated,
         affected_data_objects=affected,
     )

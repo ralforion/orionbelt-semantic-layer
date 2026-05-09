@@ -593,7 +593,7 @@ async def _try_oneshot_cache_get(cache: Cache, key: str) -> tuple[Any, str] | No
     except Exception:
         logger.debug("oneshot cache decode failed", exc_info=True)
         return None
-    return envelope, result.cached_at.isoformat()
+    return envelope, result.cached_at.isoformat().replace("+00:00", "Z")
 
 
 async def _try_oneshot_cache_set(

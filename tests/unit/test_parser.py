@@ -632,6 +632,114 @@ dataObjects:
         errors = validator.validate(model)
         assert not any(e.code == "MULTIPATH_JOIN" for e in errors)
 
+    def test_missing_via_silenced_when_pk_joined_from_all_facts(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        """Path-invariant entity dims should NOT trigger MISSING_VIA.
+
+        ``Clients`` is reached from both ``Sales`` and ``Complaints``, but
+        every reaching fact joins on ``Client ID`` (the dim's PK), so the
+        same ``Client ID`` from any path resolves to the same client row —
+        the dim attribute value is invariant.
+        """
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    columns:
+      ID: { code: id, abstractType: string, primaryKey: true }
+      Amt: { code: amt, abstractType: float }
+      ClientFK: { code: clientfk, abstractType: string }
+    joins:
+      - { joinType: many-to-one, joinTo: Clients, columnsFrom: [ClientFK], columnsTo: [Client ID] }
+  Complaints:
+    code: compl
+    columns:
+      ID: { code: id, abstractType: string, primaryKey: true }
+      ClientFK: { code: clientfk, abstractType: string }
+    joins:
+      - { joinType: many-to-one, joinTo: Clients, columnsFrom: [ClientFK], columnsTo: [Client ID] }
+  Clients:
+    code: clients
+    columns:
+      Client ID: { code: cid, abstractType: string, primaryKey: true }
+      Name: { code: name, abstractType: string }
+measures:
+  Total Amt:
+    aggregation: sum
+    columns: [{ dataObject: Sales, column: Amt }]
+  Compl Count:
+    aggregation: count_distinct
+    columns: [{ dataObject: Complaints, column: ID }]
+dimensions:
+  Client Name:
+    dataObject: Clients
+    column: Name
+    resultType: string
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, _result = resolver.resolve(raw, source_map)
+        validator = SemanticValidator()
+        errors = validator.validate(model)
+        via_warns = [e for e in errors if e.code == "MISSING_VIA"]
+        assert not via_warns, (
+            f"Expected MISSING_VIA suppressed for PK-joined entity dim, "
+            f"got {[e.message for e in via_warns]}"
+        )
+
+    def test_missing_via_warned_when_non_pk_join(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        """A target reached via non-PK columns from multiple facts must still warn."""
+        yaml_content = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    columns:
+      ID: { code: id, abstractType: string, primaryKey: true }
+      Amt: { code: amt, abstractType: float }
+      Code: { code: code, abstractType: string }
+    joins:
+      - { joinType: many-to-one, joinTo: Lookup, columnsFrom: [Code], columnsTo: [LkCode] }
+  Complaints:
+    code: compl
+    columns:
+      ID: { code: id, abstractType: string, primaryKey: true }
+      Code: { code: code, abstractType: string }
+    joins:
+      - { joinType: many-to-one, joinTo: Lookup, columnsFrom: [Code], columnsTo: [LkCode] }
+  Lookup:
+    code: lookup
+    columns:
+      LkID: { code: lkid, abstractType: string, primaryKey: true }
+      LkCode: { code: lkcode, abstractType: string }
+      Label: { code: label, abstractType: string }
+measures:
+  Total Amt:
+    aggregation: sum
+    columns: [{ dataObject: Sales, column: Amt }]
+  Compl Count:
+    aggregation: count_distinct
+    columns: [{ dataObject: Complaints, column: ID }]
+dimensions:
+  Label:
+    dataObject: Lookup
+    column: Label
+    resultType: string
+"""
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(yaml_content)
+        model, _result = resolver.resolve(raw, source_map)
+        validator = SemanticValidator()
+        errors = validator.validate(model)
+        assert any(e.code == "MISSING_VIA" for e in errors), (
+            f"Expected MISSING_VIA when non-PK join from multiple facts, "
+            f"got {[e.code for e in errors]}"
+        )
+
 
 class TestCustomExtensions:
     """Tests for customExtensions parsing at all 6 levels."""

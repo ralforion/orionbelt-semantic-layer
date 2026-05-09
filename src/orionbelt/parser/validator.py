@@ -540,6 +540,15 @@ class SemanticValidator:
         real ambiguity and should not trigger a warning.  Dimensions whose target
         IS a fact table (e.g. Sales Date on Sales) are also skipped because the
         column lives on the fact table itself.
+
+        Path-invariance heuristic: when every reaching fact joins to the target
+        on the target's primary key, the dim attribute is path-invariant — the
+        same Client ID (or Calendar.date) from any fact resolves to the same
+        target row, so the dim attribute value is identical regardless of
+        which fact drove the join. Role-playing semantics (Sales Year Month
+        vs Purchase Year Month) are a choice the modeller makes by adding
+        explicit ``via:`` on a per-dimension basis, not a correctness concern
+        the validator should flag for every shared dim table.
         """
         warnings: list[SemanticError] = []
 
@@ -567,19 +576,60 @@ class SemanticValidator:
             if target in measure_sources:
                 continue
             reaching_facts = [ft for ft in fact_tables if target in direct_children[ft]]
-            if len(reaching_facts) > 1:
-                warnings.append(
-                    SemanticError(
-                        code="MISSING_VIA",
-                        message=(
-                            f"Dimension '{dim_name}' on '{target}' has direct "
-                            f"joins from multiple fact tables "
-                            f"({', '.join(reaching_facts)}). "
-                            f"Consider adding role-playing dimensions with 'via' "
-                            f"to disambiguate join paths."
-                        ),
-                        path=f"dimensions.{dim_name}",
-                        severity="warning",
-                    )
+            if len(reaching_facts) <= 1:
+                continue
+
+            if self._is_path_invariant(model, target, reaching_facts):
+                continue
+
+            warnings.append(
+                SemanticError(
+                    code="MISSING_VIA",
+                    message=(
+                        f"Dimension '{dim_name}' on '{target}' has direct "
+                        f"joins from multiple fact tables "
+                        f"({', '.join(reaching_facts)}). "
+                        f"Consider adding role-playing dimensions with 'via' "
+                        f"to disambiguate join paths."
+                    ),
+                    path=f"dimensions.{dim_name}",
+                    severity="warning",
                 )
+            )
         return warnings
+
+    @staticmethod
+    def _is_path_invariant(
+        model: SemanticModel, target: str, reaching_facts: list[str]
+    ) -> bool:
+        """True when every reaching fact joins to the target on its primary key.
+
+        Same Client ID (or Calendar date) from any fact resolves to the same
+        target row, so the dim attribute value is identical regardless of which
+        fact drove the join — there's no correctness ambiguity to warn about.
+        Joins on non-PK columns CAN resolve to different rows from different
+        facts and are kept under the warning.
+        """
+        target_obj = model.data_objects.get(target)
+        if target_obj is None:
+            return False
+
+        pk_cols = {
+            col_name for col_name, col in target_obj.columns.items() if col.primary_key
+        }
+        if not pk_cols:
+            return False
+
+        for ft_name in reaching_facts:
+            ft_obj = model.data_objects.get(ft_name)
+            if ft_obj is None:
+                return False
+            joins_to_target = [j for j in ft_obj.joins if j.join_to == target]
+            if not joins_to_target:
+                return False
+            for j in joins_to_target:
+                # Every column on the target side of the join must be a PK column.
+                if not j.columns_to or any(c not in pk_cols for c in j.columns_to):
+                    return False
+
+        return True
