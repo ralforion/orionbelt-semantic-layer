@@ -183,6 +183,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         try:
             import pyarrow  # noqa: F401
             import pyarrow.parquet  # noqa: F401
+
             from orionbelt.cache import parquet_codec
 
             warm_payload = parquet_codec.encode(

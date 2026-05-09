@@ -337,7 +337,7 @@ _CSS = """\
    background image and the input gets matching left-padding so the
    glyph doesn't collide with typed text. */
 .picker-dropdown input {
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.65' y2='16.65'/></svg>");
+  background-image: url("__SEARCH_GLASS_SVG__");
   background-repeat: no-repeat;
   background-position: 8px center;
   background-size: 14px 14px;
@@ -389,6 +389,20 @@ _CSS = """\
   .header-bar .header-title { font-size: 18px; }
 }
 """
+
+# Inline SVG search-glass for the .picker-dropdown CSS rule. Defined here
+# (not inside _CSS) so the URL doesn't trip ruff E501 — the data: URL is
+# unavoidably long.
+_SEARCH_GLASS_SVG = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' "
+    "fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' "
+    "stroke-linejoin='round'>"
+    "<circle cx='11' cy='11' r='7'/>"
+    "<line x1='21' y1='21' x2='16.65' y2='16.65'/>"
+    "</svg>"
+)
+_CSS = _CSS.replace("__SEARCH_GLASS_SVG__", _SEARCH_GLASS_SVG)
 
 _ALIGN_HEADERS_JS = """
 (indices_str) => {
