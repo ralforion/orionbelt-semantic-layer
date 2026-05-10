@@ -2,6 +2,14 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.3.1] - 2026-05-11
+
+### Fixed
+
+- **MySQL `CAST(string-typed expr AS string)` no longer emits invalid / silently-truncating SQL.** `dialect/mysql.py::_compile_cast` previously rewrote any `VARCHAR[(N)]` cast target to `CHAR[(N)]` without inspecting `N`. For OBML's unbounded `string` type — which `_OBML_SIMPLE_TYPE_MAP` resolves to `VARCHAR(65535)` — that produced `CAST(x AS CHAR(65535))`, exceeding CHAR's 255-character column limit; the abstract `string`-via-`_ABSTRACT_TYPE_MAP` path produced `CAST(x AS CHAR(255))`, silently truncating any longer value. The cast rewriter is now length-aware: lengths above 255 collapse to plain `CHAR` so MySQL picks a safe internal width without truncation; lengths ≤ 255 are preserved.
+- **Vendor-execution drift normaliser keeps distinct string keys distinct.** `tests/integration/drift/vendor_exec/test_vendor_exec.py::_normalize_value` ran every string through `Decimal()` → `float():.11g` to keep YAML-stored Decimal goldens (`"100.50"`) symmetric with live vendor Decimals. That coercion also collapsed zero-padded IDs (`"00123"` → `"123"`), exponent-form strings (`"1e3"` → `"1000"`), and `"0000"` → `"0"`, which would have let a cross-vendor key-handling regression silently pass row-set equality. The coercion is now restricted to canonical `Decimal.__str__` form (no leading zeros, no scientific notation) so legitimate decimal goldens still normalise but string IDs stay distinct.
+- **`test_all_pointers_collect_in_pytest` no longer requires `uv` on PATH.** The Tier 2 metadata gate at `tests/integration/drift/test_snapshot_metadata.py` shelled out to `uv run pytest --collect-only ...`, failing for infrastructure reasons in any environment that runs the test suite without `uv` installed (CI containers, plain virtualenvs). It now uses `sys.executable -m pytest`.
+
 ## [2.3.0] - 2026-05-10
 
 ### Added

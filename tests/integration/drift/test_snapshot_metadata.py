@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +109,10 @@ def test_all_pointers_collect_in_pytest() -> None:
         pytest.skip("No pointers to validate.")
 
     # Pass each pointer as its own positional arg; pytest accepts node IDs.
-    cmd = ["uv", "run", "pytest", "--collect-only", "-q", *sorted(pointers)]
+    # Use the active interpreter's pytest module rather than shelling out
+    # to ``uv run`` so the gate works in any environment that runs the
+    # test suite (CI containers, virtualenvs without ``uv`` on PATH, etc.).
+    cmd = [sys.executable, "-m", "pytest", "--collect-only", "-q", *sorted(pointers)]
     result = subprocess.run(  # noqa: S603 — args are repo-internal, no shell.
         cmd,
         capture_output=True,
