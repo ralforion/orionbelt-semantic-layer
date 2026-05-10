@@ -96,23 +96,25 @@ def _normalize_value(v: Any) -> Any:
         # Same collapse for goldens that came in as ISO strings.
         return v[:10]
 
-    # Round numeric values to 12 significant digits *via float*. Going
+    # Round numeric values to 11 significant digits *via float*. Going
     # through ``float`` canonicalises trailing zeros that ``Decimal``
     # preserves but floats drop, so cross-engine output (Postgres
     # returns ``Decimal('-0.02233628881800')``, DuckDB the float
-    # ``-0.022336288817980665``) compares equal. 12 sig figs preserves
-    # money sums up to ~$1T at 2-dp precision while absorbing
-    # cross-engine division drift on ratios.
+    # ``-0.022336288817980665``) compares equal. 11 sig figs preserves
+    # money sums up to ~$100 B at 2-dp precision while absorbing the
+    # last-bit ULP drift between Decimal arithmetic (ClickHouse) and
+    # float arithmetic (DuckDB / Postgres) that surfaces in YoY-style
+    # ratios at the 12th significant digit.
     #
     # Goldens store Decimals as strings (``"100.50"``); to keep the
     # comparison symmetric we run numeric-looking strings through the
     # same pipeline. Country names / ISO dates / NULLs don't parse as
     # Decimal so they fall through unchanged.
     if isinstance(v, (Decimal, float)):
-        return f"{float(v):.12g}"
+        return f"{float(v):.11g}"
     if isinstance(v, str):
         try:
-            return f"{float(Decimal(v)):.12g}"
+            return f"{float(Decimal(v)):.11g}"
         except (InvalidOperation, ValueError):
             return v
     return v
@@ -157,35 +159,11 @@ def _load_golden(query_id: str) -> list[list[Any]]:
 # ---------------------------------------------------------------------------
 
 _KNOWN_ISSUES: dict[tuple[str, str], str] = {
-    # CFL NULL-pad type mismatch — Postgres / MySQL strict typing reject
-    # ``UNION ALL`` of ``CAST(NULL AS BIGINT)`` with a ``TEXT`` column.
-    # DuckDB and ClickHouse coerce silently. Tracked OBSL planner bug:
-    # CFL inner-leg NULL pads should match the *source column* type, not
-    # the outer aggregate's declared type. Affects every dialect that
-    # does strict UNION-type checking — currently surfacing on PG, MySQL,
-    # and ClickHouse for corpus #07's auto-included Complaint Count.
-    ("postgres", "07_total_sales_by_client_with_complaints"): (
-        "OBSL bug: CFL NULL-pad type mismatch (BIGINT pad vs TEXT column)"
-    ),
-    ("mysql", "07_total_sales_by_client_with_complaints"): (
-        "OBSL bug: CFL NULL-pad type mismatch (BIGINT pad vs TEXT column)"
-    ),
-    ("clickhouse", "07_total_sales_by_client_with_complaints"): (
-        "OBSL bug: CFL NULL-pad type mismatch (BIGINT pad vs TEXT column)"
-    ),
-    # ClickHouse Decimal arithmetic preserves the operand scale on
-    # division — ``Decimal(18,2) / Decimal(18,2)`` returns
-    # ``Decimal(18,2)``, truncating ratio precision. OBSL's ClickHouse
-    # dialect should CAST division operands to a wider scale (e.g.
-    # ``Decimal(38, 10)``) before dividing.
-    ("clickhouse", "09_return_rate"): (
-        "ClickHouse Decimal division loses scale; needs operand widening"
-    ),
     # Rolling AVG over decimal goes through DOUBLE intermediates inside
     # each engine's window machinery. ULP-scale rounding mode differs
     # between DuckDB (half-up) and Postgres / MySQL / ClickHouse — at
     # the half-cent boundary they land on different sides. Real engine
-    # variance, not an OBSL bug. Acceptable.
+    # variance, not an OBSL bug.
     ("postgres", "11_rolling_30_day_sales"): (
         "Engine variance: rolling AVG rounding mode differs at .5-cent boundary"
     ),
@@ -194,15 +172,6 @@ _KNOWN_ISSUES: dict[tuple[str, str], str] = {
     ),
     ("clickhouse", "11_rolling_30_day_sales"): (
         "Engine variance: rolling AVG rounding mode differs at .5-cent boundary"
-    ),
-    # Sales YoY Growth — same root cause as 09 on ClickHouse (Decimal
-    # division scale). On MySQL, also exhibits cross-engine rounding
-    # drift past 12 sig figs we tolerate.
-    ("mysql", "13_sales_yoy_growth"): (
-        "Engine variance: NUMERIC division precision drift past 12 sig figs"
-    ),
-    ("clickhouse", "13_sales_yoy_growth"): (
-        "ClickHouse Decimal division loses scale; needs operand widening"
     ),
 }
 

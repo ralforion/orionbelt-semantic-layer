@@ -99,6 +99,34 @@ class MySQLDialect(Dialect):
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
 
+    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+        """MySQL's ``div_precision_increment`` defaults to 4, capping
+        ratio results at the operand scale plus 4 fractional digits.
+        For ``DECIMAL(18, 2) / DECIMAL(18, 2)`` that's 6 dp — too few
+        for the 11-sig-fig cross-vendor comparison. Widening both
+        operands to ``DECIMAL(38, 14)`` lifts the result scale to 18
+        dp without changing session state.
+        """
+        wide = "DECIMAL(38, 14)"
+        return f"CAST({left_sql} AS {wide}) / CAST({right_sql} AS {wide})"
+
+    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+        """MySQL ``CAST`` accepts a fixed vocabulary that excludes ``VARCHAR``.
+
+        Allowed target types in MySQL are ``BINARY``, ``CHAR``, ``DATE``,
+        ``DATETIME``, ``DECIMAL``, ``JSON``, ``NCHAR``, ``SIGNED``,
+        ``TIME``, ``UNSIGNED``, and ``YEAR``. Other type maps in this
+        dialect (e.g. ``string → VARCHAR(255)`` for DDL) work fine in
+        ``CREATE TABLE`` but cause a parse error inside ``CAST``. Map
+        ``VARCHAR[(N)]`` → ``CHAR[(N)]`` at cast time only; DDL paths
+        keep the wider VARCHAR type.
+        """
+        resolved = self._resolve_type_name(type_name)
+        upper = resolved.strip().upper()
+        if upper.startswith("VARCHAR"):
+            resolved = "CHAR" + resolved[len("VARCHAR") :].lstrip()
+        return f"CAST({self.compile_expr(inner)} AS {resolved})"
+
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:
         """MySQL: LIKE with CONCAT (MySQL's || is logical OR by default)."""
         from orionbelt.ast.nodes import BinaryOp

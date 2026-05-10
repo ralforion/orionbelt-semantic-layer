@@ -85,6 +85,43 @@ class ClickHouseDialect(Dialect):
             return FunctionCall(name=func_name, args=[column])
         return column
 
+    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+        """Widen operands for raw-SQL decimal division — same fix as the
+        BinaryOp override but applied where SQL is built as text (e.g.
+        the PoP comparison CTE).
+
+        ClickHouse stores ``Decimal(P, S)`` as an integer scaled by
+        ``10^S``; division pre-scales the numerator by ``10^S`` again
+        to preserve scale, so very wide scales overflow on values with
+        ~10+ integer digits (we hit ``Decimal(38, 16)`` overflowing on
+        ``$42M / 10k``). ``Decimal(38, 14)`` is the sweet spot —
+        13 fractional digits in the result (enough for the 12-sig-fig
+        cross-vendor comparison) and ``38 - 14 = 24`` integer digits
+        of headroom (plenty for any aggregate in this corpus).
+        """
+        wide = "Nullable(Decimal(38, 14))"
+        return f"CAST({left_sql} AS {wide}) / CAST({right_sql} AS {wide})"
+
+    def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
+        """Widen division operands so ratio precision survives.
+
+        ClickHouse's Decimal arithmetic preserves the operand scale on
+        ``/``: ``Decimal(18, 2) / Decimal(18, 2) = Decimal(18, 2)``,
+        which truncates ratios to 2-dp (e.g. ``0.0365`` becomes
+        ``0.03``). Other engines either widen automatically (Postgres,
+        DuckDB) or use float division. To match the cross-engine
+        contract OBSL promises — ratios at the metric's declared
+        ``decimal(18, 4)`` precision — we cast both operands to
+        ``Decimal(38, 10)`` before dividing. The outer measure CAST
+        then narrows back to the declared type.
+        """
+        if op == "/":
+            wide = "Nullable(Decimal(38, 14))"
+            l_sql = f"CAST({self.compile_expr(left)} AS {wide})"
+            r_sql = f"CAST({self.compile_expr(right)} AS {wide})"
+            return f"({l_sql} / {r_sql})"
+        return super()._compile_binary_op(left, op, right)
+
     def _compile_cast(self, inner: Expr, type_name: str) -> str:
         """ClickHouse: wrap target type in ``Nullable(...)``.
 

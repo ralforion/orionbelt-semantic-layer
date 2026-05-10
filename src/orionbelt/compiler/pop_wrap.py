@@ -436,13 +436,13 @@ def _build_pop_compare_sql(
         nullif_prev = f"NULLIF({prev}, 0)"
 
         if m.pop_comparison == PeriodOverPeriodComparison.RATIO:
-            expr = f"{current} / {nullif_prev}"
+            expr = dialect.render_decimal_division_sql(current, nullif_prev)
         elif m.pop_comparison == PeriodOverPeriodComparison.DIFFERENCE:
             expr = f"{current} - {prev}"
         elif m.pop_comparison == PeriodOverPeriodComparison.PREVIOUS_VALUE:
             expr = prev
         elif m.pop_comparison == PeriodOverPeriodComparison.PERCENT_CHANGE:
-            expr = f"{current} / {nullif_prev} - 1"
+            expr = dialect.render_decimal_division_sql(current, nullif_prev) + " - 1"
         else:
             raise ResolutionError(
                 [

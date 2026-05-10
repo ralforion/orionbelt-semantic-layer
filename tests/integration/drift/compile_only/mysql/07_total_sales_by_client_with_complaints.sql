@@ -1,9 +1,9 @@
 WITH `composite_01` AS (
-SELECT `Clients`.`clientname` AS `Sales Client Name`, CAST(NULL AS VARCHAR(255)) AS `Complaint Client Name`, `Sales`.`salesamount` AS `Total Sales`, CAST(NULL AS SIGNED) AS `Complaint Count`
+SELECT `Clients`.`clientname` AS `Sales Client Name`, CAST(NULL AS CHAR(255)) AS `Complaint Client Name`, `Sales`.`salesamount` AS `Total Sales`, CAST(NULL AS CHAR(255)) AS `Complaint Count`
 FROM `orionbelt_1`.`sales` AS `Sales`
 LEFT JOIN `orionbelt_1`.`clients` AS `Clients` ON (`Sales`.`salesclient` = `Clients`.`clientid`)
 UNION ALL
-SELECT CAST(NULL AS VARCHAR(255)) AS `Sales Client Name`, `Clients`.`clientname` AS `Complaint Client Name`, CAST(NULL AS DECIMAL(18, 2)) AS `Total Sales`, `Client Complaints`.`complid` AS `Complaint Count`
+SELECT CAST(NULL AS CHAR(255)) AS `Sales Client Name`, `Clients`.`clientname` AS `Complaint Client Name`, CAST(NULL AS DECIMAL(18, 2)) AS `Total Sales`, `Client Complaints`.`complid` AS `Complaint Count`
 FROM `orionbelt_1`.`clientcomplaints` AS `Client Complaints`
 LEFT JOIN `orionbelt_1`.`clients` AS `Clients` ON (`Client Complaints`.`complclientid` = `Clients`.`clientid`)
 )

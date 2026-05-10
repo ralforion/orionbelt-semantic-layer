@@ -27,7 +27,7 @@ SELECT date_spine.spine_date AS `Sales Month`,
 ),
 `pop_compare` AS (
 SELECT pop_base.`Sales Month` AS `Sales Month`,
-       pop_base.`Total Sales` / NULLIF(prev.`Total Sales`, 0) - 1 AS `Sales YoY Growth`
+       CAST(pop_base.`Total Sales` AS DECIMAL(38, 14)) / CAST(NULLIF(prev.`Total Sales`, 0) AS DECIMAL(38, 14)) - 1 AS `Sales YoY Growth`
   FROM pop_base
   LEFT JOIN date_spine ON pop_base.`Sales Month` = date_spine.spine_date
   LEFT JOIN pop_base AS prev

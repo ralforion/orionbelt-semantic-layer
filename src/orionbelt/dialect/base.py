@@ -247,6 +247,23 @@ class Dialect(ABC):
         resolved_type = self._resolve_type_name(type_name)
         return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
 
+    def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
+        """Render an infix binary expression. Dialects override to widen
+        operand precision (e.g. ClickHouse decimal division) or special-case
+        operators that don't translate one-to-one (e.g. MySQL string concat).
+        """
+        return f"({self.compile_expr(left)} {op} {self.compile_expr(right)})"
+
+    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+        """Render ``left / right`` for decimal-typed operands, given raw SQL.
+
+        Used by code paths that build division as string SQL (e.g. PoP
+        comparison CTEs) rather than as ``BinaryOp`` AST nodes. Default
+        is plain SQL division; ClickHouse overrides to widen both sides
+        to ``Decimal(38, 10)`` first so ratio precision survives.
+        """
+        return f"{left_sql} / {right_sql}"
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Compile COUNT with multiple fields by concatenating with ``||``.
 
@@ -420,7 +437,7 @@ class Dialect(ABC):
                     return f"{fname}(DISTINCT {args_sql})"
                 return f"{fname}({args_sql})"
             case BinaryOp(left=left, op=op, right=right):
-                return f"({self.compile_expr(left)} {op} {self.compile_expr(right)})"
+                return self._compile_binary_op(left, op, right)
             case UnaryOp(op=op, operand=operand):
                 return f"({op} {self.compile_expr(operand)})"
             case IsNull(expr=inner, negated=False):
