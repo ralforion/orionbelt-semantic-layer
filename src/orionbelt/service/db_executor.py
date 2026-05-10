@@ -169,7 +169,7 @@ def _default_format_for_duckdb_type(type_obj: Any) -> str | None:
 
 def _arrow_type_to_hint(arrow_type: Any) -> str:
     """Map a PyArrow type to a simple type hint string."""
-    import pyarrow as pa  # type: ignore[import-untyped]
+    import pyarrow as pa
 
     if (
         pa.types.is_integer(arrow_type)

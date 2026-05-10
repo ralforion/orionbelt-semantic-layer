@@ -233,34 +233,56 @@ class CFLPlanner:
     ) -> str | None:
         """Resolve the SQL type for NULL padding in CFL UNION ALL legs.
 
-        For single- or zero-column measures, prefers the measure's resolved
-        ``data_type`` rendered through *dialect* so the NULL padding type
-        aligns with what the outer aggregation will CAST to. This avoids
-        cross-family widening in dialects with strict numeric typing — most
-        notably ClickHouse, where mixing ``Decimal`` (the source column's
-        actual database type) and ``Float64`` (its declared OBML
-        ``abstractType``) inside a UNION ALL produces a ``Variant`` that
-        SUM cannot consume (``ILLEGAL_TYPE_OF_ARGUMENT``).
+        Two regimes apply:
 
-        For multi-field measures (e.g. ``COUNT(a, b)``), falls back to the
-        per-column ``abstract_type`` so each NULL slot matches its
-        corresponding column's underlying type.
+        * **Numeric aggregates** (SUM / AVG / MIN / MAX / MEDIAN / etc.) —
+          the inner column projection is the *aggregate's input column*, and
+          OBSL casts the outer aggregate to the measure's declared
+          ``dataType`` (e.g. ``decimal(18, 2)``). Padding with that same
+          declared type keeps every CFL leg's column compatible with the
+          outer ``SUM``/``AVG`` and avoids ClickHouse's ``Decimal`` +
+          ``Float64`` Variant trap (where padding with the column's
+          declared OBML ``abstractType: float`` mismatches storage as
+          ``Decimal`` and produces ``ILLEGAL_TYPE_OF_ARGUMENT``).
+
+        * **Count-style aggregates** (COUNT / COUNT_DISTINCT) — the inner
+          column projection is the *raw column itself* (e.g. ``complid``,
+          a text ID). The outer ``COUNT(DISTINCT ...)`` happily counts any
+          type, but each CFL leg's column must agree on a type for
+          ``UNION ALL``. Padding with the declared aggregate output type
+          (BIGINT) trips strict-typed engines (Postgres / MySQL / strict
+          ClickHouse) when the source column is text. Pad with the
+          source column's abstract type instead.
+
+        For multi-field measures (e.g. ``COUNT(a, b)``), per-column
+        abstract types are used regardless of aggregation kind.
         """
         model_measure = model.measures.get(measure.name)
         if not model_measure:
             return None
-        # Single-/zero-column measures: align NULL padding with outer CAST target
+        agg = (model_measure.aggregation or "").lower()
+        is_count_style = agg in ("count", "count_distinct")
+        # Multi-field measures: per-column abstract_type for each slot.
+        if len(model_measure.columns) > 1:
+            if field_idx < len(model_measure.columns):
+                ref = model_measure.columns[field_idx]
+                obj = model.data_objects.get(ref.view) if ref.view else None
+                if obj and ref.column in obj.columns:
+                    return obj.columns[ref.column].abstract_type.value
+            return model_measure.result_type.value
+        # Single-/zero-column COUNT-style: pad with the source column's
+        # native type so UNION ALL legs agree (raw column, not aggregate).
+        if is_count_style and len(model_measure.columns) == 1:
+            ref = model_measure.columns[0]
+            obj = model.data_objects.get(ref.view) if ref.view else None
+            if obj and ref.column in obj.columns:
+                return obj.columns[ref.column].abstract_type.value
+        # Numeric aggregates: align padding with the outer CAST target.
         if dialect is not None and len(model_measure.columns) <= 1:
             resolved = resolve_measure_data_type(model_measure, model.settings)
             if resolved is not None:
                 return dialect.render_obml_type(resolved)
-        # Multi-field measures: per-column abstract_type
-        if field_idx < len(model_measure.columns):
-            ref = model_measure.columns[field_idx]
-            obj = model.data_objects.get(ref.view) if ref.view else None
-            if obj and ref.column in obj.columns:
-                return obj.columns[ref.column].abstract_type.value
-        # Fallback to measure result_type
+        # Fallback to measure result_type.
         return model_measure.result_type.value
 
     @staticmethod

@@ -1,0 +1,9 @@
+WITH "composite_01" AS (
+SELECT "Returns"."returnamount" AS "Total Returns", CAST(round(NULL, 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
+FROM "orionbelt_1"."returns" AS "Returns"
+UNION ALL
+SELECT CAST(round(NULL, 2) AS Nullable(Decimal(18, 2))) AS "Total Returns", "Sales"."salesamount" AS "Total Sales"
+FROM "orionbelt_1"."sales" AS "Sales"
+)
+SELECT CAST(round(SUM("composite_01"."Total Returns"), 2) AS Nullable(Decimal(18, 2))) AS "Total Returns", CAST(round(SUM("composite_01"."Total Sales"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", CAST(round((CAST(SUM("composite_01"."Total Returns") AS Nullable(Decimal(38, 14))) / CAST(SUM("composite_01"."Total Sales") AS Nullable(Decimal(38, 14)))), 4) AS Nullable(Decimal(18, 4))) AS "Return Rate"
+FROM composite_01 AS "composite_01"

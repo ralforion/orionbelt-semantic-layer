@@ -1,0 +1,585 @@
+last_verified_by: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[07_total_sales_by_client_with_complaints]
+sql: 'WITH "composite_01" AS (
+
+  SELECT "Clients"."clientname" AS "Sales Client Name", "Sales"."salesamount" AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+
+  UNION ALL BY NAME
+
+  SELECT "Clients"."clientname" AS "Complaint Client Name", "Client Complaints"."complid" AS "Complaint Count"
+
+  FROM "orionbelt_1"."clientcomplaints" AS "Client Complaints"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Client Complaints"."complclientid" = "Clients"."clientid")
+
+  )
+
+  SELECT COALESCE("Sales Client Name", "Complaint Client Name") AS "Client", CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18,
+  2)) AS "Total Sales", CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS BIGINT) AS "Complaint Count"
+
+  FROM composite_01 AS "composite_01"
+
+  GROUP BY COALESCE("Sales Client Name", "Complaint Client Name")
+
+  HAVING (CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS BIGINT) > 0)
+
+  '
+rows:
+- - Alex Bauer
+  - '5321.74'
+  - 1
+- - Alex Dvorak
+  - '3648.74'
+  - 1
+- - Alex Lopez
+  - '26846.29'
+  - 1
+- - Alex Müller
+  - '6034.55'
+  - 1
+- - Alex O'Brien
+  - '45210.34'
+  - 1
+- - Alex Petrov
+  - '26708.73'
+  - 1
+- - Alex Yamamoto
+  - '18081.54'
+  - 2
+- - Avery Garcia
+  - '10603.19'
+  - 1
+- - Avery Müller
+  - '76877.10'
+  - 3
+- - Avery Xu
+  - '9984.31'
+  - 1
+- - Bailey Eriksen
+  - '409659.03'
+  - 1
+- - Bailey Garcia
+  - '125627.80'
+  - 1
+- - Bailey Rossi
+  - '50638.31'
+  - 1
+- - Bailey Xu
+  - '2959.95'
+  - 2
+- - Bailey Yamamoto
+  - '40059.21'
+  - 1
+- - Blake Klein
+  - '119829.94'
+  - 1
+- - Blake Lopez
+  - '6948.21'
+  - 1
+- - Blake Nakamura
+  - '463401.54'
+  - 1
+- - Blake Schmidt
+  - '2730.48'
+  - 2
+- - Blake Zhang
+  - '199927.71'
+  - 2
+- - Cameron Eriksen
+  - '6768.67'
+  - 1
+- - Cameron Garcia
+  - '146688.03'
+  - 1
+- - Cameron Hassan
+  - '11866.66'
+  - 1
+- - Cameron Ueda
+  - null
+  - 1
+- - Cameron Weber
+  - '98070.01'
+  - 2
+- - Cameron Xu
+  - '22020.28'
+  - 2
+- - Casey Hassan
+  - '199237.88'
+  - 2
+- - Casey Schmidt
+  - '11256.77'
+  - 1
+- - Casey Yamamoto
+  - '9169.53'
+  - 3
+- - Dana Eriksen
+  - '618133.99'
+  - 1
+- - Dana Fischer
+  - '51732.98'
+  - 1
+- - Dana Klein
+  - '30289.07'
+  - 2
+- - Dana Lopez
+  - '5108.70'
+  - 2
+- - Dana Nakamura
+  - '5822.39'
+  - 2
+- - Dana Quinn
+  - '99565.14'
+  - 1
+- - Dana Ueda
+  - '7318.70'
+  - 1
+- - Dana Xu
+  - '29980.20'
+  - 2
+- - Dana Yamamoto
+  - '24066.44'
+  - 1
+- - Dana Zhang
+  - '7485.53'
+  - 2
+- - Drew Eriksen
+  - '8578.67'
+  - 2
+- - Drew Jansen
+  - '237744.44'
+  - 1
+- - Drew Petrov
+  - '19364.48'
+  - 1
+- - Drew Tanaka
+  - '10955.25'
+  - 3
+- - Drew Ueda
+  - '3557.13'
+  - 1
+- - Drew Yamamoto
+  - '3838.48'
+  - 1
+- - Eden Garcia
+  - '605698.02'
+  - 1
+- - Eden Ivanov
+  - '2224.55'
+  - 1
+- - Eden Jansen
+  - '2916.59'
+  - 1
+- - Eden Nakamura
+  - '158464.40'
+  - 1
+- - Eden Schmidt
+  - '3809.22'
+  - 1
+- - Erin Bauer
+  - '15544.59'
+  - 1
+- - Erin Eriksen
+  - '1736.63'
+  - 1
+- - Erin O'Brien
+  - '5501.33'
+  - 1
+- - Erin Schmidt
+  - '3810.32'
+  - 1
+- - Erin Xu
+  - '24254.53'
+  - 1
+- - Finley Costa
+  - '3362.84'
+  - 1
+- - Finley Müller
+  - '67419.52'
+  - 2
+- - Finley Quinn
+  - '7660.86'
+  - 2
+- - Finley Rossi
+  - '4041.27'
+  - 1
+- - Finley Vargas
+  - '9109.93'
+  - 3
+- - Finley Xu
+  - null
+  - 2
+- - Fran Dvorak
+  - '21916.54'
+  - 1
+- - Fran Fischer
+  - '4847.08'
+  - 1
+- - Fran Yamamoto
+  - '1164.66'
+  - 2
+- - Gale Costa
+  - '51843.99'
+  - 1
+- - Gale Hassan
+  - '12041.73'
+  - 1
+- - Gale Rossi
+  - '6610.27'
+  - 1
+- - Gale Xu
+  - '49872.50'
+  - 2
+- - Gale Yamamoto
+  - '5505.73'
+  - 1
+- - Gale Zhang
+  - '1282.69'
+  - 3
+- - Hayden Dvorak
+  - '2942.80'
+  - 1
+- - Hayden Lopez
+  - '3172.84'
+  - 2
+- - Indigo Hassan
+  - '17377.19'
+  - 2
+- - Indigo Klein
+  - '10183.86'
+  - 1
+- - Indigo Nakamura
+  - '2551.44'
+  - 2
+- - Indigo Xu
+  - '5390.43'
+  - 1
+- - Jordan Eriksen
+  - '37074.89'
+  - 1
+- - Jordan Fischer
+  - '5446.03'
+  - 1
+- - Jordan Klein
+  - null
+  - 1
+- - Jordan Tanaka
+  - '12379.56'
+  - 1
+- - Jordan Ueda
+  - '6404.50'
+  - 2
+- - Jordan Yamamoto
+  - '8110.59'
+  - 1
+- - Kai Costa
+  - '15829.62'
+  - 1
+- - Kai Fischer
+  - null
+  - 1
+- - Kai Garcia
+  - '1163890.35'
+  - 1
+- - Kai Hassan
+  - '10350.85'
+  - 1
+- - Kai Klein
+  - '27966.21'
+  - 1
+- - Kai Müller
+  - '3986.33'
+  - 1
+- - Kai Nakamura
+  - '14103.44'
+  - 1
+- - Kai Schmidt
+  - '1855.04'
+  - 1
+- - Kai Tanaka
+  - '23591.46'
+  - 1
+- - Kai Ueda
+  - '614050.14'
+  - 2
+- - Logan Adler
+  - '463799.88'
+  - 1
+- - Logan Costa
+  - '3070.46'
+  - 1
+- - Logan Dvorak
+  - '5514.22'
+  - 3
+- - Logan Ivanov
+  - '2860.69'
+  - 1
+- - Logan Schmidt
+  - '6960.42'
+  - 1
+- - Logan Yamamoto
+  - '8560.67'
+  - 1
+- - Logan Zhang
+  - '10667.12'
+  - 2
+- - Morgan Adler
+  - '7928.16'
+  - 1
+- - Morgan Garcia
+  - '239997.42'
+  - 1
+- - Morgan Hassan
+  - '18804.91'
+  - 2
+- - Morgan Müller
+  - '55099.66'
+  - 1
+- - Morgan O'Brien
+  - '2708.41'
+  - 1
+- - Morgan Ueda
+  - '13090.72'
+  - 2
+- - Noel Hassan
+  - '236966.52'
+  - 2
+- - Noel Ivanov
+  - '30883.76'
+  - 2
+- - Noel Jansen
+  - '2151.30'
+  - 1
+- - Noel Quinn
+  - '2192.88'
+  - 1
+- - Noel Tanaka
+  - '27240.92'
+  - 1
+- - Noel Yamamoto
+  - '6734.17'
+  - 2
+- - Ollie Bauer
+  - '7427.63'
+  - 1
+- - Ollie Fischer
+  - '7889.99'
+  - 1
+- - Ollie Garcia
+  - '32843.48'
+  - 1
+- - Ollie Jansen
+  - '88838.98'
+  - 1
+- - Ollie Nakamura
+  - null
+  - 2
+- - Ollie Vargas
+  - '15558.36'
+  - 1
+- - Ollie Xu
+  - '5740.70'
+  - 1
+- - Ollie Yamamoto
+  - '27618.96'
+  - 3
+- - Ollie Zhang
+  - '10824.82'
+  - 2
+- - Parker Adler
+  - '9929.01'
+  - 1
+- - Parker Bauer
+  - '428.11'
+  - 1
+- - Parker Fischer
+  - '4250.37'
+  - 1
+- - Parker Jansen
+  - '24023.47'
+  - 1
+- - Parker O'Brien
+  - '6715.68'
+  - 1
+- - Parker Rossi
+  - '4991.38'
+  - 1
+- - Parker Zhang
+  - '86556.53'
+  - 2
+- - Quinn Dvorak
+  - '3997.37'
+  - 1
+- - Quinn Klein
+  - '105157.42'
+  - 2
+- - Quinn O'Brien
+  - '23142.89'
+  - 1
+- - Quinn Zhang
+  - '24575.50'
+  - 1
+- - Riley Dvorak
+  - '17210.04'
+  - 1
+- - Riley Garcia
+  - '14779.82'
+  - 1
+- - Riley Ivanov
+  - '4976.54'
+  - 1
+- - Riley Rossi
+  - '1505.47'
+  - 1
+- - Riley Tanaka
+  - '1961.55'
+  - 1
+- - Riley Ueda
+  - '34753.33'
+  - 1
+- - Riley Vargas
+  - '3483.92'
+  - 1
+- - Riley Yamamoto
+  - '2558.92'
+  - 1
+- - Riley Zhang
+  - '4696.44'
+  - 3
+- - Sage Garcia
+  - '13093.41'
+  - 1
+- - Sage Quinn
+  - null
+  - 1
+- - Sage Rossi
+  - '7244.42'
+  - 1
+- - Sage Ueda
+  - '2277.29'
+  - 1
+- - Sage Vargas
+  - '67964.53'
+  - 1
+- - Sage Yamamoto
+  - '7664.97'
+  - 2
+- - Taylor Bauer
+  - '31291.73'
+  - 1
+- - Taylor Fischer
+  - '18122.18'
+  - 3
+- - Taylor Garcia
+  - '121044.71'
+  - 2
+- - Taylor Lopez
+  - '1771797.34'
+  - 1
+- - Taylor O'Brien
+  - '4130.90'
+  - 2
+- - Taylor Rossi
+  - '5444.49'
+  - 1
+- - Taylor Schmidt
+  - '50372.02'
+  - 2
+- - Taylor Ueda
+  - '3631.79'
+  - 2
+- - Taylor Vargas
+  - '3487.77'
+  - 2
+- - Uriah Bauer
+  - '576357.13'
+  - 1
+- - Uriah Eriksen
+  - '14301.47'
+  - 1
+- - Uriah Fischer
+  - '131665.39'
+  - 1
+- - Uriah Hassan
+  - '284860.23'
+  - 1
+- - Uriah Petrov
+  - '708.45'
+  - 2
+- - Uriah Tanaka
+  - '25672.40'
+  - 1
+- - Val Bauer
+  - '7136.71'
+  - 1
+- - Val Costa
+  - '7077.35'
+  - 1
+- - Val Ivanov
+  - '8622675.58'
+  - 1
+- - Wren Bauer
+  - '3279.47'
+  - 1
+- - Wren Garcia
+  - '28546.06'
+  - 1
+- - Wren Klein
+  - null
+  - 1
+- - Wren Lopez
+  - '7907.13'
+  - 1
+- - Wren Weber
+  - '51347.08'
+  - 2
+- - Xen Garcia
+  - '1768.57'
+  - 2
+- - Xen Klein
+  - '6510.54'
+  - 1
+- - Xen Müller
+  - null
+  - 1
+- - Xen Nakamura
+  - null
+  - 1
+- - Xen Schmidt
+  - '483833.65'
+  - 1
+- - Xen Tanaka
+  - '10696.46'
+  - 1
+- - Xen Weber
+  - '5606.54'
+  - 3
+- - Xen Yamamoto
+  - '5272.53'
+  - 2
+- - Yael Klein
+  - '19824.63'
+  - 1
+- - Yael Quinn
+  - '4074.24'
+  - 1
+- - Zion Dvorak
+  - '37005.40'
+  - 1
+- - Zion Müller
+  - null
+  - 2
+- - Zion Rossi
+  - '9504.98'
+  - 1
+- - Zion Ueda
+  - '40031.75'
+  - 2
+- - Zion Xu
+  - '2177.14'
+  - 1
+- - Zion Yamamoto
+  - '12057.47'
+  - 1

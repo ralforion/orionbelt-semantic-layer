@@ -1,0 +1,94 @@
+# v0 corpus manifest for the correctness + drift suites.
+#
+# Each entry references a pure-OBML query file under ``queries/<id>.yaml``
+# (each of those is exactly the body you would POST to /v1/query/sql) and
+# attaches test-rig metadata that does NOT belong in the query schema:
+#
+#   id              — stable identifier; doubles as the query filename
+#                     (queries/<id>.yaml) and the snapshot file basename
+#                     (drift/duckdb/<id>.yaml, drift/compile_only/<dialect>/<id>.sql)
+#   description     — one-line human summary; surfaced in test failures
+#   lastVerifiedBy  — pytest node ID of the Tier 1 test that ratifies the
+#                     captured drift snapshot (plan §4.1)
+#   handSql         — optional. Present only on entries with a §3.3
+#                     hand-SQL ratifier. ``refFile`` is relative to
+#                     reference_sql/; ``sortKeys`` is the list of
+#                     dimension columns used to canonicalize row order
+#                     before comparing OBSL output against the hand SQL.
+
+- id: 01_total_sales
+  description: Corpus #1 — ungrouped Total Sales (anchors aggregation invariance).
+  lastVerifiedBy: tests/integration/correctness/test_aggregation_invariance.py::test_total_sales_equals_sum_by_country
+
+- id: 02_total_sales_by_country
+  description: Corpus #2 — dim path Sales→Clients→Countries.
+  lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[02_total_sales_by_country]
+  handSql:
+    refFile: total_sales_by_country.sql
+    sortKeys: [Sales Country Name]
+
+- id: 03_total_sales_by_year_month
+  description: Corpus #3 — time-grain composition (year ⊆ month).
+  lastVerifiedBy: tests/integration/correctness/test_hierarchical_rollup.py::test_year_equals_sum_of_year_month
+
+- id: 04_sales_returns_cfl_by_country
+  description: Corpus #4 — CFL with shared dim (Sales + Returns by Country).
+  lastVerifiedBy: tests/integration/correctness/test_cfl_split.py::test_sales_returns_cfl_split_by_country
+
+- id: 05_sales_purchases_cfl_ungrouped
+  description: Corpus #5 — CFL, no shared dim, ungrouped (Total Sales + Total Purchases).
+  lastVerifiedBy: tests/integration/correctness/test_cfl_split.py::test_sales_purchases_cfl_split_ungrouped
+
+- id: 06_total_sales_by_sales_client
+  description: Corpus #6 — role-playing dim via Sales (Sales Client Name).
+  lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[06_total_sales_by_sales_client]
+  handSql:
+    refFile: total_sales_by_sales_client.sql
+    sortKeys: [Sales Client Name]
+
+- id: 07_total_sales_by_client_with_complaints
+  description: >-
+    Corpus #7 — CoalesceDimension over two role-playing client dims (Sales
+    Client Name via Sales, Complaint Client Name via Client Complaints),
+    with HAVING on Complaint Count > 0 to filter to clients with complaints.
+    Outer SELECT collapses the two role-playing legs with COALESCE(d1, d2)
+    AS "Client" and groups by the alias — one row per physical client.
+  lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[07_total_sales_by_client_with_complaints]
+  handSql:
+    refFile: total_sales_by_client_with_complaints.sql
+    sortKeys: [Client]
+
+- id: 08_average_sale
+  description: Corpus #8 — derived metric (Total Sales / Sales Order Count).
+  lastVerifiedBy: tests/integration/correctness/test_metric_algebra.py::test_average_sale_equals_total_sales_over_order_count
+
+- id: 09_return_rate
+  description: Corpus #9 — cross-fact ratio (Total Returns / Total Sales).
+  lastVerifiedBy: tests/integration/correctness/test_metric_algebra.py::test_return_rate_equals_returns_over_sales
+
+- id: 10_cumulative_sales_by_month
+  description: Corpus #10 — cumulative window over monthly Total Sales.
+  lastVerifiedBy: tests/integration/correctness/test_pandas_baseline.py::test_cumulative_sales_by_month
+
+- id: 11_rolling_30_day_sales
+  description: Corpus #11 — 30-row rolling AVG over daily Total Sales.
+  lastVerifiedBy: tests/integration/correctness/test_pandas_baseline.py::test_rolling_30_day_sales
+
+- id: 12_total_sales_country_in_filter
+  description: Corpus #12 — WHERE country IN (...).
+  lastVerifiedBy: tests/integration/correctness/test_filter_additivity.py::test_country_in_filter_additivity
+
+- id: 13_sales_yoy_growth
+  description: Corpus #13 — period-over-period percent change vs same month last year.
+  lastVerifiedBy: tests/integration/correctness/test_pandas_baseline.py::test_sales_yoy_growth
+
+- id: 14_total_sales_year_filter
+  description: Corpus #14 — aggregation invariance under WHERE on Sales Year.
+  lastVerifiedBy: tests/integration/correctness/test_aggregation_invariance.py::test_total_sales_invariance_under_year_filter
+
+- id: 15_total_account_balance
+  description: Corpus #15 — single-fact ungrouped sum.
+  lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[15_total_account_balance]
+  handSql:
+    refFile: total_account_balance.sql
+    sortKeys: []

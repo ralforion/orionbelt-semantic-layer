@@ -828,9 +828,16 @@ metrics:
     timeDimension: Sales Date
     cumulativeType: avg
     window: 30
-    dataType: "decimal(18, 2)"
-    format: "#,##0.00"
-    description: 30-day moving average of daily sales
+    # Whole-dollar precision: a 30-day rolling AVG is a smoothed
+    # metric where cent precision is noise (daily values typically
+    # vary by hundreds), and casting to decimal(18, 2) exposes a
+    # half-cent boundary where DuckDB (HALF_UP), Postgres / MySQL
+    # (HALF_EVEN), and ClickHouse (engine-internal) disagree at the
+    # last digit. Whole-dollar precision is deterministic across
+    # every dialect and arguably more honest for the metric.
+    dataType: "decimal(18, 0)"
+    format: "#,##0"
+    description: 30-day moving average of daily sales (whole dollars)
   MTD Sales:
     type: cumulative
     measure: Total Sales

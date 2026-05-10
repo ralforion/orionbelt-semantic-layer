@@ -2,6 +2,28 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.3.0] - 2026-05-10
+
+### Added
+
+- **Two-tier integration test framework.** `tests/integration/correctness/` ratifies query results via independent computation paths (aggregation invariance, hierarchical rollup, hand-SQL reference, pandas baseline, metric algebra, CFL split, filter additivity); `tests/integration/drift/` snapshots compiled SQL + canonical-sorted result rows per query (DuckDB exec + 8-dialect compile-only + a metadata gate that validates every snapshot's `last_verified_by` pointer is a real, collectable pytest test). Pure-OBML query files under `tests/integration/correctness/queries/` plus a sidecar `corpus.yaml` manifest keep the schema-faithful query bodies separated from test-rig metadata. Operator manual at `docs/guide/correctness-and-drift-tests.md`; dev quick-reference at `tests/integration/README.md`.
+- **Phase A vendor-execution sweep** — every corpus query × every available local engine (DuckDB, Postgres 16, MySQL 8, ClickHouse) via testcontainers, gated by `pytest -m docker`. 60 / 60 pass, no xfails. Cross-vendor row normalisation: tz-naive datetime, midnight-→-date collapse, numeric values rounded via `float()` to 11 significant digits to absorb cross-engine ULP drift while preserving money sums up to ~$100 B at 2-dp precision.
+
+### Changed
+
+- **Cumulative metrics now respect their declared `dataType`.** `compiler/cumulative_wrap.py` casts the inner `cumulative_base` projection and the outer windowed aggregate to the metric's declared decimal type. Pre-fix, `Cumulative Sales` declared `decimal(18, 2)` returned DOUBLE values with last-bit drift like `281222.37999999995`; now it returns exact 2-dp Decimals.
+- **HAVING auto-includes referenced measures.** `compiler/resolution.py` pre-scans every HAVING filter (recursively across `QueryFilterGroup`) and ensures every referenced measure / metric ends up in `resolved.measures` *before* base-object selection. A HAVING-only measure from a different fact correctly flips the planner into CFL mode. The auto-included measure is dropped from the final SELECT so the user only sees columns they asked for.
+- **Demo metric `Rolling 30 Day Sales` declares `decimal(18, 0)`** (was `decimal(18, 2)`). A 30-day rolling AVG is a smoothed metric where cent precision is noise — and the .5-cent boundary diverges across engines (DuckDB HALF_UP vs Postgres / MySQL HALF_EVEN vs ClickHouse engine-internal). Whole-dollar precision is engine-stable.
+
+### Fixed
+
+- **CFL NULL-pad type matches the source column for COUNT-style aggregates.** Inner-leg padding for `count` / `count_distinct` measures now uses the *raw column*'s abstract type (e.g. VARCHAR for `complid`) instead of the outer aggregate's declared bigint. Strict-typed engines (Postgres / MySQL / ClickHouse) accept the resulting `UNION ALL`; numeric SUM/AVG aggregates keep the existing outer-CAST-target alignment so the ClickHouse `Decimal` + `Float64` Variant trap stays closed.
+- **MySQL `CAST` accepts text values.** `dialect/mysql.py::_compile_cast` translates `VARCHAR[(N)]` → `CHAR[(N)]` at cast time; MySQL's CAST type vocabulary excludes VARCHAR but DDL paths still use the wider type.
+- **MySQL ratio precision.** `dialect/mysql.py::render_decimal_division_sql` widens both operands to `DECIMAL(38, 14)` so `div_precision_increment`'s default 4 extra fractional digits doesn't truncate ratios to 6 dp.
+- **ClickHouse Decimal division precision.** `_compile_binary_op` and `render_decimal_division_sql` widen `/` operands to `Nullable(Decimal(38, 14))`. Without this, `Decimal(18, 2) / Decimal(18, 2) = Decimal(18, 2)` truncated `Return Rate` to `0.03` instead of `0.0365`.
+- **ClickHouse Decimal CAST rounds, not truncates.** `_compile_cast` now wraps the inner expression in `round(x, S)` before `CAST(... AS Decimal(P, S))`. ClickHouse's CAST silently truncated (`CAST(4323.99 AS Decimal(18, 0)) → 4323`), diverging from DuckDB / Postgres / MySQL whose decimal CAST rounds.
+- **CI lint job runs cleanly.** `pyproject.toml` now suppresses `pyarrow` `import-untyped` errors via a per-module mypy override (mirroring the existing pandas one). Removed two pre-existing ruff-format drifts (`parser/validator.py`, `tests/unit/test_parser.py`) that were failing CI on `main`.
+
 ## [2.2.1] - 2026-05-09
 
 ### Changed

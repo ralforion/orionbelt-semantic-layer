@@ -57,8 +57,8 @@ def encode(
     physical_tables: list[str],
 ) -> bytes:
     """Serialize a query result envelope as a single Parquet blob."""
-    import pyarrow as pa  # type: ignore[import-untyped]
-    import pyarrow.parquet as pq  # type: ignore[import-untyped]
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     column_names = [str(c.get("name", f"col_{i}")) for i, c in enumerate(columns)]
     if rows:

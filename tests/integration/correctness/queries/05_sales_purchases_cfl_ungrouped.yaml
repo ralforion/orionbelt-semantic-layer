@@ -1,0 +1,2 @@
+select:
+  measures: [Total Sales, Total Purchases]

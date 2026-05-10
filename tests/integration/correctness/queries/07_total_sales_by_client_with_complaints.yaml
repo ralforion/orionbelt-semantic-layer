@@ -1,0 +1,9 @@
+select:
+  dimensions:
+    - coalesce: [Sales Client Name, Complaint Client Name]
+      as: Client
+  measures: [Total Sales, Complaint Count]
+having:
+  - field: Complaint Count
+    op: gt
+    value: 0

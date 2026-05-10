@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from orionbelt.ast.nodes import AliasedExpr, Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
@@ -86,6 +87,32 @@ class CompilationResult:
     """Deduplicated list of ``DATABASE.SCHEMA.CODE`` triples reached by the
     query. Drives freshness-cache TTL composition and heartbeat
     invalidation. See ``design/PLAN_freshness_driven_cache.md`` §8."""
+
+
+def _drop_having_only_projection(ast: Select, resolved: ResolvedQuery) -> Select:
+    """Strip auto-included HAVING-only measures from the outermost SELECT.
+
+    The resolver auto-includes any measure referenced by HAVING but not
+    listed in ``select.measures`` (so the SQL stays valid — see
+    Finding 2 in the compiler-findings plan). The planner / aggregation
+    wrappers then project that measure in their outer SELECT, which
+    leaks it into the user's output as an extra column.
+
+    HAVING itself emits the aggregate inline (not via the alias), so
+    dropping the having-only column from the outermost SELECT keeps
+    the HAVING reference valid. Inner CTEs / leg projections are
+    untouched: those still need the column for aggregation.
+    """
+    if not resolved.having_only_measures:
+        return ast
+    kept_columns = [
+        col
+        for col in ast.columns
+        if not (isinstance(col, AliasedExpr) and col.alias in resolved.having_only_measures)
+    ]
+    if len(kept_columns) == len(ast.columns):
+        return ast
+    return replace(ast, columns=kept_columns)
 
 
 def _compute_physical_tables(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
@@ -203,8 +230,16 @@ class CompilationPipeline:
             else:
                 wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
 
-            # Wrap with cumulative CTE if needed
-            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved)
+            # Wrap with cumulative CTE if needed.
+            # Pass model + dialect so the wrapper can apply the declared
+            # dataType cast inside cumulative_base and on the outer
+            # window — otherwise cumulative output is silently DOUBLE
+            # regardless of the metric's declared type.
+            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved, model=model, dialect=dialect)
+
+            # Drop HAVING-only auto-included measures from the final SELECT
+            # so the user only sees the columns they asked for.
+            wrapped_ast = _drop_having_only_projection(wrapped_ast, resolved)
 
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)

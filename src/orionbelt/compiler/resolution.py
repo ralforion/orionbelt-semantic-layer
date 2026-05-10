@@ -198,6 +198,13 @@ class ResolvedQuery:
     via_constraints: dict[str, str] = field(default_factory=dict)
     dimensions_exclude: bool = False
     coalesce_aliases: set[str] = field(default_factory=set)
+    having_only_measures: set[str] = field(default_factory=set)
+    """Measures auto-included by HAVING (not in ``select.measures``).
+
+    Tracked so a future planner pass can optionally drop these from the
+    final SELECT projection. Today they appear in output as an extra
+    column, which keeps the SQL valid and the user gets a visual hint
+    that the HAVING filter referenced an additional measure."""
 
     @property
     def fact_tables(self) -> list[str]:
@@ -313,6 +320,27 @@ class QueryResolver:
                     source_objs = self._get_measure_source_objects(ctx, measure_name)
                     ctx.result.measure_source_objects.update(source_objs)
                     ctx.result.required_objects.update(source_objs)
+
+            # 2.5. Auto-include measures referenced by HAVING but not by SELECT.
+            # Without this, codegen emits a HAVING clause that references an
+            # alias for a column the SELECT doesn't project — every database
+            # rejects the SQL with a "must appear in GROUP BY" binder error.
+            # Routing this through the regular measure-resolution path also
+            # updates ``measure_source_objects`` so the multi-fact CFL trigger
+            # below sees the HAVING-only measure's source.
+            existing_measure_names = {m.name for m in ctx.result.measures}
+            for ref in self._collect_having_measure_refs(query, model):
+                if ref in existing_measure_names:
+                    continue
+                resolved_meas = self._resolve_measure(ctx, ref)
+                if resolved_meas is None:
+                    continue
+                ctx.result.measures.append(resolved_meas)
+                ctx.result.having_only_measures.add(ref)
+                existing_measure_names.add(ref)
+                source_objs = self._get_measure_source_objects(ctx, ref)
+                ctx.result.measure_source_objects.update(source_objs)
+                ctx.result.required_objects.update(source_objs)
 
         # 3. Determine base object (the one with most joins / most measures)
         ctx.result.base_object = self._select_base_object(ctx)
@@ -1045,6 +1073,35 @@ class QueryResolver:
             pop_offset_grain=pop.offset_grain,
             pop_comparison=pop.comparison,
         )
+
+    def _collect_having_measure_refs(self, query: QueryObject, model: SemanticModel) -> list[str]:
+        """Collect measure/metric names referenced in any HAVING filter.
+
+        Walks ``query.having`` recursively (each entry is a
+        ``QueryFilter`` or a ``QueryFilterGroup``) and returns the
+        ordered, de-duplicated list of ``field`` values that name a
+        known measure or metric in the model. Order is preserved for
+        deterministic resolution; duplicates are dropped on first sight.
+        """
+
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _visit(item: QueryFilterItem) -> None:
+            if isinstance(item, QueryFilterGroup):
+                for child in item.filters:
+                    _visit(child)
+                return
+            field = item.field
+            if field in seen:
+                return
+            if field in model.measures or field in model.metrics:
+                seen.add(field)
+                out.append(field)
+
+        for entry in query.having:
+            _visit(entry)
+        return out
 
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
         """Extract all source data objects for a measure or metric."""

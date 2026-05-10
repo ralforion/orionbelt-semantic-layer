@@ -689,9 +689,7 @@ dimensions:
             f"got {[e.message for e in via_warns]}"
         )
 
-    def test_missing_via_warned_when_non_pk_join(
-        self, resolver: ReferenceResolver
-    ) -> None:
+    def test_missing_via_warned_when_non_pk_join(self, resolver: ReferenceResolver) -> None:
         """A target reached via non-PK columns from multiple facts must still warn."""
         yaml_content = """\
 version: 1.0

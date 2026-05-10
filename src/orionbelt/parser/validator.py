@@ -599,9 +599,7 @@ class SemanticValidator:
         return warnings
 
     @staticmethod
-    def _is_path_invariant(
-        model: SemanticModel, target: str, reaching_facts: list[str]
-    ) -> bool:
+    def _is_path_invariant(model: SemanticModel, target: str, reaching_facts: list[str]) -> bool:
         """True when every reaching fact joins to the target on its primary key.
 
         Same Client ID (or Calendar date) from any fact resolves to the same
@@ -614,9 +612,7 @@ class SemanticValidator:
         if target_obj is None:
             return False
 
-        pk_cols = {
-            col_name for col_name, col in target_obj.columns.items() if col.primary_key
-        }
+        pk_cols = {col_name for col_name, col in target_obj.columns.items() if col.primary_key}
         if not pk_cols:
             return False
 

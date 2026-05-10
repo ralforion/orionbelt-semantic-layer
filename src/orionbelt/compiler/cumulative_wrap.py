@@ -16,9 +16,12 @@ the cumulative window functions.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
+    Cast,
     ColumnRef,
     Expr,
     From,
@@ -30,7 +33,15 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.type_resolver import (
+    resolve_measure_data_type,
+    resolve_metric_data_type,
+)
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate
+
+if TYPE_CHECKING:
+    from orionbelt.dialect.base import Dialect
+    from orionbelt.models.semantic import SemanticModel
 
 # Map CumulativeAggType → SQL window function name
 _CUMULATIVE_AGG_MAP: dict[CumulativeAggType, str] = {
@@ -106,10 +117,26 @@ def _build_cumulative_window(
     )
 
 
-def wrap_with_cumulative(ast: Select, resolved: ResolvedQuery) -> Select:
+def wrap_with_cumulative(
+    ast: Select,
+    resolved: ResolvedQuery,
+    *,
+    model: SemanticModel | None = None,
+    dialect: Dialect | None = None,
+) -> Select:
     """Wrap a planner AST with a CTE + outer query for cumulative metrics.
 
     If no cumulative metrics are present, returns ``ast`` unchanged.
+
+    ``model`` and ``dialect`` are used to wrap the base measure expression
+    (inside ``cumulative_base``) and the outer windowed aggregate with
+    ``CAST`` to the declared dataType, mirroring what ``star.py`` and
+    ``cfl.py`` already do for non-cumulative measures. Without those
+    casts, the cumulative_base CTE carries unwrapped DOUBLE values and
+    accumulates float drift through the window — a precision bug that
+    silently violates the metric's declared ``dataType``. Both kwargs
+    are optional so legacy callers continue to compile (without the
+    casts).
     """
     if not resolved.has_cumulative:
         return ast
@@ -136,7 +163,8 @@ def wrap_with_cumulative(ast: Select, resolved: ResolvedQuery) -> Select:
                     # Only add the component if not already present
                     already_in_base = any(_get_alias(c) == comp_name for c in base_columns)
                     if not already_in_base:
-                        base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
+                        comp_expr = _apply_measure_cast(comp.expression, comp.name, model, dialect)
+                        base_columns.append(AliasedExpr(expr=comp_expr, alias=comp.name))
             # If the base measure is already a direct measure, it's already in the columns
         else:
             base_columns.append(col_node)
@@ -170,7 +198,8 @@ def wrap_with_cumulative(ast: Select, resolved: ResolvedQuery) -> Select:
         if m.is_cumulative:
             # Cumulative metric: build window function
             assert m.cumulative_time_dimension is not None
-            window_expr = _build_cumulative_window(m, m.cumulative_time_dimension)
+            window_expr: Expr = _build_cumulative_window(m, m.cumulative_time_dimension)
+            window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
         else:
             # Regular measure or derived metric: pass-through
@@ -194,6 +223,55 @@ def wrap_with_cumulative(ast: Select, resolved: ResolvedQuery) -> Select:
         offset=ast.offset,
         ctes=all_ctes,
     )
+
+
+def _apply_measure_cast(
+    expr: Expr,
+    measure_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap an aggregate expression with the base measure's declared dataType cast.
+
+    Mirrors the cast pattern in ``compiler/star.py`` so the
+    ``cumulative_base`` CTE carries the same precision the metric
+    declares. No-op if either ``model`` or ``dialect`` is None, or if
+    the measure has no resolvable declared type.
+    """
+    if model is None or dialect is None:
+        return expr
+    base_meas = model.measures.get(measure_name)
+    if base_meas is None:
+        return expr
+    resolved_type = resolve_measure_data_type(base_meas, model.settings)
+    if resolved_type is None:
+        return expr
+    return Cast(expr=expr, type_name=dialect.render_obml_type(resolved_type))
+
+
+def _apply_metric_cast(
+    expr: Expr,
+    metric_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a windowed cumulative expression with the metric's declared dataType cast.
+
+    Same shape as ``_apply_measure_cast`` but resolves the type from the
+    cumulative *metric* definition (e.g. ``Cumulative Sales`` declares
+    ``decimal(18, 2)``). Without this the outer windowed aggregate
+    propagates the underlying input type, which for DOUBLE columns
+    introduces last-bit float drift.
+    """
+    if model is None or dialect is None:
+        return expr
+    metric = model.metrics.get(metric_name)
+    if metric is None:
+        return expr
+    resolved_type = resolve_metric_data_type(metric, model.settings)
+    if resolved_type is None:
+        return expr
+    return Cast(expr=expr, type_name=dialect.render_obml_type(resolved_type))
 
 
 def _get_alias(expr: Expr) -> str | None:
