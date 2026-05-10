@@ -148,6 +148,14 @@ plugins = ["pydantic.mypy"]
 module = "pandas.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyarrow ships without a py.typed marker. The API-startup warm-up in
+# api/app.py imports it for the parquet round-trip; the imports there
+# carry inline ``# type: ignore[import-untyped]``. This override
+# silences the same warning anywhere else pyarrow is touched.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "pytest>=9.0",

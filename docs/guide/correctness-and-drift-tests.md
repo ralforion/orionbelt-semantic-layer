@@ -19,9 +19,25 @@ the operator's manual.
 | Full correctness ratification | `uv run pytest tests/integration/correctness/` |
 | Both at once | `uv run pytest tests/integration/correctness/ tests/integration/drift/` |
 | Re-snap after intentional SQL change | `UPDATE_SNAPSHOTS=1 uv run pytest tests/integration/drift/` |
+| Cross-vendor exec (Postgres / MySQL / ClickHouse via testcontainers) | `uv run pytest -m docker tests/integration/drift/vendor_exec/` |
 
-All commands run in well under a second against the bundled DuckDB seed
-(`examples/orionbelt_1_commerce.duckdb`).
+The first four run in well under a second against the bundled DuckDB
+seed (`examples/orionbelt_1_commerce.duckdb`). The vendor-exec sweep
+takes ~20 s including container startup.
+
+## When does it run automatically?
+
+| Tier | CI | Why |
+|---|---|---|
+| Tier 1 — correctness | ✅ every push + PR to `main` | Plain pytest, fast (~1 s) |
+| Tier 2 — drift (DuckDB exec + 8-dialect compile-only + metadata gate) | ✅ every push + PR | Plain pytest, fast (~1.5 s) |
+| Phase A — vendor execution sweep | ❌ skipped in CI | Marked `pytest.mark.docker`; needs Postgres / MySQL / ClickHouse containers |
+
+CI runs both tiers in a **single pytest invocation**, so a green
+workflow implies every drift snapshot is anchored to a green Tier 1
+check by construction. The vendor-exec sweep is opt-in — run locally,
+or wire a separate workflow job that boots service containers if you
+want it on CI.
 
 ## Why two tiers
 
@@ -191,18 +207,54 @@ comparison, etc.).
    green, and commit the query YAML, the manifest entry, and the
    generated drift artefacts in the same change.
 
-## Multi-vendor execution (opt-in)
+## Vendor-execution sweep (Phase A)
 
-Compile-only snapshots cover all 8 registered dialects out of the box.
-Vendor-execution snapshots — running each query against a real
-warehouse and asserting on rows — are not yet wired in v0; see
-plan §5.2 for the design.
+Compile-only snapshots cover all 8 registered dialects without needing
+a database. The vendor-execution sweep adds a stronger check: every
+corpus query is *executed* against a freshly-seeded testcontainer for
+DuckDB, Postgres 16, MySQL 8, and ClickHouse, and the row set is
+compared cell-by-cell to the DuckDB golden under
+`drift/duckdb/<id>.yaml`.
+
+```
+tests/integration/drift/vendor_exec/
+├── _seed.py             ← extracts the bundled commerce DuckDB once,
+│                          loads it into each vendor (DOUBLE → DECIMAL(18,2)
+│                          target type for exact arithmetic)
+├── conftest.py          ← per-vendor container fixtures, all yielding the
+│                          same VendorTarget(name, dialect, execute) shape
+└── test_vendor_exec.py  ← 60 cases (15 corpus × 4 vendors), gated by
+                           pytest.mark.docker
+```
+
+Run it:
+```bash
+# Full sweep across all four engines:
+uv run pytest -m docker tests/integration/drift/vendor_exec/
+
+# One vendor:
+uv run pytest -m docker tests/integration/drift/vendor_exec/test_vendor_exec.py::test_postgres_vendor_exec
+
+# One corpus query, one vendor:
+uv run pytest -m docker tests/integration/drift/vendor_exec/ -k "test_postgres_vendor_exec[07_"
+```
+
+Cross-engine result normalisation: tz-naive datetime, midnight-→-date
+collapse, and numeric values rounded to 12 significant digits via
+`float()` to absorb cross-engine division drift on ratios while
+preserving money sums up to ~$1 T at 2-dp precision.
+
+Phases B (Dremio OSS, Spark SQL, BigQuery emulator) and C (Snowflake /
+real BigQuery / Databricks via env-var-gated cloud creds) are
+follow-up work — see plan §5.2.
 
 ## Limitations
 
-* The cumulative-metric snapshot captures OBSL's current emit, which
-  does **not** cast the windowed output back to the metric's declared
-  `dataType` (e.g. `decimal(18, 2)`). Float drift in the snapshot is
-  expected; a precision-hardening fix is a separate work item.
-* Vendor-side row execution (Postgres / Snowflake / BigQuery) is not in
-  v0. Compile-only drift is the only multi-vendor coverage today.
+* Vendor-side row execution against the four cloud-only engines
+  (Snowflake, BigQuery, Databricks, Dremio cloud) is not in v0. Phase
+  C is gated by demo-account credentials and a separate config knob;
+  follow-up PR.
+* The half-boundary cases on rolling AVG / division-precision ratios
+  are intrinsic to each engine's float / decimal arithmetic and are
+  marked `xfail` in the vendor-exec sweep, not "fixed" by tightening
+  the comparison.
