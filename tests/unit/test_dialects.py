@@ -524,6 +524,35 @@ class TestMySQLDialect:
         assert "CAST" in sql
         assert "TINYINT(1)" in sql
 
+    def test_cast_string_abstract_uses_safe_char_length(self, dialect: MySQLDialect) -> None:
+        """Abstract ``string`` (VARCHAR(255)) maps to CHAR(255) — inside CHAR's limit."""
+        expr = Cast(expr=col("name"), type_name="string")
+        sql = dialect.compile_expr(expr)
+        assert sql == "CAST(`name` AS CHAR(255))"
+
+    def test_cast_obml_string_drops_oversized_length(self, dialect: MySQLDialect) -> None:
+        """OBML ``string`` resolves to VARCHAR(65535) for DDL; in CAST that
+        exceeds CHAR's 255-char column limit, so the dialect must drop the
+        length and emit plain ``CHAR`` rather than the invalid ``CHAR(65535)``.
+        """
+        from orionbelt.models.types import SimpleType
+
+        rendered = dialect.render_obml_type(SimpleType(name="string"))
+        assert rendered == "VARCHAR(65535)"
+        expr = Cast(expr=col("name"), type_name=rendered)
+        sql = dialect.compile_expr(expr)
+        assert sql == "CAST(`name` AS CHAR)"
+
+    def test_cast_varchar_no_length(self, dialect: MySQLDialect) -> None:
+        expr = Cast(expr=col("name"), type_name="VARCHAR")
+        sql = dialect.compile_expr(expr)
+        assert sql == "CAST(`name` AS CHAR)"
+
+    def test_cast_varchar_small_length_preserved(self, dialect: MySQLDialect) -> None:
+        expr = Cast(expr=col("name"), type_name="VARCHAR(64)")
+        sql = dialect.compile_expr(expr)
+        assert sql == "CAST(`name` AS CHAR(64))"
+
 
 class TestCrossDialectConsistency:
     """Ensure the same query produces valid SQL across all dialects."""

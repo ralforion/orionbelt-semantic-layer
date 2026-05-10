@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
 from orionbelt.dialect.base import Dialect, DialectCapabilities, UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+
+_VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
+_MYSQL_CAST_CHAR_MAX = 255
 
 
 @DialectRegistry.register
@@ -116,15 +121,25 @@ class MySQLDialect(Dialect):
         Allowed target types in MySQL are ``BINARY``, ``CHAR``, ``DATE``,
         ``DATETIME``, ``DECIMAL``, ``JSON``, ``NCHAR``, ``SIGNED``,
         ``TIME``, ``UNSIGNED``, and ``YEAR``. Other type maps in this
-        dialect (e.g. ``string → VARCHAR(255)`` for DDL) work fine in
-        ``CREATE TABLE`` but cause a parse error inside ``CAST``. Map
-        ``VARCHAR[(N)]`` → ``CHAR[(N)]`` at cast time only; DDL paths
-        keep the wider VARCHAR type.
+        dialect (e.g. ``string → VARCHAR(65535)`` for DDL) work fine in
+        ``CREATE TABLE`` but cause a parse error inside ``CAST``.
+
+        Rewrite ``VARCHAR[(N)]`` → ``CHAR[(N)]`` at cast time only; DDL
+        paths keep the wider VARCHAR type. CHAR's documented column
+        limit is 255 characters, so any length above that — including
+        the 65535 used for OBML's unbounded ``string`` — is dropped and
+        plain ``CHAR`` is emitted to let MySQL pick a safe internal
+        width without truncating the value.
         """
         resolved = self._resolve_type_name(type_name)
-        upper = resolved.strip().upper()
-        if upper.startswith("VARCHAR"):
-            resolved = "CHAR" + resolved[len("VARCHAR") :].lstrip()
+        match = _VARCHAR_RE.match(resolved)
+        if match is not None:
+            length_group = match.group(1)
+            if length_group is None:
+                resolved = "CHAR"
+            else:
+                length = int(length_group)
+                resolved = f"CHAR({length})" if length <= _MYSQL_CAST_CHAR_MAX else "CHAR"
         return f"CAST({self.compile_expr(inner)} AS {resolved})"
 
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:

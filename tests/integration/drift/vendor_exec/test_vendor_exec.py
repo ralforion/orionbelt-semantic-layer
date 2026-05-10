@@ -23,6 +23,7 @@ tests/integration/drift/vendor_exec/`.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,12 @@ from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[4]
 COMMERCE_MODEL_YAML = REPO_ROOT / "examples" / "orionbelt_1_commerce.yaml"
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "duckdb"
+
+# Canonical decimal serialisation: optional sign, integer with no leading
+# zeros (or a single ``0``), optional fractional part. Excludes scientific
+# notation (``1e3``) and zero-padded IDs (``00123``) so they stay distinct
+# string values during cross-vendor row comparison.
+_CANONICAL_DECIMAL_RE = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
 
 
 # Mark every test in this file as docker-gated.
@@ -110,9 +117,16 @@ def _normalize_value(v: Any) -> Any:
     # comparison symmetric we run numeric-looking strings through the
     # same pipeline. Country names / ISO dates / NULLs don't parse as
     # Decimal so they fall through unchanged.
+    #
+    # Restrict the string→numeric coercion to the *canonical* decimal
+    # form Python's ``Decimal.__str__`` produces (no leading zeros,
+    # no scientific notation). That keeps zero-padded keys like
+    # ``"00123"`` and exponent-form strings like ``"1e3"`` as distinct
+    # string values — coercing them would silently collapse different
+    # IDs into equal cells and mask cross-vendor key-handling bugs.
     if isinstance(v, (Decimal, float)):
         return f"{float(v):.11g}"
-    if isinstance(v, str):
+    if isinstance(v, str) and _CANONICAL_DECIMAL_RE.match(v):
         try:
             return f"{float(Decimal(v)):.11g}"
         except (InvalidOperation, ValueError):
