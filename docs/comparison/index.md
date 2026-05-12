@@ -12,7 +12,7 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Self-hostable | ✅ | Definitions yes, runtime no | ✅ | ❌ | ✅ | ✅ (licensed) |
 | Standalone (no transformation tool dep.) | ✅ | ❌ requires dbt | ✅ | ✅ | ✅ | ✅ |
 | Format | YAML (`OBML`) | YAML on dbt models | DSL (`.malloy`) | DSL (`.lkml`) | YAML / JS + Twig | Visual designer |
-| Query interface | REST + **Arrow Flight SQL** + DB-API + **OrionBelt Semantic QL** (OBSQL) | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | REST + GraphQL + **Postgres-wire SQL** | **MDX + DAX** + JDBC/ODBC + REST |
+| Query interface | **[OrionBelt Semantic QL](../guide/semantic-ql.md)** (OBSQL) + **Arrow Flight SQL** + REST + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | **Cube SQL API** (Postgres-wire) + REST + GraphQL | **MDX + DAX** + JDBC/ODBC + REST |
 | First-class cumulative metric | ✅ | ✅ | Per-query | Partial | Partial (`rolling_window`) | Via MDX |
 | First-class period-over-period metric | ✅ | Via `offset_window` | Per-query | Via table calc | Query-time `time_shift` | Via MDX |
 | Conversion / funnel metrics | ❌ | ✅ | Patterns | Patterns | Patterns | Patterns |
