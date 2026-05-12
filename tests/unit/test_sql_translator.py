@@ -173,9 +173,7 @@ def test_raw_mode_qualified_columns(model: SemanticModel) -> None:
 
 def test_raw_mode_with_where_and_limit(model: SemanticModel) -> None:
     q = translate_sql_to_query(
-        'SELECT "Customers"."Customer ID" FROM m '
-        'WHERE "Customers"."Country" = \'US\' '
-        'LIMIT 50',
+        'SELECT "Customers"."Customer ID" FROM m WHERE "Customers"."Country" = \'US\' LIMIT 50',
         model,
     )
     assert q.select.is_raw

@@ -131,6 +131,13 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Reference modules hold the agent-facing OBML/OBSQL grammar docs as
+# module-level strings. Markdown tables intentionally have long lines
+# (longer than 100 chars). The text is never wrapped by the formatter.
+"src/orionbelt/obml_reference.py" = ["E501"]
+"src/orionbelt/obsql_reference.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

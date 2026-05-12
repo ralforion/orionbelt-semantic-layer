@@ -1162,3 +1162,55 @@ class TestOBSQLEndpoint:
         )
         # Test fixtures do not enable query_execute by default
         assert r.status_code in (200, 503)
+
+
+class TestReferenceEndpoints:
+    """GET /v1/reference and friends — agent / LLM discovery surface."""
+
+    async def test_index_lists_all_references(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference")
+        assert r.status_code == 200
+        names = {entry["name"] for entry in r.json()["references"]}
+        assert names == {"obml", "obsql", "obml-schema", "query-schema"}
+
+    async def test_obml_reference_is_markdown(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/obml")
+        assert r.status_code == 200
+        body = r.json()["reference"]
+        assert "OBML" in body
+        assert "dataObjects" in body
+
+    async def test_obsql_reference_includes_grammar(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/obsql")
+        assert r.status_code == 200
+        body = r.json()["reference"]
+        # Spot-check that the key OBSQL features are documented
+        assert "OBSQL" in body
+        assert "MEASURE(" in body
+        assert "WITH ROLLUP" in body
+        assert "raw mode" in body.lower()
+        assert "RAW_SQL_REJECTED" in body
+        assert "WRITE_OPERATION_REJECTED" in body
+
+    async def test_obml_schema_served(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/obml")
+        assert r.status_code == 200
+        # JSON Schema content-type
+        assert "schema+json" in r.headers["content-type"]
+        body = r.json()
+        # OBML schema's top-level keys
+        assert body.get("$schema") or body.get("type")
+
+    async def test_query_schema_served(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/query")
+        assert r.status_code == 200
+        assert "schema+json" in r.headers["content-type"]
+        body = r.json()
+        assert body.get("$schema") or body.get("type") or "select" in str(body).lower()
+
+    async def test_unknown_schema_404(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/bogus")
+        assert r.status_code == 404
+        # Error names the available schemas
+        detail = r.json().get("detail", "")
+        assert "obml" in detail and "query" in detail
