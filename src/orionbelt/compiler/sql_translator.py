@@ -163,7 +163,31 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
             return metric_labels[key]
         return name
 
-    # --- SELECT ---
+    # --- raw mode detection ---
+    # If every SELECT item is a qualified "<DataObject>"."<column>"
+    # reference, this is OBML raw mode: emit QuerySelect(fields=[...])
+    # with no aggregation. The translator branches early — raw mode has
+    # different semantics (no measures, no GROUP BY, no HAVING).
+    raw_fields = _try_translate_raw_mode(ast, model)
+    if raw_fields == "MIXED":
+        raise SQLTranslationError(
+            [
+                SemanticError(
+                    code="MIXED_RAW_AND_AGGREGATE_MODE",
+                    message=(
+                        "SELECT mixes qualified raw-mode columns "
+                        '(`"DataObject"."column"`) with bare dim/measure labels. '
+                        "Use one form consistently — either all raw or all semantic."
+                    ),
+                )
+            ]
+        )
+    if isinstance(raw_fields, list):
+        return _build_raw_mode_query(
+            raw_fields, ast, model, errors, distinct_flag=bool(ast.args.get("distinct"))
+        )
+
+    # --- SELECT (aggregate mode) ---
     select_dims: list[str] = []
     select_measures: list[str] = []
     if ast.expressions and any(isinstance(e, exp.Star) for e in ast.expressions):
@@ -474,6 +498,324 @@ def _column_name(node: exp.Expression) -> str | None:
     ):
         # MEASURE(<label>) — single arg, must be a bare identifier / column.
         return _column_name(node.expressions[0])
+    return None
+
+
+def _try_translate_raw_mode(ast: exp.Select, model: SemanticModel) -> list[str] | str | None:
+    """Detect OBML raw-mode SELECT by qualified column refs.
+
+    Returns:
+
+    * ``list[str]`` of ``"DataObject.column"`` strings — every SELECT item
+      is a qualified ``<table>.<column>`` reference whose ``<table>``
+      matches a known data object. Translator emits
+      ``QuerySelect.fields`` for this list.
+    * ``"MIXED"`` — at least one qualified raw-mode column *and* at least
+      one bare dim/measure/metric label. Caller raises
+      ``MIXED_RAW_AND_AGGREGATE_MODE``.
+    * ``None`` — no raw-mode columns detected; caller proceeds with the
+      aggregate-mode path.
+
+    Detection rule: a SELECT item is "raw-mode-shaped" iff it's an
+    ``exp.Column`` (or aliased Column) with a non-empty ``.table`` part
+    that matches a known data-object name or label, **and** the bare
+    column name is NOT a known dim/measure/metric (those win
+    aggregate-mode classification).
+    """
+    if not hasattr(model, "data_objects") or not model.data_objects:
+        return None
+
+    known_objects: set[str] = set()
+    for obj_name, obj in model.data_objects.items():
+        known_objects.add(obj_name.lower())
+        label = getattr(obj, "label", obj_name) or obj_name
+        known_objects.add(str(label).lower())
+
+    bare_aggregate_labels: set[str] = set()
+    for label in model.dimensions:
+        bare_aggregate_labels.add(label.lower())
+    for label in model.measures:
+        bare_aggregate_labels.add(label.lower())
+    for label in model.metrics:
+        bare_aggregate_labels.add(label.lower())
+
+    raw_count = 0
+    aggregate_count = 0
+    raw_refs: list[str] = []
+
+    for item in ast.expressions:
+        if isinstance(item, exp.Star):
+            return None  # SELECT * — caller's aggregate-mode path rejects it
+        inner = item.this if isinstance(item, exp.Alias) else item
+        if isinstance(inner, exp.Column) and inner.table:
+            table_lc = inner.table.lower()
+            if table_lc in known_objects:
+                # Find the canonical (case-preserved) data-object label.
+                canonical_obj = None
+                for obj_name, obj in model.data_objects.items():
+                    label = getattr(obj, "label", obj_name) or obj_name
+                    if obj_name.lower() == table_lc or str(label).lower() == table_lc:
+                        canonical_obj = str(label) if label else obj_name
+                        break
+                if canonical_obj is None:
+                    canonical_obj = inner.table
+                raw_refs.append(f"{canonical_obj}.{inner.name}")
+                raw_count += 1
+                continue
+        # Anything else — check whether it's a bare aggregate-mode label.
+        if (
+            isinstance(inner, exp.Column)
+            and not inner.table
+            and inner.name.lower() in bare_aggregate_labels
+        ):
+            aggregate_count += 1
+            continue
+        # MEASURE() / aggregate wrap / metric reference — all aggregate-mode
+        if (
+            isinstance(inner, exp.Anonymous)
+            and str(getattr(inner, "name", "")).upper() == "MEASURE"
+        ):
+            aggregate_count += 1
+            continue
+        if isinstance(inner, exp.AggFunc):
+            aggregate_count += 1
+            continue
+        # Unknown shape — let aggregate-mode path surface a precise error
+        return None
+
+    if raw_count == 0:
+        return None
+    if aggregate_count > 0:
+        return "MIXED"
+    return raw_refs
+
+
+def _build_raw_mode_query(
+    raw_refs: list[str],
+    ast: exp.Select,
+    model: SemanticModel,
+    errors: list[SemanticError],
+    *,
+    distinct_flag: bool,
+) -> QueryObject:
+    """Translate a raw-mode SELECT (qualified columns) to a QueryObject.
+
+    Raw mode has different semantics than aggregate mode:
+
+    * WHERE accepts qualified ``DataObject.column`` predicates (no measure
+      routing, no HAVING).
+    * HAVING is rejected (raw mode has no aggregates).
+    * GROUP BY is rejected (raw mode emits detail rows).
+    * Trailing ``WITH ROLLUP`` / ``WITH CUBE`` is rejected (no grouping).
+    * ORDER BY accepts the qualified column refs that appear in SELECT.
+    * ``DISTINCT`` is honoured via :class:`QuerySelect.distinct`.
+
+    The resulting ``QueryObject`` flows through
+    :class:`CompilationPipeline` exactly as if posted to
+    ``/query/execute`` with ``select.fields``.
+    """
+    # HAVING is illegal in raw mode
+    if ast.args.get("having") is not None:
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=(
+                    "HAVING is not allowed in raw-mode OBSQL — there are no aggregates "
+                    "to filter on. Use WHERE on the qualified column."
+                ),
+            )
+        )
+
+    # WHERE — translate qualified predicates into QueryFilter on the
+    # `<DataObject>.<column>` field string (compiler accepts this form).
+    where_filters: list[QueryFilter] = []
+    if ast.args.get("where") is not None:
+        where_expr = ast.args["where"].this
+        for atom in _walk_and(where_expr, errors):
+            f = _atom_to_raw_filter(atom, model, errors)
+            if f is not None:
+                where_filters.append(f)
+
+    # ORDER BY — accept qualified columns or alias position
+    order_by: list[QueryOrderBy] = []
+    order_node = ast.args.get("order")
+    if order_node is not None:
+        for ob in order_node.expressions:
+            inner = ob.this
+            desc = ob.args.get("desc", False)
+            if isinstance(inner, exp.Literal) and inner.is_int:
+                pos = int(inner.this)
+                if pos < 1 or pos > len(raw_refs):
+                    errors.append(
+                        SemanticError(
+                            code="INVALID_ORDER_BY_POSITION",
+                            message=(
+                                f"ORDER BY position {pos} is out of range (1-{len(raw_refs)})."
+                            ),
+                            context={"position": pos},
+                        )
+                    )
+                    continue
+                order_by.append(
+                    QueryOrderBy(
+                        field=raw_refs[pos - 1],
+                        direction=SortDirection.DESC if desc else SortDirection.ASC,
+                    )
+                )
+                continue
+            if isinstance(inner, exp.Column) and inner.table:
+                ref = f"{inner.table}.{inner.name}"
+                if ref not in raw_refs:
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_ORDER_BY_FIELD",
+                            message=(f"ORDER BY field `{ref}` is not in the SELECT list."),
+                            context={"field": ref},
+                        )
+                    )
+                    continue
+                order_by.append(
+                    QueryOrderBy(
+                        field=ref,
+                        direction=SortDirection.DESC if desc else SortDirection.ASC,
+                    )
+                )
+                continue
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=(
+                        f"ORDER BY in raw-mode OBSQL supports qualified columns or "
+                        f"1-based positions only — got `{inner.sql()}`."
+                    ),
+                )
+            )
+
+    # LIMIT
+    limit_value: int | None = None
+    limit_node = ast.args.get("limit")
+    if limit_node is not None:
+        try:
+            limit_value = int(limit_node.expression.sql())
+        except (AttributeError, ValueError):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"LIMIT must be an integer literal — got `{limit_node.sql()}`.",
+                )
+            )
+
+    # GROUP BY / WITH ROLLUP — illegal in raw mode
+    if ast.args.get("group") is not None:
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=(
+                    "GROUP BY is not allowed in raw-mode OBSQL — raw mode returns "
+                    "detail rows, not aggregates."
+                ),
+            )
+        )
+
+    if errors:
+        raise SQLTranslationError(errors)
+
+    return QueryObject(
+        select=QuerySelect(fields=list(raw_refs), distinct=distinct_flag),
+        where=list(where_filters),
+        order_by=order_by,
+        limit=limit_value,
+    )
+
+
+def _atom_to_raw_filter(
+    atom: exp.Expression,
+    model: SemanticModel,  # noqa: ARG001 — reserved for future column-existence checks
+    errors: list[SemanticError],
+) -> QueryFilter | None:
+    """Translate one raw-mode predicate atom.
+
+    Raw mode predicates target qualified ``<DataObject>.<column>``
+    references. The compiler-level filter validator accepts this exact
+    form (see ``compiler/raw.py``), so the translator simply propagates
+    it through.
+    """
+
+    def _qualified_field(node: exp.Expression) -> str | None:
+        if isinstance(node, exp.Column) and node.table:
+            return f"{node.table}.{node.name}"
+        return None
+
+    # IN / NOT IN
+    if isinstance(atom, exp.In):
+        field = _qualified_field(atom.this)
+        if field is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported raw-mode predicate `{atom.sql()}`.",
+                )
+            )
+            return None
+        values = [_literal_value(e) for e in atom.expressions]
+        if any(v is None for v in values):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"IN list must contain only literals — got `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=field, op=FilterOperator.IN_LIST, value=values)
+
+    if isinstance(atom, exp.Is):
+        field = _qualified_field(atom.this)
+        if field is None or not isinstance(atom.expression, exp.Null):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported raw-mode IS predicate `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=field, op=FilterOperator.IS_NULL)
+
+    if isinstance(atom, exp.Like | exp.ILike):
+        field = _qualified_field(atom.this)
+        pattern = _literal_value(atom.expression)
+        if field is None or pattern is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported raw-mode LIKE predicate `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=field, op=FilterOperator.LIKE, value=pattern)
+
+    for op_type, op_value in _OP_MAP.items():
+        if isinstance(atom, op_type):
+            field = _qualified_field(atom.this)
+            value = _literal_value(atom.expression)
+            if field is None or value is None:
+                errors.append(
+                    SemanticError(
+                        code="UNSUPPORTED_SQL_FEATURE",
+                        message=(
+                            f"Raw-mode predicate `{atom.sql()}` must have the shape "
+                            '`"DataObject"."column" op literal`.'
+                        ),
+                    )
+                )
+                return None
+            return QueryFilter(field=field, op=op_value, value=value)
+
+    errors.append(
+        SemanticError(
+            code="UNSUPPORTED_SQL_FEATURE",
+            message=f"Unsupported raw-mode predicate `{atom.sql()}`.",
+        )
+    )
     return None
 
 

@@ -120,6 +120,34 @@ getting wrong numbers (e.g., the classic "sum of per-region ratios"
 trap). Honesty over convenience — the semantic layer exists to make the
 math right.
 
+## Raw mode — detail rows via qualified columns
+
+Sometimes you need un-aggregated rows from a data object — the OBML
+"raw mode" shape. Trigger it by writing **qualified** `"DataObject"."column"`
+references in SELECT:
+
+```sql
+SELECT "Customers"."Customer Name", "Customers"."Country"
+FROM   sales_model
+WHERE  "Customers"."Country" = 'US'
+ORDER  BY "Customers"."Country"
+LIMIT  100
+```
+
+Compiles to a `QueryObject` with `select.fields=[...]` (no aggregation,
+no joins). Detection rule:
+
+- Every SELECT item must be `"<DataObject>"."<column>"`
+- WHERE predicates target qualified columns the same way
+- `DISTINCT` is honoured (`SELECT DISTINCT "Customers"."Country" FROM ...`)
+- `HAVING`, `GROUP BY`, and `WITH ROLLUP` are **rejected** in raw mode
+- Mixing a qualified raw column with a bare dim/measure → `MIXED_RAW_AND_AGGREGATE_MODE`
+
+Raw mode is the OBSQL equivalent of REST `/query/execute` with
+`select.fields=[...]`. It bypasses the dim/measure abstraction but stays
+inside the semantic layer — model-defined row-level filters still
+apply, no joins, no warehouse-side ad-hoc SQL.
+
 ## Rejected SQL
 
 The translator rejects shapes that don't fit the semantic model with
@@ -134,6 +162,7 @@ stable error codes:
 | `UNSUPPORTED_SQL_FEATURE` | JOIN, CTE, subquery, UNION, window function, `SELECT *`, aggregate call wrapped around a measure, top-level `OR`. |
 | `RAW_SQL_REJECTED` | Flight: FROM target is not the virtual table and not a catalog source. Raw warehouse SQL is **never** accepted (no flag to bypass). |
 | `WRITE_OPERATION_REJECTED` | Flight or REST: `INSERT` / `UPDATE` / `DELETE` / `DROP` / `CREATE` / `ALTER` / `TRUNCATE` / `MERGE` / `GRANT` / `REVOKE` / `COMMIT` / `ROLLBACK`. OBSL is read-only. |
+| `MIXED_RAW_AND_AGGREGATE_MODE` | SELECT mixes qualified raw-mode columns (`"DataObject"."column"`) with bare dim/measure labels. Use one form consistently. |
 
 ## Hierarchical subtotals: `WITH ROLLUP` / `WITH CUBE`
 

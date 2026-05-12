@@ -156,6 +156,104 @@ def test_group_by_ignored(model: SemanticModel) -> None:
     assert q.grouping is None
 
 
+# --- raw mode (qualified columns) --------------------------------------------
+
+
+def test_raw_mode_qualified_columns(model: SemanticModel) -> None:
+    """Every SELECT item is `"DataObject"."column"` → raw mode."""
+    q = translate_sql_to_query(
+        'SELECT "Customers"."Customer ID", "Customers"."Country" FROM sample_model',
+        model,
+    )
+    assert q.select.is_raw
+    assert q.select.fields == ["Customers.Customer ID", "Customers.Country"]
+    assert q.select.dimensions == []
+    assert q.select.measures == []
+
+
+def test_raw_mode_with_where_and_limit(model: SemanticModel) -> None:
+    q = translate_sql_to_query(
+        'SELECT "Customers"."Customer ID" FROM m '
+        'WHERE "Customers"."Country" = \'US\' '
+        'LIMIT 50',
+        model,
+    )
+    assert q.select.is_raw
+    assert q.limit == 50
+    assert len(q.where) == 1
+    assert q.where[0].field == "Customers.Country"
+    assert q.where[0].op == FilterOperator.EQUALS
+    assert q.where[0].value == "US"
+
+
+def test_raw_mode_with_distinct(model: SemanticModel) -> None:
+    q = translate_sql_to_query(
+        'SELECT DISTINCT "Customers"."Country" FROM m',
+        model,
+    )
+    assert q.select.is_raw
+    assert q.select.distinct is True
+
+
+def test_raw_mode_order_by_qualified_and_position(model: SemanticModel) -> None:
+    q = translate_sql_to_query(
+        'SELECT "Customers"."Customer ID", "Customers"."Country" FROM m '
+        'ORDER BY "Customers"."Country" DESC, 1 ASC',
+        model,
+    )
+    assert q.select.is_raw
+    assert q.order_by[0].field == "Customers.Country"
+    assert q.order_by[0].direction.value == "desc"
+    assert q.order_by[1].field == "Customers.Customer ID"
+    assert q.order_by[1].direction.value == "asc"
+
+
+def test_raw_mode_having_rejected(model: SemanticModel) -> None:
+    with pytest.raises(SQLTranslationError) as exc:
+        translate_sql_to_query(
+            'SELECT "Customers"."Country" FROM m HAVING COUNT(*) > 5',
+            model,
+        )
+    msgs = [e.message for e in exc.value.errors]
+    assert any("HAVING" in m for m in msgs)
+
+
+def test_raw_mode_group_by_rejected(model: SemanticModel) -> None:
+    with pytest.raises(SQLTranslationError) as exc:
+        translate_sql_to_query(
+            'SELECT "Customers"."Country" FROM m GROUP BY "Customers"."Country"',
+            model,
+        )
+    msgs = [e.message for e in exc.value.errors]
+    assert any("GROUP BY" in m for m in msgs)
+
+
+def test_mixed_raw_and_aggregate_rejected(model: SemanticModel) -> None:
+    """Qualified column + bare dim/measure → MIXED_RAW_AND_AGGREGATE_MODE."""
+    with pytest.raises(SQLTranslationError) as exc:
+        translate_sql_to_query(
+            'SELECT "Customers"."Country", "Total Revenue" FROM m',
+            model,
+        )
+    codes = [e.code for e in exc.value.errors]
+    assert "MIXED_RAW_AND_AGGREGATE_MODE" in codes
+
+
+def test_raw_mode_compiles_through_pipeline(model: SemanticModel) -> None:
+    """A raw-mode QueryObject compiles via the pipeline's RawPlanner."""
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    q = translate_sql_to_query(
+        'SELECT "Customers"."Customer ID", "Customers"."Country" FROM m LIMIT 10',
+        model,
+    )
+    result = CompilationPipeline().compile(q, model, "duckdb")
+    # Raw mode emits SELECT without GROUP BY
+    assert "SELECT" in result.sql.upper()
+    assert "GROUP BY" not in result.sql.upper()
+    assert "LIMIT" in result.sql.upper()
+
+
 # --- MEASURE() syntax ---------------------------------------------------------
 
 
