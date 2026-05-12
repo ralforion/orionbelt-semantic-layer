@@ -132,8 +132,8 @@ stable error codes:
 | `UNKNOWN_ORDER_BY_FIELD` | ORDER BY identifier missing from SELECT. |
 | `INVALID_ORDER_BY_POSITION` | Numeric position outside `[1, n]`. |
 | `UNSUPPORTED_SQL_FEATURE` | JOIN, CTE, subquery, UNION, window function, `SELECT *`, aggregate call wrapped around a measure, top-level `OR`. |
-| `RAW_SQL_DISABLED` | Flight: FROM target unrecognised, raw passthrough off. |
-| `DATA_OBJECT_SQL_DISABLED` | Flight: FROM targets a data-object label, that flag is off. |
+| `RAW_SQL_REJECTED` | Flight: FROM target is not the virtual table and not a catalog source. Raw warehouse SQL is **never** accepted (no flag to bypass). |
+| `WRITE_OPERATION_REJECTED` | Flight or REST: `INSERT` / `UPDATE` / `DELETE` / `DROP` / `CREATE` / `ALTER` / `TRUNCATE` / `MERGE` / `GRANT` / `REVOKE` / `COMMIT` / `ROLLBACK`. OBSL is read-only. |
 
 ## Hierarchical subtotals: `WITH ROLLUP` / `WITH CUBE`
 
@@ -217,22 +217,34 @@ target:
 
 | FROM target | Mode | Behavior |
 |-------------|------|----------|
-| `<model_name>` (virtual table) | `semantic` | Translated → compiled → executed. Always on. |
-| `<data_object_label>` | `data_object` | Column-validated passthrough. Rejected with `DATA_OBJECT_SQL_DISABLED` unless `FLIGHT_ALLOW_DATA_OBJECT_SQL=true`. |
-| anything else | `raw` | Raw passthrough. Rejected with `RAW_SQL_DISABLED` unless `FLIGHT_ALLOW_RAW_SQL=true`. |
+| `<model_name>` (virtual table) | `semantic` | Translated → compiled → executed |
+| `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*`, `SELECT version()` / `current_schema()` / `SELECT 1` | `catalog` | Answered from the **model**; **never** touches the warehouse |
+| **anything else** | `rejected` | `RAW_SQL_REJECTED` — no flag to bypass |
+| DDL/DML (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `TRUNCATE`, …) | `rejected` | `WRITE_OPERATION_REJECTED` — OBSL is read-only by design |
 
-### Governance defaults
+### Governance — closed by design
 
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `FLIGHT_ALLOW_RAW_SQL` | `false` | Block raw warehouse SQL. The semantic layer is a governance plane; raw passthrough defeats the point unless explicitly opted in. |
-| `FLIGHT_ALLOW_DATA_OBJECT_SQL` | `false` | Hide data-object tables from the catalog and reject FROM-ing them. The semantic virtual table is the canonical surface. |
+**There are no env flags to enable raw SQL or write operations.** OBSL is
+a semantic layer, not a JDBC proxy. The only thing the warehouse ever
+receives is SQL produced by the OBSL compiler:
+
+| Source | What reaches the warehouse |
+|---|---|
+| Semantic QL via Flight | Compiled SQL from `CompilationPipeline` |
+| `QueryObject` via REST `/query/execute` | Compiled SQL from `CompilationPipeline` |
+| OBML YAML via Flight | Compiled SQL from `CompilationPipeline` |
+| Catalog discovery (SHOW / DESCRIBE / information_schema / pg_catalog) | **Nothing** — answered from the model in-process |
+| Anything else | **Nothing** — rejected at the door |
+
+Operators cannot accidentally open a hole. There is no "raw SQL" mode,
+no admin override, no escape hatch. If you need direct warehouse access,
+use the warehouse's own clients — not OBSL.
 
 The Flight catalog (`CommandGetTables`, `CommandGetColumns`,
-`ListFlights`) always lists the **semantic virtual table first** with its
-dimension / measure / metric columns. The legacy `_dimensions`,
-`_measures`, and `_metrics` views are also exposed for tools that read
-metadata that way.
+`ListFlights`) lists the **semantic virtual table first** with its
+dimension / measure / metric columns, plus the `_dimensions`,
+`_measures`, and `_metrics` metadata views. Data-object physical
+columns are not exposed.
 
 ### Schema probe shortcut
 

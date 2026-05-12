@@ -222,9 +222,11 @@ when the FastAPI process exits or is killed by Docker.
 | FLIGHT_API_TOKEN | | Static token for auth mode "token" |
 | FLIGHT_DEFAULT_MODEL | | Fallback model_id if path empty |
 | FLIGHT_PRELOAD_MODELS | | Comma-sep .obml.yaml paths, loaded at startup |
-| FLIGHT_ALLOW_RAW_SQL | false | Allow raw warehouse SQL pass-through. Default rejects unknown FROM targets with RAW_SQL_DISABLED. |
-| FLIGHT_ALLOW_DATA_OBJECT_SQL | false | Allow FROM-<data_object_label>. Default hides data objects; the semantic virtual table is the canonical surface. |
 | DB_VENDOR | snowflake | Default vendor for db_router |
+
+**No `FLIGHT_ALLOW_*_SQL` flags.** Raw SQL and write operations are
+rejected by design; there is no operator override. See
+`design/PLAN_flight_natural_sql.md` §3.2.
 
 ---
 
@@ -244,14 +246,15 @@ ORDER  BY "Total Sales" DESC
 LIMIT  100
 ```
 
-`server._classify_sql(sql, model)` parses the FROM target and dispatches
-to one of three modes:
+`server._classify_sql(sql, model)` parses the SQL and dispatches to one
+of three modes — there are **no escape-hatch env flags**:
 
-| FROM target | Mode | Path |
+| Shape | Mode | Path |
 |---|---|---|
-| `<model_id>` (the virtual table) | `semantic` | `translate_sql_to_query` → `CompilationPipeline.compile` |
-| data-object label | `data_object` | rewritten via `_rewrite_table_names`, gated by `FLIGHT_ALLOW_DATA_OBJECT_SQL` |
-| anything else | `raw` | rejected with `RAW_SQL_DISABLED` unless `FLIGHT_ALLOW_RAW_SQL=true` |
+| `FROM <model_id>` (the virtual table) | `semantic` | `translate_sql_to_query` → `CompilationPipeline.compile` → warehouse |
+| `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*`, `SELECT 1`, `SELECT version()` | `catalog` | `_handle_catalog_sql` → model-backed `pa.Table`; **never touches warehouse** |
+| anything else (raw FROM, data-object labels, multi-statement) | `rejected` | `RAW_SQL_REJECTED` |
+| `INSERT`/`UPDATE`/`DELETE`/`DROP`/`CREATE`/`ALTER`/`TRUNCATE`/`MERGE`/… | `rejected` | `WRITE_OPERATION_REJECTED` (checked before classification, applies to every path) |
 
 Semantic-mode queries also benefit from a **schema probe shortcut**: the
 result `pa.Schema` is built from the `QueryObject` + model metadata,

@@ -73,10 +73,38 @@ _CATALOG_COMMANDS = {
 }
 
 
-# Governance modes for the Flight SQL surface. See PLAN_flight_natural_sql.md §3.2.
+# Query modes for the Flight SQL surface. See PLAN_flight_natural_sql.md §3.2.
+# OBSL is a semantic layer, not a JDBC proxy — there are no escape hatches.
 _MODE_SEMANTIC = "semantic"
-_MODE_DATA_OBJECT = "data_object"
-_MODE_RAW = "raw"
+"""OBSQL query against the model's virtual table — compiled through the pipeline."""
+_MODE_CATALOG = "catalog"
+"""SHOW / DESCRIBE / information_schema / pg_catalog / canned probes — answered
+from the model, never touches the warehouse."""
+_MODE_REJECTED = "rejected"
+"""Anything else — raw SQL against unknown targets, data-object labels, etc.
+Rejects with RAW_SQL_REJECTED."""
+
+
+# Catalog FROM-target prefixes / system-function tokens — anything matching is
+# routed to a model-backed catalog handler instead of the warehouse.
+_CATALOG_SCHEMAS = ("information_schema.", "pg_catalog.")
+_CATALOG_VIRTUAL_TABLES = ("_dimensions", "_measures", "_metrics")
+_CATALOG_STATEMENT_KINDS = {
+    "Show",  # SHOW TABLES, SHOW COLUMNS, SHOW DATABASES (some dialects)
+    "Describe",  # DESCRIBE / DESC
+    "Use",  # USE <database>
+    "Set",  # SET <var> = <value>
+    "Command",  # sqlglot's fallback for dialect-unknown commands like SHOW
+}
+_CATALOG_SCALAR_PROBES = {
+    "version",
+    "current_database",
+    "current_schema",
+    "current_user",
+    "current_role",
+    "session_user",
+    "user",
+}
 
 
 class OBFlightServer(flight.FlightServerBase):
@@ -97,15 +125,11 @@ class OBFlightServer(flight.FlightServerBase):
         session_manager: Any = None,
         default_dialect: str = "duckdb",
         batch_size: int = 1024,
-        allow_raw_sql: bool = False,
-        allow_data_object_sql: bool = False,
     ) -> None:
         super().__init__(location, auth_handler=auth_handler)
         self._session_manager = session_manager
         self._default_dialect = default_dialect
         self._batch_size = batch_size
-        self._allow_raw_sql = allow_raw_sql
-        self._allow_data_object_sql = allow_data_object_sql
         self._lock = threading.Lock()
         # Pending queries: ticket_id -> (payload, timestamp)
         # payload is either ("sql", sql, dialect) or ("catalog", type_url)
@@ -200,50 +224,91 @@ class OBFlightServer(flight.FlightServerBase):
         return sql
 
     def _classify_sql(self, sql: str, model: Any) -> str:
-        """Classify a SQL query by the FROM target.
+        """Classify a SQL query into one of three handling modes.
 
-        Returns one of ``semantic | data_object | raw``. See
-        ``design/PLAN_flight_natural_sql.md`` §3.2.
+        Returns one of:
+
+        * ``_MODE_SEMANTIC`` — OBSQL query against the model's virtual table.
+        * ``_MODE_CATALOG`` — discovery query (``SHOW``, ``DESCRIBE``,
+          ``information_schema.*``, ``pg_catalog.*``, canned probes like
+          ``SELECT version()``). Routed to model-backed responses;
+          **never reaches the warehouse**.
+        * ``_MODE_REJECTED`` — anything else (raw SQL against unknown
+          targets, FROM-<data-object-label>, multi-statement, parse
+          failures). The caller raises ``RAW_SQL_REJECTED``.
+
+        OBSL is a semantic layer, not a JDBC proxy — there are no escape
+        hatches. See ``design/PLAN_flight_natural_sql.md`` §3.2.
         """
         # Strip the bare trailing ``WITH ROLLUP``/``WITH CUBE`` before parsing
         # — sqlglot requires a GROUP BY in front of those modifiers, but the
-        # semantic-SQL surface lets callers write them as a trailing flag.
+        # OBSQL surface lets callers write them as a trailing flag.
         from orionbelt.compiler.sql_translator import _strip_trailing_grouping
 
         cleaned, _ = _strip_trailing_grouping(sql)
 
         try:
             import sqlglot
+            import sqlglot.expressions as exp
 
             ast = sqlglot.parse_one(cleaned)
         except Exception:
-            return _MODE_RAW
+            return _MODE_REJECTED
 
-        from_node = ast.args.get("from") if hasattr(ast, "args") else None
+        # SHOW / DESCRIBE / USE / SET — top-level non-Select catalog statements
+        if type(ast).__name__ in _CATALOG_STATEMENT_KINDS:
+            return _MODE_CATALOG
+
+        if not isinstance(ast, exp.Select):
+            # INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE, MERGE,
+            # multi-statement, Union, etc. all reject as raw — write ops
+            # surface a more specific error in _prepare_sql.
+            return _MODE_REJECTED
+
+        # SELECT with no FROM — typically scalar probes (SELECT 1,
+        # SELECT version(), SELECT current_schema()). Treat as catalog if
+        # the projected names are known canned-probe functions.
+        from_node = ast.args.get("from")
         if from_node is None:
-            return _MODE_RAW
-        # sqlglot's From wraps the source as ``.this`` (a Table node) or
-        # ``.expressions[0]`` for legacy parse paths. Cover both.
+            for proj in ast.expressions:
+                if isinstance(proj, exp.Alias):
+                    proj = proj.this
+                if isinstance(proj, exp.Anonymous | exp.Func):
+                    fname = (getattr(proj, "name", "") or "").lower()
+                    if fname in _CATALOG_SCALAR_PROBES:
+                        return _MODE_CATALOG
+                if isinstance(proj, exp.Literal):
+                    return _MODE_CATALOG  # SELECT 1 → connectivity probe
+            return _MODE_REJECTED
+
+        # FROM something — examine the target
         table_node = getattr(from_node, "this", None)
         if table_node is None and getattr(from_node, "expressions", None):
             table_node = from_node.expressions[0]
         if table_node is None:
-            return _MODE_RAW
-        name = getattr(table_node, "name", None) or table_node.sql()
-        target = str(name).strip('"').strip("`").strip("'").lower()
+            return _MODE_REJECTED
 
+        # Pull the qualified name (`pg_catalog.pg_class` etc.) and the
+        # bare identifier separately.
+        full_sql = table_node.sql().lower()
+        bare = getattr(table_node, "name", None) or table_node.sql()
+        bare = str(bare).strip('"').strip("`").strip("'").lower()
+
+        # Catalog schemas
+        for prefix in _CATALOG_SCHEMAS:
+            if prefix in full_sql:
+                return _MODE_CATALOG
+        # Virtual metadata tables shipped with the model
+        if bare in _CATALOG_VIRTUAL_TABLES:
+            return _MODE_CATALOG
+
+        # Semantic — the model's virtual table
         vt = model_virtual_table_name(model).lower()
-        if target == vt:
+        if bare == vt:
             return _MODE_SEMANTIC
 
-        if hasattr(model, "data_objects") and model.data_objects:
-            for obj_name, obj in model.data_objects.items():
-                if target in (
-                    obj_name.lower(),
-                    (getattr(obj, "label", obj_name) or obj_name).lower(),
-                ):
-                    return _MODE_DATA_OBJECT
-        return _MODE_RAW
+        # Anything else (including FROM-<data-object-label>) rejects.
+        return _MODE_REJECTED
 
     def _semantic_result_schema(self, query: Any, model: Any) -> pa.Schema:
         """Build the result Arrow schema for a semantic query without DB I/O.
@@ -283,14 +348,29 @@ class OBFlightServer(flight.FlightServerBase):
                 fields.append(pa.field(f"_g_{label}", pa.int64()))
         return pa.schema(fields)
 
-    def _prepare_sql(self, sql: str) -> tuple[str, str, Any, pa.Schema | None]:
-        """Resolve model, classify SQL, translate / compile / passthrough.
+    def _prepare_sql(self, sql: str) -> tuple[str, str, Any, pa.Schema | None, str]:
+        """Resolve model, classify SQL, translate / compile / route.
 
-        Returns ``(final_sql, dialect, model, schema_hint)``. ``schema_hint``
-        is non-None when the SQL is in semantic mode — caller can skip the
-        DB dry-run for ``GetFlightInfo``. Raises
-        :class:`flight.FlightServerError` when the SQL is rejected by the
-        governance settings (raw passthrough off, data-object passthrough off).
+        Returns ``(final_sql_or_token, dialect, model, schema_hint, mode)``.
+
+        * ``mode == _MODE_SEMANTIC`` — ``final_sql_or_token`` is compiled
+          warehouse SQL; ``schema_hint`` is the result schema computed
+          from the model. Caller executes against the warehouse.
+        * ``mode == _MODE_CATALOG`` — ``final_sql_or_token`` is the
+          original SQL; the caller routes to ``_handle_catalog_sql``
+          which returns model-backed metadata. ``schema_hint`` is None.
+        * Anything else raises before returning.
+
+        Hard rules (v2.4.0+, no env flags):
+
+        * **Raw SQL pass-through is never allowed.** OBSL is a semantic
+          layer, not a JDBC proxy. Unrecognised FROM targets reject
+          with ``RAW_SQL_REJECTED``.
+        * **Write operations (DDL / DML / TCL) are never allowed.** Only
+          ``SELECT`` reaches the warehouse. Reject with
+          ``WRITE_OPERATION_REJECTED``.
+        * **Catalog discovery is always allowed**, never touches the
+          warehouse — answered from the model.
         """
         from orionbelt.compiler.pipeline import CompilationPipeline
         from orionbelt.compiler.sql_translator import (
@@ -300,15 +380,22 @@ class OBFlightServer(flight.FlightServerBase):
 
         model, dialect = self._get_model()
 
+        # Write-op early reject — covers DDL/DML/TCL across all paths.
+        # OBML YAML detection happens after this so YAML-wrapped writes
+        # also can't sneak through (OBML has no write syntax, but it's
+        # cheap defence-in-depth).
+        self._reject_write_operation(sql)
+
         # OBML YAML wrapped as a SQL string — power-user path
         if is_obml(sql):
             obml = parse_obml(sql)
             sql = self._compile_obml(obml, model, dialect)
             logger.info("Compiled OBML to SQL: %s", sql[:200])
             sql = self._rewrite_table_names(sql, model)
-            return sql, dialect, model, None
+            return sql, dialect, model, None, _MODE_SEMANTIC
 
         mode = self._classify_sql(sql, model)
+
         if mode == _MODE_SEMANTIC:
             try:
                 query = translate_sql_to_query(sql, model)
@@ -321,26 +408,198 @@ class OBFlightServer(flight.FlightServerBase):
             sql = self._rewrite_table_names(compiled.sql, model)
             logger.info("Compiled OBSQL → %s", sql[:200])
             schema_hint = self._semantic_result_schema(query, model)
-            return sql, dialect, model, schema_hint
+            return sql, dialect, model, schema_hint, _MODE_SEMANTIC
 
-        if mode == _MODE_DATA_OBJECT:
-            if not self._allow_data_object_sql:
-                raise flight.FlightServerError(
-                    "[DATA_OBJECT_SQL_DISABLED] FROM <data object> is disabled. "
-                    "Either query the semantic virtual table or set "
-                    "FLIGHT_ALLOW_DATA_OBJECT_SQL=true."
-                )
-            sql = self._rewrite_table_names(sql, model)
-            return sql, dialect, model, None
+        if mode == _MODE_CATALOG:
+            # Don't compile or rewrite — the caller routes the original SQL
+            # to a model-backed catalog handler. Schema is computed there.
+            return sql, dialect, model, None, _MODE_CATALOG
 
-        # mode == raw
-        if not self._allow_raw_sql:
-            raise flight.FlightServerError(
-                "[RAW_SQL_DISABLED] Raw SQL pass-through is disabled. "
-                "Query the semantic virtual table, or set FLIGHT_ALLOW_RAW_SQL=true "
-                "on the server."
+        # _MODE_REJECTED — no escape hatch.
+        raise flight.FlightServerError(
+            "[RAW_SQL_REJECTED] Raw SQL pass-through is not supported. "
+            "OBSL accepts: (1) OBSQL queries against the model's virtual "
+            "table, (2) compiled QueryObjects via the REST API, and "
+            "(3) catalog discovery (SHOW / DESCRIBE / information_schema / "
+            "pg_catalog). Arbitrary warehouse SQL is rejected by design."
+        )
+
+    @staticmethod
+    def _reject_write_operation(sql: str) -> None:
+        """Reject DDL / DML / TCL statements at the door.
+
+        Parses the SQL with sqlglot and rejects anything whose top-level
+        node is a write operation. ``SELECT`` and ``WITH ... SELECT`` CTEs
+        pass; the catalog-specific ``SHOW`` / ``DESCRIBE`` / ``USE`` /
+        ``SET`` statements also pass (handled by catalog mode). Anything
+        else raises ``WRITE_OPERATION_REJECTED``.
+
+        Defence-in-depth — the translator already rejects non-SELECT for
+        semantic mode, but this guard ensures write ops can't reach the
+        warehouse via *any* path.
+        """
+        try:
+            import sqlglot
+            import sqlglot.expressions as exp
+
+            ast = sqlglot.parse_one(sql)
+        except Exception:
+            # Parse failure isn't a write op per se — let downstream
+            # classification surface the right error.
+            return
+        if isinstance(ast, exp.Select):
+            return
+        if type(ast).__name__ in _CATALOG_STATEMENT_KINDS:
+            return
+        # Insert, Update, Delete, Drop, Create, Alter, Truncate, Merge,
+        # Commit, Rollback, Grant, Revoke, etc. — all reject.
+        kind = type(ast).__name__.upper()
+        if kind in {"UNION"}:  # set ops surface as raw
+            return
+        raise flight.FlightServerError(
+            f"[WRITE_OPERATION_REJECTED] {kind} statements are not allowed. "
+            "OBSL is read-only — only SELECT queries (and catalog discovery) "
+            "reach the warehouse."
+        )
+
+    def _handle_catalog_sql(self, sql: str, model: Any) -> pa.Table:
+        """Answer a catalog/discovery SQL query from the model — no warehouse hop.
+
+        Returns a :class:`pa.Table` so callers can wrap it in a
+        ``RecordBatchStream`` once. Covers the common BI-tool / JDBC
+        introspection probes:
+
+        * ``SHOW TABLES`` → list of virtual tables (the model + metadata views)
+        * ``SHOW COLUMNS FROM <model>`` / ``DESCRIBE <model>`` → dim+measure+metric
+        * ``SELECT … FROM information_schema.tables`` → same as SHOW TABLES
+        * ``SELECT … FROM information_schema.columns`` → flat column list
+        * ``SELECT … FROM pg_catalog.*`` → mapped to the same model-backed responses
+        * Canned scalar probes: ``SELECT 1``, ``SELECT version()``, ``current_schema()``
+
+        Unrecognised catalog queries return an empty result set rather
+        than failing — Postgres / MySQL clients probe a long tail of
+        system tables, and breaking on every unknown probe blocks tool
+        discovery. Empty results are the right default — clients adapt.
+        """
+        import sqlglot
+        import sqlglot.expressions as exp
+
+        try:
+            ast = sqlglot.parse_one(sql)
+        except Exception:
+            return self._catalog_empty_table()
+
+        kind = type(ast).__name__
+
+        # SHOW TABLES / SHOW COLUMNS / DESCRIBE / etc.
+        # sqlglot parses bare SHOW/DESCRIBE statements as ``Command`` when
+        # the dialect doesn't have an explicit Show node; inspect the raw
+        # text in that case.
+        if kind in {"Show", "Describe", "Command"}:
+            raw_text = sql.strip().upper()
+            this = ast.args.get("this")
+            target_arg = (str(this).upper() if this is not None else "") or (
+                getattr(ast, "name", "") or ""
+            ).upper()
+            if (
+                "COLUMN" in target_arg
+                or kind == "Describe"
+                or raw_text.startswith("DESC")
+                or "SHOW COLUMN" in raw_text
+            ):
+                return self._catalog_columns_table(model)
+            # Default: list tables
+            return self._catalog_tables_table(model)
+
+        # USE / SET — accept silently (Postgres clients send these on connect)
+        if kind in {"Use", "Set"}:
+            return self._catalog_empty_table()
+
+        # SELECT against pg_catalog / information_schema or scalar probes
+        if isinstance(ast, exp.Select):
+            from_node = ast.args.get("from")
+            if from_node is None:
+                # Scalar probe: SELECT 1, SELECT version(), SELECT current_schema()
+                return self._catalog_scalar_probe_table(ast)
+            target_sql = ""
+            table_node = getattr(from_node, "this", None) or (
+                from_node.expressions[0] if from_node.expressions else None
             )
-        return sql, dialect, model, None
+            if table_node is not None:
+                target_sql = table_node.sql().lower()
+            bare = ""
+            if table_node is not None:
+                bare_raw = getattr(table_node, "name", None) or table_node.sql()
+                bare = str(bare_raw).strip('"').strip("`").strip("'").lower()
+            if "information_schema.tables" in target_sql or "pg_catalog.pg_class" in target_sql:
+                return self._catalog_tables_table(model)
+            if (
+                "information_schema.columns" in target_sql
+                or "pg_catalog.pg_attribute" in target_sql
+            ):
+                return self._catalog_columns_table(model)
+            if bare == "_dimensions":
+                return build_dimensions_data(model)
+            if bare == "_measures":
+                return build_measures_data(model)
+            if bare == "_metrics":
+                return build_metrics_data(model)
+
+        # Unknown catalog probe — empty result. Tool moves on.
+        return self._catalog_empty_table()
+
+    @staticmethod
+    def _catalog_tables_table(model: Any) -> pa.Table:
+        """One row per queryable virtual table (model + metadata views)."""
+        from ob_flight.flight_sql import build_tables_table
+
+        return build_tables_table(model)
+
+    @staticmethod
+    def _catalog_columns_table(model: Any) -> pa.Table:
+        """One row per dim/measure/metric of the model's virtual table."""
+        from ob_flight.flight_sql import build_columns_table
+
+        return build_columns_table(model)
+
+    @staticmethod
+    def _catalog_empty_table() -> pa.Table:
+        """Empty single-column response — used for unknown catalog probes."""
+        schema = pa.schema([pa.field("result", pa.utf8())])
+        return pa.table({"result": pa.array([], type=pa.utf8())}, schema=schema)
+
+    def _catalog_scalar_probe_table(self, ast: Any) -> pa.Table:
+        """Answer common scalar probes — SELECT 1, version(), current_schema()."""
+        import sqlglot.expressions as exp
+
+        values: list[str] = []
+        names: list[str] = []
+        for i, proj in enumerate(ast.expressions):
+            alias_name: str | None = None
+            inner = proj
+            if isinstance(proj, exp.Alias):
+                alias_name = proj.alias_or_name
+                inner = proj.this
+            if isinstance(inner, exp.Literal):
+                values.append(str(inner.this))
+                names.append(alias_name or f"col_{i + 1}")
+                continue
+            fname = (getattr(inner, "name", "") or "").lower()
+            if fname in {"version"}:
+                values.append("OrionBelt Semantic Layer (OBSL)")
+            elif fname in {"current_database"}:
+                values.append("orionbelt")
+            elif fname in {"current_schema"}:
+                values.append("model")
+            elif fname in {"current_user", "current_role", "session_user", "user"}:
+                values.append("obsl")
+            else:
+                values.append("")
+            names.append(alias_name or fname or f"col_{i + 1}")
+        if not values:
+            return self._catalog_empty_table()
+        schema = pa.schema([pa.field(n, pa.utf8()) for n in names])
+        return pa.table({n: [v] for n, v in zip(names, values, strict=True)}, schema=schema)
 
     @staticmethod
     def _detect_virtual_table(sql: str) -> str | None:
@@ -399,27 +658,27 @@ class OBFlightServer(flight.FlightServerBase):
     def _build_tables_from_model(self) -> pa.Table:
         """Build the CommandGetTables response.
 
-        Always lists the semantic virtual table first. Data-object tables
-        are listed only when ``FLIGHT_ALLOW_DATA_OBJECT_SQL=true``.
+        Lists the semantic virtual table + ``_dimensions``/``_measures``/
+        ``_metrics`` views. Data objects are intentionally hidden — they're
+        not queryable through the semantic layer.
         """
         try:
             model, _ = self._get_model()
         except Exception:
             model = None
-        return build_tables_table(model, expose_data_objects=self._allow_data_object_sql)
+        return build_tables_table(model)
 
     def _build_columns_from_model(self) -> pa.Table:
         """Build the CommandGetColumns response.
 
         Returns dim / measure / metric columns of the semantic virtual
-        table, plus physical columns of each data object when those are
-        exposed via ``FLIGHT_ALLOW_DATA_OBJECT_SQL=true``.
+        table. Data-object physical columns are intentionally hidden.
         """
         try:
             model, _ = self._get_model()
         except Exception:
             model = None
-        return build_columns_table(model, expose_data_objects=self._allow_data_object_sql)
+        return build_columns_table(model)
 
     def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> str:
         """Compile OBML to SQL using the OrionBelt pipeline directly."""
@@ -449,11 +708,17 @@ class OBFlightServer(flight.FlightServerBase):
                 sql = parse_statement_query(value)
                 if sql is None:
                     raise flight.FlightServerError("Failed to parse SQL from Flight SQL command")
-                sql, dialect, _, schema_hint = self._prepare_sql(sql)
-                self._store_pending(ticket_id, ("sql", sql, dialect))
-                schema = (
-                    schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
-                )
+                prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql)
+                if mode == _MODE_CATALOG:
+                    self._store_pending(ticket_id, ("obsql_catalog", prepared_sql))
+                    schema = pa.schema([pa.field("result", pa.utf8())])
+                else:
+                    self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
+                    schema = (
+                        schema_hint
+                        if schema_hint is not None
+                        else self._probe_schema(prepared_sql, dialect)
+                    )
 
             elif type_url == CMD_PREPARED_STATEMENT_QUERY:
                 # Look up prepared statement by handle
@@ -480,9 +745,17 @@ class OBFlightServer(flight.FlightServerBase):
 
         # Plain text: SQL or OBML
         query_str = command_bytes.decode("utf-8")
-        sql, dialect, _, schema_hint = self._prepare_sql(query_str)
-        self._store_pending(ticket_id, ("sql", sql, dialect))
-        schema = schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
+        prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(query_str)
+        if mode == _MODE_CATALOG:
+            self._store_pending(ticket_id, ("obsql_catalog", prepared_sql))
+            schema = pa.schema([pa.field("result", pa.utf8())])
+        else:
+            self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
+            schema = (
+                schema_hint
+                if schema_hint is not None
+                else self._probe_schema(prepared_sql, dialect)
+            )
         ticket = flight.Ticket(ticket_id.encode("utf-8"))
         endpoint = flight.FlightEndpoint(ticket, [])
         return flight.FlightInfo(schema, descriptor, [endpoint], -1, -1)
@@ -501,6 +774,12 @@ class OBFlightServer(flight.FlightServerBase):
 
         if kind == "catalog":
             return self._handle_catalog_command(pending[1])
+
+        if kind == "obsql_catalog":
+            # OBSQL-routed catalog SQL — answered from the model
+            model, _ = self._get_model()
+            table = self._handle_catalog_sql(str(pending[1]), model)
+            return flight.RecordBatchStream(table)
 
         # kind == "sql"
         _, sql, dialect = pending
@@ -588,8 +867,17 @@ class OBFlightServer(flight.FlightServerBase):
             if sql is None:
                 raise flight.FlightServerError("Failed to parse prepared statement query")
 
-            sql, dialect, _, schema_hint = self._prepare_sql(sql)
-            schema = schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
+            prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql)
+            if mode == _MODE_CATALOG:
+                # Prepared catalog probes are unusual but possible. Reuse the
+                # generic catalog schema; the actual data is computed at do_get.
+                sql = prepared_sql
+                schema = pa.schema([pa.field("result", pa.utf8())])
+            else:
+                sql = prepared_sql
+                schema = (
+                    schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
+                )
 
             handle = uuid.uuid4().bytes
             handle_hex = handle.hex()
@@ -614,12 +902,10 @@ class OBFlightServer(flight.FlightServerBase):
             raise flight.FlightServerError(f"Unsupported action: {action_type}")
 
     def list_flights(self, context: flight.ServerCallContext, criteria: bytes) -> Any:
-        """List the semantic virtual table (and optionally data objects)."""
+        """List the semantic virtual table + metadata views."""
         try:
             model, _ = self._get_model()
         except Exception:
             return
-        for info in model_to_flight_infos(
-            model, "default", expose_data_objects=self._allow_data_object_sql
-        ):
+        for info in model_to_flight_infos(model, "default"):
             yield info

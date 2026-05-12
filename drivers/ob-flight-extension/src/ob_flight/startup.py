@@ -24,15 +24,16 @@ def start_flight_background(
     port: int | None = None,
     auth_handler: Any = None,
     default_dialect: str | None = None,
-    allow_raw_sql: bool | None = None,
     allow_data_object_sql: bool | None = None,
 ) -> threading.Thread:
     """Launch the Flight SQL server in a daemon thread.
 
-    Governance defaults follow ``design/PLAN_flight_natural_sql.md``: raw
-    SQL pass-through and FROM-<data-object-label> are both off by default.
-    Operators opt in via ``FLIGHT_ALLOW_RAW_SQL`` /
-    ``FLIGHT_ALLOW_DATA_OBJECT_SQL`` (or the explicit kwargs).
+    Governance is hard-coded: OBSL is a semantic layer, not a JDBC proxy.
+    Raw SQL pass-through is **not configurable** — it's always rejected
+    with ``RAW_SQL_REJECTED``. Only the data-object pass-through (column-
+    validated, SELECT-only) is operator-toggleable via
+    ``FLIGHT_ALLOW_DATA_OBJECT_SQL`` (default false). See
+    ``design/PLAN_flight_natural_sql.md``.
     """
     global _server, _thread
 
@@ -50,8 +51,6 @@ def start_flight_background(
         default_dialect = os.getenv("DB_VENDOR", "duckdb")
     location = f"grpc://0.0.0.0:{port}"
 
-    if allow_raw_sql is None:
-        allow_raw_sql = _env_flag("FLIGHT_ALLOW_RAW_SQL")
     if allow_data_object_sql is None:
         allow_data_object_sql = _env_flag("FLIGHT_ALLOW_DATA_OBJECT_SQL")
 
@@ -60,7 +59,6 @@ def start_flight_background(
         auth_handler=auth_handler,
         session_manager=session_manager,
         default_dialect=default_dialect,
-        allow_raw_sql=allow_raw_sql,
         allow_data_object_sql=allow_data_object_sql,
     )
 

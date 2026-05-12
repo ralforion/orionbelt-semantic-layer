@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pyarrow as pa
 import pyarrow.flight as flight
 import pytest
 
@@ -94,11 +95,15 @@ def model():
     return m
 
 
-def _make_server(model: object, **kwargs: object) -> OBFlightServer:
+def _make_server(model: object) -> OBFlightServer:
     """Build a server with a SessionManager mock that returns ``model``.
 
     The mock returns ``model_id="sample_model"`` so the server's
     ``_get_model`` stamps the same virtual-table id the fixture uses.
+
+    No governance kwargs: v2.4.0+ removed the FLIGHT_ALLOW_* flags. Raw
+    SQL is always rejected; write operations are always rejected;
+    catalog queries are always routed to model-backed responses.
     """
     store = MagicMock()
     store.list_models.return_value = [MagicMock(model_id="sample_model")]
@@ -112,8 +117,6 @@ def _make_server(model: object, **kwargs: object) -> OBFlightServer:
     server._session_manager = mgr
     server._default_dialect = "duckdb"
     server._batch_size = 1024
-    server._allow_raw_sql = bool(kwargs.get("allow_raw_sql", False))
-    server._allow_data_object_sql = bool(kwargs.get("allow_data_object_sql", False))
     import threading
 
     server._lock = threading.Lock()
@@ -131,17 +134,13 @@ class TestVirtualTableInCatalog:
         infos = model_to_flight_infos(model, "default")
         assert infos[0].descriptor.path[-1] == b"sample_model"
 
-    def test_data_objects_hidden_by_default(self, model) -> None:
+    def test_data_objects_hidden(self, model) -> None:
+        """Data objects are never exposed in v2.4.0 — the virtual table is
+        the only queryable surface."""
         infos = model_to_flight_infos(model, "default")
         labels = {info.descriptor.path[-1] for info in infos}
         assert b"Customers" not in labels
         assert b"Orders" not in labels
-
-    def test_data_objects_shown_when_opted_in(self, model) -> None:
-        infos = model_to_flight_infos(model, "default", expose_data_objects=True)
-        labels = {info.descriptor.path[-1] for info in infos}
-        assert b"Customers" in labels
-        assert b"Orders" in labels
 
     def test_virtual_table_schema_lists_dims_and_measures(self, model) -> None:
         schema = model_to_virtual_table_schema(model)
@@ -155,7 +154,7 @@ class TestBuildTablesTable:
         t = build_tables_table(model)
         table_names = t.column("table_name").to_pylist()
         assert table_names[0] == "sample_model"
-        # Default: data objects are hidden, only virtual metadata follows.
+        # v2.4.0+: data objects are never exposed.
         assert "Customers" not in table_names
         assert "Orders" not in table_names
 
@@ -180,16 +179,12 @@ class TestBuildColumnsTable:
         assert "Customer Country" in cols
         assert "Total Revenue" in cols
 
-    def test_data_object_columns_hidden_by_default(self, model) -> None:
+    def test_data_object_columns_hidden(self, model) -> None:
+        """v2.4.0+: data-object physical columns are never exposed."""
         t = build_columns_table(model)
         tables = set(t.column("table_name").to_pylist())
         assert "Customers" not in tables
         assert "Orders" not in tables
-
-    def test_data_object_columns_opt_in(self, model) -> None:
-        t = build_columns_table(model, expose_data_objects=True)
-        tables = set(t.column("table_name").to_pylist())
-        assert "Customers" in tables
 
 
 # --- translator + governance --------------------------------------------------
@@ -203,23 +198,61 @@ class TestClassifySQL:
         )
         assert mode == "semantic"
 
-    def test_data_object_target(self, model) -> None:
+    def test_data_object_label_rejected(self, model) -> None:
+        """v2.4.0+: FROM <data-object-label> is no longer a distinct mode —
+        it rejects as raw."""
         server = _make_server(model)
         mode = server._classify_sql('SELECT * FROM "Customers"', model)
-        assert mode == "data_object"
+        assert mode == "rejected"
 
-    def test_raw_target(self, model) -> None:
+    def test_raw_target_rejected(self, model) -> None:
         server = _make_server(model)
         mode = server._classify_sql("SELECT 1 FROM other_thing", model)
-        assert mode == "raw"
+        assert mode == "rejected"
+
+    def test_information_schema_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        mode = server._classify_sql("SELECT * FROM information_schema.tables", model)
+        assert mode == "catalog"
+
+    def test_pg_catalog_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        mode = server._classify_sql("SELECT * FROM pg_catalog.pg_class", model)
+        assert mode == "catalog"
+
+    def test_show_tables_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        mode = server._classify_sql("SHOW TABLES", model)
+        assert mode == "catalog"
+
+    def test_describe_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        mode = server._classify_sql("DESCRIBE sample_model", model)
+        assert mode == "catalog"
+
+    def test_select_one_is_catalog(self, model) -> None:
+        """Bare SELECT 1 — connectivity probe, never reaches warehouse."""
+        server = _make_server(model)
+        assert server._classify_sql("SELECT 1", model) == "catalog"
+
+    def test_select_version_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        assert server._classify_sql("SELECT version()", model) == "catalog"
+
+    def test_virtual_metadata_table_is_catalog(self, model) -> None:
+        server = _make_server(model)
+        assert server._classify_sql("SELECT * FROM _dimensions", model) == "catalog"
+        assert server._classify_sql("SELECT * FROM _measures", model) == "catalog"
+        assert server._classify_sql("SELECT * FROM _metrics", model) == "catalog"
 
 
 class TestPrepareSQL:
     def test_semantic_compiles(self, model) -> None:
         server = _make_server(model)
-        sql, dialect, _m, schema = server._prepare_sql(
+        sql, dialect, _m, schema, mode = server._prepare_sql(
             'SELECT "Customer Country", "Total Revenue" FROM sample_model'
         )
+        assert mode == "semantic"
         assert "SELECT" in sql.upper()
         assert dialect == "duckdb"
         assert schema is not None
@@ -245,28 +278,17 @@ class TestPrepareSQL:
         )
         assert "HAVING" in sql.upper()
 
-    def test_raw_sql_rejected_by_default(self, model) -> None:
-        server = _make_server(model, allow_raw_sql=False)
-        with pytest.raises(flight.FlightServerError, match="RAW_SQL_DISABLED"):
-            server._prepare_sql("SELECT * FROM information_schema.tables")
+    def test_raw_sql_always_rejected(self, model) -> None:
+        """No flag to bypass — raw SQL never reaches the warehouse."""
+        server = _make_server(model)
+        with pytest.raises(flight.FlightServerError, match="RAW_SQL_REJECTED"):
+            server._prepare_sql("SELECT * FROM warehouse_only_table")
 
-    def test_raw_sql_allowed_when_flag_on(self, model) -> None:
-        server = _make_server(model, allow_raw_sql=True)
-        sql, _d, _m, schema = server._prepare_sql("SELECT 1 FROM information_schema.tables")
-        assert "SELECT" in sql.upper()
-        # No schema hint for raw pass-through — caller falls back to DB probe.
-        assert schema is None
-
-    def test_data_object_rejected_by_default(self, model) -> None:
-        server = _make_server(model, allow_data_object_sql=False)
-        with pytest.raises(flight.FlightServerError, match="DATA_OBJECT_SQL_DISABLED"):
+    def test_data_object_label_always_rejected(self, model) -> None:
+        """v2.4.0+: FROM-<data-object-label> rejects, no flag to enable it."""
+        server = _make_server(model)
+        with pytest.raises(flight.FlightServerError, match="RAW_SQL_REJECTED"):
             server._prepare_sql('SELECT * FROM "Customers"')
-
-    def test_data_object_allowed_when_flag_on(self, model) -> None:
-        server = _make_server(model, allow_data_object_sql=True)
-        sql, *_ = server._prepare_sql('SELECT * FROM "Customers"')
-        # Rewritten to the physical code
-        assert "CUSTOMERS" in sql.upper()
 
     def test_translator_error_surfaces_as_flight_error(self, model) -> None:
         server = _make_server(model)
@@ -275,11 +297,98 @@ class TestPrepareSQL:
         ):
             server._prepare_sql('SELECT "Bogus" FROM sample_model')
 
+    def test_catalog_query_routes_to_catalog_mode(self, model) -> None:
+        """information_schema / SHOW / DESCRIBE return mode=catalog."""
+        server = _make_server(model)
+        _sql, _d, _m, _schema, mode = server._prepare_sql("SELECT * FROM information_schema.tables")
+        assert mode == "catalog"
+
+    def test_show_tables_routes_to_catalog_mode(self, model) -> None:
+        server = _make_server(model)
+        _sql, _d, _m, _schema, mode = server._prepare_sql("SHOW TABLES")
+        assert mode == "catalog"
+
+
+class TestWriteOperationBlocking:
+    """v2.4.0+: DDL / DML / TCL never reach the warehouse."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "INSERT INTO sample_model VALUES (1)",
+            "UPDATE \"Customers\" SET name = 'x'",
+            'DELETE FROM "Customers"',
+            "DROP TABLE sample_model",
+            "CREATE TABLE x (a INT)",
+            "ALTER TABLE x ADD COLUMN b INT",
+            "TRUNCATE TABLE x",
+        ],
+    )
+    def test_write_operations_rejected(self, model, sql: str) -> None:
+        server = _make_server(model)
+        with pytest.raises(flight.FlightServerError, match="WRITE_OPERATION_REJECTED"):
+            server._prepare_sql(sql)
+
+
+class TestCatalogHandling:
+    """Catalog queries answered from the model — never touch the warehouse."""
+
+    def test_show_tables_lists_virtual_table(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SHOW TABLES", model)
+        # tables-table schema includes table_name; virtual table must appear
+        names = table.column("table_name").to_pylist()
+        assert "sample_model" in names
+
+    def test_information_schema_tables_returns_data(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT * FROM information_schema.tables", model)
+        assert "table_name" in [f.name for f in table.schema]
+        assert "sample_model" in table.column("table_name").to_pylist()
+
+    def test_information_schema_columns_returns_data(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT * FROM information_schema.columns", model)
+        cols = table.column("column_name").to_pylist()
+        assert "Customer Country" in cols
+        assert "Total Revenue" in cols
+
+    def test_select_one_returns_canned_value(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT 1", model)
+        # SELECT 1 → one row, one column, value "1"
+        assert table.num_rows == 1
+
+    def test_select_version_returns_obsl_brand(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT version()", model)
+        values = table.column(0).to_pylist()
+        assert any("OrionBelt" in v for v in values)
+
+    def test_select_current_schema(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT current_schema()", model)
+        assert table.num_rows == 1
+
+    def test_select_dimensions_virtual_table(self, model) -> None:
+        server = _make_server(model)
+        table = server._handle_catalog_sql("SELECT * FROM _dimensions", model)
+        # _dimensions virtual table — should contain the model's dims
+        names = table.column("name").to_pylist()
+        assert "Customer Country" in names
+
+    def test_unknown_probe_returns_empty(self, model) -> None:
+        server = _make_server(model)
+        # Made-up system function — never seen
+        table = server._handle_catalog_sql("SELECT some_unknown_func()", model)
+        assert table.num_rows == 1  # but value is empty string
+        assert table.column(0)[0].as_py() == ""
+
 
 class TestSchemaProbeShortcut:
     def test_semantic_query_returns_arrow_schema_without_db(self, model) -> None:
         server = _make_server(model)
-        _sql, _d, _m, schema = server._prepare_sql(
+        _sql, _d, _m, schema, _mode = server._prepare_sql(
             'SELECT "Customer Country", "Total Revenue" FROM sample_model '
             "WHERE \"Customer Country\" = 'US'"
         )
@@ -290,7 +399,7 @@ class TestSchemaProbeShortcut:
 
     def test_rollup_adds_grouping_flag_columns(self, model) -> None:
         server = _make_server(model)
-        _sql, _d, _m, schema = server._prepare_sql(
+        _sql, _d, _m, schema, _mode = server._prepare_sql(
             'SELECT "Customer Country", "Total Revenue" FROM sample_model WITH ROLLUP'
         )
         assert schema is not None

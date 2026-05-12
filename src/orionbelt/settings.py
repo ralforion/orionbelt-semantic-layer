@@ -76,13 +76,15 @@ class Settings(BaseSettings):
     flight_api_token: str | None = None
     db_vendor: str = "duckdb"  # default vendor driver for Flight query execution
 
-    # Flight natural-SQL governance. See design/PLAN_flight_natural_sql.md.
+    # Flight Semantic QL governance. See design/PLAN_flight_natural_sql.md.
     # Semantic QL / OBSQL (SELECT dim, measure FROM <model>) is always enabled.
-    # The two flags below gate the *legacy* shapes:
-    #   - flight_allow_data_object_sql: FROM <data_object_label> (column-validated passthrough)
-    #   - flight_allow_raw_sql:         FROM anything else (raw passthrough — bypasses governance)
-    # Defaults are False so a clean install runs the semantic layer end-to-end.
-    flight_allow_raw_sql: bool = False
+    # Raw SQL pass-through is **not** configurable — OBSL is a semantic layer,
+    # not a JDBC proxy. Unrecognised FROM targets always reject with
+    # RAW_SQL_REJECTED. DDL/DML always reject with WRITE_OPERATION_REJECTED.
+    #
+    # The one operator-toggleable knob: data-object pass-through (column-
+    # validated SELECT only, no joins). Default off keeps the surface fully
+    # semantic; turn on to expose raw physical columns.
     flight_allow_data_object_sql: bool = False
 
     # One-shot batch endpoint (POST /v1/oneshot/batch). See PLAN_oneshot_batch.md.
