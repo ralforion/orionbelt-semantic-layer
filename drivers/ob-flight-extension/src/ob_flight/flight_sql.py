@@ -384,11 +384,18 @@ def _arrow_type_to_jdbc_name(arrow_type: pa.DataType) -> str:
 def build_columns_table(model: Any, *, expose_data_objects: bool = False) -> pa.Table:
     """Build response for CommandGetColumns.
 
-    Emits one row per dim/measure/metric of the semantic virtual table, plus
-    physical columns of each data object when ``expose_data_objects=True``.
+    Emits one row per column of every advertised virtual table: the
+    semantic virtual table (dims+measures+metrics) and the three
+    metadata views (``_dimensions``, ``_measures``, ``_metrics``).
+    Without the metadata-view rows, JDBC clients (DBeaver) fall back
+    to listing the semantic table's columns under each view, which
+    leads to dimensions appearing inside ``_measures`` etc.
+    Physical data-object columns are emitted only when
+    ``expose_data_objects=True`` (no shipped surface enables it).
     See ``design/PLAN_flight_natural_sql.md`` §3.5.
     """
     from ob_flight.catalog import (
+        VIRTUAL_TABLES,
         model_to_virtual_table_schema,
         model_virtual_table_name,
         object_to_schema,
@@ -396,16 +403,14 @@ def build_columns_table(model: Any, *, expose_data_objects: bool = False) -> pa.
 
     rows: list[tuple[str, str, str, str, str, str, int, str, int]] = []
 
-    if hasattr(model, "data_objects") and model.data_objects:
-        vt_name = model_virtual_table_name(model)
-        vt_schema = model_to_virtual_table_schema(model)
-        for i, field_ in enumerate(vt_schema, start=1):
+    def _emit_schema(table_name: str, schema: pa.Schema) -> None:
+        for i, field_ in enumerate(schema, start=1):
             jdbc_name = _arrow_type_to_jdbc_name(field_.type)
             rows.append(
                 (
                     "orionbelt",
                     "model",
-                    vt_name,
+                    table_name,
                     field_.name,
                     jdbc_name,
                     jdbc_name,
@@ -415,25 +420,19 @@ def build_columns_table(model: Any, *, expose_data_objects: bool = False) -> pa.
                 )
             )
 
+    if hasattr(model, "data_objects") and model.data_objects:
+        _emit_schema(model_virtual_table_name(model), model_to_virtual_table_schema(model))
+
         if expose_data_objects:
             for obj_name, obj in model.data_objects.items():
                 label = getattr(obj, "label", obj_name) or obj_name
-                obj_schema = object_to_schema(obj)
-                for i, field_ in enumerate(obj_schema, start=1):
-                    jdbc_name = _arrow_type_to_jdbc_name(field_.type)
-                    rows.append(
-                        (
-                            "orionbelt",
-                            "model",
-                            label,
-                            field_.name,
-                            jdbc_name,
-                            jdbc_name,
-                            0,
-                            "YES",
-                            i,
-                        )
-                    )
+                _emit_schema(label, object_to_schema(obj))
+
+    # Metadata views: _dimensions / _measures / _metrics. Their schemas
+    # are fixed (no model dependency) — each row describes one column
+    # of the introspection view.
+    for vt_name, vt_schema in VIRTUAL_TABLES.items():
+        _emit_schema(vt_name, vt_schema)
 
     if rows:
         columns = list(zip(*rows, strict=True))
