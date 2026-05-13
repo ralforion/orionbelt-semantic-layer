@@ -42,9 +42,11 @@ from ob_flight.flight_sql import (
     build_catalogs_table,
     build_columns_table,
     build_db_schemas_table,
+    SQL_INFO_SCHEMA,
     build_empty_imported_keys_table,
     build_empty_keys_table,
     build_prepared_statement_result,
+    build_sql_info_table,
     build_table_types_table,
     build_tables_table,
     is_flight_sql_command,
@@ -1019,7 +1021,14 @@ class OBFlightServer(flight.FlightServerBase):
             elif type_url in _CATALOG_COMMANDS:
                 # Store the raw command for do_get to handle
                 self._store_pending(ticket_id, ("catalog", type_url))
-                schema = pa.schema([pa.field("result", pa.utf8())])
+                # SqlInfo has a structured spec schema (uint32 + dense_union).
+                # JDBC clients inspect the FlightInfo schema before calling
+                # do_get, so returning the placeholder `result` column makes
+                # them treat the response as empty (DBeaver shows "Server: ?").
+                if type_url == CMD_GET_SQL_INFO:
+                    schema = SQL_INFO_SCHEMA
+                else:
+                    schema = pa.schema([pa.field("result", pa.utf8())])
 
             else:
                 raise flight.FlightServerError(f"Unsupported Flight SQL command: {type_url}")
@@ -1104,8 +1113,15 @@ class OBFlightServer(flight.FlightServerBase):
             table = build_empty_keys_table()
         elif type_url == CMD_GET_IMPORTED_KEYS:
             table = build_empty_imported_keys_table()
-        elif type_url in (CMD_GET_SQL_INFO, CMD_GET_XDBC_TYPE_INFO):
-            # Return empty results for info commands we don't support yet
+        elif type_url == CMD_GET_SQL_INFO:
+            # Populate the standard SqlInfo entries so JDBC clients display
+            # the server name (otherwise DBeaver shows "Server: ?").
+            from orionbelt import __version__ as _obsl_version
+
+            table = build_sql_info_table(_obsl_version)
+        elif type_url == CMD_GET_XDBC_TYPE_INFO:
+            # XDBC type info is request-shaped; an empty result is acceptable
+            # for BI tools that fall back to driver-side type metadata.
             table = pa.table({"info": pa.array([], type=pa.utf8())})
         else:
             raise flight.FlightServerError(f"Unsupported catalog command: {type_url}")

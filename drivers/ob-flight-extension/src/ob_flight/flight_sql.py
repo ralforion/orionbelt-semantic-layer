@@ -125,6 +125,65 @@ SQL_INFO_SCHEMA = pa.schema(
     ]
 )
 
+# Standard SqlInfo enum codes from Flight SQL spec (FlightSql.proto).
+# DBeaver reads these on connect to populate Server / Driver / Read-only fields.
+_SQL_INFO_FLIGHT_SQL_SERVER_NAME = 0
+_SQL_INFO_FLIGHT_SQL_SERVER_VERSION = 1
+_SQL_INFO_FLIGHT_SQL_SERVER_ARROW_VERSION = 2
+_SQL_INFO_FLIGHT_SQL_SERVER_READ_ONLY = 3
+
+
+def build_sql_info_table(server_version: str, arrow_version: str = "") -> pa.Table:
+    """Build the response for ``CommandGetSqlInfo``.
+
+    Without this, JDBC clients (DBeaver, Tableau Flight) show ``?`` for the
+    server name. We return the 4 standard entries; the spec defines many
+    more (SQL keywords, identifier quoting rules, etc.) but BI tools fall
+    back to sensible defaults when an info code is missing.
+    """
+    if not arrow_version:
+        arrow_version = pa.__version__
+
+    # Four entries: server_name, server_version, arrow_version (strings),
+    # plus read_only=True (bool). Type code 0 = string_value, 1 = bool_value.
+    info_names = pa.array(
+        [
+            _SQL_INFO_FLIGHT_SQL_SERVER_NAME,
+            _SQL_INFO_FLIGHT_SQL_SERVER_VERSION,
+            _SQL_INFO_FLIGHT_SQL_SERVER_ARROW_VERSION,
+            _SQL_INFO_FLIGHT_SQL_SERVER_READ_ONLY,
+        ],
+        type=pa.uint32(),
+    )
+    type_codes = pa.array([0, 0, 0, 1], type=pa.int8())
+    offsets = pa.array([0, 1, 2, 0], type=pa.int32())
+    strings = pa.array(
+        ["OrionBelt Semantic Layer", server_version, arrow_version],
+        type=pa.utf8(),
+    )
+    bools = pa.array([True], type=pa.bool_())
+    value = pa.UnionArray.from_dense(
+        type_codes,
+        offsets,
+        [
+            strings,
+            bools,
+            pa.array([], type=pa.int64()),
+            pa.array([], type=pa.int32()),
+            pa.array([], type=pa.list_(pa.utf8())),
+            pa.array([], type=pa.map_(pa.int32(), pa.list_(pa.int32()))),
+        ],
+        field_names=[
+            "string_value",
+            "bool_value",
+            "bigint_value",
+            "int32_bitmask",
+            "string_list",
+            "int32_to_int32_list_map",
+        ],
+    )
+    return pa.Table.from_arrays([info_names, value], names=["info_name", "value"])
+
 
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     """Read a protobuf varint, return (value, new_offset)."""
