@@ -90,7 +90,14 @@ Rejects with RAW_SQL_REJECTED."""
 # Catalog FROM-target prefixes / system-function tokens — anything matching is
 # routed to a model-backed catalog handler instead of the warehouse.
 _CATALOG_SCHEMAS = ("information_schema.", "pg_catalog.")
-_CATALOG_VIRTUAL_TABLES = ("_dimensions", "_measures", "_metrics")
+_LABEL_VIEW_NAMES = ("dimensions", "measures", "metrics")
+"""Label views — `SELECT "X" FROM dimensions` routes to semantic mode."""
+
+_METADATA_VIEW_NAMES = ("_dimensions_metadata", "_measures_metadata", "_metrics_metadata")
+"""Metadata views — `SELECT * FROM _dimensions_metadata` returns introspection rows."""
+
+# Back-compat name retained while callers transition.
+_CATALOG_VIRTUAL_TABLES = _METADATA_VIEW_NAMES
 _CATALOG_STATEMENT_KINDS = {
     "Show",  # SHOW TABLES, SHOW COLUMNS, SHOW DATABASES (some dialects)
     "Describe",  # DESCRIBE / DESC
@@ -532,13 +539,16 @@ class OBFlightServer(flight.FlightServerBase):
         for prefix in _CATALOG_SCHEMAS:
             if prefix in full_sql:
                 return _MODE_CATALOG
-        # Virtual metadata tables shipped with the model
-        if bare in _CATALOG_VIRTUAL_TABLES:
+        # Metadata views — return introspection rows (name / data_object / …).
+        if bare in _METADATA_VIEW_NAMES:
             return _MODE_CATALOG
 
-        # Semantic — the model's virtual table
+        # Semantic — the model's virtual table, OR a per-category label view
+        # (_dimensions/_measures/_metrics). Label views are aliases for the
+        # model VT restricted to one category, so `SELECT "X" FROM _dimensions`
+        # compiles through the standard semantic pipeline.
         vt = model_virtual_table_name(model).lower()
-        if bare == vt:
+        if bare == vt or bare in _LABEL_VIEW_NAMES:
             return _MODE_SEMANTIC
 
         # Anything else (including FROM-<data-object-label>) rejects.
@@ -800,11 +810,11 @@ class OBFlightServer(flight.FlightServerBase):
                 or "pg_catalog.pg_attribute" in target_sql
             ):
                 return self._catalog_columns_table(model)
-            if bare == "_dimensions":
+            if bare == "_dimensions_metadata":
                 return build_dimensions_data(model)
-            if bare == "_measures":
+            if bare == "_measures_metadata":
                 return build_measures_data(model)
-            if bare == "_metrics":
+            if bare == "_metrics_metadata":
                 return build_metrics_data(model)
 
         # Unknown catalog probe — empty result. Tool moves on.
@@ -875,16 +885,17 @@ class OBFlightServer(flight.FlightServerBase):
 
     @staticmethod
     def _detect_virtual_table(sql: str) -> str | None:
-        """Detect if SQL queries a virtual metadata table (_dimensions, etc.).
+        """Detect a metadata-view reference (``_dimensions_metadata``, etc.).
 
-        Uses word-boundary matching to avoid false positives on table/column
-        names like ``sales_dimensions`` or ``total_measures``.
+        Word-boundary matching avoids false positives on names like
+        ``sales_measures_metadata`` or ``total_metrics``.
         """
         import re
 
         sql_lower = sql.lower()
-        for vt in VIRTUAL_TABLES:
-            # Match the virtual table name as a standalone word
+        # Check longest names first so ``_dimensions_metadata`` wins over
+        # ``_dimensions`` when both would match the regex.
+        for vt in sorted(VIRTUAL_TABLES, key=len, reverse=True):
             if re.search(rf"\b{re.escape(vt)}\b", sql_lower):
                 return vt
         return None
@@ -894,13 +905,13 @@ class OBFlightServer(flight.FlightServerBase):
         vt_name: str,
         context: flight.ServerCallContext | None = None,
     ) -> flight.RecordBatchStream:
-        """Return data for a virtual metadata table."""
+        """Return data for a metadata view (``_dimensions_metadata`` etc.)."""
         model, _ = self._get_model(context)
-        if vt_name == "_dimensions":
+        if vt_name == "_dimensions_metadata":
             table = build_dimensions_data(model)
-        elif vt_name == "_measures":
+        elif vt_name == "_measures_metadata":
             table = build_measures_data(model)
-        elif vt_name == "_metrics":
+        elif vt_name == "_metrics_metadata":
             table = build_metrics_data(model)
         else:
             raise flight.FlightServerError(f"Unknown virtual table: {vt_name}")

@@ -156,18 +156,25 @@ def _make_model_with_dim(name: str = "sales_model") -> MagicMock:
 
 class TestModelToFlightInfos:
     def test_default_hides_data_objects(self):
-        """Default: virtual table + _dimensions/_measures/_metrics = 4."""
+        """Default: vt + label views (non-empty only) + 3 metadata views.
+
+        Test model has 1 dim + 1 measure + 0 metrics → 6 entries:
+        ``sales_model`` (vt), ``dimensions``, ``measures`` (label views;
+        ``metrics`` skipped because empty), and the 3 ``_*_metadata``
+        introspection views.
+        """
         model = _make_model_with_dim()
         infos = model_to_flight_infos(model, "test-model")
-        assert len(infos) == 4
+        assert len(infos) == 6
         # First info is the semantic virtual table
         assert infos[0].descriptor.path == [b"test-model", b"sales_model"]
 
     def test_expose_data_objects(self):
-        """expose_data_objects=True: virtual table + each data object + 3 meta."""
+        """expose_data_objects=True: vt + Sales + label views + 3 metadata views."""
         model = _make_model_with_dim()
         infos = model_to_flight_infos(model, "test-model", expose_data_objects=True)
-        assert len(infos) == 5  # vt + Sales + 3 meta
+        # vt + Sales + (dimensions, measures) + 3 metadata = 7
+        assert len(infos) == 7
         labels = {info.descriptor.path[-1] for info in infos}
         assert b"sales_model" in labels
         assert b"Sales" in labels
@@ -184,12 +191,18 @@ class TestModelToFlightInfos:
         assert len(infos) == 0
 
     def test_virtual_tables_included(self):
+        """Label views appear when non-empty; metadata views always appear."""
         model = _make_model_with_dim()
         infos = model_to_flight_infos(model, "m1")
         vt_paths = {info.descriptor.path[-1] for info in infos}
-        assert b"_dimensions" in vt_paths
-        assert b"_measures" in vt_paths
-        assert b"_metrics" in vt_paths
+        # Label views (the model has dims + measures but no metrics, so
+        # ``metrics`` is skipped — empty views aren't advertised).
+        assert b"dimensions" in vt_paths
+        assert b"measures" in vt_paths
+        # Metadata views — always present regardless of model contents.
+        assert b"_dimensions_metadata" in vt_paths
+        assert b"_measures_metadata" in vt_paths
+        assert b"_metrics_metadata" in vt_paths
 
     def test_virtual_table_schema_has_dims_and_measures(self):
         """The semantic virtual table exposes dims + measures + metrics."""

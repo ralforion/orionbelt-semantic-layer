@@ -32,10 +32,40 @@ def _obml_type_to_arrow(type_name: str | None) -> pa.DataType:
 
 
 # ---------------------------------------------------------------------------
-# Virtual metadata table schemas
+# Virtual views — two flavours per category
 # ---------------------------------------------------------------------------
+#
+# **Label views** (``_dimensions``, ``_measures``, ``_metrics``) — schema
+# built per-model with one column per dim / measure / metric label, typed
+# by the declared ``result_type``. BI tools' column picker populates from
+# these, so users see a per-category pick list. Queries against them
+# (``SELECT "X" FROM _dimensions``) route to semantic mode and compile
+# through the standard pipeline — the view name is an alias for the
+# model's virtual table restricted to that category.
+#
+# **Metadata views** (``_dimensions_metadata``, ``_measures_metadata``,
+# ``_metrics_metadata``) — fixed introspection schema (name,
+# data_object, type, …). Queries return metadata *rows* describing each
+# dim/measure/metric. Used by REST callers and SQL tinkering; BI tool
+# users mostly ignore them.
 
-DIMENSIONS_SCHEMA = pa.schema(
+# Label views — names BI tools see in the picker. No leading underscore
+# so they look like regular catalog objects users can pick from.
+LABEL_VIEW_NAMES: tuple[str, ...] = ("dimensions", "measures", "metrics")
+
+# Metadata views — the underscore-prefixed introspection counterparts.
+# The leading ``_`` follows the "internal" convention used by Postgres
+# (``pg_*``), DBeaver, and BigQuery (``INFORMATION_SCHEMA``).
+METADATA_VIEW_NAMES: tuple[str, ...] = (
+    "_dimensions_metadata",
+    "_measures_metadata",
+    "_metrics_metadata",
+)
+
+# Back-compat alias: prior name used in server / tests.
+VIRTUAL_TABLE_NAMES: tuple[str, ...] = LABEL_VIEW_NAMES + METADATA_VIEW_NAMES
+
+DIMENSIONS_METADATA_SCHEMA = pa.schema(
     [
         pa.field("name", pa.utf8()),
         pa.field("data_object", pa.utf8()),
@@ -46,7 +76,7 @@ DIMENSIONS_SCHEMA = pa.schema(
     ]
 )
 
-MEASURES_SCHEMA = pa.schema(
+MEASURES_METADATA_SCHEMA = pa.schema(
     [
         pa.field("name", pa.utf8()),
         pa.field("aggregation", pa.utf8()),
@@ -57,7 +87,7 @@ MEASURES_SCHEMA = pa.schema(
     ]
 )
 
-METRICS_SCHEMA = pa.schema(
+METRICS_METADATA_SCHEMA = pa.schema(
     [
         pa.field("name", pa.utf8()),
         pa.field("metric_type", pa.utf8()),
@@ -67,10 +97,72 @@ METRICS_SCHEMA = pa.schema(
     ]
 )
 
+
+def dimensions_view_schema(model: Any) -> pa.Schema:
+    """Per-model schema for the ``_dimensions`` view: one field per dim label."""
+    fields: list[pa.Field] = []
+    if hasattr(model, "dimensions") and model.dimensions:
+        for label, dim in model.dimensions.items():
+            display = getattr(dim, "label", label) or label
+            rt = getattr(dim, "result_type", None)
+            rt_name = getattr(rt, "value", None) or "string"
+            fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
+    return pa.schema(fields)
+
+
+def measures_view_schema(model: Any) -> pa.Schema:
+    """Per-model schema for the ``_measures`` view: one field per measure label."""
+    fields: list[pa.Field] = []
+    if hasattr(model, "measures") and model.measures:
+        for label, meas in model.measures.items():
+            display = getattr(meas, "label", label) or label
+            rt = getattr(meas, "result_type", None)
+            rt_name = getattr(rt, "value", None) or "float"
+            fields.append(pa.field(display, _obml_type_to_arrow(rt_name)))
+    return pa.schema(fields)
+
+
+def metrics_view_schema(model: Any) -> pa.Schema:
+    """Per-model schema for the ``_metrics`` view: one field per metric label."""
+    fields: list[pa.Field] = []
+    if hasattr(model, "metrics") and model.metrics:
+        for label, met in model.metrics.items():
+            display = getattr(met, "label", label) or label
+            fields.append(pa.field(display, pa.float64()))
+    return pa.schema(fields)
+
+
+def virtual_view_schema(model: Any, view_name: str) -> pa.Schema:
+    """Build the BI-tool-facing schema for a view name.
+
+    Label views (``dimensions``/``measures``/``metrics``) → per-model
+    schema of dim/measure/metric labels. Metadata views
+    (``_dimensions_metadata`` etc.) → fixed introspection schema
+    (name / data_object / type / …).
+    """
+    if view_name == "dimensions":
+        return dimensions_view_schema(model)
+    if view_name == "measures":
+        return measures_view_schema(model)
+    if view_name == "metrics":
+        return metrics_view_schema(model)
+    if view_name == "_dimensions_metadata":
+        return DIMENSIONS_METADATA_SCHEMA
+    if view_name == "_measures_metadata":
+        return MEASURES_METADATA_SCHEMA
+    if view_name == "_metrics_metadata":
+        return METRICS_METADATA_SCHEMA
+    return pa.schema([])
+
+
+# Catalog enumeration map. Label views use per-model schemas (built
+# lazily via ``virtual_view_schema``); metadata views have fixed schemas
+# returned directly. Server code iterates this dict to know which views
+# to advertise and which builder to call for each.
 VIRTUAL_TABLES: dict[str, pa.Schema] = {
-    "_dimensions": DIMENSIONS_SCHEMA,
-    "_measures": MEASURES_SCHEMA,
-    "_metrics": METRICS_SCHEMA,
+    "_dimensions_metadata": DIMENSIONS_METADATA_SCHEMA,
+    "_measures_metadata": MEASURES_METADATA_SCHEMA,
+    "_metrics_metadata": METRICS_METADATA_SCHEMA,
 }
 
 
@@ -176,7 +268,7 @@ def build_dimensions_data(model: Any) -> pa.Table:
             "time_grain": time_grains,
             "description": descriptions,
         },
-        schema=DIMENSIONS_SCHEMA,
+        schema=DIMENSIONS_METADATA_SCHEMA,
     )
 
 
@@ -214,7 +306,7 @@ def build_measures_data(model: Any) -> pa.Table:
             "columns": columns_list,
             "description": descriptions,
         },
-        schema=MEASURES_SCHEMA,
+        schema=MEASURES_METADATA_SCHEMA,
     )
 
 
@@ -243,7 +335,7 @@ def build_metrics_data(model: Any) -> pa.Table:
             "measure": measures,
             "description": descriptions,
         },
-        schema=METRICS_SCHEMA,
+        schema=METRICS_METADATA_SCHEMA,
     )
 
 
@@ -287,9 +379,17 @@ def model_to_flight_infos(
             info = flight.FlightInfo(schema, descriptor, [], -1, -1)
             infos.append(info)
 
-    # Virtual metadata tables — always present.
-    for meta_name, meta_schema in VIRTUAL_TABLES.items():
-        descriptor = flight.FlightDescriptor.for_path(model_id, meta_name)
-        info = flight.FlightInfo(meta_schema, descriptor, [], -1, -1)
-        infos.append(info)
+    # Label views — per-category dim/measure/metric labels for BI pickers.
+    for vt_name in LABEL_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        if len(view_schema) == 0:
+            continue
+        descriptor = flight.FlightDescriptor.for_path(model_id, vt_name)
+        infos.append(flight.FlightInfo(view_schema, descriptor, [], -1, -1))
+
+    # Metadata views — fixed introspection schemas.
+    for vt_name in METADATA_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        descriptor = flight.FlightDescriptor.for_path(model_id, vt_name)
+        infos.append(flight.FlightInfo(view_schema, descriptor, [], -1, -1))
     return infos

@@ -371,10 +371,12 @@ def build_tables_table(
     ``design/PLAN_flight_natural_sql.md`` §3.5.
     """
     from ob_flight.catalog import (
-        VIRTUAL_TABLES,
+        LABEL_VIEW_NAMES,
+        METADATA_VIEW_NAMES,
         model_to_virtual_table_schema,
         model_virtual_table_name,
         object_to_schema,
+        virtual_view_schema,
     )
 
     names: list[str] = []
@@ -407,9 +409,18 @@ def build_tables_table(
             label = getattr(obj, "label", obj_name) or obj_name
             _emit(label, "TABLE", object_to_schema(obj))
 
-    # Virtual metadata views (_dimensions, _measures, _metrics)
-    for vt_name, vt_schema in VIRTUAL_TABLES.items():
-        _emit(vt_name, "VIEW", vt_schema)
+    # Per-category label views (_dimensions / _measures / _metrics) —
+    # one column per dim/measure/metric label so BI tool pickers split by
+    # kind. Queries route to semantic mode (compile via the model VT).
+    for vt_name in LABEL_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        if len(view_schema) > 0:
+            _emit(vt_name, "VIEW", view_schema)
+
+    # Metadata views (_dimensions_metadata / …) — fixed introspection
+    # schema (name / data_object / type / …). Always advertised.
+    for vt_name in METADATA_VIEW_NAMES:
+        _emit(vt_name, "VIEW", virtual_view_schema(model, vt_name))
 
     return pa.table(
         {
@@ -462,10 +473,12 @@ def build_columns_table(
     See ``design/PLAN_flight_natural_sql.md`` §3.5.
     """
     from ob_flight.catalog import (
-        VIRTUAL_TABLES,
+        LABEL_VIEW_NAMES,
+        METADATA_VIEW_NAMES,
         model_to_virtual_table_schema,
         model_virtual_table_name,
         object_to_schema,
+        virtual_view_schema,
     )
 
     rows: list[tuple[str, str, str, str, str, str, int, str, int]] = []
@@ -497,11 +510,16 @@ def build_columns_table(
                 label = getattr(obj, "label", obj_name) or obj_name
                 _emit_schema(label, object_to_schema(obj))
 
-    # Metadata views: _dimensions / _measures / _metrics. Their schemas
-    # are fixed (no model dependency) — each row describes one column
-    # of the introspection view.
-    for vt_name, vt_schema in VIRTUAL_TABLES.items():
-        _emit_schema(vt_name, vt_schema)
+    # Per-category label views: one column per dim/measure/metric label
+    # for BI tool pickers.
+    for vt_name in LABEL_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        if len(view_schema) > 0:
+            _emit_schema(vt_name, view_schema)
+
+    # Metadata views: fixed introspection schema (name / data_object / …).
+    for vt_name in METADATA_VIEW_NAMES:
+        _emit_schema(vt_name, virtual_view_schema(model, vt_name))
 
     if rows:
         columns = list(zip(*rows, strict=True))

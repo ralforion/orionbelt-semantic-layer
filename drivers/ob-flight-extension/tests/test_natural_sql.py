@@ -17,14 +17,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pyarrow as pa
 import pyarrow.flight as flight
 import pytest
 
 from ob_flight.catalog import (
     model_to_flight_infos,
     model_to_virtual_table_schema,
-    model_virtual_table_name,
 )
 from ob_flight.flight_sql import build_columns_table, build_tables_table
 from ob_flight.server import OBFlightServer
@@ -168,7 +166,7 @@ class TestBuildTablesTable:
             )
         )
         for name, type_ in rows:
-            if name in {"_dimensions", "_measures", "_metrics"}:
+            if name in {"dimensions", "measures", "metrics"}:
                 assert type_ == "VIEW"
 
 
@@ -239,11 +237,21 @@ class TestClassifySQL:
         server = _make_server(model)
         assert server._classify_sql("SELECT version()", model) == "catalog"
 
-    def test_virtual_metadata_table_is_catalog(self, model) -> None:
+    def test_metadata_view_is_catalog(self, model) -> None:
+        """`SELECT * FROM _<kind>_metadata` → introspection rows (catalog mode)."""
         server = _make_server(model)
-        assert server._classify_sql("SELECT * FROM _dimensions", model) == "catalog"
-        assert server._classify_sql("SELECT * FROM _measures", model) == "catalog"
-        assert server._classify_sql("SELECT * FROM _metrics", model) == "catalog"
+        assert server._classify_sql("SELECT * FROM _dimensions_metadata", model) == "catalog"
+        assert server._classify_sql("SELECT * FROM _measures_metadata", model) == "catalog"
+        assert server._classify_sql("SELECT * FROM _metrics_metadata", model) == "catalog"
+
+    def test_label_view_is_semantic(self, model) -> None:
+        """`SELECT "X" FROM _<kind>` → compiled through the semantic pipeline."""
+        server = _make_server(model)
+        assert (
+            server._classify_sql('SELECT "Customer Country" FROM dimensions', model)
+            == "semantic"
+        )
+        assert server._classify_sql('SELECT "Total Revenue" FROM measures', model) == "semantic"
 
     def test_no_from_with_known_columns_is_semantic(self, model) -> None:
         """SELECT "dim", "measure" without FROM resolves to the implicit model."""
@@ -381,10 +389,10 @@ class TestCatalogHandling:
         table = server._handle_catalog_sql("SELECT current_schema()", model)
         assert table.num_rows == 1
 
-    def test_select_dimensions_virtual_table(self, model) -> None:
+    def test_select_dimensions_metadata_virtual_table(self, model) -> None:
         server = _make_server(model)
-        table = server._handle_catalog_sql("SELECT * FROM _dimensions", model)
-        # _dimensions virtual table — should contain the model's dims
+        table = server._handle_catalog_sql("SELECT * FROM _dimensions_metadata", model)
+        # _dimensions_metadata view — should contain the model's dim names
         names = table.column("name").to_pylist()
         assert "Customer Country" in names
 
