@@ -177,8 +177,12 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | | OBSL | Malloy |
 |---|---|---|
+| Query language | **OBSQL** (BI-style SQL: `SELECT "dim", "measure" FROM <model>` or no FROM) **+** native JSON `QueryObject` | **Malloy DSL** — language-defined query syntax (`run: source -> { group_by: x, aggregate: y }`) |
+| Natural SQL surface | **OrionBelt Semantic QL (OBSQL)** through the same Flight SQL endpoint BI tools use; aggregate-wrap matching against declared aggregation; `WITH ROLLUP` / `WITH CUBE` first-class | No — Malloy is its own language; BI tools speak SQL, not Malloy |
+| Catalog discovery from BI tools | `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*` answered from the model in-process | n/a (Malloy clients call the Malloy language) |
+| Governance | **Closed by design** — `RAW_SQL_REJECTED` / `WRITE_OPERATION_REJECTED`. No env flag to bypass. | n/a |
 | REST API | Yes — first-party FastAPI service in this repo | Yes — via the **Publisher** companion project (`malloydata/publisher`) |
-| Arrow Flight SQL | Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau, Power BI) connect via Arrow Flight SQL JDBC | No |
+| Arrow Flight SQL | Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau, Power BI) connect via Arrow Flight SQL JDBC. Multi-model addressing via the `database` gRPC header. | No |
 | JDBC | Yes — via Arrow Flight SQL JDBC driver | No |
 | DB-API 2.0 drivers | Yes — 8 drivers shipped | No |
 | MCP | Yes — first-party server | Yes — via Publisher |

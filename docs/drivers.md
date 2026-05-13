@@ -386,7 +386,7 @@ The Flight extension is **not needed** for Cloud Run deployments. Cloud Run uses
 
 ### DBeaver Setup
 
-1. **Download** the [Arrow Flight SQL JDBC driver](https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver) JAR and install in Driver Manager:
+1. **Download** the [Arrow Flight SQL JDBC driver](https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver) JAR (19.0.0 or newer) and install in Driver Manager:
 
 <p align="center">
   <img src="../docs/assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
@@ -395,30 +395,56 @@ The Flight extension is **not needed** for Cloud Run deployments. Cloud Run uses
 2. **New Connection** > Apache Arrow Flight SQL
 3. **Host:** your Docker host IP or `localhost`
 4. **Port:** `8815`
-5. **Authentication:** leave empty (or use token if `FLIGHT_AUTH_MODE=token`)
-6. **Test Connection** > should show "Connected"
-7. In the SQL editor, write OBML query or plain SQL:
+5. **Database** (multi-model only): the model name (one of `GET /v1/models`). Leave empty in single-model mode — auto-resolve picks the only loaded model. The driver maps this field to the gRPC `database` metadata header.
+6. **Authentication:** leave empty (or use token if `FLIGHT_AUTH_MODE=token`)
+7. **Test Connection** > should show "Connected", `Server: OrionBelt Semantic Layer`, and the driver version.
+8. In the SQL editor, write [OrionBelt Semantic QL](guide/semantic-ql.md):
 
-```yaml
-select:
-  dimensions:
-    - Region
-  measures:
-    - Revenue
-limit: 10
+```sql
+-- aggregate, FROM the model's virtual table (or omit FROM entirely)
+SELECT "Region", "Total Sales"
+FROM   sales
+WHERE  "Year" = 2025
+ORDER  BY "Total Sales" DESC
+LIMIT  100
+
+-- hierarchical subtotals
+SELECT "Region", "Country", "Total Sales"
+FROM   sales
+WITH ROLLUP
+
+-- detail rows (raw mode) via qualified `"DataObject"."column"` refs
+SELECT "Customers"."Customer Name", "Customers"."Country"
+FROM   sales
+LIMIT  100
 ```
 
-The schema browser shows raw tables and virtual tables of the OBML artefacts. The query YAML gets compiled to SQL in the background and executed.
+The schema browser shows the model's virtual table (one row per loaded
+model) plus the `_dimensions` / `_measures` / `_metrics` introspection
+views. `SHOW TABLES`, `DESCRIBE`, and `information_schema.tables` work
+out of the box and are answered from the model — they never touch the
+warehouse.
 
 <p align="center">
   <img src="../docs/assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
-You can also query the vritual OBML tables:
+You can also query the virtual OBML tables:
 
 <p align="center">
   <img src="../docs/assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
 </p>
+
+#### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| **"Cannot cast GenericDataSource to SQLiteDataSource"** | DBeaver workspace stored the connection with the wrong provider (often after a DBeaver upgrade). Delete the connection and recreate it from scratch via *Database → New Database Connection → Apache Arrow Flight SQL*. Don't edit the workspace JSON in place. |
+| **"No suitable driver found for jdbc:arrow-flight-sql://..."** | The Arrow Flight SQL driver lost its class registration. *Database → Driver Manager → Apache Arrow Flight SQL → Edit → Libraries* → re-download the JAR (19.0.0+), then use *Find Class* to re-register `org.apache.arrow.driver.jdbc.ArrowFlightJdbcDriver`. |
+| **`Server: ?` in the connection-test dialog** | Server is on an older OBSL build that didn't populate `CommandGetSqlInfo`. Upgrade to v2.4.0+ — DBeaver will then show `Server: OrionBelt Semantic Layer`. |
+| **`[NO_MODEL_SELECTED]` on connect** | Multiple models are loaded and you didn't set *Database*. Either set it to one of the names from `GET /v1/models`, or restart the server with a single model. |
+| **`[RAW_SQL_REJECTED]` on a query you think is valid** | OBSL is a semantic layer — `SELECT * FROM <physical_table>` is rejected by design. Use the model's virtual table name (or omit `FROM`) and reference dim/measure labels. There is no flag to enable raw SQL. |
+| **Smoke-test without DBeaver** | Run `uv run python examples/obsql.py 'SELECT version()'` — same Flight surface, no GUI dependencies. |
 
 ### Tableau Setup
 

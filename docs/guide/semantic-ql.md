@@ -41,7 +41,7 @@ declared aggregation), and **first-class hierarchical subtotals**
 
 ```sql
 SELECT <dimension or measure labels>
-FROM   <model_name>
+[FROM  <model_name>]
 [WHERE <predicates>]
 [HAVING <predicates>]
 [ORDER BY <label or position> [ASC | DESC]]
@@ -49,10 +49,15 @@ FROM   <model_name>
 [WITH ROLLUP | WITH CUBE]
 ```
 
+`FROM` is optional on a connection where the model is implicit (single-model
+mode, or multi-model with the `database` selector set). `SELECT "dim", "measure"`
+means the same as `SELECT "dim", "measure" FROM <model>` — see
+[No-FROM mode](#no-from-mode-implicit-model) below.
+
 | Clause     | Rules |
 |------------|-------|
 | `SELECT`   | Bare identifiers, `MEASURE("<label>")`, or an aggregate wrapper that **matches the measure's declared aggregation** (`SUM("X")` on a SUM-measure, `COUNT(DISTINCT "X")` on a count_distinct-measure, etc.). Mismatched wraps (`MIN` on a SUM-measure) and **any** wrap on a metric reject with a message naming the declared aggregation. `SELECT *` and free-form expressions are rejected. |
-| `FROM`     | The model's virtual table. Any other target is rejected unless `FLIGHT_ALLOW_RAW_SQL` / `FLIGHT_ALLOW_DATA_OBJECT_SQL` is on (Flight only — REST is always semantic mode). |
+| `FROM`     | The model's virtual table, or omitted entirely. Any other target is rejected with `RAW_SQL_REJECTED` — OBSL is closed by design, there is no env flag to bypass. |
 | `WHERE`    | `column op literal` atoms joined by `AND`. Measure / metric references are auto-routed to `HAVING`. Top-level `OR` is rejected. |
 | `HAVING`   | Same shape as `WHERE`; passes through unchanged. |
 | `GROUP BY` | Silently ignored — implicit from the dimensions in `SELECT`. BI tools auto-emit it; we tolerate it for compatibility. |
@@ -217,6 +222,53 @@ Discover available models via GET /v1/models.
 ```
 
 The error itself is the documentation — no need to remember anything.
+
+## No-FROM mode — implicit model
+
+On a connection with a resolved model (single-model, or multi-model with
+the `database` selector set), `FROM` is optional. These two queries are
+equivalent:
+
+```sql
+SELECT "Customer Country", "Total Revenue"
+SELECT "Customer Country", "Total Revenue" FROM sales_model
+```
+
+Classification routes a no-FROM SELECT to semantic mode when **every**
+column identifier matches a dim / measure / metric on the resolved model.
+Unknown identifiers reject with `RAW_SQL_REJECTED` — not
+`UNKNOWN_SELECT_ITEM` — so users get a clear "this isn't a query against
+the model" signal rather than a translator error.
+
+`SELECT 1`, `SELECT version()`, and other canned scalar probes keep their
+catalog routing (BI tools rely on these for connectivity checks).
+
+## Smoke-test from the terminal
+
+The repo ships `examples/obsql.py` — a ~150-line `pyarrow.flight` CLI for
+running OBSQL without a BI tool. Naming follows the `psql` / `snowsql`
+convention (the CLI shares its name with the language it runs).
+
+```bash
+# Single-model or auto-resolve
+uv run python examples/obsql.py 'SELECT version()'
+uv run python examples/obsql.py 'SHOW TABLES'
+uv run python examples/obsql.py 'SELECT "Region", "Total Sales" LIMIT 5'
+
+# Multi-model — pick with -m / --model
+uv run python examples/obsql.py -m sales 'SHOW TABLES'
+
+# Discover loaded models via REST /v1/models
+uv run python examples/obsql.py --list --rest-port 8000
+
+# Verify governance
+uv run python examples/obsql.py 'DROP TABLE foo'       # → WRITE_OPERATION_REJECTED
+uv run python examples/obsql.py 'SELECT * FROM customers'  # → RAW_SQL_REJECTED
+```
+
+The CLI sets the `database` gRPC metadata header from `-m` (matching what
+the Arrow Flight SQL JDBC driver sends when DBeaver's *Database* field is
+set), so it exercises the exact same routing path BI tools take.
 
 ## Raw mode — detail rows via qualified columns
 
