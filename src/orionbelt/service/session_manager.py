@@ -54,6 +54,10 @@ class _Session:
     # Wall-clock times for reporting
     created_at_wall: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_accessed_wall: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # When True, the session was created by the startup loader for a
+    # pre-loaded model — exempt from idle TTL and absolute max-age, never
+    # listed by ``list_sessions``. Admin-managed.
+    protected: bool = False
 
 
 class SessionManager:
@@ -228,12 +232,18 @@ class SessionManager:
         logger.info("Session closed: %s", session_id)
 
     def list_sessions(self) -> list[SessionInfo]:
-        """Return info for all non-expired sessions (excluding default)."""
+        """Return info for all non-expired user sessions.
+
+        Excludes the default session and any admin-managed (protected)
+        sessions created by the multi-model startup loader.
+        """
         now_mono = time.monotonic()
         result: list[SessionInfo] = []
         with self._lock:
             for session in self._sessions.values():
                 if session.session_id == _DEFAULT_SESSION_ID:
+                    continue
+                if session.protected:
                     continue
                 if not self._is_expired(session, now_mono):
                     result.append(self._session_info(session))
@@ -247,7 +257,15 @@ class SessionManager:
             return sum(1 for s in self._sessions.values() if not self._is_expired(s, now_mono))
 
     def get_or_create_default(self) -> ModelStore:
-        """Get (or lazily create) the default session."""
+        """Get (or lazily create) the legacy ``__default__`` session.
+
+        Unlike :meth:`get_or_create_named`, the default session is NOT
+        marked protected — its lifecycle is controlled by the
+        ``is_single_model_mode`` flag, not by the protected mechanism.
+        This preserves backward compatibility with the v2.3.x model-
+        upload semantics where each new user session inherits the
+        preloaded YAML.
+        """
         with self._lock:
             session = self._sessions.get(_DEFAULT_SESSION_ID)
             if session is not None:
@@ -267,6 +285,45 @@ class SessionManager:
             )
             self._sessions[_DEFAULT_SESSION_ID] = session
             return session.store
+
+    def get_or_create_named(self, session_id: str) -> ModelStore:
+        """Get (or lazily create) a session with a caller-chosen id.
+
+        Used by the multi-model startup loader to register each pre-loaded
+        model as its own internal session whose id is the resolved model
+        name. The created session is marked ``protected`` — exempt from
+        idle TTL eviction and not listed by :meth:`list_sessions`. Admin-
+        managed.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.last_accessed = time.monotonic()
+                session.last_accessed_wall = datetime.now(UTC)
+                return session.store
+            now_mono = time.monotonic()
+            now_wall = datetime.now(UTC)
+            session = _Session(
+                session_id=session_id,
+                store=ModelStore(max_models=self._max_models),
+                created_at=now_wall,
+                created_at_mono=now_mono,
+                last_accessed=now_mono,
+                created_at_wall=now_wall,
+                last_accessed_wall=now_wall,
+                protected=True,
+            )
+            self._sessions[session_id] = session
+            return session.store
+
+    def list_protected_session_ids(self) -> list[str]:
+        """Return the ids of all admin-managed (protected) sessions.
+
+        Used by multi-model discovery (``GET /v1/models``) and by Flight
+        routing to enumerate which model names are available.
+        """
+        with self._lock:
+            return [s.session_id for s in self._sessions.values() if s.protected]
 
     # -- internal ------------------------------------------------------------
 
@@ -305,16 +362,20 @@ class SessionManager:
         )
 
     def _purge_expired(self) -> None:
-        """Remove all expired sessions (called by cleanup thread)."""
+        """Remove all expired sessions (called by cleanup thread).
+
+        Protected sessions (admin-managed pre-loads) are never purged.
+        The legacy ``__default__`` session is kept alive when
+        ``is_single_model_mode`` is set.
+        """
         now_mono = time.monotonic()
         with self._lock:
-            # In single-model mode, keep the default session alive.
-            # Otherwise, purge it like any other session.
             skip_default = self._is_single_model_mode
             expired = [
                 sid
                 for sid, s in self._sessions.items()
-                if (not skip_default or sid != _DEFAULT_SESSION_ID)
+                if not s.protected
+                and (not skip_default or sid != _DEFAULT_SESSION_ID)
                 and self._is_expired(s, now_mono)
             ]
             for sid in expired:

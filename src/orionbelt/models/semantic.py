@@ -590,6 +590,17 @@ class SemanticModel(BaseModel):
     """Complete semantic model parsed from OBML YAML."""
 
     version: float = 1.0
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional addressing identifier for multi-model mode (v2.4.0+). "
+            "When unset, the multi-model loader uses the filename stem. "
+            "After normalization (lowercase + spaces/dots/dashes → "
+            "underscores + trim) must match ``^[a-z][a-z0-9_]{0,62}$``. "
+            "BI tools select this model via the Flight `database` catalog "
+            "or pgwire `database=` URL parameter."
+        ),
+    )
     description: str | None = None
     settings: ModelSettings | None = None
     data_objects: dict[str, DataObject] = Field(default={}, alias="dataObjects")
@@ -604,3 +615,32 @@ class SemanticModel(BaseModel):
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, v: str | None) -> str | None:
+        """Reject invalid names early. Pydantic validators raise ValueError
+        which the loader turns into a model-validation error.
+
+        Empty / whitespace-only strings are treated as ``None`` rather than
+        passed through, so an empty ``name:`` in YAML falls back to the
+        filename stem at startup.
+        """
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError("name must be a string")
+        if not v.strip():
+            return None
+        # Use the same normalization pipeline the loader uses, so an OBML
+        # `name:` that's invalid surfaces during parse-time rather than
+        # only at startup. The normalized value is stored on the model.
+        from orionbelt.models.identifiers import (
+            ModelNameError,
+            normalize_model_name,
+        )
+
+        try:
+            return normalize_model_name(v, source="OBML `name:` field")
+        except ModelNameError as exc:
+            raise ValueError(str(exc)) from None

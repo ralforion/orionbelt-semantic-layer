@@ -142,7 +142,47 @@ Unknown catalog probes return empty result sets — tools adapt.
 | ``RAW_SQL_REJECTED`` | FROM target is neither the virtual table nor a catalog source |
 | ``WRITE_OPERATION_REJECTED`` | DDL / DML / TCL — OBSL is read-only |
 
-## 6. Endpoints
+## 6. Multi-model addressing (v2.4.0+)
+
+When the server is started with ``MODEL_FILES=sales.yaml,returns.yaml``
+each model is exposed as its own Flight SQL catalog. BI tools and
+clients pick which model to query:
+
+| Protocol | How to select |
+|---|---|
+| **Arrow Flight SQL** | gRPC ``database`` metadata header (set by JDBC ``Connection.setCatalog()`` or the URL path). DBeaver / Tableau / Power BI: type the model name in the "Database" field. |
+| **Pyarrow Flight** | ``flight.FlightCallOptions(headers=[(b'database', b'sales')])`` |
+| **pgwire** (v2.5.0+) | ``postgresql://obsl:KEY@host:5432/sales`` — the URL ``database=`` slot |
+| **REST** | ``POST /v1/sessions/<model_name>/query/semantic-ql`` — session id == model name |
+
+Resolution order on the server:
+
+1. Explicit selector from header / URL → that model
+2. Legacy ``__default__`` (from ``MODEL_FILE``)
+3. Auto-resolve when exactly one model is loaded — no selector required
+4. Otherwise: rich error listing available model names and how to set
+   the selector for each client type
+
+### Model name rules
+
+* Defined by the OBML top-level ``name:`` field, falling back to the
+  filename stem.
+* Normalized: lowercase, runs of ``[whitespace | . | -]`` → underscore,
+  collapse underscore runs, strip leading/trailing underscores, strip a
+  trailing ``_obml`` suffix.
+* Validated against ``^[a-z][a-z0-9_]{0,62}$``.
+* Reserved names (rejected at startup): ``obsl, obml, obsql, model,
+  default, public, information_schema, pg_catalog, sqlite_master,
+  mysql, sys, performance_schema, admin, root``.
+
+### Discovery
+
+``GET /v1/models`` returns the live catalog of loaded models with their
+descriptions and counts of declared dims / measures / metrics / data
+objects. Stable across the server's lifetime — BI tool configs can
+hard-code names without worrying about drift.
+
+## 7. Endpoints
 
 | Method | Path | Behaviour |
 |---|---|---|
@@ -152,7 +192,7 @@ Unknown catalog probes return empty result sets — tools adapt.
 | POST | ``/v1/sessions/{id}/query/semantic-ql/compile`` | Session-scoped compile |
 | Flight | gRPC port 8815 | Send OBSQL as a regular SQL statement; same translation path |
 
-## 7. Worked examples
+## 8. Worked examples
 
 ### Aggregate
 ```sql

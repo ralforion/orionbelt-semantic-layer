@@ -213,9 +213,18 @@ def is_flight_sql_command(data: bytes) -> bool:
     return "arrow.flight.protocol.sql" in type_url
 
 
-def build_catalogs_table() -> pa.Table:
-    """Build response for CommandGetCatalogs."""
-    return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
+def build_catalogs_table(catalog_names: list[str] | None = None) -> pa.Table:
+    """Build response for CommandGetCatalogs.
+
+    In multi-model mode each loaded model is exposed as its own catalog —
+    pass the resolved model names list to populate the response so BI
+    tool catalog dropdowns show them. When ``catalog_names`` is empty or
+    None, returns the legacy single ``orionbelt`` placeholder for
+    backward compatibility with clients that only need *something*.
+    """
+    if not catalog_names:
+        return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
+    return pa.table({"catalog_name": list(catalog_names)}, schema=CATALOG_SCHEMA)
 
 
 def build_db_schemas_table() -> pa.Table:

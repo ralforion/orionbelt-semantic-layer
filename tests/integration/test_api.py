@@ -239,7 +239,7 @@ class TestSettingsEndpoint:
             model_file=str(model_file),
         )
         app = create_app(settings=settings)
-        preload = _read_model_file(str(model_file))
+        preload, _ = _read_model_file(str(model_file))
         mgr = SessionManager(
             ttl_seconds=settings.session_ttl_seconds,
             cleanup_interval=settings.session_cleanup_interval,
@@ -770,11 +770,15 @@ def single_model_app(tmp_path):
     # Manually init (ASGITransport doesn't trigger lifespan)
     from orionbelt.api.app import _read_model_file
 
-    preload_yaml = _read_model_file(str(model_file))
+    preload_yaml, _ = _read_model_file(str(model_file))
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
         cleanup_interval=settings.session_cleanup_interval,
     )
+    # Mirror the real lifespan: in single-model mode, the __default__
+    # session is created at startup and the YAML is loaded into it.
+    default_store = mgr.get_or_create_default()
+    default_store.load_model(preload_yaml)
     init_session_manager(mgr, preload_model_yaml=preload_yaml)
     yield app
     reset_session_manager()
@@ -1162,6 +1166,82 @@ class TestOBSQLEndpoint:
         )
         # Test fixtures do not enable query_execute by default
         assert r.status_code in (200, 503)
+
+
+class TestModelsEndpoint:
+    """GET /v1/models — admin-curated model discovery surface."""
+
+    async def test_empty_in_dynamic_mode(self, client: AsyncClient) -> None:
+        """Dynamic mode (no MODEL_FILES) — no protected models, empty list."""
+        r = await client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 0
+        assert data["models"] == []
+
+    async def test_single_legacy_default(self, single_model_client: AsyncClient) -> None:
+        """Legacy MODEL_FILE — one __default__ entry."""
+        r = await single_model_client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 1
+        entry = data["models"][0]
+        assert entry["name"] == "__default__"
+        assert entry["dimensions"] > 0 or entry["measures"] > 0
+
+
+class TestMultiModelMode:
+    """MODEL_FILES=a.yaml,b.yaml — admin pre-loads N named models."""
+
+    @pytest.fixture
+    async def multi_model_app(self, tmp_path):
+        """Two YAMLs with different `name:` fields → two protected sessions."""
+        from orionbelt.api.app import _read_model_file
+
+        # Build two distinct models with explicit names
+        yaml_a = SAMPLE_MODEL_YAML.replace("version: 1.0", "version: 1.0\nname: sales")
+        yaml_b = SAMPLE_MODEL_YAML.replace("version: 1.0", "version: 1.0\nname: returns")
+        path_a = tmp_path / "a.yaml"
+        path_b = tmp_path / "b.yaml"
+        path_a.write_text(yaml_a)
+        path_b.write_text(yaml_b)
+
+        settings = Settings(
+            session_ttl_seconds=3600,
+            session_cleanup_interval=9999,
+            model_files=f"{path_a},{path_b}",
+        )
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+            is_single_model_mode=True,  # admin-curated
+        )
+        for path in (path_a, path_b):
+            yaml_str, resolved = _read_model_file(str(path))
+            # Use the same name resolution as the real lifespan
+            from orionbelt.api.app import _resolve_model_name
+
+            name = _resolve_model_name(yaml_str, resolved)
+            store = mgr.get_or_create_named(name)
+            store.load_model(yaml_str)
+        init_session_manager(mgr)
+        yield app
+        reset_session_manager()
+
+    @pytest.fixture
+    async def multi_model_client(self, multi_model_app):
+        transport = ASGITransport(app=multi_model_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+
+    async def test_models_endpoint_lists_both(self, multi_model_client: AsyncClient) -> None:
+        r = await multi_model_client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        names = sorted(m["name"] for m in data["models"])
+        assert names == ["returns", "sales"]
+        assert data["count"] == 2
 
 
 class TestReferenceEndpoints:

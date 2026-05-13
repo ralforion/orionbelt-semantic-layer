@@ -54,10 +54,23 @@ class Settings(BaseSettings):
     session_rate_limit: int = 10  # max POST /sessions per IP per minute
     trusted_proxy_count: int = 0  # number of trusted reverse proxies in front of the app
 
-    # Single-model mode — pre-loaded into every new session.
-    # When set, model upload/removal endpoints return 403.
-    model_dir: str | None = None  # base directory for MODEL_FILE (set by Docker)
-    model_file: str | None = None  # filename or absolute path to OBML YAML
+    # Admin-curated model pre-loading. When MODEL_FILE or MODEL_FILES is set,
+    # REST POST /models returns 403 (the catalog is admin-managed).
+    #
+    # MODEL_FILE (single, legacy):
+    #     Single OBML YAML loaded into the __default__ session. BI tools
+    #     connect without selecting anything. Kept as an alias for
+    #     MODEL_FILES with one entry; deprecation warning logged.
+    #
+    # MODEL_FILES (v2.4.0+, comma-separated):
+    #     Multiple OBML YAMLs each loaded into its own internal session,
+    #     addressable by the OBML `name:` field (fallback: filename stem,
+    #     normalized to a valid identifier). BI tools select via the
+    #     Flight `database` catalog or pgwire `database=` URL parameter.
+    #     See design/PLAN_flight_natural_sql.md §3.x multi-model.
+    model_dir: str | None = None  # base directory (set by Docker)
+    model_file: str | None = None  # legacy single-model path
+    model_files: str | None = None  # comma-separated multi-model paths
 
     # Query execution
     query_execute: bool = False  # enable POST /v1/query/execute

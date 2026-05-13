@@ -107,6 +107,58 @@ _CATALOG_SCALAR_PROBES = {
 }
 
 
+class _SessionRoutingMiddleware(flight.ServerMiddleware):
+    """Per-call middleware that captures the incoming session/model selector.
+
+    BI tools (DBeaver, Tableau, Power BI) and JDBC clients pass the model
+    name via the gRPC ``database`` header — set by
+    ``Connection.setCatalog()`` on the Arrow Flight SQL JDBC driver, or
+    by URL path ``/database`` on direct gRPC clients. ``x-obsl-model`` is
+    accepted as an alias for clients that can't set the catalog header.
+
+    See ``design/PLAN_flight_natural_sql.md`` multi-model addressing.
+    """
+
+    def __init__(self, selected_model: str | None) -> None:
+        self.selected_model: str | None = selected_model
+
+    def call_completed(self, exception: BaseException | None) -> None:
+        pass
+
+
+class _SessionRoutingFactory(flight.ServerMiddlewareFactory):
+    """Reads the connection's catalog / model selector from incoming gRPC
+    metadata and produces a :class:`_SessionRoutingMiddleware` per call.
+
+    Resolution order for the selector:
+      1. ``database`` (standard JDBC catalog header)
+      2. ``x-obsl-model`` (OBSL-specific alias)
+      3. ``catalog`` (some clients send this instead of ``database``)
+      4. None — caller's request enters with no explicit selector and the
+         auto-resolve / __default__ paths in ``_get_model`` apply.
+    """
+
+    _SELECTOR_KEYS = ("database", "x-obsl-model", "catalog")
+
+    def start_call(
+        self, info: flight.CallInfo, headers: dict[str, list[str]]
+    ) -> _SessionRoutingMiddleware:
+        selected: str | None = None
+        # Headers come in lowercased per gRPC convention; values are lists.
+        for key in self._SELECTOR_KEYS:
+            values = headers.get(key) or headers.get(key.lower())
+            if values:
+                raw = values[0]
+                if raw:
+                    selected = raw.strip().lower() or None
+                    break
+        return _SessionRoutingMiddleware(selected)
+
+
+# Key used to register / look up the routing middleware.
+_ROUTING_MIDDLEWARE_KEY = "obsl_routing"
+
+
 class OBFlightServer(flight.FlightServerBase):
     """Arrow Flight server that compiles OBML queries via the OrionBelt pipeline.
 
@@ -126,7 +178,11 @@ class OBFlightServer(flight.FlightServerBase):
         default_dialect: str = "duckdb",
         batch_size: int = 1024,
     ) -> None:
-        super().__init__(location, auth_handler=auth_handler)
+        super().__init__(
+            location,
+            auth_handler=auth_handler,
+            middleware={_ROUTING_MIDDLEWARE_KEY: _SessionRoutingFactory()},
+        )
         self._session_manager = session_manager
         self._default_dialect = default_dialect
         self._batch_size = batch_size
@@ -161,37 +217,181 @@ class OBFlightServer(flight.FlightServerBase):
             return None
         return payload
 
-    def _get_model(self) -> tuple[Any, str]:
-        """Get the default model from the session manager.
+    @staticmethod
+    def _selector_from_context(
+        context: flight.ServerCallContext | None,
+    ) -> str | None:
+        """Read the per-call routing selector from the middleware.
 
-        Returns (model, dialect) tuple.
-        Uses the default session's first model (single-model mode). Stamps
-        the model_id onto the model as ``_ob_model_id`` so the virtual-table
-        name resolver and catalog code can find it.
+        Returns the (already-lowercased) model name set by the client's
+        ``database`` / ``x-obsl-model`` / ``catalog`` gRPC header, or
+        ``None`` if no selector was sent or the middleware isn't installed
+        (e.g. in unit tests that bypass the real gRPC machinery).
+        """
+        if context is None:
+            return None
+        try:
+            mw = context.get_middleware(_ROUTING_MIDDLEWARE_KEY)
+        except Exception:
+            return None
+        if mw is None:
+            return None
+        return getattr(mw, "selected_model", None)
+
+    def _list_available_model_names(self) -> list[str]:
+        """List protected (admin-loaded) session ids in addressing order.
+
+        Used by ``_get_model``'s error path and by the catalog endpoint.
+        The session id IS the model name in multi-model mode; legacy
+        single-model mode contributes ``__default__`` (not really an
+        addressable name — see the auto-resolve branch).
+        """
+        if self._session_manager is None:
+            return []
+        try:
+            return self._session_manager.list_protected_session_ids()
+        except Exception:
+            return []
+
+    def _resolve_model_by_name(
+        self,
+        stashed_name: str,
+        context: flight.ServerCallContext | None,
+    ) -> Any:
+        """Resolve a model by a stashed selector first, falling back to the
+        current call's context. Used by ``do_get`` for ticket round-trips.
+        """
+        if stashed_name:
+            try:
+                store = self._session_manager.get_store(stashed_name)
+                model, _ = self._stamp_model(store, stashed_name)
+                return model
+            except Exception:
+                pass
+        model, _ = self._get_model(context)
+        return model
+
+    def _get_model(self, context: flight.ServerCallContext | None = None) -> tuple[Any, str]:
+        """Resolve the model targeted by the current call.
+
+        Returns ``(model, dialect)``. Resolution order:
+
+        1. **Explicit selector** from the gRPC ``database`` /
+           ``x-obsl-model`` / ``catalog`` header → that named session.
+        2. **Legacy `__default__`** session (single-model mode via
+           ``MODEL_FILE``).
+        3. **Auto-resolve**: if exactly one admin-loaded session exists,
+           use it without requiring a selector.
+        4. **Rich error** listing the available model names and how to
+           select one.
+
+        Stamps ``_ob_model_id`` on the returned model so downstream
+        catalog code can produce a stable virtual-table name.
         """
         if self._session_manager is None:
             raise flight.FlightUnavailableError("No session manager configured")
 
-        try:
-            store = self._session_manager.get_store("__default__")
-        except Exception:
-            raise flight.FlightUnavailableError("No default session available")
+        selector = self._selector_from_context(context)
 
-        models = store.list_models()
-        if not models:
-            raise flight.FlightUnavailableError("No models loaded")
+        # 1. Explicit selector
+        if selector:
+            try:
+                store = self._session_manager.get_store(selector)
+            except Exception:
+                available = self._list_available_model_names()
+                raise flight.FlightUnavailableError(
+                    self._format_unknown_model_error(selector, available)
+                ) from None
+            return self._stamp_model(store, selector)
 
-        model_id = models[0].model_id
-        model = store.get_model(model_id)
-        # Surface the model_id for downstream catalog code that needs to
-        # produce a stable virtual-table name. Pydantic v2 doesn't allow
-        # setattr on undeclared fields by default, so we use the underlying
-        # __dict__ to side-step validation.
+        # 2. Legacy __default__ session (single-model mode)
         try:
-            model.__dict__["_ob_model_id"] = model_id
+            default_store = self._session_manager.get_store("__default__")
+            return self._stamp_model(default_store, "__default__")
         except Exception:
             pass
-        return model, self._default_dialect
+
+        # 3. Auto-resolve when exactly one admin-loaded model exists
+        protected = self._list_available_model_names()
+        if len(protected) == 1:
+            store = self._session_manager.get_store(protected[0])
+            return self._stamp_model(store, protected[0])
+
+        # 4. Ambiguous or empty → rich error
+        if not protected:
+            raise flight.FlightUnavailableError(
+                "[NO_MODEL_AVAILABLE] No models are loaded on this server. "
+                "Either set MODEL_FILES=<path,...> (or legacy MODEL_FILE) "
+                "before starting the server, or load models dynamically "
+                "via POST /v1/sessions + POST /v1/sessions/{id}/models."
+            )
+        raise flight.FlightUnavailableError(self._format_ambiguous_model_error(protected))
+
+    def _stamp_model(self, store: Any, session_id: str) -> tuple[Any, str]:
+        """Pull the (single) model out of a store and stamp the session
+        id onto it as the virtual-table name. Returns ``(model, dialect)``.
+
+        Per-model dialect resolution: prefer the OBML model's
+        ``settings.defaultDialect`` if set; otherwise fall back to the
+        server's process-wide ``_default_dialect`` (from ``DB_VENDOR``).
+        """
+        models = store.list_models()
+        if not models:
+            raise flight.FlightUnavailableError(
+                f"Session '{session_id}' exists but has no models loaded."
+            )
+        model_id = models[0].model_id
+        model = store.get_model(model_id)
+        try:
+            # In multi-model mode the session_id IS the model name —
+            # use it as the virtual-table name. In legacy mode session_id
+            # is __default__ and we fall back to internal model_id.
+            virtual_name = session_id if not session_id.startswith("_") else model_id
+            model.__dict__["_ob_model_id"] = virtual_name
+        except Exception:
+            pass
+
+        # Per-model dialect override via OBML settings.defaultDialect
+        model_dialect: str | None = None
+        settings = getattr(model, "settings", None)
+        if settings is not None:
+            model_dialect = getattr(settings, "default_dialect", None)
+        return model, model_dialect or self._default_dialect
+
+    @staticmethod
+    def _format_unknown_model_error(selector: str, available: list[str]) -> str:
+        if not available:
+            return (
+                f"[UNKNOWN_MODEL] Model '{selector}' is not loaded and no "
+                "models are available on this server. Either set "
+                "MODEL_FILES=<path,...> at startup or load a model "
+                "dynamically via REST."
+            )
+        return (
+            f"[UNKNOWN_MODEL] Model '{selector}' is not loaded on this server. "
+            f"Available models: {', '.join(sorted(available))}. "
+            "Set the connection's `database` (or `catalog`) field to one "
+            "of these names. In DBeaver: Connection → Database field. "
+            "Pyarrow: client.do_get(...) with a FlightCallOptions header "
+            "(b'database', b'<name>')."
+        )
+
+    @staticmethod
+    def _format_ambiguous_model_error(available: list[str]) -> str:
+        return (
+            "[NO_MODEL_SELECTED] Multiple models are loaded and no selector "
+            "was sent on this connection. Pick one by setting the "
+            "connection's `database` field (or `x-obsl-model` header). "
+            f"Available models: {', '.join(sorted(available))}.\n"
+            "\n"
+            "  DBeaver:    Connection → Database field = <name>\n"
+            "  Tableau:    Same field on the Arrow Flight JDBC connector\n"
+            "  pyarrow:    options = flight.FlightCallOptions(\n"
+            "                  headers=[(b'database', b'<name>')])\n"
+            "  REST:       Use /v1/sessions/<name>/query/semantic-ql\n"
+            "\n"
+            "Discover available models via GET /v1/models."
+        )
 
     def _rewrite_table_names(self, sql: str, model: Any) -> str:
         """Rewrite compiled SQL for execution on the actual database.
@@ -348,7 +548,11 @@ class OBFlightServer(flight.FlightServerBase):
                 fields.append(pa.field(f"_g_{label}", pa.int64()))
         return pa.schema(fields)
 
-    def _prepare_sql(self, sql: str) -> tuple[str, str, Any, pa.Schema | None, str]:
+    def _prepare_sql(
+        self,
+        sql: str,
+        context: flight.ServerCallContext | None = None,
+    ) -> tuple[str, str, Any, pa.Schema | None, str]:
         """Resolve model, classify SQL, translate / compile / route.
 
         Returns ``(final_sql_or_token, dialect, model, schema_hint, mode)``.
@@ -360,6 +564,9 @@ class OBFlightServer(flight.FlightServerBase):
           original SQL; the caller routes to ``_handle_catalog_sql``
           which returns model-backed metadata. ``schema_hint`` is None.
         * Anything else raises before returning.
+
+        ``context`` carries the per-call gRPC metadata used to select the
+        target model (``database`` / ``x-obsl-model`` headers).
 
         Hard rules (v2.4.0+, no env flags):
 
@@ -378,7 +585,7 @@ class OBFlightServer(flight.FlightServerBase):
             translate_sql_to_query,
         )
 
-        model, dialect = self._get_model()
+        model, dialect = self._get_model(context)
 
         # Write-op early reject — covers DDL/DML/TCL across all paths.
         # OBML YAML detection happens after this so YAML-wrapped writes
@@ -617,9 +824,13 @@ class OBFlightServer(flight.FlightServerBase):
                 return vt
         return None
 
-    def _query_virtual_table(self, vt_name: str) -> flight.RecordBatchStream:
+    def _query_virtual_table(
+        self,
+        vt_name: str,
+        context: flight.ServerCallContext | None = None,
+    ) -> flight.RecordBatchStream:
         """Return data for a virtual metadata table."""
-        model, _ = self._get_model()
+        model, _ = self._get_model(context)
         if vt_name == "_dimensions":
             table = build_dimensions_data(model)
         elif vt_name == "_measures":
@@ -655,27 +866,33 @@ class OBFlightServer(flight.FlightServerBase):
         finally:
             conn.close()
 
-    def _build_tables_from_model(self) -> pa.Table:
+    def _build_tables_from_model(self, context: flight.ServerCallContext | None = None) -> pa.Table:
         """Build the CommandGetTables response.
 
         Lists the semantic virtual table + ``_dimensions``/``_measures``/
         ``_metrics`` views. Data objects are intentionally hidden — they're
         not queryable through the semantic layer.
+
+        In multi-model mode, returns tables for the model selected by the
+        connection's gRPC ``database`` header. If no model is selected
+        but exactly one is loaded, that one's tables are returned.
         """
         try:
-            model, _ = self._get_model()
+            model, _ = self._get_model(context)
         except Exception:
             model = None
         return build_tables_table(model)
 
-    def _build_columns_from_model(self) -> pa.Table:
+    def _build_columns_from_model(
+        self, context: flight.ServerCallContext | None = None
+    ) -> pa.Table:
         """Build the CommandGetColumns response.
 
         Returns dim / measure / metric columns of the semantic virtual
         table. Data-object physical columns are intentionally hidden.
         """
         try:
-            model, _ = self._get_model()
+            model, _ = self._get_model(context)
         except Exception:
             model = None
         return build_columns_table(model)
@@ -708,9 +925,14 @@ class OBFlightServer(flight.FlightServerBase):
                 sql = parse_statement_query(value)
                 if sql is None:
                     raise flight.FlightServerError("Failed to parse SQL from Flight SQL command")
-                prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql)
+                prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(
+                    sql, context=context
+                )
                 if mode == _MODE_CATALOG:
-                    self._store_pending(ticket_id, ("obsql_catalog", prepared_sql))
+                    # Store the selected model name so do_get routes to
+                    # the same model even after the ticket round-trip
+                    selector = self._selector_from_context(context) or ""
+                    self._store_pending(ticket_id, ("obsql_catalog", prepared_sql, selector))
                     schema = pa.schema([pa.field("result", pa.utf8())])
                 else:
                     self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
@@ -745,9 +967,10 @@ class OBFlightServer(flight.FlightServerBase):
 
         # Plain text: SQL or OBML
         query_str = command_bytes.decode("utf-8")
-        prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(query_str)
+        prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(query_str, context=context)
         if mode == _MODE_CATALOG:
-            self._store_pending(ticket_id, ("obsql_catalog", prepared_sql))
+            selector = self._selector_from_context(context) or ""
+            self._store_pending(ticket_id, ("obsql_catalog", prepared_sql, selector))
             schema = pa.schema([pa.field("result", pa.utf8())])
         else:
             self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
@@ -773,11 +996,16 @@ class OBFlightServer(flight.FlightServerBase):
         kind = pending[0]
 
         if kind == "catalog":
-            return self._handle_catalog_command(pending[1])
+            return self._handle_catalog_command(pending[1], context=context)
 
         if kind == "obsql_catalog":
-            # OBSQL-routed catalog SQL — answered from the model
-            model, _ = self._get_model()
+            # OBSQL-routed catalog SQL — answered from the model that was
+            # selected when get_flight_info created the ticket. The selector
+            # is preserved in the pending payload so the round-trip doesn't
+            # lose routing context (the ticket's do_get call has its own
+            # gRPC context but it might not carry the original header).
+            stashed_selector = str(pending[2]) if len(pending) > 2 else ""
+            model = self._resolve_model_by_name(stashed_selector, context)
             table = self._handle_catalog_sql(str(pending[1]), model)
             return flight.RecordBatchStream(table)
 
@@ -785,20 +1013,28 @@ class OBFlightServer(flight.FlightServerBase):
         _, sql, dialect = pending
         return self._execute_sql(str(sql), str(dialect))
 
-    def _handle_catalog_command(self, type_url: str) -> flight.RecordBatchStream:
+    def _handle_catalog_command(
+        self,
+        type_url: str,
+        context: flight.ServerCallContext | None = None,
+    ) -> flight.RecordBatchStream:
         """Handle Flight SQL catalog metadata commands.
 
-        For CMD_GET_TABLES and CMD_GET_DB_SCHEMAS, queries the actual database
-        for physical table/column metadata rather than using the semantic model.
+        Multi-model aware: ``CommandGetCatalogs`` returns the list of
+        loaded model names so BI tools see them in the catalog dropdown.
+        ``CommandGetTables`` / ``CommandGetColumns`` filter by the
+        currently selected catalog (via the gRPC ``database`` header).
         """
         if type_url == CMD_GET_CATALOGS:
-            table = build_catalogs_table()
+            # One catalog per loaded model — this is what populates the
+            # "Database" dropdown in DBeaver/Tableau/Power BI.
+            table = build_catalogs_table(self._list_available_model_names())
         elif type_url == CMD_GET_DB_SCHEMAS:
             table = build_db_schemas_table()
         elif type_url == CMD_GET_TABLES:
-            table = self._build_tables_from_model()
+            table = self._build_tables_from_model(context)
         elif type_url == CMD_GET_COLUMNS:
-            table = self._build_columns_from_model()
+            table = self._build_columns_from_model(context)
         elif type_url == CMD_GET_TABLE_TYPES:
             table = build_table_types_table()
         elif type_url in (CMD_GET_PRIMARY_KEYS, CMD_GET_EXPORTED_KEYS, CMD_GET_CROSS_REFERENCE):
@@ -867,7 +1103,7 @@ class OBFlightServer(flight.FlightServerBase):
             if sql is None:
                 raise flight.FlightServerError("Failed to parse prepared statement query")
 
-            prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql)
+            prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql, context=context)
             if mode == _MODE_CATALOG:
                 # Prepared catalog probes are unusual but possible. Reuse the
                 # generic catalog schema; the actual data is computed at do_get.
@@ -904,7 +1140,7 @@ class OBFlightServer(flight.FlightServerBase):
     def list_flights(self, context: flight.ServerCallContext, criteria: bytes) -> Any:
         """List the semantic virtual table + metadata views."""
         try:
-            model, _ = self._get_model()
+            model, _ = self._get_model(context)
         except Exception:
             return
         for info in model_to_flight_infos(model, "default"):

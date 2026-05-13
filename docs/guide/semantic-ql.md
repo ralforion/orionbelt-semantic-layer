@@ -120,6 +120,104 @@ getting wrong numbers (e.g., the classic "sum of per-region ratios"
 trap). Honesty over convenience — the semantic layer exists to make the
 math right.
 
+## Multi-model addressing (v2.4.0+)
+
+Start the server with multiple OBML files pre-loaded:
+
+```bash
+export MODEL_FILES=examples/sales.yaml,examples/returns.yaml,examples/finance.yaml
+uv run orionbelt-api
+```
+
+Each model becomes its own Flight SQL catalog. BI tools pick one via the
+**Database** field in their connection dialog:
+
+```
+DBeaver:
+  Connection → Database: sales
+
+Tableau:
+  Same field on the Arrow Flight JDBC connector
+
+psql (pgwire, v2.5.0+):
+  postgresql://obsl:KEY@host:5432/sales
+```
+
+pyarrow programmatic:
+
+```python
+import pyarrow.flight as flight
+options = flight.FlightCallOptions(headers=[(b"database", b"sales")])
+info = client.get_flight_info(
+    flight.FlightDescriptor.for_command(b'SELECT "Region", "Total Sales" FROM sales'),
+    options=options,
+)
+```
+
+### Model naming rules
+
+Each OBML defines its addressing key via a top-level `name:` field; if
+unset, the filename stem is used. Both go through identical
+normalization:
+
+```
+1. lowercase
+2. replace runs of [space, dot, dash] with underscore
+3. collapse underscore runs
+4. strip leading/trailing underscores
+5. strip a trailing `_obml` suffix
+6. validate against ^[a-z][a-z0-9_]{0,62}$
+```
+
+Examples: `My Sales Model` → `my_sales_model`, `commerce.v2` →
+`commerce_v2`, `sales.obml.yaml` (filename) → `sales`.
+
+Reserved names (rejected at startup): `obsl`, `obml`, `obsql`, `model`,
+`default`, `public`, `information_schema`, `pg_catalog`,
+`sqlite_master`, `mysql`, `sys`, `admin`, `root`.
+
+Name collisions across `MODEL_FILES` entries error at startup with a
+clear message — no silent shadowing.
+
+### Discovery
+
+`GET /v1/models` lists every loaded model:
+
+```bash
+curl http://localhost:8000/v1/models
+{
+  "models": [
+    {"name": "sales",   "description": "...", "dimensions": 12, "measures": 8, ...},
+    {"name": "returns", "description": "...", "dimensions": 9,  "measures": 5, ...}
+  ],
+  "count": 2
+}
+```
+
+### Auto-resolve
+
+If exactly one model is loaded (single-model mode or `MODEL_FILES`
+with one entry), no selector is needed — every connection targets it
+implicitly.
+
+### What happens without a selector when ambiguous
+
+```
+[NO_MODEL_SELECTED] Multiple models are loaded and no selector was sent
+on this connection. Pick one by setting the connection's `database`
+field (or `x-obsl-model` header). Available models: returns, sales.
+
+  DBeaver:    Connection → Database field = <name>
+  Tableau:    Same field on the Arrow Flight JDBC connector
+  pyarrow:    options = flight.FlightCallOptions(
+                  headers=[(b'database', b'<name>')])
+  REST:       Use /v1/sessions/<name>/query/semantic-ql
+
+Discover available models via GET /v1/models.
+```
+
+The error itself is the documentation — no need to remember anything.
+
 ## Raw mode — detail rows via qualified columns
 
 Sometimes you need un-aggregated rows from a data object — the OBML
