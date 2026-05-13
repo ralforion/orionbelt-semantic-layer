@@ -149,9 +149,11 @@ class TestGetFlightInfo:
         assert len(server._pending) == 1
         ticket_id = list(server._pending.keys())[0]
         pending = server._pending[ticket_id][0]
-        # Scalar probes go through the OBSQL catalog path.
-        assert pending[0] == "obsql_catalog"
-        assert pending[1] == "SELECT 1"
+        # Scalar probes precompute the catalog table at get_flight_info
+        # time so FlightInfo advertises the real schema (not a placeholder).
+        assert pending[0] == "obsql_catalog_table"
+        # Second element is the precomputed pa.Table — has rows.
+        assert pending[1].num_rows >= 1
 
     def test_obml_query(self, mock_session_manager):
         server = _make_server(mock_session_manager, "duckdb")

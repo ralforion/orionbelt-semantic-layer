@@ -1010,15 +1010,17 @@ class OBFlightServer(flight.FlightServerBase):
                 sql = parse_statement_query(value)
                 if sql is None:
                     raise flight.FlightServerError("Failed to parse SQL from Flight SQL command")
-                prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(
+                prepared_sql, dialect, prep_model, schema_hint, mode = self._prepare_sql(
                     sql, context=context
                 )
                 if mode == _MODE_CATALOG:
-                    # Store the selected model name so do_get routes to
-                    # the same model even after the ticket round-trip
-                    selector = self._selector_from_context(context) or ""
-                    self._store_pending(ticket_id, ("obsql_catalog", prepared_sql, selector))
-                    schema = pa.schema([pa.field("result", pa.utf8())])
+                    # Pre-compute the catalog table so the FlightInfo schema
+                    # matches what do_get streams. Without this, JDBC clients
+                    # see the placeholder ``result`` schema and the actual
+                    # columns of e.g. ``_dimensions_metadata`` never appear.
+                    table = self._handle_catalog_sql(prepared_sql, prep_model)
+                    self._store_pending(ticket_id, ("obsql_catalog_table", table))
+                    schema = table.schema
                 else:
                     self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
                     schema = (
@@ -1062,11 +1064,14 @@ class OBFlightServer(flight.FlightServerBase):
 
         # Plain text: SQL or OBML
         query_str = command_bytes.decode("utf-8")
-        prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(query_str, context=context)
+        prepared_sql, dialect, prep_model, schema_hint, mode = self._prepare_sql(
+            query_str, context=context
+        )
         if mode == _MODE_CATALOG:
-            selector = self._selector_from_context(context) or ""
-            self._store_pending(ticket_id, ("obsql_catalog", prepared_sql, selector))
-            schema = pa.schema([pa.field("result", pa.utf8())])
+            # Precompute table so FlightInfo advertises the real schema.
+            table = self._handle_catalog_sql(prepared_sql, prep_model)
+            self._store_pending(ticket_id, ("obsql_catalog_table", table))
+            schema = table.schema
         else:
             self._store_pending(ticket_id, ("sql", prepared_sql, dialect))
             schema = (
@@ -1095,12 +1100,14 @@ class OBFlightServer(flight.FlightServerBase):
             cmd_value = bytes.fromhex(pending[2]) if len(pending) > 2 else b""
             return self._handle_catalog_command(pending[1], cmd_value, context=context)
 
+        if kind == "obsql_catalog_table":
+            # Precomputed at get_flight_info time so the FlightInfo schema
+            # advertised to the JDBC client matches the streamed payload.
+            return flight.RecordBatchStream(pending[1])
+
         if kind == "obsql_catalog":
-            # OBSQL-routed catalog SQL — answered from the model that was
-            # selected when get_flight_info created the ticket. The selector
-            # is preserved in the pending payload so the round-trip doesn't
-            # lose routing context (the ticket's do_get call has its own
-            # gRPC context but it might not carry the original header).
+            # Legacy lazy path — kept for callers that store SQL + selector
+            # instead of the precomputed table. Compute on demand.
             stashed_selector = str(pending[2]) if len(pending) > 2 else ""
             model = self._resolve_model_by_name(stashed_selector, context)
             table = self._handle_catalog_sql(str(pending[1]), model)

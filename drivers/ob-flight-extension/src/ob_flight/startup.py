@@ -64,32 +64,57 @@ def start_flight_background(
 
 
 def stop_flight_server() -> None:
-    """Shutdown the Flight server, with a timeout to avoid blocking forever.
+    """Shutdown the Flight server and release the bound port.
 
-    pyarrow's FlightServerBase.shutdown() blocks until all in-flight requests
-    finish.  DBeaver (and other JDBC clients) keep idle connections open, so
-    shutdown() can hang indefinitely.  We call it from a helper thread and
-    join with a short timeout so the main process can exit cleanly.
+    pyarrow's ``FlightServerBase.shutdown()`` blocks until all in-flight
+    requests finish. DBeaver / other JDBC clients keep idle gRPC
+    connections open, so the call can hang indefinitely. Strategy:
+
+    1. Call ``shutdown()`` from a helper thread with a short join timeout
+       so the FastAPI lifespan finalizer doesn't stall.
+    2. From the same helper, call ``wait()`` — that's what actually
+       drains the gRPC C++ thread and unbinds port 8815. Without it,
+       a quick API restart hits ``Address already in use``.
+    3. If serve() still hasn't returned after both timeouts, log a
+       warning. The daemon Python thread dies with the process; the
+       kernel reclaims the socket on actual process exit.
     """
     global _server, _thread
-    if _server is not None:
-        server = _server
-        # Call shutdown() from a helper thread — it blocks and we don't want
-        # to stall the FastAPI lifespan finalizer.
-        shutdown_thread = threading.Thread(target=_shutdown_safely, args=(server,), daemon=True)
-        shutdown_thread.start()
-        shutdown_thread.join(timeout=3)
-        # Wait for the serve() thread to finish too
-        if _thread is not None and _thread.is_alive():
-            _thread.join(timeout=2)
-        _server = None
-        _thread = None
-        logger.info("Flight SQL server stopped")
+    if _server is None:
+        return
+
+    server = _server
+    shutdown_thread = threading.Thread(target=_shutdown_safely, args=(server,), daemon=True)
+    shutdown_thread.start()
+    shutdown_thread.join(timeout=5)
+
+    # Wait for serve() to return — that's what releases the bound port.
+    if _thread is not None and _thread.is_alive():
+        _thread.join(timeout=3)
+
+    if _thread is not None and _thread.is_alive():
+        logger.warning(
+            "Flight server did not stop within 8s. The port may stay bound "
+            "until process exit. Tip: `lsof -ti :8815 | xargs kill -9` "
+            "if a stale listener blocks the next startup."
+        )
+
+    _server = None
+    _thread = None
+    logger.info("Flight SQL server stopped")
 
 
 def _shutdown_safely(server: Any) -> None:
-    """Call server.shutdown() in a thread-safe way."""
+    """Call shutdown() then wait() in a thread-safe way.
+
+    ``wait()`` is the call that actually releases the bound port — without
+    it, ``shutdown()`` returns but the gRPC C++ thread can keep the socket.
+    """
     try:
         server.shutdown()
+    except Exception:
+        pass
+    try:
+        server.wait()
     except Exception:
         pass
