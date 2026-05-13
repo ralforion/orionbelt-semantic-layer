@@ -263,6 +263,67 @@ def parse_statement_query(value: bytes) -> str | None:
     return None
 
 
+def parse_table_filter(value: bytes) -> str | None:
+    """Extract the ``table_name_filter_pattern`` (field 3) from a Flight SQL
+    ``CommandGetTables`` / ``CommandGetColumns`` protobuf body.
+
+    Both messages share the field numbering for the catalog/schema/table
+    filter pattern:
+
+    * 1 = catalog (string)
+    * 2 = db_schema_filter_pattern (string)
+    * 3 = table_name_filter_pattern (string)
+    * 4 = column_name_filter_pattern (string) [GetColumns only]
+    * 5 = include_schema (bool) / table_types (repeated string) [varies]
+
+    Returns the raw filter string (e.g. ``"_measures"``) or ``None`` when
+    no filter is set. The caller is responsible for interpreting SQL
+    wildcards (``%`` matches anything, ``_`` matches one char) — we only
+    extract the literal.
+    """
+    try:
+        offset = 0
+        while offset < len(value):
+            tag, offset = _read_varint(value, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 2:  # length-delimited (string / bytes)
+                length, offset = _read_varint(value, offset)
+                field_data = value[offset : offset + length]
+                offset += length
+                if field_number == 3:
+                    return field_data.decode("utf-8")
+            elif wire_type == 0:
+                _, offset = _read_varint(value, offset)
+            else:
+                break
+    except Exception:
+        pass
+    return None
+
+
+def matches_filter(table_name: str, pattern: str | None) -> bool:
+    """Apply a Flight SQL filter pattern to a table name.
+
+    ``%`` matches any run of characters; ``_`` matches exactly one. A
+    ``None`` pattern matches everything (no filter set). Empty pattern
+    matches only the empty string per spec, but we treat it as "no
+    filter" since BI tools sometimes send an empty placeholder.
+    """
+    if not pattern:
+        return True
+    import re
+
+    # Substitute SQL wildcards with placeholders that survive re.escape,
+    # escape the rest, then swap the placeholders for their regex form.
+    # (re.escape doesn't escape % or _, so replacing on the raw escaped
+    # output wouldn't find them.)
+    PCT, UND = "\x00P\x00", "\x00U\x00"
+    safe = pattern.replace("%", PCT).replace("_", UND)
+    regex = "^" + re.escape(safe).replace(re.escape(PCT), ".*").replace(re.escape(UND), ".") + "$"
+    return re.match(regex, table_name) is not None
+
+
 def is_flight_sql_command(data: bytes) -> bool:
     """Check if raw bytes are a Flight SQL protobuf command."""
     result = parse_any(data)
@@ -294,7 +355,12 @@ def build_db_schemas_table() -> pa.Table:
     )
 
 
-def build_tables_table(model: Any, *, expose_data_objects: bool = False) -> pa.Table:
+def build_tables_table(
+    model: Any,
+    *,
+    expose_data_objects: bool = False,
+    table_filter: str | None = None,
+) -> pa.Table:
     """Build response for CommandGetTables from the semantic model.
 
     Lists the semantic virtual table first (the canonical query surface)
@@ -319,35 +385,31 @@ def build_tables_table(model: Any, *, expose_data_objects: bool = False) -> pa.T
 
     has_objects = hasattr(model, "data_objects") and model.data_objects
 
+    def _emit(name: str, kind: str, schema: pa.Schema) -> None:
+        if not matches_filter(name, table_filter):
+            return
+        names.append(name)
+        catalogs.append("orionbelt")
+        schemas.append("model")
+        types.append(kind)
+        table_schemas.append(schema.serialize().to_pybytes())
+
     # Semantic virtual table — first, canonical query surface
     if has_objects:
         vt_schema = model_to_virtual_table_schema(model)
         if len(vt_schema) > 0:
-            names.append(model_virtual_table_name(model))
-            catalogs.append("orionbelt")
-            schemas.append("model")
-            types.append("TABLE")
-            table_schemas.append(vt_schema.serialize().to_pybytes())
+            _emit(model_virtual_table_name(model), "TABLE", vt_schema)
 
     # Data-object tables — only exposed when an internal caller passes
     # expose_data_objects=True (none do in v2.4.0+). Preserved for tooling.
     if expose_data_objects and has_objects:
         for obj_name, obj in model.data_objects.items():
             label = getattr(obj, "label", obj_name) or obj_name
-            names.append(label)
-            catalogs.append("orionbelt")
-            schemas.append("model")
-            types.append("TABLE")
-            arrow_schema = object_to_schema(obj)
-            table_schemas.append(arrow_schema.serialize().to_pybytes())
+            _emit(label, "TABLE", object_to_schema(obj))
 
     # Virtual metadata views (_dimensions, _measures, _metrics)
     for vt_name, vt_schema in VIRTUAL_TABLES.items():
-        names.append(vt_name)
-        catalogs.append("orionbelt")
-        schemas.append("model")
-        types.append("VIEW")
-        table_schemas.append(vt_schema.serialize().to_pybytes())
+        _emit(vt_name, "VIEW", vt_schema)
 
     return pa.table(
         {
@@ -381,7 +443,12 @@ def _arrow_type_to_jdbc_name(arrow_type: pa.DataType) -> str:
     return "VARCHAR"
 
 
-def build_columns_table(model: Any, *, expose_data_objects: bool = False) -> pa.Table:
+def build_columns_table(
+    model: Any,
+    *,
+    expose_data_objects: bool = False,
+    table_filter: str | None = None,
+) -> pa.Table:
     """Build response for CommandGetColumns.
 
     Emits one row per column of every advertised virtual table: the
@@ -404,6 +471,8 @@ def build_columns_table(model: Any, *, expose_data_objects: bool = False) -> pa.
     rows: list[tuple[str, str, str, str, str, str, int, str, int]] = []
 
     def _emit_schema(table_name: str, schema: pa.Schema) -> None:
+        if not matches_filter(table_name, table_filter):
+            return
         for i, field_ in enumerate(schema, start=1):
             jdbc_name = _arrow_type_to_jdbc_name(field_.type)
             rows.append(

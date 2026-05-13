@@ -931,36 +931,45 @@ class OBFlightServer(flight.FlightServerBase):
         finally:
             conn.close()
 
-    def _build_tables_from_model(self, context: flight.ServerCallContext | None = None) -> pa.Table:
+    def _build_tables_from_model(
+        self,
+        context: flight.ServerCallContext | None = None,
+        *,
+        table_filter: str | None = None,
+    ) -> pa.Table:
         """Build the CommandGetTables response.
 
         Lists the semantic virtual table + ``_dimensions``/``_measures``/
         ``_metrics`` views. Data objects are intentionally hidden — they're
-        not queryable through the semantic layer.
-
-        In multi-model mode, returns tables for the model selected by the
-        connection's gRPC ``database`` header. If no model is selected
-        but exactly one is loaded, that one's tables are returned.
+        not queryable through the semantic layer. ``table_filter``, when
+        set, scopes the response to a single table name (DBeaver sends
+        one filter request per expanded tree node).
         """
         try:
             model, _ = self._get_model(context)
         except Exception:
             model = None
-        return build_tables_table(model)
+        return build_tables_table(model, table_filter=table_filter)
 
     def _build_columns_from_model(
-        self, context: flight.ServerCallContext | None = None
+        self,
+        context: flight.ServerCallContext | None = None,
+        *,
+        table_filter: str | None = None,
     ) -> pa.Table:
         """Build the CommandGetColumns response.
 
         Returns dim / measure / metric columns of the semantic virtual
-        table. Data-object physical columns are intentionally hidden.
+        table plus the introspection columns of each metadata view.
+        ``table_filter`` scopes the response to one table — without it,
+        DBeaver displays the unfiltered union under every view (the
+        cross-pollution bug v2.4.0 had until this commit).
         """
         try:
             model, _ = self._get_model(context)
         except Exception:
             model = None
-        return build_columns_table(model)
+        return build_columns_table(model, table_filter=table_filter)
 
     def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> str:
         """Compile OBML to SQL using the OrionBelt pipeline directly."""
@@ -1019,8 +1028,11 @@ class OBFlightServer(flight.FlightServerBase):
                 self._store_pending(ticket_id, ("sql", sql, dialect))
 
             elif type_url in _CATALOG_COMMANDS:
-                # Store the raw command for do_get to handle
-                self._store_pending(ticket_id, ("catalog", type_url))
+                # Stash both the command type and its protobuf body so
+                # do_get can parse filters (e.g. table_name_filter_pattern
+                # for CommandGetTables / CommandGetColumns). Stored as hex
+                # so the tuple stays plain str/bytes-only.
+                self._store_pending(ticket_id, ("catalog", type_url, value.hex()))
                 # SqlInfo has a structured spec schema (uint32 + dense_union).
                 # JDBC clients inspect the FlightInfo schema before calling
                 # do_get, so returning the placeholder `result` column makes
@@ -1068,7 +1080,9 @@ class OBFlightServer(flight.FlightServerBase):
         kind = pending[0]
 
         if kind == "catalog":
-            return self._handle_catalog_command(pending[1], context=context)
+            # pending = ("catalog", type_url, value_hex)
+            cmd_value = bytes.fromhex(pending[2]) if len(pending) > 2 else b""
+            return self._handle_catalog_command(pending[1], cmd_value, context=context)
 
         if kind == "obsql_catalog":
             # OBSQL-routed catalog SQL — answered from the model that was
@@ -1088,15 +1102,22 @@ class OBFlightServer(flight.FlightServerBase):
     def _handle_catalog_command(
         self,
         type_url: str,
+        cmd_value: bytes = b"",
         context: flight.ServerCallContext | None = None,
     ) -> flight.RecordBatchStream:
         """Handle Flight SQL catalog metadata commands.
 
         Multi-model aware: ``CommandGetCatalogs`` returns the list of
         loaded model names so BI tools see them in the catalog dropdown.
-        ``CommandGetTables`` / ``CommandGetColumns`` filter by the
-        currently selected catalog (via the gRPC ``database`` header).
+        ``CommandGetTables`` / ``CommandGetColumns`` apply the
+        ``table_name_filter_pattern`` from the protobuf body — JDBC
+        clients (DBeaver) send one filter request per expanded node and
+        expect the response scoped to that node's table name.
         """
+        from ob_flight.flight_sql import parse_table_filter
+
+        table_filter = parse_table_filter(cmd_value) if cmd_value else None
+
         if type_url == CMD_GET_CATALOGS:
             # One catalog per loaded model — this is what populates the
             # "Database" dropdown in DBeaver/Tableau/Power BI.
@@ -1104,9 +1125,9 @@ class OBFlightServer(flight.FlightServerBase):
         elif type_url == CMD_GET_DB_SCHEMAS:
             table = build_db_schemas_table()
         elif type_url == CMD_GET_TABLES:
-            table = self._build_tables_from_model(context)
+            table = self._build_tables_from_model(context, table_filter=table_filter)
         elif type_url == CMD_GET_COLUMNS:
-            table = self._build_columns_from_model(context)
+            table = self._build_columns_from_model(context, table_filter=table_filter)
         elif type_url == CMD_GET_TABLE_TYPES:
             table = build_table_types_table()
         elif type_url in (CMD_GET_PRIMARY_KEYS, CMD_GET_EXPORTED_KEYS, CMD_GET_CROSS_REFERENCE):
