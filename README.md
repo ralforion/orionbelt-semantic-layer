@@ -139,6 +139,18 @@ uv run orionbelt-ui                        # standalone Gradio UI on :7860 (conn
 FLIGHT_ENABLED=true uv run orionbelt-api   # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
 ```
 
+**Smoke-test the Flight SQL surface** without a BI tool:
+
+```bash
+uv run python examples/obsql.py 'SELECT version()'
+uv run python examples/obsql.py 'SHOW TABLES'
+uv run python examples/obsql.py 'SELECT "Region", "Total Sales" FROM sales LIMIT 5'
+
+# Multi-model deployment? Pick the model with -m:
+uv run python examples/obsql.py -m sales 'SHOW TABLES'
+uv run python examples/obsql.py --list   # discover loaded models via REST
+```
+
 ### Option D: Docker
 
 **Stage 1 — Zero-config start** (models loaded later via API or UI):
@@ -245,7 +257,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **MCP Server** — [separate thin client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for Claude, Copilot, Cursor, Windsurf
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
-- **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI
+- **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
 
 ### Agent-Facing API
 
