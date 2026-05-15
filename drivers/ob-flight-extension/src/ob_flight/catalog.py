@@ -262,9 +262,10 @@ def build_dimensions_data(model: Any) -> pa.Table:
             data_objects.append(getattr(dim, "view", "") or "")
             columns.append(getattr(dim, "column", "") or "")
             rt = getattr(dim, "result_type", None)
-            types.append(rt.value if hasattr(rt, "value") else str(rt or "string"))
+            rt_value = getattr(rt, "value", None)
+            types.append(rt_value if rt_value is not None else str(rt or "string"))
             tg = getattr(dim, "time_grain", None)
-            time_grains.append(tg.value if hasattr(tg, "value") else None)
+            time_grains.append(getattr(tg, "value", None))
             descriptions.append(getattr(dim, "description", None))
 
     return pa.table(
@@ -295,7 +296,8 @@ def build_measures_data(model: Any) -> pa.Table:
             aggregations.append(getattr(meas, "aggregation", "") or "")
             expressions.append(getattr(meas, "expression", None))
             rt = getattr(meas, "result_type", None)
-            types.append(rt.value if hasattr(rt, "value") else str(rt or "float"))
+            rt_value = getattr(rt, "value", None)
+            types.append(rt_value if rt_value is not None else str(rt or "float"))
             cols = getattr(meas, "columns", []) or []
             col_strs = []
             for c in cols:
@@ -336,7 +338,8 @@ def build_metrics_data(model: Any) -> pa.Table:
         for met_name, met in model.metrics.items():
             names.append(getattr(met, "label", met_name) or met_name)
             mt = getattr(met, "type", None)
-            mt_value = mt.value if hasattr(mt, "value") else str(mt or "derived")
+            mt_value_attr = getattr(mt, "value", None)
+            mt_value = mt_value_attr if mt_value_attr is not None else str(mt or "derived")
             metric_types.append(mt_value)
             expressions.append(getattr(met, "expression", None))
             measures.append(getattr(met, "measure", None))
@@ -356,18 +359,21 @@ def build_metrics_data(model: Any) -> pa.Table:
             grain: str | None = None
             if pop is not None:
                 pop_grain = getattr(pop, "grain", None)
-                grain = pop_grain.value if hasattr(pop_grain, "value") else None
+                grain = getattr(pop_grain, "value", None)
             if grain is None and td and td in model_dims:
                 dim = model_dims[td]
                 tg = getattr(dim, "time_grain", None)
-                grain = tg.value if hasattr(tg, "value") else None
+                grain = getattr(tg, "value", None)
             time_grains.append(grain)
 
             win = getattr(met, "window", None)
             windows.append(int(win) if isinstance(win, int) else None)
 
             gtd = getattr(met, "grain_to_date", None)
-            gtd_value = gtd.value if hasattr(gtd, "value") else (str(gtd) if gtd else None)
+            gtd_value_attr = getattr(gtd, "value", None)
+            gtd_value = (
+                gtd_value_attr if gtd_value_attr is not None else (str(gtd) if gtd else None)
+            )
             grain_to_dates.append(gtd_value)
 
             descriptions.append(getattr(met, "description", None))

@@ -8,7 +8,7 @@ from typing import Any
 import pyarrow.flight as flight
 
 
-class NoopAuthHandler(flight.ServerAuthHandler):
+class NoopAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
     """No authentication — accept all connections."""
 
     def authenticate(self, outgoing: Any, incoming: Any) -> None:
@@ -19,7 +19,7 @@ class NoopAuthHandler(flight.ServerAuthHandler):
         return ""
 
 
-class TokenAuthHandler(flight.ServerAuthHandler):
+class TokenAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
     """Simple static bearer token authentication."""
 
     def __init__(self, token: str) -> None:

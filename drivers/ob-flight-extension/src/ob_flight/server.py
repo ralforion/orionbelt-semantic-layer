@@ -11,7 +11,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.flight as flight
 
-from ob_driver_core.detection import is_obml, parse_obml
+from ob_driver_core.detection import is_obml, parse_obml  # type: ignore[import-untyped]
 
 from ob_flight.catalog import (
     VIRTUAL_TABLES,
@@ -137,7 +137,7 @@ _CATALOG_SCALAR_PROBES = {
 }
 
 
-class _SessionRoutingMiddleware(flight.ServerMiddleware):
+class _SessionRoutingMiddleware(flight.ServerMiddleware):  # type: ignore[misc]
     """Per-call middleware that captures the incoming session/model selector.
 
     BI tools (DBeaver, Tableau, Power BI) and JDBC clients pass the model
@@ -156,7 +156,7 @@ class _SessionRoutingMiddleware(flight.ServerMiddleware):
         pass
 
 
-class _SessionRoutingFactory(flight.ServerMiddlewareFactory):
+class _SessionRoutingFactory(flight.ServerMiddlewareFactory):  # type: ignore[misc]
     """Reads the connection's catalog / model selector from incoming gRPC
     metadata and produces a :class:`_SessionRoutingMiddleware` per call.
 
@@ -189,7 +189,7 @@ class _SessionRoutingFactory(flight.ServerMiddlewareFactory):
 _ROUTING_MIDDLEWARE_KEY = "obsl_routing"
 
 
-class OBFlightServer(flight.FlightServerBase):
+class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     """Arrow Flight server that compiles OBML queries via the OrionBelt pipeline.
 
     Runs inside the orionbelt-api process with direct access to
@@ -225,15 +225,22 @@ class OBFlightServer(flight.FlightServerBase):
         self._cache = cache
         self._cache_config = cache_config
         self._lock = threading.Lock()
-        # Pending queries: ticket_id -> (payload, timestamp)
-        # payload is either ("sql", sql, dialect) or ("catalog", type_url)
-        self._pending: dict[str, tuple[tuple[str, ...], float]] = {}
-        # Prepared statements: handle_hex -> (sql, dialect, schema)
-        self._prepared: dict[str, tuple[str, str, pa.Schema]] = {}
+        # Pending queries: ticket_id -> (payload, timestamp). Payload is one
+        # of: ``("sql", sql, dialect, cache_meta|None)``,
+        # ``("catalog", type_url, body_hex)``, or
+        # ``("obsql_catalog_table", pa.Table)`` — so the element types are
+        # heterogeneous (str / dict / pa.Table). Use ``tuple[Any, ...]``.
+        self._pending: dict[str, tuple[tuple[Any, ...], float]] = {}
+        # Prepared statements: handle_hex -> (kind_or_sql, dialect_or_table,
+        # schema, cache_meta|None). Element 2 is either the dialect string
+        # (regular SQL) or a precomputed ``pa.Table`` (catalog mode marked
+        # by ``kind_or_sql == "__catalog__"``), so the tuple's middle
+        # elements are heterogeneous — Any here, narrowed at the read site.
+        self._prepared: dict[str, tuple[Any, ...]] = {}
         # TTL for pending tickets (seconds) — entries older than this are evicted
         self._pending_ttl = 300
 
-    def _store_pending(self, ticket_id: str, payload: tuple[str, ...]) -> None:
+    def _store_pending(self, ticket_id: str, payload: tuple[Any, ...]) -> None:
         """Store a pending query with timestamp, evicting stale entries."""
         now = time.monotonic()
         with self._lock:
@@ -287,7 +294,8 @@ class OBFlightServer(flight.FlightServerBase):
         if self._session_manager is None:
             return []
         try:
-            return self._session_manager.list_protected_session_ids()
+            ids: list[str] = self._session_manager.list_protected_session_ids()
+            return ids
         except Exception:
             return []
 
@@ -625,7 +633,7 @@ class OBFlightServer(flight.FlightServerBase):
         self,
         sql: str,
         context: flight.ServerCallContext | None = None,
-    ) -> tuple[str, str, Any, pa.Schema | None, str, dict | None]:
+    ) -> tuple[str, str, Any, pa.Schema | None, str, dict[str, Any] | None]:
         """Resolve model, classify SQL, translate / compile / route.
 
         Returns ``(final_sql_or_token, dialect, model, schema_hint, mode,
@@ -730,7 +738,7 @@ class OBFlightServer(flight.FlightServerBase):
         dialect: str,
         context: flight.ServerCallContext | None,
         physical_tables: list[str],
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """Compute cache key + TTL for a semantic Flight query.
 
         Returns ``None`` when the cache backend is disabled or the TTL
@@ -789,7 +797,7 @@ class OBFlightServer(flight.FlightServerBase):
             contracts = store.refresh_contracts(model_id)
         except Exception:
             contracts = {}
-        heartbeats: dict = {}
+        heartbeats: dict[str, Any] = {}
         snapshot = getattr(self._cache, "heartbeats_snapshot", None)
         if callable(snapshot):
             try:
@@ -1305,7 +1313,10 @@ class OBFlightServer(flight.FlightServerBase):
         # kind == "sql" — possibly with a cache_meta as 4th element
         sql = str(pending[1])
         dialect = str(pending[2])
-        cache_meta = pending[3] if len(pending) > 3 else None
+        cache_meta_raw = pending[3] if len(pending) > 3 else None
+        cache_meta: dict[str, Any] | None = (
+            cache_meta_raw if isinstance(cache_meta_raw, dict) else None
+        )
         return self._execute_sql(sql, dialect, cache_meta=cache_meta)
 
     def _handle_catalog_command(
@@ -1368,7 +1379,7 @@ class OBFlightServer(flight.FlightServerBase):
         self,
         sql: str,
         dialect: str,
-        cache_meta: dict | None = None,
+        cache_meta: dict[str, Any] | None = None,
     ) -> flight.RecordBatchStream:
         """Execute SQL on the vendor database and stream results.
 
@@ -1467,7 +1478,7 @@ class OBFlightServer(flight.FlightServerBase):
             logger.debug("cache decode failed for key=%s", key, exc_info=True)
             return None
 
-    def _cache_put_table(self, table: pa.Table, cache_meta: dict) -> None:
+    def _cache_put_table(self, table: pa.Table, cache_meta: dict[str, Any]) -> None:
         """Serialize a ``pa.Table`` to the shared parquet_codec envelope and
         store under ``cache_meta``.
 
@@ -1570,7 +1581,10 @@ class OBFlightServer(flight.FlightServerBase):
                 # instead of SQL/dialect to execute on the warehouse).
                 handle = uuid.uuid4().bytes
                 handle_hex = handle.hex()
-                self._prepared[handle_hex] = ("__catalog__", catalog_table, schema)
+                # 4th slot is cache_meta for SQL prepared statements; catalog
+                # prepared statements have no cache plumbing — pad with None
+                # so the tuple shape matches ``self._prepared``'s annotation.
+                self._prepared[handle_hex] = ("__catalog__", catalog_table, schema, None)
             else:
                 sql = prepared_sql
                 schema = (

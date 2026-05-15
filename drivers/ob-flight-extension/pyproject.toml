@@ -51,6 +51,14 @@ python_version = "3.12"
 strict = true
 files = ["src/ob_flight"]
 
+[[tool.mypy.overrides]]
+# pyarrow ships without a py.typed marker (same as the parent
+# orionbelt-semantic-layer override). Without this, every pyarrow /
+# pyarrow.flight / pyarrow.parquet import emits a noisy
+# ``Skipping analyzing ...`` warning that masks real errors.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

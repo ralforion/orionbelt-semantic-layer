@@ -330,9 +330,7 @@ def warm_db_tz_cache(dialect: str) -> ZoneInfo | None:
     try:
         if dialect == "duckdb":
             import duckdb
-            from ob_flight.db_router import (  # type: ignore[import-untyped]
-                get_credentials,
-            )
+            from ob_flight.db_router import get_credentials
 
             creds = get_credentials("duckdb")
             database = creds.get("database", ":memory:")

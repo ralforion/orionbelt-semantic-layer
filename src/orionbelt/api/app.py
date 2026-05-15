@@ -356,7 +356,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     flight_available = importlib.util.find_spec("ob_flight") is not None
     if settings.flight_enabled or flight_available:
         try:
-            from ob_flight.startup import start_flight_background  # type: ignore[import-untyped]
+            from ob_flight.startup import start_flight_background
 
             flight_thread = start_flight_background(
                 session_manager=mgr,
@@ -399,7 +399,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             stop_flight_server()
         # Drain connection pools before stopping sessions
         try:
-            from ob_flight.db_router import close_all_pools  # type: ignore[import-untyped]
+            from ob_flight.db_router import close_all_pools
 
             close_all_pools()
         except ImportError:
