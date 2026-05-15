@@ -57,9 +57,10 @@ from orionbelt.api.warnings_adapter import (
     health_summary_to_response,
     semantic_error_to_warning,
 )
-from orionbelt.cache import build_cache_key, compute_effective_ttl
+from orionbelt.cache import build_cache_key, compute_effective_ttl, is_nondeterministic_sql
 from orionbelt.cache.parquet_codec import decode as cache_decode
 from orionbelt.cache.protocol import Cache
+from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
@@ -1109,28 +1110,45 @@ async def _run_with_cache(
     cache_key: str | None = None
     ttl_outcome = None
     if cacheable:
-        cache_key = build_cache_key(
-            session_id=session_id,
-            model_id=model_id,
-            dialect=dialect,
-            sql=compile_result.sql,
-        )
-        ttl_outcome = _resolve_ttl(
-            store=store,
-            model_id=model_id,
-            cache=cache,
-            cache_config=cache_config,
-            physical_tables=compile_result.physical_tables,
-        )
-        _cache_t0 = time.monotonic()
-        cached_envelope = await _try_cache_get(cache, cache_key)
-        if cached_envelope is not None:
-            return _build_cached_response(
-                envelope=cached_envelope,
-                cache_key=cache_key,
-                ttl_outcome=ttl_outcome,
-                fetch_elapsed_ms=round((time.monotonic() - _cache_t0) * 1000, 2),
+        # Non-deterministic SQL (RAND, NOW, CURRENT_DATE, TABLESAMPLE, ...) must
+        # bypass the cache — same SQL, different answer per run. The cache key
+        # is the compiled SQL hash, so caching would freeze one stale slice
+        # forever. See ``cache/determinism.py``.
+        nondet, name = is_nondeterministic_sql(compile_result.sql)
+        if nondet:
+            logger.info(
+                "cache skipped for %s/%s: non-deterministic SQL (%s)",
+                session_id,
+                model_id,
+                name,
             )
+            ttl_outcome = TtlResult(
+                ttl=None,
+                no_cache_reason=NoCacheReason.NON_DETERMINISTIC_SQL,
+            )
+        else:
+            cache_key = build_cache_key(
+                session_id=session_id,
+                model_id=model_id,
+                dialect=dialect,
+                sql=compile_result.sql,
+            )
+            ttl_outcome = _resolve_ttl(
+                store=store,
+                model_id=model_id,
+                cache=cache,
+                cache_config=cache_config,
+                physical_tables=compile_result.physical_tables,
+            )
+            _cache_t0 = time.monotonic()
+            cached_envelope = await _try_cache_get(cache, cache_key)
+            if cached_envelope is not None:
+                return _build_cached_response(
+                    envelope=cached_envelope,
+                    cache_key=cache_key,
+                    ttl_outcome=ttl_outcome,
+                    fetch_elapsed_ms=round((time.monotonic() - _cache_t0) * 1000, 2),
+                )
 
     try:
         exec_result = await asyncio.to_thread(

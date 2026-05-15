@@ -37,10 +37,11 @@ from orionbelt.api.schemas import (
     StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
-from orionbelt.cache import build_cache_key, compute_effective_ttl
+from orionbelt.cache import build_cache_key, compute_effective_ttl, is_nondeterministic_sql
 from orionbelt.cache.parquet_codec import decode as cache_decode
 from orionbelt.cache.parquet_codec import encode as cache_encode
 from orionbelt.cache.protocol import Cache
+from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
@@ -253,22 +254,40 @@ async def _run_query(
         tz = resolve_timezone(default_timezone=model_default_tz)
 
         # Freshness-driven cache lookup. Cacheable here is always True
-        # because oneshot batch produces canonical JSON only.
-        cache_key = build_cache_key(
-            session_id=session_id,
-            model_id=model_id,
-            dialect=dialect,
-            sql=compile_result.sql,
-        )
-        ttl_outcome = _resolve_oneshot_ttl(
-            store=store,
-            model_id=model_id,
-            cache=cache,
-            cache_config=cache_config,
-            physical_tables=physical_tables,
-        )
-        _cache_t0 = time.monotonic()
-        cached_hit = await _try_oneshot_cache_get(cache, cache_key)
+        # because oneshot batch produces canonical JSON only — but non-
+        # deterministic SQL (RAND, NOW, CURRENT_DATE, …) still bypasses
+        # the cache. Cache key is the compiled SQL hash; caching a clock-
+        # reading query would freeze a stale moment forever.
+        cache_key: str | None = None
+        cached_hit = None
+        nondet, nondet_name = is_nondeterministic_sql(compile_result.sql)
+        if nondet:
+            logger.info(
+                "oneshot cache skipped for %s/%s: non-deterministic SQL (%s)",
+                session_id,
+                model_id,
+                nondet_name,
+            )
+            ttl_outcome = TtlResult(
+                ttl=None,
+                no_cache_reason=NoCacheReason.NON_DETERMINISTIC_SQL,
+            )
+        else:
+            cache_key = build_cache_key(
+                session_id=session_id,
+                model_id=model_id,
+                dialect=dialect,
+                sql=compile_result.sql,
+            )
+            ttl_outcome = _resolve_oneshot_ttl(
+                store=store,
+                model_id=model_id,
+                cache=cache,
+                cache_config=cache_config,
+                physical_tables=physical_tables,
+            )
+            _cache_t0 = time.monotonic()
+            cached_hit = await _try_oneshot_cache_get(cache, cache_key)
         if cached_hit is not None:
             envelope, cached_at_iso = cached_hit
             fetch_elapsed_ms = round((time.monotonic() - _cache_t0) * 1000, 2)

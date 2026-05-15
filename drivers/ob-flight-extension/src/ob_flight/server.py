@@ -723,6 +723,16 @@ class OBFlightServer(flight.FlightServerBase):
         if backend == "noop":
             return None
 
+        # Non-deterministic SQL (RAND, NOW, CURRENT_DATE, TABLESAMPLE, ...)
+        # must bypass the cache — the SQL hash is the cache key, so caching
+        # would freeze one stale clock/random slice forever.
+        from orionbelt.cache import is_nondeterministic_sql
+
+        nondet, name = is_nondeterministic_sql(compiled_sql)
+        if nondet:
+            logger.info("cache skipped: non-deterministic SQL (%s)", name)
+            return None
+
         # Resolve session_id from the selector header. Falls back to the
         # __default__ slot for legacy single-model deployments — matches
         # how the REST endpoints derive session_id for the cache key.
@@ -1142,9 +1152,7 @@ class OBFlightServer(flight.FlightServerBase):
                     self._store_pending(ticket_id, ("obsql_catalog_table", table))
                     schema = table.schema
                 else:
-                    self._store_pending(
-                        ticket_id, ("sql", prepared_sql, dialect, cache_meta)
-                    )
+                    self._store_pending(ticket_id, ("sql", prepared_sql, dialect, cache_meta))
                     schema = (
                         schema_hint
                         if schema_hint is not None
@@ -1331,7 +1339,9 @@ class OBFlightServer(flight.FlightServerBase):
         if cache_meta is not None and self._cache is not None:
             cached_table = self._cache_get_table(cache_meta["key"])
             if cached_table is not None:
-                logger.info("Flight cache HIT: key=%s rows=%d", cache_meta["key"], cached_table.num_rows)
+                logger.info(
+                    "Flight cache HIT: key=%s rows=%d", cache_meta["key"], cached_table.num_rows
+                )
                 return flight.RecordBatchStream(cached_table)
 
         conn = db_connect(dialect)

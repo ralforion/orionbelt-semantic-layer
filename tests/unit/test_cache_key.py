@@ -39,9 +39,7 @@ class TestBuildCacheKey:
 
     def test_whitespace_normalized(self) -> None:
         """Trailing semicolons + run-of-whitespace collapse to the same key."""
-        a = build_cache_key(
-            session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t"
-        )
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t")
         b = build_cache_key(
             session_id="s",
             model_id="m",
@@ -52,12 +50,8 @@ class TestBuildCacheKey:
 
     def test_different_sql_different_key(self) -> None:
         """The whole point — different compiled SQL → different key."""
-        a = build_cache_key(
-            session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t"
-        )
-        b = build_cache_key(
-            session_id="s", model_id="m", dialect="postgres", sql="SELECT b FROM t"
-        )
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t")
+        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT b FROM t")
         assert a != b
 
     def test_legacy_query_arg_still_works(self) -> None:

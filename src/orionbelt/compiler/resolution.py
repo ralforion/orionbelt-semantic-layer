@@ -478,6 +478,20 @@ class QueryResolver:
             if expr:
                 ctx.result.order_by_exprs.append((expr, ob.direction == "desc", ob.nulls))
 
+        # 8. Auto-order on LIMIT — when limit is set with no explicit ORDER BY,
+        # append ORDER BY over all SELECT dimensions (or raw fields) so results
+        # are deterministic. Without this, ``LIMIT N`` returns any N rows the
+        # engine emits, and the cache (keyed on compiled SQL) would freeze one
+        # arbitrary slice forever. Aggregate-only queries (no dims, no fields)
+        # are already single-row deterministic — skip.
+        if ctx.result.limit is not None and not ctx.result.order_by_exprs:
+            if ctx.result.is_raw and ctx.result.fields:
+                for f in ctx.result.fields:
+                    ctx.result.order_by_exprs.append((ColumnRef(name=f.alias), False, None))
+            elif ctx.result.dimensions:
+                for dim in ctx.result.dimensions:
+                    ctx.result.order_by_exprs.append((ColumnRef(name=dim.name), False, None))
+
         if ctx.errors:
             raise ResolutionError(ctx.errors)
 

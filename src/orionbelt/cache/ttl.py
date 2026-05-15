@@ -44,6 +44,7 @@ class NoCacheReason(StrEnum):
     UNKNOWN_FRESHNESS = "unknown_freshness"
     BELOW_MIN_TTL = "below_min_ttl"
     ZERO_DERIVED_TTL = "zero_derived_ttl"
+    NON_DETERMINISTIC_SQL = "non_deterministic_sql"
 
 
 @dataclass(frozen=True)
