@@ -374,7 +374,9 @@ async def _run_query(
         ttl_seconds: int | None = None
         ttl_source: str | None = None
         ttl_limiting_table: str | None = None
-        if ttl_outcome.ttl is not None:
+        if ttl_outcome.ttl is not None and cache_key is not None:
+            # cache_key is only None on the non-det bypass, which also sets
+            # ttl=None — so this branch is the strictly-cacheable case.
             ttl_seconds = ttl_outcome.ttl.seconds
             ttl_source = ttl_outcome.ttl.source
             ttl_limiting_table = ttl_outcome.ttl.limiting_table
