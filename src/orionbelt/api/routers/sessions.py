@@ -1113,7 +1113,7 @@ async def _run_with_cache(
             session_id=session_id,
             model_id=model_id,
             dialect=dialect,
-            query=query.model_dump(by_alias=True, mode="json"),
+            sql=compile_result.sql,
         )
         ttl_outcome = _resolve_ttl(
             store=store,
@@ -1272,7 +1272,7 @@ async def _try_cache_set(
             physical_tables=list(response.physical_tables),
             session_id=session_id,
             model_id=model_id,
-            query_hash=cache_key_mod.query_hash(query.model_dump(by_alias=True, mode="json")),
+            query_hash=cache_key_mod.query_hash(sql=response.sql),
             dialect=dialect,
             row_count=response.row_count,
         )

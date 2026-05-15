@@ -258,7 +258,7 @@ async def _run_query(
             session_id=session_id,
             model_id=model_id,
             dialect=dialect,
-            query=item.query.model_dump(by_alias=True, mode="json"),
+            sql=compile_result.sql,
         )
         ttl_outcome = _resolve_oneshot_ttl(
             store=store,

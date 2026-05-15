@@ -675,6 +675,7 @@ class OBFlightServer(flight.FlightServerBase):
             schema_hint = self._semantic_result_schema(query, model)
             cache_meta = self._build_cache_meta(
                 query=query,
+                compiled_sql=sql,
                 dialect=dialect,
                 context=context,
                 physical_tables=list(getattr(compiled, "physical_tables", [])),
@@ -699,6 +700,7 @@ class OBFlightServer(flight.FlightServerBase):
         self,
         *,
         query: Any,
+        compiled_sql: str,
         dialect: str,
         context: flight.ServerCallContext | None,
         physical_tables: list[str],
@@ -736,12 +738,13 @@ class OBFlightServer(flight.FlightServerBase):
 
         from orionbelt.cache import build_cache_key, compute_effective_ttl
 
-        query_json = query.model_dump(by_alias=True, mode="json")
+        # v2 keys hash on the compiled SQL string — the canonical, dialect-
+        # rendered form actually sent to the warehouse.
         cache_key = build_cache_key(
             session_id=selector,
             model_id=model_id,
             dialect=dialect,
-            query=query_json,
+            sql=compiled_sql,
         )
 
         # Resolve TTL from refresh contracts + heartbeats — same logic
@@ -775,7 +778,7 @@ class OBFlightServer(flight.FlightServerBase):
             "model_id": model_id,
             "physical_tables": physical_tables,
             "dialect": dialect,
-            "query": query_json,
+            "sql": compiled_sql,
         }
 
     @staticmethod
@@ -1421,7 +1424,7 @@ class OBFlightServer(flight.FlightServerBase):
                         physical_tables=cache_meta["physical_tables"],
                         session_id=cache_meta["session_id"],
                         model_id=cache_meta["model_id"],
-                        query_hash=_query_hash(cache_meta.get("query", {})),
+                        query_hash=_query_hash(sql=cache_meta["sql"]),
                         dialect=cache_meta["dialect"],
                         row_count=table.num_rows,
                     )
