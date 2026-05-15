@@ -27,6 +27,7 @@ from testcontainers.clickhouse import ClickHouseContainer  # noqa: E402
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.models.query import (  # noqa: E402
     FilterOperator,
+    Grouping,
     QueryFilter,
     QueryObject,
     QueryOrderBy,
@@ -325,3 +326,106 @@ class TestClickHouseMetrics:
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
         assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
         assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Grouping operators (ROLLUP / CUBE) — real execution
+# ---------------------------------------------------------------------------
+
+
+class TestClickHouseRollupCube:
+    """End-to-end: compile WITH ROLLUP/CUBE and execute against real ClickHouse.
+
+    Verifies that the dialect emits executable SQL, that the auto-order
+    NULLS FIRST default brings subtotals + grand total to the top of the
+    result, and that GROUPING() flag columns correctly identify aggregate
+    rows.
+    """
+
+    def test_rollup_single_dim_row_count_and_grand_total(
+        self, ch_client, sales_model, pipeline
+    ) -> None:
+        """ROLLUP over 1 dim → N detail rows + 1 grand total."""
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Revenue"]),
+            grouping=Grouping.ROLLUP,
+        )
+        sql = pipeline.compile(query, sales_model, "clickhouse").sql
+        rows = _execute_dict(ch_client, sql)
+
+        # 2 countries (US, UK) + 1 grand total = 3 rows.
+        assert len(rows) == 3
+        # GROUPING flag identifies the rolled-up total row authoritatively.
+        # NULLS FIRST default puts that row at the top. ClickHouse returns
+        # an empty string for rolled-up non-Nullable String dims (rather
+        # than NULL), so we key off the GROUPING flag, not the dim value.
+        assert int(rows[0]["_g_Customer Country"]) == 1
+        assert float(rows[0]["Revenue"]) == pytest.approx(240.0)
+        details = {r["Customer Country"]: r for r in rows[1:]}
+        assert float(details["US"]["Revenue"]) == pytest.approx(200.0)
+        assert int(details["US"]["_g_Customer Country"]) == 0
+        assert float(details["UK"]["Revenue"]) == pytest.approx(40.0)
+
+    def test_rollup_two_dims_country_subtotals(self, ch_client, sales_model, pipeline) -> None:
+        """ROLLUP over 2 dims → details + per-first-dim subtotals + grand."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country", "Product Category"],
+                measures=["Revenue"],
+            ),
+            grouping=Grouping.ROLLUP,
+        )
+        sql = pipeline.compile(query, sales_model, "clickhouse").sql
+        rows = _execute_dict(ch_client, sql)
+
+        # Detail combinations: US×Hardware, US×Software, UK×Hardware = 3
+        # Country subtotals (Product Category rolled up): US, UK = 2
+        # Grand total: 1
+        # Total: 6 rows
+        assert len(rows) == 6
+
+        # Grand total: both GROUPING flags = 1.
+        grand = next(
+            r
+            for r in rows
+            if int(r["_g_Customer Country"]) == 1 and int(r["_g_Product Category"]) == 1
+        )
+        assert float(grand["Revenue"]) == pytest.approx(240.0)
+
+        # US subtotal: Country flag=0, Product Category flag=1 (rolled up).
+        us_subtotal = next(
+            r for r in rows if r["Customer Country"] == "US" and int(r["_g_Product Category"]) == 1
+        )
+        assert float(us_subtotal["Revenue"]) == pytest.approx(200.0)
+        assert int(us_subtotal["_g_Customer Country"]) == 0
+
+    def test_cube_two_dims_full_lattice(self, ch_client, sales_model, pipeline) -> None:
+        """CUBE over 2 dims → all subtotals on every axis + grand total."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country", "Product Category"],
+                measures=["Revenue"],
+            ),
+            grouping=Grouping.CUBE,
+        )
+        sql = pipeline.compile(query, sales_model, "clickhouse").sql
+        rows = _execute_dict(ch_client, sql)
+
+        # CUBE: 3 details + 2 country subtotals + 2 category subtotals + 1 grand = 8
+        assert len(rows) == 8
+
+        # Hardware category subtotal: Country rolled up (flag=1), Hardware kept.
+        hw_subtotal = next(
+            r
+            for r in rows
+            if int(r["_g_Customer Country"]) == 1 and r["Product Category"] == "Hardware"
+        )
+        assert float(hw_subtotal["Revenue"]) == pytest.approx(90.0)
+
+        # Software category subtotal: Country rolled up, Software kept.
+        sw_subtotal = next(
+            r
+            for r in rows
+            if int(r["_g_Customer Country"]) == 1 and r["Product Category"] == "Software"
+        )
+        assert float(sw_subtotal["Revenue"]) == pytest.approx(150.0)

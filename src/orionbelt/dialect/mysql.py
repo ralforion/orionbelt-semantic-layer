@@ -48,6 +48,44 @@ class MySQLDialect(Dialect):
     def name(self) -> str:
         return "mysql"
 
+    def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
+        """MySQL uses ``GROUP BY ... WITH ROLLUP`` (trailing form), not the
+        ANSI ``GROUP BY ROLLUP(...)`` function form, and does not support
+        CUBE at all.
+        """
+        groups = ", ".join(self.compile_expr(e) for e in group_by)
+        if grouping == "rollup":
+            return f"GROUP BY {groups} WITH ROLLUP"
+        if grouping == "cube":
+            raise NotImplementedError(
+                "MySQL does not support GROUP BY CUBE. Use ROLLUP or split into multiple queries."
+            )
+        return f"GROUP BY {groups}"
+
+    def compile_order_by(self, node: OrderByItem) -> str:
+        """MySQL doesn't accept ``NULLS FIRST`` / ``NULLS LAST`` keywords.
+
+        Standard SQL ``NULLS FIRST`` / ``NULLS LAST`` is rejected by MySQL's
+        parser. Workaround: prepend ``<expr> IS NULL`` with appropriate
+        direction so MySQL's boolean coercion sorts the NULL group first
+        or last, then add the actual order key.
+
+        Examples (NULLS FIRST):
+            ORDER BY x ASC NULLS FIRST   →   ORDER BY x IS NULL DESC, x ASC
+            ORDER BY x DESC NULLS FIRST  →   ORDER BY x IS NULL DESC, x DESC
+
+        ``nulls_last=None`` (no preference) falls through to MySQL's
+        default ordering — NULLs sort first on ASC, last on DESC.
+        """
+        expr_sql = self.compile_expr(node.expr)
+        direction = "DESC" if node.desc else "ASC"
+        if node.nulls_last is None:
+            return f"{expr_sql} {direction}"
+        # nulls_last=True  → IS NULL ASC (0s first = non-NULL first, NULLS LAST)
+        # nulls_last=False → IS NULL DESC (1s first = NULL first, NULLS FIRST)
+        null_dir = "ASC" if node.nulls_last else "DESC"
+        return f"{expr_sql} IS NULL {null_dir}, {expr_sql} {direction}"
+
     @property
     def capabilities(self) -> DialectCapabilities:
         return DialectCapabilities(

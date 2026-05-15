@@ -27,6 +27,7 @@ from testcontainers.mysql import MySqlContainer  # noqa: E402
 from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
 from orionbelt.models.query import (  # noqa: E402
     FilterOperator,
+    Grouping,
     QueryFilter,
     QueryObject,
     QueryOrderBy,
@@ -333,3 +334,79 @@ class TestMySQLMetrics:
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
         assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
         assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Grouping operators (ROLLUP / CUBE) — real execution
+# ---------------------------------------------------------------------------
+
+
+class TestMySQLRollupCube:
+    """End-to-end: compile WITH ROLLUP/CUBE and execute against real MySQL.
+
+    Verifies that the dialect emits executable SQL, that the auto-order
+    NULLS FIRST default brings subtotals + grand total to the top of the
+    result, and that GROUPING() flag columns correctly identify aggregate
+    rows.
+    """
+
+    def test_rollup_single_dim_row_count_and_grand_total(
+        self, mysql_conn, sales_model, pipeline
+    ) -> None:
+        """ROLLUP over 1 dim → N detail rows + 1 grand total."""
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Revenue"]),
+            grouping=Grouping.ROLLUP,
+        )
+        sql = pipeline.compile(query, sales_model, "mysql").sql
+        rows = _execute_dict(mysql_conn, sql)
+
+        # 2 countries (US, UK) + 1 grand total = 3 rows.
+        assert len(rows) == 3
+        # NULLS FIRST default puts grand total at the top.
+        assert rows[0]["Customer Country"] is None
+        assert float(rows[0]["Revenue"]) == pytest.approx(240.0)
+        # GROUPING flag column identifies the rolled-up total row.
+        assert int(rows[0]["_g_Customer Country"]) == 1
+        details = {r["Customer Country"]: r for r in rows[1:]}
+        assert float(details["US"]["Revenue"]) == pytest.approx(200.0)
+        assert int(details["US"]["_g_Customer Country"]) == 0
+        assert float(details["UK"]["Revenue"]) == pytest.approx(40.0)
+
+    def test_rollup_two_dims_country_subtotals(self, mysql_conn, sales_model, pipeline) -> None:
+        """ROLLUP over 2 dims → details + per-first-dim subtotals + grand."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country", "Product Category"],
+                measures=["Revenue"],
+            ),
+            grouping=Grouping.ROLLUP,
+        )
+        sql = pipeline.compile(query, sales_model, "mysql").sql
+        rows = _execute_dict(mysql_conn, sql)
+
+        # Detail combinations: US×Hardware, US×Software, UK×Hardware = 3
+        # Country subtotals (Product Category rolled up): US, UK = 2
+        # Grand total: 1
+        # Total: 6 rows
+        assert len(rows) == 6
+
+        # Grand total: both dims NULL, both GROUPING flags 1.
+        grand = next(
+            r for r in rows if r["Customer Country"] is None and r["Product Category"] is None
+        )
+        assert float(grand["Revenue"]) == pytest.approx(240.0)
+        assert int(grand["_g_Customer Country"]) == 1
+        assert int(grand["_g_Product Category"]) == 1
+
+        # US subtotal: Country present, Product Category NULL.
+        us_subtotal = next(
+            r for r in rows if r["Customer Country"] == "US" and r["Product Category"] is None
+        )
+        assert float(us_subtotal["Revenue"]) == pytest.approx(200.0)
+        assert int(us_subtotal["_g_Customer Country"]) == 0
+        assert int(us_subtotal["_g_Product Category"]) == 1
+
+    def test_cube_unsupported_on_mysql(self) -> None:
+        """MySQL does not support CUBE in any version. Documented limitation."""
+        pytest.skip("MySQL does not support GROUP BY CUBE")
