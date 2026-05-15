@@ -22,6 +22,18 @@ KEY_VERSION = 2
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Match any quoted region — single-quoted string literal, double-quoted
+# identifier, or backtick-quoted identifier (MySQL / BigQuery / Databricks).
+# Each form supports doubled-quote escaping. Whitespace inside these regions
+# is significant and must NOT be collapsed, or two different inputs (e.g.
+# ``name = 'A  B'`` vs ``name = 'A B'`` or ``"Order  Id"`` vs ``"Order Id"``)
+# would hash identically and serve each other's cached rows.
+_QUOTED_RE = re.compile(
+    r"'(?:''|[^'])*'"  # 'sql literal' with '' escape
+    r"|\"(?:\"\"|[^\"])*\""  # "ansi identifier" with "" escape
+    r"|`(?:``|[^`])*`"  # `mysql/bq/databricks identifier`
+)
+
 
 def _normalize_sql(sql: str) -> str:
     """Collapse insignificant SQL formatting variations.
@@ -29,10 +41,19 @@ def _normalize_sql(sql: str) -> str:
     The compiler is deterministic, but pretty-printing or trailing
     semicolons could vary across paths (REST `format_sql` vs Flight raw
     SQL). Strip trailing whitespace/semicolon and collapse internal
-    whitespace runs so equivalent SQL hashes identically.
+    whitespace runs so equivalent SQL hashes identically — but preserve
+    whitespace inside quoted regions verbatim, since it's significant to
+    the engine and to the resulting cache key.
     """
     cleaned = sql.strip().rstrip(";").strip()
-    return _WHITESPACE_RE.sub(" ", cleaned)
+    parts: list[str] = []
+    last = 0
+    for m in _QUOTED_RE.finditer(cleaned):
+        parts.append(_WHITESPACE_RE.sub(" ", cleaned[last : m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(_WHITESPACE_RE.sub(" ", cleaned[last:]))
+    return "".join(parts)
 
 
 def build_cache_key(

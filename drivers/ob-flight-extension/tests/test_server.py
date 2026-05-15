@@ -483,3 +483,45 @@ class TestVirtualTables:
         # Should NOT hit the database — returns virtual table data
         stream = server._execute_sql('SELECT * FROM "_dimensions_metadata"', "duckdb")
         assert stream is not None
+
+
+class TestFlightCacheEnvelope:
+    """Regression: Flight cache writes must use the shared parquet_codec
+    envelope so REST readers can decode ``sql``/``dialect``/``columns``
+    instead of falling back to empty defaults.
+    """
+
+    def test_flight_cache_payload_is_decodable_by_rest(self) -> None:
+        from orionbelt.cache import parquet_codec
+
+        server = _make_server()
+        captured: dict = {}
+
+        class FakeCache:
+            async def set(self, key, payload, **kwargs):
+                captured["payload"] = payload
+                captured["kwargs"] = kwargs
+                captured["key"] = key
+
+        server._cache = FakeCache()
+
+        table = pa.table({"id": [1, 2], "name": ["alice", "bob"]})
+        server._cache_put_table(
+            table,
+            {
+                "key": "k1",
+                "ttl": 60,
+                "physical_tables": ["main.t"],
+                "session_id": "s",
+                "model_id": "m",
+                "sql": "SELECT id, name FROM t",
+                "dialect": "postgres",
+            },
+        )
+
+        env = parquet_codec.decode(captured["payload"])
+        assert env.sql == "SELECT id, name FROM t"
+        assert env.dialect == "postgres"
+        assert env.physical_tables == ["main.t"]
+        assert [c["name"] for c in env.columns] == ["id", "name"]
+        assert env.rows == [[1, "alice"], [2, "bob"]]

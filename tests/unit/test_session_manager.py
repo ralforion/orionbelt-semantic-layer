@@ -95,6 +95,23 @@ class TestSessionExpiration:
         with pytest.raises(SessionExpiredError, match="max-age"):
             mgr.get_session(info.session_id)
 
+    def test_protected_session_not_expired_on_access(self) -> None:
+        """Admin-loaded (protected) sessions must survive TTL/max-age on get_store/get_session.
+
+        Regression: ``_is_expired`` previously ignored ``protected``, so
+        ``get_store()`` would delete a protected session on the first
+        access past TTL even though ``_purge_expired`` correctly skipped
+        it.
+        """
+        mgr = SessionManager(ttl_seconds=0, max_age_seconds=0, cleanup_interval=9999)
+        mgr.get_or_create_named("admin_model")
+        time.sleep(0.05)
+        # Neither idle TTL nor max-age should evict a protected session.
+        store = mgr.get_store("admin_model")
+        assert store is not None
+        info = mgr.get_session("admin_model")
+        assert info.session_id == "admin_model"
+
     def test_not_found_vs_expired_distinction(self) -> None:
         """SessionNotFoundError for unknown IDs, SessionExpiredError for expired ones."""
         mgr = SessionManager(ttl_seconds=0, max_age_seconds=86400, cleanup_interval=9999)

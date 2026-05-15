@@ -1385,9 +1385,12 @@ class OBFlightServer(flight.FlightServerBase):
     def _cache_get_table(self, key: str) -> pa.Table | None:
         """Look up a Flight cache entry. Returns the decoded ``pa.Table`` or None.
 
-        The cache stores parquet-encoded payloads (the same shape REST
-        uses). We round-trip through ``pq.read_table`` to drop the
-        envelope metadata and recover just the Arrow table.
+        The cache stores parquet-encoded payloads using the same
+        ``parquet_codec`` envelope REST uses, so a Flight reader can
+        consume a REST writer's entry and vice versa. We use plain
+        ``pq.read_table`` because Flight only needs the columnar data;
+        the envelope metadata (sql, dialect, explain, …) is harmless
+        to read and re-serve.
         """
         import asyncio
 
@@ -1413,19 +1416,40 @@ class OBFlightServer(flight.FlightServerBase):
             return None
 
     def _cache_put_table(self, table: pa.Table, cache_meta: dict) -> None:
-        """Serialize a ``pa.Table`` to parquet and store under ``cache_meta``.
+        """Serialize a ``pa.Table`` to the shared parquet_codec envelope and
+        store under ``cache_meta``.
 
-        Errors are swallowed — cache write failures must never break
-        query execution.
+        REST and Flight share the cache namespace — both must encode the
+        same envelope so the other side can decode ``sql``, ``dialect``,
+        ``columns``, etc. without falling back to defaults. Errors are
+        swallowed; cache writes must never break query execution.
         """
         import asyncio
 
-        import pyarrow.parquet as pq
+        from orionbelt.cache import parquet_codec
+
+        rows = table.to_pylist()
+        list_of_lists: list[list[Any]] = [
+            [row.get(name) for name in table.column_names] for row in rows
+        ]
+        columns_meta = [
+            {"name": field.name, "data_type": str(field.type)} for field in table.schema
+        ]
 
         try:
-            buf = pa.BufferOutputStream()
-            pq.write_table(table, buf, compression="snappy")
-            payload = bytes(buf.getvalue())
+            payload = parquet_codec.encode(
+                columns=columns_meta,
+                rows=list_of_lists,
+                sql=cache_meta.get("sql", ""),
+                dialect=cache_meta.get("dialect", ""),
+                explain=None,
+                warnings=[],
+                sql_valid=True,
+                execution_time_ms=0.0,
+                timezone=None,
+                resolved={},
+                physical_tables=cache_meta.get("physical_tables", []),
+            )
         except Exception:
             logger.debug("cache encode failed", exc_info=True)
             return

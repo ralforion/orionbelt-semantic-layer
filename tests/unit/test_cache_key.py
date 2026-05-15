@@ -54,6 +54,54 @@ class TestBuildCacheKey:
         b = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT b FROM t")
         assert a != b
 
+    def test_whitespace_inside_string_literal_is_significant(self) -> None:
+        """``'A  B'`` and ``'A B'`` must NOT collide — they're different values."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql="SELECT * FROM t WHERE name = 'A  B'",
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql="SELECT * FROM t WHERE name = 'A B'",
+        )
+        assert a != b
+
+    def test_whitespace_inside_double_quoted_identifier_is_significant(self) -> None:
+        """ANSI ``"Order  Id"`` and ``"Order Id"`` are different columns."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql='SELECT "Order  Id" FROM t',
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql='SELECT "Order Id" FROM t',
+        )
+        assert a != b
+
+    def test_whitespace_inside_backtick_identifier_is_significant(self) -> None:
+        """MySQL/BigQuery/Databricks backtick identifiers with internal spaces."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="bigquery",
+            sql="SELECT `Order  Id` FROM t",
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="bigquery",
+            sql="SELECT `Order Id` FROM t",
+        )
+        assert a != b
+
     def test_legacy_query_arg_still_works(self) -> None:
         """``query=`` fallback for callers mid-migration."""
         q = {"select": {"dimensions": ["A"], "measures": ["B"]}}

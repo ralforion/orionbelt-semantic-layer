@@ -328,7 +328,16 @@ class SessionManager:
     # -- internal ------------------------------------------------------------
 
     def _is_expired(self, session: _Session, now_mono: float) -> bool:
-        """Check if a session has exceeded idle TTL or absolute max-age."""
+        """Check if a session has exceeded idle TTL or absolute max-age.
+
+        Protected sessions (admin-loaded models via ``MODEL_FILES``) never
+        expire — they're owned by the process lifecycle, not by client
+        activity. Without this guard, ``get_store()`` would delete them on
+        access past TTL, even though ``_purge_expired`` correctly skips
+        them.
+        """
+        if session.protected:
+            return False
         idle = now_mono - session.last_accessed > self._ttl
         aged = now_mono - session.created_at_mono > self._max_age
         return idle or aged
