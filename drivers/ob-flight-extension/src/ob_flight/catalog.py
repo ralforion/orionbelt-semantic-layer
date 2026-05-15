@@ -94,8 +94,11 @@ METRICS_METADATA_SCHEMA = pa.schema(
         pa.field("expression", pa.utf8()),
         pa.field("measure", pa.utf8()),
         # Cumulative & period-over-period metrics require a time dimension —
-        # surface it so BI users know to pair the metric with that dimension.
+        # surface it (and its grain) so BI users know to pair the metric
+        # with that dim AND can read window=3 + time_grain=month as
+        # "3 months".
         pa.field("time_dimension", pa.utf8()),
+        pa.field("time_grain", pa.utf8()),
         pa.field("window", pa.int64()),
         pa.field("grain_to_date", pa.utf8()),
         pa.field("description", pa.utf8()),
@@ -322,9 +325,12 @@ def build_metrics_data(model: Any) -> pa.Table:
     expressions: list[str | None] = []
     measures: list[str | None] = []
     time_dimensions: list[str | None] = []
+    time_grains: list[str | None] = []
     windows: list[int | None] = []
     grain_to_dates: list[str | None] = []
     descriptions: list[str | None] = []
+
+    model_dims = getattr(model, "dimensions", None) or {}
 
     if hasattr(model, "metrics") and model.metrics:
         for met_name, met in model.metrics.items():
@@ -339,10 +345,23 @@ def build_metrics_data(model: Any) -> pa.Table:
             # hide theirs inside ``period_over_period.time_dimension``. Derived
             # metrics have neither — emit NULL.
             td = getattr(met, "time_dimension", None)
-            if not td:
-                pop = getattr(met, "period_over_period", None)
-                td = getattr(pop, "time_dimension", None) if pop is not None else None
+            pop = getattr(met, "period_over_period", None)
+            if not td and pop is not None:
+                td = getattr(pop, "time_dimension", None)
             time_dimensions.append(td or None)
+
+            # Resolve the grain so ``window=3`` reads as "3 <grain>". PoP
+            # carries its own explicit grain; cumulative inherits from the
+            # referenced dimension's ``time_grain``.
+            grain: str | None = None
+            if pop is not None:
+                pop_grain = getattr(pop, "grain", None)
+                grain = pop_grain.value if hasattr(pop_grain, "value") else None
+            if grain is None and td and td in model_dims:
+                dim = model_dims[td]
+                tg = getattr(dim, "time_grain", None)
+                grain = tg.value if hasattr(tg, "value") else None
+            time_grains.append(grain)
 
             win = getattr(met, "window", None)
             windows.append(int(win) if isinstance(win, int) else None)
@@ -360,6 +379,7 @@ def build_metrics_data(model: Any) -> pa.Table:
             "expression": expressions,
             "measure": measures,
             "time_dimension": time_dimensions,
+            "time_grain": time_grains,
             "window": windows,
             "grain_to_date": grain_to_dates,
             "description": descriptions,

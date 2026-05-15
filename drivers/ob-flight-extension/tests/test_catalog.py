@@ -309,6 +309,7 @@ class TestBuildMetricsData:
 
         model = MagicMock()
         model.metrics = {"Return Rate": met}
+        model.dimensions = {}
 
         table = build_metrics_data(model)
         assert len(table) == 1
@@ -316,10 +317,16 @@ class TestBuildMetricsData:
         assert table.column("metric_type")[0].as_py() == "derived"
         assert table.column("expression")[0].as_py() == "{[Total Returns]} / {[Total Sales]}"
         assert table.column("time_dimension")[0].as_py() is None
+        assert table.column("time_grain")[0].as_py() is None
         assert table.column("window")[0].as_py() is None
         assert table.column("grain_to_date")[0].as_py() is None
 
-    def test_cumulative_surfaces_time_dimension_and_window(self):
+    def test_cumulative_surfaces_time_dimension_window_and_grain(self):
+        # The referenced dim declares time_grain=month — that's the unit
+        # that disambiguates window=3 as "3 months".
+        dim = MagicMock()
+        dim.time_grain = MagicMock(value="month")
+
         met = MagicMock()
         met.label = "Rolling 3m Sales"
         met.type = MagicMock(value="cumulative")
@@ -333,16 +340,20 @@ class TestBuildMetricsData:
 
         model = MagicMock()
         model.metrics = {"Rolling 3m Sales": met}
+        model.dimensions = {"Order Month": dim}
 
         table = build_metrics_data(model)
         assert table.column("metric_type")[0].as_py() == "cumulative"
         assert table.column("measure")[0].as_py() == "Total Sales"
         assert table.column("time_dimension")[0].as_py() == "Order Month"
+        assert table.column("time_grain")[0].as_py() == "month"
         assert table.column("window")[0].as_py() == 3
 
-    def test_period_over_period_surfaces_nested_time_dimension(self):
+    def test_period_over_period_surfaces_nested_time_dimension_and_grain(self):
+        # PoP carries its own explicit grain — independent of the dim.
         pop = MagicMock()
         pop.time_dimension = "Order Date"
+        pop.grain = MagicMock(value="year")
 
         met = MagicMock()
         met.label = "YoY Sales"
@@ -357,10 +368,12 @@ class TestBuildMetricsData:
 
         model = MagicMock()
         model.metrics = {"YoY Sales": met}
+        model.dimensions = {}
 
         table = build_metrics_data(model)
         assert table.column("metric_type")[0].as_py() == "period_over_period"
         assert table.column("time_dimension")[0].as_py() == "Order Date"
+        assert table.column("time_grain")[0].as_py() == "year"
 
     def test_empty_model(self):
         model = MagicMock()
