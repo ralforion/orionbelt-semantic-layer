@@ -1037,8 +1037,13 @@ class OBFlightServer(flight.FlightServerBase):
                 handle_hex = handle.hex()
                 if handle_hex not in self._prepared:
                     raise flight.FlightServerError(f"Unknown prepared statement: {handle_hex}")
-                sql, dialect, schema = self._prepared[handle_hex]
-                self._store_pending(ticket_id, ("sql", sql, dialect))
+                first, payload, schema = self._prepared[handle_hex]
+                if first == "__catalog__":
+                    # Precomputed catalog table — stream it directly.
+                    self._store_pending(ticket_id, ("obsql_catalog_table", payload))
+                else:
+                    # Regular SQL path: first=sql, payload=dialect.
+                    self._store_pending(ticket_id, ("sql", first, payload))
 
             elif type_url in _CATALOG_COMMANDS:
                 # Stash both the command type and its protobuf body so
@@ -1221,22 +1226,37 @@ class OBFlightServer(flight.FlightServerBase):
             if sql is None:
                 raise flight.FlightServerError("Failed to parse prepared statement query")
 
-            prepared_sql, dialect, _, schema_hint, mode = self._prepare_sql(sql, context=context)
+            prepared_sql, dialect, prep_model, schema_hint, mode = self._prepare_sql(
+                sql, context=context
+            )
             if mode == _MODE_CATALOG:
-                # Prepared catalog probes are unusual but possible. Reuse the
-                # generic catalog schema; the actual data is computed at do_get.
-                sql = prepared_sql
-                schema = pa.schema([pa.field("result", pa.utf8())])
+                # DBeaver's SQL editor uses prepared statements, so we
+                # MUST advertise the real schema here. Precompute the
+                # catalog table (same trick as get_flight_info) and stash
+                # the pa.Table for the eventual do_get.
+                catalog_table = self._handle_catalog_sql(prepared_sql, prep_model)
+                schema = catalog_table.schema
+                # Sentinel first element lets CMD_PREPARED_STATEMENT_QUERY
+                # dispatch to the catalog-table branch (precomputed pa.Table
+                # instead of SQL/dialect to execute on the warehouse).
+                handle = uuid.uuid4().bytes
+                handle_hex = handle.hex()
+                self._prepared[handle_hex] = ("__catalog__", catalog_table, schema)
             else:
                 sql = prepared_sql
                 schema = (
                     schema_hint if schema_hint is not None else self._probe_schema(sql, dialect)
                 )
+                handle = uuid.uuid4().bytes
+                handle_hex = handle.hex()
+                self._prepared[handle_hex] = (sql, dialect, schema)
 
-            handle = uuid.uuid4().bytes
-            handle_hex = handle.hex()
-            self._prepared[handle_hex] = (sql, dialect, schema)
-            logger.debug("Created prepared statement %s: %s", handle_hex, sql[:100])
+            logger.debug(
+                "Created prepared statement %s (mode=%s, %d cols)",
+                handle_hex,
+                mode,
+                len(schema),
+            )
 
             result_bytes = build_prepared_statement_result(handle, schema)
             yield flight.Result(pa.py_buffer(result_bytes))
