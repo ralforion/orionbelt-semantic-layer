@@ -171,18 +171,24 @@ class StarSchemaPlanner:
         for wf in resolved.where_filters:
             builder.where(wf.expression)
 
-        # GROUP BY (all dimension columns, with time grain if applicable)
+        # GROUP BY (all dimension columns, with time grain if applicable).
+        # Stash the per-dim group-by expression by alias so GROUPING() below
+        # can reuse the SAME expression — Postgres rejects GROUPING(<alias>)
+        # with "column does not exist" and requires the group-key expression.
+        group_by_exprs: dict[str, Expr] = {}
         for dim in resolved.dimensions:
             gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain and dialect:
                 gb_col = dialect.render_time_grain(gb_col, dim.grain)
             builder.group_by(gb_col)
+            group_by_exprs[dim.name] = gb_col
 
         # GROUPING() flag columns + grouping modifier (rollup/cube)
         if resolved.grouping is not None and grouping_dim_aliases:
             builder.grouping(resolved.grouping.value)
             for alias in grouping_dim_aliases:
-                flag_col = FunctionCall(name="GROUPING", args=[ColumnRef(name=alias)])
+                gb_arg = group_by_exprs.get(alias) or ColumnRef(name=alias)
+                flag_col = FunctionCall(name="GROUPING", args=[gb_arg])
                 builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions
