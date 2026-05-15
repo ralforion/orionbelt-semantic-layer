@@ -653,10 +653,17 @@ class OBFlightServer(flight.FlightServerBase):
         if is_obml(sql):
             obml = parse_obml(sql)
             logger.info("OBML request:\n%s", sql)
-            sql = self._compile_obml(obml, model, dialect)
+            compiled = self._compile_obml(obml, model, dialect)
+            sql = self._rewrite_table_names(compiled.sql, model)
             logger.info("Compiled SQL:\n%s", sql)
-            sql = self._rewrite_table_names(sql, model)
-            return sql, dialect, model, None, _MODE_SEMANTIC, None
+            # OBML compiles to deterministic SQL like OBSQL; share the cache.
+            cache_meta = self._build_cache_meta(
+                compiled_sql=sql,
+                dialect=dialect,
+                context=context,
+                physical_tables=list(getattr(compiled, "physical_tables", [])),
+            )
+            return sql, dialect, model, None, _MODE_SEMANTIC, cache_meta
 
         mode = self._classify_sql(sql, model)
 
@@ -674,7 +681,6 @@ class OBFlightServer(flight.FlightServerBase):
             logger.info("Compiled SQL:\n%s", sql)
             schema_hint = self._semantic_result_schema(query, model)
             cache_meta = self._build_cache_meta(
-                query=query,
                 compiled_sql=sql,
                 dialect=dialect,
                 context=context,
@@ -699,7 +705,6 @@ class OBFlightServer(flight.FlightServerBase):
     def _build_cache_meta(
         self,
         *,
-        query: Any,
         compiled_sql: str,
         dialect: str,
         context: flight.ServerCallContext | None,
@@ -1088,14 +1093,18 @@ class OBFlightServer(flight.FlightServerBase):
             model = None
         return build_columns_table(model, table_filter=table_filter)
 
-    def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> str:
-        """Compile OBML to SQL using the OrionBelt pipeline directly."""
+    def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> Any:
+        """Compile OBML to SQL using the OrionBelt pipeline directly.
+
+        Returns the full ``CompilationResult`` so callers can access
+        ``sql`` plus ``physical_tables`` (needed for the freshness-
+        driven cache TTL resolution).
+        """
         from orionbelt.compiler.pipeline import CompilationPipeline
         from orionbelt.models.query import QueryObject
 
         query = QueryObject.model_validate(obml)
-        result = CompilationPipeline().compile(query, model, dialect)
-        return result.sql
+        return CompilationPipeline().compile(query, model, dialect)
 
     def get_flight_info(
         self, context: flight.ServerCallContext, descriptor: flight.FlightDescriptor
