@@ -11,6 +11,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from orionbelt.models.semantic import FilterLogic, TimeGrain
 
 
+class Grouping(StrEnum):
+    """Hierarchical grouping modifier — emits GROUP BY ROLLUP/CUBE in SQL."""
+
+    ROLLUP = "rollup"
+    CUBE = "cube"
+
+
 class FilterOperator(StrEnum):
     EQUALS = "equals"
     NOT_EQUALS = "notequals"
@@ -57,6 +64,20 @@ class FilterOperator(StrEnum):
 class SortDirection(StrEnum):
     ASC = "asc"
     DESC = "desc"
+
+
+class NullsPosition(StrEnum):
+    """Where NULL values sort in an ORDER BY clause.
+
+    Mirrors SQL standard ``NULLS FIRST`` / ``NULLS LAST``. ``None`` on
+    ``QueryOrderBy.nulls`` lets the dialect default apply: Postgres
+    treats NULLs as larger than non-NULLs (so ASC → last, DESC → first);
+    MySQL is the opposite. Setting this explicitly forces deterministic
+    behavior across dialects.
+    """
+
+    FIRST = "first"
+    LAST = "last"
 
 
 class DimensionRef(BaseModel):
@@ -137,6 +158,7 @@ class QueryOrderBy(BaseModel):
 
     field: str
     direction: SortDirection = SortDirection.ASC
+    nulls: NullsPosition | None = None
 
 
 class CoalesceDimension(BaseModel):
@@ -201,8 +223,32 @@ class QueryObject(BaseModel):
     offset: int | None = None
     use_path_names: list[UsePathName] = Field([], alias="usePathNames")
     dimensions_exclude: bool = Field(False, alias="dimensionsExclude")
+    grouping: Grouping | None = Field(
+        default=None,
+        description=(
+            "Hierarchical grouping modifier. 'rollup' emits GROUP BY ROLLUP(...) "
+            "for hierarchical subtotals + grand total. 'cube' emits GROUP BY CUBE(...) "
+            "for the full cross-tab. Adds one GROUPING(dim) AS _g_<dim> column per "
+            "selected dimension so callers can distinguish subtotal/grand-total rows."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_grouping(self) -> QueryObject:
+        """Reject grouping with no dimensions or in raw mode."""
+        if self.grouping is None:
+            return self
+        if self.select.is_raw:
+            raise ValueError(
+                "select.fields (raw mode) cannot be combined with grouping (rollup/cube)"
+            )
+        if not self.select.dimensions:
+            raise ValueError(
+                "grouping (rollup/cube) requires at least one dimension in select.dimensions"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_raw_mode_exclusivity(self) -> QueryObject:

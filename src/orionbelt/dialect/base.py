@@ -44,6 +44,20 @@ class UnsupportedAggregationError(Exception):
         super().__init__(f"Dialect '{dialect}' does not support {aggregation.upper()} aggregation")
 
 
+class UnsupportedGroupingError(Exception):
+    """Raised when a dialect does not support a specific grouping modifier
+    (``CUBE`` / ``ROLLUP`` / ``GROUPING SETS``). Routers translate this to
+    a 422 with the dialect + grouping in the response body; without this
+    domain error the underlying ``NotImplementedError`` would surface as a
+    500.
+    """
+
+    def __init__(self, dialect: str, grouping: str) -> None:
+        self.dialect = dialect
+        self.grouping = grouping
+        super().__init__(f"Dialect '{dialect}' does not support GROUP BY {grouping.upper()}")
+
+
 @dataclass
 class DialectCapabilities:
     """Flags indicating what SQL features a dialect supports."""
@@ -101,6 +115,17 @@ class Dialect(ABC):
             s = min(obml_type.scale, p)
             return f"DECIMAL({p}, {s})"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
+
+    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+        """Build an Expr that coerces ``expr`` to the given OBML type.
+
+        Default form is a plain ``CAST(expr AS <type>)``. Dialects whose
+        ``CAST`` doesn't accept a parameterized decimal (notably BigQuery
+        — "Parameterized types are not allowed in CAST expressions") can
+        override to wrap the cast with a ROUND to honour the user-specified
+        scale.
+        """
+        return Cast(expr=expr, type_name=self.render_obml_type(obml_type))
 
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.
@@ -322,8 +347,7 @@ class Dialect(ABC):
 
         # GROUP BY
         if node.group_by:
-            groups = ", ".join(self.compile_expr(g) for g in node.group_by)
-            parts.append(f"GROUP BY {groups}")
+            parts.append(self.compile_group_by(node.group_by, node.grouping))
 
         # HAVING
         if node.having:
@@ -344,12 +368,27 @@ class Dialect(ABC):
 
         return "\n".join(parts)
 
+    def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
+        """Render the GROUP BY clause.
+
+        Default ANSI form (Postgres, Snowflake, DuckDB, BigQuery, Databricks,
+        Dremio, MySQL): ``GROUP BY ROLLUP(a, b)`` / ``GROUP BY CUBE(a, b)``.
+        ClickHouse overrides to the trailing-modifier form
+        (``GROUP BY a, b WITH ROLLUP``).
+        """
+        groups = ", ".join(self.compile_expr(g) for g in group_by)
+        if grouping == "rollup":
+            return f"GROUP BY ROLLUP({groups})"
+        if grouping == "cube":
+            return f"GROUP BY CUBE({groups})"
+        return f"GROUP BY {groups}"
+
     def compile_from(self, node: From) -> str:
         if isinstance(node.source, Select):
             sub = self.compile_select(node.source)
             result = f"(\n{sub}\n)"
         else:
-            result = str(node.source)
+            result = self._render_source_string(node.source)
         if node.alias:
             result += f" AS {self.quote_identifier(node.alias)}"
         return result
@@ -358,7 +397,7 @@ class Dialect(ABC):
         if isinstance(node.source, Select):
             source = f"(\n{self.compile_select(node.source)}\n)"
         else:
-            source = str(node.source)
+            source = self._render_source_string(node.source)
         if node.alias:
             source += f" AS {self.quote_identifier(node.alias)}"
 
@@ -366,6 +405,19 @@ class Dialect(ABC):
         if node.on:
             parts.append(f"ON {self.compile_expr(node.on)}")
         return " ".join(parts)
+
+    def _render_source_string(self, source: str) -> str:
+        """Render a ``From``/``Join`` string source.
+
+        Wrap modules emit bare CTE names (e.g. ``base``); the star/CFL
+        planners emit pre-quoted qualified table strings (e.g.
+        ``"DB"."SCHEMA"."TABLE"``). Quote the former so case-sensitive
+        dialects like Snowflake match the CTE declaration; pass the latter
+        through unchanged.
+        """
+        if source.isidentifier():
+            return self.quote_identifier(source)
+        return source
 
     def compile_order_by(self, node: OrderByItem) -> str:
         result = self.compile_expr(node.expr)

@@ -11,7 +11,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.3.1](https://img.shields.io/badge/version-2.3.1-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 2.4.0](https://img.shields.io/badge/version-2.4.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -139,6 +139,18 @@ uv run orionbelt-ui                        # standalone Gradio UI on :7860 (conn
 FLIGHT_ENABLED=true uv run orionbelt-api   # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
 ```
 
+**Smoke-test the Flight SQL surface** without a BI tool:
+
+```bash
+uv run python examples/obsql.py 'SELECT version()'
+uv run python examples/obsql.py 'SHOW TABLES'
+uv run python examples/obsql.py 'SELECT "Region", "Total Sales" FROM sales LIMIT 5'
+
+# Multi-model deployment? Pick the model with -m:
+uv run python examples/obsql.py -m sales 'SHOW TABLES'
+uv run python examples/obsql.py --list   # discover loaded models via REST
+```
+
 ### Option D: Docker
 
 **Stage 1 — Zero-config start** (models loaded later via API or UI):
@@ -155,7 +167,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:2.3.1
+    image: ralforion/orionbelt-api:2.4.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -164,7 +176,7 @@ services:
       MODEL_FILE: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:2.3.1
+    image: ralforion/orionbelt-ui:2.4.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -180,7 +192,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
-> - For production, pin a version tag (`:2.3.1`) rather than `:latest`.
+> - For production, pin a version tag (`:2.4.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -245,7 +257,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **MCP Server** — [separate thin client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for Claude, Copilot, Cursor, Windsurf
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
-- **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI
+- **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
 
 ### Agent-Facing API
 

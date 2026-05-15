@@ -323,7 +323,124 @@ else
     fail "POST query/sql ratio metric" "HTTP $HTTP_CODE, body: $BODY"
 fi
 
-# 18. Invalid query returns error (unknown dimension)
+# 18. WITH ROLLUP (QueryObject form) — emits GROUP BY ROLLUP / WITH ROLLUP
+#     AND auto-orders dims with NULLS FIRST so totals bubble to the top.
+ROLLUP_QUERY='{
+    "select": {
+        "dimensions": ["Product Category", "Client Gender"],
+        "measures": ["Total Sales"]
+    },
+    "grouping": "rollup"
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${ROLLUP_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+# Postgres uses ROLLUP function form; ClickHouse uses trailing WITH ROLLUP.
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"ROLLUP"* ]] && [[ "$SQL" == *"NULLS FIRST"* ]]; then
+    pass "POST query/sql compiles ROLLUP with auto-order NULLS FIRST"
+else
+    fail "POST query/sql ROLLUP" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 19. WITH ROLLUP on ClickHouse — uses the trailing WITH ROLLUP form
+#     (CH-native), not GROUP BY ROLLUP(...).
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"clickhouse\",
+        \"query\": ${ROLLUP_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"WITH ROLLUP"* ]] && [[ "$SQL" == *"GROUPING"* ]]; then
+    pass "POST query/sql compiles ROLLUP for ClickHouse (trailing form + GROUPING flags)"
+else
+    fail "POST query/sql ClickHouse ROLLUP" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 20. WITH CUBE — emits GROUP BY CUBE / WITH CUBE + GROUPING() flag columns
+CUBE_QUERY='{
+    "select": {
+        "dimensions": ["Product Category", "Client Gender"],
+        "measures": ["Total Sales"]
+    },
+    "grouping": "cube"
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${CUBE_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"CUBE"* ]] && [[ "$SQL" == *"GROUPING"* ]] && [[ "$SQL" == *"NULLS FIRST"* ]]; then
+    pass "POST query/sql compiles CUBE with GROUPING flags + NULLS FIRST"
+else
+    fail "POST query/sql CUBE" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 21. OBSQL with trailing WITH ROLLUP — semantic-ql compile path
+api POST "/v1/sessions/${SESSION_ID}/query/semantic-ql/compile" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"clickhouse\",
+        \"sql\": \"SELECT \\\"Product Category\\\", \\\"Client Gender\\\", \\\"Total Sales\\\" FROM ${MODEL_ID} WITH ROLLUP\"
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"WITH ROLLUP"* ]] && [[ "$SQL" == *"NULLS FIRST"* ]]; then
+    pass "POST query/semantic-ql/compile translates trailing WITH ROLLUP (OBSQL)"
+else
+    fail "POST query/semantic-ql/compile trailing ROLLUP" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 22. OBSQL with WITH CUBE + trailing line comment — comment must be stripped
+#     before classification, otherwise the trailing-modifier regex misses
+#     the end-of-statement marker and the query rejects as RAW_SQL_REJECTED.
+#     Bash escaping note: \\\" survives the heredoc and becomes \" in JSON.
+api POST "/v1/sessions/${SESSION_ID}/query/semantic-ql/compile" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"clickhouse\",
+        \"sql\": \"SELECT \\\"Product Category\\\", \\\"Total Sales\\\" FROM ${MODEL_ID} WITH CUBE -- trailing line comment\"
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"WITH CUBE"* ]]; then
+    pass "POST query/semantic-ql/compile strips trailing -- line comment before WITH CUBE"
+else
+    fail "POST query/semantic-ql/compile CUBE+comment" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 23. LIMIT without ORDER BY auto-orders by all dims (deterministic cache).
+LIMIT_QUERY='{
+    "select": {
+        "dimensions": ["Product Category"],
+        "measures": ["Total Sales"]
+    },
+    "limit": 10
+}'
+api POST "/v1/sessions/${SESSION_ID}/query/sql" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model_id\": \"${MODEL_ID}\",
+        \"dialect\": \"postgres\",
+        \"query\": ${LIMIT_QUERY}
+    }"
+SQL=$(json_field "['sql']" 2>/dev/null || echo "")
+if [[ "$HTTP_CODE" == "200" ]] && [[ "$SQL" == *"ORDER BY"* ]] && [[ "$SQL" == *"LIMIT 10"* ]]; then
+    pass "POST query/sql auto-orders when LIMIT is set without ORDER BY"
+else
+    fail "POST query/sql auto-order on LIMIT" "HTTP $HTTP_CODE, body: $BODY"
+fi
+
+# 24. Invalid query returns error (unknown dimension)
 api POST "/v1/sessions/${SESSION_ID}/query/sql" \
     -H "Content-Type: application/json" \
     -d "{
@@ -342,7 +459,7 @@ else
     fail "POST query/sql error handling" "expected 4xx, got HTTP $HTTP_CODE"
 fi
 
-# 14. Delete model
+# 25. Delete model
 api DELETE "/v1/sessions/${SESSION_ID}/models/${MODEL_ID}"
 if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "204" ]]; then
     pass "DELETE /sessions/{id}/models/{mid} removes model"
@@ -350,7 +467,7 @@ else
     fail "DELETE model" "HTTP $HTTP_CODE"
 fi
 
-# 15. Delete session
+# 26. Delete session
 api DELETE "/v1/sessions/${SESSION_ID}"
 if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "204" ]]; then
     pass "DELETE /sessions/{id} closes session"

@@ -224,6 +224,46 @@ when the FastAPI process exits or is killed by Docker.
 | FLIGHT_PRELOAD_MODELS | | Comma-sep .obml.yaml paths, loaded at startup |
 | DB_VENDOR | snowflake | Default vendor for db_router |
 
+**No `FLIGHT_ALLOW_*_SQL` flags.** Raw SQL and write operations are
+rejected by design; there is no operator override. See
+`design/PLAN_flight_natural_sql.md` §3.2.
+
+---
+
+## OrionBelt Semantic QL (OBSQL) (v2.4.0+)
+
+**OrionBelt Semantic QL** — short form **OBSQL** — is OBSL's natural SQL
+surface. The server exposes each model as **one virtual table** named
+`<model_id>` with columns = dimensions + measures + metrics. BI tools
+(Tableau, Power BI, DBeaver) browse this table and write Semantic QL
+against it:
+
+```sql
+SELECT "Region", "Total Sales"
+FROM   sales_model
+WHERE  "Year" = 2025
+ORDER  BY "Total Sales" DESC
+LIMIT  100
+```
+
+`server._classify_sql(sql, model)` parses the SQL and dispatches to one
+of three modes — there are **no escape-hatch env flags**:
+
+| Shape | Mode | Path |
+|---|---|---|
+| `FROM <model_id>` (the virtual table) | `semantic` | `translate_sql_to_query` → `CompilationPipeline.compile` → warehouse |
+| `SHOW TABLES`, `DESCRIBE`, `information_schema.*`, `pg_catalog.*`, `SELECT 1`, `SELECT version()` | `catalog` | `_handle_catalog_sql` → model-backed `pa.Table`; **never touches warehouse** |
+| anything else (raw FROM, data-object labels, multi-statement) | `rejected` | `RAW_SQL_REJECTED` |
+| `INSERT`/`UPDATE`/`DELETE`/`DROP`/`CREATE`/`ALTER`/`TRUNCATE`/`MERGE`/… | `rejected` | `WRITE_OPERATION_REJECTED` (checked before classification, applies to every path) |
+
+Semantic-mode queries also benefit from a **schema probe shortcut**: the
+result `pa.Schema` is built from the `QueryObject` + model metadata,
+avoiding a warehouse round-trip on `GetFlightInfo`.
+
+`WITH ROLLUP` / `WITH CUBE` (trailing modifier or `GROUP BY ROLLUP(...)`
+function form) is supported end-to-end — see
+`design/PLAN_with_rollup.md`.
+
 ---
 
 ## DBeaver Configuration (end-user guide)

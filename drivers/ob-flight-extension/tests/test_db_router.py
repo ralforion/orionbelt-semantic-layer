@@ -1,4 +1,5 @@
 """Tests for vendor database routing."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -10,7 +11,16 @@ from ob_flight.db_router import VENDOR_MAP, connect, get_credentials
 
 class TestVendorMap:
     def test_all_dialects_present(self):
-        expected = {"duckdb", "postgres", "snowflake", "clickhouse", "dremio", "databricks", "bigquery", "mysql"}
+        expected = {
+            "duckdb",
+            "postgres",
+            "snowflake",
+            "clickhouse",
+            "dremio",
+            "databricks",
+            "bigquery",
+            "mysql",
+        }
         assert set(VENDOR_MAP) == expected
 
 

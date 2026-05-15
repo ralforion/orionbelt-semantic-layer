@@ -7,7 +7,12 @@ from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
-from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, STRING
+from ob_driver_core.type_codes import (  # type: ignore[import-untyped]
+    BINARY,
+    DATETIME,
+    NUMBER,
+    STRING,
+)
 
 
 def pep249_type_to_arrow(type_code: Any) -> pa.DataType:
@@ -48,7 +53,7 @@ def _python_type_to_arrow(value: Any) -> pa.DataType:
 
 
 def schema_from_description(
-    description: tuple[tuple[str, Any, ...], ...],
+    description: tuple[tuple[Any, ...], ...],
     sample_row: tuple[Any, ...] | None = None,
     sample_rows: list[tuple[Any, ...]] | None = None,
 ) -> pa.Schema:
@@ -92,9 +97,7 @@ def rows_to_batch(
     Transposes row-major data to column-major for Arrow.
     """
     if not rows:
-        return pa.RecordBatch.from_pydict(
-            {field.name: [] for field in schema}, schema=schema
-        )
+        return pa.RecordBatch.from_pydict({field.name: [] for field in schema}, schema=schema)
     n_cols = len(schema)
     columns: dict[str, list[Any]] = {schema.field(i).name: [] for i in range(n_cols)}
     for row in rows:

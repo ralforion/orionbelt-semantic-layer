@@ -41,6 +41,9 @@ from orionbelt.api.routers import (
     sessions,
     shortcuts,
 )
+from orionbelt.api.routers import (
+    models as models_router,
+)
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
@@ -79,12 +82,13 @@ def _wipe_file_cache_state(backend: str, cache_dir: str) -> None:
         logger.info("Cache wiped on startup: %s", cache_dir)
 
 
-def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
-    """Read and validate the MODEL_FILE at startup. Raises on error.
+def _read_model_file(path_str: str, model_dir: str | None = None) -> tuple[str, Path]:
+    """Read and validate one OBML YAML at startup. Raises on error.
 
-    If the YAML contains ``extends`` or ``inherits`` keys, the referenced files
-    are resolved relative to the model file's directory and merged before
-    validation. The returned string is the fully merged YAML.
+    If the YAML contains ``extends`` or ``inherits`` keys, the referenced
+    files are resolved relative to the model file's directory and merged
+    before validation. Returns ``(yaml_string, resolved_path)`` so callers
+    can use the resolved path for filename-based addressing.
     """
     import yaml as pyyaml
 
@@ -92,10 +96,10 @@ def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
     if not path.is_absolute() and model_dir:
         path = Path(model_dir) / path
     if not path.is_file():
-        raise FileNotFoundError(f"MODEL_FILE not found: {path}")
+        raise FileNotFoundError(f"model file not found: {path}")
     yaml_str = path.read_text(encoding="utf-8")
     if not yaml_str.strip():
-        raise ValueError(f"MODEL_FILE is empty: {path}")
+        raise ValueError(f"model file is empty: {path}")
 
     raw = pyyaml.safe_load(yaml_str) or {}
     if raw.get("extends") or raw.get("inherits"):
@@ -112,20 +116,104 @@ def _read_model_file(path_str: str, model_dir: str | None = None) -> str:
     summary = store.validate(yaml_str)
     if not summary.valid:
         msgs = "; ".join(e.message for e in summary.errors)
-        raise ValueError(f"MODEL_FILE validation failed: {msgs}")
-    return yaml_str
+        raise ValueError(f"model file validation failed ({path}): {msgs}")
+    return yaml_str, path
+
+
+def _resolve_model_name(yaml_str: str, path: Path) -> str:
+    """Derive a model's addressing name from its YAML.
+
+    Preference order: top-level OBML ``name:`` field → filename stem.
+    Both paths go through ``normalize_model_name`` so the result is
+    guaranteed to be a valid identifier or a precise ``ModelNameError``
+    is raised.
+    """
+    import yaml as pyyaml
+
+    from orionbelt.models.identifiers import normalize_model_name
+
+    raw = pyyaml.safe_load(yaml_str) or {}
+    obml_name = raw.get("name")
+    if obml_name:
+        return normalize_model_name(obml_name, source=f"OBML `name:` in {path}")
+    return normalize_model_name(path.stem, source=f"filename '{path.name}'")
+
+
+def _parse_model_files_env(model_files: str) -> list[str]:
+    """Split the ``MODEL_FILES`` env var into individual paths.
+
+    Comma-separated. Empty entries skipped. Whitespace trimmed.
+    """
+    return [p.strip() for p in model_files.split(",") if p.strip()]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    """Start/stop the SessionManager alongside the application."""
+    """Start/stop the SessionManager alongside the application.
+
+    Three startup-time model-loading modes (v2.4.0+):
+
+    * ``MODEL_FILES=a.yaml,b.yaml`` — multi-model. Each YAML is loaded
+      into its own internal session, addressable by the resolved name
+      (OBML ``name:`` → filename stem). Multiple BI tool catalogs.
+    * ``MODEL_FILE=path.yaml`` — legacy single-model alias. Internally
+      treated as ``MODEL_FILES`` with one entry that goes into the
+      ``__default__`` session for backward compatibility. Deprecation
+      warning logged.
+    * Neither set — dynamic mode. Sessions and models are created at
+      runtime via REST. The Flight surface has no preloaded model and
+      will return ``NO_MODEL_AVAILABLE`` on connect.
+    """
     settings: Settings = app.state.settings
 
-    # Read and validate MODEL_FILE before starting (fail fast)
-    preload_yaml: str | None = None
-    if settings.model_file:
-        preload_yaml = _read_model_file(settings.model_file, settings.model_dir)
-        logger.info("Single-model mode: loaded %s", settings.model_file)
+    # Mutual exclusion of MODEL_FILE and MODEL_FILES
+    if settings.model_file and settings.model_files:
+        raise RuntimeError(
+            "MODEL_FILE and MODEL_FILES cannot both be set. "
+            "Use MODEL_FILES for multi-model mode; MODEL_FILE is the "
+            "deprecated single-model alias kept for backward compatibility."
+        )
+
+    # Read + validate every YAML before constructing the SessionManager —
+    # fail fast at startup rather than emitting half-broken state.
+    preloads: list[tuple[str, Path]] = []  # (yaml_str, path)
+    if settings.model_files:
+        for path_str in _parse_model_files_env(settings.model_files):
+            yaml_str, resolved = _read_model_file(path_str, settings.model_dir)
+            preloads.append((yaml_str, resolved))
+    elif settings.model_file:
+        logger.warning(
+            "MODEL_FILE is deprecated as of v2.4.0; use MODEL_FILES=<path> "
+            "(comma-separated for multiple models). MODEL_FILE will be "
+            "removed in v2.5.0."
+        )
+        yaml_str, resolved = _read_model_file(settings.model_file, settings.model_dir)
+        preloads.append((yaml_str, resolved))
+
+    # Resolve every model's addressing name and check uniqueness BEFORE
+    # we start the SessionManager — surface collisions as one clean error
+    # rather than partial state.
+    named_preloads: list[tuple[str, str]] = []  # (model_name, yaml_str)
+    seen: dict[str, Path] = {}
+    legacy_default: str | None = None  # YAML for the legacy __default__ slot
+    if preloads and settings.model_files:
+        # Multi-model mode: every preload gets its own named session
+        for yaml_str, path in preloads:
+            name = _resolve_model_name(yaml_str, path)
+            if name in seen:
+                raise RuntimeError(
+                    f"Model name '{name}' is used by both "
+                    f"{seen[name]} and {path}. Each MODEL_FILES entry "
+                    "must resolve to a unique addressing name. Override "
+                    "via OBML `name:` field if needed."
+                )
+            seen[name] = path
+            named_preloads.append((name, yaml_str))
+    elif preloads:
+        # Legacy MODEL_FILE single-model — preserve __default__ semantics
+        legacy_default = preloads[0][0]
+
+    is_admin_curated = bool(preloads)  # disables POST /models in either mode
 
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
@@ -133,7 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         max_sessions=settings.max_sessions,
         max_models_per_session=settings.max_models_per_session,
         cleanup_interval=settings.session_cleanup_interval,
-        is_single_model_mode=preload_yaml is not None,
+        is_single_model_mode=is_admin_curated,
     )
     mgr.start()
 
@@ -150,11 +238,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # query/execute is available when explicitly enabled OR when Flight is enabled
     query_execute_enabled = settings.query_execute or settings.flight_enabled
 
-    # Single-model mode: create __default__ session with the preloaded model
-    if preload_yaml is not None:
+    # Single-model legacy mode: load into __default__ for compatibility
+    if legacy_default is not None:
         default_store = mgr.get_or_create_default()
-        default_store.load_model(preload_yaml)
-        logger.info("Preloaded model into __default__ session")
+        default_store.load_model(legacy_default)
+        logger.info("Single-model (legacy MODEL_FILE) → __default__ session")
+
+    # Multi-model mode: each named preload goes into its own protected session
+    for name, yaml_str in named_preloads:
+        store = mgr.get_or_create_named(name)
+        store.load_model(yaml_str)
+        logger.info("Loaded model '%s' into protected session", name)
+    if named_preloads:
+        logger.info(
+            "Multi-model mode active: %d model(s) loaded — %s",
+            len(named_preloads),
+            ", ".join(n for n, _ in named_preloads),
+        )
 
     # Wipe persisted cache state on startup. ``model_id`` is regenerated as
     # a fresh UUID on every model load, so any entries from a previous
@@ -231,7 +331,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
-        preload_model_yaml=preload_yaml,
+        # Legacy single-model preload (MODEL_FILE only). Multi-model
+        # (MODEL_FILES) doesn't use this slot — each named model is
+        # created at startup above.
+        preload_model_yaml=legacy_default,
         flight_info=flight_info,
         query_execute_enabled=query_execute_enabled,
         db_vendor=settings.db_vendor,
@@ -253,12 +356,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     flight_available = importlib.util.find_spec("ob_flight") is not None
     if settings.flight_enabled or flight_available:
         try:
-            from ob_flight.startup import start_flight_background  # type: ignore[import-untyped]
+            from ob_flight.startup import start_flight_background
 
             flight_thread = start_flight_background(
                 session_manager=mgr,
                 port=settings.flight_port,
                 default_dialect=settings.db_vendor,
+                cache=cache,
+                cache_config=cache_config,
             )
             settings.flight_enabled = True
             logger.info(
@@ -294,7 +399,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             stop_flight_server()
         # Drain connection pools before stopping sessions
         try:
-            from ob_flight.db_router import close_all_pools  # type: ignore[import-untyped]
+            from ob_flight.db_router import close_all_pools
 
             close_all_pools()
         except ImportError:
@@ -356,6 +461,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(dialects.router, prefix="/dialects", tags=["dialects"])
     v1.include_router(oneshot.router, prefix="/oneshot", tags=["oneshot"])
     v1.include_router(reference.router, prefix="/reference", tags=["reference"])
+    v1.include_router(models_router.router, prefix="/models", tags=["models"])
     v1.include_router(settings_router.router, prefix="/settings", tags=["settings"])
     v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
     v1.include_router(heartbeat.router, tags=["cache"])
@@ -382,8 +488,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # is_query_execute_enabled()/is_single_model_mode()/get_flight_info() here
         # would always read defaults. Mirror the same logic used in lifespan().
         query_execute_enabled = settings.query_execute or settings.flight_enabled
+        # Admin-curated mode: either legacy single-model (MODEL_FILE) or
+        # multi-model (MODEL_FILES). Both lock down POST /models.
+        admin_curated = bool(settings.model_file or settings.model_files)
         ui_settings: dict[str, object] = {
-            "single_model_mode": settings.model_file is not None,
+            "single_model_mode": admin_curated,
             "query_execute": query_execute_enabled,
             "session_ttl_seconds": settings.session_ttl_seconds,
         }

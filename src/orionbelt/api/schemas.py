@@ -163,6 +163,51 @@ class SessionQueryExecuteRequest(BaseModel):
     )
 
 
+class SemanticQLRequest(BaseModel):
+    """Request body for POST /sessions/{id}/query/semantic-ql.
+
+    Accepts BI-style SQL against the model's virtual table — the translator
+    in ``compiler/sql_translator.py`` converts it to a :class:`QueryObject`.
+    See ``design/PLAN_flight_natural_sql.md``.
+    """
+
+    model_id: str = Field(description="Model loaded in the session")
+    sql: str = Field(
+        min_length=1,
+        max_length=200_000,
+        description=(
+            "OrionBelt Semantic QL (OBSQL): SELECT <dim/measure labels> FROM <model_name> "
+            "[WHERE ...] [HAVING ...] [ORDER BY ...] [LIMIT n] "
+            "[WITH ROLLUP | WITH CUBE]. JOINs, CTEs, subqueries, UNION, "
+            "window functions, and SELECT * are rejected."
+        ),
+    )
+    dialect: str | None = Field(
+        default=None,
+        description=(
+            "SQL dialect for compilation. Resolution: explicit → "
+            "model.settings.defaultDialect → DB_VENDOR → 'postgres'."
+        ),
+    )
+
+
+class SemanticQLCompileResponse(BaseModel):
+    """Response body for POST /sessions/{id}/query/semantic-ql/compile.
+
+    Mirrors :class:`QueryCompileResponse` but also surfaces the intermediate
+    :class:`QueryObject` so callers can see *what their SQL translated to*.
+    """
+
+    sql: str
+    dialect: str
+    query: dict[str, Any] = Field(description="JSON shape of the translated QueryObject.")
+    resolved: ResolvedInfoResponse
+    warnings: list[StructuredWarning] = Field(default_factory=list)
+    sql_valid: bool = True
+    explain: ExplainPlanResponse | None = None
+    physical_tables: list[str] = Field(default_factory=list)
+
+
 class ValidateRequest(BaseModel):
     """Request body for POST /validate."""
 

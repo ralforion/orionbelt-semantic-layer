@@ -33,7 +33,7 @@ from orionbelt.compiler.resolution import (
     ResolvedQuery,
     make_column_expr,
 )
-from orionbelt.compiler.star import CflLegInfo, QueryPlan
+from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import DataObject, SemanticModel
@@ -506,7 +506,17 @@ class CFLPlanner:
                             )
                             leg_builder.select(AliasedExpr(expr=null_expr, alias=alias))
                 elif m.name in this_measure_names:
-                    leg_builder.select(AliasedExpr(expr=self._unwrap_aggregation(m), alias=m.name))
+                    # Cast the own-measure column to the same type used for
+                    # NULL padding in sibling legs, so every leg's column
+                    # agrees on a single type. Without this, strict-typed
+                    # engines (ClickHouse with UNION ALL) produce a Variant
+                    # type that SUM can't aggregate ("ILLEGAL_TYPE_OF_ARGUMENT
+                    # Variant(Decimal, Float64)").
+                    own_expr: Expr = self._unwrap_aggregation(m)
+                    own_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
+                    if own_type_name:
+                        own_expr = Cast(expr=own_expr, type_name=own_type_name)
+                    leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
                     null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
@@ -664,8 +674,7 @@ class CFLPlanner:
             if model_measure and dialect:
                 resolved_type = resolve_measure_data_type(model_measure, settings)
                 if resolved_type:
-                    type_sql = dialect.render_obml_type(resolved_type)
-                    agg_expr = Cast(expr=agg_expr, type_name=type_sql)
+                    agg_expr = dialect.cast_to_obml_type(agg_expr, resolved_type)
             outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
             outer_measure_exprs[m.name] = agg_expr
 
@@ -677,8 +686,7 @@ class CFLPlanner:
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)
                     if resolved_type:
-                        type_sql = dialect.render_obml_type(resolved_type)
-                        metric_expr = Cast(expr=metric_expr, type_name=type_sql)
+                        metric_expr = dialect.cast_to_obml_type(metric_expr, resolved_type)
                 outer_builder.select(AliasedExpr(expr=metric_expr, alias=m.name))
                 outer_measure_exprs[m.name] = metric_expr
 
@@ -704,13 +712,32 @@ class CFLPlanner:
             else:
                 outer_builder.group_by(ColumnRef(name=dim.name))
 
+        # GROUPING() flag columns + grouping modifier (rollup/cube) — outer query only
+        # so subtotal rows compose correctly over the unioned facts (the
+        # individual UNION ALL legs stay at detail grain).
+        if resolved.grouping is not None and resolved.dimensions:
+            outer_builder.grouping(resolved.grouping.value)
+            flag_aliases: list[str] = []
+            for dim in resolved.dimensions:
+                alias_name = dim.coalesce_alias or dim.name
+                if alias_name in flag_aliases:
+                    continue
+                flag_aliases.append(alias_name)
+            for alias in flag_aliases:
+                flag_col = FunctionCall(name="GROUPING", args=[ColumnRef(name=alias)])
+                outer_builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
+
         # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:
             outer_builder.having(_expand_cfl_measure_refs(hf.expression, outer_measure_exprs))
 
         # ORDER BY and LIMIT — remap to CTE aliases
-        for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
+        for expr, desc, nulls in resolved.order_by_exprs:
+            outer_builder.order_by(
+                self._remap_cfl_order_by(expr, resolved, model),
+                desc=desc,
+                nulls_last=_nulls_last(nulls),
+            )
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:
@@ -730,6 +757,7 @@ class CFLPlanner:
             limit=outer_select.limit,
             offset=outer_select.offset,
             ctes=[union_cte],
+            grouping=outer_select.grouping,
         )
 
         return QueryPlan(ast=final, cfl_legs=leg_infos)
@@ -805,8 +833,12 @@ class CFLPlanner:
             outer_builder.select(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
         outer_builder.from_("non_combinations", alias="non_combinations")
 
-        for expr, desc in resolved.order_by_exprs:
-            outer_builder.order_by(self._remap_cfl_order_by(expr, resolved, model), desc=desc)
+        for expr, desc, nulls in resolved.order_by_exprs:
+            outer_builder.order_by(
+                self._remap_cfl_order_by(expr, resolved, model),
+                desc=desc,
+                nulls_last=_nulls_last(nulls),
+            )
         if resolved.limit is not None:
             outer_builder.limit(resolved.limit)
         if resolved.offset is not None:

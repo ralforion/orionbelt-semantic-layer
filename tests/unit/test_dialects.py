@@ -87,7 +87,7 @@ class TestPostgresDialect:
         ast = QueryBuilder().select(Star()).from_("orders").build()
         sql = dialect.compile(ast)
         assert "SELECT *" in sql
-        assert "FROM orders" in sql
+        assert 'FROM "orders"' in sql
 
     def test_compile_with_alias(self, dialect: PostgresDialect) -> None:
         ast = (
@@ -371,6 +371,24 @@ class TestMySQLDialect:
         assert dialect.quote_identifier("col") == "`col`"
         assert dialect.quote_identifier("has`tick") == "`has``tick`"
 
+    def test_group_by_cube_raises_domain_error(self, dialect: MySQLDialect) -> None:
+        """Regression: MySQL CUBE used to surface as bare NotImplementedError
+        and become a 500 through the API. Must raise the structured
+        ``UnsupportedGroupingError`` so routers map it to a 422 with
+        dialect + grouping fields.
+        """
+        from orionbelt.dialect.base import UnsupportedGroupingError
+
+        with pytest.raises(UnsupportedGroupingError) as exc:
+            dialect.compile_group_by([ColumnRef(name="x")], "cube")
+        assert exc.value.dialect == "mysql"
+        assert exc.value.grouping == "cube"
+
+    def test_group_by_rollup_unchanged(self, dialect: MySQLDialect) -> None:
+        """ROLLUP path is unaffected by the CUBE error refactor."""
+        sql = dialect.compile_group_by([ColumnRef(name="x")], "rollup")
+        assert sql == "GROUP BY `x` WITH ROLLUP"
+
     def test_format_table_ref(self, dialect: MySQLDialect) -> None:
         ref = dialect.format_table_ref("ignored_db", "myschema", "orders")
         assert ref == "`myschema`.`orders`"
@@ -379,11 +397,36 @@ class TestMySQLDialect:
         ref = dialect.format_table_ref("db", "my`schema", "my`table")
         assert ref == "`my``schema`.`my``table`"
 
+    def test_order_by_asc_no_nulls_position(self, dialect: MySQLDialect) -> None:
+        """Plain ASC — MySQL default applies, no workaround."""
+        item = OrderByItem(expr=ColumnRef(name="x"))
+        assert dialect.compile_order_by(item) == "`x` ASC"
+
+    def test_order_by_asc_nulls_first_matches_mysql_default(self, dialect: MySQLDialect) -> None:
+        """ASC NULLS FIRST = MySQL default → emit plain ASC, no IS NULL hack."""
+        item = OrderByItem(expr=ColumnRef(name="x"), nulls_last=False)
+        assert dialect.compile_order_by(item) == "`x` ASC"
+
+    def test_order_by_desc_nulls_last_matches_mysql_default(self, dialect: MySQLDialect) -> None:
+        """DESC NULLS LAST = MySQL default → emit plain DESC, no workaround."""
+        item = OrderByItem(expr=ColumnRef(name="x"), desc=True, nulls_last=True)
+        assert dialect.compile_order_by(item) == "`x` DESC"
+
+    def test_order_by_asc_nulls_last_uses_workaround(self, dialect: MySQLDialect) -> None:
+        """ASC NULLS LAST conflicts with MySQL default → IS NULL workaround."""
+        item = OrderByItem(expr=ColumnRef(name="x"), nulls_last=True)
+        assert dialect.compile_order_by(item) == "`x` IS NULL ASC, `x` ASC"
+
+    def test_order_by_desc_nulls_first_uses_workaround(self, dialect: MySQLDialect) -> None:
+        """DESC NULLS FIRST conflicts with MySQL default → IS NULL workaround."""
+        item = OrderByItem(expr=ColumnRef(name="x"), desc=True, nulls_last=False)
+        assert dialect.compile_order_by(item) == "`x` IS NULL DESC, `x` DESC"
+
     def test_compile_simple_select(self, dialect: MySQLDialect) -> None:
         ast = QueryBuilder().select(Star()).from_("orders").build()
         sql = dialect.compile(ast)
         assert "SELECT *" in sql
-        assert "FROM orders" in sql
+        assert "FROM `orders`" in sql
 
     def test_compile_aggregation(self, dialect: MySQLDialect) -> None:
         ast = (

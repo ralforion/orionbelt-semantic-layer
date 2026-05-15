@@ -124,6 +124,144 @@ class TestQueryResolver:
         assert resolved.limit == 50
 
 
+class TestAutoOrderOnLimit:
+    """LIMIT without explicit ORDER BY auto-orders by all SELECT dims.
+
+    The cache hashes on compiled SQL — without ORDER BY, LIMIT returns
+    arbitrary N rows, and the same hash would correspond to different
+    result sets across runs. Auto-ordering keeps the cache content-
+    addressable.
+    """
+
+    def test_limit_without_order_by_adds_order_over_dims(self) -> None:
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            limit=50,
+        )
+        resolved = resolver.resolve(query, model)
+        assert len(resolved.order_by_exprs) == 1
+        expr, desc, nulls = resolved.order_by_exprs[0]
+        assert desc is False
+        assert nulls is None
+        # ColumnRef points to the dim name (the SELECT alias).
+        assert hasattr(expr, "name")
+
+    def test_no_limit_no_auto_order(self) -> None:
+        """Without LIMIT, ordering cost would be wasted on full result sets."""
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+        )
+        resolved = resolver.resolve(query, model)
+        assert resolved.order_by_exprs == []
+
+    def test_limit_with_explicit_order_by_preserves_user_choice(self) -> None:
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            order_by=[{"field": "Total Revenue", "direction": "desc"}],
+            limit=50,
+        )
+        resolved = resolver.resolve(query, model)
+        # Only the user's ORDER BY survives — auto-order doesn't append.
+        assert len(resolved.order_by_exprs) == 1
+        _expr, desc, _nulls = resolved.order_by_exprs[0]
+        assert desc is True
+
+
+class TestRollupCubeOrdering:
+    """ROLLUP / CUBE auto-orders with NULLS FIRST so totals bubble to the top.
+
+    Without explicit ORDER BY: append ORDER BY <all dims> NULLS FIRST.
+    With explicit ORDER BY that omits NULLS position: backfill NULLS FIRST.
+    """
+
+    def test_rollup_auto_orders_with_nulls_first(self) -> None:
+        from orionbelt.models.query import Grouping, NullsPosition
+
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            grouping=Grouping.ROLLUP,
+        )
+        resolved = resolver.resolve(query, model)
+        assert len(resolved.order_by_exprs) >= 1
+        _expr, desc, nulls = resolved.order_by_exprs[0]
+        assert desc is False
+        assert nulls is NullsPosition.FIRST
+
+    def test_cube_auto_orders_with_nulls_first(self) -> None:
+        from orionbelt.models.query import Grouping, NullsPosition
+
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            grouping=Grouping.CUBE,
+        )
+        resolved = resolver.resolve(query, model)
+        assert len(resolved.order_by_exprs) >= 1
+        _expr, _desc, nulls = resolved.order_by_exprs[0]
+        assert nulls is NullsPosition.FIRST
+
+    def test_rollup_backfills_nulls_first_on_explicit_order_by(self) -> None:
+        """Explicit ORDER BY without NULLS clause inherits NULLS FIRST under ROLLUP."""
+        from orionbelt.models.query import Grouping, NullsPosition
+
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            order_by=[{"field": "Customer Country", "direction": "asc"}],
+            grouping=Grouping.ROLLUP,
+        )
+        resolved = resolver.resolve(query, model)
+        assert len(resolved.order_by_exprs) == 1
+        _expr, _desc, nulls = resolved.order_by_exprs[0]
+        assert nulls is NullsPosition.FIRST
+
+    def test_rollup_respects_explicit_nulls_last(self) -> None:
+        """User-specified NULLS LAST under ROLLUP must NOT be overridden."""
+        from orionbelt.models.query import Grouping, NullsPosition
+
+        model = _load_model()
+        resolver = QueryResolver()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Total Revenue"],
+            ),
+            order_by=[{"field": "Customer Country", "direction": "asc", "nulls": "last"}],
+            grouping=Grouping.ROLLUP,
+        )
+        resolved = resolver.resolve(query, model)
+        _expr, _desc, nulls = resolved.order_by_exprs[0]
+        assert nulls is NullsPosition.LAST
+
+
 class TestStarSchemaPlanner:
     def test_plan_simple_query(self) -> None:
         model = _load_model()
@@ -796,7 +934,7 @@ class TestOrderByValidation:
         )
         resolved = resolver.resolve(query, model)
         assert len(resolved.order_by_exprs) == 1
-        expr, _desc = resolved.order_by_exprs[0]
+        expr, _desc, _nulls = resolved.order_by_exprs[0]
         assert isinstance(expr, Literal) and expr.value == 1
 
     def test_order_by_numeric_out_of_range(self) -> None:

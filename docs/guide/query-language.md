@@ -23,7 +23,9 @@ having:
 order_by:
   - field: Revenue
     direction: desc
+    nulls: last        # optional — "first" | "last"; omit for dialect default
 limit: 1000
+offset: 0              # optional, paired with limit for pagination
 ```
 
 ### In Python

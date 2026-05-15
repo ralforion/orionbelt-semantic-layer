@@ -219,6 +219,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
         limit=None,
         offset=None,
         ctes=[],
+        grouping=ast.grouping,
     )
 
     base_cte = CTE(name="base", query=base_cte_query)

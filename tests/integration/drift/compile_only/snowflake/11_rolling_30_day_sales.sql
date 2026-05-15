@@ -4,4 +4,4 @@ FROM ""."orionbelt_1"."sales" AS "Sales"
 GROUP BY DATE_TRUNC('day', "Sales"."salesdate")
 )
 SELECT "Sales Date" AS "Sales Date", CAST(AVG("Total Sales") OVER (ORDER BY "Sales Date" ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS NUMBER(18, 0)) AS "Rolling 30 Day Sales"
-FROM cumulative_base AS "cumulative_base"
+FROM "cumulative_base" AS "cumulative_base"

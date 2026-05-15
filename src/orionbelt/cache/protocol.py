@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 
 @dataclass
@@ -98,7 +98,3 @@ class Cache(Protocol):
 
     async def shutdown(self) -> None:
         """Release resources (file handles, sweep tasks). Idempotent."""
-
-
-# Sentinel value used by call sites that intentionally bypass caching.
-SKIP_CACHE: Any = object()

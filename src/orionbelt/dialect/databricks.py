@@ -23,6 +23,19 @@ class DatabricksDialect(Dialect):
         "boolean": "BOOLEAN",
     }
 
+    _ABSTRACT_TYPE_MAP: dict[str, str] = {
+        "string": "STRING",
+        "json": "STRING",
+        "int": "INT",
+        "float": "FLOAT",
+        "date": "DATE",
+        "time": "STRING",
+        "time_tz": "STRING",
+        "timestamp": "TIMESTAMP",
+        "timestamp_tz": "TIMESTAMP",
+        "boolean": "BOOLEAN",
+    }
+
     @property
     def name(self) -> str:
         return "databricks"

@@ -10,18 +10,43 @@ from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
-    Cast,
     ColumnRef,
     Expr,
+    FunctionCall,
     Select,
 )
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
+from orionbelt.models.query import NullsPosition
 from orionbelt.models.semantic import DataObject, SemanticModel
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
+
+
+_GROUPING_FLAG_PREFIX = "_g_"
+
+
+def _nulls_last(nulls: NullsPosition | None) -> bool | None:
+    """Map a QueryOrderBy.nulls value to the AST's ``nulls_last`` flag.
+
+    ``None`` keeps the dialect default; explicit ``FIRST`` / ``LAST``
+    forces the corresponding ``NULLS FIRST`` / ``NULLS LAST`` clause.
+    """
+    if nulls is None:
+        return None
+    return nulls == NullsPosition.LAST
+
+
+def _grouping_flag_alias(dim_alias: str) -> str:
+    """Build the GROUPING() flag column alias for a dimension.
+
+    Per PLAN_with_rollup.md §"Output: GROUPING() flag columns" — convention is
+    ``_g_<dim>`` with a stable prefix so callers can filter on detail vs
+    subtotal vs grand-total rows.
+    """
+    return f"{_GROUPING_FLAG_PREFIX}{dim_alias}"
 
 
 def _substitute_measure_refs(
@@ -93,11 +118,14 @@ class StarSchemaPlanner:
         base_alias = resolved.base_object
 
         # SELECT: dimensions (apply time grain truncation if specified)
+        grouping_dim_aliases: list[str] = []
         for dim in resolved.dimensions:
             col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain and dialect:
                 col = dialect.render_time_grain(col, dim.grain)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
+            if resolved.grouping is not None:
+                grouping_dim_aliases.append(dim.name)
 
         # SELECT: measures (aggregated) — for metrics, substitute component refs
         settings = model.settings
@@ -111,8 +139,7 @@ class StarSchemaPlanner:
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)
                     if resolved_type:
-                        type_sql = dialect.render_obml_type(resolved_type)
-                        expr = Cast(expr=expr, type_name=type_sql)
+                        expr = dialect.cast_to_obml_type(expr, resolved_type)
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             else:
                 expr = measure.expression
@@ -120,8 +147,7 @@ class StarSchemaPlanner:
                 if model_measure and dialect:
                     resolved_type = resolve_measure_data_type(model_measure, settings)
                     if resolved_type:
-                        type_sql = dialect.render_obml_type(resolved_type)
-                        expr = Cast(expr=expr, type_name=type_sql)
+                        expr = dialect.cast_to_obml_type(expr, resolved_type)
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             measure_exprs[measure.name] = expr
 
@@ -154,12 +180,25 @@ class StarSchemaPlanner:
         for wf in resolved.where_filters:
             builder.where(wf.expression)
 
-        # GROUP BY (all dimension columns, with time grain if applicable)
+        # GROUP BY (all dimension columns, with time grain if applicable).
+        # Stash the per-dim group-by expression by alias so GROUPING() below
+        # can reuse the SAME expression — Postgres rejects GROUPING(<alias>)
+        # with "column does not exist" and requires the group-key expression.
+        group_by_exprs: dict[str, Expr] = {}
         for dim in resolved.dimensions:
             gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain and dialect:
                 gb_col = dialect.render_time_grain(gb_col, dim.grain)
             builder.group_by(gb_col)
+            group_by_exprs[dim.name] = gb_col
+
+        # GROUPING() flag columns + grouping modifier (rollup/cube)
+        if resolved.grouping is not None and grouping_dim_aliases:
+            builder.grouping(resolved.grouping.value)
+            for alias in grouping_dim_aliases:
+                gb_arg = group_by_exprs.get(alias) or ColumnRef(name=alias)
+                flag_col = FunctionCall(name="GROUPING", args=[gb_arg])
+                builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
 
         # HAVING — expand alias references to actual CAST'd aggregate expressions
         for hf in resolved.having_filters:
@@ -169,10 +208,10 @@ class StarSchemaPlanner:
         grained_cols: dict[tuple[str, str | None], str] = {
             (d.source_column, d.object_name): d.name for d in resolved.dimensions if d.grain
         }
-        for expr, desc in resolved.order_by_exprs:
+        for expr, desc, nulls in resolved.order_by_exprs:
             if isinstance(expr, ColumnRef) and (expr.name, expr.table) in grained_cols:
                 expr = ColumnRef(name=grained_cols[(expr.name, expr.table)])
-            builder.order_by(expr, desc=desc)
+            builder.order_by(expr, desc=desc, nulls_last=_nulls_last(nulls))
 
         # LIMIT / OFFSET
         if resolved.limit is not None:

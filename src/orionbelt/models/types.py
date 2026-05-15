@@ -73,10 +73,3 @@ def parse_data_type(raw: str) -> OBMLType:
     raise ValueError(
         f"Unknown data_type '{raw}'. Supported: decimal(p, s), {', '.join(sorted(_SIMPLE_TYPES))}"
     )
-
-
-def is_numeric_type(t: OBMLType) -> bool:
-    """Return True if the type represents a numeric value."""
-    if isinstance(t, DecimalType):
-        return True
-    return t.name in ("bigint", "integer", "double")

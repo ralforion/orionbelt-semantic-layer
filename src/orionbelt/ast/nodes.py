@@ -270,6 +270,13 @@ class Select:
     offset: int | None = None
     ctes: list[CTE] = field(default_factory=list)
     distinct: bool = False
+    grouping: str | None = None
+    """Hierarchical grouping modifier: 'rollup' or 'cube'.
+
+    When set, the dialect emits ``GROUP BY ROLLUP(...)`` / ``GROUP BY CUBE(...)``
+    (or ClickHouse-style ``GROUP BY ... WITH ROLLUP``) instead of plain
+    ``GROUP BY``. The planner is responsible for appending the
+    ``GROUPING(dim) AS _g_<dim>`` columns to the SELECT projection."""
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,7 @@ sql: "WITH \"date_range\" AS (\nSELECT date_trunc('month', MIN(\"Sales\".\"sales
   \"pop_compare\" AS (\nSELECT pop_base.\"Sales Month\" AS \"Sales Month\",\n       pop_base.\"Total Sales\" / NULLIF(prev.\"\
   Total Sales\", 0) - 1 AS \"Sales YoY Growth\"\n  FROM pop_base\n  LEFT JOIN date_spine ON pop_base.\"Sales Month\" = date_spine.spine_date\n\
   \  LEFT JOIN pop_base AS prev\n    ON date_spine.spine_date_prev = prev.\"Sales Month\"\n)\nSELECT \"Sales Month\" AS \"\
-  Sales Month\", \"Sales YoY Growth\" AS \"Sales YoY Growth\"\nFROM pop_compare AS \"pop_compare\"\n"
+  Sales Month\", \"Sales YoY Growth\" AS \"Sales YoY Growth\"\nFROM \"pop_compare\" AS \"pop_compare\"\n"
 rows:
 - - '2021-01-01'
   - null

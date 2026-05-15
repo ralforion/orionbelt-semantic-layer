@@ -35,4 +35,4 @@ SELECT pop_base."Sales Month" AS "Sales Month",
     ON date_spine.spine_date_prev = prev."Sales Month"
 )
 SELECT "Sales Month" AS "Sales Month", "Sales YoY Growth" AS "Sales YoY Growth"
-FROM pop_compare AS "pop_compare"
+FROM "pop_compare" AS "pop_compare"

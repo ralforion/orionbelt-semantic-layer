@@ -49,6 +49,10 @@
       "description": "Sort direction",
       "enum": ["asc", "desc"]
     },
+    "nullsPosition": {
+      "description": "Position of NULL values in an ORDER BY clause. Omit to use the dialect default (Postgres / Snowflake / DuckDB / Dremio: NULLs last on ASC, first on DESC; MySQL / ClickHouse / BigQuery / Databricks the opposite).",
+      "enum": ["first", "last"]
+    },
     "queryFilter": {
       "type": "object",
       "description": "A filter condition. WHERE filters reference a dimension name or a qualified column (DataObject.Column); HAVING filters reference a measure name. The data object must be reachable from the query's join graph (auto-joined if needed).",
@@ -107,6 +111,10 @@
         "direction": {
           "$ref": "#/definitions/sortDirection",
           "default": "asc"
+        },
+        "nulls": {
+          "$ref": "#/definitions/nullsPosition",
+          "description": "Optional NULLS FIRST / NULLS LAST. Omit to use dialect default."
         }
       },
       "required": ["field"],

@@ -172,8 +172,11 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 | | OBSL | dbt SL |
 |---|---|---|
+| Natural SQL surface | **OrionBelt Semantic QL (OBSQL)** — write `SELECT "Region", "Total Sales" FROM sales` (or without FROM); `MEASURE()` marker; aggregate-wrap matching against declared aggregation; `WITH ROLLUP` / `WITH CUBE` first-class | No — dbt SL has no SQL surface; you ask for metrics via GraphQL or the `dbt sl query` CLI, both DSL-specific |
+| Catalog discovery from BI tools | `SHOW TABLES`, `DESCRIBE <model>`, `information_schema.*`, `pg_catalog.*` answered from the model in-process — never touches the warehouse | n/a |
+| Governance | **Closed by design** — raw warehouse SQL and DDL/DML always reject with `RAW_SQL_REJECTED` / `WRITE_OPERATION_REJECTED`. No env flag to bypass | n/a |
 | REST API | Yes — full session lifecycle, validate/compile/execute, ER diagram, `find`, lineage `explain`, OSI conversion | No (REST not offered) |
-| Arrow Flight SQL | Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau JDBC, Power BI ODBC) connect natively | No |
+| Arrow Flight SQL | Yes — gRPC server on port 8815; BI tools (DBeaver, Tableau JDBC, Power BI ODBC) connect natively. Multi-model addressing via the `database` gRPC header. | No |
 | DB-API 2.0 drivers | Yes — 8 drivers (`ob-bigquery`, `ob-snowflake`, `ob-postgres`, `ob-mysql`, `ob-duckdb`, `ob-clickhouse`, `ob-databricks`, `ob-dremio`) | No |
 | GraphQL | No | Yes (dbt Cloud) |
 | JDBC | Via Arrow Flight SQL JDBC driver | Yes (dbt Cloud) |

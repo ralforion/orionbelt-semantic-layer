@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.3.1"
+version = "2.4.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -131,12 +131,22 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Reference modules hold the agent-facing OBML/OBSQL grammar docs as
+# module-level strings. Markdown tables intentionally have long lines
+# (longer than 100 chars). The text is never wrapped by the formatter.
+"src/orionbelt/obml_reference.py" = ["E501"]
+"src/orionbelt/obsql_reference.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "docker: requires Docker (testcontainers) — run with: pytest -m docker",
     "adbc: requires a reachable PostgreSQL via ADBC — run with: pytest -m adbc",
+    "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars) — run with: pytest -m snowflake",
+    "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC) — run with: pytest -m bigquery",
+    "databricks: requires a live Databricks workspace (DATABRICKS_* env vars) — run with: pytest -m databricks",
 ]
 
 [tool.mypy]

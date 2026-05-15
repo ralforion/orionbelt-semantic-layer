@@ -1,73 +1,131 @@
-"""Tests for cache.key — deterministic key construction + query normalization."""
+"""Tests for cache.key — deterministic key construction.
+
+v2 (2026-05): keys hash on compiled SQL strings, not QueryObject dicts.
+Two callers that compile to the same SQL get the same key, regardless
+of how they assembled it (OBSQL, QueryObject, OBML YAML).
+"""
 
 from __future__ import annotations
+
+import pytest
 
 from orionbelt.cache.key import build_cache_key, query_hash
 
 
 class TestBuildCacheKey:
-    def test_identical_queries_same_key(self) -> None:
+    def test_identical_sql_same_key(self) -> None:
+        sql = "SELECT a FROM t GROUP BY a"
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql=sql)
+        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql=sql)
+        assert a == b
+
+    def test_different_session_different_key(self) -> None:
+        sql = "SELECT a FROM t"
+        a = build_cache_key(session_id="s1", model_id="m", dialect="postgres", sql=sql)
+        b = build_cache_key(session_id="s2", model_id="m", dialect="postgres", sql=sql)
+        assert a != b
+
+    def test_different_dialect_different_key(self) -> None:
+        sql = "SELECT a FROM t"
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql=sql)
+        b = build_cache_key(session_id="s", model_id="m", dialect="snowflake", sql=sql)
+        assert a != b
+
+    def test_different_model_different_key(self) -> None:
+        sql = "SELECT a FROM t"
+        a = build_cache_key(session_id="s", model_id="m1", dialect="postgres", sql=sql)
+        b = build_cache_key(session_id="s", model_id="m2", dialect="postgres", sql=sql)
+        assert a != b
+
+    def test_whitespace_normalized(self) -> None:
+        """Trailing semicolons + run-of-whitespace collapse to the same key."""
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t")
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql="  SELECT   a\n  FROM\tt  ; ",
+        )
+        assert a == b
+
+    def test_different_sql_different_key(self) -> None:
+        """The whole point — different compiled SQL → different key."""
+        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT a FROM t")
+        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT b FROM t")
+        assert a != b
+
+    def test_whitespace_inside_string_literal_is_significant(self) -> None:
+        """``'A  B'`` and ``'A B'`` must NOT collide — they're different values."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql="SELECT * FROM t WHERE name = 'A  B'",
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql="SELECT * FROM t WHERE name = 'A B'",
+        )
+        assert a != b
+
+    def test_whitespace_inside_double_quoted_identifier_is_significant(self) -> None:
+        """ANSI ``"Order  Id"`` and ``"Order Id"`` are different columns."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql='SELECT "Order  Id" FROM t',
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="postgres",
+            sql='SELECT "Order Id" FROM t',
+        )
+        assert a != b
+
+    def test_whitespace_inside_backtick_identifier_is_significant(self) -> None:
+        """MySQL/BigQuery/Databricks backtick identifiers with internal spaces."""
+        a = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="bigquery",
+            sql="SELECT `Order  Id` FROM t",
+        )
+        b = build_cache_key(
+            session_id="s",
+            model_id="m",
+            dialect="bigquery",
+            sql="SELECT `Order Id` FROM t",
+        )
+        assert a != b
+
+    def test_legacy_query_arg_still_works(self) -> None:
+        """``query=`` fallback for callers mid-migration."""
         q = {"select": {"dimensions": ["A"], "measures": ["B"]}}
         a = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q)
         b = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q)
         assert a == b
 
-    def test_different_session_different_key(self) -> None:
-        q = {"select": {"dimensions": ["A"], "measures": ["B"]}}
-        a = build_cache_key(session_id="s1", model_id="m", dialect="postgres", query=q)
-        b = build_cache_key(session_id="s2", model_id="m", dialect="postgres", query=q)
-        assert a != b
-
-    def test_different_dialect_different_key(self) -> None:
-        q = {"select": {"dimensions": ["A"], "measures": ["B"]}}
-        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q)
-        b = build_cache_key(session_id="s", model_id="m", dialect="snowflake", query=q)
-        assert a != b
-
-    def test_dimension_order_normalized(self) -> None:
-        q1 = {"select": {"dimensions": ["A", "B"], "measures": ["X"]}}
-        q2 = {"select": {"dimensions": ["B", "A"], "measures": ["X"]}}
-        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q1)
-        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q2)
-        assert a == b
-
-    def test_in_op_value_order_normalized(self) -> None:
-        q1 = {
-            "select": {"dimensions": ["A"], "measures": ["X"]},
-            "where": [{"field": "A", "op": "in", "value": ["x", "y", "z"]}],
-        }
-        q2 = {
-            "select": {"dimensions": ["A"], "measures": ["X"]},
-            "where": [{"field": "A", "op": "in", "value": ["z", "x", "y"]}],
-        }
-        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q1)
-        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q2)
-        assert a == b
-
-    def test_order_by_preserved(self) -> None:
-        q1 = {
-            "select": {"dimensions": ["A"], "measures": ["X"]},
-            "order_by": [{"field": "X", "direction": "desc"}],
-        }
-        q2 = {
-            "select": {"dimensions": ["A"], "measures": ["X"]},
-            "order_by": [{"field": "X", "direction": "asc"}],
-        }
-        a = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q1)
-        b = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q2)
-        assert a != b
+    def test_missing_both_args_raises(self) -> None:
+        with pytest.raises(ValueError, match="either sql or query"):
+            build_cache_key(session_id="s", model_id="m", dialect="postgres")
 
     def test_key_length_32(self) -> None:
-        q = {"select": {"dimensions": [], "measures": []}}
-        key = build_cache_key(session_id="s", model_id="m", dialect="postgres", query=q)
+        key = build_cache_key(session_id="s", model_id="m", dialect="postgres", sql="SELECT 1")
         assert len(key) == 32
 
 
 class TestQueryHash:
     def test_query_hash_stable(self) -> None:
-        q = {"select": {"dimensions": ["A"], "measures": ["B"]}}
-        assert query_hash(q) == query_hash(q)
+        sql = "SELECT a FROM t"
+        assert query_hash(sql=sql) == query_hash(sql=sql)
 
     def test_query_hash_length(self) -> None:
-        q = {"select": {"dimensions": [], "measures": []}}
-        assert len(query_hash(q)) == 16
+        assert len(query_hash(sql="SELECT 1")) == 16
+
+    def test_legacy_query_arg(self) -> None:
+        q = {"select": {"dimensions": ["A"]}}
+        assert query_hash(query=q) == query_hash(query=q)

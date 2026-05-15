@@ -1,4 +1,5 @@
 """Tests for Arrow conversion utilities."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

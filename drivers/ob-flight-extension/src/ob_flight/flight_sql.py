@@ -26,6 +26,7 @@ CMD_GET_PRIMARY_KEYS = "type.googleapis.com/arrow.flight.protocol.sql.CommandGet
 CMD_GET_IMPORTED_KEYS = "type.googleapis.com/arrow.flight.protocol.sql.CommandGetImportedKeys"
 CMD_GET_EXPORTED_KEYS = "type.googleapis.com/arrow.flight.protocol.sql.CommandGetExportedKeys"
 CMD_GET_CROSS_REFERENCE = "type.googleapis.com/arrow.flight.protocol.sql.CommandGetCrossReference"
+CMD_GET_COLUMNS = "type.googleapis.com/arrow.flight.protocol.sql.CommandGetColumns"
 CMD_PREPARED_STATEMENT_QUERY = (
     "type.googleapis.com/arrow.flight.protocol.sql.CommandPreparedStatementQuery"
 )
@@ -33,66 +34,152 @@ CMD_PREPARED_STATEMENT_QUERY = (
 # Flight SQL action types (used in do_action)
 ACTION_CREATE_PREPARED_STATEMENT = "CreatePreparedStatement"
 ACTION_CLOSE_PREPARED_STATEMENT = "ClosePreparedStatement"
-ACTION_CREATE_PREPARED_STATEMENT_REQ = (
-    "type.googleapis.com/arrow.flight.protocol.sql.ActionCreatePreparedStatementRequest"
-)
 
 # Standard Flight SQL schemas for catalog responses
 CATALOG_SCHEMA = pa.schema([pa.field("catalog_name", pa.utf8())])
 
-DB_SCHEMA_SCHEMA = pa.schema([
-    pa.field("catalog_name", pa.utf8()),
-    pa.field("db_schema_name", pa.utf8()),
-])
+DB_SCHEMA_SCHEMA = pa.schema(
+    [
+        pa.field("catalog_name", pa.utf8()),
+        pa.field("db_schema_name", pa.utf8()),
+    ]
+)
 
-TABLE_SCHEMA = pa.schema([
-    pa.field("catalog_name", pa.utf8()),
-    pa.field("db_schema_name", pa.utf8()),
-    pa.field("table_name", pa.utf8()),
-    pa.field("table_type", pa.utf8()),
-    pa.field("table_schema", pa.binary()),
-])
+TABLE_SCHEMA = pa.schema(
+    [
+        pa.field("catalog_name", pa.utf8()),
+        pa.field("db_schema_name", pa.utf8()),
+        pa.field("table_name", pa.utf8()),
+        pa.field("table_type", pa.utf8()),
+        pa.field("table_schema", pa.binary()),
+    ]
+)
 
 TABLE_TYPES_SCHEMA = pa.schema([pa.field("table_type", pa.utf8())])
 
-PRIMARY_KEYS_SCHEMA = pa.schema([
-    pa.field("catalog_name", pa.utf8()),
-    pa.field("db_schema_name", pa.utf8()),
-    pa.field("table_name", pa.utf8()),
-    pa.field("column_name", pa.utf8()),
-    pa.field("key_name", pa.utf8()),
-    pa.field("key_sequence", pa.int32()),
-])
+PRIMARY_KEYS_SCHEMA = pa.schema(
+    [
+        pa.field("catalog_name", pa.utf8()),
+        pa.field("db_schema_name", pa.utf8()),
+        pa.field("table_name", pa.utf8()),
+        pa.field("column_name", pa.utf8()),
+        pa.field("key_name", pa.utf8()),
+        pa.field("key_sequence", pa.int32()),
+    ]
+)
 
-IMPORTED_KEYS_SCHEMA = pa.schema([
-    pa.field("pk_catalog_name", pa.utf8()),
-    pa.field("pk_db_schema_name", pa.utf8()),
-    pa.field("pk_table_name", pa.utf8()),
-    pa.field("pk_column_name", pa.utf8()),
-    pa.field("fk_catalog_name", pa.utf8()),
-    pa.field("fk_db_schema_name", pa.utf8()),
-    pa.field("fk_table_name", pa.utf8()),
-    pa.field("fk_column_name", pa.utf8()),
-    pa.field("key_sequence", pa.int32()),
-    pa.field("fk_key_name", pa.utf8()),
-    pa.field("pk_key_name", pa.utf8()),
-    pa.field("update_rule", pa.uint8()),
-    pa.field("delete_rule", pa.uint8()),
-])
+# CommandGetColumns response shape. JDBC clients call this to populate the
+# column picker without executing a query. See PLAN_flight_natural_sql.md §3.5.
+COLUMNS_SCHEMA = pa.schema(
+    [
+        pa.field("catalog_name", pa.utf8()),
+        pa.field("db_schema_name", pa.utf8()),
+        pa.field("table_name", pa.utf8()),
+        pa.field("column_name", pa.utf8()),
+        pa.field("data_type", pa.utf8()),
+        pa.field("type_name", pa.utf8()),
+        pa.field("column_size", pa.int32()),
+        pa.field("is_nullable", pa.utf8()),
+        pa.field("ordinal_position", pa.int32()),
+    ]
+)
+
+IMPORTED_KEYS_SCHEMA = pa.schema(
+    [
+        pa.field("pk_catalog_name", pa.utf8()),
+        pa.field("pk_db_schema_name", pa.utf8()),
+        pa.field("pk_table_name", pa.utf8()),
+        pa.field("pk_column_name", pa.utf8()),
+        pa.field("fk_catalog_name", pa.utf8()),
+        pa.field("fk_db_schema_name", pa.utf8()),
+        pa.field("fk_table_name", pa.utf8()),
+        pa.field("fk_column_name", pa.utf8()),
+        pa.field("key_sequence", pa.int32()),
+        pa.field("fk_key_name", pa.utf8()),
+        pa.field("pk_key_name", pa.utf8()),
+        pa.field("update_rule", pa.uint8()),
+        pa.field("delete_rule", pa.uint8()),
+    ]
+)
 
 # SqlInfo response schema
-SQL_INFO_SCHEMA = pa.schema([
-    pa.field("info_name", pa.uint32()),
-    pa.field("value", pa.dense_union([
-        pa.field("string_value", pa.utf8()),
-        pa.field("bool_value", pa.bool_()),
-        pa.field("bigint_value", pa.int64()),
-        pa.field("int32_bitmask", pa.int32()),
-        pa.field("string_list", pa.list_(pa.utf8())),
-        pa.field("int32_to_int32_list_map",
-                 pa.map_(pa.int32(), pa.list_(pa.int32()))),
-    ])),
-])
+SQL_INFO_SCHEMA = pa.schema(
+    [
+        pa.field("info_name", pa.uint32()),
+        pa.field(
+            "value",
+            pa.dense_union(
+                [
+                    pa.field("string_value", pa.utf8()),
+                    pa.field("bool_value", pa.bool_()),
+                    pa.field("bigint_value", pa.int64()),
+                    pa.field("int32_bitmask", pa.int32()),
+                    pa.field("string_list", pa.list_(pa.utf8())),
+                    pa.field("int32_to_int32_list_map", pa.map_(pa.int32(), pa.list_(pa.int32()))),
+                ]
+            ),
+        ),
+    ]
+)
+
+# Standard SqlInfo enum codes from Flight SQL spec (FlightSql.proto).
+# DBeaver reads these on connect to populate Server / Driver / Read-only fields.
+_SQL_INFO_FLIGHT_SQL_SERVER_NAME = 0
+_SQL_INFO_FLIGHT_SQL_SERVER_VERSION = 1
+_SQL_INFO_FLIGHT_SQL_SERVER_ARROW_VERSION = 2
+_SQL_INFO_FLIGHT_SQL_SERVER_READ_ONLY = 3
+
+
+def build_sql_info_table(server_version: str, arrow_version: str = "") -> pa.Table:
+    """Build the response for ``CommandGetSqlInfo``.
+
+    Without this, JDBC clients (DBeaver, Tableau Flight) show ``?`` for the
+    server name. We return the 4 standard entries; the spec defines many
+    more (SQL keywords, identifier quoting rules, etc.) but BI tools fall
+    back to sensible defaults when an info code is missing.
+    """
+    if not arrow_version:
+        arrow_version = pa.__version__
+
+    # Four entries: server_name, server_version, arrow_version (strings),
+    # plus read_only=True (bool). Type code 0 = string_value, 1 = bool_value.
+    info_names = pa.array(
+        [
+            _SQL_INFO_FLIGHT_SQL_SERVER_NAME,
+            _SQL_INFO_FLIGHT_SQL_SERVER_VERSION,
+            _SQL_INFO_FLIGHT_SQL_SERVER_ARROW_VERSION,
+            _SQL_INFO_FLIGHT_SQL_SERVER_READ_ONLY,
+        ],
+        type=pa.uint32(),
+    )
+    type_codes = pa.array([0, 0, 0, 1], type=pa.int8())
+    offsets = pa.array([0, 1, 2, 0], type=pa.int32())
+    strings = pa.array(
+        ["OrionBelt Semantic Layer", server_version, arrow_version],
+        type=pa.utf8(),
+    )
+    bools = pa.array([True], type=pa.bool_())
+    value = pa.UnionArray.from_dense(
+        type_codes,
+        offsets,
+        [
+            strings,
+            bools,
+            pa.array([], type=pa.int64()),
+            pa.array([], type=pa.int32()),
+            pa.array([], type=pa.list_(pa.utf8())),
+            pa.array([], type=pa.map_(pa.int32(), pa.list_(pa.int32()))),
+        ],
+        field_names=[
+            "string_value",
+            "bool_value",
+            "bigint_value",
+            "int32_bitmask",
+            "string_list",
+            "int32_to_int32_list_map",
+        ],
+    )
+    return pa.Table.from_arrays([info_names, value], names=["info_name", "value"])
 
 
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
@@ -128,7 +215,7 @@ def parse_any(data: bytes) -> tuple[str, bytes] | None:
 
             if wire_type == 2:  # length-delimited
                 length, offset = _read_varint(data, offset)
-                field_data = data[offset:offset + length]
+                field_data = data[offset : offset + length]
                 offset += length
                 if field_number == 1:
                     type_url = field_data.decode("utf-8")
@@ -160,7 +247,7 @@ def parse_statement_query(value: bytes) -> str | None:
 
             if wire_type == 2:  # length-delimited
                 length, offset = _read_varint(value, offset)
-                field_data = value[offset:offset + length]
+                field_data = value[offset : offset + length]
                 offset += length
                 if field_number == 1:
                     return field_data.decode("utf-8")
@@ -173,6 +260,85 @@ def parse_statement_query(value: bytes) -> str | None:
     return None
 
 
+def parse_table_filter(value: bytes) -> str | None:
+    """Extract the ``table_name_filter_pattern`` (field 3) from a Flight SQL
+    ``CommandGetTables`` / ``CommandGetColumns`` protobuf body.
+
+    Both messages share the field numbering for the catalog/schema/table
+    filter pattern:
+
+    * 1 = catalog (string)
+    * 2 = db_schema_filter_pattern (string)
+    * 3 = table_name_filter_pattern (string)
+    * 4 = column_name_filter_pattern (string) [GetColumns only]
+    * 5 = include_schema (bool) / table_types (repeated string) [varies]
+
+    Returns the raw filter string (e.g. ``"_measures"``) or ``None`` when
+    no filter is set. The caller is responsible for interpreting SQL
+    wildcards (``%`` matches anything, ``_`` matches one char) — we only
+    extract the literal.
+    """
+    return _parse_filter_field(value, target_field=3)
+
+
+def parse_catalog_filter(value: bytes) -> str | None:
+    """Extract the ``catalog`` protobuf field (1) from a Flight SQL
+    ``CommandGetTables`` / ``CommandGetColumns`` body.
+
+    The Flight SQL spec exposes per-command catalog selection in addition
+    to the gRPC ``database`` / ``catalog`` headers. When set, BI clients
+    expect the metadata response scoped to that catalog (= model name in
+    OBSL's multi-model mode). Returning the wrong model's metadata for a
+    different selected catalog confused DBeaver's schema tree.
+    """
+    return _parse_filter_field(value, target_field=1)
+
+
+def _parse_filter_field(value: bytes, *, target_field: int) -> str | None:
+    """Scan a Flight SQL command body for one length-delimited string field."""
+    try:
+        offset = 0
+        while offset < len(value):
+            tag, offset = _read_varint(value, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 2:  # length-delimited (string / bytes)
+                length, offset = _read_varint(value, offset)
+                field_data = value[offset : offset + length]
+                offset += length
+                if field_number == target_field:
+                    return field_data.decode("utf-8")
+            elif wire_type == 0:
+                _, offset = _read_varint(value, offset)
+            else:
+                break
+    except Exception:
+        pass
+    return None
+
+
+def matches_filter(table_name: str, pattern: str | None) -> bool:
+    """Apply a Flight SQL filter pattern to a table name.
+
+    ``%`` matches any run of characters; ``_`` matches exactly one. A
+    ``None`` pattern matches everything (no filter set). Empty pattern
+    matches only the empty string per spec, but we treat it as "no
+    filter" since BI tools sometimes send an empty placeholder.
+    """
+    if not pattern:
+        return True
+    import re
+
+    # Substitute SQL wildcards with placeholders that survive re.escape,
+    # escape the rest, then swap the placeholders for their regex form.
+    # (re.escape doesn't escape % or _, so replacing on the raw escaped
+    # output wouldn't find them.)
+    PCT, UND = "\x00P\x00", "\x00U\x00"
+    safe = pattern.replace("%", PCT).replace("_", UND)
+    regex = "^" + re.escape(safe).replace(re.escape(PCT), ".*").replace(re.escape(UND), ".") + "$"
+    return re.match(regex, table_name) is not None
+
+
 def is_flight_sql_command(data: bytes) -> bool:
     """Check if raw bytes are a Flight SQL protobuf command."""
     result = parse_any(data)
@@ -182,50 +348,110 @@ def is_flight_sql_command(data: bytes) -> bool:
     return "arrow.flight.protocol.sql" in type_url
 
 
-def build_catalogs_table() -> pa.Table:
-    """Build response for CommandGetCatalogs."""
-    return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
+def build_catalogs_table(catalog_names: list[str] | None = None) -> pa.Table:
+    """Build response for CommandGetCatalogs.
+
+    In multi-model mode each loaded model is exposed as its own catalog —
+    pass the resolved model names list to populate the response so BI
+    tool catalog dropdowns show them. When ``catalog_names`` is empty or
+    None, returns the legacy single ``orionbelt`` placeholder for
+    backward compatibility with clients that only need *something*.
+    """
+    if not catalog_names:
+        return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
+    return pa.table({"catalog_name": list(catalog_names)}, schema=CATALOG_SCHEMA)
 
 
-def build_db_schemas_table() -> pa.Table:
-    """Build response for CommandGetDbSchemas."""
+def build_db_schemas_table(catalog_names: list[str] | None = None) -> pa.Table:
+    """Build response for CommandGetDbSchemas.
+
+    In multi-model mode each loaded model is its own catalog with a single
+    ``model`` schema. Pass the resolved catalog/model names list to emit
+    one row per catalog. When empty/None, falls back to the legacy single
+    ``orionbelt`` row.
+    """
+    catalogs = list(catalog_names) if catalog_names else ["orionbelt"]
     return pa.table(
-        {"catalog_name": ["orionbelt"], "db_schema_name": ["model"]},
+        {
+            "catalog_name": catalogs,
+            "db_schema_name": ["model"] * len(catalogs),
+        },
         schema=DB_SCHEMA_SCHEMA,
     )
 
 
-def build_tables_table(model: Any) -> pa.Table:
-    """Build response for CommandGetTables from the semantic model."""
+def build_tables_table(
+    model: Any,
+    *,
+    expose_data_objects: bool = False,
+    table_filter: str | None = None,
+) -> pa.Table:
+    """Build response for CommandGetTables from the semantic model.
+
+    Lists the semantic virtual table first (the canonical query surface)
+    plus ``_dimensions / _measures / _metrics`` metadata views. Data
+    objects are intentionally hidden in v2.4.0+ — they're not queryable.
+    The ``expose_data_objects`` kwarg is preserved for introspection
+    tooling but no shipped surface enables it. See
+    ``design/PLAN_flight_natural_sql.md`` §3.5.
+    """
+    from ob_flight.catalog import (
+        LABEL_VIEW_NAMES,
+        METADATA_VIEW_NAMES,
+        model_to_virtual_table_schema,
+        model_virtual_table_name,
+        object_to_schema,
+        virtual_view_schema,
+    )
+
     names: list[str] = []
     catalogs: list[str] = []
     schemas: list[str] = []
     types: list[str] = []
     table_schemas: list[bytes] = []
 
-    if hasattr(model, "data_objects") and model.data_objects:
-        from ob_flight.catalog import object_to_schema
+    has_objects = hasattr(model, "data_objects") and model.data_objects
+    # Each loaded model is exposed as its own catalog (see
+    # ``build_catalogs_table``). The model carries the catalog name on
+    # ``_ob_model_id`` (stamped by ``_stamp_model``); fall back to the
+    # legacy ``orionbelt`` placeholder when unstamped so BI clients still
+    # see *something*.
+    catalog_name = getattr(model, "_ob_model_id", None) or "orionbelt"
 
+    def _emit(name: str, kind: str, schema: pa.Schema) -> None:
+        if not matches_filter(name, table_filter):
+            return
+        names.append(name)
+        catalogs.append(catalog_name)
+        schemas.append("model")
+        types.append(kind)
+        table_schemas.append(schema.serialize().to_pybytes())
+
+    # Semantic virtual table — first, canonical query surface
+    if has_objects:
+        vt_schema = model_to_virtual_table_schema(model)
+        if len(vt_schema) > 0:
+            _emit(model_virtual_table_name(model), "TABLE", vt_schema)
+
+    # Data-object tables — only exposed when an internal caller passes
+    # expose_data_objects=True (none do in v2.4.0+). Preserved for tooling.
+    if expose_data_objects and has_objects:
         for obj_name, obj in model.data_objects.items():
             label = getattr(obj, "label", obj_name) or obj_name
-            names.append(label)
-            catalogs.append("orionbelt")
-            schemas.append("model")
-            types.append("TABLE")
-            # Serialize Arrow schema for the table_schema column
-            # Flight SQL spec requires Schema serialization (not IPC stream)
-            arrow_schema = object_to_schema(obj)
-            table_schemas.append(arrow_schema.serialize().to_pybytes())
+            _emit(label, "TABLE", object_to_schema(obj))
 
-    # Virtual metadata tables (_dimensions, _measures, _metrics)
-    from ob_flight.catalog import VIRTUAL_TABLES
+    # Per-category label views (_dimensions / _measures / _metrics) —
+    # one column per dim/measure/metric label so BI tool pickers split by
+    # kind. Queries route to semantic mode (compile via the model VT).
+    for vt_name in LABEL_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        if len(view_schema) > 0:
+            _emit(vt_name, "VIEW", view_schema)
 
-    for vt_name, vt_schema in VIRTUAL_TABLES.items():
-        names.append(vt_name)
-        catalogs.append("orionbelt")
-        schemas.append("model")
-        types.append("TABLE")
-        table_schemas.append(vt_schema.serialize().to_pybytes())
+    # Metadata views (_dimensions_metadata / …) — fixed introspection
+    # schema (name / data_object / type / …). Always advertised.
+    for vt_name in METADATA_VIEW_NAMES:
+        _emit(vt_name, "VIEW", virtual_view_schema(model, vt_name))
 
     return pa.table(
         {
@@ -241,7 +467,112 @@ def build_tables_table(model: Any) -> pa.Table:
 
 def build_table_types_table() -> pa.Table:
     """Build response for CommandGetTableTypes."""
-    return pa.table({"table_type": ["TABLE"]}, schema=TABLE_TYPES_SCHEMA)
+    return pa.table({"table_type": ["TABLE", "VIEW"]}, schema=TABLE_TYPES_SCHEMA)
+
+
+def _arrow_type_to_jdbc_name(arrow_type: pa.DataType) -> str:
+    """Map an Arrow DataType to a JDBC-friendly type name."""
+    if pa.types.is_integer(arrow_type):
+        return "BIGINT"
+    if pa.types.is_floating(arrow_type):
+        return "DOUBLE"
+    if pa.types.is_boolean(arrow_type):
+        return "BOOLEAN"
+    if pa.types.is_date(arrow_type):
+        return "DATE"
+    if pa.types.is_timestamp(arrow_type):
+        return "TIMESTAMP"
+    return "VARCHAR"
+
+
+def build_columns_table(
+    model: Any,
+    *,
+    expose_data_objects: bool = False,
+    table_filter: str | None = None,
+) -> pa.Table:
+    """Build response for CommandGetColumns.
+
+    Emits one row per column of every advertised virtual table: the
+    semantic virtual table (dims+measures+metrics) and the three
+    metadata views (``_dimensions``, ``_measures``, ``_metrics``).
+    Without the metadata-view rows, JDBC clients (DBeaver) fall back
+    to listing the semantic table's columns under each view, which
+    leads to dimensions appearing inside ``_measures`` etc.
+    Physical data-object columns are emitted only when
+    ``expose_data_objects=True`` (no shipped surface enables it).
+    See ``design/PLAN_flight_natural_sql.md`` §3.5.
+    """
+    from ob_flight.catalog import (
+        LABEL_VIEW_NAMES,
+        METADATA_VIEW_NAMES,
+        model_to_virtual_table_schema,
+        model_virtual_table_name,
+        object_to_schema,
+        virtual_view_schema,
+    )
+
+    rows: list[tuple[str, str, str, str, str, str, int, str, int]] = []
+    catalog_name = getattr(model, "_ob_model_id", None) or "orionbelt"
+
+    def _emit_schema(table_name: str, schema: pa.Schema) -> None:
+        if not matches_filter(table_name, table_filter):
+            return
+        for i, field_ in enumerate(schema, start=1):
+            jdbc_name = _arrow_type_to_jdbc_name(field_.type)
+            rows.append(
+                (
+                    catalog_name,
+                    "model",
+                    table_name,
+                    field_.name,
+                    jdbc_name,
+                    jdbc_name,
+                    0,
+                    "YES",
+                    i,
+                )
+            )
+
+    if hasattr(model, "data_objects") and model.data_objects:
+        _emit_schema(model_virtual_table_name(model), model_to_virtual_table_schema(model))
+
+        if expose_data_objects:
+            for obj_name, obj in model.data_objects.items():
+                label = getattr(obj, "label", obj_name) or obj_name
+                _emit_schema(label, object_to_schema(obj))
+
+    # Per-category label views: one column per dim/measure/metric label
+    # for BI tool pickers.
+    for vt_name in LABEL_VIEW_NAMES:
+        view_schema = virtual_view_schema(model, vt_name)
+        if len(view_schema) > 0:
+            _emit_schema(vt_name, view_schema)
+
+    # Metadata views: fixed introspection schema (name / data_object / …).
+    for vt_name in METADATA_VIEW_NAMES:
+        _emit_schema(vt_name, virtual_view_schema(model, vt_name))
+
+    if rows:
+        columns = list(zip(*rows, strict=True))
+        return pa.table(
+            {
+                "catalog_name": list(columns[0]),
+                "db_schema_name": list(columns[1]),
+                "table_name": list(columns[2]),
+                "column_name": list(columns[3]),
+                "data_type": list(columns[4]),
+                "type_name": list(columns[5]),
+                "column_size": list(columns[6]),
+                "is_nullable": list(columns[7]),
+                "ordinal_position": list(columns[8]),
+            },
+            schema=COLUMNS_SCHEMA,
+        )
+    return pa.table(
+        {f.name: pa.array([], type=f.type) for f in COLUMNS_SCHEMA},
+        schema=COLUMNS_SCHEMA,
+    )
 
 
 def build_empty_keys_table() -> pa.Table:
@@ -294,7 +625,7 @@ def parse_prepared_statement_handle(data: bytes) -> bytes | None:
 
             if wire_type == 2:  # length-delimited
                 length, offset = _read_varint(data, offset)
-                field_data = data[offset:offset + length]
+                field_data = data[offset : offset + length]
                 offset += length
                 if field_number == 1:
                     return field_data

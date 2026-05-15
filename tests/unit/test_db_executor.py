@@ -189,10 +189,8 @@ class TestExecuteSql:
 
     @_needs_ob_flight
     def test_unsupported_dialect_raises_unavailable(self) -> None:
-        @contextmanager
         def _raise_key_error(dialect: str, **kw):  # noqa: ARG001
             raise KeyError("Unsupported dialect: 'mysql'")
-            yield  # noqa: RET503 — unreachable, but needed for generator
 
         with (
             patch(

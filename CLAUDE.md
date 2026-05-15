@@ -176,6 +176,8 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | POST | `/v1/sessions/{id}/validate` | Validate YAML |
 | POST | `/v1/sessions/{id}/query/sql` | Compile query (includes explain) |
 | POST | `/v1/sessions/{id}/query/execute` | Compile and execute query. Supports `?format=tsv`, `?format_values=true`, `?locale=`, `?timezone=` |
+| POST | `/v1/sessions/{id}/query/semantic-ql` | OrionBelt Semantic QL (OBSQL): translate BI-style SQL (SELECT dim, measure FROM `<model>`) → QueryObject → execute. Same response shape as `/query/execute` |
+| POST | `/v1/sessions/{id}/query/semantic-ql/compile` | OrionBelt Semantic QL: translate + compile only, returns compiled SQL + translated QueryObject JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/diagram/er` | Mermaid ER diagram |
 | GET | `/v1/sessions/{id}/models/{mid}/schema` | Full model as JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions` | List dimensions |
@@ -195,9 +197,13 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | GET | `/v1/cache/stats` | Result cache summary (entries, size, hit rate, oldest entry, next sweep) |
 | POST | `/v1/cache/sweep` | Trigger one TTL + capacity eviction pass on demand |
 | POST | `/v1/cache/clear` | Drop every cache entry (counters preserved) |
-| GET | `/v1/reference/obml` | OBML reference documentation |
+| GET | `/v1/models` | List admin-pre-loaded models (multi-model mode). Each entry includes name, description, dim/measure/metric counts. Use the `name` as the Flight `database` header or pgwire `database=` URL parameter. |
+| GET | `/v1/reference` | List all reference documents (OBML, OBSQL, JSON schemas) |
+| GET | `/v1/reference/obml` | OBML reference (modeling language) — markdown |
+| GET | `/v1/reference/obsql` | OBSQL reference (semantic query language) — markdown |
+| GET | `/v1/reference/schemas/{name}` | JSON Schema by name (`obml` \| `query`) with `application/schema+json` content-type |
 
-Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`.
+Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`, `/v1/query/semantic-ql`, `/v1/query/semantic-ql/compile`.
 
 ## Configuration
 
@@ -214,7 +220,8 @@ Environment variables or `.env` file (via pydantic-settings):
 | `DEFAULT_LOCALE` | — | BCP-47 locale used by `/v1/query/execute?format_values=true` when no `locale` query param is supplied |
 | `SESSION_TTL_SECONDS` | `1800` | Session timeout |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Cleanup sweep interval |
-| `MODEL_FILE` | — | Path to OBML YAML for single-model mode |
+| `MODEL_FILE` | — | **Deprecated, removed v2.5.0.** Path to OBML YAML for legacy single-model mode. Use `MODEL_FILES` instead. |
+| `MODEL_FILES` | — | Comma-separated OBML YAML paths for multi-model mode. Each model loads into its own internal session, addressable by the OBML `name:` field (fallback: filename stem; normalized to a valid identifier `[a-z][a-z0-9_]{0,62}`). BI tools select via Flight `database` catalog or pgwire `database=` URL parameter. Mutually exclusive with `MODEL_FILE`. |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `console` | `console` (pretty), `json` (structured), `cloudrun` (JSON, no access logs) |
 | `API_BASE_URL` | — | API URL for standalone UI |

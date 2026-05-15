@@ -486,26 +486,30 @@ def _build_pop_compare_sql(
 def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
     """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
     from orionbelt.ast.nodes import Literal
+    from orionbelt.compiler.star import _nulls_last
 
     col_to_dim: dict[tuple[str, str | None], str] = {
         (d.source_column, d.object_name): d.name for d in resolved.dimensions
     }
     order_by: list[OrderByItem] = []
-    for expr, desc in resolved.order_by_exprs:
+    for expr, desc, nulls in resolved.order_by_exprs:
+        nl = _nulls_last(nulls)
         if isinstance(expr, Literal):
-            order_by.append(OrderByItem(expr=expr, desc=desc))
+            order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
         elif isinstance(expr, ColumnRef):
             dim_name = col_to_dim.get((expr.name, expr.table))
             name = dim_name if dim_name else expr.name
-            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc))
+            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc, nulls_last=nl))
         else:
             # Measure expression — find matching measure by expression equality
             matched = False
             for m in resolved.measures:
                 if m.expression == expr:
-                    order_by.append(OrderByItem(expr=ColumnRef(name=m.name), desc=desc))
+                    order_by.append(
+                        OrderByItem(expr=ColumnRef(name=m.name), desc=desc, nulls_last=nl)
+                    )
                     matched = True
                     break
             if not matched:
-                order_by.append(OrderByItem(expr=expr, desc=desc))
+                order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
     return order_by

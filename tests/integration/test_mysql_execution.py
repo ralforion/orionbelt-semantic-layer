@@ -1,335 +1,184 @@
-"""Integration tests: compile queries and execute against a real MySQL via testcontainers.
+"""Integration tests: compile + execute the commerce battery on real MySQL.
 
-These tests validate that the MySQL dialect produces correct, executable SQL
-against a real MySQL database.  They are **opt-in** and require Docker:
+The full ``COMMERCE_CASES`` battery defined in
+``tests/integration/_commerce.py`` runs against a MySQL container. DuckDB
+executes the same queries against the same parquet fixtures and acts as
+the source of truth — any row-level disagreement is a MySQL dialect bug.
+
+Opt-in — requires Docker::
 
     uv run pytest -m docker
 
 Skipped automatically when:
-- testcontainers or pymysql packages are not installed
-- Docker is not running
+- testcontainers / pymysql / pandas / pyarrow are not installed
+- the Docker daemon is not reachable
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
-# Skip entire module if dependencies are missing
 testcontainers_mysql = pytest.importorskip(
     "testcontainers.mysql", reason="testcontainers[mysql] required"
 )
 pymysql = pytest.importorskip("pymysql", reason="pymysql required")
+pd = pytest.importorskip("pandas", reason="pandas required for bulk-load")
+pytest.importorskip("pyarrow", reason="pyarrow required to read parquet")
 
 from testcontainers.mysql import MySqlContainer  # noqa: E402
 
-from orionbelt.compiler.pipeline import CompilationPipeline  # noqa: E402
-from orionbelt.models.query import (  # noqa: E402
-    FilterOperator,
-    QueryFilter,
-    QueryObject,
-    QueryOrderBy,
-    QuerySelect,
-    SortDirection,
+from tests.integration._commerce import (  # noqa: E402
+    COMMERCE_CASES,
+    COMMERCE_TABLES,
+    CommerceCase,
+    compare_rows,
+    compile_for,
+    fetch_duckdb,
+    load_commerce_model,
+    open_duckdb_truth,
+    parquet_path,
 )
-from orionbelt.models.semantic import SemanticModel  # noqa: E402
-from orionbelt.parser.loader import TrackedLoader  # noqa: E402
-from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
-from tests.conftest import SALES_MODEL_DIR  # noqa: E402
 
-# Mark ALL tests in this module as docker (opt-in)
 pytestmark = pytest.mark.docker
 
-# ---------------------------------------------------------------------------
-# Test data (same values as other execution tests for baseline comparison)
-# ---------------------------------------------------------------------------
 
-# MySQL uses backtick quoting.  The compiled SQL references tables as
-# `PUBLIC`.`ORDERS` (backtick-quoted schema.table).  DDL must create a
-# `PUBLIC` database with matching table and column names.
-_SETUP_SQL = """\
-CREATE DATABASE IF NOT EXISTS `PUBLIC`;
-
-CREATE TABLE `PUBLIC`.`CUSTOMERS` (
-    `CUSTOMER_ID` VARCHAR(255), `NAME` VARCHAR(255),
-    `COUNTRY` VARCHAR(255), `SEGMENT` VARCHAR(255)
-);
-INSERT INTO `PUBLIC`.`CUSTOMERS` VALUES
-    ('C1', 'Alice',   'US', 'SMB'),
-    ('C2', 'Bob',     'UK', 'Enterprise'),
-    ('C3', 'Charlie', 'US', 'MidMarket');
-
-CREATE TABLE `PUBLIC`.`PRODUCTS` (
-    `PRODUCT_ID` VARCHAR(255), `NAME` VARCHAR(255), `CATEGORY` VARCHAR(255)
-);
-INSERT INTO `PUBLIC`.`PRODUCTS` VALUES
-    ('P1', 'Widget', 'Hardware'),
-    ('P2', 'Gadget', 'Software');
-
-CREATE TABLE `PUBLIC`.`ORDERS` (
-    `ORDER_ID` VARCHAR(255), `ORDER_DATE` DATE, `CUSTOMER_ID` VARCHAR(255),
-    `PRODUCT_ID` VARCHAR(255), `QUANTITY` INT, `PRICE` DOUBLE
-);
-INSERT INTO `PUBLIC`.`ORDERS` VALUES
-    ('O1', '2024-01-15', 'C1', 'P1', 10,  5.0),
-    ('O2', '2024-01-20', 'C1', 'P2',  2, 25.0),
-    ('O3', '2024-02-10', 'C2', 'P1',  5,  5.0),
-    ('O4', '2024-02-15', 'C3', 'P2',  1, 100.0),
-    ('O5', '2024-03-01', 'C2', 'P1',  3,  5.0);
-"""
-
-# Expected values (identical to DuckDB/Postgres baseline):
-# Revenue by country:  US=200.0, UK=40.0
-# Order count:         US=3, UK=2
-# Grand Total Revenue: 240.0 (all rows)
-# Revenue per Order:   US≈66.667, UK=20.0
-# Revenue Share:       US≈0.833, UK≈0.167
+# MySQL's "schema" is a database. We use a single database whose name matches
+# the OBML model's ``schema:`` field so the compiled SQL (``orionbelt_1.sales``)
+# resolves cleanly.
+_SCHEMA = "orionbelt_1"
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+_MYSQL_TYPE_MAP = {
+    "int64": "BIGINT",
+    "int32": "INT",
+    "float64": "DOUBLE",
+    "float32": "FLOAT",
+    "bool": "TINYINT(1)",
+}
 
 
 def _docker_available() -> bool:
-    """Check if Docker daemon is reachable."""
     try:
         import docker
 
         client = docker.from_env()
         client.ping()
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
-@pytest.fixture(scope="module")
-def mysql_conn():
-    """Spin up a MySQL container and return a pymysql connection.
+def _mysql_type_for(dtype) -> str:
+    s = str(dtype)
+    if s.startswith("datetime64"):
+        return "DATETIME"
+    if s == "object":
+        return "VARCHAR(255)"
+    return _MYSQL_TYPE_MAP.get(s, "VARCHAR(255)")
 
-    Skips if Docker is not running.
+
+def _load_parquet(cur, schema: str, table: str) -> None:
+    """CREATE TABLE + INSERT one parquet fixture via executemany."""
+    df = pd.read_parquet(parquet_path(table))
+    cols_ddl = ", ".join(f"`{c}` {_mysql_type_for(df[c].dtype)}" for c in df.columns)
+    cur.execute(f"CREATE TABLE `{schema}`.`{table}` ({cols_ddl})")
+    if df.empty:
+        return
+    quoted_cols = ", ".join(f"`{c}`" for c in df.columns)
+    placeholders = ", ".join(["%s"] * len(df.columns))
+    rows = [tuple(None if pd.isna(v) else v for v in row) for row in df.itertuples(index=False)]
+    cur.executemany(
+        f"INSERT INTO `{schema}`.`{table}` ({quoted_cols}) VALUES ({placeholders})",
+        rows,
+    )
+
+
+@pytest.fixture(scope="module")
+def mysql_setup():
+    """Spin up MySQL, load all parquet tables into the container's default DB.
+
+    The testcontainers MySQL image gives the non-root ``test`` user permission
+    only on the bundled ``test`` database — creating a fresh database for the
+    commerce schema would 1044 with "Access denied". We instead load the
+    commerce tables into the default database and rewrite the model's schema
+    to match.
     """
     if not _docker_available():
         pytest.skip("Docker is not running")
 
-    with MySqlContainer("mysql:8.0") as mysql:
+    with MySqlContainer("mysql:8.0") as my:
         conn = pymysql.connect(
-            host=mysql.get_container_host_ip(),
-            port=int(mysql.get_exposed_port(3306)),
-            user="root",
-            password=mysql.root_password,
+            host=my.get_container_host_ip(),
+            port=int(my.get_exposed_port(3306)),
+            user=my.username,
+            password=my.password,
+            database=my.dbname,
             autocommit=True,
         )
         cur = conn.cursor()
-        for stmt in _SETUP_SQL.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                cur.execute(stmt)
+        schema = my.dbname
+        for table in COMMERCE_TABLES:
+            _load_parquet(cur, schema, table)
         cur.close()
-        yield conn
+        yield conn, schema
         conn.close()
 
 
 @pytest.fixture(scope="module")
-def sales_model() -> SemanticModel:
-    loader = TrackedLoader()
-    resolver = ReferenceResolver()
-    raw, source_map = loader.load(SALES_MODEL_DIR / "model.yaml")
-    model, result = resolver.resolve(raw, source_map)
-    assert result.valid
-    return model
+def vendor_model(mysql_setup):
+    _conn, schema = mysql_setup
+    return load_commerce_model(database="mysql", schema=schema)
 
 
 @pytest.fixture(scope="module")
-def pipeline() -> CompilationPipeline:
-    return CompilationPipeline()
+def truth_model(mysql_setup):
+    _conn, schema = mysql_setup
+    return load_commerce_model(database="main", schema=schema)
 
 
-def _execute_dict(conn: Any, sql: str) -> list[dict[str, Any]]:
-    """Execute SQL on the MySQL connection and return rows as dicts."""
-    cur = conn.cursor()
-    cur.execute(sql)
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
-    cur.close()
-    return rows
+@pytest.fixture(scope="module")
+def truth_results(truth_model, mysql_setup):
+    _conn, schema = mysql_setup
+    con = open_duckdb_truth(schema=schema)
+    try:
+        return {
+            case.name: fetch_duckdb(con, compile_for(case.query, truth_model, "duckdb"))
+            for case in COMMERCE_CASES
+        }
+    finally:
+        con.close()
 
 
-# ---------------------------------------------------------------------------
-# Star-schema queries
-# ---------------------------------------------------------------------------
+def _fetch_mysql(conn, sql: str) -> list[dict]:
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(sql)
+        return list(cur.fetchall())
+    finally:
+        cur.close()
 
 
-class TestMySQLStarSchema:
-    """Compile with dialect=mysql and execute against real MySQL."""
-
-    def test_revenue_by_country(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Customer Country"], measures=["Revenue"]),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r["Revenue"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0)
-        assert by_country["UK"] == pytest.approx(40.0)
-
-    def test_order_count_by_country(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r["Order Count"] for r in rows}
-        assert by_country["US"] == 3
-        assert by_country["UK"] == 2
-
-    def test_multi_measure(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Revenue", "Order Count"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r for r in rows}
-        assert by_country["US"]["Revenue"] == pytest.approx(200.0)
-        assert by_country["US"]["Order Count"] == 3
-        assert by_country["UK"]["Revenue"] == pytest.approx(40.0)
-        assert by_country["UK"]["Order Count"] == 2
-
-    def test_revenue_by_product_category(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Product Category"], measures=["Revenue"]),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_cat = {r["Product Category"]: r["Revenue"] for r in rows}
-        assert by_cat["Hardware"] == pytest.approx(90.0)
-        assert by_cat["Software"] == pytest.approx(150.0)
-
-    def test_average_order_value(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Average Order Value"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r["Average Order Value"] for r in rows}
-        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
-        assert float(by_country["UK"]) == pytest.approx(20.0)
+# MySQL has no GROUP BY CUBE — the dialect raises NotImplementedError on
+# compile. Mark just that case as expected-skip so the rest of the battery
+# still gates on real dialect bugs.
+_MYSQL_UNSUPPORTED = {"cube_sales_by_country_category"}
 
 
-# ---------------------------------------------------------------------------
-# Filtered queries
-# ---------------------------------------------------------------------------
+def _parametrize_cases():
+    out = []
+    for case in COMMERCE_CASES:
+        if case.name in _MYSQL_UNSUPPORTED:
+            out.append(
+                pytest.param(case, marks=pytest.mark.skip(reason="MySQL has no GROUP BY CUBE"))
+            )
+        else:
+            out.append(case)
+    return out
 
 
-class TestMySQLFiltered:
-    def test_where_in_filter(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Customer Country"], measures=["Revenue"]),
-            where=[
-                QueryFilter(
-                    field="Customer Segment",
-                    op=FilterOperator.IN,
-                    value=["SMB", "MidMarket"],
-                ),
-            ],
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        assert len(rows) == 1
-        assert rows[0]["Customer Country"] == "US"
-        assert rows[0]["Revenue"] == pytest.approx(200.0)
-
-    def test_order_by_desc_with_limit(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Customer Country"], measures=["Revenue"]),
-            order_by=[QueryOrderBy(field="Revenue", direction=SortDirection.DESC)],
-            limit=1,
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        assert len(rows) == 1
-        assert rows[0]["Customer Country"] == "US"
-
-
-# ---------------------------------------------------------------------------
-# Total measures (window functions)
-# ---------------------------------------------------------------------------
-
-
-class TestMySQLTotal:
-    def test_grand_total_revenue(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Grand Total Revenue"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        assert len(rows) == 2
-        for row in rows:
-            assert row["Grand Total Revenue"] == pytest.approx(240.0)
-
-    def test_regular_and_total_together(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Revenue", "Grand Total Revenue"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r for r in rows}
-        assert by_country["US"]["Revenue"] == pytest.approx(200.0)
-        assert by_country["US"]["Grand Total Revenue"] == pytest.approx(240.0)
-
-
-# ---------------------------------------------------------------------------
-# Metrics (derived measures)
-# ---------------------------------------------------------------------------
-
-
-class TestMySQLMetrics:
-    def test_revenue_per_order(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Revenue per Order"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r["Revenue per Order"] for r in rows}
-        assert float(by_country["US"]) == pytest.approx(200.0 / 3, rel=1e-3)
-        assert float(by_country["UK"]) == pytest.approx(20.0)
-
-    def test_revenue_share(self, mysql_conn, sales_model, pipeline) -> None:
-        query = QueryObject(
-            select=QuerySelect(
-                dimensions=["Customer Country"],
-                measures=["Revenue Share"],
-            ),
-        )
-        sql = pipeline.compile(query, sales_model, "mysql").sql
-        rows = _execute_dict(mysql_conn, sql)
-
-        by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
-        assert float(by_country["US"]) == pytest.approx(200.0 / 240.0, rel=1e-3)
-        assert float(by_country["UK"]) == pytest.approx(40.0 / 240.0, rel=1e-3)
+@pytest.mark.parametrize("case", _parametrize_cases(), ids=lambda c: c.name)
+def test_commerce_case(mysql_setup, vendor_model, truth_results, case: CommerceCase) -> None:
+    conn, _schema = mysql_setup
+    sql = compile_for(case.query, vendor_model, "mysql")
+    actual = _fetch_mysql(conn, sql)
+    compare_rows(actual, truth_results[case.name], case=case.name)

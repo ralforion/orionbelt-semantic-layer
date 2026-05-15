@@ -85,6 +85,15 @@ class ClickHouseDialect(Dialect):
             return FunctionCall(name=func_name, args=[column])
         return column
 
+    def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
+        """ClickHouse uses trailing-modifier form, not ROLLUP()/CUBE() functions."""
+        groups = ", ".join(self.compile_expr(g) for g in group_by)
+        if grouping == "rollup":
+            return f"GROUP BY {groups} WITH ROLLUP"
+        if grouping == "cube":
+            return f"GROUP BY {groups} WITH CUBE"
+        return f"GROUP BY {groups}"
+
     def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
         """Widen operands for raw-SQL decimal division — same fix as the
         BinaryOp override but applied where SQL is built as text (e.g.

@@ -187,7 +187,10 @@ class TestDialectRendering:
 
     def test_bigquery_decimal(self) -> None:
         d = BigQueryDialect()
-        assert d.render_obml_type(DecimalType(18, 2)) == "NUMERIC(18, 2)"
+        # BigQuery: parameterized types not allowed in CAST → bare NUMERIC,
+        # spill to BIGNUMERIC above precision 38.
+        assert d.render_obml_type(DecimalType(18, 2)) == "NUMERIC"
+        assert d.render_obml_type(DecimalType(76, 10)) == "BIGNUMERIC"
 
     def test_precision_clamping(self) -> None:
         d = SnowflakeDialect()

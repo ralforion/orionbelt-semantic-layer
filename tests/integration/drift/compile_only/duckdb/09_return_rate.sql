@@ -1,9 +1,9 @@
 WITH "composite_01" AS (
-SELECT "Returns"."returnamount" AS "Total Returns"
+SELECT CAST("Returns"."returnamount" AS DECIMAL(18, 2)) AS "Total Returns"
 FROM "orionbelt_1"."returns" AS "Returns"
 UNION ALL BY NAME
-SELECT "Sales"."salesamount" AS "Total Sales"
+SELECT CAST("Sales"."salesamount" AS DECIMAL(18, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 )
 SELECT CAST(SUM("composite_01"."Total Returns") AS DECIMAL(18, 2)) AS "Total Returns", CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18, 2)) AS "Total Sales", CAST((SUM("composite_01"."Total Returns") / SUM("composite_01"."Total Sales")) AS DECIMAL(18, 4)) AS "Return Rate"
-FROM composite_01 AS "composite_01"
+FROM "composite_01" AS "composite_01"

@@ -43,6 +43,8 @@ from orionbelt.api.schemas import (
     SchemaResponse,
     SearchRequest,
     SearchResponse,
+    SemanticQLCompileResponse,
+    SemanticQLRequest,
     SPARQLRequest,
     SPARQLResponse,
     ValidateRequest,
@@ -52,7 +54,7 @@ from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError
+from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -435,6 +437,16 @@ async def shortcut_compile_query(
                 "aggregation": exc.aggregation,
             },
         ) from None
+    except UnsupportedGroupingError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported grouping",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "grouping": exc.grouping,
+            },
+        ) from None
 
     explain_resp = None
     if result.explain:
@@ -571,6 +583,16 @@ async def shortcut_execute_query(
                 "aggregation": exc.aggregation,
             },
         ) from None
+    except UnsupportedGroupingError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported grouping",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "grouping": exc.grouping,
+            },
+        ) from None
 
     # Resolve the session_id that owns the resolved store so the cache key
     # remains scoped per session (matching the session-scoped endpoint).
@@ -594,6 +616,63 @@ async def shortcut_execute_query(
         format_values=format_values,
         locale=locale,
         timezone_override=timezone,
+    )
+
+
+class ShortcutSemanticQLRequest(SemanticQLRequest):
+    """Semantic-SQL shortcut: model_id auto-resolved when single-model mode."""
+
+    model_id: str = ""
+
+
+@router.post(
+    "/query/semantic-ql/compile",
+    response_model=SemanticQLCompileResponse,
+    tags=["query"],
+)
+async def shortcut_compile_semantic_ql(
+    body: ShortcutSemanticQLRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> SemanticQLCompileResponse:
+    """Translate Semantic QL → QueryObject and compile (auto-resolves session/model)."""
+    from orionbelt.api.routers.sessions import compile_semantic_ql
+
+    store, model_id = _resolve_store_and_model(mgr)
+    session_id = _session_id_for_store(mgr, store)
+    body.model_id = model_id
+    return await compile_semantic_ql(session_id, body, mgr)
+
+
+@router.post(
+    "/query/semantic-ql",
+    response_model=QueryExecuteResponse,
+    tags=["query"],
+)
+async def shortcut_execute_semantic_ql(
+    body: ShortcutSemanticQLRequest,
+    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    format_values: bool = False,
+    locale: str | None = None,
+    timezone: str | None = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> QueryExecuteResponse | Response:
+    """Translate Semantic QL → QueryObject and execute (auto-resolves session/model)."""
+    from orionbelt.api.deps import get_cache, get_cache_config
+    from orionbelt.api.routers.sessions import execute_semantic_ql
+
+    store, model_id = _resolve_store_and_model(mgr)
+    session_id = _session_id_for_store(mgr, store)
+    body.model_id = model_id
+    return await execute_semantic_ql(
+        session_id,
+        body,
+        format,
+        format_values,
+        locale,
+        timezone,
+        mgr,
+        get_cache(),
+        get_cache_config(),
     )
 
 

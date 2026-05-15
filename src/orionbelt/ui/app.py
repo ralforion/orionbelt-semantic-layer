@@ -2584,19 +2584,35 @@ def create_blocks(
                         elem_id="ob-meta-code",
                     )
 
-            # Refresh execute button/tab visibility when API URL changes
-            def _refresh_query_exec_visibility(api_url_val: str) -> tuple[object, object]:
+            # Refresh execute button/tab visibility AND snap the dialect to
+            # the API's effective dialect. Runs on api_url blur and on every
+            # page load — the startup-time fetch in create_blocks() can fail
+            # silently (5s timeout vs Cloud Run cold start), baking a stale
+            # visible=False / dialect=postgres into the page. Re-fetching per
+            # page load makes the decision per-session instead of per-process.
+            def _refresh_query_exec_visibility(
+                api_url_val: str,
+            ) -> tuple[object, object, object]:
                 import gradio as gr
 
                 _cached_settings.pop(api_url_val.rstrip("/"), None)
                 s = _fetch_settings(api_url_val)
                 enabled = s.get("query_execute", False)
-                return gr.update(visible=enabled), gr.update(visible=enabled)
+                effective = (s.get("dialect") or {}).get("effective")
+                if isinstance(effective, str) and effective in dialects:
+                    dialect_update = gr.update(value=effective)
+                else:
+                    dialect_update = gr.update()
+                return (
+                    gr.update(visible=enabled),
+                    gr.update(visible=enabled),
+                    dialect_update,
+                )
 
             api_url.blur(
                 fn=_refresh_query_exec_visibility,
                 inputs=[api_url],
-                outputs=[execute_btn, results_tab],
+                outputs=[execute_btn, results_tab, dialect],
             )
 
             # Wire execute button after result components are defined.
@@ -3133,6 +3149,13 @@ def create_blocks(
             fn=_restore,
             inputs=[saved_model, saved_query, saved_api, saved_dialect, saved_zoom, saved_sql],
             outputs=[model_input, query_input, api_url, dialect, zoom_slider, sql_output],
+        ).then(
+            # Re-fetch settings against the restored api_url so the Execute
+            # Query button and the dialect dropdown reflect the live API,
+            # not the (possibly stale) values from process startup.
+            fn=_refresh_query_exec_visibility,
+            inputs=[api_url],
+            outputs=[execute_btn, results_tab, dialect],
         ).then(fn=None, js=inject_js)
 
         # Session cleanup: API sessions expire automatically via SESSION_TTL_SECONDS.

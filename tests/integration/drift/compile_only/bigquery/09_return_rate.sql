@@ -1,9 +1,9 @@
 WITH `composite_01` AS (
-SELECT `Returns`.`returnamount` AS `Total Returns`, CAST(NULL AS NUMERIC(18, 2)) AS `Total Sales`
+SELECT CAST(`Returns`.`returnamount` AS NUMERIC) AS `Total Returns`, CAST(NULL AS NUMERIC) AS `Total Sales`
 FROM ``.`orionbelt_1`.`returns` AS `Returns`
 UNION ALL
-SELECT CAST(NULL AS NUMERIC(18, 2)) AS `Total Returns`, `Sales`.`salesamount` AS `Total Sales`
+SELECT CAST(NULL AS NUMERIC) AS `Total Returns`, CAST(`Sales`.`salesamount` AS NUMERIC) AS `Total Sales`
 FROM ``.`orionbelt_1`.`sales` AS `Sales`
 )
-SELECT CAST(SUM(`composite_01`.`Total Returns`) AS NUMERIC(18, 2)) AS `Total Returns`, CAST(SUM(`composite_01`.`Total Sales`) AS NUMERIC(18, 2)) AS `Total Sales`, CAST((SUM(`composite_01`.`Total Returns`) / SUM(`composite_01`.`Total Sales`)) AS NUMERIC(18, 4)) AS `Return Rate`
-FROM composite_01 AS `composite_01`
+SELECT ROUND(CAST(SUM(`composite_01`.`Total Returns`) AS NUMERIC), 2) AS `Total Returns`, ROUND(CAST(SUM(`composite_01`.`Total Sales`) AS NUMERIC), 2) AS `Total Sales`, ROUND(CAST((SUM(`composite_01`.`Total Returns`) / SUM(`composite_01`.`Total Sales`)) AS NUMERIC), 4) AS `Return Rate`
+FROM `composite_01` AS `composite_01`

@@ -196,6 +196,37 @@ class CompilationPipeline:
         if resolved.is_raw:
             wrapped_ast = plan.ast
         else:
+            # ROLLUP/CUBE wraps the base CTE inside total/PoP/cumulative
+            # wrappers, but the outer wrapper SELECTs by dim/measure name —
+            # the GROUPING() flag columns won't survive. Warn so callers
+            # know subtotal rows have NULL in rolled-up dims with no flag
+            # to disambiguate them from real-NULL detail rows.
+            if resolved.grouping is not None and (
+                resolved.has_totals or resolved.has_pop or resolved.has_cumulative
+            ):
+                resolved.warnings.append(
+                    warning(
+                        code=WarningCode.INCOMPATIBLE_COMBINATION,
+                        message=(
+                            "ROLLUP/CUBE combined with total / period-over-period / "
+                            "cumulative measures — GROUPING() flag columns may not "
+                            "appear in the final projection. Subtotal rows are still "
+                            "produced, but callers cannot distinguish them from "
+                            "detail rows whose rolled-up dim is legitimately NULL."
+                        ),
+                        hint=(
+                            "Avoid combining `grouping: rollup|cube` with "
+                            "`total: true`, period-over-period metrics, or cumulative "
+                            "metrics in the same query."
+                        ),
+                        context={
+                            "grouping": resolved.grouping.value,
+                            "has_totals": resolved.has_totals,
+                            "has_pop": resolved.has_pop,
+                            "has_cumulative": resolved.has_cumulative,
+                        },
+                    )
+                )
             # Wrap with filter context CTEs if needed
             wrapped_ast = wrap_with_filter_context(
                 plan.ast, resolved, model, dialect, qualify_table

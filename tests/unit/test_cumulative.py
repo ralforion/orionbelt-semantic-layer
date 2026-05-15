@@ -617,7 +617,7 @@ class TestOrderByAndLimit:
             base_object="Orders",
             metric_components={"Revenue": revenue},
             order_by_exprs=[
-                (ColumnRef(name="ORDER_DATE", table="Orders"), False),
+                (ColumnRef(name="ORDER_DATE", table="Orders"), False, None),
             ],
         )
         result = wrap_with_cumulative(ast, resolved)

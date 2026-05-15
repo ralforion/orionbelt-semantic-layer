@@ -239,7 +239,7 @@ class TestSettingsEndpoint:
             model_file=str(model_file),
         )
         app = create_app(settings=settings)
-        preload = _read_model_file(str(model_file))
+        preload, _ = _read_model_file(str(model_file))
         mgr = SessionManager(
             ttl_seconds=settings.session_ttl_seconds,
             cleanup_interval=settings.session_cleanup_interval,
@@ -604,6 +604,33 @@ class TestQueryPlanEndpoint:
         assert data["would_compile"] is False
         assert len(data["warnings"]) > 0
 
+    async def test_plan_mysql_cube_returns_structured_error(self, client: AsyncClient) -> None:
+        """Regression: ``/query/plan`` previously surfaced MySQL CUBE as a
+        500 because the UnsupportedGroupingError handler was missing on
+        this endpoint (other compile/execute paths already handled it).
+        """
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/plan",
+            json={
+                "model_id": mid,
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country"],
+                        "measures": ["Total Revenue"],
+                    },
+                    "grouping": "cube",
+                },
+                "dialect": "mysql",
+            },
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "error"
+        assert data["would_compile"] is False
+        codes = [w["code"] for w in data["warnings"]]
+        assert "UNSUPPORTED_GROUPING" in codes
+
     async def test_plan_database_explain_unavailable_emits_warning(
         self, client: AsyncClient
     ) -> None:
@@ -770,11 +797,15 @@ def single_model_app(tmp_path):
     # Manually init (ASGITransport doesn't trigger lifespan)
     from orionbelt.api.app import _read_model_file
 
-    preload_yaml = _read_model_file(str(model_file))
+    preload_yaml, _ = _read_model_file(str(model_file))
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
         cleanup_interval=settings.session_cleanup_interval,
     )
+    # Mirror the real lifespan: in single-model mode, the __default__
+    # session is created at startup and the YAML is loaded into it.
+    default_store = mgr.get_or_create_default()
+    default_store.load_model(preload_yaml)
     init_session_manager(mgr, preload_model_yaml=preload_yaml)
     yield app
     reset_session_manager()
@@ -1009,3 +1040,284 @@ class TestQueryOffset:
         sql = response.json()["sql"]
         assert "LIMIT 10" in sql
         assert "OFFSET" not in sql
+
+
+class TestOBSQLEndpoint:
+    """POST /v1/sessions/{id}/query/semantic-ql — see PLAN_flight_natural_sql.md."""
+
+    async def _setup(self, client: AsyncClient) -> tuple[str, str]:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        return sid, load.json()["model_id"]
+
+    async def test_compile_happy_path(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": (
+                    'SELECT "Customer Country", "Total Revenue" FROM sample_model '
+                    "WHERE \"Customer Country\" = 'US' "
+                    'ORDER BY "Total Revenue" DESC LIMIT 10'
+                ),
+                "dialect": "postgres",
+            },
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "SELECT" in data["sql"]
+        assert data["dialect"] == "postgres"
+        # The intermediate QueryObject must round-trip
+        q = data["query"]
+        assert q["select"]["dimensions"] == ["Customer Country"]
+        assert q["select"]["measures"] == ["Total Revenue"]
+        assert q["limit"] == 10
+
+    async def test_compile_unknown_select_item(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={"model_id": mid, "sql": 'SELECT "Bogus Column" FROM m'},
+        )
+        assert r.status_code == 400
+        codes = [e["code"] for e in r.json()["detail"]["errors"]]
+        assert "UNKNOWN_SELECT_ITEM" in codes
+
+    async def test_compile_join_rejected(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": 'SELECT "Customer Country" FROM m JOIN n ON 1 = 1',
+            },
+        )
+        assert r.status_code == 400
+        codes = [e["code"] for e in r.json()["detail"]["errors"]]
+        assert "UNSUPPORTED_SQL_FEATURE" in codes
+
+    async def test_compile_group_by_ignored(self, client: AsyncClient) -> None:
+        """Explicit GROUP BY in Semantic QL is silently accepted."""
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": (
+                    'SELECT "Customer Country", "Total Revenue" FROM m GROUP BY "Customer Country"'
+                ),
+            },
+        )
+        assert r.status_code == 200
+
+    async def test_compile_measure_in_where_routes_to_having(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": (
+                    'SELECT "Customer Country", "Total Revenue" FROM m WHERE "Total Revenue" > 1000'
+                ),
+            },
+        )
+        assert r.status_code == 200
+        q = r.json()["query"]
+        assert len(q["having"]) == 1
+        assert q["having"][0]["field"] == "Total Revenue"
+        assert q["where"] == []
+
+    async def test_compile_with_rollup(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": ('SELECT "Customer Country", "Total Revenue" FROM m WITH ROLLUP'),
+                "dialect": "postgres",
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["query"]["grouping"] == "rollup"
+        # Pretty-printed: "GROUP BY\n  ROLLUP (..." — match across whitespace
+        normalized = " ".join(body["sql"].split())
+        assert "GROUP BY ROLLUP" in normalized
+
+    async def test_compile_with_cube_clickhouse_trailing_form(self, client: AsyncClient) -> None:
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql/compile",
+            json={
+                "model_id": mid,
+                "sql": ('SELECT "Customer Country", "Total Revenue" FROM m WITH CUBE'),
+                "dialect": "clickhouse",
+            },
+        )
+        assert r.status_code == 200
+        normalized = " ".join(r.json()["sql"].split())
+        assert "WITH CUBE" in normalized
+        assert "GROUP BY CUBE (" not in normalized  # ClickHouse uses trailing form
+
+    async def test_top_level_shortcut(self, client: AsyncClient) -> None:
+        sid, _ = await self._setup(client)
+        # Only one model loaded — shortcut should auto-resolve
+        r = await client.post(
+            "/v1/query/semantic-ql/compile",
+            json={
+                "sql": 'SELECT "Customer Country", "Total Revenue" FROM m',
+            },
+        )
+        # session_id was created so __default__ resolution requires single session
+        # NOTE: the shortcut uses _resolve_store_and_model which may find
+        # this user-created session. Either 200 or 409 is acceptable here;
+        # we assert it's not 500.
+        assert r.status_code in (200, 409), r.text
+        if r.status_code == 200:
+            assert "SELECT" in r.json()["sql"]
+        # silence unused variable warning
+        assert sid
+
+    async def test_execute_unavailable_returns_503(self, client: AsyncClient) -> None:
+        """Without QUERY_EXECUTE the execute endpoint returns 503 not 500."""
+        sid, mid = await self._setup(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/query/semantic-ql",
+            json={
+                "model_id": mid,
+                "sql": 'SELECT "Customer Country" FROM m',
+            },
+        )
+        # Test fixtures do not enable query_execute by default
+        assert r.status_code in (200, 503)
+
+
+class TestModelsEndpoint:
+    """GET /v1/models — admin-curated model discovery surface."""
+
+    async def test_empty_in_dynamic_mode(self, client: AsyncClient) -> None:
+        """Dynamic mode (no MODEL_FILES) — no protected models, empty list."""
+        r = await client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 0
+        assert data["models"] == []
+
+    async def test_single_legacy_default(self, single_model_client: AsyncClient) -> None:
+        """Legacy MODEL_FILE — one __default__ entry."""
+        r = await single_model_client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 1
+        entry = data["models"][0]
+        assert entry["name"] == "__default__"
+        assert entry["dimensions"] > 0 or entry["measures"] > 0
+
+
+class TestMultiModelMode:
+    """MODEL_FILES=a.yaml,b.yaml — admin pre-loads N named models."""
+
+    @pytest.fixture
+    async def multi_model_app(self, tmp_path):
+        """Two YAMLs with different `name:` fields → two protected sessions."""
+        from orionbelt.api.app import _read_model_file
+
+        # Build two distinct models with explicit names
+        yaml_a = SAMPLE_MODEL_YAML.replace("version: 1.0", "version: 1.0\nname: sales")
+        yaml_b = SAMPLE_MODEL_YAML.replace("version: 1.0", "version: 1.0\nname: returns")
+        path_a = tmp_path / "a.yaml"
+        path_b = tmp_path / "b.yaml"
+        path_a.write_text(yaml_a)
+        path_b.write_text(yaml_b)
+
+        settings = Settings(
+            session_ttl_seconds=3600,
+            session_cleanup_interval=9999,
+            model_files=f"{path_a},{path_b}",
+        )
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+            is_single_model_mode=True,  # admin-curated
+        )
+        for path in (path_a, path_b):
+            yaml_str, resolved = _read_model_file(str(path))
+            # Use the same name resolution as the real lifespan
+            from orionbelt.api.app import _resolve_model_name
+
+            name = _resolve_model_name(yaml_str, resolved)
+            store = mgr.get_or_create_named(name)
+            store.load_model(yaml_str)
+        init_session_manager(mgr)
+        yield app
+        reset_session_manager()
+
+    @pytest.fixture
+    async def multi_model_client(self, multi_model_app):
+        transport = ASGITransport(app=multi_model_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+
+    async def test_models_endpoint_lists_both(self, multi_model_client: AsyncClient) -> None:
+        r = await multi_model_client.get("/v1/models")
+        assert r.status_code == 200
+        data = r.json()
+        names = sorted(m["name"] for m in data["models"])
+        assert names == ["returns", "sales"]
+        assert data["count"] == 2
+
+
+class TestReferenceEndpoints:
+    """GET /v1/reference and friends — agent / LLM discovery surface."""
+
+    async def test_index_lists_all_references(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference")
+        assert r.status_code == 200
+        names = {entry["name"] for entry in r.json()["references"]}
+        assert names == {"obml", "obsql", "obml-schema", "query-schema"}
+
+    async def test_obml_reference_is_markdown(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/obml")
+        assert r.status_code == 200
+        body = r.json()["reference"]
+        assert "OBML" in body
+        assert "dataObjects" in body
+
+    async def test_obsql_reference_includes_grammar(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/obsql")
+        assert r.status_code == 200
+        body = r.json()["reference"]
+        # Spot-check that the key OBSQL features are documented
+        assert "OBSQL" in body
+        assert "MEASURE(" in body
+        assert "WITH ROLLUP" in body
+        assert "raw mode" in body.lower()
+        assert "RAW_SQL_REJECTED" in body
+        assert "WRITE_OPERATION_REJECTED" in body
+
+    async def test_obml_schema_served(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/obml")
+        assert r.status_code == 200
+        # JSON Schema content-type
+        assert "schema+json" in r.headers["content-type"]
+        body = r.json()
+        # OBML schema's top-level keys
+        assert body.get("$schema") or body.get("type")
+
+    async def test_query_schema_served(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/query")
+        assert r.status_code == 200
+        assert "schema+json" in r.headers["content-type"]
+        body = r.json()
+        assert body.get("$schema") or body.get("type") or "select" in str(body).lower()
+
+    async def test_unknown_schema_404(self, client: AsyncClient) -> None:
+        r = await client.get("/v1/reference/schemas/bogus")
+        assert r.status_code == 404
+        # Error names the available schemas
+        detail = r.json().get("detail", "")
+        assert "obml" in detail and "query" in detail

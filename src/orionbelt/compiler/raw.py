@@ -27,7 +27,7 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
-from orionbelt.compiler.star import CflLegInfo, QueryPlan
+from orionbelt.compiler.star import CflLegInfo, QueryPlan, _nulls_last
 from orionbelt.models.semantic import DataObject, SemanticModel
 
 if TYPE_CHECKING:
@@ -110,8 +110,8 @@ class RawPlanner:
         for wf in resolved.where_filters:
             builder.where(wf.expression)
 
-        for expr, desc in resolved.order_by_exprs:
-            builder.order_by(expr, desc=desc)
+        for expr, desc, nulls in resolved.order_by_exprs:
+            builder.order_by(expr, desc=desc, nulls_last=_nulls_last(nulls))
 
         if resolved.limit is not None:
             builder.limit(resolved.limit)
@@ -201,8 +201,12 @@ class RawPlanner:
         outer.from_(cte_name, alias=cte_name)
 
         # ORDER BY remapped to alias-only refs (CTE has no table qualifier).
-        for expr, desc in resolved.order_by_exprs:
-            outer.order_by(self._remap_order_by(expr, resolved, model), desc=desc)
+        for expr, desc, nulls in resolved.order_by_exprs:
+            outer.order_by(
+                self._remap_order_by(expr, resolved, model),
+                desc=desc,
+                nulls_last=_nulls_last(nulls),
+            )
 
         if resolved.limit is not None:
             outer.limit(resolved.limit)

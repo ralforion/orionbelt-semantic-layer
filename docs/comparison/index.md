@@ -12,11 +12,14 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Self-hostable | ✅ | Definitions yes, runtime no | ✅ | ❌ | ✅ | ✅ (licensed) |
 | Standalone (no transformation tool dep.) | ✅ | ❌ requires dbt | ✅ | ✅ | ✅ | ✅ |
 | Format | YAML (`OBML`) | YAML on dbt models | DSL (`.malloy`) | DSL (`.lkml`) | YAML / JS + Twig | Visual designer |
-| Query interface | REST + **Arrow Flight SQL** + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | REST + GraphQL + **Postgres-wire SQL** | **MDX + DAX** + JDBC/ODBC + REST |
+| Query interface | **[OrionBelt Semantic QL](../guide/semantic-ql.md)** (OBSQL) + **Arrow Flight SQL** + REST + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | **Cube SQL API** (Postgres-wire) + REST + GraphQL | **MDX + DAX** + JDBC/ODBC + REST |
 | First-class cumulative metric | ✅ | ✅ | Per-query | Partial | Partial (`rolling_window`) | Via MDX |
 | First-class period-over-period metric | ✅ | Via `offset_window` | Per-query | Via table calc | Query-time `time_shift` | Via MDX |
 | Conversion / funnel metrics | ❌ | ✅ | Patterns | Patterns | Patterns | Patterns |
 | Symmetric aggregates | ❌ (uses CFL) | ❌ | ✅ | ✅ | ✅ | ✅ (OLAP) |
+| Hierarchical subtotals (`WITH ROLLUP` / `WITH CUBE`) | ✅ first-class in **Semantic QL** (trailing modifier + `GROUPING()` flag columns; dialect-portable across all 8 drivers) | ❌ presentation concern | ❌ | UI-only checkbox; no LookML construct | "Rollup" means pre-aggregation tables, not the SQL operator | Via MDX/DAX |
+| Natural SQL query surface | ✅ **Semantic QL** (OBSQL) with explicit `MEASURE()` marker + aggregate-wrap matching | ❌ | n/a (Malloy DSL) | n/a (LookML DSL) | ✅ Cube SQL API (Postgres-wire) | n/a (MDX/DAX) |
+| Read-only governance — **no raw-SQL or write-op escape hatch** | ✅ closed by design: raw SQL → `RAW_SQL_REJECTED`, DDL/DML → `WRITE_OPERATION_REJECTED`, catalog probes answered from the model | dbt SL is read-only by API shape; no raw-SQL surface | Malloy emits its own queries | Looker SQL Runner allows raw SQL | Cube SQL API rejects writes; raw SELECTs flow through | AtScale routes through MDX/DAX |
 | Multi-rooted modeling (peer-rooted facts) | ✅ independent `dataObjects` | ✅ independent `semantic_models` | ❌ single-rooted `source` | ❌ single-rooted `explore` (joined facts only) | ✅ independent cubes | ✅ multiple facts in one Cube via conformed dims |
 | Multi-fact query plan | `UNION ALL` legs (CFL) | `FULL OUTER JOIN` on shared entities | n/a | JOIN inside explore (symmetric agg) | Single JOIN path via Dijkstra-resolved cube graph | JOIN with OLAP aggregation |
 | Multi-path joins (between same pair) | ✅ per-query selection via `pathName` + `usePathNames` | ❌ no path-name primitive | ❌ aliased sources (model-time) | `from` aliasing (model-time) | Dijkstra + member-type priority heuristic; pin via `views` | Role-playing dimensions (model-time) |

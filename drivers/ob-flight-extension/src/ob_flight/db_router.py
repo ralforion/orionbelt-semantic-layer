@@ -126,13 +126,11 @@ def get_credentials(dialect: str) -> dict[str, Any]:
     creds: dict[str, Any] = {}
     keys = _CREDENTIAL_KEYS.get(dialect, [])
     for env_key in keys:
-        value = os.getenv(env_key)
-        if value is not None:
+        raw = os.getenv(env_key)
+        if raw is not None:
             kwarg_name = _ENV_TO_KWARG.get(env_key, env_key.lower())
             # Convert port to int
-            if env_key.endswith("_PORT"):
-                value = int(value)
-            creds[kwarg_name] = value
+            creds[kwarg_name] = int(raw) if env_key.endswith("_PORT") else raw
     return creds
 
 

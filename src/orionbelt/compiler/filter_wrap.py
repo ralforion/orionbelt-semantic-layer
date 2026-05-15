@@ -203,6 +203,7 @@ def wrap_with_filter_context(
         limit=None,
         offset=None,
         ctes=[],
+        grouping=ast.grouping,
     )
     main_cte = CTE(name="main", query=main_cte_query)
 

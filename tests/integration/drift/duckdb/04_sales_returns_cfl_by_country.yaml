@@ -1,7 +1,7 @@
 last_verified_by: tests/integration/correctness/test_cfl_split.py::test_sales_returns_cfl_split_by_country
 sql: 'WITH "composite_01" AS (
 
-  SELECT "Countries"."countryname" AS "Sales Country Name", "Sales"."salesamount" AS "Total Sales"
+  SELECT "Countries"."countryname" AS "Sales Country Name", CAST("Sales"."salesamount" AS DECIMAL(18, 2)) AS "Total Sales"
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
@@ -11,7 +11,7 @@ sql: 'WITH "composite_01" AS (
 
   UNION ALL BY NAME
 
-  SELECT "Countries"."countryname" AS "Sales Country Name", "Returns"."returnamount" AS "Total Returns"
+  SELECT "Countries"."countryname" AS "Sales Country Name", CAST("Returns"."returnamount" AS DECIMAL(18, 2)) AS "Total Returns"
 
   FROM "orionbelt_1"."returns" AS "Returns"
 
@@ -26,7 +26,7 @@ sql: 'WITH "composite_01" AS (
   SELECT "Sales Country Name" AS "Sales Country Name", CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18, 2)) AS "Total
   Sales", CAST(SUM("composite_01"."Total Returns") AS DECIMAL(18, 2)) AS "Total Returns"
 
-  FROM composite_01 AS "composite_01"
+  FROM "composite_01" AS "composite_01"
 
   GROUP BY "Sales Country Name"
 

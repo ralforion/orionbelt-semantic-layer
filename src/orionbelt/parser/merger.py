@@ -13,8 +13,6 @@ logger = logging.getLogger("orionbelt.parser.merger")
 
 MAX_EXTENDS_DEPTH = 5
 
-ANALYTICAL_KEYS = {"dimensions", "measures", "metrics", "customExtensions"}
-
 
 class MergeError(Exception):
     """Raised when merging extends or inherits fails."""

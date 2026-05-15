@@ -26,10 +26,26 @@ class BigQueryDialect(Dialect):
 
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
-            p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)
-            s = min(obml_type.scale, p)
-            return f"NUMERIC({p}, {s})"
+            # BigQuery rejects parameterized types in CAST expressions
+            # ("Parameterized types are not allowed in CAST expressions"),
+            # so emit a bare NUMERIC / BIGNUMERIC and let BigQuery default
+            # the precision/scale. NUMERIC covers precision ≤ 38; spill
+            # over to BIGNUMERIC for higher precision OBML decimals. The
+            # user-specified scale is honoured separately by
+            # ``cast_to_obml_type`` which wraps the CAST in ROUND.
+            if obml_type.precision > 38:
+                return "BIGNUMERIC"
+            return "NUMERIC"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
+
+    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+        """BigQuery: wrap the CAST with ROUND for DecimalType to enforce the
+        OBML-specified scale, since BigQuery's CAST drops the scale parameter.
+        """
+        cast_expr = Cast(expr=expr, type_name=self.render_obml_type(obml_type))
+        if isinstance(obml_type, DecimalType):
+            return FunctionCall(name="ROUND", args=[cast_expr, Literal.number(obml_type.scale)])
+        return cast_expr
 
     _ABSTRACT_TYPE_MAP: dict[str, str] = {
         "string": "STRING",

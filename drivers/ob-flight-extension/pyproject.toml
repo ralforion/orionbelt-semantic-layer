@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-flight-extension"
-version = "2.1.0"
+version = "2.4.0"
 description = "Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)"
 license = { text = "BSL-1.1" }
 readme = "README.md"
@@ -50,6 +50,14 @@ target-version = "py312"
 python_version = "3.12"
 strict = true
 files = ["src/ob_flight"]
+
+[[tool.mypy.overrides]]
+# pyarrow ships without a py.typed marker (same as the parent
+# orionbelt-semantic-layer override). Without this, every pyarrow /
+# pyarrow.flight / pyarrow.parquet import emits a noisy
+# ``Skipping analyzing ...`` warning that masks real errors.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
