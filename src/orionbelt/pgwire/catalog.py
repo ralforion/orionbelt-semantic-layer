@@ -877,44 +877,46 @@ def _qualified(schema: str, name: str) -> str:
     return f'"{schema.replace(chr(34), chr(34) * 2)}"."{name}"'
 
 
+def _typed_projection_body(columns: list[tuple[str, str]]) -> str:
+    """Body for a Flight-shaped view: one typed column per artefact.
+
+    Each ``(label, sql_type)`` pair becomes a ``CAST(NULL AS T)`` column.
+    The view is empty (``WHERE FALSE``) — its purpose is to expose the
+    surface area as a typed schema for BI-tool discovery, not to return
+    data.  Real values come from ``<schema>.model``.
+    """
+
+    if not columns:
+        return "SELECT CAST(NULL AS VARCHAR) AS __empty__ WHERE FALSE"
+    projections = ", ".join(
+        f'CAST(NULL AS {sql_type}) AS "{label.replace(chr(34), chr(34) * 2)}"'
+        for label, sql_type in columns
+    )
+    return f"SELECT {projections} WHERE FALSE"
+
+
 def _simple_dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
-    rows = [
-        "("
-        + ", ".join(
-            [_sql_literal(label), _sql_literal(str(dim.result_type)), _sql_literal(dim.description)]
-        )
-        + ")"
-        for label, dim in model.dimensions.items()
-    ]
-    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'dimensions')} AS {_simple_view_body(rows)}"
+    columns = [(label, _dim_sql_type(dim)) for label, dim in model.dimensions.items()]
+    return (
+        f"CREATE OR REPLACE VIEW {_qualified(schema, 'dimensions')} "
+        f"AS {_typed_projection_body(columns)}"
+    )
 
 
 def _simple_measures_view_ddl(schema: str, model: SemanticModel) -> str:
-    rows = [
-        "("
-        + ", ".join(
-            [
-                _sql_literal(label),
-                _sql_literal(str(measure.result_type)),
-                _sql_literal(measure.description),
-            ]
-        )
-        + ")"
-        for label, measure in model.measures.items()
-    ]
-    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'measures')} AS {_simple_view_body(rows)}"
+    columns = [(label, _measure_sql_type(measure)) for label, measure in model.measures.items()]
+    return (
+        f"CREATE OR REPLACE VIEW {_qualified(schema, 'measures')} "
+        f"AS {_typed_projection_body(columns)}"
+    )
 
 
 def _simple_metrics_view_ddl(schema: str, model: SemanticModel) -> str:
-    rows = [
-        "("
-        + ", ".join(
-            [_sql_literal(label), _sql_literal(str(metric.type)), _sql_literal(metric.description)]
-        )
-        + ")"
-        for label, metric in model.metrics.items()
-    ]
-    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'metrics')} AS {_simple_view_body(rows)}"
+    columns = [(label, _metric_sql_type(metric)) for label, metric in model.metrics.items()]
+    return (
+        f"CREATE OR REPLACE VIEW {_qualified(schema, 'metrics')} "
+        f"AS {_typed_projection_body(columns)}"
+    )
 
 
 def _dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
