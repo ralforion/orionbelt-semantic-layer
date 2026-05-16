@@ -95,6 +95,17 @@ class Settings(BaseSettings):
     # OBSL is a semantic layer, not a JDBC proxy. There are no env flags
     # that allow arbitrary SQL through to the warehouse.
 
+    # Postgres wire surface (see design/PLAN_postgres_wire.md).
+    # Step 1 (Hello world): trust auth only, simple-query protocol.
+    # Auth modes "password" / "scram-sha-256" land in Step 6 alongside the
+    # unified auth subsystem (see design/PLAN_unified_auth.md).
+    pgwire_enabled: bool = False
+    pgwire_host: str = "0.0.0.0"  # noqa: S104 — server bind address
+    pgwire_port: int = 5432
+    pgwire_auth_mode: str = "trust"  # "trust" (Step 1) | "password" | "scram-sha-256" (Step 6)
+    pgwire_max_connections: int = 64
+    pgwire_query_timeout_seconds: int = 60
+
     # One-shot batch endpoint (POST /v1/oneshot/batch). See PLAN_oneshot_batch.md.
     oneshot_batch_max_queries: int = 50
     oneshot_batch_max_parallelism: int = 8

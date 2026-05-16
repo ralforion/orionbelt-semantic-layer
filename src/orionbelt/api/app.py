@@ -390,9 +390,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 "Install with: uv sync --extra flight"
             )
 
+    # Start Postgres wire surface if PGWIRE_ENABLED=true. Step 1 ships a
+    # hardcoded SELECT-1 handler; later steps wire the semantic router.
+    # See design/PLAN_postgres_wire.md.
+    pgwire_runtime = None
+    if settings.pgwire_enabled:
+        from orionbelt.pgwire.startup import start_pgwire
+
+        pgwire_runtime = await start_pgwire(settings)
+
     try:
         yield
     finally:
+        if pgwire_runtime is not None:
+            await pgwire_runtime.shutdown()
         if flight_thread is not None:
             from ob_flight.startup import stop_flight_server
 
