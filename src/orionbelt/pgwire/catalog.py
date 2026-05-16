@@ -666,24 +666,26 @@ def _pg_namespace_view_ddl(model_names: list[str]) -> str:
     show only the OBSL surface — one row per loaded model.
     """
 
-    # Override ``nspacl`` to a non-NULL empty-array literal — DuckDB
-    # types it as INTEGER (wrong; real Postgres uses ``aclitem[]``) and
-    # the NULL trips DBeaver's introspection into an NPE when it tries
-    # to parse the column as an array.
-    select_columns = (
-        "n.oid, n.nspname, "
-        "CAST(10 AS INTEGER) AS nspowner, "
-        "CAST('{}' AS VARCHAR) AS nspacl"
-    )
-    if not model_names:
-        return (
-            "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
-            f"SELECT {select_columns} FROM pg_catalog.pg_namespace n WHERE FALSE"
-        )
-    quoted_names = ", ".join("'" + n.replace("'", "''") + "'" for n in model_names)
+    # DuckDB tags every pg_type row with ``typnamespace = oid(main)``
+    # (its single physical namespace), so we MUST keep ``main`` in
+    # pg_namespace — but we expose it under the name ``pg_catalog``
+    # because that's where Postgres clients (DBeaver, the JDBC driver,
+    # …) expect the type rows to live. Without this DBeaver logs
+    # "Attribute data type 'NNNN' not found. Use varchar" for every
+    # column.
+    #
+    # ``nspacl`` is rewritten to a non-NULL empty-array literal —
+    # DuckDB types it as INTEGER (real Postgres uses ``aclitem[]``)
+    # and the NULL otherwise NPEs DBeaver's tree refresh.
+    keep_schemas = list(model_names) + ["main"]
+    quoted_names = ", ".join("'" + n.replace("'", "''") + "'" for n in keep_schemas)
     return (
         "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
-        f"SELECT {select_columns} FROM pg_catalog.pg_namespace n "
+        "SELECT n.oid, "
+        "CASE WHEN n.nspname='main' THEN 'pg_catalog' ELSE n.nspname END AS nspname, "
+        "CAST(10 AS INTEGER) AS nspowner, "
+        "CAST('{}' AS VARCHAR) AS nspacl "
+        "FROM pg_catalog.pg_namespace n "
         f"WHERE n.nspname IN ({quoted_names})"
     )
 

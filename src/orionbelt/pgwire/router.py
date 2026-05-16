@@ -218,18 +218,24 @@ class SemanticRouter:
     def _resolve_target(self, database: str) -> _ResolvedTarget:
         """Pick a (store, model_id, model) tuple for the requested DB.
 
-        Resolution order, matching the Flight surface's behaviour:
+        Resolution order:
 
         1. ``database`` matches a SessionManager session id directly
            (multi-model preload uses the model name as the session id).
-        2. ``__default__`` session (single-model preload, MCP stdio,
+        2. ``database`` is the OBSL brand name ("orionbelt") — fall
+           through to the first loaded model. This is the path DBeaver
+           takes when ``pg_database`` advertises ``orionbelt`` as the
+           single database and the client uses that name to reconnect.
+        3. ``__default__`` session (single-model preload, MCP stdio,
            tests).
-        3. Any other session with at least one loaded model — only
+        4. Any other session with at least one loaded model — only
            when exactly one match exists, so we never silently pick.
 
-        Raises ``_ModelNotFoundError`` with a message that surfaces in the
-        Postgres ErrorResponse on miss.
+        Raises ``_ModelNotFoundError`` with a message that surfaces in
+        the Postgres ErrorResponse on miss.
         """
+
+        from orionbelt.pgwire.catalog import OBSL_DATABASE_NAME
 
         candidate_ids: list[str] = []
         if database:
@@ -241,6 +247,21 @@ class SemanticRouter:
             target = self._first_model_in(session_id)
             if target is not None:
                 return target
+
+        # When the client passes the brand name ("orionbelt") and the
+        # SessionManager doesn't host a session by that name, fall
+        # through to the first loaded model. pg_database advertises
+        # only one row ("orionbelt"), so this is the canonical path
+        # for any BI tool that re-reads the catalog after connecting.
+        if database == OBSL_DATABASE_NAME:
+            for session_id in self._sessions.list_protected_session_ids():
+                target = self._first_model_in(session_id)
+                if target is not None:
+                    return target
+            for session_summary in self._sessions.list_sessions():
+                target = self._first_model_in(session_summary.session_id)
+                if target is not None:
+                    return target
 
         # Last-resort scan across all sessions for the case where the
         # client passed a database name that doesn't match a session id
