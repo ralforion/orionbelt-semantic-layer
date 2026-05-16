@@ -446,6 +446,15 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1(",
     ),
+    # ``SESSION_USER`` and ``CURRENT_USER`` as bare identifiers (no
+    # parens) return "duckdb" by default — replace with our brand
+    # name so BI-tool displays surface "obsl" instead. Matched only
+    # when surrounded by word boundaries so we don't touch the rare
+    # column literally named ``session_user``.
+    (
+        re.compile(r"\bSESSION_USER\b", re.IGNORECASE),
+        "'obsl'",
+    ),
 )
 
 
@@ -585,6 +594,16 @@ class CatalogEmulator:
             # noise.
             with contextlib.suppress(Exception):
                 self._con.execute(_pg_namespace_view_ddl(list(desired.keys())))
+            # Set DuckDB's search_path to the loaded model schemas so
+            # ``SELECT current_schema()`` returns a meaningful name
+            # (the model) instead of ``main``. BI tools that highlight
+            # the connected schema in their tree pick it up from here.
+            if desired:
+                quoted = ", ".join(
+                    "'" + name.replace("'", "''") + "'" for name in desired
+                )
+                with contextlib.suppress(Exception):
+                    self._con.execute(f"SET search_path TO {quoted}")
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.

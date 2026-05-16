@@ -541,15 +541,30 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 inner = proj.this if isinstance(proj, exp.Alias) else proj
                 if isinstance(inner, exp.Anonymous | exp.Func):
                     fname = (getattr(inner, "name", "") or "").lower()
+                    # sqlglot's typed function nodes (CurrentSchema,
+                    # CurrentUser, …) carry an empty ``.name`` — fall
+                    # back to the class name so canned-probe detection
+                    # still fires for ``SELECT current_schema()``.
+                    if not fname:
+                        fname = type(inner).__name__.lower()
                     if fname in _CATALOG_SCALAR_PROBES:
                         saw_canned_probe = True
                     saw_literal_only = False
                 elif isinstance(inner, exp.Literal):
                     pass  # keep saw_literal_only True
                 elif isinstance(inner, exp.Column):
+                    col_name = (getattr(inner, "name", "") or "").lower()
+                    # Bare ``SESSION_USER`` / ``CURRENT_USER`` etc. parse
+                    # as Columns. They're system info, not model
+                    # references — treat them as canned probes so the
+                    # whole SELECT routes to catalog.
+                    if col_name in _CATALOG_SCALAR_PROBES:
+                        saw_canned_probe = True
+                        saw_literal_only = False
+                        continue
                     identifier_count += 1
                     saw_literal_only = False
-                    if (getattr(inner, "name", "") or "").lower() not in known_labels:
+                    if col_name not in known_labels:
                         unmatched_identifier = True
                 else:
                     saw_literal_only = False
