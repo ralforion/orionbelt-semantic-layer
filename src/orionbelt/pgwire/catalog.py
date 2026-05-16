@@ -446,16 +446,37 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1(",
     ),
-    # ``SESSION_USER`` and ``CURRENT_USER`` as bare identifiers (no
-    # parens) return "duckdb" by default — replace with our brand
-    # name so BI-tool displays surface "obsl" instead. Matched only
-    # when surrounded by word boundaries so we don't touch the rare
-    # column literally named ``session_user``.
-    (
-        re.compile(r"\bSESSION_USER\b", re.IGNORECASE),
-        "'obsl'",
-    ),
+    # ``SESSION_USER`` handled by ``_rewrite_session_user`` below —
+    # single-pass replacement so the second match doesn't eat its
+    # own alias.
 )
+
+
+_SESSION_USER_RE = re.compile(
+    r"\bSESSION_USER\b(\s+AS\s+\S+)?",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_session_user(sql: str) -> str:
+    """Replace ``SESSION_USER`` with our brand string while preserving aliases.
+
+    DuckDB's ``SESSION_USER`` returns "duckdb" — surfacing the embedded
+    engine to BI tools is awkward. We swap in the OBSL brand
+    (``'obsl'``) and pick the column alias so it still reads as
+    ``session_user`` in result-set headers:
+
+    * Bare ``SESSION_USER`` → ``'obsl' AS session_user``
+    * Pre-aliased ``SESSION_USER AS x`` → ``'obsl' AS x``
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        existing_alias = match.group(1)
+        if existing_alias:
+            return f"'obsl'{existing_alias}"
+        return "'obsl' AS session_user"
+
+    return _SESSION_USER_RE.sub(repl, sql)
 
 
 def _rewrite_for_duckdb(sql: str) -> str:
@@ -474,6 +495,7 @@ def _rewrite_for_duckdb(sql: str) -> str:
         out = pattern.sub(replacement, out)
     for pattern, replacement in _TABLE_SUBSTITUTIONS:
         out = pattern.sub(replacement, out)
+    out = _rewrite_session_user(out)
     return out
 
 
