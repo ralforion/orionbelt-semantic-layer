@@ -363,6 +363,23 @@ _METADATA_VIEW_NAMES: frozenset[str] = frozenset(
 #: Name of the single data table inside each per-model schema.
 _MODEL_DATA_TABLE = "model"
 
+#: Bare identifiers that Postgres treats as system info, not column
+#: references. DBeaver and other JDBC clients probe these in
+#: ``refreshDefaults`` (``SELECT current_schema(), session_user``);
+#: when they appear in a no-FROM SELECT the query belongs to the
+#: catalog branch, not OBSQL.
+_SYSTEM_IDENTIFIERS: frozenset[str] = frozenset(
+    {
+        "current_user",
+        "current_role",
+        "current_database",
+        "current_schema",
+        "current_catalog",
+        "session_user",
+        "user",
+    }
+)
+
 
 def references_catalog(sql: str) -> bool:
     """Return ``True`` when the query needs the catalog emulator.
@@ -428,6 +445,24 @@ def references_catalog(sql: str) -> bool:
         left = dot.args.get("this")
         if isinstance(left, exp.Identifier) and (left.name or "").lower() in _CATALOG_SCHEMAS:
             return True
+    # No-FROM SELECT — could be either a system probe (DBeaver's
+    # ``SELECT current_schema(), session_user``) or a bare-dimension
+    # query OBSQL handles natively (``SELECT "Customer Country"``
+    # against the connection's model). Distinguish by content:
+    #
+    # * Any function call (``current_schema()``, ``version()``, …)
+    #   → catalog (DuckDB evaluates the function).
+    # * A bare identifier matching a known Postgres system name
+    #   (``session_user``, ``current_user``, …) → catalog.
+    # * Otherwise (numeric literals, model column refs only) →
+    #   fall through to the semantic path so OBSQL can handle
+    #   dimension/measure references.
+    if isinstance(parsed, exp.Select) and not list(parsed.find_all(exp.Table)):
+        if list(parsed.find_all(exp.Func)):
+            return True
+        for col in parsed.find_all(exp.Column):
+            if (col.name or "").lower() in _SYSTEM_IDENTIFIERS:
+                return True
     return False
 
 
