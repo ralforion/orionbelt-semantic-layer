@@ -27,22 +27,25 @@ from orionbelt.pgwire.auth import authenticate
 logger = logging.getLogger(__name__)
 
 
-# Type alias for the query handler. Step 1 ships a hardcoded
-# ``SELECT 1`` responder; Step 2 swaps in the router. Handlers return
-# raw bytes to write — a sequence of one or more protocol frames
-# terminated by the per-statement reply (CommandComplete or
-# ErrorResponse). The caller appends ReadyForQuery.
-QueryHandler = Callable[[str], Awaitable[bytes]]
+# Type alias for the query handler. The server passes the literal SQL
+# string from the Query frame and the ``database`` parameter captured
+# from the client's StartupMessage. Handlers return raw bytes — a
+# sequence of one or more protocol frames terminated by the per-statement
+# reply (CommandComplete or ErrorResponse). The caller appends
+# ReadyForQuery. Steps 3+ extend this signature (parameters, portals).
+QueryHandler = Callable[[str, str], Awaitable[bytes]]
 
 
-async def _hello_world_handler(sql: str) -> bytes:
-    """Step 1 responder.
+async def _hello_world_handler(sql: str, database: str) -> bytes:
+    """Fallback responder used when no router is wired in.
 
-    Recognises ``SELECT 1`` (case-insensitive, optional trailing
-    semicolon) and returns a single-row text result. Everything else
-    becomes an ErrorResponse so misuse is loud rather than silent.
+    Recognises ``SELECT 1`` so connectivity probes still work in
+    tests/dev when the server has no SessionManager attached. Every
+    other query gets a clear ErrorResponse pointing at the missing
+    handler so misuse is loud rather than silent.
     """
 
+    del database  # unused — see SemanticRouter for the real path
     normalised = sql.strip().rstrip(";").strip().lower()
     if normalised == "select 1":
         return (
@@ -54,9 +57,9 @@ async def _hello_world_handler(sql: str) -> bytes:
         severity="ERROR",
         code="0A000",  # feature_not_supported
         message=(
-            "pgwire Step 1 only answers 'SELECT 1'. "
-            "Semantic-SQL routing lands in Step 2 "
-            "(design/PLAN_postgres_wire.md §6)."
+            "pgwire server has no query handler attached. "
+            "Construct a SemanticRouter (orionbelt.pgwire.router) and "
+            "pass it as query_handler= when starting the server."
         ),
     )
 
@@ -215,7 +218,8 @@ class PgWireServer:
                 query = protocol.parse_query(body)
                 try:
                     reply = await asyncio.wait_for(
-                        self._handler(query.sql), timeout=self.query_timeout
+                        self._handler(query.sql, startup.database),
+                        timeout=self.query_timeout,
                     )
                     writer.write(reply)
                 except TimeoutError:

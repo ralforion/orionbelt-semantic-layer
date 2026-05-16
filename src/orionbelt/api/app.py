@@ -390,14 +390,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 "Install with: uv sync --extra flight"
             )
 
-    # Start Postgres wire surface if PGWIRE_ENABLED=true. Step 1 ships a
-    # hardcoded SELECT-1 handler; later steps wire the semantic router.
+    # Start Postgres wire surface if PGWIRE_ENABLED=true. The startup
+    # helper builds a SemanticRouter bound to the live SessionManager,
+    # so SELECT statements over the wire run through the same
+    # translate→compile→execute pipeline as REST /query/semantic-ql.
     # See design/PLAN_postgres_wire.md.
     pgwire_runtime = None
     if settings.pgwire_enabled:
         from orionbelt.pgwire.startup import start_pgwire
 
-        pgwire_runtime = await start_pgwire(settings)
+        pgwire_runtime = await start_pgwire(settings, session_manager=mgr)
 
     try:
         yield

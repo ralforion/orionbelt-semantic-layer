@@ -1,9 +1,14 @@
-"""Integration tests for the pgwire surface — Step 1.
+"""Integration tests for the pgwire surface.
 
 Drives a live ``PgWireServer`` on an ephemeral port using raw asyncio
-sockets. This avoids a hard dependency on psycopg/JDBC for the
-hello-world cycle; client-library tests join in Step 4 once the
-extended-query protocol exists.
+sockets. This avoids a hard dependency on psycopg/JDBC for the simple-
+query cycle; client-library tests land alongside the extended-query
+protocol in Step 4.
+
+Step 1 (handshake + canned ``SELECT 1``) lives below.  Step 2 adds
+end-to-end coverage that drives a :class:`SemanticRouter` through the
+same socket — the router's translate/compile path is exercised for
+real; execution is stubbed so the test doesn't need a live warehouse.
 """
 
 from __future__ import annotations
@@ -11,11 +16,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import struct
+from typing import Any
 
 import pytest
 
 from orionbelt.pgwire import protocol
+from orionbelt.pgwire.router import SemanticRouter
 from orionbelt.pgwire.server import PgWireServer
+from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+from orionbelt.service.session_manager import SessionManager
+from tests.conftest import SAMPLE_MODEL_YAML
 
 
 def _startup_payload(params: dict[str, str]) -> bytes:
@@ -139,6 +149,103 @@ async def test_ssl_request_is_rejected_then_startup_continues(
         await writer.drain()
         handshake = await _drain_until_ready(reader)
         assert handshake[0][0] == b"R"
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# Step 2: SemanticRouter end-to-end over a live socket.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pgwire_with_router(monkeypatch: pytest.MonkeyPatch) -> PgWireServer:
+    """Live server with a SemanticRouter handler bound to a loaded model.
+
+    ``execute_sql`` is monkeypatched to return a deterministic stub —
+    the test exercises the translate/compile/encode path; live database
+    execution is covered by the vendor-specific integration suites.
+    """
+
+    mgr = SessionManager()
+    store = mgr.get_or_create_named("commerce")
+    store.load_model(SAMPLE_MODEL_YAML)
+
+    def fake_execute(sql: str, **_: Any) -> ExecutionResult:
+        return ExecutionResult(
+            columns=[
+                ColumnMeta(name="Customer Country", type_hint="string"),
+                ColumnMeta(name="Total Revenue", type_hint="number"),
+            ],
+            raw_rows=[["DE", 1234], ["US", 9876]],
+            row_count=2,
+        )
+
+    monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
+
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+    server = PgWireServer(
+        host="127.0.0.1",
+        port=0,
+        max_connections=8,
+        query_handler=router.handle,
+    )
+    await server.start()
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        yield server
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
+
+
+async def test_semantic_query_returns_real_rows(pgwire_with_router: PgWireServer) -> None:
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(_query_frame('SELECT "Customer Country", "Total Revenue" FROM commerce'))
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        assert tags == [b"T", b"D", b"D", b"C", b"Z"]
+
+        # RowDescription advertises both columns.
+        _, desc = reply[0]
+        (n_cols,) = struct.unpack("!H", desc[:2])
+        assert n_cols == 2
+
+        # CommandComplete carries the row count.
+        _, cmd = reply[3]
+        assert cmd.startswith(b"SELECT 2")
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_unknown_database_returns_3d000(pgwire_with_router: PgWireServer) -> None:
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        # Database name doesn't match any session and __default__ is
+        # empty — router should return an undefined_database error.
+        writer.write(_startup_payload({"user": "obsl", "database": "ghost"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(_query_frame('SELECT "Customer Country" FROM ghost'))
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        assert reply[0][0] == b"E"
+        assert b"C3D000\x00" in reply[0][1]
     finally:
         writer.write(_terminate_frame())
         await writer.drain()
