@@ -142,7 +142,10 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(0 AS INTEGER) AS relpages,
         CAST(0 AS INTEGER) AS relallvisible,
         CAST(0 AS INTEGER) AS relchecks,
-        CAST('' AS VARCHAR) AS relacl,
+        -- relacl is an aclitem[] in real Postgres; an empty array
+        -- literal keeps DBeaver's tree introspection from NPE-ing on
+        -- a NULL value where it expects an array.
+        CAST('{}' AS VARCHAR) AS relacl,
         CAST('' AS VARCHAR) AS relpartbound
     FROM pg_catalog.pg_class c
     """,
@@ -250,7 +253,7 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(0 AS BIGINT) AS datfrozenxid,
         CAST(0 AS BIGINT) AS datminmxid,
         CAST(1663 AS INTEGER) AS dattablespace,
-        CAST(NULL AS VARCHAR) AS datacl,
+        CAST('{}' AS VARCHAR) AS datacl,
         CAST('c' AS VARCHAR) AS datlocprovider,
         CAST(NULL AS VARCHAR) AS daticulocale,
         CAST(NULL AS VARCHAR) AS daticurules,
@@ -663,15 +666,24 @@ def _pg_namespace_view_ddl(model_names: list[str]) -> str:
     show only the OBSL surface — one row per loaded model.
     """
 
+    # Override ``nspacl`` to a non-NULL empty-array literal — DuckDB
+    # types it as INTEGER (wrong; real Postgres uses ``aclitem[]``) and
+    # the NULL trips DBeaver's introspection into an NPE when it tries
+    # to parse the column as an array.
+    select_columns = (
+        "n.oid, n.nspname, "
+        "CAST(10 AS INTEGER) AS nspowner, "
+        "CAST('{}' AS VARCHAR) AS nspacl"
+    )
     if not model_names:
         return (
             "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
-            "SELECT n.* FROM pg_catalog.pg_namespace n WHERE FALSE"
+            f"SELECT {select_columns} FROM pg_catalog.pg_namespace n WHERE FALSE"
         )
     quoted_names = ", ".join("'" + n.replace("'", "''") + "'" for n in model_names)
     return (
         "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
-        "SELECT n.* FROM pg_catalog.pg_namespace n "
+        f"SELECT {select_columns} FROM pg_catalog.pg_namespace n "
         f"WHERE n.nspname IN ({quoted_names})"
     )
 
@@ -702,7 +714,7 @@ def _pg_database_view_ddl(model_names: list[str]) -> str:
         CAST(0 AS BIGINT) AS datfrozenxid,
         CAST(0 AS BIGINT) AS datminmxid,
         CAST(1663 AS INTEGER) AS dattablespace,
-        CAST(NULL AS VARCHAR) AS datacl,
+        CAST('{}' AS VARCHAR) AS datacl,
         CAST('c' AS VARCHAR) AS datlocprovider,
         CAST(NULL AS VARCHAR) AS daticulocale,
         CAST(NULL AS VARCHAR) AS daticurules,
