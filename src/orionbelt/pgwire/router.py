@@ -1,20 +1,28 @@
-"""Semantic-SQL dispatcher for the Postgres wire surface (Step 2).
+"""Semantic-SQL dispatcher for the Postgres wire surface.
 
 The router takes a raw SQL string + the ``database`` value from the
-Postgres StartupMessage and runs the same translate / compile / execute
-pipeline as the REST ``/v1/query/semantic-ql`` endpoint, then encodes
-the result as Postgres wire frames.
+Postgres StartupMessage and dispatches:
 
-Step 2 ships a "semantic-only" router: anything other than the canned
-``SELECT 1`` connectivity probe is routed through the OBSQL pipeline.
-Step 3 adds the catalog branch (``pg_catalog.*`` / ``information_schema.*``)
-and Step 4 adds the extended query protocol on top.
+1. Canned protocol probes (``SELECT 1``, ``SHOW``, ``SET``,
+   transaction wrappers, ``SELECT version()`` …) — handled in
+   :mod:`pgwire.canned`.
+2. Catalog probes (anything referencing ``pg_catalog.*`` or
+   ``information_schema.*``) — routed to the embedded DuckDB
+   in :mod:`pgwire.catalog`.
+3. Semantic SQL — the same translate / compile / execute pipeline as
+   the REST ``/v1/query/semantic-ql`` endpoint, then encoded as
+   Postgres wire frames.
+
+Step 4 adds the extended query protocol on top.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+
+import sqlglot
+import sqlglot.expressions as exp
 
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -23,6 +31,8 @@ from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroup
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.pgwire import protocol
+from orionbelt.pgwire.canned import match_canned
+from orionbelt.pgwire.catalog import CatalogEmulator
 from orionbelt.pgwire.types import encode_text_value, oid_for_type_hint
 from orionbelt.service.db_executor import (
     ExecutionError,
@@ -73,9 +83,11 @@ class SemanticRouter:
         *,
         session_manager: SessionManager,
         default_dialect: str,
+        catalog: CatalogEmulator | None = None,
     ) -> None:
         self._sessions = session_manager
         self._default_dialect = default_dialect
+        self._catalog = catalog if catalog is not None else CatalogEmulator()
 
     async def handle(self, sql: str, database: str) -> bytes:
         """Top-level entry point used by the pgwire server loop.
@@ -85,19 +97,24 @@ class SemanticRouter:
         + CommandComplete frames, or a single ErrorResponse.
         """
 
-        normalised = sql.strip().rstrip(";").strip()
-        if not normalised:
-            return protocol.build_command_complete("")
+        # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
+        canned = match_canned(sql)
+        if canned is not None:
+            return canned
 
-        # Cheap connectivity probe. Step 3 routes pg_catalog / version()
-        # / SET / SHOW through the catalog emulator; for now we only
-        # answer the most common BI-tool ping.
-        if normalised.lower() == "select 1":
-            return (
-                protocol.build_row_description([("?column?", protocol.OID_INT4)])
-                + protocol.build_data_row(["1"])
-                + protocol.build_command_complete("SELECT 1")
-            )
+        # 2. Catalog probes (pg_catalog.*, information_schema.*).
+        if references_catalog(sql):
+            try:
+                self._catalog.refresh(self._sessions)
+                result = self._catalog.execute(sql)
+            except Exception as exc:  # noqa: BLE001 — protocol boundary
+                logger.info("pgwire catalog probe failed: %s", exc)
+                return protocol.build_error_response(
+                    severity="ERROR",
+                    code=SQLSTATE_SYNTAX_ERROR,
+                    message=f"catalog query failed: {exc}",
+                )
+            return _encode_result(result)
 
         try:
             target = self._resolve_target(database)
@@ -254,6 +271,52 @@ class SemanticRouter:
         except KeyError:
             return None
         return _ResolvedTarget(store=store, model_id=chosen_id, model=model)
+
+
+_CATALOG_SCHEMAS: frozenset[str] = frozenset({"pg_catalog", "information_schema"})
+
+
+def references_catalog(sql: str) -> bool:
+    """Return ``True`` when the query needs the catalog emulator.
+
+    Detects two shapes:
+
+    * a ``FROM`` / ``JOIN`` target whose schema or database is
+      ``pg_catalog`` or ``information_schema``; and
+    * a function reference like ``pg_catalog.set_config(...)``.
+
+    Falls back to a cheap substring test if sqlglot can't parse the
+    query — Postgres clients sometimes emit dialect-specific snippets
+    (e.g. operator classes) sqlglot doesn't fully understand.
+    """
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception:
+        lowered = sql.lower()
+        return "pg_catalog" in lowered or "information_schema" in lowered
+
+    for table in parsed.find_all(exp.Table):
+        if (table.db or "").lower() in _CATALOG_SCHEMAS:
+            return True
+        if (table.text("db") or "").lower() in _CATALOG_SCHEMAS:
+            return True
+        if (table.text("catalog") or "").lower() in _CATALOG_SCHEMAS:
+            return True
+    for column in parsed.find_all(exp.Column):
+        if (column.text("table") or "").lower() in _CATALOG_SCHEMAS:
+            return True
+        if (column.text("db") or "").lower() in _CATALOG_SCHEMAS:
+            return True
+    for func in parsed.find_all(exp.Anonymous):
+        if (func.text("this") or "").lower() in _CATALOG_SCHEMAS:
+            return True
+    # Some catalog functions parse as Dot expressions (schema.func()).
+    for dot in parsed.find_all(exp.Dot):
+        left = dot.args.get("this")
+        if isinstance(left, exp.Identifier) and (left.name or "").lower() in _CATALOG_SCHEMAS:
+            return True
+    return False
 
 
 def _encode_translation_error(exc: SQLTranslationError) -> bytes:

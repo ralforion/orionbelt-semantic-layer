@@ -232,6 +232,68 @@ async def test_semantic_query_returns_real_rows(pgwire_with_router: PgWireServer
         await writer.wait_closed()
 
 
+async def test_catalog_probe_lists_loaded_model(pgwire_with_router: PgWireServer) -> None:
+    """psql `\\dt`-style query surfaces the loaded model as a relation."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        sql = (
+            "SELECT n.nspname, c.relname, c.relkind "
+            "FROM pg_catalog.pg_class c "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relkind IN ('r','p','') "
+            "AND n.nspname NOT IN ('pg_catalog','information_schema') "
+            "ORDER BY 1,2"
+        )
+        writer.write(_query_frame(sql))
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        # Expect RowDescription + at least one DataRow + CommandComplete + Z.
+        assert tags[0] == b"T"
+        assert b"D" in tags
+        assert tags[-1] == b"Z"
+
+        # At least one row, and one of them carries the model name.
+        data_rows = [body for tag, body in reply if tag == b"D"]
+        names_present = False
+        for body in data_rows:
+            if b"commerce" in body:
+                names_present = True
+                break
+        assert names_present
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_show_server_version_returns_canned_string(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(_query_frame("SHOW server_version"))
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        assert tags == [b"T", b"D", b"C", b"Z"]
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_unknown_database_returns_3d000(pgwire_with_router: PgWireServer) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
     try:
