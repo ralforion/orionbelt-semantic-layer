@@ -216,17 +216,19 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(false AS BOOLEAN) AS rolbypassrls,
         CAST(-1 AS INTEGER) AS rolconnlimit
     """,
-    # pg_database: DuckDB exposes (oid, datname) only.  DBeaver's
-    # "list databases" probe (db.oid, db.*) needs the full Postgres
-    # column set or it errors on missing ``datallowconn`` /
-    # ``datistemplate``. Defaults match a typical user-creatable DB.
+    # pg_database is built dynamically during refresh() — one row per
+    # loaded model — so BI tools' "list databases" probe surfaces the
+    # OBSL model names (orionbelt_1_commerce, sales, …) instead of
+    # DuckDB's "memory" / "system" / "temp" catalog names. The empty
+    # placeholder here lives only so the rewriter has a target
+    # before the first refresh().
     """
     CREATE OR REPLACE VIEW obsl_meta.pg_database AS
     SELECT
-        d.oid,
-        d.datname,
+        CAST(NULL AS INTEGER) AS oid,
+        CAST(NULL AS VARCHAR) AS datname,
         CAST(10 AS INTEGER) AS datdba,
-        CAST(6 AS INTEGER) AS encoding,           -- UTF8
+        CAST(6 AS INTEGER) AS encoding,
         CAST('en_US.UTF-8' AS VARCHAR) AS datcollate,
         CAST('en_US.UTF-8' AS VARCHAR) AS datctype,
         CAST(false AS BOOLEAN) AS datistemplate,
@@ -234,13 +236,33 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(-1 AS INTEGER) AS datconnlimit,
         CAST(0 AS BIGINT) AS datfrozenxid,
         CAST(0 AS BIGINT) AS datminmxid,
-        CAST(1663 AS INTEGER) AS dattablespace,    -- pg_default
+        CAST(1663 AS INTEGER) AS dattablespace,
         CAST(NULL AS VARCHAR) AS datacl,
         CAST('c' AS VARCHAR) AS datlocprovider,
         CAST(NULL AS VARCHAR) AS daticulocale,
         CAST(NULL AS VARCHAR) AS daticurules,
         CAST(NULL AS VARCHAR) AS datcollversion
-    FROM pg_catalog.pg_database d
+    WHERE FALSE
+    """,
+    # pg_namespace override hides our internal obsl_meta schema from
+    # BI-tool schema trees. ``pg_catalog`` / ``information_schema``
+    # are also dropped because BI tools render them separately.
+    """
+    CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS
+    SELECT n.*
+    FROM pg_catalog.pg_namespace n
+    WHERE n.nspname NOT IN ('obsl_meta', 'pg_catalog', 'information_schema')
+    """,
+    # pg_shdescription: DBeaver's column-detail dialog joins this
+    # table for shared-object comments. DuckDB doesn't have it; an
+    # empty stub with the standard columns is the right answer.
+    """
+    CREATE OR REPLACE VIEW obsl_meta.pg_shdescription AS
+    SELECT
+        CAST(NULL AS INTEGER) AS objoid,
+        CAST(NULL AS INTEGER) AS classoid,
+        CAST(NULL AS VARCHAR) AS description
+    WHERE FALSE
     """,
     # pg_collation: DuckDB's pg_catalog is missing this table entirely.
     # We expose an empty view; clients that LEFT JOIN it get NULLs which
@@ -354,6 +376,11 @@ _TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (re.compile(r"\bpg_catalog\.pg_roles\b", re.IGNORECASE), "obsl_meta.pg_roles"),
     (re.compile(r"\bpg_catalog\.pg_database\b", re.IGNORECASE), "obsl_meta.pg_database"),
+    (re.compile(r"\bpg_catalog\.pg_namespace\b", re.IGNORECASE), "obsl_meta.pg_namespace"),
+    (
+        re.compile(r"\bpg_catalog\.pg_shdescription\b", re.IGNORECASE),
+        "obsl_meta.pg_shdescription",
+    ),
 )
 
 
@@ -499,6 +526,12 @@ class CatalogEmulator:
                     continue
                 self._registered_signatures[table_name] = signature
 
+            # Rebuild obsl_meta.pg_database from the loaded models so
+            # BI-tool "list databases" probes see the OBSL namespaces
+            # instead of DuckDB's default catalogs.
+            with contextlib.suppress(Exception):
+                self._con.execute(_pg_database_view_ddl(list(desired.keys())))
+
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
     # ------------------------------------------------------------------
@@ -560,6 +593,48 @@ def _truncate_for_log(sql: str, limit: int = 400) -> str:
     if len(one_line) <= limit:
         return one_line
     return one_line[:limit] + "…"
+
+
+#: Brand name used as the single pg_database row. All loaded models
+#: appear as TABLES inside this one logical "database" — BI-tool trees
+#: get a clean top-level "orionbelt" node and the model names land
+#: where users actually expect them (in the Tables list, not the
+#: Databases list).
+OBSL_DATABASE_NAME = "orionbelt"
+
+
+def _pg_database_view_ddl(model_names: list[str]) -> str:
+    """Build a ``CREATE OR REPLACE VIEW`` for pg_database.
+
+    Always returns a single row named ``OBSL_DATABASE_NAME`` regardless
+    of how many models are loaded — models live in the Tables list,
+    not as sibling databases. ``model_names`` is accepted for API
+    symmetry with the per-model refresh path; the only thing we
+    currently care about is whether refresh was called at all.
+    """
+
+    del model_names  # All models share the single "orionbelt" entry.
+    return f"""
+    CREATE OR REPLACE VIEW obsl_meta.pg_database AS
+    SELECT
+        CAST(16384 AS INTEGER) AS oid,
+        CAST('{OBSL_DATABASE_NAME}' AS VARCHAR) AS datname,
+        CAST(10 AS INTEGER) AS datdba,
+        CAST(6 AS INTEGER) AS encoding,
+        CAST('en_US.UTF-8' AS VARCHAR) AS datcollate,
+        CAST('en_US.UTF-8' AS VARCHAR) AS datctype,
+        CAST(false AS BOOLEAN) AS datistemplate,
+        CAST(true AS BOOLEAN) AS datallowconn,
+        CAST(-1 AS INTEGER) AS datconnlimit,
+        CAST(0 AS BIGINT) AS datfrozenxid,
+        CAST(0 AS BIGINT) AS datminmxid,
+        CAST(1663 AS INTEGER) AS dattablespace,
+        CAST(NULL AS VARCHAR) AS datacl,
+        CAST('c' AS VARCHAR) AS datlocprovider,
+        CAST(NULL AS VARCHAR) AS daticulocale,
+        CAST(NULL AS VARCHAR) AS daticurules,
+        CAST(NULL AS VARCHAR) AS datcollversion
+    """
 
 
 def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, SemanticModel]]:

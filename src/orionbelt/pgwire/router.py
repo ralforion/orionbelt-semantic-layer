@@ -98,7 +98,7 @@ class SemanticRouter:
         """
 
         # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
-        canned = match_canned(sql)
+        canned = match_canned(sql, database=database)
         if canned is not None:
             return canned
 

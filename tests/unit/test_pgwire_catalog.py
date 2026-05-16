@@ -202,6 +202,40 @@ def test_dbeaver_pg_database_probe_returns_full_columns(
     assert result.row_count >= 1
 
 
+def test_pg_database_returns_single_orionbelt_row(
+    manager_with_model: SessionManager,
+) -> None:
+    """pg_database surfaces the OBSL brand, not DuckDB catalog names.
+
+    Every loaded model is exposed as a TABLE under this single database.
+    BI-tool trees get a clean top-level "orionbelt" node and the model
+    names appear in the Tables list — not as sibling databases.
+    """
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    result = emu.execute("SELECT datname FROM pg_catalog.pg_database")
+    names = [row[0] for row in result.rows]
+    assert names == ["orionbelt"]
+    # DuckDB's defaults must not leak through.
+    assert "memory" not in names
+    assert "system" not in names
+
+
+def test_pg_namespace_hides_obsl_meta(
+    manager_with_model: SessionManager,
+) -> None:
+    """Internal obsl_meta schema is filtered from pg_namespace listings."""
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    result = emu.execute("SELECT nspname FROM pg_catalog.pg_namespace")
+    names = [row[0] for row in result.rows]
+    assert "obsl_meta" not in names
+    assert "pg_catalog" not in names
+    assert "information_schema" not in names
+
+
 def test_unhandled_probe_logs_warning(
     manager_with_model: SessionManager, caplog: pytest.LogCaptureFixture
 ) -> None:
