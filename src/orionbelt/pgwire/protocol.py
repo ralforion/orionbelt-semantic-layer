@@ -133,6 +133,162 @@ def parse_query(body: bytes) -> QueryMessage:
 
 
 # ---------------------------------------------------------------------------
+# Extended query protocol (Step 4) — frame bodies
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ParseMessage:
+    """Body of a ``P`` (Parse) frame."""
+
+    statement_name: str
+    query: str
+    param_oids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class BindMessage:
+    """Body of a ``B`` (Bind) frame.
+
+    ``param_values`` carries one entry per parameter — bytes when the
+    client sent the value, ``None`` when the wire length was -1 (NULL).
+    The matching ``param_formats`` tuple is either empty (caller falls
+    back to all-text), a single entry (applies to every parameter), or
+    one entry per parameter (0=text, 1=binary).
+    """
+
+    portal_name: str
+    statement_name: str
+    param_formats: tuple[int, ...]
+    param_values: tuple[bytes | None, ...]
+    result_formats: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class DescribeMessage:
+    """Body of a ``D`` (Describe) frame.
+
+    ``target`` is either ``b"S"`` (statement) or ``b"P"`` (portal).
+    """
+
+    target: bytes
+    name: str
+
+
+@dataclass(frozen=True)
+class ExecuteMessage:
+    """Body of an ``E`` (Execute) frame.
+
+    ``max_rows`` of ``0`` means unbounded — clients use this almost
+    always; ``PortalSuspended`` is for the rare paginated path.
+    """
+
+    portal_name: str
+    max_rows: int
+
+
+@dataclass(frozen=True)
+class CloseMessage:
+    """Body of a ``C`` (Close) frame."""
+
+    target: bytes
+    name: str
+
+
+def _read_cstring(body: bytes, offset: int) -> tuple[str, int]:
+    """Decode a NUL-terminated UTF-8 string starting at ``offset``."""
+
+    end = body.find(b"\x00", offset)
+    if end == -1:
+        raise ProtocolError("Frame missing NUL terminator")
+    return body[offset:end].decode("utf-8", errors="replace"), end + 1
+
+
+def parse_parse(body: bytes) -> ParseMessage:
+    statement_name, offset = _read_cstring(body, 0)
+    query, offset = _read_cstring(body, offset)
+    if offset + 2 > len(body):
+        raise ProtocolError("Parse body too short for param count")
+    (n_params,) = struct.unpack("!H", body[offset : offset + 2])
+    offset += 2
+    expected = offset + 4 * n_params
+    if expected > len(body):
+        raise ProtocolError("Parse body truncated in param oids")
+    oids = struct.unpack(f"!{n_params}I", body[offset:expected]) if n_params else ()
+    return ParseMessage(statement_name=statement_name, query=query, param_oids=tuple(oids))
+
+
+def parse_bind(body: bytes) -> BindMessage:
+    portal_name, offset = _read_cstring(body, 0)
+    statement_name, offset = _read_cstring(body, offset)
+
+    (n_formats,) = struct.unpack("!H", body[offset : offset + 2])
+    offset += 2
+    formats = struct.unpack(f"!{n_formats}H", body[offset : offset + 2 * n_formats])
+    offset += 2 * n_formats
+
+    (n_params,) = struct.unpack("!H", body[offset : offset + 2])
+    offset += 2
+    values: list[bytes | None] = []
+    for _ in range(n_params):
+        if offset + 4 > len(body):
+            raise ProtocolError("Bind body truncated in value length")
+        (length,) = struct.unpack("!i", body[offset : offset + 4])
+        offset += 4
+        if length == -1:
+            values.append(None)
+            continue
+        if length < 0:
+            raise ProtocolError(f"Invalid Bind value length: {length}")
+        if offset + length > len(body):
+            raise ProtocolError("Bind body truncated in value bytes")
+        values.append(body[offset : offset + length])
+        offset += length
+
+    (n_result_formats,) = struct.unpack("!H", body[offset : offset + 2])
+    offset += 2
+    result_formats = struct.unpack(
+        f"!{n_result_formats}H", body[offset : offset + 2 * n_result_formats]
+    )
+
+    return BindMessage(
+        portal_name=portal_name,
+        statement_name=statement_name,
+        param_formats=tuple(formats),
+        param_values=tuple(values),
+        result_formats=tuple(result_formats),
+    )
+
+
+def parse_describe(body: bytes) -> DescribeMessage:
+    if not body:
+        raise ProtocolError("Describe body empty")
+    target = body[0:1]
+    if target not in (b"S", b"P"):
+        raise ProtocolError(f"Describe target must be 'S' or 'P', got {target!r}")
+    name, _ = _read_cstring(body, 1)
+    return DescribeMessage(target=target, name=name)
+
+
+def parse_execute(body: bytes) -> ExecuteMessage:
+    portal_name, offset = _read_cstring(body, 0)
+    if offset + 4 > len(body):
+        raise ProtocolError("Execute body too short for max_rows")
+    (max_rows,) = struct.unpack("!I", body[offset : offset + 4])
+    return ExecuteMessage(portal_name=portal_name, max_rows=max_rows)
+
+
+def parse_close(body: bytes) -> CloseMessage:
+    if not body:
+        raise ProtocolError("Close body empty")
+    target = body[0:1]
+    if target not in (b"S", b"P"):
+        raise ProtocolError(f"Close target must be 'S' or 'P', got {target!r}")
+    name, _ = _read_cstring(body, 1)
+    return CloseMessage(target=target, name=name)
+
+
+# ---------------------------------------------------------------------------
 # Writers — each returns bytes; caller writes to the socket.
 # ---------------------------------------------------------------------------
 
@@ -217,3 +373,37 @@ def build_error_response(*, severity: str, code: str, message: str) -> bytes:
         + b"\x00"
     )
     return _frame(b"E", fields)
+
+
+# ---------------------------------------------------------------------------
+# Extended query protocol (Step 4) — response frames
+# ---------------------------------------------------------------------------
+
+
+def build_parse_complete() -> bytes:
+    return _frame(b"1", b"")
+
+
+def build_bind_complete() -> bytes:
+    return _frame(b"2", b"")
+
+
+def build_close_complete() -> bytes:
+    return _frame(b"3", b"")
+
+
+def build_no_data() -> bytes:
+    return _frame(b"n", b"")
+
+
+def build_empty_query_response() -> bytes:
+    return _frame(b"I", b"")
+
+
+def build_parameter_description(param_oids: list[int]) -> bytes:
+    """ParameterDescription (``t``) — N parameter type OIDs."""
+
+    payload = struct.pack("!H", len(param_oids))
+    for oid in param_oids:
+        payload += struct.pack("!I", oid)
+    return _frame(b"t", payload)

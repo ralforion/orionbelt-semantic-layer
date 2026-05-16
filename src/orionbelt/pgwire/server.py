@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import authenticate
+from orionbelt.pgwire.extended import ExtendedSession
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +210,21 @@ class PgWireServer:
             startup.database,
         )
 
-        # Simple-query loop. Extended protocol arrives in Step 4.
+        # Per-connection extended-query state.  Each Bind eagerly runs
+        # the query through ``self._handler``; the cached reply replays
+        # for the matching Describe + Execute pair.
+        extended = ExtendedSession(handler=self._handler, database=startup.database)
+        skip_until_sync = False
+
         while True:
             tag, body = await protocol.read_message(reader.readexactly)
             if tag == b"X":  # Terminate
                 return
             if tag == b"Q":
+                # A Simple Query implicitly closes any pending extended
+                # transaction; reset the skip-until-Sync flag so errors
+                # don't leak between modes.
+                skip_until_sync = False
                 query = protocol.parse_query(body)
                 try:
                     reply = await asyncio.wait_for(
@@ -233,22 +243,65 @@ class PgWireServer:
                 writer.write(protocol.build_ready_for_query())
                 await writer.drain()
                 continue
-            # Unknown / not-yet-supported tag (Parse, Bind, …).  Reply
-            # with a clean error but keep the session alive — clients
-            # that send an extended-query sequence will probably reset.
-            writer.write(
-                protocol.build_error_response(
+
+            # ---- Extended query protocol --------------------------------
+            if tag == b"S":  # Sync — emit ReadyForQuery, clear skip flag
+                skip_until_sync = False
+                writer.write(protocol.build_ready_for_query())
+                await writer.drain()
+                continue
+
+            if skip_until_sync:
+                # PostgreSQL behaviour: after an error the server drops
+                # extended-query messages until the client catches up
+                # with Sync.  Flush is allowed but no-ops.
+                continue
+
+            if tag == b"H":  # Flush — no-op; we already drain after each reply
+                await writer.drain()
+                continue
+
+            try:
+                reply_bytes = await self._dispatch_extended(tag, body, extended)
+            except protocol.ProtocolError as exc:
+                reply_bytes = protocol.build_error_response(
                     severity="ERROR",
-                    code="0A000",
-                    message=(
-                        f"pgwire Step 1 only supports the Simple Query "
-                        f"protocol (received frame tag {tag!r}). Extended "
-                        "protocol lands in Step 4."
-                    ),
+                    code="08P01",  # protocol_violation
+                    message=str(exc),
                 )
-            )
-            writer.write(protocol.build_ready_for_query())
+
+            writer.write(reply_bytes)
             await writer.drain()
+
+            # Any ErrorResponse in extended-query mode triggers the
+            # skip-until-Sync state described above.
+            if _contains_error_response(reply_bytes):
+                skip_until_sync = True
+
+    async def _dispatch_extended(
+        self,
+        tag: bytes,
+        body: bytes,
+        extended: ExtendedSession,
+    ) -> bytes:
+        if tag == b"P":
+            return extended.parse(protocol.parse_parse(body))
+        if tag == b"B":
+            return await asyncio.wait_for(
+                extended.bind(protocol.parse_bind(body)),
+                timeout=self.query_timeout,
+            )
+        if tag == b"D":
+            return extended.describe(protocol.parse_describe(body))
+        if tag == b"E":
+            return extended.execute(protocol.parse_execute(body))
+        if tag == b"C":
+            return extended.close(protocol.parse_close(body))
+        return protocol.build_error_response(
+            severity="ERROR",
+            code="0A000",
+            message=f"pgwire frame tag {tag!r} is not implemented",
+        )
 
     async def _safe_send_error(
         self,
@@ -264,6 +317,17 @@ class PgWireServer:
             await writer.drain()
         except Exception:
             pass
+
+
+def _contains_error_response(reply: bytes) -> bool:
+    """Quick scan: does this reply contain an ErrorResponse (``E``) frame?
+
+    Extended-query mode requires the server to enter skip-until-Sync
+    after any error; the router emits errors as a single ``E`` frame so
+    a one-byte check is enough.
+    """
+
+    return reply.startswith(b"E")
 
 
 def _startup_parameters() -> dict[str, str]:

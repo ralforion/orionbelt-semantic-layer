@@ -294,6 +294,190 @@ async def test_show_server_version_returns_canned_string(
         await writer.wait_closed()
 
 
+# ---------------------------------------------------------------------------
+# Step 4: extended-query protocol over a live socket.
+# ---------------------------------------------------------------------------
+
+
+def _parse_frame(buf: bytes) -> tuple[bytes, bytes]:
+    """Wrap a body in tag + length for client → server frames."""
+
+    tag, body = buf[:1], buf[1:]
+    return tag, body
+
+
+def _build_parse(stmt_name: str, query: str, oids: tuple[int, ...] = ()) -> bytes:
+    payload = stmt_name.encode() + b"\x00" + query.encode() + b"\x00" + struct.pack("!H", len(oids))
+    for oid in oids:
+        payload += struct.pack("!I", oid)
+    return b"P" + struct.pack("!I", 4 + len(payload)) + payload
+
+
+def _build_bind(
+    portal: str,
+    stmt: str,
+    values: list[bytes | None] | None = None,
+) -> bytes:
+    values = values or []
+    payload = (
+        portal.encode()
+        + b"\x00"
+        + stmt.encode()
+        + b"\x00"
+        + struct.pack("!H", 0)  # no format codes — defaults to text
+        + struct.pack("!H", len(values))
+    )
+    for v in values:
+        if v is None:
+            payload += struct.pack("!i", -1)
+        else:
+            payload += struct.pack("!I", len(v)) + v
+    payload += struct.pack("!H", 0)  # no result format codes
+    return b"B" + struct.pack("!I", 4 + len(payload)) + payload
+
+
+def _build_describe(target: bytes, name: str) -> bytes:
+    payload = target + name.encode() + b"\x00"
+    return b"D" + struct.pack("!I", 4 + len(payload)) + payload
+
+
+def _build_execute(portal: str, max_rows: int = 0) -> bytes:
+    payload = portal.encode() + b"\x00" + struct.pack("!I", max_rows)
+    return b"E" + struct.pack("!I", 4 + len(payload)) + payload
+
+
+def _build_sync() -> bytes:
+    return b"S" + struct.pack("!I", 4)
+
+
+def _build_close(target: bytes, name: str) -> bytes:
+    payload = target + name.encode() + b"\x00"
+    return b"C" + struct.pack("!I", 4 + len(payload)) + payload
+
+
+async def test_extended_query_select_one_round_trip(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    """Parse → Bind → Describe('P') → Execute → Sync returns one row."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(
+            _build_parse("", "SELECT 1", ())
+            + _build_bind("", "", [])
+            + _build_describe(b"P", "")
+            + _build_execute("", 0)
+            + _build_sync()
+        )
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        # Expected ordering: ParseComplete, BindComplete, RowDescription,
+        # DataRow, CommandComplete, ReadyForQuery.
+        assert tags == [b"1", b"2", b"T", b"D", b"C", b"Z"]
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_extended_query_parameter_substitution(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    """Bind values flow through the parameter substituter into the SQL."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        # The fake_execute in the fixture ignores the SQL; we just need
+        # the substitution + protocol flow to complete cleanly.
+        writer.write(
+            _build_parse(
+                "p1",
+                "SELECT $1::text AS value",
+                (protocol.OID_TEXT,),
+            )
+            + _build_bind("portal1", "p1", [b"hello"])
+            + _build_execute("portal1", 0)
+            + _build_sync()
+        )
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        # ParseComplete, BindComplete, DataRow*, CommandComplete, RFQ.
+        assert tags[0] == b"1"
+        assert tags[1] == b"2"
+        assert tags[-1] == b"Z"
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_extended_describe_statement_returns_param_desc_and_no_data(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    """Describe('S') before Bind responds with ParameterDescription + NoData."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(
+            _build_parse("s1", "SELECT $1", (protocol.OID_TEXT,))
+            + _build_describe(b"S", "s1")
+            + _build_sync()
+        )
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        # ParseComplete, ParameterDescription, NoData, RFQ.
+        assert tags == [b"1", b"t", b"n", b"Z"]
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_extended_error_then_sync_recovers_session(
+    pgwire_with_router: PgWireServer,
+) -> None:
+    """An error in extended mode enters skip-until-Sync; Sync restores."""
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
+    try:
+        writer.write(_startup_payload({"user": "obsl", "database": "commerce"}))
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        # Bind a statement that doesn't exist → ErrorResponse.
+        writer.write(_build_bind("", "missing", []) + _build_execute("", 0) + _build_sync())
+        await writer.drain()
+        reply = await _drain_until_ready(reader)
+        tags = [t for t, _ in reply]
+        assert tags[0] == b"E"
+        # The Execute message issued mid-error is dropped silently; the
+        # final RFQ from Sync still appears.
+        assert tags[-1] == b"Z"
+    finally:
+        writer.write(_terminate_frame())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_unknown_database_returns_3d000(pgwire_with_router: PgWireServer) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", pgwire_with_router.bound_port)
     try:

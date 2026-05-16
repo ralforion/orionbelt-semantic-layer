@@ -156,3 +156,100 @@ def test_read_startup_message_rejects_unknown_protocol() -> None:
     reader = _ByteReader(payload)
     with pytest.raises(protocol.ProtocolError):
         asyncio.run(protocol.read_startup_message(reader.readexactly))
+
+
+# ---------------------------------------------------------------------------
+# Extended query protocol (Step 4) — frame parsers and writers.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_parse_decodes_statement_and_oids() -> None:
+    body = (
+        b"my_stmt\x00"
+        + b"SELECT $1, $2\x00"
+        + struct.pack("!H", 2)
+        + struct.pack("!II", protocol.OID_TEXT, protocol.OID_INT4)
+    )
+    msg = protocol.parse_parse(body)
+    assert msg.statement_name == "my_stmt"
+    assert msg.query == "SELECT $1, $2"
+    assert msg.param_oids == (protocol.OID_TEXT, protocol.OID_INT4)
+
+
+def test_parse_parse_handles_unnamed_statement() -> None:
+    body = b"\x00SELECT 1\x00" + struct.pack("!H", 0)
+    msg = protocol.parse_parse(body)
+    assert msg.statement_name == ""
+    assert msg.query == "SELECT 1"
+    assert msg.param_oids == ()
+
+
+def test_parse_bind_decodes_values_and_formats() -> None:
+    body = (
+        b"p\x00s\x00"
+        + struct.pack("!H", 2)  # 2 param formats
+        + struct.pack("!HH", 0, 0)  # text, text
+        + struct.pack("!H", 2)  # 2 params
+        + struct.pack("!I", 3)
+        + b"abc"
+        + struct.pack("!i", -1)  # NULL second param
+        + struct.pack("!H", 1)  # 1 result format
+        + struct.pack("!H", 0)
+    )
+    msg = protocol.parse_bind(body)
+    assert msg.portal_name == "p"
+    assert msg.statement_name == "s"
+    assert msg.param_formats == (0, 0)
+    assert msg.param_values == (b"abc", None)
+    assert msg.result_formats == (0,)
+
+
+def test_parse_describe_target_validation() -> None:
+    with pytest.raises(protocol.ProtocolError):
+        protocol.parse_describe(b"X\x00")
+    msg = protocol.parse_describe(b"P\x00")
+    assert msg.target == b"P"
+    assert msg.name == ""
+
+
+def test_parse_execute_includes_max_rows() -> None:
+    body = b"p\x00" + struct.pack("!I", 42)
+    msg = protocol.parse_execute(body)
+    assert msg.portal_name == "p"
+    assert msg.max_rows == 42
+
+
+def test_parse_close_distinguishes_statement_and_portal() -> None:
+    stmt = protocol.parse_close(b"Smy_stmt\x00")
+    portal = protocol.parse_close(b"Pportal\x00")
+    assert stmt.target == b"S"
+    assert stmt.name == "my_stmt"
+    assert portal.target == b"P"
+
+
+def test_build_parse_complete_is_empty_one_byte() -> None:
+    frame = protocol.build_parse_complete()
+    assert frame == b"1" + struct.pack("!I", 4)
+
+
+def test_build_bind_complete_is_empty() -> None:
+    assert protocol.build_bind_complete() == b"2" + struct.pack("!I", 4)
+
+
+def test_build_close_complete_is_empty() -> None:
+    assert protocol.build_close_complete() == b"3" + struct.pack("!I", 4)
+
+
+def test_build_no_data_and_empty_query_response() -> None:
+    assert protocol.build_no_data() == b"n" + struct.pack("!I", 4)
+    assert protocol.build_empty_query_response() == b"I" + struct.pack("!I", 4)
+
+
+def test_build_parameter_description_lists_oids() -> None:
+    frame = protocol.build_parameter_description([protocol.OID_TEXT, protocol.OID_INT4])
+    assert frame[:1] == b"t"
+    payload = frame[5:]
+    (n,) = struct.unpack("!H", payload[:2])
+    assert n == 2
+    oids = struct.unpack("!II", payload[2:10])
+    assert oids == (protocol.OID_TEXT, protocol.OID_INT4)
