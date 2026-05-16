@@ -119,8 +119,8 @@ def test_psycopg3_information_schema_columns(
     with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = %s ORDER BY ordinal_position",
-            ("commerce",),
+            "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+            ("commerce", "model"),
         )
         names = [row[0] for row in cur.fetchall()]
     assert "Customer Country" in names
@@ -142,8 +142,9 @@ def test_psycopg3_pg_class_dt_style(
             "AND n.nspname NOT IN ('pg_catalog','information_schema') "
             "ORDER BY 1,2"
         )
-        names = [row[1] for row in cur.fetchall()]
-    assert "commerce" in names
+        rows = [(row[0], row[1]) for row in cur.fetchall()]
+    # Per-model schema layout: data table is ``<model>.model``.
+    assert ("commerce", "model") in rows
 
 
 def test_psycopg3_semantic_query_returns_rows(

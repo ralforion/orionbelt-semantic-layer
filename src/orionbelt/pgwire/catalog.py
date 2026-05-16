@@ -86,6 +86,19 @@ _STUB_MACROS: tuple[str, ...] = (
     "CREATE OR REPLACE MACRO col_description(oid, col) AS NULL",
     "CREATE OR REPLACE MACRO format_type(oid, typemod) AS 'unknown'",
     "CREATE OR REPLACE MACRO pg_encoding_to_char(enc) AS 'UTF8'",
+    # DBeaver fetches the keyword list to colour the SQL editor.  We
+    # emit an empty rowset; the client's hard-coded fallback covers
+    # the user-experience gap.
+    "CREATE OR REPLACE MACRO pg_get_keywords() AS TABLE "
+    "(SELECT CAST(NULL AS VARCHAR) AS word, CAST(NULL AS VARCHAR) AS catcode, "
+    "CAST(NULL AS VARCHAR) AS catdesc WHERE FALSE)",
+    # DBeaver's table-detail dialog asks for storage statistics. OBSL
+    # models are virtual so the honest answer is 0.
+    "CREATE OR REPLACE MACRO pg_total_relation_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_relation_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_indexes_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_table_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_database_size(oid) AS 0",
 )
 
 
@@ -244,14 +257,13 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(NULL AS VARCHAR) AS datcollversion
     WHERE FALSE
     """,
-    # pg_namespace override hides our internal obsl_meta schema from
-    # BI-tool schema trees. ``pg_catalog`` / ``information_schema``
-    # are also dropped because BI tools render them separately.
+    # pg_namespace placeholder — the real view is rebuilt during
+    # refresh() with exactly one row per loaded model schema so BI
+    # tools see only the OBSL surface (no DuckDB defaults, no
+    # ``pg_catalog`` / ``information_schema`` / ``obsl_meta`` leak).
     """
     CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS
-    SELECT n.*
-    FROM pg_catalog.pg_namespace n
-    WHERE n.nspname NOT IN ('obsl_meta', 'pg_catalog', 'information_schema')
+    SELECT n.* FROM pg_catalog.pg_namespace n WHERE FALSE
     """,
     # pg_shdescription: DBeaver's column-detail dialog joins this
     # table for shared-object comments. DuckDB doesn't have it; an
@@ -512,40 +524,46 @@ class CatalogEmulator:
                 desired_views[view_name] = view_ddl
 
         with self._lock:
-            # Drop tables that no longer have a backing model.
-            for table in list(self._registered_signatures):
-                if table not in desired:
+            # Drop schemas + tables that no longer have a backing model.
+            for schema in list(self._registered_signatures):
+                if schema not in desired:
                     with contextlib.suppress(Exception):
-                        self._con.execute(f'DROP TABLE IF EXISTS "{table}"')
-                    self._registered_signatures.pop(table, None)
+                        self._con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+                    self._registered_signatures.pop(schema, None)
 
-            # Create or recreate only tables whose DDL signature changed.
-            # Stable tables keep their pg_class.oid across catalog probes
-            # — critical for psql ``\\d``'s two-step lookup pattern.
-            for table_name, signature in desired.items():
-                if self._registered_signatures.get(table_name) == signature:
+            # Create or recreate per-model schemas whose DDL signature
+            # changed.  The DDL bundle is multi-statement (schema +
+            # table) so we run each statement separately.
+            for schema_name, signature in desired.items():
+                if self._registered_signatures.get(schema_name) == signature:
                     continue
                 with contextlib.suppress(Exception):
-                    self._con.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+                    self._con.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
                 try:
-                    self._con.execute(ddls[table_name])
+                    for stmt in ddls[schema_name].split(";"):
+                        stmt = stmt.strip()
+                        if stmt:
+                            self._con.execute(stmt)
                 except duckdb.Error:  # pragma: no cover — defensive guard
-                    logger.exception("Failed to register catalog table for model '%s'", table_name)
+                    logger.exception(
+                        "Failed to register catalog schema for model '%s'", schema_name
+                    )
                     continue
-                self._registered_signatures[table_name] = signature
+                self._registered_signatures[schema_name] = signature
 
-            # Drop stale metadata views (model removed) and rebuild any
-            # whose DDL signature changed.
+            # Drop stale metadata views (model removed). Active views
+            # for active schemas were already recreated via CASCADE
+            # above; here we just refresh signatures for views whose
+            # bodies changed but whose owning schema survives.
             for view in list(self._registered_view_signatures):
                 if view not in desired_views:
                     with contextlib.suppress(Exception):
-                        self._con.execute(f'DROP VIEW IF EXISTS "{view}"')
+                        schema, _, name = view.partition(".")
+                        self._con.execute(f'DROP VIEW IF EXISTS "{schema}"."{name}"')
                     self._registered_view_signatures.pop(view, None)
             for view_name, signature in desired_views.items():
                 if self._registered_view_signatures.get(view_name) == signature:
                     continue
-                with contextlib.suppress(Exception):
-                    self._con.execute(f'DROP VIEW IF EXISTS "{view_name}"')
                 try:
                     self._con.execute(signature)
                 except duckdb.Error:  # pragma: no cover — defensive guard
@@ -558,6 +576,12 @@ class CatalogEmulator:
             # instead of DuckDB's default catalogs.
             with contextlib.suppress(Exception):
                 self._con.execute(_pg_database_view_ddl(list(desired.keys())))
+            # Rebuild obsl_meta.pg_namespace so the BI-tool schema list
+            # contains only loaded-model schemas — no ``main`` /
+            # ``obsl_meta`` / ``pg_catalog`` / ``information_schema``
+            # noise.
+            with contextlib.suppress(Exception):
+                self._con.execute(_pg_namespace_view_ddl(list(desired.keys())))
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
@@ -628,6 +652,28 @@ def _truncate_for_log(sql: str, limit: int = 400) -> str:
 #: where users actually expect them (in the Tables list, not the
 #: Databases list).
 OBSL_DATABASE_NAME = "orionbelt"
+
+
+def _pg_namespace_view_ddl(model_names: list[str]) -> str:
+    """Rebuild ``obsl_meta.pg_namespace`` to expose only model schemas.
+
+    DuckDB's ``pg_catalog.pg_namespace`` lists ``main``, ``obsl_meta``,
+    ``pg_catalog`` and ``information_schema`` in addition to the
+    schemas we registered for each model. BI-tool schema trees should
+    show only the OBSL surface — one row per loaded model.
+    """
+
+    if not model_names:
+        return (
+            "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
+            "SELECT n.* FROM pg_catalog.pg_namespace n WHERE FALSE"
+        )
+    quoted_names = ", ".join("'" + n.replace("'", "''") + "'" for n in model_names)
+    return (
+        "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
+        "SELECT n.* FROM pg_catalog.pg_namespace n "
+        f"WHERE n.nspname IN ({quoted_names})"
+    )
 
 
 def _pg_database_view_ddl(model_names: list[str]) -> str:
@@ -722,13 +768,25 @@ def _safe_model_table_name(name: str) -> str:
     return name.replace('"', '""')
 
 
-def _build_table_ddl(table_name: str, model: SemanticModel) -> str | None:
-    """Build the ``CREATE TABLE`` for a model.
+#: Name of the single data TABLE inside each per-model schema.
+#: BI-tool trees show ``<model_name>.model`` — schema = model name,
+#: table = the canonical "model" label.  Mirrors the convention
+#: documented in the Arrow Flight catalog handler.
+MODEL_TABLE_NAME = "model"
 
-    Columns: every dimension, measure, and metric exposed by the
-    model.  Names are quoted because OBSL labels routinely contain
-    spaces and punctuation.  Returns ``None`` if no columns survive
-    deduplication — DuckDB rejects empty column lists.
+
+def _build_table_ddl(schema_name: str, model: SemanticModel) -> str | None:
+    """Build the per-model schema + ``CREATE TABLE schema.model`` pair.
+
+    Each loaded model lives in its own DuckDB schema named after the
+    model. The data table inside is always called ``model`` (mirrors
+    the Arrow Flight surface convention), so qualified references read
+    ``<model_name>.model`` and unqualified references are unambiguous
+    inside the schema.
+
+    Columns are every dimension / measure / metric exposed by the
+    model. Returns ``None`` if no columns survive deduplication —
+    DuckDB rejects empty column lists.
     """
 
     columns: list[str] = []
@@ -741,8 +799,12 @@ def _build_table_ddl(table_name: str, model: SemanticModel) -> str | None:
         columns.append(f'"{quoted}" {sql_type}')
     if not columns:
         return None
-    quoted_table = table_name.replace('"', '""')
-    return f'CREATE TABLE "{quoted_table}" ({", ".join(columns)})'
+    quoted_schema = schema_name.replace('"', '""')
+    return (
+        f'CREATE SCHEMA IF NOT EXISTS "{quoted_schema}";\n'
+        f'CREATE TABLE "{quoted_schema}"."{MODEL_TABLE_NAME}" '
+        f"({', '.join(columns)})"
+    )
 
 
 def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
@@ -754,41 +816,37 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         yield label, _metric_sql_type(metric)
 
 
-def _build_metadata_views(table_name: str, model: SemanticModel) -> Iterator[tuple[str, str]]:
-    """Emit ``(view_name, ddl)`` per model for the dim/measure/metric trio.
+def _build_metadata_views(schema_name: str, model: SemanticModel) -> Iterator[tuple[str, str]]:
+    """Emit ``(qualified_view_name, ddl)`` per model for the trio.
 
-    These views surface OBSL's semantic surface under DBeaver's "Views"
-    node so users can introspect what the model exposes without leaving
-    their SQL client. Each row is hand-built from VALUES — DuckDB has
-    no foreign-data adapter for our Python model objects.
+    Both the view name and the DDL include the per-model schema, so
+    each loaded model gets its own ``<model>.dimensions`` /
+    ``<model>.measures`` / etc. — no cross-model collisions.
     """
 
-    # Short summary views (name + data_type + description) for the
-    # "give me the surface in three columns" use case.
     yield (
-        f"{table_name}_dimensions",
-        _simple_dimensions_view_ddl(table_name, model),
+        f"{schema_name}.dimensions",
+        _simple_dimensions_view_ddl(schema_name, model),
     )
     yield (
-        f"{table_name}_measures",
-        _simple_measures_view_ddl(table_name, model),
+        f"{schema_name}.measures",
+        _simple_measures_view_ddl(schema_name, model),
     )
     yield (
-        f"{table_name}_metrics",
-        _simple_metrics_view_ddl(table_name, model),
-    )
-    # Full metadata views — every attribute we expose per kind.
-    yield (
-        f"{table_name}_dimensions_metadata",
-        _dimensions_view_ddl(table_name, model),
+        f"{schema_name}.metrics",
+        _simple_metrics_view_ddl(schema_name, model),
     )
     yield (
-        f"{table_name}_measures_metadata",
-        _measures_view_ddl(table_name, model),
+        f"{schema_name}._dimensions_metadata",
+        _dimensions_view_ddl(schema_name, model),
     )
     yield (
-        f"{table_name}_metrics_metadata",
-        _metrics_view_ddl(table_name, model),
+        f"{schema_name}._measures_metadata",
+        _measures_view_ddl(schema_name, model),
+    )
+    yield (
+        f"{schema_name}._metrics_metadata",
+        _metrics_view_ddl(schema_name, model),
     )
 
 
@@ -813,8 +871,13 @@ def _simple_view_body(
     return f"SELECT * FROM (VALUES {', '.join(rows)}) AS t({col_list})"
 
 
-def _simple_dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
-    quoted = table_name.replace('"', '""')
+def _qualified(schema: str, name: str) -> str:
+    """Return ``"schema"."name"`` with both identifiers safely quoted."""
+
+    return f'"{schema.replace(chr(34), chr(34) * 2)}"."{name}"'
+
+
+def _simple_dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = [
         "("
         + ", ".join(
@@ -823,11 +886,10 @@ def _simple_dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
         + ")"
         for label, dim in model.dimensions.items()
     ]
-    return f'CREATE OR REPLACE VIEW "{quoted}_dimensions" AS {_simple_view_body(rows)}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'dimensions')} AS {_simple_view_body(rows)}"
 
 
-def _simple_measures_view_ddl(table_name: str, model: SemanticModel) -> str:
-    quoted = table_name.replace('"', '""')
+def _simple_measures_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = [
         "("
         + ", ".join(
@@ -840,11 +902,10 @@ def _simple_measures_view_ddl(table_name: str, model: SemanticModel) -> str:
         + ")"
         for label, measure in model.measures.items()
     ]
-    return f'CREATE OR REPLACE VIEW "{quoted}_measures" AS {_simple_view_body(rows)}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'measures')} AS {_simple_view_body(rows)}"
 
 
-def _simple_metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
-    quoted = table_name.replace('"', '""')
+def _simple_metrics_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = [
         "("
         + ", ".join(
@@ -853,10 +914,10 @@ def _simple_metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
         + ")"
         for label, metric in model.metrics.items()
     ]
-    return f'CREATE OR REPLACE VIEW "{quoted}_metrics" AS {_simple_view_body(rows)}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, 'metrics')} AS {_simple_view_body(rows)}"
 
 
-def _dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
+def _dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = []
     for label, dim in model.dimensions.items():
         rows.append(
@@ -872,7 +933,6 @@ def _dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
             )
             + ")"
         )
-    quoted = table_name.replace('"', '""')
     if not rows:
         body = (
             "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS data_type, "
@@ -885,15 +945,13 @@ def _dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
             + ", ".join(rows)
             + ") AS t(name, data_type, data_object, column_name, description)"
         )
-    return f'CREATE OR REPLACE VIEW "{quoted}_dimensions_metadata" AS {body}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, '_dimensions_metadata')} AS {body}"
 
 
-def _measures_view_ddl(table_name: str, model: SemanticModel) -> str:
+def _measures_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = []
     for label, measure in model.measures.items():
-        source_objects = ", ".join(
-            sorted({ref.view for ref in measure.columns if ref.view})
-        )
+        source_objects = ", ".join(sorted({ref.view for ref in measure.columns if ref.view}))
         rows.append(
             "("
             + ", ".join(
@@ -908,7 +966,6 @@ def _measures_view_ddl(table_name: str, model: SemanticModel) -> str:
             )
             + ")"
         )
-    quoted = table_name.replace('"', '""')
     if not rows:
         body = (
             "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS data_type, "
@@ -923,10 +980,10 @@ def _measures_view_ddl(table_name: str, model: SemanticModel) -> str:
             + ") AS t(name, data_type, aggregation, expression, "
             "source_data_objects, description)"
         )
-    return f'CREATE OR REPLACE VIEW "{quoted}_measures_metadata" AS {body}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, '_measures_metadata')} AS {body}"
 
 
-def _metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
+def _metrics_view_ddl(schema: str, model: SemanticModel) -> str:
     rows = []
     for label, metric in model.metrics.items():
         rows.append(
@@ -941,7 +998,6 @@ def _metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
             )
             + ")"
         )
-    quoted = table_name.replace('"', '""')
     if not rows:
         body = (
             "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS type, "
@@ -954,7 +1010,7 @@ def _metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
             + ", ".join(rows)
             + ") AS t(name, type, expression, description)"
         )
-    return f'CREATE OR REPLACE VIEW "{quoted}_metrics_metadata" AS {body}'
+    return f"CREATE OR REPLACE VIEW {_qualified(schema, '_metrics_metadata')} AS {body}"
 
 
 def _dim_sql_type(dim: Dimension) -> str:

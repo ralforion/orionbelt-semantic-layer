@@ -17,14 +17,26 @@ def manager_with_model() -> SessionManager:
     return mgr
 
 
-def test_refresh_creates_one_table_per_model(manager_with_model: SessionManager) -> None:
+def test_refresh_creates_one_schema_per_model(manager_with_model: SessionManager) -> None:
+    """Each loaded model gets its own DuckDB schema named after the model."""
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    result = emu.execute("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name")
+    schemas = [row[0] for row in result.rows]
+    assert "commerce" in schemas
+
+
+def test_data_table_is_named_model(manager_with_model: SessionManager) -> None:
+    """The data table inside each model schema is called ``model``."""
+
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT relname FROM pg_catalog.pg_class WHERE relkind='r' ORDER BY relname"
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema='commerce' AND table_type='BASE TABLE'"
     )
-    table_names = [row[0] for row in result.rows]
-    assert "commerce" in table_names
+    assert [row[0] for row in result.rows] == ["model"]
 
 
 def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
@@ -34,7 +46,8 @@ def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
     emu.refresh(manager_with_model)
     result = emu.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name='commerce' ORDER BY ordinal_position"
+        "WHERE table_schema='commerce' AND table_name='model' "
+        "ORDER BY ordinal_position"
     )
     columns = [row[0] for row in result.rows]
     # SAMPLE_MODEL_YAML exposes one dim, three measures, and two metrics.
@@ -50,7 +63,10 @@ def test_refresh_is_idempotent(manager_with_model: SessionManager) -> None:
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     emu.refresh(manager_with_model)
-    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_class WHERE relname='commerce'")
+    result = emu.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_schema='commerce' AND table_name='model'"
+    )
     assert result.rows[0][0] == 1
 
 
@@ -58,19 +74,20 @@ def test_refresh_drops_stale_models() -> None:
     """A model removed from the SessionManager disappears from the catalog."""
 
     mgr = SessionManager()
-    store = mgr.get_or_create_named("temp")
+    store = mgr.get_or_create_named("temp_model")
     store.load_model(SAMPLE_MODEL_YAML)
     emu = CatalogEmulator()
     emu.refresh(mgr)
-    # Reset SessionManager to empty and refresh.
     empty = SessionManager()
     emu.refresh(empty)
-    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_class WHERE relname='temp'")
+    result = emu.execute(
+        "SELECT count(*) FROM information_schema.schemata WHERE schema_name='temp_model'"
+    )
     assert result.rows[0][0] == 0
 
 
 def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) -> None:
-    """\\dt's actual SQL must surface the model table."""
+    """\\dt's actual SQL must surface the model table under its own schema."""
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
@@ -83,15 +100,18 @@ def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) ->
         "ORDER BY 1,2"
     )
     result = emu.execute(sql)
-    names = [row[1] for row in result.rows]
-    assert "commerce" in names
+    rows = [(row[0], row[1]) for row in result.rows]
+    assert ("commerce", "model") in rows
 
 
-def test_empty_session_manager_yields_no_tables() -> None:
+def test_empty_session_manager_yields_no_model_schemas() -> None:
     emu = CatalogEmulator()
     emu.refresh(SessionManager())
-    result = emu.execute("SELECT relname FROM pg_catalog.pg_class WHERE relkind='r'")
-    assert result.rows == []
+    result = emu.execute(
+        "SELECT count(*) FROM information_schema.schemata "
+        "WHERE schema_name NOT IN ('main','obsl_meta','pg_catalog','information_schema')"
+    )
+    assert result.rows[0][0] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -109,13 +129,13 @@ def test_obsl_meta_pg_class_has_psql16_columns(
     result = emu.execute(
         "SELECT relname, relforcerowsecurity, relrowsecurity, relhasoids, "
         "relispartition, relreplident, relpersistence "
-        "FROM pg_catalog.pg_class WHERE relname='commerce'"
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE c.relname='model' AND n.nspname='commerce'"
     )
     assert result.row_count == 1
     row = result.rows[0]
-    assert row[0] == "commerce"
-    # All Boolean defaults are false; replident / persistence are
-    # one-character strings; no NULLs anywhere.
+    assert row[0] == "model"
     assert row[1] is False
     assert row[6] == "p"
 
@@ -131,29 +151,30 @@ def test_obsl_meta_pg_attribute_returns_real_postgres_oids(
         "SELECT a.attname, a.atttypid "
         "FROM pg_catalog.pg_attribute a "
         "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
-        "WHERE c.relname='commerce' ORDER BY a.attnum"
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relname='model' AND n.nspname='commerce' "
+        "ORDER BY a.attnum"
     )
     types = {row[0]: row[1] for row in result.rows}
-    # SAMPLE_MODEL_YAML's "Customer Country" is a string dimension → OID 1043 (varchar).
     assert types.get("Customer Country") == 1043
-    # "Total Revenue" / "Order Count" are floats → OID 701 (float8).
     assert types.get("Total Revenue") == 701
 
 
-def test_refresh_preserves_pg_class_oid_across_calls(
+def test_refresh_preserves_data_table_oid_across_calls(
     manager_with_model: SessionManager,
 ) -> None:
     """Stable refresh: same model → same oid (psql \\d's two-step probe)."""
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
-    oid_before = emu.execute("SELECT oid FROM pg_catalog.pg_class WHERE relname='commerce'").rows[
-        0
-    ][0]
+    sql = (
+        "SELECT c.oid FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE c.relname='model' AND n.nspname='commerce'"
+    )
+    oid_before = emu.execute(sql).rows[0][0]
     emu.refresh(manager_with_model)
-    oid_after = emu.execute("SELECT oid FROM pg_catalog.pg_class WHERE relname='commerce'").rows[0][
-        0
-    ]
+    oid_after = emu.execute(sql).rows[0][0]
     assert oid_before == oid_after
 
 

@@ -116,8 +116,17 @@ class SemanticRouter:
                 )
             return _encode_result(result)
 
+        # ``SELECT FROM "<model>"."model"`` — DBeaver and similar GUIs
+        # emit fully-qualified references against our per-model schema
+        # layout. Rewrite to bare ``FROM "<model>"`` so the OBSQL
+        # translator (which keys off the table name) recognises the
+        # virtual semantic table. The schema becomes the resolution
+        # hint for ``_resolve_target`` too.
+        sql, qualified_target_schema = _strip_model_schema_qualifier(sql)
+        effective_database = qualified_target_schema or database
+
         try:
-            target = self._resolve_target(database)
+            target = self._resolve_target(effective_database)
         except _ModelNotFoundError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
@@ -273,20 +282,65 @@ class SemanticRouter:
         return _ResolvedTarget(store=store, model_id=chosen_id, model=model)
 
 
+def _strip_model_schema_qualifier(sql: str) -> tuple[str, str | None]:
+    """Rewrite ``FROM "<schema>"."model"`` → ``FROM "<schema>"``.
+
+    Returns ``(rewritten_sql, schema_name | None)``. The schema name is
+    bubbled back to the caller so semantic resolution can pick the
+    matching model when the connection's ``database`` parameter is
+    ambiguous (multi-model deployments where the user connected to
+    ``orionbelt`` rather than a specific model).
+
+    Best-effort: failures to parse return ``(sql, None)`` and let the
+    OBSQL translator surface a clean diagnostic if anything is wrong.
+    """
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception:
+        return sql, None
+
+    found_schema: str | None = None
+    for table in parsed.find_all(exp.Table):
+        if (table.name or "").lower() != _MODEL_DATA_TABLE:
+            continue
+        schema = table.db or table.text("db")
+        if not schema:
+            continue
+        # Promote the schema name to the table position so OBSQL sees
+        # ``FROM "<schema>"`` and treats it as the virtual model.
+        # Preserve the existing alias if any.
+        alias = table.alias or ""
+        table.set("this", exp.to_identifier(schema, quoted=True))
+        table.set("db", None)
+        if alias:
+            table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+        found_schema = schema
+    if found_schema is None:
+        return sql, None
+    return parsed.sql(dialect="postgres"), found_schema
+
+
 _CATALOG_SCHEMAS: frozenset[str] = frozenset({"pg_catalog", "information_schema"})
 
-#: Suffixes our metadata views append to the model table name
-#: (see ``pgwire/catalog.py::_build_metadata_views``).  Queries
-#: targeting these names route to the catalog branch — they read from
-#: the in-memory DuckDB, not the OBSQL translator.
-_METADATA_VIEW_SUFFIXES: tuple[str, ...] = (
-    "_dimensions",
-    "_measures",
-    "_metrics",
-    "_dimensions_metadata",
-    "_measures_metadata",
-    "_metrics_metadata",
+#: Exact names of the metadata views we create inside each per-model
+#: schema (see ``pgwire/catalog.py::_build_metadata_views``).  Queries
+#: against ``<model>.<one of these>`` route to the catalog branch.
+_METADATA_VIEW_NAMES: frozenset[str] = frozenset(
+    {
+        "dimensions",
+        "measures",
+        "metrics",
+        # Underscore-prefixed metadata views — match the Arrow Flight
+        # catalog convention so the same name works on both surfaces.
+        "_dimensions_metadata",
+        "_measures_metadata",
+        "_metrics_metadata",
+    }
 )
+
+#: Name of the single data table inside each per-model schema.
+_MODEL_DATA_TABLE = "model"
 
 
 def references_catalog(sql: str) -> bool:
@@ -327,11 +381,13 @@ def references_catalog(sql: str) -> bool:
         name_lower = (table.name or "").lower()
         if name_lower.startswith("pg_"):
             return True
-        # Per-model metadata views (<model>_dimensions / _measures /
-        # _metrics / _<…>_metadata). These live in the catalog DuckDB,
-        # not the semantic warehouse, so queries against them must
-        # route to ``CatalogEmulator.execute``.
-        if any(name_lower.endswith(suffix) for suffix in _METADATA_VIEW_SUFFIXES):
+        # Per-model metadata views (``<model>.dimensions`` etc.).
+        # These live in the catalog DuckDB, not the warehouse, so any
+        # query against one of our six known view names — qualified
+        # OR bare — routes to ``CatalogEmulator.execute``. The data
+        # table (``<model>.model``) is excluded so semantic queries
+        # still flow through the warehouse path.
+        if name_lower in _METADATA_VIEW_NAMES and name_lower != _MODEL_DATA_TABLE:
             return True
     for column in parsed.find_all(exp.Column):
         if (column.text("table") or "").lower() in _CATALOG_SCHEMAS:
@@ -339,7 +395,12 @@ def references_catalog(sql: str) -> bool:
         if (column.text("db") or "").lower() in _CATALOG_SCHEMAS:
             return True
     for func in parsed.find_all(exp.Anonymous):
-        if (func.text("this") or "").lower() in _CATALOG_SCHEMAS:
+        func_name = (func.text("this") or "").lower()
+        if func_name in _CATALOG_SCHEMAS:
+            return True
+        # Bare ``pg_*()`` function call — e.g. ``pg_get_keywords()``
+        # used as a table function by DBeaver's SQL-editor highlighting.
+        if func_name.startswith("pg_"):
             return True
     # Some catalog functions parse as Dot expressions (schema.func()).
     for dot in parsed.find_all(exp.Dot):
