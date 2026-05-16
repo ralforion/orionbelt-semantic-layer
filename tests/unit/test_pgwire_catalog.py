@@ -243,18 +243,25 @@ def test_pg_database_returns_single_orionbelt_row(
     assert "system" not in names
 
 
-def test_pg_namespace_hides_obsl_meta(
+def test_pg_namespace_exposes_model_schemas_and_pg_catalog(
     manager_with_model: SessionManager,
 ) -> None:
-    """Internal obsl_meta schema is filtered from pg_namespace listings."""
+    """pg_namespace lists model schemas + ``pg_catalog``.
+
+    DuckDB's ``main`` schema (where it physically stores pg_type rows)
+    is renamed to ``pg_catalog`` so Postgres clients' type-resolution
+    JOINs find the expected namespace. Our internal ``obsl_meta``
+    rewrite target is hidden.
+    """
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
-    result = emu.execute("SELECT nspname FROM pg_catalog.pg_namespace")
+    result = emu.execute("SELECT nspname FROM pg_catalog.pg_namespace ORDER BY 1")
     names = [row[0] for row in result.rows]
+    assert "commerce" in names
+    assert "pg_catalog" in names  # synthesised from DuckDB's ``main``
     assert "obsl_meta" not in names
-    assert "pg_catalog" not in names
-    assert "information_schema" not in names
+    assert "main" not in names  # renamed away
 
 
 def test_unhandled_probe_logs_warning(
