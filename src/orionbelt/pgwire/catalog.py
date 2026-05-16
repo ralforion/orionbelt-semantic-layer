@@ -473,6 +473,11 @@ class CatalogEmulator:
         # ``pg_class.oid``; ``psql \\d`` issues two probes back-to-back
         # and a stale oid between them is what we're guarding against.
         self._registered_signatures: dict[str, str] = {}
+        # Per-model metadata views (<model>_dimensions / _measures /
+        # _metrics) live in the same diff path.  They show up under
+        # DBeaver's "Views" node and let users introspect the semantic
+        # surface without hitting the REST API.
+        self._registered_view_signatures: dict[str, str] = {}
         for ddl in _STUB_MACROS:
             with contextlib.suppress(Exception):
                 self._con.execute(ddl)
@@ -495,6 +500,7 @@ class CatalogEmulator:
 
         desired: dict[str, str] = {}
         ddls: dict[str, str] = {}
+        desired_views: dict[str, str] = {}
         for store_target, model in _iter_loaded_models(session_manager):
             table_name = _safe_model_table_name(store_target)
             ddl = _build_table_ddl(table_name, model)
@@ -502,6 +508,8 @@ class CatalogEmulator:
                 continue
             desired[table_name] = ddl
             ddls[table_name] = ddl
+            for view_name, view_ddl in _build_metadata_views(table_name, model):
+                desired_views[view_name] = view_ddl
 
         with self._lock:
             # Drop tables that no longer have a backing model.
@@ -525,6 +533,25 @@ class CatalogEmulator:
                     logger.exception("Failed to register catalog table for model '%s'", table_name)
                     continue
                 self._registered_signatures[table_name] = signature
+
+            # Drop stale metadata views (model removed) and rebuild any
+            # whose DDL signature changed.
+            for view in list(self._registered_view_signatures):
+                if view not in desired_views:
+                    with contextlib.suppress(Exception):
+                        self._con.execute(f'DROP VIEW IF EXISTS "{view}"')
+                    self._registered_view_signatures.pop(view, None)
+            for view_name, signature in desired_views.items():
+                if self._registered_view_signatures.get(view_name) == signature:
+                    continue
+                with contextlib.suppress(Exception):
+                    self._con.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+                try:
+                    self._con.execute(signature)
+                except duckdb.Error:  # pragma: no cover — defensive guard
+                    logger.exception("Failed to register metadata view '%s'", view_name)
+                    continue
+                self._registered_view_signatures[view_name] = signature
 
             # Rebuild obsl_meta.pg_database from the loaded models so
             # BI-tool "list databases" probes see the OBSL namespaces
@@ -725,6 +752,209 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         yield label, _measure_sql_type(measure)
     for label, metric in model.metrics.items():
         yield label, _metric_sql_type(metric)
+
+
+def _build_metadata_views(table_name: str, model: SemanticModel) -> Iterator[tuple[str, str]]:
+    """Emit ``(view_name, ddl)`` per model for the dim/measure/metric trio.
+
+    These views surface OBSL's semantic surface under DBeaver's "Views"
+    node so users can introspect what the model exposes without leaving
+    their SQL client. Each row is hand-built from VALUES — DuckDB has
+    no foreign-data adapter for our Python model objects.
+    """
+
+    # Short summary views (name + data_type + description) for the
+    # "give me the surface in three columns" use case.
+    yield (
+        f"{table_name}_dimensions",
+        _simple_dimensions_view_ddl(table_name, model),
+    )
+    yield (
+        f"{table_name}_measures",
+        _simple_measures_view_ddl(table_name, model),
+    )
+    yield (
+        f"{table_name}_metrics",
+        _simple_metrics_view_ddl(table_name, model),
+    )
+    # Full metadata views — every attribute we expose per kind.
+    yield (
+        f"{table_name}_dimensions_metadata",
+        _dimensions_view_ddl(table_name, model),
+    )
+    yield (
+        f"{table_name}_measures_metadata",
+        _measures_view_ddl(table_name, model),
+    )
+    yield (
+        f"{table_name}_metrics_metadata",
+        _metrics_view_ddl(table_name, model),
+    )
+
+
+def _sql_literal(value: str | None) -> str:
+    """Render a Python string as a single-quoted SQL literal (or NULL)."""
+
+    if value is None or value == "":
+        return "NULL"
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _simple_view_body(
+    rows: list[str],
+    columns: tuple[str, ...] = ("name", "data_type", "description"),
+) -> str:
+    """Body for a 3-column ``name / data_type / description`` summary view."""
+
+    if not rows:
+        casts = ", ".join(f"CAST(NULL AS VARCHAR) AS {c}" for c in columns)
+        return f"SELECT {casts} WHERE FALSE"
+    col_list = ", ".join(columns)
+    return f"SELECT * FROM (VALUES {', '.join(rows)}) AS t({col_list})"
+
+
+def _simple_dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
+    quoted = table_name.replace('"', '""')
+    rows = [
+        "("
+        + ", ".join(
+            [_sql_literal(label), _sql_literal(str(dim.result_type)), _sql_literal(dim.description)]
+        )
+        + ")"
+        for label, dim in model.dimensions.items()
+    ]
+    return f'CREATE OR REPLACE VIEW "{quoted}_dimensions" AS {_simple_view_body(rows)}'
+
+
+def _simple_measures_view_ddl(table_name: str, model: SemanticModel) -> str:
+    quoted = table_name.replace('"', '""')
+    rows = [
+        "("
+        + ", ".join(
+            [
+                _sql_literal(label),
+                _sql_literal(str(measure.result_type)),
+                _sql_literal(measure.description),
+            ]
+        )
+        + ")"
+        for label, measure in model.measures.items()
+    ]
+    return f'CREATE OR REPLACE VIEW "{quoted}_measures" AS {_simple_view_body(rows)}'
+
+
+def _simple_metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
+    quoted = table_name.replace('"', '""')
+    rows = [
+        "("
+        + ", ".join(
+            [_sql_literal(label), _sql_literal(str(metric.type)), _sql_literal(metric.description)]
+        )
+        + ")"
+        for label, metric in model.metrics.items()
+    ]
+    return f'CREATE OR REPLACE VIEW "{quoted}_metrics" AS {_simple_view_body(rows)}'
+
+
+def _dimensions_view_ddl(table_name: str, model: SemanticModel) -> str:
+    rows = []
+    for label, dim in model.dimensions.items():
+        rows.append(
+            "("
+            + ", ".join(
+                [
+                    _sql_literal(label),
+                    _sql_literal(str(dim.result_type)),
+                    _sql_literal(dim.view),
+                    _sql_literal(dim.column),
+                    _sql_literal(dim.description),
+                ]
+            )
+            + ")"
+        )
+    quoted = table_name.replace('"', '""')
+    if not rows:
+        body = (
+            "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS data_type, "
+            "CAST(NULL AS VARCHAR) AS data_object, CAST(NULL AS VARCHAR) AS column_name, "
+            "CAST(NULL AS VARCHAR) AS description WHERE FALSE"
+        )
+    else:
+        body = (
+            "SELECT * FROM (VALUES "
+            + ", ".join(rows)
+            + ") AS t(name, data_type, data_object, column_name, description)"
+        )
+    return f'CREATE OR REPLACE VIEW "{quoted}_dimensions_metadata" AS {body}'
+
+
+def _measures_view_ddl(table_name: str, model: SemanticModel) -> str:
+    rows = []
+    for label, measure in model.measures.items():
+        source_objects = ", ".join(
+            sorted({ref.view for ref in measure.columns if ref.view})
+        )
+        rows.append(
+            "("
+            + ", ".join(
+                [
+                    _sql_literal(label),
+                    _sql_literal(str(measure.result_type)),
+                    _sql_literal(str(measure.aggregation)),
+                    _sql_literal(measure.expression),
+                    _sql_literal(source_objects),
+                    _sql_literal(measure.description),
+                ]
+            )
+            + ")"
+        )
+    quoted = table_name.replace('"', '""')
+    if not rows:
+        body = (
+            "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS data_type, "
+            "CAST(NULL AS VARCHAR) AS aggregation, CAST(NULL AS VARCHAR) AS expression, "
+            "CAST(NULL AS VARCHAR) AS source_data_objects, "
+            "CAST(NULL AS VARCHAR) AS description WHERE FALSE"
+        )
+    else:
+        body = (
+            "SELECT * FROM (VALUES "
+            + ", ".join(rows)
+            + ") AS t(name, data_type, aggregation, expression, "
+            "source_data_objects, description)"
+        )
+    return f'CREATE OR REPLACE VIEW "{quoted}_measures_metadata" AS {body}'
+
+
+def _metrics_view_ddl(table_name: str, model: SemanticModel) -> str:
+    rows = []
+    for label, metric in model.metrics.items():
+        rows.append(
+            "("
+            + ", ".join(
+                [
+                    _sql_literal(label),
+                    _sql_literal(str(metric.type)),
+                    _sql_literal(metric.expression),
+                    _sql_literal(metric.description),
+                ]
+            )
+            + ")"
+        )
+    quoted = table_name.replace('"', '""')
+    if not rows:
+        body = (
+            "SELECT CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS type, "
+            "CAST(NULL AS VARCHAR) AS expression, CAST(NULL AS VARCHAR) AS description "
+            "WHERE FALSE"
+        )
+    else:
+        body = (
+            "SELECT * FROM (VALUES "
+            + ", ".join(rows)
+            + ") AS t(name, type, expression, description)"
+        )
+    return f'CREATE OR REPLACE VIEW "{quoted}_metrics_metadata" AS {body}'
 
 
 def _dim_sql_type(dim: Dimension) -> str:

@@ -275,6 +275,19 @@ class SemanticRouter:
 
 _CATALOG_SCHEMAS: frozenset[str] = frozenset({"pg_catalog", "information_schema"})
 
+#: Suffixes our metadata views append to the model table name
+#: (see ``pgwire/catalog.py::_build_metadata_views``).  Queries
+#: targeting these names route to the catalog branch — they read from
+#: the in-memory DuckDB, not the OBSQL translator.
+_METADATA_VIEW_SUFFIXES: tuple[str, ...] = (
+    "_dimensions",
+    "_measures",
+    "_metrics",
+    "_dimensions_metadata",
+    "_measures_metadata",
+    "_metrics_metadata",
+)
+
 
 def references_catalog(sql: str) -> bool:
     """Return ``True`` when the query needs the catalog emulator.
@@ -311,7 +324,14 @@ def references_catalog(sql: str) -> bool:
         # Bare ``pg_*`` table reference (e.g. ``FROM pg_description d``).
         # Postgres reserves the ``pg_`` prefix for system catalogs, so
         # this is unambiguously a catalog probe.
-        if (table.name or "").lower().startswith("pg_"):
+        name_lower = (table.name or "").lower()
+        if name_lower.startswith("pg_"):
+            return True
+        # Per-model metadata views (<model>_dimensions / _measures /
+        # _metrics / _<…>_metadata). These live in the catalog DuckDB,
+        # not the semantic warehouse, so queries against them must
+        # route to ``CatalogEmulator.execute``.
+        if any(name_lower.endswith(suffix) for suffix in _METADATA_VIEW_SUFFIXES):
             return True
     for column in parsed.find_all(exp.Column):
         if (column.text("table") or "").lower() in _CATALOG_SCHEMAS:
