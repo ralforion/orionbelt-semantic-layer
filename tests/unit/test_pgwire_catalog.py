@@ -178,6 +178,30 @@ def test_dbeaver_regclass_cast_does_not_error(
     assert result.row_count == 1
 
 
+def test_dbeaver_pg_database_probe_returns_full_columns(
+    manager_with_model: SessionManager,
+) -> None:
+    """DBeaver's ``SELECT db.oid, db.* FROM pg_database WHERE datallowconn``.
+
+    DuckDB's native ``pg_catalog.pg_database`` exposes only (oid, datname);
+    DBeaver expects the full Postgres column set or it errors on
+    ``datallowconn``/``datistemplate``.  Our ``obsl_meta.pg_database``
+    view provides sensible defaults so the probe succeeds.
+    """
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+    result = emu.execute(
+        "SELECT db.oid, db.* FROM pg_catalog.pg_database db "
+        "WHERE 1=1 AND datallowconn AND NOT datistemplate"
+    )
+    column_names = [c.name for c in result.columns]
+    assert "datname" in column_names
+    assert "datallowconn" in column_names
+    assert "datistemplate" in column_names
+    assert result.row_count >= 1
+
+
 def test_unhandled_probe_logs_warning(
     manager_with_model: SessionManager, caplog: pytest.LogCaptureFixture
 ) -> None:

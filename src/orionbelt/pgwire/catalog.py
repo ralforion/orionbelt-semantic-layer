@@ -215,6 +215,32 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(false AS BOOLEAN) AS rolbypassrls,
         CAST(-1 AS INTEGER) AS rolconnlimit
     """,
+    # pg_database: DuckDB exposes (oid, datname) only.  DBeaver's
+    # "list databases" probe (db.oid, db.*) needs the full Postgres
+    # column set or it errors on missing ``datallowconn`` /
+    # ``datistemplate``. Defaults match a typical user-creatable DB.
+    """
+    CREATE OR REPLACE VIEW obsl_meta.pg_database AS
+    SELECT
+        d.oid,
+        d.datname,
+        CAST(10 AS INTEGER) AS datdba,
+        CAST(6 AS INTEGER) AS encoding,           -- UTF8
+        CAST('en_US.UTF-8' AS VARCHAR) AS datcollate,
+        CAST('en_US.UTF-8' AS VARCHAR) AS datctype,
+        CAST(false AS BOOLEAN) AS datistemplate,
+        CAST(true AS BOOLEAN) AS datallowconn,
+        CAST(-1 AS INTEGER) AS datconnlimit,
+        CAST(0 AS BIGINT) AS datfrozenxid,
+        CAST(0 AS BIGINT) AS datminmxid,
+        CAST(1663 AS INTEGER) AS dattablespace,    -- pg_default
+        CAST(NULL AS VARCHAR) AS datacl,
+        CAST('c' AS VARCHAR) AS datlocprovider,
+        CAST(NULL AS VARCHAR) AS daticulocale,
+        CAST(NULL AS VARCHAR) AS daticurules,
+        CAST(NULL AS VARCHAR) AS datcollversion
+    FROM pg_catalog.pg_database d
+    """,
     # pg_collation: DuckDB's pg_catalog is missing this table entirely.
     # We expose an empty view; clients that LEFT JOIN it get NULLs which
     # is what they expect when collation isn't relevant.
@@ -326,6 +352,7 @@ _TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
         "obsl_meta.pg_publication_namespace",
     ),
     (re.compile(r"\bpg_catalog\.pg_roles\b", re.IGNORECASE), "obsl_meta.pg_roles"),
+    (re.compile(r"\bpg_catalog\.pg_database\b", re.IGNORECASE), "obsl_meta.pg_database"),
 )
 
 
