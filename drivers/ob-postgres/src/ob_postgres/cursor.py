@@ -11,7 +11,7 @@ from typing import Any
 
 from ob_postgres.compiler import compile_obml, is_obml, parse_obml
 from ob_postgres.exceptions import NotSupportedError, ProgrammingError
-from ob_postgres.type_codes import PG_OID_MAP, STRING
+from ob_postgres.type_codes import BINARY, DATETIME, NUMBER, PG_OID_MAP, STRING
 
 
 class Cursor:
@@ -42,7 +42,14 @@ class Cursor:
     def description(
         self,
     ) -> tuple[tuple[str, Any, None, None, None, None, None], ...] | None:
-        """PEP 249 cursor description — 7-item tuples per column."""
+        """PEP 249 cursor description — 7-item tuples per column.
+
+        ``adbc-driver-postgresql`` returns PyArrow ``DataType`` objects
+        (or ``OpaqueType`` for vendor-specific types like ``numeric``)
+        as the ``type_code`` slot. psycopg2 returns OID integers. We
+        handle both so downstream type-hint mapping (``_map_type_code``
+        in db_executor.py) sees the right PEP 249 type constant.
+        """
         native_desc = self._native.description
         if native_desc is None:
             return None
@@ -50,8 +57,7 @@ class Cursor:
         for col in native_desc:
             name = col[0]
             type_code = col[1]
-            # ADBC PG driver may return OIDs or other type identifiers
-            mapped = PG_OID_MAP.get(type_code, STRING) if isinstance(type_code, int) else STRING
+            mapped = _classify_type_code(type_code)
             cols.append((name, mapped, None, None, None, None, None))
         return tuple(cols)
 
@@ -156,3 +162,76 @@ class Cursor:
         if row is None:
             raise StopIteration
         return row
+
+
+# Substrings inside an OpaqueType's repr that identify the underlying
+# Postgres type. ADBC wraps types it can't represent natively (NUMERIC,
+# MONEY, JSON, …) in ``OpaqueType`` whose repr embeds ``type_name=<pg>``.
+_OPAQUE_NUMBER_NAMES = ("numeric", "money", "decimal")
+_OPAQUE_DATETIME_NAMES = ("timestamp", "date", "time", "interval")
+_OPAQUE_BINARY_NAMES = ("bytea",)
+
+
+def _classify_type_code(type_code: object) -> object:
+    """Map a native ADBC type identifier to a PEP 249 type constant.
+
+    ADBC's PostgreSQL driver populates ``cursor.description[i][1]``
+    with PyArrow ``DataType`` objects — ``DataType(int32)``,
+    ``TimestampType(timestamp[us, tz=UTC])``, ``DataType(string)`` —
+    plus ``OpaqueType`` wrappers for types Arrow can't natively
+    represent (NUMERIC ends up as
+    ``OpaqueType(extension<arrow.opaque[storage_type=string,
+    type_name=numeric, vendor_name=PostgreSQL]>)``).
+    The legacy psycopg2 path supplies OID integers, kept for
+    compatibility.
+    """
+
+    # psycopg2 / classic PEP 249 — bare OID.
+    if isinstance(type_code, int):
+        return PG_OID_MAP.get(type_code, STRING)
+
+    # ADBC native PyArrow types — use pyarrow.types helpers when the
+    # module is importable. ``pa.types.is_*`` calls ``t.id`` internally,
+    # so an unrelated object (OpaqueType subclass, mock, etc.) trips
+    # ``AttributeError`` — catch that and fall through to the
+    # repr-substring branch below.
+    try:
+        import pyarrow as pa
+
+        try:
+            if pa.types.is_integer(type_code):
+                return NUMBER
+            if pa.types.is_floating(type_code) or pa.types.is_decimal(type_code):
+                return NUMBER
+            if pa.types.is_boolean(type_code):
+                return STRING
+            if (
+                pa.types.is_timestamp(type_code)
+                or pa.types.is_date(type_code)
+                or pa.types.is_time(type_code)
+                or pa.types.is_duration(type_code)
+            ):
+                return DATETIME
+            if (
+                pa.types.is_binary(type_code)
+                or pa.types.is_large_binary(type_code)
+                or pa.types.is_fixed_size_binary(type_code)
+            ):
+                return BINARY
+            if pa.types.is_string(type_code) or pa.types.is_large_string(type_code):
+                return STRING
+        except (AttributeError, TypeError):
+            pass
+    except ImportError:
+        pass
+
+    # OpaqueType (NUMERIC, MONEY, JSON, …) — the type's repr embeds
+    # ``type_name=<pg type>``. Match against the substring lists.
+    s = str(type_code).lower()
+    if any(name in s for name in _OPAQUE_NUMBER_NAMES):
+        return NUMBER
+    if any(name in s for name in _OPAQUE_DATETIME_NAMES):
+        return DATETIME
+    if any(name in s for name in _OPAQUE_BINARY_NAMES):
+        return BINARY
+    return STRING
