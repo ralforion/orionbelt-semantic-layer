@@ -101,11 +101,51 @@ def test_substitute_skips_inside_double_quotes() -> None:
     assert sql == 'SELECT "$1" AS "$1", \'val\''
 
 
-def test_substitute_rejects_binary_format() -> None:
-    from orionbelt.pgwire.extended import _BinaryParameterError
+def test_substitute_decodes_binary_int4() -> None:
+    """Binary-format int4 params decode to their decimal representation."""
 
-    with pytest.raises(_BinaryParameterError):
-        substitute_parameters("SELECT $1", (b"\x00\x01",), [1])
+    import struct
+
+    sql = substitute_parameters(
+        "SELECT * FROM t WHERE id = $1",
+        (struct.pack("!i", 12345),),
+        [1],
+        param_oids=(23,),
+    )
+    assert sql == "SELECT * FROM t WHERE id = '12345'"
+
+
+def test_substitute_decodes_binary_int8() -> None:
+    import struct
+
+    sql = substitute_parameters(
+        "SELECT $1",
+        (struct.pack("!q", 9223372036854775000),),
+        [1],
+        param_oids=(20,),
+    )
+    assert "'9223372036854775000'" in sql
+
+
+def test_substitute_decodes_binary_bool() -> None:
+    sql_true = substitute_parameters("SELECT $1", (b"\x01",), [1], param_oids=(16,))
+    sql_false = substitute_parameters("SELECT $1", (b"\x00",), [1], param_oids=(16,))
+    assert sql_true == "SELECT 't'"
+    assert sql_false == "SELECT 'f'"
+
+
+def test_substitute_binary_text_falls_back_to_utf8() -> None:
+    """OID 25 / 1043 (text/varchar) binary == UTF-8 bytes."""
+
+    sql = substitute_parameters("SELECT $1", (b"hello",), [1], param_oids=(25,))
+    assert sql == "SELECT 'hello'"
+
+
+def test_substitute_binary_with_no_oid_falls_back_to_utf8() -> None:
+    """Common DBeaver case: client omits OIDs in Parse, sends text bytes binary."""
+
+    sql = substitute_parameters("SELECT $1", (b"hello",), [1])
+    assert sql == "SELECT 'hello'"
 
 
 def test_substitute_rejects_out_of_range_placeholder() -> None:

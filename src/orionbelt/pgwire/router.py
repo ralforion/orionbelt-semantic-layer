@@ -98,7 +98,7 @@ class SemanticRouter:
         """
 
         # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
-        canned = match_canned(sql)
+        canned = match_canned(sql, database=database)
         if canned is not None:
             return canned
 
@@ -116,8 +116,17 @@ class SemanticRouter:
                 )
             return _encode_result(result)
 
+        # ``SELECT FROM "<model>"."model"`` — DBeaver and similar GUIs
+        # emit fully-qualified references against our per-model schema
+        # layout. Rewrite to bare ``FROM "<model>"`` so the OBSQL
+        # translator (which keys off the table name) recognises the
+        # virtual semantic table. The schema becomes the resolution
+        # hint for ``_resolve_target`` too.
+        sql, qualified_target_schema = _strip_model_schema_qualifier(sql)
+        effective_database = qualified_target_schema or database
+
         try:
-            target = self._resolve_target(database)
+            target = self._resolve_target(effective_database)
         except _ModelNotFoundError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
@@ -209,18 +218,24 @@ class SemanticRouter:
     def _resolve_target(self, database: str) -> _ResolvedTarget:
         """Pick a (store, model_id, model) tuple for the requested DB.
 
-        Resolution order, matching the Flight surface's behaviour:
+        Resolution order:
 
         1. ``database`` matches a SessionManager session id directly
            (multi-model preload uses the model name as the session id).
-        2. ``__default__`` session (single-model preload, MCP stdio,
+        2. ``database`` is the OBSL brand name ("orionbelt") — fall
+           through to the first loaded model. This is the path DBeaver
+           takes when ``pg_database`` advertises ``orionbelt`` as the
+           single database and the client uses that name to reconnect.
+        3. ``__default__`` session (single-model preload, MCP stdio,
            tests).
-        3. Any other session with at least one loaded model — only
+        4. Any other session with at least one loaded model — only
            when exactly one match exists, so we never silently pick.
 
-        Raises ``_ModelNotFoundError`` with a message that surfaces in the
-        Postgres ErrorResponse on miss.
+        Raises ``_ModelNotFoundError`` with a message that surfaces in
+        the Postgres ErrorResponse on miss.
         """
+
+        from orionbelt.pgwire.catalog import OBSL_DATABASE_NAME
 
         candidate_ids: list[str] = []
         if database:
@@ -232,6 +247,21 @@ class SemanticRouter:
             target = self._first_model_in(session_id)
             if target is not None:
                 return target
+
+        # When the client passes the brand name ("orionbelt") and the
+        # SessionManager doesn't host a session by that name, fall
+        # through to the first loaded model. pg_database advertises
+        # only one row ("orionbelt"), so this is the canonical path
+        # for any BI tool that re-reads the catalog after connecting.
+        if database == OBSL_DATABASE_NAME:
+            for session_id in self._sessions.list_protected_session_ids():
+                target = self._first_model_in(session_id)
+                if target is not None:
+                    return target
+            for session_summary in self._sessions.list_sessions():
+                target = self._first_model_in(session_summary.session_id)
+                if target is not None:
+                    return target
 
         # Last-resort scan across all sessions for the case where the
         # client passed a database name that doesn't match a session id
@@ -273,17 +303,97 @@ class SemanticRouter:
         return _ResolvedTarget(store=store, model_id=chosen_id, model=model)
 
 
+def _strip_model_schema_qualifier(sql: str) -> tuple[str, str | None]:
+    """Rewrite ``FROM "<schema>"."model"`` → ``FROM "<schema>"``.
+
+    Returns ``(rewritten_sql, schema_name | None)``. The schema name is
+    bubbled back to the caller so semantic resolution can pick the
+    matching model when the connection's ``database`` parameter is
+    ambiguous (multi-model deployments where the user connected to
+    ``orionbelt`` rather than a specific model).
+
+    Best-effort: failures to parse return ``(sql, None)`` and let the
+    OBSQL translator surface a clean diagnostic if anything is wrong.
+    """
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception:
+        return sql, None
+
+    found_schema: str | None = None
+    for table in parsed.find_all(exp.Table):
+        if (table.name or "").lower() != _MODEL_DATA_TABLE:
+            continue
+        schema = table.db or table.text("db")
+        if not schema:
+            continue
+        # Promote the schema name to the table position so OBSQL sees
+        # ``FROM "<schema>"`` and treats it as the virtual model.
+        # Preserve the existing alias if any.
+        alias = table.alias or ""
+        table.set("this", exp.to_identifier(schema, quoted=True))
+        table.set("db", None)
+        if alias:
+            table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+        found_schema = schema
+    if found_schema is None:
+        return sql, None
+    return parsed.sql(dialect="postgres"), found_schema
+
+
 _CATALOG_SCHEMAS: frozenset[str] = frozenset({"pg_catalog", "information_schema"})
+
+#: Exact names of the metadata views we create inside each per-model
+#: schema (see ``pgwire/catalog.py::_build_metadata_views``).  Queries
+#: against ``<model>.<one of these>`` route to the catalog branch.
+_METADATA_VIEW_NAMES: frozenset[str] = frozenset(
+    {
+        "dimensions",
+        "measures",
+        "metrics",
+        # Underscore-prefixed metadata views — match the Arrow Flight
+        # catalog convention so the same name works on both surfaces.
+        "_dimensions_metadata",
+        "_measures_metadata",
+        "_metrics_metadata",
+    }
+)
+
+#: Name of the single data table inside each per-model schema.
+_MODEL_DATA_TABLE = "model"
+
+#: Bare identifiers that Postgres treats as system info, not column
+#: references. DBeaver and other JDBC clients probe these in
+#: ``refreshDefaults`` (``SELECT current_schema(), session_user``);
+#: when they appear in a no-FROM SELECT the query belongs to the
+#: catalog branch, not OBSQL.
+_SYSTEM_IDENTIFIERS: frozenset[str] = frozenset(
+    {
+        "current_user",
+        "current_role",
+        "current_database",
+        "current_schema",
+        "current_catalog",
+        "session_user",
+        "user",
+    }
+)
 
 
 def references_catalog(sql: str) -> bool:
     """Return ``True`` when the query needs the catalog emulator.
 
-    Detects two shapes:
+    Detects three shapes:
 
     * a ``FROM`` / ``JOIN`` target whose schema or database is
-      ``pg_catalog`` or ``information_schema``; and
-    * a function reference like ``pg_catalog.set_config(...)``.
+      ``pg_catalog`` or ``information_schema``;
+    * a function reference like ``pg_catalog.set_config(...)``;
+    * a bare table reference to a well-known Postgres system table
+      (``pg_class``, ``pg_namespace``, ``pg_description``, …). DBeaver
+      and pgAdmin frequently omit the ``pg_catalog.`` qualifier; the
+      ``pg_`` prefix is reserved for Postgres system catalogs so OBSL
+      models never collide.
 
     Falls back to a cheap substring test if sqlglot can't parse the
     query — Postgres clients sometimes emit dialect-specific snippets
@@ -303,19 +413,56 @@ def references_catalog(sql: str) -> bool:
             return True
         if (table.text("catalog") or "").lower() in _CATALOG_SCHEMAS:
             return True
+        # Bare ``pg_*`` table reference (e.g. ``FROM pg_description d``).
+        # Postgres reserves the ``pg_`` prefix for system catalogs, so
+        # this is unambiguously a catalog probe.
+        name_lower = (table.name or "").lower()
+        if name_lower.startswith("pg_"):
+            return True
+        # Per-model metadata views (``<model>.dimensions`` etc.).
+        # These live in the catalog DuckDB, not the warehouse, so any
+        # query against one of our six known view names — qualified
+        # OR bare — routes to ``CatalogEmulator.execute``. The data
+        # table (``<model>.model``) is excluded so semantic queries
+        # still flow through the warehouse path.
+        if name_lower in _METADATA_VIEW_NAMES and name_lower != _MODEL_DATA_TABLE:
+            return True
     for column in parsed.find_all(exp.Column):
         if (column.text("table") or "").lower() in _CATALOG_SCHEMAS:
             return True
         if (column.text("db") or "").lower() in _CATALOG_SCHEMAS:
             return True
     for func in parsed.find_all(exp.Anonymous):
-        if (func.text("this") or "").lower() in _CATALOG_SCHEMAS:
+        func_name = (func.text("this") or "").lower()
+        if func_name in _CATALOG_SCHEMAS:
+            return True
+        # Bare ``pg_*()`` function call — e.g. ``pg_get_keywords()``
+        # used as a table function by DBeaver's SQL-editor highlighting.
+        if func_name.startswith("pg_"):
             return True
     # Some catalog functions parse as Dot expressions (schema.func()).
     for dot in parsed.find_all(exp.Dot):
         left = dot.args.get("this")
         if isinstance(left, exp.Identifier) and (left.name or "").lower() in _CATALOG_SCHEMAS:
             return True
+    # No-FROM SELECT — could be either a system probe (DBeaver's
+    # ``SELECT current_schema(), session_user``) or a bare-dimension
+    # query OBSQL handles natively (``SELECT "Customer Country"``
+    # against the connection's model). Distinguish by content:
+    #
+    # * Any function call (``current_schema()``, ``version()``, …)
+    #   → catalog (DuckDB evaluates the function).
+    # * A bare identifier matching a known Postgres system name
+    #   (``session_user``, ``current_user``, …) → catalog.
+    # * Otherwise (numeric literals, model column refs only) →
+    #   fall through to the semantic path so OBSQL can handle
+    #   dimension/measure references.
+    if isinstance(parsed, exp.Select) and not list(parsed.find_all(exp.Table)):
+        if list(parsed.find_all(exp.Func)):
+            return True
+        for col in parsed.find_all(exp.Column):
+            if (col.name or "").lower() in _SYSTEM_IDENTIFIERS:
+                return True
     return False
 
 

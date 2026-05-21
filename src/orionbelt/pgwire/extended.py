@@ -145,7 +145,9 @@ class ExtendedSession:
 
         formats = _expand_param_formats(msg.param_formats, len(msg.param_values))
         try:
-            substituted = substitute_parameters(stmt.sql, msg.param_values, formats)
+            substituted = substitute_parameters(
+                stmt.sql, msg.param_values, formats, stmt.param_oids
+            )
         except _BinaryParameterError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
@@ -262,12 +264,21 @@ def _expand_param_formats(formats: tuple[int, ...], n_params: int) -> list[int]:
     return list(formats)
 
 
-def substitute_parameters(sql: str, values: tuple[bytes | None, ...], formats: list[int]) -> str:
+def substitute_parameters(
+    sql: str,
+    values: tuple[bytes | None, ...],
+    formats: list[int],
+    param_oids: tuple[int, ...] = (),
+) -> str:
     """Inline ``$1`` / ``$2`` … placeholders with safely-quoted values.
 
-    Step 4 only supports text-format (format code 0) parameters. Binary
-    raises :class:`_BinaryParameterError` so the caller surfaces a
-    ``feature_not_supported`` ErrorResponse.
+    Text format (code 0) is the original Step 4 path: UTF-8 decode and
+    wrap in single quotes.  Binary format (code 1) is decoded per the
+    declared parameter OID — int / float / bool / timestamp / date /
+    text are all covered.  Unrecognised OIDs fall back to a UTF-8
+    decode, which usually works for ``text``-typed parameters whose
+    OID the client omitted.  Truly opaque binary values raise
+    :class:`_BinaryParameterError`.
 
     Quoting follows the Postgres standard-conforming-strings rule: wrap
     the value in single quotes and double any embedded single quote.
@@ -276,22 +287,79 @@ def substitute_parameters(sql: str, values: tuple[bytes | None, ...], formats: l
     """
 
     rendered: list[str] = []
-    for raw, fmt in zip(values, formats, strict=True):
+    for idx, (raw, fmt) in enumerate(zip(values, formats, strict=True)):
         if raw is None:
             rendered.append("NULL")
             continue
+        oid = param_oids[idx] if idx < len(param_oids) else 0
         if fmt == 1:
-            raise _BinaryParameterError(
-                "Binary-format Bind parameters are not yet supported "
-                "(Step 7 of design/PLAN_postgres_wire.md)"
-            )
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise _BadParameterError(f"Text-format parameter is not valid UTF-8: {exc}") from None
+            text = _decode_binary_param(raw, oid)
+        else:
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _BadParameterError(
+                    f"Text-format parameter is not valid UTF-8: {exc}"
+                ) from None
         escaped = text.replace("'", "''")
         rendered.append(f"'{escaped}'")
     return _replace_placeholders(sql, rendered)
+
+
+def _decode_binary_param(raw: bytes, oid: int) -> str:
+    """Render a binary-format Bind parameter as its text-form literal.
+
+    DuckDB tolerates ``WHERE int_col = '42'`` (implicit cast), so we
+    always return a string and let the existing quoting path wrap it
+    in single quotes — same shape as the text-format path. Worst case
+    we lose type precision, but BI tools (DBeaver / Tableau / JDBC)
+    overwhelmingly bind oids and short strings where this is fine.
+    """
+
+    if oid == 16:  # bool
+        return "t" if raw == b"\x01" else "f"
+    if oid == 21 and len(raw) == 2:  # int2
+        return str(struct.unpack("!h", raw)[0])
+    if oid == 23 and len(raw) == 4:  # int4
+        return str(struct.unpack("!i", raw)[0])
+    if oid == 20 and len(raw) == 8:  # int8
+        return str(struct.unpack("!q", raw)[0])
+    if oid == 700 and len(raw) == 4:  # float4
+        return str(struct.unpack("!f", raw)[0])
+    if oid == 701 and len(raw) == 8:  # float8
+        return str(struct.unpack("!d", raw)[0])
+    if oid in (25, 1043, 1042, 19):  # text / varchar / bpchar / name
+        return raw.decode("utf-8", errors="replace")
+    if oid == 0:
+        # OID 0 = "unspecified" — most BI tools omit oids for textual
+        # params and assume the server can sniff. Decoding as UTF-8 is
+        # the safe default.
+        return raw.decode("utf-8", errors="replace")
+    if oid == 1082 and len(raw) == 4:  # date — days since 2000-01-01
+        from datetime import date, timedelta
+
+        days = struct.unpack("!i", raw)[0]
+        return (date(2000, 1, 1) + timedelta(days=days)).isoformat()
+    if oid == 1114 and len(raw) == 8:  # timestamp — µs since 2000-01-01
+        from datetime import datetime, timedelta
+
+        microseconds = struct.unpack("!q", raw)[0]
+        return (datetime(2000, 1, 1) + timedelta(microseconds=microseconds)).isoformat(sep=" ")
+    if oid == 1184 and len(raw) == 8:  # timestamptz — µs since 2000-01-01 UTC
+        from datetime import UTC, datetime, timedelta
+
+        microseconds = struct.unpack("!q", raw)[0]
+        ts = datetime(2000, 1, 1, tzinfo=UTC) + timedelta(microseconds=microseconds)
+        return ts.isoformat(sep=" ")
+    # Unknown OID with binary bytes — fall back to UTF-8 decode rather
+    # than failing the whole connection.  If the bytes aren't text,
+    # DuckDB will reject the resulting comparison cleanly.
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _BinaryParameterError(
+            f"Cannot decode binary parameter (oid={oid}, {len(raw)} bytes): {exc}"
+        ) from None
 
 
 def _replace_placeholders(sql: str, rendered: list[str]) -> str:

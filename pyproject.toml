@@ -81,6 +81,7 @@ dev = [
     "duckdb>=1.0",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
+    "psycopg[binary]>=3.2",
     "pymysql[rsa]>=1.0",
     "clickhouse-connect>=0.7",
 ]
@@ -178,6 +179,7 @@ dev = [
     "duckdb>=1.0",
     "testcontainers>=4.0",
     "psycopg2-binary>=2.9",
+    "psycopg[binary]>=3.2",
     "pymysql[rsa]>=1.0",
     "clickhouse-connect>=0.7",
     "nbstripout>=0.9.1",

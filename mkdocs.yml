@@ -133,6 +133,7 @@ nav:
       - Result Cache: guide/result-cache.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
+      - Postgres Wire (BI Tools): guide/postgres-wire-bi-tools.md
       - OSI Interoperability: guide/osi.md
   - API:
       - Overview: api/overview.md

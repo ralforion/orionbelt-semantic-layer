@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 
 from orionbelt.pgwire import protocol
+from orionbelt.pgwire.catalog import OBSL_DATABASE_NAME as _OBSL_DATABASE_NAME
 
 # Connectivity probes that don't need a model loaded.
 _CONNECTIVITY_PATTERNS: dict[str, tuple[str, str, str]] = {
@@ -70,13 +71,17 @@ _RE_ROLLBACK = re.compile(r"^rollback\b", re.IGNORECASE)
 _RE_SAVEPOINT = re.compile(r"^(savepoint|release\s+savepoint)\b", re.IGNORECASE)
 
 
-def match_canned(sql: str) -> bytes | None:
+def match_canned(sql: str, database: str = "") -> bytes | None:
     """Return wire bytes for a recognised protocol probe, else ``None``.
 
     The caller appends ``ReadyForQuery``; we only emit the per-statement
     reply (RowDescription + DataRow + CommandComplete or a bare
     CommandComplete).  Returns ``None`` so the router falls through to
     catalog / semantic dispatch.
+
+    ``database`` is the value the client sent in StartupMessage —
+    used to answer ``SELECT current_database()`` honestly so BI tools
+    can highlight the connected node in their schema trees.
     """
 
     normalised = _strip_terminator(sql).lower()
@@ -111,7 +116,12 @@ def match_canned(sql: str) -> bytes | None:
         return _single_text_row("current_schema", "public")
 
     if normalised in {"select current_database()", "select current_database"}:
-        return _single_text_row("current_database", _SHOW_VALUES["session_authorization"])
+        # OBSL surfaces every loaded model under a single "orionbelt"
+        # logical database (mirrors pg_database). Returning the brand
+        # name here keeps BI-tool schema trees consistent with the
+        # one-row pg_database view.
+        del database  # routing uses it; the catalog name does not
+        return _single_text_row("current_database", _OBSL_DATABASE_NAME)
 
     if normalised in {"select current_user", "select current_user()", "select user"}:
         return _single_text_row("current_user", _SHOW_VALUES["session_authorization"])

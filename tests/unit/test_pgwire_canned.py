@@ -98,6 +98,18 @@ def test_unknown_query_returns_none() -> None:
     assert match_canned("SELECT pg_table_is_visible(1)") is None
 
 
+def test_current_database_returns_brand_name() -> None:
+    """current_database() returns the fixed ``orionbelt`` brand name."""
+
+    reply = match_canned("SELECT current_database()", database="anything_user_typed")
+    assert reply is not None
+    frames = _parse_frames(reply)
+    _, data_row = frames[1]
+    (col_len,) = struct.unpack("!I", data_row[2:6])
+    value = data_row[6 : 6 + col_len].decode()
+    assert value == "orionbelt"
+
+
 def test_empty_query_returns_empty_command_complete() -> None:
     reply = match_canned("   ;  ")
     assert reply is not None
