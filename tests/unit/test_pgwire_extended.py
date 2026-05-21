@@ -199,13 +199,17 @@ def _make_session(reply_bytes: bytes) -> ExtendedSession:
 
 def test_parse_complete() -> None:
     sess = _make_session(_select_one_reply())
-    reply = sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    reply = asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     assert _parse_frames(reply) == [(b"1", b"")]
 
 
 def test_bind_complete_for_known_statement() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     reply = asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -222,7 +226,9 @@ def test_bind_complete_for_known_statement() -> None:
 
 def test_describe_portal_returns_row_description() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -241,9 +247,11 @@ def test_describe_portal_returns_row_description() -> None:
 
 def test_describe_statement_returns_param_description_and_no_data() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(
-        protocol.ParseMessage(
-            statement_name="s1", query="SELECT $1", param_oids=(protocol.OID_TEXT,)
+    asyncio.run(
+        sess.parse(
+            protocol.ParseMessage(
+                statement_name="s1", query="SELECT $1", param_oids=(protocol.OID_TEXT,)
+            )
         )
     )
     reply = sess.describe(protocol.DescribeMessage(target=b"S", name="s1"))
@@ -253,7 +261,11 @@ def test_describe_statement_returns_param_description_and_no_data() -> None:
 
 def test_execute_replays_data_rows_and_command_complete() -> None:
     sess = _make_session(_two_row_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT col FROM t", param_oids=()))
+    asyncio.run(
+        sess.parse(
+            protocol.ParseMessage(statement_name="", query="SELECT col FROM t", param_oids=())
+        )
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -267,14 +279,16 @@ def test_execute_replays_data_rows_and_command_complete() -> None:
     )
     reply = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
     frames = _parse_frames(reply)
-    assert [t for t, _ in frames] == [b"D", b"D", b"C"]
+    # Step 5 eagerly pre-executes no-param statements at Parse time, so
+    # the cached reply includes RowDescription; Execute replays it.
+    assert [t for t, _ in frames] == [b"T", b"D", b"D", b"C"]
 
 
 def test_execute_returns_empty_query_response_for_blank_sql() -> None:
     # Router returns a bare CommandComplete with empty tag for whitespace.
     blank_reply = protocol.build_command_complete("")
     sess = _make_session(blank_reply)
-    sess.parse(protocol.ParseMessage(statement_name="", query="", param_oids=()))
+    asyncio.run(sess.parse(protocol.ParseMessage(statement_name="", query="", param_oids=())))
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -293,7 +307,7 @@ def test_execute_returns_empty_query_response_for_blank_sql() -> None:
 
 def test_execute_returns_cached_error_response() -> None:
     sess = _make_session(_error_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="oops", param_oids=()))
+    asyncio.run(sess.parse(protocol.ParseMessage(statement_name="", query="oops", param_oids=())))
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -312,7 +326,9 @@ def test_execute_returns_cached_error_response() -> None:
 
 def test_close_statement_and_portal() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="s", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="s", query="SELECT 1", param_oids=()))
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(

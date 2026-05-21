@@ -134,7 +134,7 @@ class SemanticRouter:
         if references_catalog(sql) or references_temp_table(sql) or is_metadata_probe(sql):
             try:
                 self._catalog.refresh(self._sessions)
-                result = self._catalog.execute(sql, database)
+                result = self._catalog.execute(sql)
             except Exception as exc:  # noqa: BLE001 — protocol boundary
                 logger.info("pgwire catalog probe failed: %s", exc)
                 return protocol.build_error_response(

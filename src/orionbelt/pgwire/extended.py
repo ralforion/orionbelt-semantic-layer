@@ -390,19 +390,16 @@ def substitute_parameters(
             continue
         oid = param_oids[idx] if idx < len(param_oids) else 0
         if fmt == 1:
-            rendered.append(_decode_binary_param(raw, oid))
-            continue
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise _BadParameterError(f"Text-format parameter is not valid UTF-8: {exc}") from None
-        if oid in _NUMERIC_TEXT_OIDS:
-            rendered.append(text)
-        elif oid in _BOOL_TEXT_OIDS:
-            rendered.append("TRUE" if text.lower() in {"t", "true", "1", "y", "yes"} else "FALSE")
+            text = _decode_binary_param(raw, oid)
         else:
-            escaped = text.replace("'", "''")
-            rendered.append(f"'{escaped}'")
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _BadParameterError(
+                    f"Text-format parameter is not valid UTF-8: {exc}"
+                ) from None
+        escaped = text.replace("'", "''")
+        rendered.append(f"'{escaped}'")
     return _replace_placeholders(sql, rendered)
 
 
@@ -425,84 +422,64 @@ _OID_BPCHAR = 1042
 _OID_DATE = 1082
 _OID_TIMESTAMP = 1114
 _OID_TIMESTAMPTZ = 1184
-_OID_NUMERIC = 1700
-
-_NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
-    {_OID_INT2, _OID_INT4, _OID_INT8, _OID_FLOAT4, _OID_FLOAT8, _OID_NUMERIC}
-)
-_BOOL_TEXT_OIDS: frozenset[int] = frozenset({_OID_BOOL})
 
 
 def _decode_binary_param(raw: bytes, oid: int) -> str:
-    """Decode a Postgres binary-format value into a SQL literal.
+    """Render a binary-format Bind parameter as its bare text form.
 
-    The wire formats here match PostgreSQL's ``send`` functions: all
-    multi-byte integers / floats are network byte order (big-endian);
-    date / timestamp are offsets from 2000-01-01.
+    DuckDB tolerates ``WHERE int_col = '42'`` (implicit cast), so we
+    return the bare value and let ``substitute_parameters`` wrap it in
+    single quotes — same shape as the text-format path. Worst case we
+    lose type precision, but BI tools (DBeaver / Tableau / JDBC)
+    overwhelmingly bind oids and short strings where this is fine.
     """
 
-    if oid == _OID_INT2:
-        if len(raw) != 2:
-            raise _BadParameterError(f"INT2 binary param must be 2 bytes, got {len(raw)}")
-        return str(struct.unpack("!h", raw)[0])
-    if oid == _OID_INT4:
-        if len(raw) != 4:
-            raise _BadParameterError(f"INT4 binary param must be 4 bytes, got {len(raw)}")
-        return str(struct.unpack("!i", raw)[0])
-    if oid == _OID_INT8:
-        if len(raw) != 8:
-            raise _BadParameterError(f"INT8 binary param must be 8 bytes, got {len(raw)}")
-        return str(struct.unpack("!q", raw)[0])
     if oid == _OID_BOOL:
-        if len(raw) != 1:
-            raise _BadParameterError(f"BOOL binary param must be 1 byte, got {len(raw)}")
-        return "TRUE" if raw[0] else "FALSE"
-    if oid == _OID_FLOAT4:
-        if len(raw) != 4:
-            raise _BadParameterError(f"FLOAT4 binary param must be 4 bytes, got {len(raw)}")
-        return repr(struct.unpack("!f", raw)[0])
-    if oid == _OID_FLOAT8:
-        if len(raw) != 8:
-            raise _BadParameterError(f"FLOAT8 binary param must be 8 bytes, got {len(raw)}")
-        return repr(struct.unpack("!d", raw)[0])
-    if oid in {_OID_TEXT, _OID_VARCHAR, _OID_NAME, _OID_BPCHAR}:
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise _BadParameterError(
-                f"Binary text-typed parameter is not valid UTF-8: {exc}"
-            ) from None
-        return "'" + text.replace("'", "''") + "'"
-    if oid == _OID_BYTEA:
-        return "'\\x" + raw.hex() + "'::bytea"
-    if oid == _OID_DATE:
-        if len(raw) != 4:
-            raise _BadParameterError(f"DATE binary param must be 4 bytes, got {len(raw)}")
+        return "t" if raw == b"\x01" else "f"
+    if oid == _OID_INT2 and len(raw) == 2:
+        return str(struct.unpack("!h", raw)[0])
+    if oid == _OID_INT4 and len(raw) == 4:
+        return str(struct.unpack("!i", raw)[0])
+    if oid == _OID_INT8 and len(raw) == 8:
+        return str(struct.unpack("!q", raw)[0])
+    if oid == _OID_FLOAT4 and len(raw) == 4:
+        return str(struct.unpack("!f", raw)[0])
+    if oid == _OID_FLOAT8 and len(raw) == 8:
+        return str(struct.unpack("!d", raw)[0])
+    if oid in {_OID_TEXT, _OID_VARCHAR, _OID_BPCHAR, _OID_NAME}:
+        return raw.decode("utf-8", errors="replace")
+    if oid == 0:
+        # OID 0 = "unspecified" — most BI tools omit oids for textual
+        # params and assume the server can sniff. Decoding as UTF-8 is
+        # the safe default.
+        return raw.decode("utf-8", errors="replace")
+    if oid == _OID_DATE and len(raw) == 4:
         from datetime import date, timedelta
 
         days = struct.unpack("!i", raw)[0]
-        return "'" + (date(2000, 1, 1) + timedelta(days=days)).isoformat() + "'"
-    if oid == _OID_TIMESTAMP:
-        if len(raw) != 8:
-            raise _BadParameterError(f"TIMESTAMP binary param must be 8 bytes, got {len(raw)}")
+        return (date(2000, 1, 1) + timedelta(days=days)).isoformat()
+    if oid == _OID_TIMESTAMP and len(raw) == 8:
         from datetime import datetime, timedelta
 
         microseconds = struct.unpack("!q", raw)[0]
-        ts = datetime(2000, 1, 1) + timedelta(microseconds=microseconds)
-        return "'" + ts.isoformat(sep=" ") + "'"
-    if oid == _OID_TIMESTAMPTZ:
-        if len(raw) != 8:
-            raise _BadParameterError(f"TIMESTAMPTZ binary param must be 8 bytes, got {len(raw)}")
+        return (datetime(2000, 1, 1) + timedelta(microseconds=microseconds)).isoformat(sep=" ")
+    if oid == _OID_TIMESTAMPTZ and len(raw) == 8:
         from datetime import UTC, datetime, timedelta
 
         microseconds = struct.unpack("!q", raw)[0]
         ts = datetime(2000, 1, 1, tzinfo=UTC) + timedelta(microseconds=microseconds)
-        return "'" + ts.isoformat(sep=" ") + "'"
-    raise _BinaryParameterError(
-        f"Binary-format parameter for OID {oid} not supported (supported: "
-        "INT2/INT4/INT8/BOOL/FLOAT4/FLOAT8/TEXT/VARCHAR/NAME/BPCHAR/BYTEA/DATE/"
-        "TIMESTAMP/TIMESTAMPTZ)"
-    )
+        return ts.isoformat(sep=" ")
+    if oid == _OID_BYTEA:
+        return "\\x" + raw.hex()
+    # Unknown OID with binary bytes — fall back to UTF-8 decode rather
+    # than failing the whole connection. DuckDB will reject the
+    # resulting comparison cleanly if the bytes aren't text.
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _BinaryParameterError(
+            f"Cannot decode binary parameter (oid={oid}, {len(raw)} bytes): {exc}"
+        ) from None
 
 
 def _replace_placeholders(sql: str, rendered: list[str]) -> str:
