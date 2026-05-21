@@ -341,8 +341,13 @@ _OBSL_META_DDL: tuple[str, ...] = (
         CAST(-1 AS SMALLINT) AS attlen,
         CAST(-1 AS INTEGER) AS atttypmod,
         CAST(false AS BOOLEAN) AS atthasdef,
-        CAST(false AS BOOLEAN) AS attidentity,
-        CAST(false AS BOOLEAN) AS attgenerated,
+        -- attidentity/attgenerated are Postgres "char" (single-byte
+        -- char) in real pg_catalog; pgjdbc and Dremio compare them
+        -- against string literals like '' (not identity / not generated)
+        -- or 'a'/'d'/'s' (identity / generated). BOOLEAN would NPE
+        -- those string comparisons. Empty VARCHAR is the right sentinel.
+        CAST('' AS VARCHAR) AS attidentity,
+        CAST('' AS VARCHAR) AS attgenerated,
         CAST('' AS VARCHAR) AS attoptions,
         CAST('' AS VARCHAR) AS attfdwoptions,
         CAST('' AS VARCHAR) AS attmissingval,
@@ -356,15 +361,81 @@ _OBSL_META_DDL: tuple[str, ...] = (
     """,
 )
 
+
+# ---------------------------------------------------------------------------
+# Tableau / pgjdbc shadow pg_type (additive layer on top of obsl_meta.*).
+#
+# Background: Step 5's per-model ``obsl_meta.pg_*`` views serve DBeaver's
+# schema browser. ``obsl_meta.pg_attribute`` translates atttypid via a
+# CASE on information_schema's textual data_type, which distinguishes
+# VARCHAR (OID 1043) from TEXT (OID 25). But ``pg_type`` itself still
+# resolves to DuckDB's real ``pg_catalog.pg_type``, which carries
+# DuckDB's internal type-id numbering (e.g. ``oid = 23`` for DOUBLE,
+# where Postgres OID 23 is INT4). Tableau's pgjdbc reads pg_type
+# directly during ``DatabaseMetaData.getColumns()`` to allocate the
+# right-width column reader; with DuckDB's IDs it allocates a 4-byte
+# integer reader for what we send as 8-byte FLOAT8, producing NULL / 0
+# measures with no error.
+#
+# Fix: one TEMP shadow view with hand-written real-Postgres OIDs +
+# typname / typcategory + typtypmod / typbasetype (the last two so
+# Dremio's pgjdbc binder accepts the catalog probe — see _REWRITES).
+# We do NOT shadow pg_attribute — Step 5's obsl_meta.pg_attribute is
+# more precise because it sees information_schema's textual types.
+_SHADOW_VIEWS: tuple[str, ...] = (
+    # Shadow pg_type with real Postgres OIDs + the columns pgjdbc reads
+    # from DatabaseMetaData.getColumns / getTypeInfo.
+    #
+    # ``TEMP VIEW`` is intentional: DuckDB puts temp objects in a special
+    # catalog where ``pg_class.relnamespace`` is NULL. Tableau's
+    # ``getTables`` query filters ``WHERE nspname NOT IN ('pg_catalog',
+    # 'information_schema')`` — and ``NULL NOT IN (…)`` evaluates to
+    # NULL, excluding the row. The view remains queryable by name so
+    # the SQL rewrites below still resolve.
+    #
+    # Dremio's Postgres JDBC connector probe from
+    # ``DatabaseMetaData.getColumns()`` references ``typtypmod`` and
+    # ``typbasetype``; without them the binder fails with
+    # ``Values list "t" does not have a column named "<col>"``. -1 is the
+    # Postgres sentinel for "no type modifier", 0 is the sentinel for
+    # "not a domain over another type" — both are correct for every base
+    # type we expose here.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
+        SELECT * FROM (VALUES
+            -- (oid, typname, typcategory, typlen, typtype, typnotnull, typtypmod, typbasetype)
+            (16,   'bool',        'B', 1,   'b', false, -1, 0),
+            (17,   'bytea',       'U', -1,  'b', false, -1, 0),
+            (18,   'char',        'S', 1,   'b', false, -1, 0),
+            (19,   'name',        'S', 64,  'b', false, -1, 0),
+            (20,   'int8',        'N', 8,   'b', false, -1, 0),
+            (21,   'int2',        'N', 2,   'b', false, -1, 0),
+            (23,   'int4',        'N', 4,   'b', false, -1, 0),
+            (25,   'text',        'S', -1,  'b', false, -1, 0),
+            (26,   'oid',         'N', 4,   'b', false, -1, 0),
+            (700,  'float4',      'N', 4,   'b', false, -1, 0),
+            (701,  'float8',      'N', 8,   'b', false, -1, 0),
+            (1042, 'bpchar',      'S', -1,  'b', false, -1, 0),
+            (1043, 'varchar',     'S', -1,  'b', false, -1, 0),
+            (1082, 'date',        'D', 4,   'b', false, -1, 0),
+            (1083, 'time',        'D', 8,   'b', false, -1, 0),
+            (1114, 'timestamp',   'D', 8,   'b', false, -1, 0),
+            (1184, 'timestamptz', 'D', 8,   'b', false, -1, 0),
+            (1186, 'interval',    'T', 16,  'b', false, -1, 0),
+            (1266, 'timetz',      'D', 12,  'b', false, -1, 0),
+            (1700, 'numeric',     'N', -1,  'b', false, -1, 0),
+            (2950, 'uuid',        'U', 16,  'b', false, -1, 0)
+        ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull, typtypmod, typbasetype)""",
+)
+
+
 # Catalog-table substitutions applied to incoming SQL: when a client
 # references ``pg_catalog.pg_class`` we transparently swap it to
 # ``obsl_meta.pg_class`` so the missing-column / mistyped-attribute
-# problems documented in Step 3 disappear. Step 5's per-model schema
-# layout supersedes v2.5.0's earlier ``_obsl_pg_type`` / ``_obsl_pg_attribute``
-# shadow VALUES approach — DuckDB's real ``pg_catalog.pg_type`` already
-# exposes the columns Dremio's getColumns probe needs (``typtypmod``,
-# ``typbasetype``), and ``obsl_meta.pg_attribute`` synthesizes
-# ``attidentity`` / ``attgenerated`` (lines ~344–345 above).
+# problems documented in Step 3 disappear. ``pg_attribute`` /
+# ``pg_type`` references are intercepted earlier by ``_REWRITES``
+# (which fires before this table) and routed to the TEMP shadow views
+# above; the obsl_meta.pg_attribute substitution here is a safety net
+# for any path where the rewrite misses.
 _TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\bpg_catalog\.pg_class\b", re.IGNORECASE),
@@ -450,6 +521,29 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1(",
     ),
+    # pg_catalog.pg_type / pg_type → _obsl_pg_type. DuckDB's pg_type
+    # carries DuckDB's internal type-id numbering (e.g. ``oid = 23`` for
+    # DOUBLE, where Postgres OID 23 is INT4). Tableau's pgjdbc reads
+    # pg_type directly during ``DatabaseMetaData.getColumns()`` to
+    # allocate the right-width column reader; with DuckDB's IDs it
+    # allocates a 4-byte integer reader for what we send as 8-byte
+    # FLOAT8, producing NULL / 0 measures with no error. The shadow
+    # TEMP view (see _SHADOW_VIEWS) hand-writes real Postgres OIDs +
+    # typname / typcategory so the allocator matches the data we send.
+    #
+    # Note: pg_attribute is intentionally NOT rewritten here — Step 5's
+    # obsl_meta.pg_attribute (loaded via _OBSL_META_DDL above) maps types
+    # via information_schema.columns.data_type, which distinguishes
+    # VARCHAR (OID 1043) from TEXT (OID 25) — more precise than a CASE
+    # on pg_attribute.atttypid (where DuckDB stores both as 25).
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_type\b", re.IGNORECASE),
+        "_obsl_pg_type",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_type\b", re.IGNORECASE),
+        "_obsl_pg_type",
+    ),
     # ``SESSION_USER`` handled by ``_rewrite_session_user`` below —
     # single-pass replacement so the second match doesn't eat its
     # own alias.
@@ -532,6 +626,11 @@ class CatalogEmulator:
             with contextlib.suppress(Exception):
                 self._con.execute(ddl)
         for ddl in _OBSL_META_DDL:
+            with contextlib.suppress(Exception):
+                self._con.execute(ddl)
+        # TEMP shadow views for Tableau / pgjdbc — see the _SHADOW_VIEWS
+        # block above for why this is additive to obsl_meta.*.
+        for ddl in _SHADOW_VIEWS:
             with contextlib.suppress(Exception):
                 self._con.execute(ddl)
 
