@@ -148,6 +148,7 @@ markers = [
     "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars) — run with: pytest -m snowflake",
     "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC) — run with: pytest -m bigquery",
     "databricks: requires a live Databricks workspace (DATABRICKS_* env vars) — run with: pytest -m databricks",
+    "dremio: requires the Dremio + OBSL docker-compose stack — see tests/integration/dremio/README.md",
 ]
 
 [tool.mypy]

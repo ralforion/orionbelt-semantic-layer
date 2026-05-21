@@ -1,0 +1,60 @@
+# Stage-1 pgwire compat: Dremio OSS connects to OrionBelt's pgwire as a
+# Postgres source. See tests/integration/dremio/README.md for usage.
+#
+# Two services on a shared bridge network:
+#   - obsl    : the OrionBelt API image with PGWIRE_ENABLED=true on :5432
+#               (the commerce demo model + DuckDB are baked into the image)
+#   - dremio  : dremio/dremio-oss exposing :9047 (REST) and :31010 (Flight)
+
+services:
+  obsl:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    image: orionbelt-api:dremio-test
+    environment:
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+      API_SERVER_HOST: 0.0.0.0
+      PORT: 8080
+      PGWIRE_ENABLED: "true"
+      PGWIRE_HOST: 0.0.0.0
+      PGWIRE_PORT: "5432"
+      PGWIRE_AUTH_MODE: trust
+      QUERY_EXECUTE: "true"
+      DB_VENDOR: duckdb
+      DUCKDB_DATABASE: /app/data/orionbelt_1_commerce.duckdb
+      MODEL_DIR: /app/data
+      # The base image bakes MODEL_FILE (legacy single-model mode), which
+      # loads the model into the __default__ session and the pgwire
+      # catalog ends up exposing the table as ``orionbelt.__default__``.
+      # Override with MODEL_FILES (multi-model mode) so the table is
+      # named after the filename stem (``orionbelt_1_commerce``).
+      MODEL_FILE: ""
+      MODEL_FILES: orionbelt_1_commerce.yaml
+    ports:
+      - "18080:8080"
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status == 200 else 1)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  dremio:
+    image: dremio/dremio-oss:latest
+    ports:
+      - "19047:9047"
+      - "31010:31010"
+    environment:
+      DREMIO_JAVA_SERVER_EXTRA_OPTS: -Xms1g -Xmx2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9047/apiv2/server_status || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      obsl:
+        condition: service_healthy
