@@ -119,10 +119,10 @@ nav:
       - Quick Start: getting-started/quickstart.md
       - Docker & Deployment: getting-started/docker.md
       - Development: getting-started/development.md
+  - OBSQL: guide/semantic-ql.md
   - Guide:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
-      - OrionBelt Semantic QL (OBSQL): guide/semantic-ql.md
       - SQL Dialects: guide/dialects.md
       - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md

@@ -8,6 +8,18 @@
 
 OrionBelt Semantic Layer is an **API-first** semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, and Snowflake. Query using business concepts — dimensions, measures, and metrics — instead of raw SQL.
 
+## The OrionBelt trio
+
+OBSL ships three named pillars. You author models in **OBML**, query them in **OBSQL**, and run it all on **OBSL**.
+
+| Short form | Full name | What it is | Reference |
+|---|---|---|---|
+| **OBSL** | OrionBelt **Semantic Layer** | The system itself — compiler, planner, runtime, REST / Flight / Postgres-wire surfaces | this site |
+| **OBML** | OrionBelt **Modeling Language** | Declarative YAML format for defining models | [OBML Model Format](guide/model-format.md) |
+| **OBSQL** | OrionBelt **Semantic QL** | SQL surface BI tools and humans actually write — bare-label or `MEASURE()` syntax, aggregation-match validation, `WITH ROLLUP` / `WITH CUBE`, no escape hatch to raw SQL | [OBSQL reference](guide/semantic-ql.md) |
+
+OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2.5+). Same language, two transports — pick whichever your BI tool prefers.
+
 ## Why OrionBelt?
 
 - **Analytics as Code** — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible

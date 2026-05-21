@@ -153,6 +153,25 @@ uv run python examples/obsql.py -m sales 'SHOW TABLES'
 uv run python examples/obsql.py --list   # discover loaded models via REST
 ```
 
+### Try OBSQL in 30 seconds
+
+**OBSQL** — OrionBelt Semantic QL — is the SQL surface BI tools and humans actually write. Bare labels, `MEASURE()` markers, or matching aggregate wrappers; aggregation-match validation; `WITH ROLLUP` / `WITH CUBE`; no escape hatch to raw warehouse SQL. Same language over **Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2.5+):
+
+```bash
+PGWIRE_ENABLED=true uv run orionbelt-api &
+
+# Connect with any Postgres client — no driver to install
+psql "host=localhost port=5432 user=obsl dbname=sales sslmode=disable" \
+  -c 'SELECT "Region", "Total Sales" LIMIT 5'
+
+# All three measure forms compile to the same vendor SQL:
+psql "..." -c 'SELECT "Region", "Total Sales"        FROM sales LIMIT 5'  -- bare
+psql "..." -c 'SELECT "Region", MEASURE("Total Sales") FROM sales LIMIT 5'  -- explicit marker
+psql "..." -c 'SELECT "Region", SUM("Total Sales")   FROM sales LIMIT 5'  -- matching aggregate
+```
+
+See the [OBSQL reference](https://ralforion.com/orionbelt-semantic-layer/guide/semantic-ql/) for the full grammar.
+
 ### Option D: Docker
 
 **Stage 1 — Zero-config start** (models loaded later via API or UI):
