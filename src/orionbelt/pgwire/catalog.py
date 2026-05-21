@@ -621,9 +621,7 @@ class CatalogEmulator:
             # (the model) instead of ``main``. BI tools that highlight
             # the connected schema in their tree pick it up from here.
             if desired:
-                quoted = ", ".join(
-                    "'" + name.replace("'", "''") + "'" for name in desired
-                )
+                quoted = ", ".join("'" + name.replace("'", "''") + "'" for name in desired)
                 with contextlib.suppress(Exception):
                     self._con.execute(f"SET search_path TO {quoted}")
 
