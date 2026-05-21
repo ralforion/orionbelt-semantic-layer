@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from ob_dremio.connection import Connection
 from ob_dremio.exceptions import (
-    DataError,
     DatabaseError,
+    DataError,
     Error,
     IntegrityError,
     InterfaceError,
@@ -73,19 +73,21 @@ def connect(
     location = f"{scheme}://{host}:{port}"
     client = pyarrow.flight.FlightClient(location)
 
+    call_options: pyarrow.flight.FlightCallOptions | None = None
     if username is not None and password is not None:
         token_pair = client.authenticate_basic_token(username, password)
-        # Store the bearer token as default call options via a header factory.
-        # pyarrow Flight uses call options for auth headers on each RPC.
-        options = pyarrow.flight.FlightCallOptions(
-            headers=[token_pair],
-        )
-        # Wrap the client so that default options are applied.
-        # For simplicity, we store the options on the client object.
-        client._ob_call_options = options  # type: ignore[attr-defined]
+        # The bearer token returned by authenticate_basic_token must be
+        # attached to every subsequent get_flight_info / do_get call.
+        # pyarrow's FlightClient is a Cython object that rejects ad-hoc
+        # attribute writes (`AttributeError: 'pyarrow._flight.FlightClient'
+        # object has no attribute '_ob_call_options'`) — so we stash the
+        # options on our Python-owned Connection/Cursor wrappers instead
+        # and pass them through to each RPC.
+        call_options = pyarrow.flight.FlightCallOptions(headers=[token_pair])
 
     return Connection(
         client,
+        call_options=call_options,
         ob_api_url=ob_api_url,
         ob_timeout=ob_timeout,
     )

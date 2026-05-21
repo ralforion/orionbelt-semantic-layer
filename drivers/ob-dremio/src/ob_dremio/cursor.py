@@ -9,11 +9,16 @@ buffering) by converting the Arrow table to Python tuples.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 from ob_dremio.compiler import compile_obml, is_obml, parse_obml
 from ob_dremio.exceptions import NotSupportedError, ProgrammingError
 from ob_dremio.type_codes import ARROW_TYPE_MAP, STRING
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+    import pyarrow.flight
 
 
 class Cursor:
@@ -28,21 +33,21 @@ class Cursor:
 
     def __init__(
         self,
-        client: Any,
+        client: pyarrow.flight.FlightClient,
         *,
+        call_options: pyarrow.flight.FlightCallOptions | None = None,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
     ) -> None:
         self._client = client
+        self._call_options = call_options
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
-        self._arrow_table: Any = None  # kept until fetch_arrow_table() or fetchall()
+        self._arrow_table: pa.Table | None = None  # kept until fetch_arrow_table()
         self._rows: list[tuple[Any, ...]] = []
         self._pos: int = 0
-        self._description: (
-            tuple[tuple[str, Any, None, None, None, None, None], ...] | None
-        ) = None
+        self._description: tuple[tuple[str, Any, None, None, None, None, None], ...] | None = None
         self._rowcount: int = -1
 
     # -- PEP 249 attributes --------------------------------------------------
@@ -82,20 +87,26 @@ class Cursor:
             ob_timeout=self._ob_timeout,
         )
 
-    def _execute_sql(self, sql: str) -> Any:
+    def _execute_sql(self, sql: str) -> pa.Table:
         """Execute SQL via Arrow Flight and return the result as an Arrow Table.
 
         Uses ``FlightDescriptor.for_command()`` + ``get_flight_info()`` +
         ``do_get()`` to retrieve results.
         """
-        import pyarrow.flight
+        import pyarrow.flight as _pf
 
-        descriptor = pyarrow.flight.FlightDescriptor.for_command(sql.encode("utf-8"))
-        info = self._client.get_flight_info(descriptor)
-        reader = self._client.do_get(info.endpoints[0].ticket)
+        descriptor = _pf.FlightDescriptor.for_command(sql.encode("utf-8"))
+        # When the connection was authenticated, every Flight RPC needs the
+        # bearer token in its call options — Dremio rejects unauthenticated
+        # do_get with `UNAUTHENTICATED` otherwise.
+        rpc_args: tuple[_pf.FlightCallOptions, ...] = (
+            (self._call_options,) if self._call_options is not None else ()
+        )
+        info = self._client.get_flight_info(descriptor, *rpc_args)
+        reader = self._client.do_get(info.endpoints[0].ticket, *rpc_args)
         return reader.read_all()
 
-    def _build_description(self, schema: Any) -> None:
+    def _build_description(self, schema: pa.Schema) -> None:
         """Build PEP 249 description from an Arrow schema."""
         cols: list[tuple[str, Any, None, None, None, None, None]] = []
         for field in schema:
@@ -108,7 +119,7 @@ class Cursor:
         self._description = tuple(cols) if cols else None
 
     @staticmethod
-    def _table_to_rows(table: Any) -> list[tuple[Any, ...]]:
+    def _table_to_rows(table: pa.Table) -> list[tuple[Any, ...]]:
         """Convert an Arrow Table to a list of tuples (row-major)."""
         columns = table.to_pydict()
         col_names = table.column_names
@@ -120,7 +131,7 @@ class Cursor:
 
     # -- PEP 249 execute methods ----------------------------------------------
 
-    def execute(self, operation: str, parameters: Any = None) -> Cursor:
+    def execute(self, operation: str, parameters: Sequence[object] | None = None) -> Cursor:
         """Execute a query — OBML YAML or plain SQL.
 
         Parameters are not supported for Dremio Flight queries.  If
@@ -143,7 +154,7 @@ class Cursor:
             self._rows = self._table_to_rows(self._arrow_table)
             self._arrow_table = None  # free Arrow memory
 
-    def executemany(self, operation: str, seq_of_parameters: Any) -> None:
+    def executemany(self, operation: str, seq_of_parameters: Sequence[Sequence[object]]) -> None:
         """Execute against all parameter sequences.
 
         OBML queries are not supported with executemany — raises NotSupportedError.
@@ -160,7 +171,7 @@ class Cursor:
 
     # -- PEP 249 fetch methods ------------------------------------------------
 
-    def fetch_arrow_table(self) -> Any:
+    def fetch_arrow_table(self) -> pa.Table | None:
         """Return the result as a PyArrow Table (zero-copy).
 
         Dremio uses Arrow Flight natively, so this avoids the overhead of
@@ -202,7 +213,7 @@ class Cursor:
 
     # -- PEP 249 no-ops -------------------------------------------------------
 
-    def setinputsizes(self, _sizes: Any) -> None:
+    def setinputsizes(self, _sizes: Sequence[object]) -> None:
         """No-op — required by PEP 249."""
 
     def setoutputsize(self, size: int, column: int | None = None) -> None:

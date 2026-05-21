@@ -174,10 +174,20 @@ class SemanticRouter:
                 message=f"semantic translator error: {exc}",
             )
 
+        # Per-model dialect: when the OBML declares ``settings.defaultDialect``
+        # it wins over the global ``DB_VENDOR``. That lets a single OBSL
+        # serve, e.g., a DuckDB-backed model and a Dremio-backed model
+        # from the same pgwire surface — each query is compiled AND
+        # executed against the right vendor.
+        model_settings = target.model.settings
+        dialect = (
+            model_settings.default_dialect
+            if model_settings is not None and model_settings.default_dialect
+            else self._default_dialect
+        )
+
         try:
-            compile_result = target.store.compile_query(
-                target.model_id, query, self._default_dialect
-            )
+            compile_result = target.store.compile_query(target.model_id, query, dialect)
         except UnsupportedDialectError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
@@ -211,12 +221,10 @@ class SemanticRouter:
                 message=f"compiler error: {exc}",
             )
 
-        logger.info(
-            "pgwire compiled SQL (dialect=%s):\n%s", self._default_dialect, compile_result.sql
-        )
+        logger.info("pgwire compiled SQL (dialect=%s):\n%s", dialect, compile_result.sql)
 
         try:
-            result = execute_sql(compile_result.sql, dialect=self._default_dialect)
+            result = execute_sql(compile_result.sql, dialect=dialect)
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
