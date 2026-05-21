@@ -163,7 +163,7 @@ class SemanticRouter:
             )
 
         try:
-            query = translate_sql_to_query(sql, target.model)
+            query = translate_sql_to_query(_normalize_for_obsql(sql), target.model)
         except SQLTranslationError as exc:
             return _encode_translation_error(exc)
         except Exception as exc:  # noqa: BLE001 — broad guard at protocol boundary
@@ -458,6 +458,55 @@ _RE_ZERO_ROW_METADATA_PROBE = re.compile(
     re.IGNORECASE,
 )
 _RE_LIMIT_ZERO_PROBE = re.compile(r"\blimit\s+0\b", re.IGNORECASE)
+
+# Dremio's Postgres JDBC connector annotates every text column in
+# pushdown SQL with ``COLLATE "C"`` to force byte-order comparison
+# semantics across federated sources. The annotation is meaningless to
+# a semantic layer (we don't do raw lexical comparison on column refs)
+# and the OBSQL translator rejects anything but bare identifiers. Strip
+# any ``COLLATE <quoted-or-bare-identifier>`` (optionally
+# schema-qualified) before the translator sees the SQL.
+_RE_COLLATE_ANNOTATION = re.compile(
+    r'\s+COLLATE\s+(?:"[^"]+"|[\w.]+)',
+    re.IGNORECASE,
+)
+
+# Same BI-tool pushdown story for the SQL-standard pagination form:
+# Dremio emits ``OFFSET m ROWS FETCH NEXT n ROWS ONLY``. The OBSQL
+# translator only accepts the Postgres ``LIMIT n [OFFSET m]`` form, so
+# we rewrite. Order matters — the combined ``OFFSET … FETCH …`` shape
+# has to be tried before the standalone clauses, otherwise the OFFSET
+# part is consumed first and the FETCH half ends up orphaned.
+_RE_OFFSET_FETCH = re.compile(
+    r"\bOFFSET\s+(\d+)\s+ROWS\s+FETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS\s+ONLY\b",
+    re.IGNORECASE,
+)
+_RE_FETCH_FIRST = re.compile(
+    r"\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS\s+ONLY\b",
+    re.IGNORECASE,
+)
+_RE_OFFSET_ROWS = re.compile(r"\bOFFSET\s+(\d+)\s+ROWS\b", re.IGNORECASE)
+
+
+def _strip_collate_annotations(sql: str) -> str:
+    """Drop ``COLLATE "<x>"`` / ``COLLATE foo.bar`` annotations from SQL."""
+
+    return _RE_COLLATE_ANNOTATION.sub("", sql)
+
+
+def _rewrite_fetch_to_limit(sql: str) -> str:
+    """Convert SQL-standard FETCH/OFFSET pagination to Postgres LIMIT/OFFSET."""
+
+    sql = _RE_OFFSET_FETCH.sub(r"LIMIT \2 OFFSET \1", sql)
+    sql = _RE_FETCH_FIRST.sub(r"LIMIT \1", sql)
+    sql = _RE_OFFSET_ROWS.sub(r"OFFSET \1", sql)
+    return sql
+
+
+def _normalize_for_obsql(sql: str) -> str:
+    """Apply pgjdbc-pushdown normalizations before OBSQL translation."""
+
+    return _rewrite_fetch_to_limit(_strip_collate_annotations(sql))
 
 
 def is_metadata_probe(sql: str) -> bool:

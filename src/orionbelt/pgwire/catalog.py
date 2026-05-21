@@ -356,11 +356,15 @@ _OBSL_META_DDL: tuple[str, ...] = (
     """,
 )
 
-
 # Catalog-table substitutions applied to incoming SQL: when a client
 # references ``pg_catalog.pg_class`` we transparently swap it to
 # ``obsl_meta.pg_class`` so the missing-column / mistyped-attribute
-# problems documented in Step 3 disappear.
+# problems documented in Step 3 disappear. Step 5's per-model schema
+# layout supersedes v2.5.0's earlier ``_obsl_pg_type`` / ``_obsl_pg_attribute``
+# shadow VALUES approach — DuckDB's real ``pg_catalog.pg_type`` already
+# exposes the columns Dremio's getColumns probe needs (``typtypmod``,
+# ``typbasetype``), and ``obsl_meta.pg_attribute`` synthesizes
+# ``attidentity`` / ``attgenerated`` (lines ~344–345 above).
 _TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\bpg_catalog\.pg_class\b", re.IGNORECASE),

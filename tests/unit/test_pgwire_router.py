@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from orionbelt.pgwire.router import SemanticRouter
+from orionbelt.pgwire.router import (
+    SemanticRouter,
+    _rewrite_fetch_to_limit,
+    _strip_collate_annotations,
+)
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
 from orionbelt.service.session_manager import SessionManager
 from tests.conftest import SAMPLE_MODEL_YAML
@@ -367,3 +371,94 @@ def test_uses_default_dialect_when_compiling(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
     asyncio.run(router.handle('SELECT "Customer Country" FROM commerce', database="commerce"))
     assert seen["dialect"] == "postgres"
+
+
+# ---------------------------------------------------------------------------
+# COLLATE-annotation stripping — Dremio's pgjdbc adds ``COLLATE "C"`` to
+# every text column in pushdown SQL. The OBSQL translator only accepts
+# bare identifiers, so the router strips it before delegating.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("input_sql", "expected"),
+    [
+        # Dremio's exact pushdown shape — quoted "C" collation on a column ref.
+        (
+            'SELECT "t"."col" COLLATE "C" FROM t',
+            'SELECT "t"."col" FROM t',
+        ),
+        # Bare identifier collation (Postgres default style).
+        (
+            "SELECT name COLLATE default FROM t",
+            "SELECT name FROM t",
+        ),
+        # Schema-qualified collation (psql's pg_catalog.default form).
+        (
+            "SELECT name COLLATE pg_catalog.default FROM t",
+            "SELECT name FROM t",
+        ),
+        # Multiple annotations in one statement.
+        (
+            'SELECT a COLLATE "C", b COLLATE "C" FROM t WHERE c COLLATE "C" = \'x\'',
+            "SELECT a, b FROM t WHERE c = 'x'",
+        ),
+        # Lower-case keyword.
+        (
+            'SELECT a collate "C" FROM t',
+            "SELECT a FROM t",
+        ),
+        # No-op when there is no COLLATE.
+        (
+            "SELECT a FROM t",
+            "SELECT a FROM t",
+        ),
+    ],
+)
+def test_strip_collate_annotations(input_sql: str, expected: str) -> None:
+    assert _strip_collate_annotations(input_sql) == expected
+
+
+# ---------------------------------------------------------------------------
+# FETCH/OFFSET → LIMIT/OFFSET rewrite — Dremio emits the SQL-standard
+# pagination shape; the OBSQL translator only accepts ``LIMIT n``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("input_sql", "expected"),
+    [
+        # Dremio's exact pushdown shape — bare FETCH NEXT.
+        (
+            "SELECT a FROM t FETCH NEXT 5 ROWS ONLY",
+            "SELECT a FROM t LIMIT 5",
+        ),
+        # FETCH FIRST is the other SQL-standard alias.
+        (
+            "SELECT a FROM t FETCH FIRST 10 ROWS ONLY",
+            "SELECT a FROM t LIMIT 10",
+        ),
+        # OFFSET m ROWS FETCH NEXT n ROWS ONLY → LIMIT n OFFSET m.
+        (
+            "SELECT a FROM t OFFSET 20 ROWS FETCH NEXT 5 ROWS ONLY",
+            "SELECT a FROM t LIMIT 5 OFFSET 20",
+        ),
+        # Standalone OFFSET m ROWS → OFFSET m (no LIMIT).
+        (
+            "SELECT a FROM t OFFSET 20 ROWS",
+            "SELECT a FROM t OFFSET 20",
+        ),
+        # Lower-case keywords.
+        (
+            "select a from t fetch next 3 rows only",
+            "select a from t LIMIT 3",
+        ),
+        # No-op when there's no FETCH/OFFSET ROWS.
+        (
+            "SELECT a FROM t LIMIT 5",
+            "SELECT a FROM t LIMIT 5",
+        ),
+    ],
+)
+def test_rewrite_fetch_to_limit(input_sql: str, expected: str) -> None:
+    assert _rewrite_fetch_to_limit(input_sql) == expected
