@@ -66,6 +66,36 @@ SQLSTATE_SYSTEM_ERROR = "58000"
 SQLSTATE_CANNOT_CONNECT_NOW = "57P03"
 
 
+# Per-model metadata views the catalog emulator creates inside every
+# model's schema (``orionbelt.<model>.<view>``). The Arrow Flight
+# surface exposes them under the alias ``model.<view>``; pgwire
+# accepts the same alias so users can write
+# ``SELECT * FROM model.dimensions`` from any client without
+# retyping the schema name.
+_METADATA_VIEW_NAMES: frozenset[str] = frozenset({
+    "dimensions",
+    "measures",
+    "metrics",
+    "_dimensions_metadata",
+    "_measures_metadata",
+    "_metrics_metadata",
+    "model",
+})
+
+
+_RE_MODEL_ALIAS_QUALIFIER = re.compile(
+    # ``"model"."<view>"`` or ``model.<view>`` (case-insensitive).
+    # Matches the metadata-view names exactly; the FROM / JOIN
+    # surrounding context isn't required so an aliased reference
+    # inside a JOIN clause also gets rewritten.
+    r'"?model"?\s*\.\s*"?(?P<view>'
+    r"dimensions|measures|metrics"
+    r"|_dimensions_metadata|_measures_metadata|_metrics_metadata"
+    r')"?',
+    re.IGNORECASE,
+)
+
+
 class _ModelNotFoundError(Exception):
     """Raised when the Postgres ``database`` parameter resolves to nothing."""
 
@@ -141,7 +171,14 @@ class SemanticRouter:
         ):
             try:
                 self._catalog.refresh(self._sessions)
-                result = self._catalog.execute(sql, database)
+                # Resolve the ``model.<view>`` alias to the connected
+                # model's actual schema before executing. The alias is
+                # the Arrow Flight surface's user-friendly shape; we
+                # accept it on pgwire so the same SQL works from any
+                # client without retyping the schema name the user
+                # just ``SET search_path``'d to.
+                catalog_sql = self._resolve_model_alias(sql, database)
+                result = self._catalog.execute(catalog_sql, database)
             except Exception as exc:  # noqa: BLE001 — protocol boundary
                 logger.info("pgwire catalog probe failed: %s", exc)
                 return protocol.build_error_response(
@@ -314,6 +351,26 @@ class SemanticRouter:
                 names.add(s.session_id.lower())
         return names
 
+    def _resolve_model_alias(self, sql: str, database: str) -> str:
+        """Rewrite ``model.<view>`` → ``"<schema>"."<view>"``.
+
+        ``<schema>`` is the connected model's pg_namespace.nspname —
+        same value as ``current_schema()`` / ``SHOW search_path``
+        report. Returns the SQL unchanged when no alias is present
+        OR when the effective schema is unknown (multi-model
+        connection on the brand database without a SET search_path),
+        which preserves the original error path for ambiguous
+        references.
+        """
+
+        schema = self._effective_schema(database)
+        if not schema:
+            return sql
+        quoted = '"' + schema.replace('"', '""') + '"'
+        return _RE_MODEL_ALIAS_QUALIFIER.sub(
+            lambda m: f'{quoted}."{m.group("view")}"', sql
+        )
+
     def _references_model_schema(self, sql: str) -> bool:
         """True when ``sql`` references a schema that matches a loaded model.
 
@@ -324,6 +381,15 @@ class SemanticRouter:
         not the OBSQL translator. We detect them by parsing the SQL
         and checking if any FROM/JOIN target's schema qualifier
         matches a currently-loaded model.
+
+        Also routes the ``model.<metadata_view>`` user-friendly alias
+        (the Arrow Flight surface uses the same shape) so
+        ``SELECT * FROM model.dimensions`` lands in the catalog
+        DuckDB rather than the OBSQL translator. ``model`` is the
+        v2.5.0 virtual table living inside each model schema; the
+        alias ``model.<view>`` reads as "the metadata of the
+        connected model" without forcing the user to retype the
+        schema name they just ``SET search_path``'d to.
         """
 
         try:
@@ -331,11 +397,11 @@ class SemanticRouter:
         except Exception:
             return False
         model_names = self._loaded_model_names()
-        if not model_names:
-            return False
         for table in parsed.find_all(exp.Table):
             schema = (table.db or "").lower() or (table.text("db") or "").lower()
             if schema and schema in model_names:
+                return True
+            if schema == "model" and (table.name or "").lower() in _METADATA_VIEW_NAMES:
                 return True
         return False
 
