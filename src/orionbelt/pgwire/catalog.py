@@ -161,6 +161,79 @@ _OID_TRANSLATION_CASE = """
 """
 
 _SHADOW_VIEWS: tuple[str, ...] = (
+    # Empty stubs for pg_catalog tables DuckDB doesn't expose but
+    # DBeaver / pgAdmin / pg_dump probe during schema-tree refresh.
+    # Each one carries the columns the standard probe queries reference,
+    # all rows = 0. The router's pg_catalog → shadow rewrite (below)
+    # routes ``pg_catalog.<name>`` and bare ``<name>`` references to
+    # these views. Without them DBeaver bombs with "Catalog Error:
+    # Table with name <X> does not exist" when it browses event
+    # triggers, publications, subscriptions, foreign-data wrappers,
+    # or row-level-security policies. None of these features apply to
+    # OBSL's read-only semantic surface, so empty results are
+    # semantically correct as well as the cheapest fix.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_event_trigger AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER,    -- oid
+            NULL::VARCHAR,    -- evtname
+            NULL::VARCHAR,    -- evtevent
+            NULL::INTEGER,    -- evtowner
+            NULL::INTEGER,    -- evtfoid
+            NULL::VARCHAR,    -- evtenabled
+            NULL::VARCHAR     -- evttags (text[] in real pg; VARCHAR is fine for empty)
+        )) AS t(oid, evtname, evtevent, evtowner, evtfoid, evtenabled, evttags)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_publication AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::BOOLEAN, NULL::BOOLEAN, NULL::BOOLEAN,
+            NULL::BOOLEAN, NULL::BOOLEAN, NULL::BOOLEAN
+        )) AS t(oid, pubname, pubowner, puballtables,
+                pubinsert, pubupdate, pubdelete, pubtruncate, pubviaroot)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_subscription AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::VARCHAR, NULL::BOOLEAN, NULL::BOOLEAN,
+            NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR,
+            NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, subdbid, subname, subowner, subconninfo,
+                subenabled, subbinary, subslotname, subsynccommit,
+                subpublications, suborigin, subskiplsn)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_foreign_data_wrapper AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, fdwname, fdwowner, fdwhandler, fdwvalidator,
+                fdwacl, fdwoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_foreign_server AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::INTEGER,
+            NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, srvname, srvowner, srvfdw, srvtype, srvversion,
+                srvacl, srvoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_user_mapping AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR
+        )) AS t(oid, umuser, umserver, umoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_policy AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::VARCHAR,
+            NULL::BOOLEAN, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, polname, polrelid, polcmd, polpermissive,
+                polroles, polqual, polwithcheck)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_extension AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::INTEGER,
+            NULL::BOOLEAN, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, extname, extowner, extnamespace, extrelocatable,
+                extversion, extconfig, extcondition)
+        WHERE false""",
     # Shadow pg_attribute that translates atttypid to real Postgres OIDs.
     # All other columns pass through unchanged so the rest of the JDBC
     # getColumns query keeps working.
@@ -438,6 +511,36 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(?<![.\w])pg_class\b(?!\s*\()", re.IGNORECASE),
         "_obsl_pg_class",
     ),
+    # Empty-stub catalogs DuckDB doesn't expose but DBeaver / pgAdmin
+    # probe during schema-tree refresh. Each rewrite handles both the
+    # ``pg_catalog.<name>`` and bare ``<name>`` forms — Postgres
+    # clients drop the qualifier opportunistically. Without the
+    # rewrite DuckDB errors with "Catalog Error: Table with name
+    # <X> does not exist" and the schema browser reports a confusing
+    # ``42601 catalog query failed`` to the user.
+    *[
+        rewrite
+        for stub_name in (
+            "pg_event_trigger",
+            "pg_publication",
+            "pg_subscription",
+            "pg_foreign_data_wrapper",
+            "pg_foreign_server",
+            "pg_user_mapping",
+            "pg_policy",
+            "pg_extension",
+        )
+        for rewrite in (
+            (
+                re.compile(rf"\bpg_catalog\s*\.\s*{stub_name}\b", re.IGNORECASE),
+                f"_obsl_{stub_name}",
+            ),
+            (
+                re.compile(rf"(?<![.\w]){stub_name}\b(?!\s*\()", re.IGNORECASE),
+                f"_obsl_{stub_name}",
+            ),
+        )
+    ],
     # Function / operator references prefixed with pg_catalog. — strip
     # the prefix so DuckDB resolves against the unqualified built-in or
     # our stub macros.  We deliberately don't touch table references
