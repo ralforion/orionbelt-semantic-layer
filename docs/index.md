@@ -53,6 +53,32 @@ OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
 | Source Tracking     | Error messages with YAML line/column positions                                                                  |
 
+## Try the demo
+
+**Hosted Gradio UI:** [orionbelt.ralforion.com](https://orionbelt.ralforion.com/ui/?__theme=dark) — pre-loaded example model, compile across dialects, see SQL instantly. ([Swagger](https://orionbelt.ralforion.com/docs) · [ReDoc](https://orionbelt.ralforion.com/redoc))
+
+The hosted demo runs on Cloud Run (HTTPS-only by design), so the **PostgreSQL wire** and **Arrow Flight SQL** transports can't be exposed publicly there. Spin the same demo up locally in one `docker run` — same image, same baked-in `orionbelt_1_commerce` DuckDB dataset, plus all three transports:
+
+```bash
+docker run --rm -d --name orionbelt-demo \
+  -p 8080:8080 -p 5432:5432 -p 8815:8815 \
+  -e PGWIRE_ENABLED=true \
+  -e FLIGHT_ENABLED=true \
+  ralforion/orionbelt-api:latest
+
+# REST + Gradio UI:
+#   http://localhost:8080/ui
+# pgwire (any psql / DBeaver / Tableau / Power BI / Superset / Metabase):
+psql "host=localhost port=5432 user=obsl dbname=orionbelt_1_commerce sslmode=disable" \
+  -c 'SELECT "Client Name", "Total Sales" LIMIT 5'
+# Flight SQL smoke test:
+uv run python examples/obsql.py 'SELECT "Client Name", "Total Sales" LIMIT 5'
+
+docker stop orionbelt-demo
+```
+
+The container ships with `PGWIRE_AUTH_MODE=trust` (default) — fine for `localhost`, **not** safe to expose to the public internet until SCRAM / password auth lands on the pgwire surface.
+
 ## Quick Example
 
 Define a semantic model in YAML:
