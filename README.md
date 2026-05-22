@@ -160,7 +160,7 @@ uv run python examples/obsql.py --list   # discover loaded models via REST
 ```bash
 PGWIRE_ENABLED=true uv run orionbelt-api &
 
-# Connect with any Postgres client — no driver to install
+# Every BI tool already ships a Postgres ODBC/JDBC driver — point yours at :5432
 psql "host=localhost port=5432 user=obsl dbname=sales sslmode=disable" \
   -c 'SELECT "Region", "Total Sales" LIMIT 5'
 
@@ -279,7 +279,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
-- **PostgreSQL Wire Protocol** (v2.5.0+) — native Postgres-protocol surface on `:5432`, no driver to install. Any Postgres-speaking client connects directly: Tableau, DBeaver, Superset, Power BI, plain `psql`, and **Dremio as a federated Postgres source** (Dremio → OBSL → optionally back to Dremio's lakehouse, full circle)
+- **PostgreSQL Wire Protocol** (v2.5.0+) — native Postgres-protocol surface on `:5432`. Every BI tool already ships a Postgres ODBC/JDBC driver, so the user side is "point your existing connection at OBSL and go" — Tableau, DBeaver, Superset, Power BI, plain `psql`, and **Dremio as a federated Postgres source** (Dremio → OBSL → optionally back to Dremio's lakehouse, full circle)
 
 ### Agent-Facing API
 
