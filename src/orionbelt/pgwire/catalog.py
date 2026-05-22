@@ -235,6 +235,16 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             (2950, 'uuid',        'U', 16,  'b', false, -1, 0, 0, 0)
         ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull,
                typtypmod, typbasetype, typelem, typrelid)""",
+    # Shadow pg_namespace that hides DuckDB's internal ``main`` schema
+    # from BI-tool schema browsers. We expose every model under the
+    # branded ``orionbelt`` schema; ``main`` is DuckDB's own default
+    # and shouldn't show up next to it. ``pg_catalog`` and
+    # ``information_schema`` stay visible — that's where the catalog
+    # itself lives — but Tableau / pgAdmin filter them out by default.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
+        SELECT oid, nspname, nspowner, nspacl
+        FROM pg_catalog.pg_namespace
+        WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
     # Shadow pg_database. DBeaver / pgAdmin connect-check filters on
     # ``WHERE datallowconn AND NOT datistemplate`` (and reads
     # encoding / datcollate / datctype / datacl in the same probe);
@@ -375,6 +385,18 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(?<![.\w])pg_database\b(?!\s*\()", re.IGNORECASE),
         "_obsl_pg_database",
     ),
+    # pg_namespace — DuckDB's native view exposes ``main`` (the
+    # default schema) next to our branded ``orionbelt`` schema, which
+    # confuses BI-tool browsers. Shadow filters ``main`` /
+    # temp-schema noise out so users see only the OBSL surface.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_namespace\b", re.IGNORECASE),
+        "_obsl_pg_namespace",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_namespace\b", re.IGNORECASE),
+        "_obsl_pg_namespace",
+    ),
     # Function / operator references prefixed with pg_catalog. — strip
     # the prefix so DuckDB resolves against the unqualified built-in or
     # our stub macros.  We deliberately don't touch table references
@@ -484,6 +506,14 @@ class CatalogEmulator:
                 ddl = _build_table_ddl(db_name, table_name, model)
                 if ddl is None:
                     continue
+                # Per-model metadata views (dimensions / measures /
+                # metrics + their _<name>_metadata siblings). BI-tool
+                # schema browsers show them under the model's schema so
+                # users can ``SELECT * FROM dimensions`` to introspect
+                # the semantic surface without leaving SQL.
+                for meta_ddl in _build_metadata_views(db_name, model):
+                    with contextlib.suppress(Exception):
+                        self._con.execute(meta_ddl)
                 try:
                     self._con.execute(ddl)
                 except duckdb.Error:  # pragma: no cover — defensive guard
@@ -640,6 +670,127 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         yield label, _measure_sql_type(measure)
     for label, metric in model.metrics.items():
         yield label, _metric_sql_type(metric)
+
+
+def _build_metadata_views(db_name: str, model: SemanticModel) -> Iterator[str]:
+    """Yield CREATE-OR-REPLACE TABLE DDLs for the per-model metadata views.
+
+    Six views per model, under the ``orionbelt`` schema:
+
+    * ``dimensions`` / ``_dimensions_metadata`` — one row per dimension
+    * ``measures``   / ``_measures_metadata``   — one row per measure
+    * ``metrics``    / ``_metrics_metadata``    — one row per metric
+
+    The bare names are the user-facing surface BI tool browsers show.
+    The ``_<name>_metadata`` siblings carry richer information
+    (expression / formula / data object refs) for callers that want it
+    without making the user-facing tables wider than necessary.
+
+    DDL is rendered as ``CREATE OR REPLACE TABLE`` (not VIEW) because
+    DuckDB temp-view scoping makes them invisible to ``pg_class`` /
+    ``information_schema.tables`` queries BI tools issue against the
+    attached database. Tables show up; temp views don't.
+    """
+
+    qdb = db_name.replace('"', '""')
+    schema = CATALOG_SCHEMA
+    yield from _build_dimension_metadata_views(qdb, schema, model)
+    yield from _build_measure_metadata_views(qdb, schema, model)
+    yield from _build_metric_metadata_views(qdb, schema, model)
+
+
+def _build_dimension_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``dimensions`` and ``_dimensions_metadata`` per model."""
+
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, dim in model.dimensions.items():
+        result_type = str(dim.result_type) if dim.result_type else "string"
+        data_object = (dim.view or "").replace("'", "''")
+        column = (dim.column or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{result_type}')")
+        rows_full.append(f"('{safe_label}', '{result_type}', '{data_object}', '{column}')")
+    yield _values_table_ddl(qdb, schema, "dimensions", ("name", "data_type"), rows_basic)
+    yield _values_table_ddl(
+        qdb,
+        schema,
+        "_dimensions_metadata",
+        ("name", "data_type", "data_object", "column"),
+        rows_full,
+    )
+
+
+def _build_measure_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``measures`` and ``_measures_metadata`` per model."""
+
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, measure in model.measures.items():
+        agg = str(measure.aggregation) if measure.aggregation else ""
+        data_type = str(measure.result_type) if measure.result_type else "number"
+        expression = (getattr(measure, "expression", "") or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{agg}', '{data_type}')")
+        rows_full.append(f"('{safe_label}', '{agg}', '{data_type}', '{expression}')")
+    yield _values_table_ddl(
+        qdb, schema, "measures", ("name", "aggregation", "data_type"), rows_basic
+    )
+    yield _values_table_ddl(
+        qdb,
+        schema,
+        "_measures_metadata",
+        ("name", "aggregation", "data_type", "expression"),
+        rows_full,
+    )
+
+
+def _build_metric_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``metrics`` and ``_metrics_metadata`` per model."""
+
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, metric in model.metrics.items():
+        metric_type = str(getattr(metric, "type", "") or "derived")
+        formula = (getattr(metric, "formula", "") or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{metric_type}')")
+        rows_full.append(f"('{safe_label}', '{metric_type}', '{formula}')")
+    yield _values_table_ddl(qdb, schema, "metrics", ("name", "metric_type"), rows_basic)
+    yield _values_table_ddl(
+        qdb,
+        schema,
+        "_metrics_metadata",
+        ("name", "metric_type", "formula"),
+        rows_full,
+    )
+
+
+def _values_table_ddl(
+    qdb: str,
+    schema: str,
+    table: str,
+    columns: tuple[str, ...],
+    rows: list[str],
+) -> str:
+    """Render ``CREATE OR REPLACE TABLE qdb.schema.table AS SELECT * FROM VALUES …``.
+
+    Empty ``rows`` produces an empty table by way of a SELECT-WHERE-false
+    on a single dummy row, so the columns still appear in
+    ``information_schema.columns``.
+    """
+
+    col_list = ", ".join(f'"{c}"' for c in columns)
+    if rows:
+        values_sql = ", ".join(rows)
+        select_clause = f"SELECT * FROM (VALUES {values_sql}) AS v({col_list})"
+    else:
+        # One-row stub filtered out so the table has the right column
+        # shape but zero rows. Each placeholder is an empty string so
+        # the inferred types are VARCHAR.
+        placeholders = ", ".join("''" for _ in columns)
+        select_clause = f"SELECT * FROM (VALUES ({placeholders})) AS v({col_list}) WHERE false"
+    return f'CREATE OR REPLACE TABLE "{qdb}".{schema}."{table}" AS {select_clause}'
 
 
 def _dim_sql_type(dim: Dimension) -> str:
