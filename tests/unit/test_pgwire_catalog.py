@@ -74,9 +74,7 @@ def test_refresh_drops_stale_models() -> None:
     # Reset SessionManager to empty and refresh.
     empty = SessionManager()
     emu.refresh(empty)
-    result = emu.execute(
-        "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname='temp_model'"
-    )
+    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname='temp_model'")
     assert result.rows[0][0] == 0
 
 

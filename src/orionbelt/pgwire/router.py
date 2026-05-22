@@ -121,7 +121,7 @@ class SemanticRouter:
         """
 
         # 1. Canned protocol probes (SELECT 1, SHOW, SET, BEGIN, …).
-        canned = match_canned(sql, database)
+        canned = match_canned(sql, database, self._effective_schema(database))
         if canned is not None:
             return canned
 
@@ -259,6 +259,46 @@ class SemanticRouter:
     # Resolution
     # ------------------------------------------------------------------
 
+    def _effective_schema(self, database: str) -> str:
+        """Schema name that ``current_schema()`` / ``SHOW search_path`` report.
+
+        v2.5.0 catalog layout puts the model at
+        ``database=orionbelt``, ``schema=<model_name>``,
+        ``table=model``. Pre-flip BI-tool connect-checks would set
+        ``search_path`` to a model schema and immediately query
+        ``current_schema()`` to confirm. The canned response used to
+        return the literal ``"orionbelt"`` — which is now the
+        DATABASE name, not a schema — so pgjdbc filtered
+        ``pg_namespace`` by a non-existent schema and NPE'd when its
+        next probe found no matching ``pg_class`` row for the
+        expected ``model`` table.
+
+        Heuristic:
+
+        * ``database`` names a loaded model        → return ``database``
+          (the schema-per-model name in ``pg_namespace``).
+        * ``database`` is the brand ``"orionbelt"`` → return the
+          first loaded model name (sorted, so deterministic).
+        * Otherwise                                → return ``""``;
+          canned falls back to the legacy literal.
+
+        SET search_path is still accepted-and-ignored at this layer
+        because no connection state is threaded through yet; that's
+        fine for the immediate NPE fix because every loaded-model
+        name appears in ``pg_namespace`` and DBeaver's follow-up
+        ``pg_class`` filter resolves to a real row.
+        """
+
+        names = self._loaded_model_names()
+        if not names:
+            return ""
+        db_lower = (database or "").lower()
+        if db_lower and db_lower in names:
+            return database
+        if db_lower == CATALOG_SCHEMA.lower():
+            return sorted(names)[0]
+        return ""
+
     def _loaded_model_names(self) -> set[str]:
         """Return the set of currently-loaded model names (lowercased).
 
@@ -268,9 +308,7 @@ class SemanticRouter:
 
         names: set[str] = set()
         with contextlib.suppress(Exception):
-            names.update(
-                n.lower() for n in self._sessions.list_protected_session_ids()
-            )
+            names.update(n.lower() for n in self._sessions.list_protected_session_ids())
         with contextlib.suppress(Exception):
             for s in self._sessions.list_sessions():
                 names.add(s.session_id.lower())
@@ -516,37 +554,47 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
 def _normalize_for_obsql(sql: str) -> str:
     """Apply pgjdbc-pushdown normalizations before OBSQL translation."""
 
-    return _rewrite_fetch_to_limit(
-        _strip_collate_annotations(_unwrap_model_qualifier(sql))
-    )
+    return _rewrite_fetch_to_limit(_strip_collate_annotations(_unwrap_model_qualifier(sql)))
 
 
 # When OBSL exposes a model as ``"<model>"."model"`` (v2.5.0 catalog
 # layout: schema=model, table='model'), BI tools that pushdown queries
-# (Dremio's Postgres-source connector, DBeaver query builders) emit
-# fully-qualified references the OBSQL translator doesn't accept:
+# (Dremio's Postgres-source connector, DBeaver query builders,
+# Tableau's custom-SQL path) emit fully-qualified references the
+# OBSQL translator doesn't accept:
 #
-#   FROM "commerce"."model"            → strip ``.model`` to bare ``commerce``
-#   "model"."Region", "model"."Sales"  → strip ``"model".`` from column refs
+#   FROM "orionbelt"."commerce"."model"  → strip db+table to ``"commerce"``
+#   FROM "commerce"."model"              → strip ``.model`` to ``"commerce"``
+#   "model"."Region", "model"."Sales"    → strip ``"model".`` column-refs
 #
 # After the rewrite the SQL looks exactly like what an OBSQL-savvy
-# caller would write: ``SELECT "Region", "Sales" FROM commerce``.
+# caller would write: ``SELECT "Region", "Sales" FROM "commerce"``.
+#
+# The leading ``"<db>".`` is optional because BI tools differ on
+# whether they include the database in pushdown SQL: pgjdbc/DBeaver
+# typically omit it (search_path covers the schema), Tableau's
+# JDBC-source pushdown emits the full three-part form.
 _RE_FROM_MODEL_QUALIFIER = re.compile(
-    r'(\bFROM\s+"[^"]+")\."model"(?!\w)',
+    r'(\bFROM\s+)(?:"[^"]+"\s*\.\s*)?("[^"]+")\s*\.\s*"model"(?!\w)',
     re.IGNORECASE,
 )
 _RE_JOIN_MODEL_QUALIFIER = re.compile(
-    r'(\bJOIN\s+"[^"]+")\."model"(?!\w)',
+    r'(\bJOIN\s+)(?:"[^"]+"\s*\.\s*)?("[^"]+")\s*\.\s*"model"(?!\w)',
     re.IGNORECASE,
 )
 _RE_MODEL_TABLE_PREFIX = re.compile(r'(?<![\w"])"model"\s*\.\s*"', re.IGNORECASE)
 
 
 def _unwrap_model_qualifier(sql: str) -> str:
-    """Strip the ``."model"`` table qualifier from FROM/JOIN + column refs."""
+    """Strip the ``."model"`` table qualifier from FROM/JOIN + column refs.
 
-    sql = _RE_FROM_MODEL_QUALIFIER.sub(r"\1", sql)
-    sql = _RE_JOIN_MODEL_QUALIFIER.sub(r"\1", sql)
+    Handles both 2-part (``"schema"."model"``) and 3-part
+    (``"db"."schema"."model"``) qualified references so Tableau's
+    pushdown SQL is accepted by the OBSQL translator.
+    """
+
+    sql = _RE_FROM_MODEL_QUALIFIER.sub(r"\1\2", sql)
+    sql = _RE_JOIN_MODEL_QUALIFIER.sub(r"\1\2", sql)
     sql = _RE_MODEL_TABLE_PREFIX.sub('"', sql)
     return sql
 

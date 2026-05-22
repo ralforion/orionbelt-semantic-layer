@@ -80,7 +80,11 @@ _RE_ROLLBACK = re.compile(r"^rollback\b", re.IGNORECASE)
 _RE_SAVEPOINT = re.compile(r"^(savepoint|release\s+savepoint)\b", re.IGNORECASE)
 
 
-def match_canned(sql: str, database: str = "") -> bytes | None:
+def match_canned(
+    sql: str,
+    database: str = "",
+    current_schema: str = "",
+) -> bytes | None:
     """Return wire bytes for a recognised protocol probe, else ``None``.
 
     The caller appends ``ReadyForQuery``; we only emit the per-statement
@@ -91,6 +95,20 @@ def match_canned(sql: str, database: str = "") -> bytes | None:
     ``database`` is the value the client passed in StartupMessage; used
     by ``current_database`` / ``current_catalog`` probes so BI tools see
     the database they actually connected to (not the session user).
+
+    ``current_schema`` is the effective schema name reported by
+    ``SELECT current_schema()`` and ``SHOW search_path``. The router
+    computes it from the connection's effective model (database == a
+    model name → that model; database == 'orionbelt' brand → the
+    sole / first loaded model). Falls back to the v2.5.0 placeholder
+    ``"orionbelt"`` only when no model is available, so the canned
+    response never reports a schema that doesn't appear in
+    ``pg_namespace``. The previous hard-coded ``"orionbelt"`` was a
+    DBeaver NPE source: DBeaver issued ``SET search_path = <model>``,
+    then ``SELECT current_schema()`` got back ``"orionbelt"`` (the
+    database, not a schema), and subsequent ``pg_class`` filters by
+    that "schema" returned zero rows → pgjdbc NPE on the missing
+    table.
     """
 
     normalised = _strip_terminator(sql).lower()
@@ -122,7 +140,12 @@ def match_canned(sql: str, database: str = "") -> bytes | None:
         "select current_schema()",
         "select current_schema",
     }:
-        return _single_text_row("current_schema", "orionbelt")
+        # Default to the connected database when it names a model (the
+        # ``database=<model>`` connect mode), else the explicit
+        # current_schema passed by the router. The legacy literal
+        # ``"orionbelt"`` is the last-resort fallback — see docstring.
+        value = current_schema or database or "orionbelt"
+        return _single_text_row("current_schema", value)
 
     if normalised in {
         "select current_database()",
@@ -156,6 +179,16 @@ def match_canned(sql: str, database: str = "") -> bytes | None:
     show_match = _RE_SHOW.match(normalised)
     if show_match is not None:
         name = show_match.group(1).lower()
+        if name == "search_path":
+            # search_path mirrors the effective schema so BI tools'
+            # ``SET search_path = X`` / ``SHOW search_path`` cycle
+            # round-trips to a real, queryable schema. Pre-v2.5.0 we
+            # returned the literal ``"$user", orionbelt`` for every
+            # connection, which left the schema name out of sync with
+            # ``pg_namespace`` after the schema-per-model layout flip
+            # and contributed to the DBeaver NPE.
+            value = current_schema or database or _SHOW_VALUES["search_path"]
+            return _single_text_row(name, value)
         value = _SHOW_VALUES.get(name, "")
         return _single_text_row(name, value)
 

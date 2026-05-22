@@ -467,7 +467,7 @@ class TestCFLWithFilters:
         orders_leg = sql.split("UNION ALL")[0]
         assert "Products" in orders_leg, (
             f"Orders-side CFL leg missing Products JOIN — would error "
-            f"`missing FROM-clause entry for table \"Products\"`. SQL:\n{orders_leg}"
+            f'`missing FROM-clause entry for table "Products"`. SQL:\n{orders_leg}'
         )
 
     def test_cfl_without_filter(self) -> None:

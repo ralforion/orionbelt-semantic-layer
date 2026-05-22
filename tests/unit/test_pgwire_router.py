@@ -12,6 +12,7 @@ from orionbelt.pgwire.router import (
     SemanticRouter,
     _rewrite_fetch_to_limit,
     _strip_collate_annotations,
+    _unwrap_model_qualifier,
 )
 from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
 from orionbelt.service.session_manager import SessionManager
@@ -462,3 +463,37 @@ def test_strip_collate_annotations(input_sql: str, expected: str) -> None:
 )
 def test_rewrite_fetch_to_limit(input_sql: str, expected: str) -> None:
     assert _rewrite_fetch_to_limit(input_sql) == expected
+
+
+@pytest.mark.parametrize(
+    "input_sql,expected",
+    [
+        # Bare OBSQL — pass through unchanged.
+        (
+            'SELECT "Region" FROM "commerce" LIMIT 5',
+            'SELECT "Region" FROM "commerce" LIMIT 5',
+        ),
+        # 2-part: pgjdbc / DBeaver pushdown shape.
+        (
+            'SELECT "Region", "Sales" FROM "commerce"."model" LIMIT 5',
+            'SELECT "Region", "Sales" FROM "commerce" LIMIT 5',
+        ),
+        # 3-part: Tableau / Dremio Postgres-source pushdown shape.
+        (
+            'SELECT "Region", "Sales" FROM "orionbelt"."commerce"."model" LIMIT 5',
+            'SELECT "Region", "Sales" FROM "commerce" LIMIT 5',
+        ),
+        # 3-part with table-alias-qualified column refs (Tableau).
+        (
+            'SELECT "model"."Region" FROM "orionbelt"."commerce"."model" LIMIT 5',
+            'SELECT "Region" FROM "commerce" LIMIT 5',
+        ),
+        # JOIN form, both legs 3-part.
+        (
+            'SELECT * FROM "orionbelt"."a"."model" x JOIN "orionbelt"."b"."model" y ON x.k = y.k',
+            'SELECT * FROM "a" x JOIN "b" y ON x.k = y.k',
+        ),
+    ],
+)
+def test_unwrap_model_qualifier(input_sql: str, expected: str) -> None:
+    assert _unwrap_model_qualifier(input_sql) == expected
