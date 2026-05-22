@@ -117,12 +117,13 @@ def test_psycopg3_information_schema_columns(
 
     _, port = pgwire_with_router_psycopg
     with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
-        # v2.5.0 catalog layout: every model registers as one table
-        # named after the model under the single ``orionbelt`` schema.
+        # v2.5.0 catalog layout: database=orionbelt, schema=<model>,
+        # table='model'. So the columns live under
+        # ``<model>.model`` (e.g. ``commerce.model``).
         cur.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-            ("orionbelt", "commerce"),
+            ("commerce", "model"),
         )
         names = [row[0] for row in cur.fetchall()]
     assert "Customer Country" in names
@@ -145,12 +146,10 @@ def test_psycopg3_pg_class_dt_style(
             "ORDER BY 1,2"
         )
         rows = [(row[0], row[1]) for row in cur.fetchall()]
-    # v2.5.0 catalog layout: every model registers as one table named
-    # after the model under the single ``orionbelt`` schema. (Step 5
-    # briefly tried a per-model schema layout where every model got
-    # its own ``<model>.model`` namespace; that broke Tableau's
-    # connect-check and was reverted.)
-    assert ("orionbelt", "commerce") in rows
+    # v2.5.0 catalog layout: database=orionbelt, schema=<model>,
+    # table='model'. The model's data table is at
+    # ``<model>.model`` (e.g. ``commerce.model``).
+    assert ("commerce", "model") in rows
 
 
 def test_psycopg3_semantic_query_returns_rows(

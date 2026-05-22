@@ -18,6 +18,7 @@ Step 4 adds the extended query protocol on top.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.canned import match_canned
-from orionbelt.pgwire.catalog import CatalogEmulator
+from orionbelt.pgwire.catalog import CATALOG_SCHEMA, CatalogEmulator
 from orionbelt.pgwire.types import (
     can_encode_binary,
     encode_value,
@@ -132,7 +133,12 @@ class SemanticRouter:
         #    zero rows, and ``SELECT * FROM t WHERE 1=0`` answers from
         #    the catalog's column shape rather than bouncing off the
         #    semantic translator.
-        if references_catalog(sql) or references_temp_table(sql) or is_metadata_probe(sql):
+        if (
+            references_catalog(sql)
+            or references_temp_table(sql)
+            or is_metadata_probe(sql)
+            or self._references_model_schema(sql)
+        ):
             try:
                 self._catalog.refresh(self._sessions)
                 result = self._catalog.execute(sql, database)
@@ -146,7 +152,7 @@ class SemanticRouter:
             return _encode_result(result, result_formats)
 
         try:
-            target = self._resolve_target(database)
+            target = self._resolve_target(database, sql)
         except _ModelNotFoundError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
@@ -253,24 +259,73 @@ class SemanticRouter:
     # Resolution
     # ------------------------------------------------------------------
 
-    def _resolve_target(self, database: str) -> _ResolvedTarget:
+    def _loaded_model_names(self) -> set[str]:
+        """Return the set of currently-loaded model names (lowercased).
+
+        Includes both preloaded protected sessions (``MODEL_FILES``) and
+        sessions created over REST.
+        """
+
+        names: set[str] = set()
+        with contextlib.suppress(Exception):
+            names.update(
+                n.lower() for n in self._sessions.list_protected_session_ids()
+            )
+        with contextlib.suppress(Exception):
+            for s in self._sessions.list_sessions():
+                names.add(s.session_id.lower())
+        return names
+
+    def _references_model_schema(self, sql: str) -> bool:
+        """True when ``sql`` references a schema that matches a loaded model.
+
+        ``database=orionbelt`` BI-tool browsing fires SQL like
+        ``SELECT * FROM commerce.model`` or
+        ``SELECT * FROM commerce.measures``. The schema (``commerce``)
+        is a model name. Those queries belong in the catalog DuckDB,
+        not the OBSQL translator. We detect them by parsing the SQL
+        and checking if any FROM/JOIN target's schema qualifier
+        matches a currently-loaded model.
+        """
+
+        try:
+            parsed = sqlglot.parse_one(sql, read="postgres")
+        except Exception:
+            return False
+        model_names = self._loaded_model_names()
+        if not model_names:
+            return False
+        for table in parsed.find_all(exp.Table):
+            schema = (table.db or "").lower() or (table.text("db") or "").lower()
+            if schema and schema in model_names:
+                return True
+        return False
+
+    def _resolve_target(self, database: str, sql: str = "") -> _ResolvedTarget:
         """Pick a (store, model_id, model) tuple for the requested DB.
 
-        Resolution order, matching the Flight surface's behaviour:
+        Resolution order:
 
         1. ``database`` matches a SessionManager session id directly
            (multi-model preload uses the model name as the session id).
         2. ``__default__`` session (single-model preload, MCP stdio,
            tests).
-        3. Any other session with at least one loaded model — only
-           when exactly one match exists, so we never silently pick.
+        3. The connection is on the brand database (``orionbelt``) and
+           the SQL has a FROM target naming a loaded model — extract
+           the model from the SQL. This is the BI-tool path: the user
+           writes ``SELECT … FROM <model>`` against a connection on
+           ``database=orionbelt``.
+        4. ``database`` matches a model in some other session's store
+           by name (single unambiguous match).
+        5. ``database='orionbelt'`` with exactly one model loaded —
+           fall back to that single model (the demo case).
 
         Raises ``_ModelNotFoundError`` with a message that surfaces in the
         Postgres ErrorResponse on miss.
         """
 
         candidate_ids: list[str] = []
-        if database:
+        if database and database != CATALOG_SCHEMA:
             candidate_ids.append(database)
         if "__default__" not in candidate_ids:
             candidate_ids.append("__default__")
@@ -279,6 +334,16 @@ class SemanticRouter:
             target = self._first_model_in(session_id)
             if target is not None:
                 return target
+
+        # On a brand-database connection (``database=orionbelt``), the
+        # model comes from the SQL itself — the user's FROM clause
+        # names the model directly. Peek at the first known FROM target.
+        if database == CATALOG_SCHEMA and sql:
+            model_from_sql = self._extract_model_name_from_sql(sql)
+            if model_from_sql:
+                target = self._first_model_in(model_from_sql)
+                if target is not None:
+                    return target
 
         # Last-resort scan across all sessions for the case where the
         # client passed a database name that doesn't match a session id
@@ -296,11 +361,52 @@ class SemanticRouter:
                 "with that name; supply a unique database parameter."
             )
 
+        # Brand-database with exactly one model loaded — auto-resolve.
+        if database == CATALOG_SCHEMA:
+            all_models: list[_ResolvedTarget] = []
+            for name in self._loaded_model_names():
+                target = self._first_model_in(name)
+                if target is not None:
+                    all_models.append(target)
+            if len(all_models) == 1:
+                return all_models[0]
+            if len(all_models) > 1:
+                raise _ModelNotFoundError(
+                    f"database='{CATALOG_SCHEMA}' with multiple models loaded — "
+                    "qualify the FROM with the model name (``SELECT … FROM <model>``) "
+                    "or connect with ``database=<model>`` directly. "
+                    "``GET /v1/models`` lists the available names."
+                )
+
         raise _ModelNotFoundError(
             f"no model is available for database='{database}'. "
             "Load a model via REST /v1/sessions/{id}/models or start the server "
             "with MODEL_FILES=<path,...>."
         )
+
+    def _extract_model_name_from_sql(self, sql: str) -> str | None:
+        """Find a FROM target whose name matches a loaded model.
+
+        Handles both bare ``FROM <model>`` (semantic-mode shape) and
+        schema-qualified ``FROM <schema>.<table>`` (catalog probe
+        shape, where the schema IS the model name).
+        """
+
+        try:
+            parsed = sqlglot.parse_one(sql, read="postgres")
+        except Exception:
+            return None
+        model_names = self._loaded_model_names()
+        if not model_names:
+            return None
+        for table in parsed.find_all(exp.Table):
+            schema = (table.db or "").lower() or (table.text("db") or "").lower()
+            if schema and schema in model_names:
+                return schema
+            name = (table.name or "").lower()
+            if name and name in model_names:
+                return name
+        return None
 
     def _first_model_in(
         self, session_id: str, *, model_id: str | None = None
@@ -410,7 +516,39 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
 def _normalize_for_obsql(sql: str) -> str:
     """Apply pgjdbc-pushdown normalizations before OBSQL translation."""
 
-    return _rewrite_fetch_to_limit(_strip_collate_annotations(sql))
+    return _rewrite_fetch_to_limit(
+        _strip_collate_annotations(_unwrap_model_qualifier(sql))
+    )
+
+
+# When OBSL exposes a model as ``"<model>"."model"`` (v2.5.0 catalog
+# layout: schema=model, table='model'), BI tools that pushdown queries
+# (Dremio's Postgres-source connector, DBeaver query builders) emit
+# fully-qualified references the OBSQL translator doesn't accept:
+#
+#   FROM "commerce"."model"            → strip ``.model`` to bare ``commerce``
+#   "model"."Region", "model"."Sales"  → strip ``"model".`` from column refs
+#
+# After the rewrite the SQL looks exactly like what an OBSQL-savvy
+# caller would write: ``SELECT "Region", "Sales" FROM commerce``.
+_RE_FROM_MODEL_QUALIFIER = re.compile(
+    r'(\bFROM\s+"[^"]+")\."model"(?!\w)',
+    re.IGNORECASE,
+)
+_RE_JOIN_MODEL_QUALIFIER = re.compile(
+    r'(\bJOIN\s+"[^"]+")\."model"(?!\w)',
+    re.IGNORECASE,
+)
+_RE_MODEL_TABLE_PREFIX = re.compile(r'(?<![\w"])"model"\s*\.\s*"', re.IGNORECASE)
+
+
+def _unwrap_model_qualifier(sql: str) -> str:
+    """Strip the ``."model"`` table qualifier from FROM/JOIN + column refs."""
+
+    sql = _RE_FROM_MODEL_QUALIFIER.sub(r"\1", sql)
+    sql = _RE_JOIN_MODEL_QUALIFIER.sub(r"\1", sql)
+    sql = _RE_MODEL_TABLE_PREFIX.sub('"', sql)
+    return sql
 
 
 _RE_SELECT_STAR = re.compile(r"^\s*select\s+\*", re.IGNORECASE)

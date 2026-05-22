@@ -47,22 +47,19 @@ def test_information_schema_lists_model_table(run_dremio_sql: RunSql) -> None:
     """Dremio's own INFORMATION_SCHEMA surfaces the OBSL model as a dataset.
 
     Dremio exposes ``INFORMATION_SCHEMA`` at the root (not under each
-    source). We filter by ``TABLE_SCHEMA`` to find any path that lands
-    in the OBSL Postgres source's ``orionbelt`` namespace.
+    source). With OBSL's v2.5.0 catalog layout the model lives at
+    ``<source>.<model>.model``, so we look for ``TABLE_NAME='model'``
+    in any schema under the OBSL Postgres source.
     """
 
     rows = run_dremio_sql(
         'SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA."TABLES" '
-        f"WHERE TABLE_SCHEMA LIKE '{DREMIO_SOURCE_NAME}.%' "
-        f"AND TABLE_NAME = '{OBSL_MODEL_NAME}'"
+        f"WHERE TABLE_SCHEMA = '{DREMIO_SOURCE_NAME}.{OBSL_MODEL_NAME}' "
+        "AND TABLE_NAME = 'model'"
     )
     assert rows, (
-        "Dremio could not see the OBSL model dataset under "
-        f"'{DREMIO_SOURCE_NAME}.orionbelt' via INFORMATION_SCHEMA"
-    )
-    schemas = {str(row[0]) for row in rows}
-    assert any(s.endswith(".orionbelt") for s in schemas), (
-        f"expected '{DREMIO_SOURCE_NAME}.orionbelt' schema, got {schemas!r}"
+        f"Dremio could not see the OBSL model at "
+        f"'{DREMIO_SOURCE_NAME}.{OBSL_MODEL_NAME}.model' via INFORMATION_SCHEMA"
     )
 
 
@@ -71,7 +68,7 @@ def test_semantic_query_round_trip(run_dremio_sql: RunSql) -> None:
 
     rows = run_dremio_sql(
         'SELECT "Client Name", "Total Sales" '
-        f'FROM {DREMIO_SOURCE_NAME}.orionbelt."{OBSL_MODEL_NAME}" '
+        f'FROM {DREMIO_SOURCE_NAME}."{OBSL_MODEL_NAME}".model '
         "LIMIT 5"
     )
     assert rows, "OBSL returned no rows for the dim+measure query"

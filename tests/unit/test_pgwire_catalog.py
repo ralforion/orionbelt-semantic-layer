@@ -18,13 +18,18 @@ def manager_with_model() -> SessionManager:
 
 
 def test_refresh_creates_one_table_per_model(manager_with_model: SessionManager) -> None:
+    """v2.5.0 layout: database=orionbelt, schema=<model>, table='model'."""
+
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT relname FROM pg_catalog.pg_class WHERE relkind='r' ORDER BY relname"
+        "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind='r' AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+        "ORDER BY 1, 2"
     )
-    table_names = [row[0] for row in result.rows]
-    assert "commerce" in table_names
+    rows = [(row[0], row[1]) for row in result.rows]
+    assert ("commerce", "model") in rows
 
 
 def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
@@ -34,7 +39,7 @@ def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
     emu.refresh(manager_with_model)
     result = emu.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name='commerce' ORDER BY ordinal_position"
+        "WHERE table_schema='commerce' AND table_name='model' ORDER BY ordinal_position"
     )
     columns = [row[0] for row in result.rows]
     # SAMPLE_MODEL_YAML exposes one dim, three measures, and two metrics.
@@ -50,7 +55,11 @@ def test_refresh_is_idempotent(manager_with_model: SessionManager) -> None:
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     emu.refresh(manager_with_model)
-    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_class WHERE relname='commerce'")
+    result = emu.execute(
+        "SELECT count(*) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind='r' AND n.nspname='commerce' AND c.relname='model'"
+    )
     assert result.rows[0][0] == 1
 
 
@@ -58,19 +67,21 @@ def test_refresh_drops_stale_models() -> None:
     """A model removed from the SessionManager disappears from the catalog."""
 
     mgr = SessionManager()
-    store = mgr.get_or_create_named("temp")
+    store = mgr.get_or_create_named("temp_model")
     store.load_model(SAMPLE_MODEL_YAML)
     emu = CatalogEmulator()
     emu.refresh(mgr)
     # Reset SessionManager to empty and refresh.
     empty = SessionManager()
     emu.refresh(empty)
-    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_class WHERE relname='temp'")
+    result = emu.execute(
+        "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname='temp_model'"
+    )
     assert result.rows[0][0] == 0
 
 
 def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) -> None:
-    """\\dt's actual SQL must surface the model table."""
+    """\\dt's actual SQL must surface the model table at <model>.model."""
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
@@ -83,8 +94,8 @@ def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) ->
         "ORDER BY 1,2"
     )
     result = emu.execute(sql)
-    names = [row[1] for row in result.rows]
-    assert "commerce" in names
+    rows = [(row[0], row[1]) for row in result.rows]
+    assert ("commerce", "model") in rows
 
 
 def test_empty_session_manager_yields_no_tables() -> None:
@@ -118,11 +129,13 @@ def test_shadow_views_hidden_from_get_tables(
         "AND c.relkind IN ('r', 'v') "
         "ORDER BY 1, 2"
     )
-    visible_names = {row[1] for row in result.rows}
+    visible_pairs = {(row[0], row[1]) for row in result.rows}
+    # Shadow views must be hidden (TEMP scope → relnamespace IS NULL).
+    visible_names = {pair[1] for pair in visible_pairs}
     assert "_obsl_pg_attribute" not in visible_names
     assert "_obsl_pg_type" not in visible_names
-    # The user-facing model table is still listed.
-    assert "commerce" in visible_names
+    # The user-facing model table is still listed at <schema>.model.
+    assert ("commerce", "model") in visible_pairs
 
 
 def test_pg_attribute_atttypid_returns_real_postgres_oids(
@@ -144,8 +157,9 @@ def test_pg_attribute_atttypid_returns_real_postgres_oids(
         "SELECT a.attname, a.atttypid, t.typname "
         "FROM pg_attribute a "
         "JOIN pg_class c ON a.attrelid = c.oid "
+        "JOIN pg_namespace n ON c.relnamespace = n.oid "
         "JOIN pg_type t ON a.atttypid = t.oid "
-        "WHERE c.relname = 'commerce' AND a.attnum > 0 "
+        "WHERE n.nspname = 'commerce' AND c.relname = 'model' AND a.attnum > 0 "
         "ORDER BY a.attnum"
     )
     by_name = {row[0]: (row[1], row[2]) for row in result.rows}

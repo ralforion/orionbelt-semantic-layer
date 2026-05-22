@@ -105,7 +105,7 @@ def test_full_circle_dim_measure(run_dremio_sql: RunSql, stage2_source: str) -> 
 
     rows = run_dremio_sql(
         'SELECT "Table Schema", "Column Count" '
-        f'FROM {stage2_source}.orionbelt."{OBSL_STAGE2_MODEL_NAME}" '
+        f'FROM {stage2_source}."{OBSL_STAGE2_MODEL_NAME}".model '
         'ORDER BY "Column Count" DESC '
         "LIMIT 5"
     )

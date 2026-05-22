@@ -236,11 +236,9 @@ _SHADOW_VIEWS: tuple[str, ...] = (
         ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull,
                typtypmod, typbasetype, typelem, typrelid)""",
     # Shadow pg_namespace that hides DuckDB's internal ``main`` schema
-    # from BI-tool schema browsers. We expose every model under the
-    # branded ``orionbelt`` schema; ``main`` is DuckDB's own default
-    # and shouldn't show up next to it. ``pg_catalog`` and
-    # ``information_schema`` stay visible — that's where the catalog
-    # itself lives — but Tableau / pgAdmin filter them out by default.
+    # from BI-tool schema browsers. The branded ``orionbelt`` ATTACHed
+    # DB owns one schema per loaded model; ``main`` is DuckDB's own
+    # default and shouldn't show up next to them.
     """CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
         SELECT oid, nspname, nspowner, nspacl
         FROM pg_catalog.pg_namespace
@@ -440,15 +438,37 @@ class CatalogEmulator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._con: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
-        # Tracked as (database_name, table_name) — each model gets its
-        # own ATTACHed in-memory database so ``table_catalog`` in
-        # information_schema matches the Postgres ``database`` parameter
-        # BI tools filter on.
-        self._registered_tables: list[tuple[str, str]] = []
-        self._attached_dbs: set[str] = set()
+        # Single ATTACHed in-memory database named after the brand.
+        # All loaded models live as **schemas** inside it; each model
+        # schema carries a literal ``model`` table plus per-model
+        # metadata views. BI tools that connect with ``database=orionbelt``
+        # see the layout as:
+        #
+        #   orionbelt
+        #     ├─ <model_a>    ← schema (one per loaded model)
+        #     │   ├─ model              ← the user-facing virtual table
+        #     │   ├─ dimensions / measures / metrics  ← metadata views
+        #     │   └─ _dimensions_metadata / _measures_metadata / _metrics_metadata
+        #     └─ <model_b>
+        #         └─ …
+        #
+        # Tracked as a list of schemas we've registered, so refresh()
+        # can drop schemas whose model has gone away.
+        self._registered_schemas: list[str] = []
+        with contextlib.suppress(Exception):
+            self._con.execute(f"ATTACH ':memory:' AS \"{CATALOG_SCHEMA}\"")
+        # Stub macros and shadow views live in the orionbelt DB so they
+        # resolve under ``database=orionbelt`` connections without the
+        # per-attach replay the prior layout needed.
+        self._con.execute(f'USE "{CATALOG_SCHEMA}"')
         for ddl in _STUB_MACROS:
             with contextlib.suppress(Exception):
                 self._con.execute(ddl)
+        for view_ddl in _SHADOW_VIEWS:
+            with contextlib.suppress(Exception):
+                self._con.execute(view_ddl)
+        with contextlib.suppress(Exception):
+            self._con.execute("USE memory")
 
     # ------------------------------------------------------------------
     # Refresh — rebuild the in-memory schema from a SessionManager.
@@ -464,54 +484,45 @@ class CatalogEmulator:
         """
 
         with self._lock:
-            # Drop everything we registered last time first.
-            for db_name, table_name in self._registered_tables:
+            # Build the set of schemas that should exist now.
+            desired_schemas: set[str] = set()
+            for store_target, _ in _iter_loaded_models(session_manager):
+                desired_schemas.add(_safe_model_table_name(store_target))
+
+            # Drop schemas whose backing model is gone. CASCADE removes
+            # the ``model`` table and the six metadata views in one shot.
+            for schema in self._registered_schemas:
+                if schema in desired_schemas:
+                    continue
                 with contextlib.suppress(Exception):
                     self._con.execute(
-                        f'DROP TABLE IF EXISTS "{db_name}".{CATALOG_SCHEMA}."{table_name}"'
+                        f'DROP SCHEMA IF EXISTS "{CATALOG_SCHEMA}"."{schema}" CASCADE'
                     )
-            self._registered_tables = []
+            self._registered_schemas = [s for s in self._registered_schemas if s in desired_schemas]
 
             for store_target, model in _iter_loaded_models(session_manager):
-                db_name = _safe_model_table_name(store_target)
-                # Each model lives in its own ATTACHed in-memory DB so
-                # ``information_schema.tables.table_catalog`` reports
-                # the model's addressing name — what BI tools filter on.
-                if db_name not in self._attached_dbs:
-                    try:
-                        self._con.execute(f"ATTACH ':memory:' AS \"{db_name}\"")
-                    except duckdb.Error:
-                        logger.exception("Failed to ATTACH catalog DB for model '%s'", store_target)
-                        continue
-                    self._attached_dbs.add(db_name)
-                    with contextlib.suppress(Exception):
-                        self._con.execute(
-                            f'CREATE SCHEMA IF NOT EXISTS "{db_name}".{CATALOG_SCHEMA}'
-                        )
-                    # Stub macros live in DuckDB's default ``memory`` DB
-                    # but ``execute()`` switches the current DB to the
-                    # one matching the Postgres ``database`` parameter,
-                    # putting the macros out of scope. Recreate them in
-                    # every attached DB so JDBC catalog probes resolve.
-                    self._con.execute(f'USE "{db_name}"')
-                    for macro_ddl in _STUB_MACROS:
-                        with contextlib.suppress(Exception):
-                            self._con.execute(macro_ddl)
-                    for view_ddl in _SHADOW_VIEWS:
-                        with contextlib.suppress(Exception):
-                            self._con.execute(view_ddl)
-                    with contextlib.suppress(Exception):
-                        self._con.execute("USE memory")
-                table_name = db_name
-                ddl = _build_table_ddl(db_name, table_name, model)
+                schema = _safe_model_table_name(store_target)
+                # CREATE SCHEMA IF NOT EXISTS is the cheap path on first
+                # refresh; subsequent refreshes recreate the table /
+                # views so column-shape changes propagate.
+                with contextlib.suppress(Exception):
+                    self._con.execute(f'CREATE SCHEMA IF NOT EXISTS "{CATALOG_SCHEMA}"."{schema}"')
+                if schema not in self._registered_schemas:
+                    self._registered_schemas.append(schema)
+                ddl = _build_table_ddl(schema, model)
                 if ddl is None:
                     continue
+                # Drop the existing ``model`` table so re-creates pick
+                # up column changes. ``CREATE OR REPLACE TABLE`` doesn't
+                # exist for table-from-columns shape in DuckDB.
+                with contextlib.suppress(Exception):
+                    self._con.execute(f'DROP TABLE IF EXISTS "{CATALOG_SCHEMA}"."{schema}"."model"')
                 # Per-model metadata views (dimensions / measures /
                 # metrics + their _<name>_metadata siblings). BI-tool
                 # schema browsers show them under the model's schema so
                 # users can ``SELECT * FROM dimensions`` to introspect
                 # the semantic surface without leaving SQL.
-                for meta_ddl in _build_metadata_views(db_name, model):
+                for meta_ddl in _build_metadata_views(schema, model):
                     with contextlib.suppress(Exception):
                         self._con.execute(meta_ddl)
                 try:
@@ -521,7 +532,6 @@ class CatalogEmulator:
                         "Failed to register catalog table for model '%s'", store_target
                     )
                     continue
-                self._registered_tables.append((db_name, table_name))
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
@@ -543,17 +553,13 @@ class CatalogEmulator:
 
         t0 = time.monotonic()
         rewritten = _rewrite_for_duckdb(sql)
+        del database  # single-DB layout — every catalog probe runs against ``orionbelt``
         with self._lock:
-            target_db = database if database in self._attached_dbs else None
-            if target_db is None and len(self._attached_dbs) == 1:
-                # No explicit database (callers like tests, REST API
-                # probes) — fall back to the single attached DB so
-                # ``pg_class`` / ``pg_namespace`` enumerate something
-                # rather than empty.
-                target_db = next(iter(self._attached_dbs))
-            if target_db is not None:
-                with contextlib.suppress(Exception):
-                    self._con.execute(f'USE "{target_db}"')
+            # Always run probes inside the single ``orionbelt`` ATTACHed
+            # DB so ``pg_class`` / ``pg_namespace`` / model-schema
+            # references all resolve consistently.
+            with contextlib.suppress(Exception):
+                self._con.execute(f'USE "{CATALOG_SCHEMA}"')
             cursor = self._con.execute(rewritten)
             rows_raw = cursor.fetchall()
             description = cursor.description or []
@@ -639,13 +645,14 @@ def _safe_model_table_name(name: str) -> str:
     return name.replace('"', '""')
 
 
-def _build_table_ddl(db_name: str, table_name: str, model: SemanticModel) -> str | None:
+def _build_table_ddl(schema: str, model: SemanticModel) -> str | None:
     """Build the ``CREATE TABLE`` for a model.
 
-    Columns: every dimension, measure, and metric exposed by the
-    model.  Names are quoted because OBSL labels routinely contain
-    spaces and punctuation.  Returns ``None`` if no columns survive
-    deduplication — DuckDB rejects empty column lists.
+    Path: ``"orionbelt"."<schema>"."model"`` — schema = model name,
+    table = literal ``model``. Columns are every dimension, measure,
+    and metric the model exposes (names quoted because OBSL labels
+    routinely contain spaces / punctuation). Returns ``None`` if no
+    columns survive deduplication — DuckDB rejects empty column lists.
     """
 
     columns: list[str] = []
@@ -658,9 +665,8 @@ def _build_table_ddl(db_name: str, table_name: str, model: SemanticModel) -> str
         columns.append(f'"{quoted}" {sql_type}')
     if not columns:
         return None
-    quoted_db = db_name.replace('"', '""')
-    quoted_table = table_name.replace('"', '""')
-    return f'CREATE TABLE "{quoted_db}".{CATALOG_SCHEMA}."{quoted_table}" ({", ".join(columns)})'
+    qschema = schema.replace('"', '""')
+    return f'CREATE TABLE "{CATALOG_SCHEMA}"."{qschema}"."model" ({", ".join(columns)})'
 
 
 def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
@@ -672,7 +678,7 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         yield label, _metric_sql_type(metric)
 
 
-def _build_metadata_views(db_name: str, model: SemanticModel) -> Iterator[str]:
+def _build_metadata_views(schema: str, model: SemanticModel) -> Iterator[str]:
     """Yield CREATE-OR-REPLACE TABLE DDLs for the per-model metadata views.
 
     Six views per model, under the ``orionbelt`` schema:
@@ -695,11 +701,11 @@ def _build_metadata_views(db_name: str, model: SemanticModel) -> Iterator[str]:
     TEMP-view invisibility caveat only applies to TEMP scope.
     """
 
-    qdb = db_name.replace('"', '""')
-    schema = CATALOG_SCHEMA
-    yield from _build_dimension_metadata_views(qdb, schema, model)
-    yield from _build_measure_metadata_views(qdb, schema, model)
-    yield from _build_metric_metadata_views(qdb, schema, model)
+    qdb = CATALOG_SCHEMA  # single ATTACHed DB carries every model
+    qschema = schema.replace('"', '""')
+    yield from _build_dimension_metadata_views(qdb, qschema, model)
+    yield from _build_measure_metadata_views(qdb, qschema, model)
+    yield from _build_metric_metadata_views(qdb, qschema, model)
 
 
 def _build_dimension_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
@@ -793,7 +799,7 @@ def _values_view_ddl(
         # the inferred types are VARCHAR.
         placeholders = ", ".join("''" for _ in columns)
         select_clause = f"SELECT * FROM (VALUES ({placeholders})) AS v({col_list}) WHERE false"
-    return f'CREATE OR REPLACE VIEW "{qdb}".{schema}."{view}" AS {select_clause}'
+    return f'CREATE OR REPLACE VIEW "{qdb}"."{schema}"."{view}" AS {select_clause}'
 
 
 def _dim_sql_type(dim: Dimension) -> str:
