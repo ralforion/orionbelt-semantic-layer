@@ -303,9 +303,7 @@ def test_obml_count_measure(duckdb_conn_with_data: Connection) -> None:
 
 def test_obml_with_limit(duckdb_conn_with_data: Connection) -> None:
     """OBML with limit clause."""
-    compiled_sql = (
-        "SELECT region, SUM(amount) AS revenue FROM orders GROUP BY region LIMIT 2"
-    )
+    compiled_sql = "SELECT region, SUM(amount) AS revenue FROM orders GROUP BY region LIMIT 2"
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
         with duckdb_conn_with_data.cursor() as cur:
             cur.execute(

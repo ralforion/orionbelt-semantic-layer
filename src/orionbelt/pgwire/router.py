@@ -72,15 +72,17 @@ SQLSTATE_CANNOT_CONNECT_NOW = "57P03"
 # accepts the same alias so users can write
 # ``SELECT * FROM model.dimensions`` from any client without
 # retyping the schema name.
-_METADATA_VIEW_NAMES: frozenset[str] = frozenset({
-    "dimensions",
-    "measures",
-    "metrics",
-    "_dimensions_metadata",
-    "_measures_metadata",
-    "_metrics_metadata",
-    "model",
-})
+_METADATA_VIEW_NAMES: frozenset[str] = frozenset(
+    {
+        "dimensions",
+        "measures",
+        "metrics",
+        "_dimensions_metadata",
+        "_measures_metadata",
+        "_metrics_metadata",
+        "model",
+    }
+)
 
 
 _RE_MODEL_ALIAS_QUALIFIER = re.compile(
@@ -367,9 +369,7 @@ class SemanticRouter:
         if not schema:
             return sql
         quoted = '"' + schema.replace('"', '""') + '"'
-        return _RE_MODEL_ALIAS_QUALIFIER.sub(
-            lambda m: f'{quoted}."{m.group("view")}"', sql
-        )
+        return _RE_MODEL_ALIAS_QUALIFIER.sub(lambda m: f'{quoted}."{m.group("view")}"', sql)
 
     def _references_model_schema(self, sql: str) -> bool:
         """True when ``sql`` references a schema that matches a loaded model.

@@ -531,9 +531,7 @@ def test_cursor_context_manager() -> None:
 def test_obml_compile_and_execute() -> None:
     """OBML query is compiled via REST API then executed on ClickHouse."""
     mock_client = _make_mock_client()
-    compiled_sql = (
-        "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
-    )
+    compiled_sql = "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
     qr = _make_query_result(
         rows=[("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0)],
         column_names=["region", "revenue"],
@@ -543,9 +541,7 @@ def test_obml_compile_and_execute() -> None:
     conn = Connection(mock_client)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
         with conn.cursor() as cur:
-            cur.execute(
-                "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
-            )
+            cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
             rows = cur.fetchall()
             assert len(rows) == 3
             # Verify the compiled SQL was passed to client.query
@@ -557,16 +553,12 @@ def test_obml_rest_dialect_is_clickhouse() -> None:
     mock_client = _make_mock_client()
     conn = Connection(mock_client)
     compiled_sql = "SELECT 1"
-    with patch(
-        "httpx.post", return_value=_mock_api_response(compiled_sql)
-    ) as mock_post:
+    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
         with conn.cursor() as cur:
             cur.execute("select:\n  measures:\n    - Revenue\n")
             url = mock_post.call_args.args[0]
             assert "/v1/query/sql" in url
-            assert mock_post.call_args.kwargs["params"] == {
-                "dialect": "clickhouse"
-            }
+            assert mock_post.call_args.kwargs["params"] == {"dialect": "clickhouse"}
 
 
 def test_obml_custom_api_url() -> None:
@@ -574,9 +566,7 @@ def test_obml_custom_api_url() -> None:
     mock_client = _make_mock_client()
     conn = Connection(mock_client, ob_api_url="http://my-api:9000")
     compiled_sql = "SELECT 1"
-    with patch(
-        "httpx.post", return_value=_mock_api_response(compiled_sql)
-    ) as mock_post:
+    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
         with conn.cursor() as cur:
             cur.execute("select:\n  measures:\n    - Revenue\n")
             url = mock_post.call_args.args[0]
@@ -607,9 +597,7 @@ def test_obml_execute_with_description() -> None:
     conn = Connection(mock_client)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
         with conn.cursor() as cur:
-            cur.execute(
-                "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
-            )
+            cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
             desc = cur.description
             assert desc is not None
             assert len(desc) == 2

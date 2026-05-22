@@ -1,22 +1,26 @@
 """Unit tests for OBML YAML detection — runs without any external service."""
+
 import pytest
 from ob_duckdb.compiler import is_obml, parse_obml
 
 
-@pytest.mark.parametrize("query,expected", [
-    ("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n", True),
-    ("select:\n  measures:\n    - Revenue\n", True),
-    ("select:\n  dimensions:\n    - Country\n", True),
-    ("SELECT:\n  dimensions:\n    - X\n", True),
-    ("   select:\n  dimensions:\n    - X\n", True),
-    ("SELECT * FROM orders", False),
-    ("SELECT id FROM customers WHERE id = 1", False),
-    ("", False),
-    ("model:\n  name: test\n", False),
-    ("select:\n  filters:\n    - x = 1\n", False),
-    ("select:\n  - [unclosed", False),
-    ("select:\n  - dimension1\n", False),
-])
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n", True),
+        ("select:\n  measures:\n    - Revenue\n", True),
+        ("select:\n  dimensions:\n    - Country\n", True),
+        ("SELECT:\n  dimensions:\n    - X\n", True),
+        ("   select:\n  dimensions:\n    - X\n", True),
+        ("SELECT * FROM orders", False),
+        ("SELECT id FROM customers WHERE id = 1", False),
+        ("", False),
+        ("model:\n  name: test\n", False),
+        ("select:\n  filters:\n    - x = 1\n", False),
+        ("select:\n  - [unclosed", False),
+        ("select:\n  - dimension1\n", False),
+    ],
+)
 def test_obml_detection(query, expected):
     assert is_obml(query) == expected
 

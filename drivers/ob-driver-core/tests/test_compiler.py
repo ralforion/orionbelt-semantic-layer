@@ -18,7 +18,9 @@ def test_compile_success() -> None:
     """Successful REST call returns SQL."""
     mock_response = MagicMock()
     mock_response.is_success = True
-    mock_response.json.return_value = {"sql": "SELECT region, SUM(amount) FROM orders GROUP BY region"}
+    mock_response.json.return_value = {
+        "sql": "SELECT region, SUM(amount) FROM orders GROUP BY region"
+    }
 
     with patch("httpx.post", return_value=mock_response) as mock_post:
         sql = compile_obml(SAMPLE_OBML, dialect="duckdb")

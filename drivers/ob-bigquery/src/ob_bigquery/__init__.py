@@ -70,9 +70,7 @@ def connect(
     if credentials_file is not None and credentials is None:
         from google.oauth2 import service_account
 
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_file
-        )
+        credentials = service_account.Credentials.from_service_account_file(credentials_file)
 
     client_kwargs: dict[str, Any] = {}
     if project is not None:

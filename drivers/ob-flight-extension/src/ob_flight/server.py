@@ -595,16 +595,26 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         if bare in _METADATA_VIEW_NAMES:
             return _MODE_CATALOG
 
-        # Schema-qualified metadata / label view —
-        # ``SELECT * FROM <model>.dimensions`` is the BI-tool double-
-        # click path on the pgwire layout (database=orionbelt,
-        # schema=<model>, table='model'). On Flight the resolved
-        # ``model`` is the connection's model, so a matching schema
-        # qualifier means "metadata rows for THIS model" — route to
+        # Schema-qualified metadata / label view. Three shapes the BI
+        # tools fire after picking a table from the schema tree:
+        #
+        #   FROM <model>.dimensions                       (2-part, pgjdbc/DBeaver pushdown)
+        #   FROM "orionbelt"."<model>"."dimensions"       (3-part, Tableau pushdown)
+        #   FROM <model>.model / FROM <model>.measures    (2-part, generic)
+        #
+        # All three are "metadata for THIS model" → route to the
         # catalog where ``SELECT *`` is honoured. Bare label-view
-        # references (``FROM dimensions``) keep the OBSQL category-
-        # filtered virtual-table semantics so existing surface
-        # behaviour is preserved.
+        # references (``FROM dimensions``) keep the OBSQL
+        # category-filtered virtual-table semantics so existing
+        # surface behaviour is preserved.
+        #
+        # Compare the schema qualifier against BOTH the
+        # ``_ob_model_id`` (stamped session name = pg_namespace
+        # nspname BI tools see in the tree) AND the OBML
+        # ``name:`` field — they can differ when the OBML doesn't
+        # declare ``name:`` explicitly and falls back to a filename
+        # stem, in which case ``model.name`` is empty and only the
+        # stamp is reliable.
         schema = (
             (getattr(table_node, "db", None) or table_node.text("db") or "")
             .strip('"')
@@ -612,10 +622,12 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             .strip("'")
             .lower()
         )
-        model_name = (getattr(model, "name", "") or "").lower()
+        stamped_name = (getattr(model, "_ob_model_id", "") or "").lower()
+        obml_name = (getattr(model, "name", "") or "").lower()
+        model_schemas = {n for n in (stamped_name, obml_name) if n}
         if (
             schema
-            and schema == model_name
+            and schema in model_schemas
             and bare in (_LABEL_VIEW_NAMES + _METADATA_VIEW_NAMES + ("model",))
         ):
             return _MODE_CATALOG

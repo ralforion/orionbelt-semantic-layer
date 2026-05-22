@@ -80,9 +80,7 @@ class Cursor:
         self._check_open()
         sql = self._resolve_sql(operation)
         if parameters is not None:
-            query_params = [
-                _to_query_parameter(k, v) for k, v in parameters.items()
-            ]
+            query_params = [_to_query_parameter(k, v) for k, v in parameters.items()]
             from google.cloud.bigquery import QueryJobConfig
 
             job_config = QueryJobConfig(query_parameters=query_params)

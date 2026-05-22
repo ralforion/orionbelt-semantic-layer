@@ -31,6 +31,10 @@ The catalog-layout flip surfaced a stack of BI-tool compat regressions. Each com
 - **``<schema>.model`` routes to OBSQL data path, not catalog probe.** ``_references_model_schema`` matched the qualified ``test_sem_layer.model`` and routed to the catalog DuckDB — where ``model`` is a column-shape-only table with no rows. Now excluded from the catalog match so ``_unwrap_model_qualifier`` + the OBSQL translator handle the data query end-to-end. Tableau / Dremio / DBeaver direct pushdown all hit the right path.
 - **Shadow ``pg_settings`` exposes Postgres GUCs DuckDB lacks (the Tableau ``81B3934F`` connection error).** Tableau's pgjdbc connect-check runs ``SELECT setting FROM pg_settings WHERE name = 'max_index_keys'`` and aborts the entire connection when the result is empty. DuckDB's native pg_settings only carries DuckDB-internal GUCs (``max_memory`` …). The shadow UNIONs ``duckdb_settings()`` with the standard Postgres defaults for ~27 GUCs BI tools probe at connect — ``max_index_keys`` / ``max_identifier_length`` / ``server_version_num`` / locale settings / search_path / transaction defaults / extra_float_digits / application_name / IntervalStyle / etc.
 
+#### Arrow Flight catalog tree mirrors pgwire (5d8aeaa)
+
+- **Flight ``CommandGetCatalogs`` / ``CommandGetDbSchemas`` / ``CommandGetTables`` / ``CommandGetColumns`` flip to match the pgwire v2.5.0 layout.** Pre-fix the Flight tree showed ``<model_name> > model > <model_name>`` — the model name as catalog, the literal "model" as schema, and the per-model virtual table at the table level. Confusing for users toggling between Flight and pgwire connections in DBeaver. Now both wires render ``orionbelt > <model_name> > model`` (plus the six ``dimensions`` / ``measures`` / ``metrics`` + ``_*_metadata`` views). Model selection moves from ``catalog_filter`` (protobuf field 1) to ``db_schema_filter`` (field 2); the old field 1 path is preserved as a fallback so the obsql CLI ``--model`` flag and our Dremio integration tests keep working unchanged.
+
 ## [2.4.0] - 2026-05-15
 
 ### Added
