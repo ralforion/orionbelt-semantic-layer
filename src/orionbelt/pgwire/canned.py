@@ -147,6 +147,30 @@ def match_canned(
         value = current_schema or database or "orionbelt"
         return _single_text_row("current_schema", value)
 
+    # DBeaver's SQL-editor session opener fires the combined two-column
+    # form ``SELECT current_schema(),session_user``. Without a canned
+    # response it falls through to the semantic translator, which
+    # errors (no FROM clause) — pgjdbc then NPEs in the schema-tree
+    # refresh path because the expected metadata row never lands.
+    # Handle the combined shape verbatim so the response carries the
+    # two columns DBeaver expects, in order.
+    if re.sub(r"\s+", "", normalised) in {
+        "selectcurrent_schema(),session_user",
+        "selectcurrent_schema,session_user",
+    }:
+        schema_value = current_schema or database or "orionbelt"
+        user_value = _SHOW_VALUES["session_authorization"]
+        return (
+            protocol.build_row_description(
+                [
+                    ("current_schema", protocol.OID_TEXT),
+                    ("session_user", protocol.OID_TEXT),
+                ]
+            )
+            + protocol.build_data_row([schema_value, user_value])
+            + protocol.build_command_complete("SELECT 1")
+        )
+
     if normalised in {
         "select current_database()",
         "select current_database",
