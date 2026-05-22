@@ -382,6 +382,18 @@ def _startup_parameters() -> dict[str, str]:
 
     These mirror real Postgres values enough for BI tool driver
     handshakes. Step 3's catalog emulation expands the set.
+
+    ``search_path`` is included because pgjdbc 42.x reads it from the
+    cached startup parameters via
+    ``serverParameters.get("search_path").toString()``. Real Postgres
+    always emits a ``ParameterStatus`` for ``search_path`` after
+    AuthOk; without one the lookup returns ``null`` and the
+    ``.toString()`` call NPEs with
+    "Cannot invoke java.lang.CharSequence.toString() because
+    <parameter1> is null" — the DBeaver-on-every-activity NPE the
+    user kept hitting after the v2.5.0 layout flip. The value uses
+    the same ``"$user"`` macro real Postgres ships so clients don't
+    treat it as a literal schema name.
     """
 
     return {
@@ -393,6 +405,10 @@ def _startup_parameters() -> dict[str, str]:
         "integer_datetimes": "on",
         "standard_conforming_strings": "on",
         "application_name": "",
+        "search_path": '"$user", public',
+        "is_superuser": "off",
+        "session_authorization": "obsl",
+        "IntervalStyle": "postgres",
     }
 
 
