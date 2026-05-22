@@ -239,8 +239,19 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # from BI-tool schema browsers. The branded ``orionbelt`` ATTACHed
     # DB owns one schema per loaded model; ``main`` is DuckDB's own
     # default and shouldn't show up next to them.
+    #
+    # ``nspacl`` is rewritten to a non-NULL empty-array literal —
+    # DuckDB's pg_namespace stores it as NULL, and pgjdbc's schema-
+    # tree refresh NPEs reading a NULL where it expects an
+    # ``aclitem[]``: "Cannot invoke java.lang.CharSequence.toString()
+    # because <parameter1> is null". Empty ``{}`` keeps the column
+    # non-NULL without granting any privileges.
     """CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
-        SELECT oid, nspname, nspowner, nspacl
+        SELECT
+            oid,
+            nspname,
+            COALESCE(nspowner, 10) AS nspowner,
+            COALESCE(CAST(nspacl AS VARCHAR), '{}') AS nspacl
         FROM pg_catalog.pg_namespace
         WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
     # Shadow pg_database. DBeaver / pgAdmin connect-check filters on
