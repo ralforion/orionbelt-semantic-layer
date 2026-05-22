@@ -235,7 +235,11 @@ class ExtendedSession:
                 len(msg.param_values),
                 list(msg.param_formats),
                 list(msg.result_formats),
-                stmt.sql[:200],
+                # 2000 chars covers DBeaver's getColumns probe (~1.5kB
+                # with all the JOINs to pg_attrdef / pg_depend) so
+                # debugging "0 rows back" no longer hides the WHERE
+                # clause behind a truncated tail.
+                stmt.sql[:2000],
             )
 
         formats = _expand_param_formats(msg.param_formats, len(msg.param_values))
