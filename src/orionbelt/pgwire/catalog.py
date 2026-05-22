@@ -356,6 +356,56 @@ _SHADOW_VIEWS: tuple[str, ...] = (
     # the binder fails with ``Referenced column "datallowconn" not
     # found``. Single-row view named after the OBSL brand keeps the
     # one-database illusion the rest of the catalog presents.
+    # Shadow pg_settings — supplements DuckDB's pg_settings (which
+    # only exposes DuckDB-internal GUCs) with the Postgres GUCs BI
+    # tools probe during connect. Tableau queries
+    # ``SELECT setting FROM pg_settings WHERE name='max_index_keys'``
+    # and bails the entire connection with a generic
+    # "Bad Connection" 81B3934F error when the result is empty —
+    # DuckDB's pg_settings has no ``max_index_keys`` row. We UNION
+    # the standard Postgres defaults below so the values BI clients
+    # rely on are always queryable; columns match Postgres
+    # (``name`` / ``setting`` / ``category`` / ``short_desc``) so a
+    # ``SELECT *`` works too. Casts force VARCHAR throughout because
+    # DuckDB's pg_settings.setting is VARCHAR — a UNION with a TEXT
+    # literal would otherwise fail type unification.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_settings AS
+        SELECT
+            CAST(name AS VARCHAR) AS name,
+            CAST(value AS VARCHAR) AS setting,
+            CAST('' AS VARCHAR) AS category,
+            CAST(description AS VARCHAR) AS short_desc
+        FROM duckdb_settings()
+        UNION ALL
+        SELECT * FROM (VALUES
+            ('max_index_keys',          '32',  'Preset Options',  'Number of index keys'),
+            ('max_identifier_length',   '63',  'Preset Options',  'Identifier length'),
+            ('block_size',              '8192','Preset Options',  'Block size'),
+            ('server_version',          '15.0','Reporting',       'Server version'),
+            ('server_version_num',      '150000','Reporting',     'Server version number'),
+            ('server_encoding',         'UTF8','Client Connection Defaults','Server encoding'),
+            ('client_encoding',         'UTF8','Client Connection Defaults','Client encoding'),
+            ('DateStyle',               'ISO, MDY','Client Connection Defaults','Date format'),
+            ('TimeZone',                'UTC', 'Client Connection Defaults','Time zone'),
+            ('IntervalStyle',           'postgres','Client Connection Defaults','Interval format'),
+            ('integer_datetimes',       'on',  'Preset Options',  'Integer datetimes'),
+            ('standard_conforming_strings','on','Compatibility','Standard-conforming strings'),
+            ('is_superuser',            'off', 'Preset Options',  'Superuser flag'),
+            ('session_authorization',   'obsl','Client Connection Defaults','Session user'),
+            ('lc_collate',              'en_US.UTF-8','Preset Options','Collate locale'),
+            ('lc_ctype',                'en_US.UTF-8','Preset Options','Ctype locale'),
+            ('lc_messages',             'en_US.UTF-8','Reporting','Messages locale'),
+            ('lc_monetary',             'en_US.UTF-8','Locale','Monetary locale'),
+            ('lc_numeric',              'en_US.UTF-8','Locale','Numeric locale'),
+            ('lc_time',                 'en_US.UTF-8','Locale','Time locale'),
+            ('search_path',             '"$user", public','Client Connection','Search path'),
+            ('default_transaction_isolation','read committed','Client Connection','Isolation'),
+            ('default_transaction_read_only','off','Client Connection','Default read-only'),
+            ('transaction_isolation',   'read committed','Connection','Transaction isolation'),
+            ('transaction_read_only',   'off', 'Connection',  'Transaction read-only'),
+            ('application_name',        '',    'Reporting',   'Application name'),
+            ('extra_float_digits',      '3',   'Client Connection','Float precision')
+        ) AS t(name, setting, category, short_desc)""",
     f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_database AS
         SELECT * FROM (VALUES (
             16384::INTEGER,                         -- oid
@@ -511,6 +561,18 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?<![.\w])pg_class\b(?!\s*\()", re.IGNORECASE),
         "_obsl_pg_class",
+    ),
+    # pg_settings — DuckDB's view doesn't expose Postgres-only GUCs
+    # like ``max_index_keys`` / ``server_version_num``. The shadow
+    # UNIONs them in so Tableau / pgjdbc / pgAdmin probes find the
+    # values they expect.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_settings\b", re.IGNORECASE),
+        "_obsl_pg_settings",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_settings\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_settings",
     ),
     # Empty-stub catalogs DuckDB doesn't expose but DBeaver / pgAdmin
     # probe during schema-tree refresh. Each rewrite handles both the
