@@ -1,0 +1,78 @@
+# Stage-1 pgwire compat: Dremio OSS connects to OrionBelt's pgwire as a
+# Postgres source. See tests/integration/dremio/README.md for usage.
+#
+# Two services on a shared bridge network:
+#   - obsl    : the OrionBelt API image with PGWIRE_ENABLED=true on :5432
+#               (the commerce demo model + DuckDB are baked into the image)
+#   - dremio  : dremio/dremio-oss exposing :9047 (REST) and :31010 (Flight)
+
+services:
+  obsl:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      args:
+        # Stage 2 (Dremio-backed model) needs ob-dremio in the runtime;
+        # the default `flight-duckdb-only` extra omits it. The full
+        # `flight` extra pulls all 8 vendor drivers including ob-dremio.
+        OB_EXTRA: flight
+    image: orionbelt-api:dremio-test
+    environment:
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+      API_SERVER_HOST: 0.0.0.0
+      PORT: 8080
+      PGWIRE_ENABLED: "true"
+      PGWIRE_HOST: 0.0.0.0
+      PGWIRE_PORT: "5432"
+      PGWIRE_AUTH_MODE: trust
+      QUERY_EXECUTE: "true"
+      DB_VENDOR: duckdb
+      DUCKDB_DATABASE: /app/data/orionbelt_1_commerce.duckdb
+      MODEL_DIR: /app/data
+      # The base image bakes MODEL_FILE (legacy single-model mode), which
+      # loads the model into the __default__ session and the pgwire
+      # catalog ends up exposing the table as ``orionbelt.__default__``.
+      # Override with MODEL_FILES (multi-model mode) so the table is
+      # named after the filename stem (``orionbelt_1_commerce``).
+      MODEL_FILE: ""
+      # Two models loaded:
+      #   - orionbelt_1_commerce.yaml — Stage 1 (DuckDB backend, baked in)
+      #   - dremio_info_schema.yaml   — Stage 2 (Dremio backend, queries
+      #     Dremio's INFORMATION_SCHEMA.COLUMNS — always available, no
+      #     dataset promotion needed)
+      MODEL_FILES: orionbelt_1_commerce.yaml,/app/stage2/dremio_info_schema.yaml
+      # Stage-2 backend connection. ob_flight.db_router reads these to
+      # wire ob_dremio.connect() back to the same Dremio container.
+      DREMIO_HOST: dremio
+      DREMIO_PORT: "32010"
+      DREMIO_USERNAME: obsl_admin
+      DREMIO_PASSWORD: obsl_admin_pw_123!
+    volumes:
+      - ./stage2:/app/stage2:ro
+    ports:
+      - "18080:8080"
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status == 200 else 1)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  dremio:
+    image: dremio/dremio-oss:latest
+    ports:
+      - "19047:9047"
+      - "31010:31010"
+    environment:
+      DREMIO_JAVA_SERVER_EXTRA_OPTS: -Xms1g -Xmx2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9047/apiv2/server_status || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      obsl:
+        condition: service_healthy

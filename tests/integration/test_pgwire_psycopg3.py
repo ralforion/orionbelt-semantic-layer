@@ -117,6 +117,9 @@ def test_psycopg3_information_schema_columns(
 
     _, port = pgwire_with_router_psycopg
     with psycopg.connect(_dsn(port), autocommit=True) as conn, conn.cursor() as cur:
+        # v2.5.0 catalog layout: database=orionbelt, schema=<model>,
+        # table='model'. So the columns live under
+        # ``<model>.model`` (e.g. ``commerce.model``).
         cur.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
@@ -143,7 +146,9 @@ def test_psycopg3_pg_class_dt_style(
             "ORDER BY 1,2"
         )
         rows = [(row[0], row[1]) for row in cur.fetchall()]
-    # Per-model schema layout: data table is ``<model>.model``.
+    # v2.5.0 catalog layout: database=orionbelt, schema=<model>,
+    # table='model'. The model's data table is at
+    # ``<model>.model`` (e.g. ``commerce.model``).
     assert ("commerce", "model") in rows
 
 

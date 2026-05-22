@@ -22,8 +22,10 @@ from ob_snowflake.type_codes import DATETIME, NUMBER, STRING
 # ---------------------------------------------------------------------------
 
 # snowflake-connector-python description columns are named tuples
-SfColumn = namedtuple("Column", ["name", "type_code", "display_size",
-                                 "internal_size", "precision", "scale", "null_ok"])
+SfColumn = namedtuple(
+    "Column",
+    ["name", "type_code", "display_size", "internal_size", "precision", "scale", "null_ok"],
+)
 
 
 def _make_mock_native() -> MagicMock:
@@ -184,10 +186,10 @@ def test_cursor_description() -> None:
     mock_native = _make_mock_native()
     mock_cursor = mock_native.cursor()
     mock_cursor.description = [
-        SfColumn("NUM", 0, None, None, None, None, None),    # FIXED → NUMBER
-        SfColumn("TXT", 2, None, None, None, None, None),    # TEXT → STRING
-        SfColumn("DT", 4, None, None, None, None, None),     # TIMESTAMP_NTZ → DATETIME
-        SfColumn("BIN", 11, None, None, None, None, None),   # BINARY → BINARY
+        SfColumn("NUM", 0, None, None, None, None, None),  # FIXED → NUMBER
+        SfColumn("TXT", 2, None, None, None, None, None),  # TEXT → STRING
+        SfColumn("DT", 4, None, None, None, None, None),  # TIMESTAMP_NTZ → DATETIME
+        SfColumn("BIN", 11, None, None, None, None, None),  # BINARY → BINARY
         SfColumn("BOOL", 13, None, None, None, None, None),  # BOOLEAN → STRING
     ]
     conn = Connection(mock_native)
@@ -333,7 +335,9 @@ def test_obml_compile_and_execute() -> None:
         SfColumn("REVENUE", 1, None, None, None, None, None),
     ]
     mock_native.cursor().fetchall.return_value = [
-        ("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0),
+        ("EMEA", 300.0),
+        ("APAC", 150.0),
+        ("AMER", 550.0),
     ]
     conn = Connection(mock_native)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):

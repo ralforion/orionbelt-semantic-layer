@@ -10,6 +10,18 @@ covered by Step 5 of the
 [Postgres wire plan](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md):
 DBeaver, Tableau Desktop, Power BI Desktop, and Metabase.
 
+## The Semantic Loop — Dremio + OrionBelt
+
+![Dremio + OrionBelt Semantic Layer — the Full Circle: Dremio (Query Engine) → Postgres wire → OBSL → Dremio (Execution Engine)](../assets/dremio-orionbelt-full-circle.png)
+
+Dremio is the flagship pgwire consumer in v2.5: register OBSL as a
+Postgres source, and Dremio's federation engine pushes queries down
+over the wire. With a Dremio-backed OBSL model (OBML
+``settings.defaultDialect: dremio``) the loop closes — Dremio
+queries OBSL via Postgres, OBSL compiles to Dremio's SQL dialect,
+ob-dremio's Arrow Flight driver streams the result back through
+Dremio's own execution engine. Governed semantics, no extra hop.
+
 ## 1. Common configuration
 
 Start the OBSL server with the wire surface enabled:

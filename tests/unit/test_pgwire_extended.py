@@ -101,51 +101,49 @@ def test_substitute_skips_inside_double_quotes() -> None:
     assert sql == 'SELECT "$1" AS "$1", \'val\''
 
 
+def test_substitute_rejects_binary_format_for_unknown_oid() -> None:
+    """Unknown binary OID still errors — we only decode a small allow-list."""
+    from orionbelt.pgwire.extended import _BinaryParameterError
+
+    with pytest.raises(_BinaryParameterError):
+        # OID 0 (unspecified) + binary format → not in the decode set.
+        substitute_parameters("SELECT $1", (b"\x00\x01",), [1], param_oids=(0,))
+
+
 def test_substitute_decodes_binary_int4() -> None:
-    """Binary-format int4 params decode to their decimal representation."""
-
-    import struct
-
+    """Tableau's connect-check INSERTs INT4 binary — must inline as int literal."""
     sql = substitute_parameters(
-        "SELECT * FROM t WHERE id = $1",
-        (struct.pack("!i", 12345),),
+        "INSERT INTO t VALUES ($1)",
+        (struct.pack("!i", 42),),
         [1],
-        param_oids=(23,),
+        param_oids=(23,),  # OID_INT4
     )
-    assert sql == "SELECT * FROM t WHERE id = '12345'"
+    assert sql == "INSERT INTO t VALUES (42)"
 
 
-def test_substitute_decodes_binary_int8() -> None:
-    import struct
-
+def test_substitute_decodes_binary_int2_int8() -> None:
     sql = substitute_parameters(
-        "SELECT $1",
-        (struct.pack("!q", 9223372036854775000),),
-        [1],
-        param_oids=(20,),
+        "SELECT $1, $2",
+        (struct.pack("!h", -7), struct.pack("!q", 1_000_000_000_000)),
+        [1, 1],
+        param_oids=(21, 20),  # INT2, INT8
     )
-    assert "'9223372036854775000'" in sql
+    assert sql == "SELECT -7, 1000000000000"
+
+
+def test_substitute_decodes_binary_float8() -> None:
+    sql = substitute_parameters("SELECT $1", (struct.pack("!d", 3.5),), [1], param_oids=(701,))
+    assert sql == "SELECT 3.5"
 
 
 def test_substitute_decodes_binary_bool() -> None:
-    sql_true = substitute_parameters("SELECT $1", (b"\x01",), [1], param_oids=(16,))
-    sql_false = substitute_parameters("SELECT $1", (b"\x00",), [1], param_oids=(16,))
-    assert sql_true == "SELECT 't'"
-    assert sql_false == "SELECT 'f'"
+    assert substitute_parameters("SELECT $1", (b"\x01",), [1], param_oids=(16,)) == "SELECT TRUE"
+    assert substitute_parameters("SELECT $1", (b"\x00",), [1], param_oids=(16,)) == "SELECT FALSE"
 
 
-def test_substitute_binary_text_falls_back_to_utf8() -> None:
-    """OID 25 / 1043 (text/varchar) binary == UTF-8 bytes."""
-
-    sql = substitute_parameters("SELECT $1", (b"hello",), [1], param_oids=(25,))
-    assert sql == "SELECT 'hello'"
-
-
-def test_substitute_binary_with_no_oid_falls_back_to_utf8() -> None:
-    """Common DBeaver case: client omits OIDs in Parse, sends text bytes binary."""
-
-    sql = substitute_parameters("SELECT $1", (b"hello",), [1])
-    assert sql == "SELECT 'hello'"
+def test_substitute_decodes_binary_text() -> None:
+    sql = substitute_parameters("SELECT $1", (b"hi'there",), [1], param_oids=(25,))
+    assert sql == "SELECT 'hi''there'"
 
 
 def test_substitute_rejects_out_of_range_placeholder() -> None:
@@ -191,7 +189,9 @@ def test_split_simple_reply_empty_query() -> None:
 def _make_session(reply_bytes: bytes) -> ExtendedSession:
     """ExtendedSession with a stub handler that always returns ``reply_bytes``."""
 
-    async def handler(_sql: str, _db: str) -> bytes:
+    async def handler(_sql: str, _db: str, **_kwargs: object) -> bytes:
+        # Accept any kwargs (e.g. ``result_formats``) the Bind path
+        # passes through; this stub ignores them.
         return reply_bytes
 
     return ExtendedSession(handler=handler, database="")
@@ -199,13 +199,17 @@ def _make_session(reply_bytes: bytes) -> ExtendedSession:
 
 def test_parse_complete() -> None:
     sess = _make_session(_select_one_reply())
-    reply = sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    reply = asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     assert _parse_frames(reply) == [(b"1", b"")]
 
 
 def test_bind_complete_for_known_statement() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     reply = asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -222,7 +226,9 @@ def test_bind_complete_for_known_statement() -> None:
 
 def test_describe_portal_returns_row_description() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 1", param_oids=()))
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -241,9 +247,11 @@ def test_describe_portal_returns_row_description() -> None:
 
 def test_describe_statement_returns_param_description_and_no_data() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(
-        protocol.ParseMessage(
-            statement_name="s1", query="SELECT $1", param_oids=(protocol.OID_TEXT,)
+    asyncio.run(
+        sess.parse(
+            protocol.ParseMessage(
+                statement_name="s1", query="SELECT $1", param_oids=(protocol.OID_TEXT,)
+            )
         )
     )
     reply = sess.describe(protocol.DescribeMessage(target=b"S", name="s1"))
@@ -253,7 +261,11 @@ def test_describe_statement_returns_param_description_and_no_data() -> None:
 
 def test_execute_replays_data_rows_and_command_complete() -> None:
     sess = _make_session(_two_row_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="SELECT col FROM t", param_oids=()))
+    asyncio.run(
+        sess.parse(
+            protocol.ParseMessage(statement_name="", query="SELECT col FROM t", param_oids=())
+        )
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -267,14 +279,61 @@ def test_execute_replays_data_rows_and_command_complete() -> None:
     )
     reply = sess.execute(protocol.ExecuteMessage(portal_name="", max_rows=0))
     frames = _parse_frames(reply)
-    assert [t for t, _ in frames] == [b"D", b"D", b"C"]
+    # Execute prepends RowDescription when Describe('P') wasn't called
+    # (JDBC fast-path / Tableau compatibility). The data frames follow.
+    assert [t for t, _ in frames] == [b"T", b"D", b"D", b"C"]
+
+
+def test_bind_re_runs_handler_with_requested_result_formats() -> None:
+    """Bind passes its ``result_formats`` through to the handler so the
+    DataRow bytes are encoded matching what the client asked for.
+    pgjdbc reads ``Bind.result_formats`` to decide how to parse each
+    column — sending text bytes when binary was requested makes pgjdbc
+    throw ``Index 7 out of bounds for length 7`` reading 8 bytes from
+    a 7-char text payload.
+    """
+
+    text_reply = (
+        protocol.build_row_description([("n", protocol.OID_INT4, 0)])
+        + protocol.build_data_row(["42"])
+        + protocol.build_command_complete("SELECT 1")
+    )
+    binary_reply = (
+        protocol.build_row_description([("n", protocol.OID_INT4, 1)])
+        + protocol.build_data_row([b"\x00\x00\x00\x2a"])
+        + protocol.build_command_complete("SELECT 1")
+    )
+    calls: list[tuple[int, ...]] = []
+
+    async def handler(_sql: str, _db: str, *, result_formats: tuple[int, ...] = ()) -> bytes:
+        calls.append(result_formats)
+        return binary_reply if result_formats and any(result_formats) else text_reply
+
+    sess = ExtendedSession(handler=handler, database="")
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="", query="SELECT 42", param_oids=()))
+    )
+    asyncio.run(
+        sess.bind(
+            protocol.BindMessage(
+                portal_name="",
+                statement_name="",
+                param_formats=(),
+                param_values=(),
+                result_formats=(1,),
+            )
+        )
+    )
+    # Handler was called twice: preexec (no formats) and Bind (binary).
+    assert () in calls
+    assert (1,) in calls
 
 
 def test_execute_returns_empty_query_response_for_blank_sql() -> None:
     # Router returns a bare CommandComplete with empty tag for whitespace.
     blank_reply = protocol.build_command_complete("")
     sess = _make_session(blank_reply)
-    sess.parse(protocol.ParseMessage(statement_name="", query="", param_oids=()))
+    asyncio.run(sess.parse(protocol.ParseMessage(statement_name="", query="", param_oids=())))
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -293,7 +352,7 @@ def test_execute_returns_empty_query_response_for_blank_sql() -> None:
 
 def test_execute_returns_cached_error_response() -> None:
     sess = _make_session(_error_reply())
-    sess.parse(protocol.ParseMessage(statement_name="", query="oops", param_oids=()))
+    asyncio.run(sess.parse(protocol.ParseMessage(statement_name="", query="oops", param_oids=())))
     asyncio.run(
         sess.bind(
             protocol.BindMessage(
@@ -312,7 +371,9 @@ def test_execute_returns_cached_error_response() -> None:
 
 def test_close_statement_and_portal() -> None:
     sess = _make_session(_select_one_reply())
-    sess.parse(protocol.ParseMessage(statement_name="s", query="SELECT 1", param_oids=()))
+    asyncio.run(
+        sess.parse(protocol.ParseMessage(statement_name="s", query="SELECT 1", param_oids=()))
+    )
     asyncio.run(
         sess.bind(
             protocol.BindMessage(

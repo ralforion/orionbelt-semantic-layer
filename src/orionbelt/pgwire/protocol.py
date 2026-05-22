@@ -318,27 +318,39 @@ def build_ready_for_query(status: bytes = TX_IDLE) -> bytes:
     return _frame(b"Z", status)
 
 
-def build_row_description(columns: list[tuple[str, int]]) -> bytes:
+def build_row_description(
+    columns: list[tuple[str, int]] | list[tuple[str, int, int]],
+) -> bytes:
     """RowDescription frame.
 
-    ``columns`` is a list of ``(name, type_oid)`` pairs. Type-size /
-    type-modifier / format columns are filled with sensible defaults for
-    text-format results — Step 1 only emits text.
+    ``columns`` is a list of ``(name, type_oid)`` or
+    ``(name, type_oid, format_code)`` tuples. ``format_code`` defaults
+    to 0 (text). Set to 1 to advertise a binary-format column — the
+    matching :func:`build_data_row` value must then be ``bytes``.
     """
 
     payload = struct.pack("!H", len(columns))
-    for name, oid in columns:
+    for col in columns:
+        name = col[0]
+        oid = col[1]
+        format_code = col[2] if len(col) > 2 else 0
         payload += name.encode("utf-8") + b"\x00"
         # table_oid, column_attr, type_oid, type_size, type_modifier, format_code
-        payload += struct.pack("!IhIhih", 0, 0, oid, -1, -1, 0)
+        payload += struct.pack("!IhIhih", 0, 0, oid, -1, -1, format_code)
     return _frame(b"T", payload)
 
 
-def build_data_row(values: list[str | None]) -> bytes:
+def build_data_row(values: list[str | bytes | None]) -> bytes:
+    """DataRow frame. ``str`` values are UTF-8 encoded (text format);
+    ``bytes`` values are sent verbatim (binary format).
+    """
+
     payload = struct.pack("!H", len(values))
     for value in values:
         if value is None:
             payload += struct.pack("!i", -1)
+        elif isinstance(value, bytes):
+            payload += struct.pack("!I", len(value)) + value
         else:
             encoded = value.encode("utf-8")
             payload += struct.pack("!I", len(encoded)) + encoded

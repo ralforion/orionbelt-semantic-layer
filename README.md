@@ -11,7 +11,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.4.0](https://img.shields.io/badge/version-2.4.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 2.5.0](https://img.shields.io/badge/version-2.5.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -58,6 +58,27 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 **[Open the Live Demo](https://orionbelt.ralforion.com/ui/?__theme=dark)** — Gradio UI with a pre-loaded example model. Paste a query, pick a dialect, see SQL instantly.
 
 API explorer: [Swagger UI](https://orionbelt.ralforion.com/docs) | [ReDoc](https://orionbelt.ralforion.com/redoc)
+
+> **Want to try the PostgreSQL wire surface?** Cloud Run is HTTPS-only, so the public demo can't expose ports 5432 (pgwire) or 8815 (Flight SQL). Spin the same demo up locally in two commands — it includes the baked-in `orionbelt_1_commerce` DuckDB dataset and the full OBSQL surface:
+>
+> ```bash
+> docker run --rm -d --name orionbelt-demo \
+>   -p 8080:8080 -p 5432:5432 -p 8815:8815 \
+>   -e PGWIRE_ENABLED=true \
+>   -e FLIGHT_ENABLED=true \
+>   ralforion/orionbelt-api:latest
+>
+> # REST + Gradio UI:   http://localhost:8080/ui
+> # pgwire (any psql / DBeaver / Tableau / Power BI):
+> psql "host=localhost port=5432 user=obsl dbname=orionbelt_1_commerce sslmode=disable" \
+>   -c 'SELECT "Client Name", "Total Sales" LIMIT 5'
+> # Flight SQL smoke test:
+> uv run python examples/obsql.py 'SELECT "Client Name", "Total Sales" LIMIT 5'
+>
+> docker stop orionbelt-demo
+> ```
+>
+> The container ships with `PGWIRE_AUTH_MODE=trust` (default), so it's safe for `localhost` but **not** safe to expose to the public internet — SCRAM/password auth is on the roadmap before that becomes the recommended pattern.
 
 ### Option B: Google Colab (no install)
 
@@ -125,6 +146,7 @@ No env file needed — the compilation pipeline is stateless.
 orionbelt-api                              # REST API on :8000 (Swagger UI at /docs, Gradio UI at /ui)
 orionbelt-ui                               # standalone Gradio UI on :7860 (connects to API on :8000)
 FLIGHT_ENABLED=true orionbelt-api          # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
+PGWIRE_ENABLED=true orionbelt-api          # API + PostgreSQL wire on :5432 (Tableau, DBeaver, Superset, psql, Dremio source)
 ```
 
 ### Option C2: Install with uv
@@ -137,6 +159,7 @@ uv pip install orionbelt-semantic-layer
 uv run orionbelt-api                       # REST API on :8000 (Swagger UI at /docs, Gradio UI at /ui)
 uv run orionbelt-ui                        # standalone Gradio UI on :7860 (connects to API on :8000)
 FLIGHT_ENABLED=true uv run orionbelt-api   # API + Arrow Flight SQL on :8815 (DBeaver, Tableau, Power BI)
+PGWIRE_ENABLED=true uv run orionbelt-api   # API + PostgreSQL wire on :5432 (Tableau, DBeaver, Superset, psql, Dremio source)
 ```
 
 **Smoke-test the Flight SQL surface** without a BI tool:
@@ -150,6 +173,25 @@ uv run python examples/obsql.py 'SELECT "Region", "Total Sales" FROM sales LIMIT
 uv run python examples/obsql.py -m sales 'SHOW TABLES'
 uv run python examples/obsql.py --list   # discover loaded models via REST
 ```
+
+### Try OBSQL in 30 seconds
+
+**OBSQL** — OrionBelt Semantic QL — is the SQL surface BI tools and humans actually write. Bare labels, `MEASURE()` markers, or matching aggregate wrappers; aggregation-match validation; `WITH ROLLUP` / `WITH CUBE`; no escape hatch to raw warehouse SQL. Same language over **Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2.5+):
+
+```bash
+PGWIRE_ENABLED=true uv run orionbelt-api &
+
+# Every BI tool already ships a Postgres ODBC/JDBC driver — point yours at :5432
+psql "host=localhost port=5432 user=obsl dbname=sales sslmode=disable" \
+  -c 'SELECT "Region", "Total Sales" LIMIT 5'
+
+# All three measure forms compile to the same vendor SQL:
+psql "..." -c 'SELECT "Region", "Total Sales"        FROM sales LIMIT 5'  -- bare
+psql "..." -c 'SELECT "Region", MEASURE("Total Sales") FROM sales LIMIT 5'  -- explicit marker
+psql "..." -c 'SELECT "Region", SUM("Total Sales")   FROM sales LIMIT 5'  -- matching aggregate
+```
+
+See the [OBSQL reference](https://ralforion.com/orionbelt-semantic-layer/guide/semantic-ql/) for the full grammar.
 
 ### Option D: Docker
 
@@ -167,7 +209,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:2.4.0
+    image: ralforion/orionbelt-api:2.5.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -176,7 +218,7 @@ services:
       MODEL_FILE: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:2.4.0
+    image: ralforion/orionbelt-ui:2.5.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -192,7 +234,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
-> - For production, pin a version tag (`:2.4.0`) rather than `:latest`.
+> - For production, pin a version tag (`:2.5.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -258,6 +300,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
+- **PostgreSQL Wire Protocol** (v2.5.0+) — native Postgres-protocol surface on `:5432`. Every BI tool already ships a Postgres ODBC/JDBC driver, so the user side is "point your existing connection at OBSL and go" — Tableau, DBeaver, Superset, Power BI, plain `psql`, and **Dremio as a federated Postgres source** (Dremio → OBSL → optionally back to Dremio's lakehouse, full circle)
 
 ### Agent-Facing API
 
@@ -441,9 +484,9 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides |
-| In progress | Additional dialects, CLI tool |
-| Planned | Authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)** — Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides |
+| In progress | Additional dialects, CLI tool, pgwire SCRAM/password auth (unified auth subsystem) |
+| Planned | Authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations, pre-aggregation / materialization layer |
 
 ---
 

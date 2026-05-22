@@ -8,6 +8,18 @@
 
 OrionBelt Semantic Layer is an **API-first** semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, and Snowflake. Query using business concepts — dimensions, measures, and metrics — instead of raw SQL.
 
+## The OrionBelt trio
+
+OBSL ships three named pillars. You author models in **OBML**, query them in **OBSQL**, and run it all on **OBSL**.
+
+| Short form | Full name | What it is | Reference |
+|---|---|---|---|
+| **OBSL** | OrionBelt **Semantic Layer** | The system itself — compiler, planner, runtime, REST / Flight / Postgres-wire surfaces | this site |
+| **OBML** | OrionBelt **Modeling Language** | Declarative YAML format for defining models | [OBML Model Format](guide/model-format.md) |
+| **OBSQL** | OrionBelt **Semantic QL** | SQL surface BI tools and humans actually write — bare-label or `MEASURE()` syntax, aggregation-match validation, `WITH ROLLUP` / `WITH CUBE`, no escape hatch to raw SQL | [OBSQL reference](guide/semantic-ql.md) |
+
+OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2.5+). Same language, two transports — pick whichever your BI tool prefers.
+
 ## Why OrionBelt?
 
 - **Analytics as Code** — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible
@@ -36,9 +48,36 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 | Custom Extensions   | Vendor-specific metadata at all model levels (model, data object, column, dimension, measure, metric)           |
 | DB-API 2.0 Drivers  | PEP 249 drivers for all 8 databases with transparent OBML compilation                                          |
 | Arrow Flight SQL    | Embedded gRPC server for DBeaver, Tableau, Power BI — single container, two ports                               |
+| PostgreSQL Wire     | Native Postgres-protocol surface (v2.5.0+) — Tableau, DBeaver, Superset, Power BI, `psql`, and **Dremio as a federated Postgres source** connect via their built-in Postgres ODBC/JDBC driver; no new connector to install |
 | OBSL Graph & SPARQL | Every loaded model is exported as an OBSL-Core 0.1 RDF graph (Turtle) with a read-only SPARQL (SELECT/ASK) endpoint |
 | Plugin Architecture | Extensible dialect system with capability flags                                                                 |
 | Source Tracking     | Error messages with YAML line/column positions                                                                  |
+
+## Try the demo
+
+**Hosted Gradio UI:** [orionbelt.ralforion.com](https://orionbelt.ralforion.com/ui/?__theme=dark) — pre-loaded example model, compile across dialects, see SQL instantly. ([Swagger](https://orionbelt.ralforion.com/docs) · [ReDoc](https://orionbelt.ralforion.com/redoc))
+
+The hosted demo runs on Cloud Run (HTTPS-only by design), so the **PostgreSQL wire** and **Arrow Flight SQL** transports can't be exposed publicly there. Spin the same demo up locally in one `docker run` — same image, same baked-in `orionbelt_1_commerce` DuckDB dataset, plus all three transports:
+
+```bash
+docker run --rm -d --name orionbelt-demo \
+  -p 8080:8080 -p 5432:5432 -p 8815:8815 \
+  -e PGWIRE_ENABLED=true \
+  -e FLIGHT_ENABLED=true \
+  ralforion/orionbelt-api:latest
+
+# REST + Gradio UI:
+#   http://localhost:8080/ui
+# pgwire (any psql / DBeaver / Tableau / Power BI / Superset / Metabase):
+psql "host=localhost port=5432 user=obsl dbname=orionbelt_1_commerce sslmode=disable" \
+  -c 'SELECT "Client Name", "Total Sales" LIMIT 5'
+# Flight SQL smoke test:
+uv run python examples/obsql.py 'SELECT "Client Name", "Total Sales" LIMIT 5'
+
+docker stop orionbelt-demo
+```
+
+The container ships with `PGWIRE_AUTH_MODE=trust` (default) — fine for `localhost`, **not** safe to expose to the public internet until SCRAM / password auth lands on the pgwire surface.
 
 ## Quick Example
 

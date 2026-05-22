@@ -12,13 +12,13 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Self-hostable | ✅ | Definitions yes, runtime no | ✅ | ❌ | ✅ | ✅ (licensed) |
 | Standalone (no transformation tool dep.) | ✅ | ❌ requires dbt | ✅ | ✅ | ✅ | ✅ |
 | Format | YAML (`OBML`) | YAML on dbt models | DSL (`.malloy`) | DSL (`.lkml`) | YAML / JS + Twig | Visual designer |
-| Query interface | **[OrionBelt Semantic QL](../guide/semantic-ql.md)** (OBSQL) + **Arrow Flight SQL** + REST + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | **Cube SQL API** (Postgres-wire) + REST + GraphQL | **MDX + DAX** + JDBC/ODBC + REST |
+| Query interface | **[OrionBelt Semantic QL](../guide/semantic-ql.md)** (OBSQL) + **Arrow Flight SQL** + **PostgreSQL wire** + REST + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | **Cube SQL API** (Postgres-wire) + REST + GraphQL | **MDX + DAX** + JDBC/ODBC + REST |
 | First-class cumulative metric | ✅ | ✅ | Per-query | Partial | Partial (`rolling_window`) | Via MDX |
 | First-class period-over-period metric | ✅ | Via `offset_window` | Per-query | Via table calc | Query-time `time_shift` | Via MDX |
 | Conversion / funnel metrics | ❌ | ✅ | Patterns | Patterns | Patterns | Patterns |
 | Symmetric aggregates | ❌ (uses CFL) | ❌ | ✅ | ✅ | ✅ | ✅ (OLAP) |
 | Hierarchical subtotals (`WITH ROLLUP` / `WITH CUBE`) | ✅ first-class in **Semantic QL** (trailing modifier + `GROUPING()` flag columns; dialect-portable across all 8 drivers) | ❌ presentation concern | ❌ | UI-only checkbox; no LookML construct | "Rollup" means pre-aggregation tables, not the SQL operator | Via MDX/DAX |
-| Natural SQL query surface | ✅ **Semantic QL** (OBSQL) with explicit `MEASURE()` marker + aggregate-wrap matching | ❌ | n/a (Malloy DSL) | n/a (LookML DSL) | ✅ Cube SQL API (Postgres-wire) | n/a (MDX/DAX) |
+| Natural SQL query surface | ✅ **Semantic QL** (OBSQL) with explicit `MEASURE()` marker + aggregate-wrap matching — over **Arrow Flight SQL AND PostgreSQL wire** (v2.5.0+) | ❌ | n/a (Malloy DSL) | n/a (LookML DSL) | ✅ Cube SQL API (Postgres-wire) | n/a (MDX/DAX) |
 | Read-only governance — **no raw-SQL or write-op escape hatch** | ✅ closed by design: raw SQL → `RAW_SQL_REJECTED`, DDL/DML → `WRITE_OPERATION_REJECTED`, catalog probes answered from the model | dbt SL is read-only by API shape; no raw-SQL surface | Malloy emits its own queries | Looker SQL Runner allows raw SQL | Cube SQL API rejects writes; raw SELECTs flow through | AtScale routes through MDX/DAX |
 | Multi-rooted modeling (peer-rooted facts) | ✅ independent `dataObjects` | ✅ independent `semantic_models` | ❌ single-rooted `source` | ❌ single-rooted `explore` (joined facts only) | ✅ independent cubes | ✅ multiple facts in one Cube via conformed dims |
 | Multi-fact query plan | `UNION ALL` legs (CFL) | `FULL OUTER JOIN` on shared entities | n/a | JOIN inside explore (symmetric agg) | Single JOIN path via Dijkstra-resolved cube graph | JOIN with OLAP aggregation |
@@ -44,7 +44,7 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 - [vs. dbt Semantic Layer (MetricFlow)](dbt.md) — coupled to dbt projects, served via dbt Cloud
 - [vs. Malloy](malloy.md) — a query language with semantic modeling, plus the Publisher REST/MCP server
 - [vs. LookML / Looker](lookml.md) — the proprietary modeling language behind Google Cloud Looker
-- [vs. Cube](cube.md) — the OSS production semantic layer with pre-aggregations, multi-API parity, and a Postgres-wire SQL surface
+- [vs. Cube](cube.md) — the OSS production semantic layer with pre-aggregations and multi-API parity (Postgres wire, REST, GraphQL)
 - [vs. AtScale](atscale.md) — the enterprise universal semantic layer with native MDX/DAX for Excel and Power BI live connections
 
 ## Topology: a recurring theme
@@ -119,7 +119,7 @@ AtScale's conformed-dimensions-within-a-Cube + virtual cubes is the closest peer
 - **dbt SL** if you've standardized on dbt and want metrics tightly coupled to your transformation pipeline, with dbt Cloud governance.
 - **Malloy** for analyst-driven exploration and BI authoring, especially if you need hierarchical (`nest`) result shapes.
 - **Looker** if you're buying an end-to-end BI platform with dashboards, alerts, RLS, and PDTs — and the per-user licensing fits your org.
-- **Cube** if you need pre-aggregations for sub-second analytics on large datasets, a Postgres-wire SQL API for BI-tool connectivity, or first-class multi-tenancy/RLS — and you're willing to operate (or pay for Cube Cloud to operate) the heavier runtime.
+- **Cube** if you need pre-aggregations for sub-second analytics on large datasets or first-class multi-tenancy/RLS — and you're willing to operate (or pay for Cube Cloud to operate) the heavier runtime. (PostgreSQL-wire BI connectivity is no longer a Cube exclusive — OBSL also speaks it as of v2.5.0.)
 - **AtScale** if your business users live in Excel pivot tables and need native MDX, or you need DAX for Power BI live connections — no other tool in this comparison set speaks those protocols.
 
 These tools are not mutually exclusive — it's plausible to ship a BI platform (Looker / AtScale) for the human audience and OBSL alongside it for the embedded / API / agent audience.

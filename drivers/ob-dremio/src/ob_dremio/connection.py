@@ -6,10 +6,13 @@ that simply verify the connection is still open.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from ob_dremio.cursor import Cursor
 from ob_dremio.exceptions import ProgrammingError
+
+if TYPE_CHECKING:
+    import pyarrow.flight  # type: ignore[import-untyped]
 
 
 class Connection:
@@ -21,12 +24,14 @@ class Connection:
 
     def __init__(
         self,
-        client: Any,
+        client: pyarrow.flight.FlightClient,
         *,
+        call_options: pyarrow.flight.FlightCallOptions | None = None,
         ob_api_url: str = "http://localhost:8000",
         ob_timeout: int = 30,
     ) -> None:
         self._client = client
+        self._call_options = call_options
         self._closed = False
         self._ob_api_url = ob_api_url
         self._ob_timeout = ob_timeout
@@ -44,6 +49,7 @@ class Connection:
         self._check_open()
         return Cursor(
             self._client,
+            call_options=self._call_options,
             ob_api_url=self._ob_api_url,
             ob_timeout=self._ob_timeout,
         )

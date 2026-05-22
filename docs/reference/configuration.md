@@ -26,6 +26,12 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port                |
 | `FLIGHT_AUTH_MODE`         | `none`      | `none` or `token`                         |
 | `FLIGHT_API_TOKEN`         | —           | Static token (when auth mode = token)     |
+| `PGWIRE_ENABLED`           | `false`     | Enable PostgreSQL wire-protocol surface (v2.5.0+) — connect any Postgres client (Tableau, DBeaver, Superset, Power BI, `psql`, Dremio's Postgres source) |
+| `PGWIRE_HOST`              | `0.0.0.0`   | pgwire bind address                       |
+| `PGWIRE_PORT`              | `5432`      | pgwire TCP port                           |
+| `PGWIRE_AUTH_MODE`         | `trust`     | `trust` today; `password` / `scram-sha-256` planned alongside the unified-auth subsystem |
+| `PGWIRE_MAX_CONNECTIONS`   | `64`        | Concurrent connection cap                 |
+| `PGWIRE_QUERY_TIMEOUT_SECONDS` | `60`    | Per-query wall-clock timeout              |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 
 ## Single-Model Mode

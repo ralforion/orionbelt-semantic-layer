@@ -22,8 +22,10 @@ from ob_postgres.type_codes import DATETIME, NUMBER, STRING
 # ---------------------------------------------------------------------------
 
 # psycopg2 description columns are named tuples
-PgColumn = namedtuple("Column", ["name", "type_code", "display_size",
-                                 "internal_size", "precision", "scale", "null_ok"])
+PgColumn = namedtuple(
+    "Column",
+    ["name", "type_code", "display_size", "internal_size", "precision", "scale", "null_ok"],
+)
 
 
 def _make_mock_native() -> MagicMock:
@@ -62,7 +64,10 @@ def test_threadsafety() -> None:
 
 
 def test_paramstyle() -> None:
-    assert ob_postgres.paramstyle == "format"
+    # ADBC uses ``?`` placeholders — paramstyle ``qmark``. The legacy
+    # psycopg2-based driver used ``%s`` (``format``); the migration to
+    # ``adbc-driver-postgresql`` changed this.
+    assert ob_postgres.paramstyle == "qmark"
 
 
 # ---------------------------------------------------------------------------
@@ -71,27 +76,30 @@ def test_paramstyle() -> None:
 
 
 def test_connect_returns_connection() -> None:
-    with patch("psycopg2.connect") as mock_connect:
+    with patch("adbc_driver_postgresql.dbapi.connect") as mock_connect:
         mock_connect.return_value = _make_mock_native()
         conn = ob_postgres.connect(dbname="testdb", user="testuser")
         assert isinstance(conn, Connection)
         mock_connect.assert_called_once()
-        kwargs = mock_connect.call_args.kwargs
-        assert kwargs["dbname"] == "testdb"
-        assert kwargs["user"] == "testuser"
+        # ADBC takes a URI as its first positional arg — the kwargs are
+        # encoded into it. Verify both made the trip.
+        (uri,) = mock_connect.call_args.args
+        assert "testdb" in uri
+        assert "testuser" in uri
 
 
 def test_connect_with_dsn() -> None:
-    with patch("psycopg2.connect") as mock_connect:
+    with patch("adbc_driver_postgresql.dbapi.connect") as mock_connect:
         mock_connect.return_value = _make_mock_native()
-        conn = ob_postgres.connect(dsn="host=localhost dbname=mydb")
+        dsn = "postgresql://localhost:5432/mydb"
+        conn = ob_postgres.connect(dsn=dsn)
         assert isinstance(conn, Connection)
-        kwargs = mock_connect.call_args.kwargs
-        assert kwargs["dsn"] == "host=localhost dbname=mydb"
+        (uri,) = mock_connect.call_args.args
+        assert uri == dsn
 
 
 def test_connect_context_manager() -> None:
-    with patch("psycopg2.connect") as mock_connect:
+    with patch("adbc_driver_postgresql.dbapi.connect") as mock_connect:
         mock_native = _make_mock_native()
         mock_connect.return_value = mock_native
         with ob_postgres.connect() as conn:
@@ -167,8 +175,8 @@ def test_cursor_description() -> None:
     mock_native = _make_mock_native()
     mock_cursor = mock_native.cursor()
     mock_cursor.description = [
-        PgColumn("num", 23, None, None, None, None, None),   # int4 → NUMBER
-        PgColumn("txt", 25, None, None, None, None, None),   # text → STRING
+        PgColumn("num", 23, None, None, None, None, None),  # int4 → NUMBER
+        PgColumn("txt", 25, None, None, None, None, None),  # text → STRING
         PgColumn("dt", 1114, None, None, None, None, None),  # timestamp → DATETIME
     ]
     conn = Connection(mock_native)
@@ -183,6 +191,63 @@ def test_cursor_description() -> None:
     assert desc[1][1] == STRING
     assert desc[2][0] == "dt"
     assert desc[2][1] == DATETIME
+
+
+def test_cursor_description_classifies_arrow_datatypes() -> None:
+    """ADBC returns PyArrow ``DataType`` objects, not OIDs.
+
+    The legacy code path checked ``isinstance(type_code, int)`` and
+    fell back to ``STRING`` for everything else — which caused every
+    column from a live ADBC PostgreSQL connection to surface as TEXT,
+    breaking Tableau (NUMERIC measures decoded as strings → SUM = 0).
+    """
+
+    import pyarrow as pa
+
+    mock_native = _make_mock_native()
+    mock_cursor = mock_native.cursor()
+    mock_cursor.description = [
+        PgColumn("a", pa.int32(), None, None, None, None, None),
+        PgColumn("b", pa.float64(), None, None, None, None, None),
+        PgColumn("c", pa.string(), None, None, None, None, None),
+        PgColumn("d", pa.timestamp("us"), None, None, None, None, None),
+        PgColumn("e", pa.binary(), None, None, None, None, None),
+    ]
+    conn = Connection(mock_native)
+    cur = conn.cursor()
+    desc = cur.description
+    assert desc is not None
+    assert desc[0][1] == NUMBER  # int32
+    assert desc[1][1] == NUMBER  # float64
+    assert desc[2][1] == STRING  # string
+    assert desc[3][1] == DATETIME  # timestamp
+    from ob_postgres.type_codes import BINARY
+
+    assert desc[4][1] == BINARY  # binary
+
+
+def test_cursor_description_classifies_opaque_numeric() -> None:
+    """ADBC wraps Postgres NUMERIC in an OpaqueType — repr contains ``type_name=numeric``.
+
+    Falls through pa.types.is_decimal() (which only matches Arrow
+    DecimalType) and into the OpaqueType repr-substring branch.
+    """
+
+    class _FakeOpaque:
+        def __repr__(self) -> str:
+            return (
+                "OpaqueType(extension<arrow.opaque[storage_type=string, "
+                "type_name=numeric, vendor_name=PostgreSQL]>)"
+            )
+
+    mock_native = _make_mock_native()
+    mock_native.cursor().description = [
+        PgColumn("total_sales", _FakeOpaque(), None, None, None, None, None),
+    ]
+    cur = Connection(mock_native).cursor()
+    desc = cur.description
+    assert desc is not None
+    assert desc[0][1] == NUMBER
 
 
 def test_cursor_description_none_before_execute() -> None:
@@ -309,7 +374,9 @@ def test_obml_compile_and_execute() -> None:
         PgColumn("revenue", 701, None, None, None, None, None),
     ]
     mock_native.cursor().fetchall.return_value = [
-        ("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0),
+        ("EMEA", 300.0),
+        ("APAC", 150.0),
+        ("AMER", 550.0),
     ]
     conn = Connection(mock_native)
     with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):

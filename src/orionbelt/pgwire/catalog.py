@@ -23,6 +23,7 @@ fidelity.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import re
 import threading
@@ -62,6 +63,13 @@ _DATATYPE_TO_DUCKDB: dict[DataType, str] = {
 # tools sometimes refuse quoted identifiers; column names stay quoted.
 _SAFE_TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
+# Branded schema name surfaced to BI tools.  Replaces the Postgres
+# default ``public`` so OBSL models show up under a recognisable label
+# in Tableau / Power BI / DBeaver schema browsers. Kept as a constant
+# (not configurable) so the canned ``search_path`` / ``current_schema``
+# replies and the catalog DDL stay in lockstep.
+CATALOG_SCHEMA = "orionbelt"
+
 
 # Stub Postgres catalog functions referenced by psql ``\\dt`` / ``\\d``.
 # DuckDB exposes ``pg_class`` / ``pg_namespace`` / ``pg_attribute`` as
@@ -76,326 +84,353 @@ _STUB_MACROS: tuple[str, ...] = (
     "CREATE OR REPLACE MACRO pg_get_partkeydef(oid) AS NULL",
     "CREATE OR REPLACE MACRO pg_get_indexdef(oid) AS NULL",
     "CREATE OR REPLACE MACRO pg_get_constraintdef(oid) AS NULL",
-    # pg_get_expr is called with 2 or 3 args by different clients
-    # (psql 16's \\d uses 3-arg, DBeaver uses 2-arg). DuckDB macros
-    # don't overload by arity — ``CREATE OR REPLACE`` replaces — so we
-    # use a default-arg form that accepts both call shapes.
+    # Both arities — ``pg_get_expr(expr, oid)`` (Dremio's pgjdbc /
+    # DBeaver) and ``pg_get_expr(expr, oid, pretty)`` (psql / pgAdmin).
+    # DuckDB ``CREATE OR REPLACE MACRO`` does NOT arity-overload —
+    # a second CREATE OR REPLACE with a different arity silently
+    # replaces the first. The default-value syntax (``pretty := …``)
+    # is what makes one macro accept both call shapes.
     "CREATE OR REPLACE MACRO pg_get_expr(expr, oid, pretty := false) AS NULL",
+    # pg_get_keywords is a set-returning function in real Postgres.
+    # DBeaver calls it as ``FROM pg_get_keywords()`` (table form), so a
+    # scalar macro fails with "Table Function with name pg_get_keywords
+    # does not exist". DuckDB ``MACRO … AS TABLE …`` declares a
+    # table-returning macro. The single dummy row is enough to satisfy
+    # the ``SELECT string_agg(word, ',')`` shape DBeaver uses to build
+    # its SQL editor's reserved-word list.
+    "CREATE OR REPLACE MACRO pg_get_keywords() AS TABLE SELECT 'select' AS word",
+    "CREATE OR REPLACE MACRO pg_get_function_arguments(oid) AS ''",
+    "CREATE OR REPLACE MACRO pg_get_function_identity_arguments(oid) AS ''",
+    "CREATE OR REPLACE MACRO pg_get_function_result(oid) AS ''",
+    "CREATE OR REPLACE MACRO pg_get_serial_sequence(table_name, column_name) AS NULL",
+    "CREATE OR REPLACE MACRO pg_size_pretty(bytes) AS '0 bytes'",
+    "CREATE OR REPLACE MACRO pg_relation_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_total_relation_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_database_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_indexes_size(oid) AS 0",
+    "CREATE OR REPLACE MACRO pg_table_size(oid) AS 0",
     "CREATE OR REPLACE MACRO pg_relation_is_publishable(oid) AS false",
     "CREATE OR REPLACE MACRO obj_description(oid, catalog) AS NULL",
     "CREATE OR REPLACE MACRO col_description(oid, col) AS NULL",
     "CREATE OR REPLACE MACRO format_type(oid, typemod) AS 'unknown'",
     "CREATE OR REPLACE MACRO pg_encoding_to_char(enc) AS 'UTF8'",
-    # DBeaver fetches the keyword list to colour the SQL editor.  We
-    # emit an empty rowset; the client's hard-coded fallback covers
-    # the user-experience gap.
-    "CREATE OR REPLACE MACRO pg_get_keywords() AS TABLE "
-    "(SELECT CAST(NULL AS VARCHAR) AS word, CAST(NULL AS VARCHAR) AS catcode, "
-    "CAST(NULL AS VARCHAR) AS catdesc WHERE FALSE)",
-    # DBeaver's table-detail dialog asks for storage statistics. OBSL
-    # models are virtual so the honest answer is 0.
-    "CREATE OR REPLACE MACRO pg_total_relation_size(oid) AS 0",
-    "CREATE OR REPLACE MACRO pg_relation_size(oid) AS 0",
-    "CREATE OR REPLACE MACRO pg_indexes_size(oid) AS 0",
-    "CREATE OR REPLACE MACRO pg_table_size(oid) AS 0",
-    "CREATE OR REPLACE MACRO pg_database_size(oid) AS 0",
+    # JDBC's ``getPrimaryKeys`` calls
+    # ``(information_schema._pg_expandarray(i.indkey)).n`` to enumerate
+    # PK column positions. Our virtual tables have no PKs so the
+    # surrounding JOIN against ``pg_index`` is always empty; the macro
+    # only needs to be resolvable. Return a STRUCT so ``(call).n``
+    # parses; the actual SELECT never executes.
+    "CREATE OR REPLACE MACRO _pg_expandarray(arr) AS {'x': NULL, 'n': NULL}",
 )
 
 
-# Augmented catalog views in our own ``obsl_meta`` schema. DuckDB's
-# native ``pg_catalog.pg_class`` / ``pg_attribute`` are missing columns
-# psql 16 expects (relforcerowsecurity, relhasoids, …) and the
-# atttypid values are DuckDB-internal type ids, not real Postgres OIDs.
-# We can't write to the system catalog (``Cannot create entry in
-# system catalog``) so we mirror those tables here and swap references
-# with ``_REWRITES`` below.
-_OBSL_META_DDL: tuple[str, ...] = (
-    "CREATE SCHEMA IF NOT EXISTS obsl_meta",
-    # pg_class: pass-through + missing columns as constants. psql 16's
-    # \\d reads ~30 columns from pg_class; supplying sensible defaults
-    # keeps the introspection query well-typed without changing
-    # behaviour for the columns DuckDB already exposes correctly.
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_class AS
-    SELECT
-        c.*,
-        CAST(false AS BOOLEAN) AS relforcerowsecurity,
-        CAST(false AS BOOLEAN) AS relrowsecurity,
-        CAST(false AS BOOLEAN) AS relhasoids,
-        CAST(false AS BOOLEAN) AS relispartition,
-        CAST(false AS BOOLEAN) AS relhastriggers,
-        CAST(false AS BOOLEAN) AS relhasindex,
-        CAST(false AS BOOLEAN) AS relhasrules,
-        CAST(false AS BOOLEAN) AS relhassubclass,
-        CAST(false AS BOOLEAN) AS relispopulated,
-        CAST('d' AS VARCHAR) AS relreplident,
-        CAST('p' AS VARCHAR) AS relpersistence,
-        CAST(0 AS INTEGER) AS reloftype,
-        CAST(0 AS INTEGER) AS relrewrite,
-        CAST(0 AS INTEGER) AS reltoastrelid,
-        CAST(0 AS INTEGER) AS relam,
-        CAST(0 AS INTEGER) AS reltablespace,
-        CAST(0 AS INTEGER) AS reloptions,
-        CAST(0 AS INTEGER) AS relminmxid,
-        CAST(0 AS INTEGER) AS relfrozenxid,
-        CAST(0 AS BIGINT)  AS reltuples,
-        CAST(0 AS INTEGER) AS relpages,
-        CAST(0 AS INTEGER) AS relallvisible,
-        CAST(0 AS INTEGER) AS relchecks,
-        -- relacl is an aclitem[] in real Postgres; an empty array
-        -- literal keeps DBeaver's tree introspection from NPE-ing on
-        -- a NULL value where it expects an array.
-        CAST('{}' AS VARCHAR) AS relacl,
-        CAST('' AS VARCHAR) AS relpartbound
-    FROM pg_catalog.pg_class c
-    """,
-    # Empty stub views for psql 16's "advanced relation" probes. These
-    # tables don't exist in DuckDB and the underlying features (RLS,
-    # publications, inheritance) don't apply to OBSL's virtual models
-    # — empty rows are the semantically correct answer.
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_policy AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS VARCHAR) AS polname,
-        CAST(NULL AS INTEGER) AS polrelid,
-        CAST(NULL AS VARCHAR) AS polcmd,
-        CAST(NULL AS BOOLEAN) AS polpermissive,
-        CAST(NULL AS VARCHAR) AS polroles,
-        CAST(NULL AS VARCHAR) AS polqual,
-        CAST(NULL AS VARCHAR) AS polwithcheck
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_inherits AS
-    SELECT
-        CAST(NULL AS INTEGER) AS inhrelid,
-        CAST(NULL AS INTEGER) AS inhparent,
-        CAST(NULL AS INTEGER) AS inhseqno,
-        CAST(NULL AS BOOLEAN) AS inhdetachpending
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_partitioned_table AS
-    SELECT
-        CAST(NULL AS INTEGER) AS partrelid,
-        CAST(NULL AS VARCHAR) AS partstrat,
-        CAST(NULL AS SMALLINT) AS partnatts,
-        CAST(NULL AS INTEGER) AS partdefid,
-        CAST(NULL AS VARCHAR) AS partattrs,
-        CAST(NULL AS VARCHAR) AS partclass,
-        CAST(NULL AS VARCHAR) AS partcollation,
-        CAST(NULL AS VARCHAR) AS partexprs
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_publication AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS VARCHAR) AS pubname,
-        CAST(NULL AS INTEGER) AS pubowner,
-        CAST(NULL AS BOOLEAN) AS puballtables,
-        CAST(NULL AS BOOLEAN) AS pubinsert,
-        CAST(NULL AS BOOLEAN) AS pubupdate,
-        CAST(NULL AS BOOLEAN) AS pubdelete,
-        CAST(NULL AS BOOLEAN) AS pubtruncate,
-        CAST(NULL AS BOOLEAN) AS pubviaroot
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_publication_rel AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS INTEGER) AS prpubid,
-        CAST(NULL AS INTEGER) AS prrelid
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_publication_namespace AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS INTEGER) AS pnpubid,
-        CAST(NULL AS INTEGER) AS pnnspid
-    WHERE FALSE
-    """,
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_roles AS
-    SELECT
-        CAST(10 AS INTEGER) AS oid,
-        CAST('obsl' AS VARCHAR) AS rolname,
-        CAST(true AS BOOLEAN) AS rolsuper,
-        CAST(true AS BOOLEAN) AS rolinherit,
-        CAST(true AS BOOLEAN) AS rolcreaterole,
-        CAST(true AS BOOLEAN) AS rolcreatedb,
-        CAST(true AS BOOLEAN) AS rolcanlogin,
-        CAST(false AS BOOLEAN) AS rolreplication,
-        CAST(false AS BOOLEAN) AS rolbypassrls,
-        CAST(-1 AS INTEGER) AS rolconnlimit
-    """,
-    # pg_database is built dynamically during refresh() — one row per
-    # loaded model — so BI tools' "list databases" probe surfaces the
-    # OBSL model names (orionbelt_1_commerce, sales, …) instead of
-    # DuckDB's "memory" / "system" / "temp" catalog names. The empty
-    # placeholder here lives only so the rewriter has a target
-    # before the first refresh().
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_database AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS VARCHAR) AS datname,
-        CAST(10 AS INTEGER) AS datdba,
-        CAST(6 AS INTEGER) AS encoding,
-        CAST('en_US.UTF-8' AS VARCHAR) AS datcollate,
-        CAST('en_US.UTF-8' AS VARCHAR) AS datctype,
-        CAST(false AS BOOLEAN) AS datistemplate,
-        CAST(true AS BOOLEAN) AS datallowconn,
-        CAST(-1 AS INTEGER) AS datconnlimit,
-        CAST(0 AS BIGINT) AS datfrozenxid,
-        CAST(0 AS BIGINT) AS datminmxid,
-        CAST(1663 AS INTEGER) AS dattablespace,
-        CAST('{}' AS VARCHAR) AS datacl,
-        CAST('c' AS VARCHAR) AS datlocprovider,
-        CAST(NULL AS VARCHAR) AS daticulocale,
-        CAST(NULL AS VARCHAR) AS daticurules,
-        CAST(NULL AS VARCHAR) AS datcollversion
-    WHERE FALSE
-    """,
-    # pg_namespace placeholder — the real view is rebuilt during
-    # refresh() with exactly one row per loaded model schema so BI
-    # tools see only the OBSL surface (no DuckDB defaults, no
-    # ``pg_catalog`` / ``information_schema`` / ``obsl_meta`` leak).
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS
-    SELECT n.* FROM pg_catalog.pg_namespace n WHERE FALSE
-    """,
-    # pg_shdescription: DBeaver's column-detail dialog joins this
-    # table for shared-object comments. DuckDB doesn't have it; an
-    # empty stub with the standard columns is the right answer.
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_shdescription AS
-    SELECT
-        CAST(NULL AS INTEGER) AS objoid,
-        CAST(NULL AS INTEGER) AS classoid,
-        CAST(NULL AS VARCHAR) AS description
-    WHERE FALSE
-    """,
-    # pg_collation: DuckDB's pg_catalog is missing this table entirely.
-    # We expose an empty view; clients that LEFT JOIN it get NULLs which
-    # is what they expect when collation isn't relevant.
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_collation AS
-    SELECT
-        CAST(NULL AS INTEGER) AS oid,
-        CAST(NULL AS VARCHAR) AS collname,
-        CAST(NULL AS INTEGER) AS collnamespace,
-        CAST(NULL AS INTEGER) AS collowner,
-        CAST(NULL AS VARCHAR) AS collprovider,
-        CAST(NULL AS BOOLEAN) AS collisdeterministic,
-        CAST(NULL AS INTEGER) AS collencoding,
-        CAST(NULL AS VARCHAR) AS collcollate,
-        CAST(NULL AS VARCHAR) AS collctype,
-        CAST(NULL AS VARCHAR) AS collversion
-    WHERE FALSE
-    """,
-    # pg_attribute: rebuild from information_schema.columns so atttypid
-    # uses real Postgres OIDs. Without this, JDBC type lookups via
-    # ``JOIN pg_type`` resolve to wrong type names (Step 3 caveat).
-    """
-    CREATE OR REPLACE VIEW obsl_meta.pg_attribute AS
-    SELECT
-        c2.oid AS attrelid,
-        isc.column_name AS attname,
-        CAST(
-            CASE LOWER(SPLIT_PART(isc.data_type, '(', 1))
-                WHEN 'varchar' THEN 1043
-                WHEN 'character varying' THEN 1043
-                WHEN 'text' THEN 25
-                WHEN 'bigint' THEN 20
-                WHEN 'integer' THEN 23
-                WHEN 'smallint' THEN 21
-                WHEN 'tinyint' THEN 21
-                WHEN 'hugeint' THEN 1700
-                WHEN 'double' THEN 701
-                WHEN 'double precision' THEN 701
-                WHEN 'real' THEN 700
-                WHEN 'boolean' THEN 16
-                WHEN 'date' THEN 1082
-                WHEN 'timestamp' THEN 1114
-                WHEN 'timestamp without time zone' THEN 1114
-                WHEN 'timestamp with time zone' THEN 1184
-                WHEN 'time' THEN 1083
-                WHEN 'time without time zone' THEN 1083
-                WHEN 'time with time zone' THEN 1266
-                WHEN 'blob' THEN 17
-                WHEN 'bytea' THEN 17
-                WHEN 'decimal' THEN 1700
-                WHEN 'numeric' THEN 1700
-                WHEN 'json' THEN 114
-                WHEN 'uuid' THEN 2950
-                ELSE 25
-            END
-        AS INTEGER) AS atttypid,
-        CAST(isc.ordinal_position AS SMALLINT) AS attnum,
-        CAST((isc.is_nullable = 'NO') AS BOOLEAN) AS attnotnull,
-        CAST(false AS BOOLEAN) AS attisdropped,
-        CAST(-1 AS SMALLINT) AS attlen,
-        CAST(-1 AS INTEGER) AS atttypmod,
-        CAST(false AS BOOLEAN) AS atthasdef,
-        CAST(false AS BOOLEAN) AS attidentity,
-        CAST(false AS BOOLEAN) AS attgenerated,
-        CAST('' AS VARCHAR) AS attoptions,
-        CAST('' AS VARCHAR) AS attfdwoptions,
-        CAST('' AS VARCHAR) AS attmissingval,
-        CAST(0 AS INTEGER) AS attinhcount,
-        CAST(0 AS INTEGER) AS attstattarget,
-        CAST(0 AS INTEGER) AS attndims,
-        CAST('p' AS VARCHAR) AS attstorage,
-        CAST(0 AS INTEGER) AS attcollation
-    FROM information_schema.columns isc
-    JOIN pg_catalog.pg_class c2 ON c2.relname = isc.table_name
-    """,
-)
+# Shadow views that translate DuckDB's internal type-id numbering in
+# ``pg_attribute`` / ``pg_type`` to real Postgres OIDs. DuckDB stores
+# ``atttypid = 23`` for a DOUBLE column — but 23 in Postgres is INT4.
+# Tableau's pgjdbc reads that 23 and allocates a 4-byte integer reader
+# for what we send as an 8-byte FLOAT8, producing NULL / 0 measures.
+#
+# We can't write into the ``pg_catalog`` schema (DuckDB rejects it as a
+# system catalog), so we expose translated views under the orionbelt
+# schema and rewrite ``pg_attribute`` / ``pg_type`` references in
+# incoming SQL to use them.
+#
+# Mapping below derived empirically from ``CREATE TABLE t (a VARCHAR,
+# b BIGINT, c DOUBLE, …)`` + ``SELECT atttypid FROM pg_attribute``:
+# DuckDB id → Postgres OID
+#   10 → 16   (BOOL)
+#   12 → 21   (INT2)
+#   13 → 23   (INT4)
+#   14 → 20   (INT8)
+#   15 → 1082 (DATE)
+#   16 → 1083 (TIME)
+#   19 → 1114 (TIMESTAMP)
+#   21 → 1700 (NUMERIC)
+#   22 → 700  (FLOAT4)
+#   23 → 701  (FLOAT8)
+#   25 → 25   (TEXT — already matches)
+#   26 → 17   (BYTEA)
+#   27 → 1186 (INTERVAL)
+_OID_TRANSLATION_CASE = """
+        CASE atttypid
+            WHEN 10 THEN 16    WHEN 12 THEN 21    WHEN 13 THEN 23
+            WHEN 14 THEN 20    WHEN 15 THEN 1082  WHEN 16 THEN 1083
+            WHEN 19 THEN 1114  WHEN 21 THEN 1700  WHEN 22 THEN 700
+            WHEN 23 THEN 701   WHEN 26 THEN 17    WHEN 27 THEN 1186
+            ELSE atttypid::INTEGER
+        END
+"""
 
-
-# Catalog-table substitutions applied to incoming SQL: when a client
-# references ``pg_catalog.pg_class`` we transparently swap it to
-# ``obsl_meta.pg_class`` so the missing-column / mistyped-attribute
-# problems documented in Step 3 disappear.
-_TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"\bpg_catalog\.pg_class\b", re.IGNORECASE),
-        "obsl_meta.pg_class",
-    ),
-    (
-        re.compile(r"\bpg_catalog\.pg_attribute\b", re.IGNORECASE),
-        "obsl_meta.pg_attribute",
-    ),
-    (
-        re.compile(r"\bpg_catalog\.pg_collation\b", re.IGNORECASE),
-        "obsl_meta.pg_collation",
-    ),
-    (re.compile(r"\bpg_catalog\.pg_policy\b", re.IGNORECASE), "obsl_meta.pg_policy"),
-    (re.compile(r"\bpg_catalog\.pg_inherits\b", re.IGNORECASE), "obsl_meta.pg_inherits"),
-    (
-        re.compile(r"\bpg_catalog\.pg_partitioned_table\b", re.IGNORECASE),
-        "obsl_meta.pg_partitioned_table",
-    ),
-    (re.compile(r"\bpg_catalog\.pg_publication\b", re.IGNORECASE), "obsl_meta.pg_publication"),
-    (
-        re.compile(r"\bpg_catalog\.pg_publication_rel\b", re.IGNORECASE),
-        "obsl_meta.pg_publication_rel",
-    ),
-    (
-        re.compile(r"\bpg_catalog\.pg_publication_namespace\b", re.IGNORECASE),
-        "obsl_meta.pg_publication_namespace",
-    ),
-    (re.compile(r"\bpg_catalog\.pg_roles\b", re.IGNORECASE), "obsl_meta.pg_roles"),
-    (re.compile(r"\bpg_catalog\.pg_database\b", re.IGNORECASE), "obsl_meta.pg_database"),
-    (re.compile(r"\bpg_catalog\.pg_namespace\b", re.IGNORECASE), "obsl_meta.pg_namespace"),
-    (
-        re.compile(r"\bpg_catalog\.pg_shdescription\b", re.IGNORECASE),
-        "obsl_meta.pg_shdescription",
-    ),
+_SHADOW_VIEWS: tuple[str, ...] = (
+    # Empty stubs for pg_catalog tables DuckDB doesn't expose but
+    # DBeaver / pgAdmin / pg_dump probe during schema-tree refresh.
+    # Each one carries the columns the standard probe queries reference,
+    # all rows = 0. The router's pg_catalog → shadow rewrite (below)
+    # routes ``pg_catalog.<name>`` and bare ``<name>`` references to
+    # these views. Without them DBeaver bombs with "Catalog Error:
+    # Table with name <X> does not exist" when it browses event
+    # triggers, publications, subscriptions, foreign-data wrappers,
+    # or row-level-security policies. None of these features apply to
+    # OBSL's read-only semantic surface, so empty results are
+    # semantically correct as well as the cheapest fix.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_event_trigger AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER,    -- oid
+            NULL::VARCHAR,    -- evtname
+            NULL::VARCHAR,    -- evtevent
+            NULL::INTEGER,    -- evtowner
+            NULL::INTEGER,    -- evtfoid
+            NULL::VARCHAR,    -- evtenabled
+            NULL::VARCHAR     -- evttags (text[] in real pg; VARCHAR is fine for empty)
+        )) AS t(oid, evtname, evtevent, evtowner, evtfoid, evtenabled, evttags)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_publication AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::BOOLEAN, NULL::BOOLEAN, NULL::BOOLEAN,
+            NULL::BOOLEAN, NULL::BOOLEAN, NULL::BOOLEAN
+        )) AS t(oid, pubname, pubowner, puballtables,
+                pubinsert, pubupdate, pubdelete, pubtruncate, pubviaroot)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_subscription AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::VARCHAR, NULL::BOOLEAN, NULL::BOOLEAN,
+            NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR,
+            NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, subdbid, subname, subowner, subconninfo,
+                subenabled, subbinary, subslotname, subsynccommit,
+                subpublications, suborigin, subskiplsn)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_foreign_data_wrapper AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER,
+            NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, fdwname, fdwowner, fdwhandler, fdwvalidator,
+                fdwacl, fdwoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_foreign_server AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::INTEGER,
+            NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, srvname, srvowner, srvfdw, srvtype, srvversion,
+                srvacl, srvoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_user_mapping AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::INTEGER, NULL::INTEGER, NULL::VARCHAR
+        )) AS t(oid, umuser, umserver, umoptions)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_policy AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::VARCHAR,
+            NULL::BOOLEAN, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, polname, polrelid, polcmd, polpermissive,
+                polroles, polqual, polwithcheck)
+        WHERE false""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_extension AS
+        SELECT * FROM (VALUES (
+            NULL::INTEGER, NULL::VARCHAR, NULL::INTEGER, NULL::INTEGER,
+            NULL::BOOLEAN, NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR
+        )) AS t(oid, extname, extowner, extnamespace, extrelocatable,
+                extversion, extconfig, extcondition)
+        WHERE false""",
+    # Shadow pg_attribute that translates atttypid to real Postgres OIDs.
+    # All other columns pass through unchanged so the rest of the JDBC
+    # getColumns query keeps working.
+    #
+    # ``TEMP VIEW`` is intentional: DuckDB puts temp objects in a special
+    # catalog where ``pg_class.relnamespace`` is NULL. Tableau's
+    # ``getTables`` query filters ``WHERE nspname NOT IN ('pg_catalog',
+    # 'information_schema')`` — and ``NULL NOT IN (…)`` evaluates to
+    # NULL, excluding the row. The views remain queryable by name so
+    # the SQL rewrites below still resolve.
+    # ``attidentity`` (Postgres 10+) and ``attgenerated`` (Postgres 12+)
+    # don't exist in DuckDB's pg_attribute view. Dremio's
+    # ``DatabaseMetaData.getColumns()`` probe references both, so we
+    # synthesize them as the Postgres sentinels for "not an identity
+    # column" / "not a generated column" (empty string).
+    f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_attribute AS
+        SELECT
+            attrelid,
+            attname,
+            {_OID_TRANSLATION_CASE} AS atttypid,
+            attstattarget,
+            attlen,
+            attnum,
+            attndims,
+            attcacheoff,
+            atttypmod,
+            attbyval,
+            attstorage,
+            attalign,
+            attnotnull,
+            atthasdef,
+            attisdropped,
+            attislocal,
+            attinhcount,
+            attcollation,
+            ''::VARCHAR AS attidentity,
+            ''::VARCHAR AS attgenerated
+        FROM pg_catalog.pg_attribute""",
+    # Shadow pg_type with real Postgres OIDs + the columns pgjdbc reads
+    # from DatabaseMetaData.getColumns / getTypeInfo. TEMP for the same
+    # invisibility-to-Tableau reasons as ``_obsl_pg_attribute`` above.
+    # Dremio's Postgres JDBC connector probe from
+    # `DatabaseMetaData.getColumns()` references `typtypmod` and
+    # `typbasetype`; without them the binder fails with
+    # 'Values list "t" does not have a column named "<col>"'. -1 is the
+    # Postgres sentinel for "no type modifier", 0 is the sentinel for
+    # "not a domain over another type" — both are correct for every base
+    # type we expose here.
+    # ``typelem`` is the array-element type OID (0 = "not an array");
+    # ``typrelid`` is the relation OID for composite types (0 = scalar).
+    # DBeaver's pgwire connect-check self-joins pg_type via
+    # ``LEFT JOIN pg_type et ON et.oid = t.typelem`` to resolve array
+    # element types and fails the bind without ``typelem``. Both are
+    # 0 for every base scalar we expose here.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_type AS
+        SELECT * FROM (VALUES
+            -- columns: oid, typname, typcategory, typlen, typtype,
+            --          typnotnull, typtypmod, typbasetype, typelem, typrelid
+            (16,   'bool',        'B', 1,   'b', false, -1, 0, 0, 0),
+            (17,   'bytea',       'U', -1,  'b', false, -1, 0, 0, 0),
+            (18,   'char',        'S', 1,   'b', false, -1, 0, 0, 0),
+            (19,   'name',        'S', 64,  'b', false, -1, 0, 0, 0),
+            (20,   'int8',        'N', 8,   'b', false, -1, 0, 0, 0),
+            (21,   'int2',        'N', 2,   'b', false, -1, 0, 0, 0),
+            (23,   'int4',        'N', 4,   'b', false, -1, 0, 0, 0),
+            (25,   'text',        'S', -1,  'b', false, -1, 0, 0, 0),
+            (26,   'oid',         'N', 4,   'b', false, -1, 0, 0, 0),
+            (700,  'float4',      'N', 4,   'b', false, -1, 0, 0, 0),
+            (701,  'float8',      'N', 8,   'b', false, -1, 0, 0, 0),
+            (1042, 'bpchar',      'S', -1,  'b', false, -1, 0, 0, 0),
+            (1043, 'varchar',     'S', -1,  'b', false, -1, 0, 0, 0),
+            (1082, 'date',        'D', 4,   'b', false, -1, 0, 0, 0),
+            (1083, 'time',        'D', 8,   'b', false, -1, 0, 0, 0),
+            (1114, 'timestamp',   'D', 8,   'b', false, -1, 0, 0, 0),
+            (1184, 'timestamptz', 'D', 8,   'b', false, -1, 0, 0, 0),
+            (1186, 'interval',    'T', 16,  'b', false, -1, 0, 0, 0),
+            (1266, 'timetz',      'D', 12,  'b', false, -1, 0, 0, 0),
+            (1700, 'numeric',     'N', -1,  'b', false, -1, 0, 0, 0),
+            (2950, 'uuid',        'U', 16,  'b', false, -1, 0, 0, 0)
+        ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull,
+               typtypmod, typbasetype, typelem, typrelid)""",
+    # Shadow pg_class that replaces NULL ``aclitem[]`` / ``text[]``
+    # columns with non-NULL empty-array literals. pgjdbc inside
+    # DBeaver and other BI clients reads ``relacl`` / ``reloptions``
+    # during schema-tree refresh and NPEs on NULL with the message
+    # "Cannot invoke java.lang.CharSequence.toString() because
+    # <parameter1> is null". DuckDB's native pg_class always returns
+    # NULL for these (no ACL system, no per-table reloptions). Keep
+    # all other columns intact via SELECT * EXCLUDE so existing
+    # introspection probes work unchanged.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_class AS
+        SELECT * EXCLUDE (relacl, reloptions),
+               COALESCE(CAST(relacl AS VARCHAR), '{}') AS relacl,
+               COALESCE(CAST(reloptions AS VARCHAR), '{}') AS reloptions
+        FROM pg_catalog.pg_class""",
+    # Shadow pg_namespace that hides DuckDB's internal ``main`` schema
+    # from BI-tool schema browsers. The branded ``orionbelt`` ATTACHed
+    # DB owns one schema per loaded model; ``main`` is DuckDB's own
+    # default and shouldn't show up next to them.
+    #
+    # ``nspacl`` is rewritten to a non-NULL empty-array literal —
+    # DuckDB's pg_namespace stores it as NULL, and pgjdbc's schema-
+    # tree refresh NPEs reading a NULL where it expects an
+    # ``aclitem[]``: "Cannot invoke java.lang.CharSequence.toString()
+    # because <parameter1> is null". Empty ``{}`` keeps the column
+    # non-NULL without granting any privileges.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_namespace AS
+        SELECT
+            oid,
+            nspname,
+            COALESCE(nspowner, 10) AS nspowner,
+            COALESCE(CAST(nspacl AS VARCHAR), '{}') AS nspacl
+        FROM pg_catalog.pg_namespace
+        WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
+    # Shadow pg_database. DBeaver / pgAdmin connect-check filters on
+    # ``WHERE datallowconn AND NOT datistemplate`` (and reads
+    # encoding / datcollate / datctype / datacl in the same probe);
+    # DuckDB's native pg_database view is missing those columns and
+    # the binder fails with ``Referenced column "datallowconn" not
+    # found``. Single-row view named after the OBSL brand keeps the
+    # one-database illusion the rest of the catalog presents.
+    # Shadow pg_settings — supplements DuckDB's pg_settings (which
+    # only exposes DuckDB-internal GUCs) with the Postgres GUCs BI
+    # tools probe during connect. Tableau queries
+    # ``SELECT setting FROM pg_settings WHERE name='max_index_keys'``
+    # and bails the entire connection with a generic
+    # "Bad Connection" 81B3934F error when the result is empty —
+    # DuckDB's pg_settings has no ``max_index_keys`` row. We UNION
+    # the standard Postgres defaults below so the values BI clients
+    # rely on are always queryable; columns match Postgres
+    # (``name`` / ``setting`` / ``category`` / ``short_desc``) so a
+    # ``SELECT *`` works too. Casts force VARCHAR throughout because
+    # DuckDB's pg_settings.setting is VARCHAR — a UNION with a TEXT
+    # literal would otherwise fail type unification.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_settings AS
+        SELECT
+            CAST(name AS VARCHAR) AS name,
+            CAST(value AS VARCHAR) AS setting,
+            CAST('' AS VARCHAR) AS category,
+            CAST(description AS VARCHAR) AS short_desc
+        FROM duckdb_settings()
+        UNION ALL
+        SELECT * FROM (VALUES
+            ('max_index_keys',          '32',  'Preset Options',  'Number of index keys'),
+            ('max_identifier_length',   '63',  'Preset Options',  'Identifier length'),
+            ('block_size',              '8192','Preset Options',  'Block size'),
+            ('server_version',          '15.0','Reporting',       'Server version'),
+            ('server_version_num',      '150000','Reporting',     'Server version number'),
+            ('server_encoding',         'UTF8','Client Connection Defaults','Server encoding'),
+            ('client_encoding',         'UTF8','Client Connection Defaults','Client encoding'),
+            ('DateStyle',               'ISO, MDY','Client Connection Defaults','Date format'),
+            ('TimeZone',                'UTC', 'Client Connection Defaults','Time zone'),
+            ('IntervalStyle',           'postgres','Client Connection Defaults','Interval format'),
+            ('integer_datetimes',       'on',  'Preset Options',  'Integer datetimes'),
+            ('standard_conforming_strings','on','Compatibility','Standard-conforming strings'),
+            ('is_superuser',            'off', 'Preset Options',  'Superuser flag'),
+            ('session_authorization',   'obsl','Client Connection Defaults','Session user'),
+            ('lc_collate',              'en_US.UTF-8','Preset Options','Collate locale'),
+            ('lc_ctype',                'en_US.UTF-8','Preset Options','Ctype locale'),
+            ('lc_messages',             'en_US.UTF-8','Reporting','Messages locale'),
+            ('lc_monetary',             'en_US.UTF-8','Locale','Monetary locale'),
+            ('lc_numeric',              'en_US.UTF-8','Locale','Numeric locale'),
+            ('lc_time',                 'en_US.UTF-8','Locale','Time locale'),
+            ('search_path',             '"$user", public','Client Connection','Search path'),
+            ('default_transaction_isolation','read committed','Client Connection','Isolation'),
+            ('default_transaction_read_only','off','Client Connection','Default read-only'),
+            ('transaction_isolation',   'read committed','Connection','Transaction isolation'),
+            ('transaction_read_only',   'off', 'Connection',  'Transaction read-only'),
+            ('application_name',        '',    'Reporting',   'Application name'),
+            ('extra_float_digits',      '3',   'Client Connection','Float precision')
+        ) AS t(name, setting, category, short_desc)""",
+    f"""CREATE OR REPLACE TEMP VIEW _obsl_pg_database AS
+        SELECT * FROM (VALUES (
+            16384::INTEGER,                         -- oid
+            '{CATALOG_SCHEMA}'::VARCHAR,            -- datname
+            10::INTEGER,                            -- datdba
+            6::INTEGER,                             -- encoding (UTF8 = 6)
+            'en_US.UTF-8'::VARCHAR,                 -- datcollate
+            'en_US.UTF-8'::VARCHAR,                 -- datctype
+            false::BOOLEAN,                         -- datistemplate
+            true::BOOLEAN,                          -- datallowconn
+            -1::INTEGER,                            -- datconnlimit
+            0::BIGINT,                              -- datfrozenxid
+            0::BIGINT,                              -- datminmxid
+            1663::INTEGER,                          -- dattablespace (pg_default)
+            '{{}}'::VARCHAR,                        -- datacl (NOT NULL string for DBeaver)
+            'c'::VARCHAR,                           -- datlocprovider
+            NULL::VARCHAR,                          -- daticulocale
+            NULL::VARCHAR,                          -- daticurules
+            NULL::VARCHAR                           -- datcollversion
+        )) AS t(
+            oid, datname, datdba, encoding, datcollate, datctype,
+            datistemplate, datallowconn, datconnlimit, datfrozenxid,
+            datminmxid, dattablespace, datacl, datlocprovider,
+            daticulocale, daticurules, datcollversion
+        )""",
 )
 
 
@@ -404,6 +439,35 @@ _TABLE_SUBSTITUTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 # more specific rules (``OPERATOR(pg_catalog.~)``) run before the
 # generic ``pg_catalog.<ident>`` prefix strip.
 _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # CREATE [LOCAL|GLOBAL] TEMPORARY TABLE → CREATE TEMPORARY TABLE.
+    # DuckDB rejects the LOCAL / GLOBAL modifiers Postgres allows;
+    # they're meaningless for our single-process catalog connection.
+    (
+        re.compile(
+            r"\bcreate\s+(?:local|global)\s+(temp(?:orary)?\s+table)\b",
+            re.IGNORECASE,
+        ),
+        r"CREATE \1",
+    ),
+    # ``ON COMMIT PRESERVE ROWS`` / ``DROP`` modifiers — meaningless
+    # for an in-memory DuckDB connection that has no transactions in
+    # the Postgres sense. Strip so the surrounding DDL parses.
+    (
+        re.compile(r"\bON\s+COMMIT\s+(?:PRESERVE|DELETE|DROP)\s+ROWS\b", re.IGNORECASE),
+        "",
+    ),
+    # ``SELECT … INTO [TEMP[ORARY]] TABLE "name" FROM …`` is Postgres
+    # syntax DuckDB doesn't accept. Rewrite to ``CREATE [TEMPORARY]
+    # TABLE "name" AS SELECT … FROM …``. Tableau's connect-check uses
+    # this shape to test temp-table support.
+    (
+        re.compile(
+            r"\bSELECT\b(?P<cols>.+?)\bINTO\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+"
+            r'(?P<name>"[^"]+"|\w+)\s+FROM\b(?P<rest>.+)$',
+            re.IGNORECASE | re.DOTALL,
+        ),
+        r"CREATE TEMPORARY TABLE \g<name> AS SELECT \g<cols> FROM \g<rest>",
+    ),
     # COLLATE pg_catalog.default → drop entirely.  DuckDB has no notion
     # of named collations and the default collation is implicit anyway.
     (re.compile(r"\bCOLLATE\s+pg_catalog\.\w+\b", re.IGNORECASE), ""),
@@ -416,86 +480,156 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     # loose coercion is fine for catalog probes.
     (
         re.compile(
-            r"::\s*pg_catalog\.(text|name|regtype|regclass|regprocedure|regproc|regnamespace|oid|char)\b",
+            r"::\s*pg_catalog\.(text|name|regtype|regclass|regprocedure|regnamespace|oid|char)\b",
             re.IGNORECASE,
         ),
         "::VARCHAR",
     ),
-    # Bare ``::regclass`` / ``::regtype`` / ``::name`` etc. without the
-    # ``pg_catalog.`` qualifier. DBeaver and pgAdmin emit these in
-    # introspection probes — e.g. ``classoid='pg_namespace'::regclass``.
-    # Rewriting to VARCHAR keeps the surrounding comparison parseable;
-    # the rows it filters on are usually empty stubs (pg_description)
-    # so the loose coercion is harmless.
+    # Bare ::regclass / ::regtype / ::oid / ::name (without the
+    # ``pg_catalog.`` qualifier) — same collapse, same rationale.
+    # Tableau and pgAdmin emit both forms depending on the probe.
     (
         re.compile(
-            r"::\s*(regclass|regtype|regprocedure|regproc|regnamespace|name)\b",
+            r"::\s*(regclass|regtype|regprocedure|regnamespace|name)\b",
             re.IGNORECASE,
         ),
         "::VARCHAR",
     ),
+    # information_schema._pg_expandarray → bare _pg_expandarray. JDBC's
+    # getPrimaryKeys query uses the qualified form; DuckDB can't create
+    # macros inside ``information_schema`` so we strip the prefix and
+    # resolve against the stub macro defined above.
+    (
+        re.compile(r"\binformation_schema\._pg_expandarray\b", re.IGNORECASE),
+        "_pg_expandarray",
+    ),
+    # pg_catalog.pg_attribute / pg_attribute → _obsl_pg_attribute. The
+    # DuckDB pg_attribute view stores DuckDB's internal type-id numbering
+    # in atttypid (e.g. 23 for DOUBLE, where 23 is Postgres INT4). The
+    # shadow view translates to real Postgres OIDs so Tableau's pgjdbc
+    # allocates the right-width column reader.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_attribute\b", re.IGNORECASE),
+        "_obsl_pg_attribute",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_attribute\b", re.IGNORECASE),
+        "_obsl_pg_attribute",
+    ),
+    # Same story for pg_type — the shadow view exposes real Postgres
+    # OIDs + typname so the JOIN ``a.atttypid = t.oid`` lines up after
+    # the atttypid translation above.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_type\b", re.IGNORECASE),
+        "_obsl_pg_type",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_type\b", re.IGNORECASE),
+        "_obsl_pg_type",
+    ),
+    # pg_database — DBeaver / pgAdmin connect-check filters on
+    # ``datallowconn AND NOT datistemplate``, columns DuckDB's native
+    # pg_database lacks. Route to the single-row shadow that carries
+    # the full standard column set (see _SHADOW_VIEWS).
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_database\b", re.IGNORECASE),
+        "_obsl_pg_database",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_database\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_database",
+    ),
+    # pg_namespace — DuckDB's native view exposes ``main`` (the
+    # default schema) next to our branded ``orionbelt`` schema, which
+    # confuses BI-tool browsers. Shadow filters ``main`` /
+    # temp-schema noise out so users see only the OBSL surface.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_namespace\b", re.IGNORECASE),
+        "_obsl_pg_namespace",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_namespace\b", re.IGNORECASE),
+        "_obsl_pg_namespace",
+    ),
+    # pg_class — replace NULL acl-typed columns with non-NULL empty
+    # literals so pgjdbc schema-tree refresh doesn't NPE on
+    # ``relacl`` / ``reloptions``.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_class\b", re.IGNORECASE),
+        "_obsl_pg_class",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_class\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_class",
+    ),
+    # pg_settings — DuckDB's view doesn't expose Postgres-only GUCs
+    # like ``max_index_keys`` / ``server_version_num``. The shadow
+    # UNIONs them in so Tableau / pgjdbc / pgAdmin probes find the
+    # values they expect.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_settings\b", re.IGNORECASE),
+        "_obsl_pg_settings",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_settings\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_settings",
+    ),
+    # Empty-stub catalogs DuckDB doesn't expose but DBeaver / pgAdmin
+    # probe during schema-tree refresh. Each rewrite handles both the
+    # ``pg_catalog.<name>`` and bare ``<name>`` forms — Postgres
+    # clients drop the qualifier opportunistically. Without the
+    # rewrite DuckDB errors with "Catalog Error: Table with name
+    # <X> does not exist" and the schema browser reports a confusing
+    # ``42601 catalog query failed`` to the user.
+    *[
+        rewrite
+        for stub_name in (
+            "pg_event_trigger",
+            "pg_publication",
+            "pg_subscription",
+            "pg_foreign_data_wrapper",
+            "pg_foreign_server",
+            "pg_user_mapping",
+            "pg_policy",
+            "pg_extension",
+        )
+        for rewrite in (
+            (
+                re.compile(rf"\bpg_catalog\s*\.\s*{stub_name}\b", re.IGNORECASE),
+                f"_obsl_{stub_name}",
+            ),
+            (
+                re.compile(rf"(?<![.\w]){stub_name}\b(?!\s*\()", re.IGNORECASE),
+                f"_obsl_{stub_name}",
+            ),
+        )
+    ],
     # Function / operator references prefixed with pg_catalog. — strip
     # the prefix so DuckDB resolves against the unqualified built-in or
-    # our stub macros. We match any identifier immediately followed by
-    # ``(`` to keep this rule disjoint from table references (which
-    # never have parens after the table name).
+    # our stub macros.  We deliberately don't touch table references
+    # like ``pg_catalog.pg_class`` because DuckDB handles those itself.
     (
         re.compile(
-            r"pg_catalog\.([a-z_][a-z0-9_]*)\s*\(",
+            r"pg_catalog\.(pg_[a-z_]+|format_type|obj_description|col_description)\s*\(",
             re.IGNORECASE,
         ),
         r"\1(",
     ),
-    # ``SESSION_USER`` handled by ``_rewrite_session_user`` below —
-    # single-pass replacement so the second match doesn't eat its
-    # own alias.
 )
-
-
-_SESSION_USER_RE = re.compile(
-    r"\bSESSION_USER\b(\s+AS\s+\S+)?",
-    re.IGNORECASE,
-)
-
-
-def _rewrite_session_user(sql: str) -> str:
-    """Replace ``SESSION_USER`` with our brand string while preserving aliases.
-
-    DuckDB's ``SESSION_USER`` returns "duckdb" — surfacing the embedded
-    engine to BI tools is awkward. We swap in the OBSL brand
-    (``'obsl'``) and pick the column alias so it still reads as
-    ``session_user`` in result-set headers:
-
-    * Bare ``SESSION_USER`` → ``'obsl' AS session_user``
-    * Pre-aliased ``SESSION_USER AS x`` → ``'obsl' AS x``
-    """
-
-    def repl(match: re.Match[str]) -> str:
-        existing_alias = match.group(1)
-        if existing_alias:
-            return f"'obsl'{existing_alias}"
-        return "'obsl' AS session_user"
-
-    return _SESSION_USER_RE.sub(repl, sql)
 
 
 def _rewrite_for_duckdb(sql: str) -> str:
     """Best-effort SQL rewrite so psql introspection runs on DuckDB.
 
-    Touches only the patterns documented in ``_REWRITES`` plus the
-    ``_TABLE_SUBSTITUTIONS`` that redirect ``pg_catalog.pg_class`` and
-    ``pg_catalog.pg_attribute`` to our augmented ``obsl_meta`` views.
-    Unrecognised constructs are left alone — the catalog branch is
-    best-effort by design, and the caller's error response will surface
-    anything we miss so we can extend the rules incrementally.
+    Touches only the patterns documented in ``_REWRITES``.  Unrecognised
+    constructs are left alone — the catalog branch is best-effort by
+    design, and the caller's error response will surface anything we
+    miss so we can extend the rule list incrementally.
     """
 
     out = sql
     for pattern, replacement in _REWRITES:
         out = pattern.sub(replacement, out)
-    for pattern, replacement in _TABLE_SUBSTITUTIONS:
-        out = pattern.sub(replacement, out)
-    out = _rewrite_session_user(out)
     return out
 
 
@@ -513,23 +647,44 @@ class CatalogEmulator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._con: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
-        # Map of table_name → stable signature so refresh can diff
-        # against the SessionManager and only churn tables that
-        # actually changed.  Recreating a table reassigns its
-        # ``pg_class.oid``; ``psql \\d`` issues two probes back-to-back
-        # and a stale oid between them is what we're guarding against.
-        self._registered_signatures: dict[str, str] = {}
-        # Per-model metadata views (<model>_dimensions / _measures /
-        # _metrics) live in the same diff path.  They show up under
-        # DBeaver's "Views" node and let users introspect the semantic
-        # surface without hitting the REST API.
-        self._registered_view_signatures: dict[str, str] = {}
+        # Single ATTACHed in-memory database named after the brand.
+        # All loaded models live as **schemas** inside it; each model
+        # schema carries a literal ``model`` table plus per-model
+        # metadata views. BI tools that connect with ``database=orionbelt``
+        # see the layout as:
+        #
+        #   orionbelt
+        #     ├─ <model_a>    ← schema (one per loaded model)
+        #     │   ├─ model              ← the user-facing virtual table
+        #     │   ├─ dimensions / measures / metrics  ← metadata views
+        #     │   └─ _dimensions_metadata / _measures_metadata / _metrics_metadata
+        #     └─ <model_b>
+        #         └─ …
+        #
+        # Tracked as a list of schemas we've registered, so refresh()
+        # can drop schemas whose model has gone away.
+        self._registered_schemas: list[str] = []
+        # Per-schema fingerprint of the last-applied table DDL. We
+        # only re-CREATE the ``model`` table when its column shape
+        # actually changed; idempotent refreshes preserve the
+        # DuckDB-assigned ``pg_class.oid`` so BI-tool driver caches
+        # (DBeaver, pgjdbc, psql ``\d``) keep matching across the
+        # rapid-fire catalog probes a schema-tree refresh emits.
+        self._schema_ddl_fingerprints: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            self._con.execute(f"ATTACH ':memory:' AS \"{CATALOG_SCHEMA}\"")
+        # Stub macros and shadow views live in the orionbelt DB so they
+        # resolve under ``database=orionbelt`` connections without the
+        # per-attach replay the prior layout needed.
+        self._con.execute(f'USE "{CATALOG_SCHEMA}"')
         for ddl in _STUB_MACROS:
             with contextlib.suppress(Exception):
                 self._con.execute(ddl)
-        for ddl in _OBSL_META_DDL:
+        for view_ddl in _SHADOW_VIEWS:
             with contextlib.suppress(Exception):
-                self._con.execute(ddl)
+                self._con.execute(view_ddl)
+        with contextlib.suppress(Exception):
+            self._con.execute("USE memory")
 
     # ------------------------------------------------------------------
     # Refresh — rebuild the in-memory schema from a SessionManager.
@@ -544,117 +699,98 @@ class CatalogEmulator:
         protocol.
         """
 
-        desired: dict[str, str] = {}
-        ddls: dict[str, str] = {}
-        desired_views: dict[str, str] = {}
-        for store_target, model in _iter_loaded_models(session_manager):
-            table_name = _safe_model_table_name(store_target)
-            ddl = _build_table_ddl(table_name, model)
-            if ddl is None:
-                continue
-            desired[table_name] = ddl
-            ddls[table_name] = ddl
-            for view_name, view_ddl in _build_metadata_views(table_name, model):
-                desired_views[view_name] = view_ddl
-
         with self._lock:
-            # Drop schemas + tables that no longer have a backing model.
-            for schema in list(self._registered_signatures):
-                if schema not in desired:
-                    with contextlib.suppress(Exception):
-                        self._con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-                    self._registered_signatures.pop(schema, None)
+            # Build the set of schemas that should exist now.
+            desired_schemas: set[str] = set()
+            for store_target, _ in _iter_loaded_models(session_manager):
+                desired_schemas.add(_safe_model_table_name(store_target))
 
-            # Create or recreate per-model schemas whose DDL signature
-            # changed.  The DDL bundle is multi-statement (schema +
-            # table) so we run each statement separately.
-            for schema_name, signature in desired.items():
-                if self._registered_signatures.get(schema_name) == signature:
+            # Drop schemas whose backing model is gone. CASCADE removes
+            # the ``model`` table and the six metadata views in one shot.
+            for schema in self._registered_schemas:
+                if schema in desired_schemas:
                     continue
                 with contextlib.suppress(Exception):
-                    self._con.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+                    self._con.execute(
+                        f'DROP SCHEMA IF EXISTS "{CATALOG_SCHEMA}"."{schema}" CASCADE'
+                    )
+                self._schema_ddl_fingerprints.pop(schema, None)
+            self._registered_schemas = [s for s in self._registered_schemas if s in desired_schemas]
+
+            for store_target, model in _iter_loaded_models(session_manager):
+                schema = _safe_model_table_name(store_target)
+                # CREATE SCHEMA IF NOT EXISTS is the cheap path on first
+                # refresh; subsequent refreshes recreate the table /
+                # views so column-shape changes propagate.
+                with contextlib.suppress(Exception):
+                    self._con.execute(f'CREATE SCHEMA IF NOT EXISTS "{CATALOG_SCHEMA}"."{schema}"')
+                if schema not in self._registered_schemas:
+                    self._registered_schemas.append(schema)
+                ddl = _build_table_ddl(schema, model)
+                if ddl is None:
+                    continue
+                # Idempotent path: skip the DROP + CREATE when the
+                # table's column shape is unchanged. Re-running DROP
+                # TABLE / CREATE TABLE assigns a fresh
+                # ``pg_class.oid`` each time, which breaks DBeaver's
+                # column-list panel — DBeaver caches the table oid
+                # from one probe and uses it in ``WHERE c.oid = $1``
+                # on the next, so a shifted oid silently returns
+                # zero columns. The fingerprint covers the metadata
+                # views too because their DDLs are deterministic
+                # functions of the same model.
+                fingerprint = _ddl_fingerprint(ddl, model)
+                if self._schema_ddl_fingerprints.get(schema) == fingerprint:
+                    continue
+                with contextlib.suppress(Exception):
+                    self._con.execute(f'DROP TABLE IF EXISTS "{CATALOG_SCHEMA}"."{schema}"."model"')
+                # Per-model metadata views (dimensions / measures /
+                # metrics + their _<name>_metadata siblings). BI-tool
+                # schema browsers show them under the model's schema so
+                # users can ``SELECT * FROM dimensions`` to introspect
+                # the semantic surface without leaving SQL.
+                for meta_ddl in _build_metadata_views(schema, model):
+                    with contextlib.suppress(Exception):
+                        self._con.execute(meta_ddl)
                 try:
-                    for stmt in ddls[schema_name].split(";"):
-                        stmt = stmt.strip()
-                        if stmt:
-                            self._con.execute(stmt)
+                    self._con.execute(ddl)
                 except duckdb.Error:  # pragma: no cover — defensive guard
                     logger.exception(
-                        "Failed to register catalog schema for model '%s'", schema_name
+                        "Failed to register catalog table for model '%s'", store_target
                     )
                     continue
-                self._registered_signatures[schema_name] = signature
-
-            # Drop stale metadata views (model removed). Active views
-            # for active schemas were already recreated via CASCADE
-            # above; here we just refresh signatures for views whose
-            # bodies changed but whose owning schema survives.
-            for view in list(self._registered_view_signatures):
-                if view not in desired_views:
-                    with contextlib.suppress(Exception):
-                        schema, _, name = view.partition(".")
-                        self._con.execute(f'DROP VIEW IF EXISTS "{schema}"."{name}"')
-                    self._registered_view_signatures.pop(view, None)
-            for view_name, signature in desired_views.items():
-                if self._registered_view_signatures.get(view_name) == signature:
-                    continue
-                try:
-                    self._con.execute(signature)
-                except duckdb.Error:  # pragma: no cover — defensive guard
-                    logger.exception("Failed to register metadata view '%s'", view_name)
-                    continue
-                self._registered_view_signatures[view_name] = signature
-
-            # Rebuild obsl_meta.pg_database from the loaded models so
-            # BI-tool "list databases" probes see the OBSL namespaces
-            # instead of DuckDB's default catalogs.
-            with contextlib.suppress(Exception):
-                self._con.execute(_pg_database_view_ddl(list(desired.keys())))
-            # Rebuild obsl_meta.pg_namespace so the BI-tool schema list
-            # contains only loaded-model schemas — no ``main`` /
-            # ``obsl_meta`` / ``pg_catalog`` / ``information_schema``
-            # noise.
-            with contextlib.suppress(Exception):
-                self._con.execute(_pg_namespace_view_ddl(list(desired.keys())))
-            # Set DuckDB's search_path to the loaded model schemas so
-            # ``SELECT current_schema()`` returns a meaningful name
-            # (the model) instead of ``main``. BI tools that highlight
-            # the connected schema in their tree pick it up from here.
-            if desired:
-                quoted = ", ".join("'" + name.replace("'", "''") + "'" for name in desired)
-                with contextlib.suppress(Exception):
-                    self._con.execute(f"SET search_path TO {quoted}")
+                self._schema_ddl_fingerprints[schema] = fingerprint
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
     # ------------------------------------------------------------------
 
-    def execute(self, sql: str) -> ExecutionResult:
+    def execute(self, sql: str, database: str = "") -> ExecutionResult:
         """Run ``sql`` against the embedded DuckDB.
 
         DuckDB's pg_catalog and information_schema are auto-populated
         from the schema we registered in :meth:`refresh`, so the
         caller doesn't need to special-case which table is being
-        queried.  Errors bubble as ``duckdb.Error`` but are tagged as
-        ``PGWIRE_CATALOG_PROBE_UNHANDLED`` warnings first so BI-tool
-        introspection failures surface in logs without breaking the
-        session (plan §7).
+        queried.  Errors bubble as ``duckdb.Error``.
+
+        ``database`` is the Postgres ``database`` parameter the client
+        connected with; we ``USE`` the matching ATTACHed DuckDB database
+        so ``pg_class`` / ``pg_namespace`` (which only enumerate the
+        currently-connected DuckDB DB) scope to the right model.
         """
 
         t0 = time.monotonic()
         rewritten = _rewrite_for_duckdb(sql)
-        try:
-            with self._lock:
-                cursor = self._con.execute(rewritten)
-                rows_raw = cursor.fetchall()
-                description = cursor.description or []
-        except duckdb.Error as exc:
-            logger.warning(
-                "PGWIRE_CATALOG_PROBE_UNHANDLED dialect=duckdb error=%s sql=%s",
-                exc,
-                _truncate_for_log(rewritten),
-            )
-            raise
+        del database  # single-DB layout — every catalog probe runs against ``orionbelt``
+        with self._lock:
+            # Always run probes inside the single ``orionbelt`` ATTACHed
+            # DB so ``pg_class`` / ``pg_namespace`` / model-schema
+            # references all resolve consistently.
+            with contextlib.suppress(Exception):
+                self._con.execute(f'USE "{CATALOG_SCHEMA}"')
+            cursor = self._con.execute(rewritten)
+            rows_raw = cursor.fetchall()
+            description = cursor.description or []
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         columns = [
             ColumnMeta(name=str(d[0]), type_hint=_duckdb_desc_to_hint(d)) for d in description
@@ -677,90 +813,6 @@ class CatalogEmulator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _truncate_for_log(sql: str, limit: int = 400) -> str:
-    """Clamp a SQL string so a noisy probe doesn't dominate the log line."""
-
-    one_line = " ".join(sql.split())
-    if len(one_line) <= limit:
-        return one_line
-    return one_line[:limit] + "…"
-
-
-#: Brand name used as the single pg_database row. All loaded models
-#: appear as TABLES inside this one logical "database" — BI-tool trees
-#: get a clean top-level "orionbelt" node and the model names land
-#: where users actually expect them (in the Tables list, not the
-#: Databases list).
-OBSL_DATABASE_NAME = "orionbelt"
-
-
-def _pg_namespace_view_ddl(model_names: list[str]) -> str:
-    """Rebuild ``obsl_meta.pg_namespace`` to expose only model schemas.
-
-    DuckDB's ``pg_catalog.pg_namespace`` lists ``main``, ``obsl_meta``,
-    ``pg_catalog`` and ``information_schema`` in addition to the
-    schemas we registered for each model. BI-tool schema trees should
-    show only the OBSL surface — one row per loaded model.
-    """
-
-    # DuckDB tags every pg_type row with ``typnamespace = oid(main)``
-    # (its single physical namespace), so we MUST keep ``main`` in
-    # pg_namespace — but we expose it under the name ``pg_catalog``
-    # because that's where Postgres clients (DBeaver, the JDBC driver,
-    # …) expect the type rows to live. Without this DBeaver logs
-    # "Attribute data type 'NNNN' not found. Use varchar" for every
-    # column.
-    #
-    # ``nspacl`` is rewritten to a non-NULL empty-array literal —
-    # DuckDB types it as INTEGER (real Postgres uses ``aclitem[]``)
-    # and the NULL otherwise NPEs DBeaver's tree refresh.
-    keep_schemas = list(model_names) + ["main"]
-    quoted_names = ", ".join("'" + n.replace("'", "''") + "'" for n in keep_schemas)
-    return (
-        "CREATE OR REPLACE VIEW obsl_meta.pg_namespace AS "
-        "SELECT n.oid, "
-        "CASE WHEN n.nspname='main' THEN 'pg_catalog' ELSE n.nspname END AS nspname, "
-        "CAST(10 AS INTEGER) AS nspowner, "
-        "CAST('{}' AS VARCHAR) AS nspacl "
-        "FROM pg_catalog.pg_namespace n "
-        f"WHERE n.nspname IN ({quoted_names})"
-    )
-
-
-def _pg_database_view_ddl(model_names: list[str]) -> str:
-    """Build a ``CREATE OR REPLACE VIEW`` for pg_database.
-
-    Always returns a single row named ``OBSL_DATABASE_NAME`` regardless
-    of how many models are loaded — models live in the Tables list,
-    not as sibling databases. ``model_names`` is accepted for API
-    symmetry with the per-model refresh path; the only thing we
-    currently care about is whether refresh was called at all.
-    """
-
-    del model_names  # All models share the single "orionbelt" entry.
-    return f"""
-    CREATE OR REPLACE VIEW obsl_meta.pg_database AS
-    SELECT
-        CAST(16384 AS INTEGER) AS oid,
-        CAST('{OBSL_DATABASE_NAME}' AS VARCHAR) AS datname,
-        CAST(10 AS INTEGER) AS datdba,
-        CAST(6 AS INTEGER) AS encoding,
-        CAST('en_US.UTF-8' AS VARCHAR) AS datcollate,
-        CAST('en_US.UTF-8' AS VARCHAR) AS datctype,
-        CAST(false AS BOOLEAN) AS datistemplate,
-        CAST(true AS BOOLEAN) AS datallowconn,
-        CAST(-1 AS INTEGER) AS datconnlimit,
-        CAST(0 AS BIGINT) AS datfrozenxid,
-        CAST(0 AS BIGINT) AS datminmxid,
-        CAST(1663 AS INTEGER) AS dattablespace,
-        CAST('{{}}' AS VARCHAR) AS datacl,
-        CAST('c' AS VARCHAR) AS datlocprovider,
-        CAST(NULL AS VARCHAR) AS daticulocale,
-        CAST(NULL AS VARCHAR) AS daticurules,
-        CAST(NULL AS VARCHAR) AS datcollversion
-    """
 
 
 def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, SemanticModel]]:
@@ -821,25 +873,32 @@ def _safe_model_table_name(name: str) -> str:
     return name.replace('"', '""')
 
 
-#: Name of the single data TABLE inside each per-model schema.
-#: BI-tool trees show ``<model_name>.model`` — schema = model name,
-#: table = the canonical "model" label.  Mirrors the convention
-#: documented in the Arrow Flight catalog handler.
-MODEL_TABLE_NAME = "model"
+def _ddl_fingerprint(table_ddl: str, model: SemanticModel) -> str:
+    """SHA-1 of the model's catalog-visible surface.
+
+    Covers both the ``CREATE TABLE`` shape and the labels feeding the
+    per-model metadata views, so a change in any dimension / measure /
+    metric definition (rename, type swap, add, remove) invalidates the
+    fingerprint and triggers a re-CREATE. Identical models hash to the
+    same value so repeat refresh() calls become no-ops and the DuckDB
+    ``pg_class.oid`` stays stable across BI-tool catalog probes.
+    """
+
+    parts = [table_ddl]
+    parts.extend(f"d:{label}" for label in sorted(model.dimensions))
+    parts.extend(f"u:{label}" for label in sorted(model.measures))
+    parts.extend(f"m:{label}" for label in sorted(model.metrics))
+    return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
-def _build_table_ddl(schema_name: str, model: SemanticModel) -> str | None:
-    """Build the per-model schema + ``CREATE TABLE schema.model`` pair.
+def _build_table_ddl(schema: str, model: SemanticModel) -> str | None:
+    """Build the ``CREATE TABLE`` for a model.
 
-    Each loaded model lives in its own DuckDB schema named after the
-    model. The data table inside is always called ``model`` (mirrors
-    the Arrow Flight surface convention), so qualified references read
-    ``<model_name>.model`` and unqualified references are unambiguous
-    inside the schema.
-
-    Columns are every dimension / measure / metric exposed by the
-    model. Returns ``None`` if no columns survive deduplication —
-    DuckDB rejects empty column lists.
+    Path: ``"orionbelt"."<schema>"."model"`` — schema = model name,
+    table = literal ``model``. Columns are every dimension, measure,
+    and metric the model exposes (names quoted because OBSL labels
+    routinely contain spaces / punctuation). Returns ``None`` if no
+    columns survive deduplication — DuckDB rejects empty column lists.
     """
 
     columns: list[str] = []
@@ -852,12 +911,8 @@ def _build_table_ddl(schema_name: str, model: SemanticModel) -> str | None:
         columns.append(f'"{quoted}" {sql_type}')
     if not columns:
         return None
-    quoted_schema = schema_name.replace('"', '""')
-    return (
-        f'CREATE SCHEMA IF NOT EXISTS "{quoted_schema}";\n'
-        f'CREATE TABLE "{quoted_schema}"."{MODEL_TABLE_NAME}" '
-        f"({', '.join(columns)})"
-    )
+    qschema = schema.replace('"', '""')
+    return f'CREATE TABLE "{CATALOG_SCHEMA}"."{qschema}"."model" ({", ".join(columns)})'
 
 
 def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
@@ -869,221 +924,128 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         yield label, _metric_sql_type(metric)
 
 
-def _build_metadata_views(schema_name: str, model: SemanticModel) -> Iterator[tuple[str, str]]:
-    """Emit ``(qualified_view_name, ddl)`` per model for the trio.
+def _build_metadata_views(schema: str, model: SemanticModel) -> Iterator[str]:
+    """Yield CREATE-OR-REPLACE TABLE DDLs for the per-model metadata views.
 
-    Both the view name and the DDL include the per-model schema, so
-    each loaded model gets its own ``<model>.dimensions`` /
-    ``<model>.measures`` / etc. — no cross-model collisions.
+    Six views per model, under the ``orionbelt`` schema:
+
+    * ``dimensions`` / ``_dimensions_metadata`` — one row per dimension
+    * ``measures``   / ``_measures_metadata``   — one row per measure
+    * ``metrics``    / ``_metrics_metadata``    — one row per metric
+
+    The bare names are the user-facing surface BI tool browsers show.
+    The ``_<name>_metadata`` siblings carry richer information
+    (expression / formula / data object refs) for callers that want it
+    without making the user-facing tables wider than necessary.
+
+    Rendered as ``CREATE OR REPLACE VIEW`` (not TABLE) so BI tool
+    browsers show them under the **Views** node — matching where the
+    same per-model metadata appears on the Arrow Flight SQL surface
+    and keeping the "Tables" node reserved for the user-facing model
+    table itself. Plain (non-temp) views ARE visible via
+    ``pg_class.relkind = 'v'`` and ``information_schema.views``; the
+    TEMP-view invisibility caveat only applies to TEMP scope.
     """
 
-    yield (
-        f"{schema_name}.dimensions",
-        _simple_dimensions_view_ddl(schema_name, model),
-    )
-    yield (
-        f"{schema_name}.measures",
-        _simple_measures_view_ddl(schema_name, model),
-    )
-    yield (
-        f"{schema_name}.metrics",
-        _simple_metrics_view_ddl(schema_name, model),
-    )
-    yield (
-        f"{schema_name}._dimensions_metadata",
-        _dimensions_view_ddl(schema_name, model),
-    )
-    yield (
-        f"{schema_name}._measures_metadata",
-        _measures_view_ddl(schema_name, model),
-    )
-    yield (
-        f"{schema_name}._metrics_metadata",
-        _metrics_view_ddl(schema_name, model),
-    )
+    qdb = CATALOG_SCHEMA  # single ATTACHed DB carries every model
+    qschema = schema.replace('"', '""')
+    yield from _build_dimension_metadata_views(qdb, qschema, model)
+    yield from _build_measure_metadata_views(qdb, qschema, model)
+    yield from _build_metric_metadata_views(qdb, qschema, model)
 
 
-def _sql_literal(value: str | None) -> str:
-    """Render a Python string as a single-quoted SQL literal (or NULL)."""
+def _build_dimension_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``dimensions`` and ``_dimensions_metadata`` per model."""
 
-    if value is None or value == "":
-        return "NULL"
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _simple_view_body(
-    rows: list[str],
-    columns: tuple[str, ...] = ("name", "data_type", "description"),
-) -> str:
-    """Body for a 3-column ``name / data_type / description`` summary view."""
-
-    if not rows:
-        casts = ", ".join(f"CAST(NULL AS VARCHAR) AS {c}" for c in columns)
-        return f"SELECT {casts} WHERE FALSE"
-    col_list = ", ".join(columns)
-    return f"SELECT * FROM (VALUES {', '.join(rows)}) AS t({col_list})"
-
-
-def _qualified(schema: str, name: str) -> str:
-    """Return ``"schema"."name"`` with both identifiers safely quoted."""
-
-    return f'"{schema.replace(chr(34), chr(34) * 2)}"."{name}"'
-
-
-def _typed_projection_body(columns: list[tuple[str, str]]) -> str:
-    """Body for a Flight-shaped view: one typed column per artefact.
-
-    Each ``(label, sql_type)`` pair becomes a ``CAST(NULL AS T)`` column.
-    The view is empty (``WHERE FALSE``) — its purpose is to expose the
-    surface area as a typed schema for BI-tool discovery, not to return
-    data.  Real values come from ``<schema>.model``.
-    """
-
-    if not columns:
-        return "SELECT CAST(NULL AS VARCHAR) AS __empty__ WHERE FALSE"
-    projections = ", ".join(
-        f'CAST(NULL AS {sql_type}) AS "{label.replace(chr(34), chr(34) * 2)}"'
-        for label, sql_type in columns
-    )
-    return f"SELECT {projections} WHERE FALSE"
-
-
-def _simple_dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
-    columns = [(label, _dim_sql_type(dim)) for label, dim in model.dimensions.items()]
-    return (
-        f"CREATE OR REPLACE VIEW {_qualified(schema, 'dimensions')} "
-        f"AS {_typed_projection_body(columns)}"
-    )
-
-
-def _simple_measures_view_ddl(schema: str, model: SemanticModel) -> str:
-    columns = [(label, _measure_sql_type(measure)) for label, measure in model.measures.items()]
-    return (
-        f"CREATE OR REPLACE VIEW {_qualified(schema, 'measures')} "
-        f"AS {_typed_projection_body(columns)}"
-    )
-
-
-def _simple_metrics_view_ddl(schema: str, model: SemanticModel) -> str:
-    columns = [(label, _metric_sql_type(metric)) for label, metric in model.metrics.items()]
-    return (
-        f"CREATE OR REPLACE VIEW {_qualified(schema, 'metrics')} "
-        f"AS {_typed_projection_body(columns)}"
-    )
-
-
-def _value_literal(value: Any, sql_type: str) -> str:
-    """Render any Python value as a SQL literal for VALUES.
-
-    Strings flow through ``_sql_literal`` (quoted + escaped); integers
-    are emitted unquoted so DuckDB types them as numeric; ``None`` and
-    empty strings become ``CAST(NULL AS T)`` — the explicit cast keeps
-    DuckDB from inferring a NULL column type when every row in a
-    column is unset.
-    """
-
-    if value is None or value == "":
-        return f"CAST(NULL AS {sql_type})"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return f"CAST({value} AS {sql_type})"
-    return f"CAST({_sql_literal(str(value))} AS {sql_type})"
-
-
-def _build_metadata_view_ddl(
-    schema: str,
-    view_name: str,
-    columns: tuple[tuple[str, str], ...],
-    rows: list[tuple[Any, ...]],
-) -> str:
-    """Generic CREATE VIEW … AS VALUES (...) builder.
-
-    ``columns`` is an ordered list of ``(name, sql_type)`` pairs;
-    ``rows`` matches that ordering. Empty ``rows`` emits a typed
-    ``WHERE FALSE`` projection so the view shape is still inspectable.
-    """
-
-    target = _qualified(schema, view_name)
-    if not rows:
-        casts = ", ".join(f'CAST(NULL AS {sql_type}) AS "{name}"' for name, sql_type in columns)
-        return f"CREATE OR REPLACE VIEW {target} AS SELECT {casts} WHERE FALSE"
-    row_sql = []
-    for row in rows:
-        cells = [
-            _value_literal(value, sql_type)
-            for value, (_, sql_type) in zip(row, columns, strict=True)
-        ]
-        row_sql.append("(" + ", ".join(cells) + ")")
-    col_list = ", ".join(f'"{name}"' for name, _ in columns)
-    return (
-        f"CREATE OR REPLACE VIEW {target} AS "
-        f"SELECT * FROM (VALUES {', '.join(row_sql)}) AS t({col_list})"
-    )
-
-
-_DIMENSIONS_METADATA_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("name", "VARCHAR"),
-    ("data_object", "VARCHAR"),
-    ("column", "VARCHAR"),
-    ("type", "VARCHAR"),
-    ("time_grain", "VARCHAR"),
-    ("description", "VARCHAR"),
-)
-
-_MEASURES_METADATA_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("name", "VARCHAR"),
-    ("aggregation", "VARCHAR"),
-    ("expression", "VARCHAR"),
-    ("type", "VARCHAR"),
-    ("columns", "VARCHAR"),
-    ("description", "VARCHAR"),
-)
-
-_METRICS_METADATA_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("name", "VARCHAR"),
-    ("metric_type", "VARCHAR"),
-    ("expression", "VARCHAR"),
-    ("measure", "VARCHAR"),
-    ("time_dimension", "VARCHAR"),
-    ("time_grain", "VARCHAR"),
-    ("window", "BIGINT"),
-    ("grain_to_date", "VARCHAR"),
-    ("description", "VARCHAR"),
-)
-
-
-def _dimensions_view_ddl(schema: str, model: SemanticModel) -> str:
-    from orionbelt.obsl.metadata_rows import build_dimension_rows
-
-    return _build_metadata_view_ddl(
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, dim in model.dimensions.items():
+        result_type = str(dim.result_type) if dim.result_type else "string"
+        data_object = (dim.view or "").replace("'", "''")
+        column = (dim.column or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{result_type}')")
+        rows_full.append(f"('{safe_label}', '{result_type}', '{data_object}', '{column}')")
+    yield _values_view_ddl(qdb, schema, "dimensions", ("name", "data_type"), rows_basic)
+    yield _values_view_ddl(
+        qdb,
         schema,
         "_dimensions_metadata",
-        _DIMENSIONS_METADATA_COLUMNS,
-        list(build_dimension_rows(model)),
+        ("name", "data_type", "data_object", "column"),
+        rows_full,
     )
 
 
-def _measures_view_ddl(schema: str, model: SemanticModel) -> str:
-    from orionbelt.obsl.metadata_rows import build_measure_rows
+def _build_measure_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``measures`` and ``_measures_metadata`` per model."""
 
-    return _build_metadata_view_ddl(
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, measure in model.measures.items():
+        agg = str(measure.aggregation) if measure.aggregation else ""
+        data_type = str(measure.result_type) if measure.result_type else "number"
+        expression = (getattr(measure, "expression", "") or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{agg}', '{data_type}')")
+        rows_full.append(f"('{safe_label}', '{agg}', '{data_type}', '{expression}')")
+    yield _values_view_ddl(
+        qdb, schema, "measures", ("name", "aggregation", "data_type"), rows_basic
+    )
+    yield _values_view_ddl(
+        qdb,
         schema,
         "_measures_metadata",
-        _MEASURES_METADATA_COLUMNS,
-        list(build_measure_rows(model)),
+        ("name", "aggregation", "data_type", "expression"),
+        rows_full,
     )
 
 
-def _metrics_view_ddl(schema: str, model: SemanticModel) -> str:
-    from orionbelt.obsl.metadata_rows import build_metric_rows
+def _build_metric_metadata_views(qdb: str, schema: str, model: SemanticModel) -> Iterator[str]:
+    """``metrics`` and ``_metrics_metadata`` per model."""
 
-    return _build_metadata_view_ddl(
+    rows_basic: list[str] = []
+    rows_full: list[str] = []
+    for label, metric in model.metrics.items():
+        metric_type = str(getattr(metric, "type", "") or "derived")
+        formula = (getattr(metric, "formula", "") or "").replace("'", "''")
+        safe_label = label.replace("'", "''")
+        rows_basic.append(f"('{safe_label}', '{metric_type}')")
+        rows_full.append(f"('{safe_label}', '{metric_type}', '{formula}')")
+    yield _values_view_ddl(qdb, schema, "metrics", ("name", "metric_type"), rows_basic)
+    yield _values_view_ddl(
+        qdb,
         schema,
         "_metrics_metadata",
-        _METRICS_METADATA_COLUMNS,
-        list(build_metric_rows(model)),
+        ("name", "metric_type", "formula"),
+        rows_full,
     )
+
+
+def _values_view_ddl(
+    qdb: str,
+    schema: str,
+    view: str,
+    columns: tuple[str, ...],
+    rows: list[str],
+) -> str:
+    """Render ``CREATE OR REPLACE VIEW qdb.schema.view AS SELECT … FROM VALUES …``.
+
+    Empty ``rows`` produces an empty view by way of a SELECT-WHERE-false
+    on a single dummy row, so the columns still appear in
+    ``information_schema.columns``.
+    """
+
+    col_list = ", ".join(f'"{c}"' for c in columns)
+    if rows:
+        values_sql = ", ".join(rows)
+        select_clause = f"SELECT * FROM (VALUES {values_sql}) AS v({col_list})"
+    else:
+        # One-row stub filtered out so the view has the right column
+        # shape but zero rows. Each placeholder is an empty string so
+        # the inferred types are VARCHAR.
+        placeholders = ", ".join("''" for _ in columns)
+        select_clause = f"SELECT * FROM (VALUES ({placeholders})) AS v({col_list}) WHERE false"
+    return f'CREATE OR REPLACE VIEW "{qdb}"."{schema}"."{view}" AS {select_clause}'
 
 
 def _dim_sql_type(dim: Dimension) -> str:

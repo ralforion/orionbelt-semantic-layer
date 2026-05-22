@@ -206,6 +206,41 @@ def test_raw_mode_order_by_qualified_and_position(model: SemanticModel) -> None:
     assert q.order_by[1].direction.value == "asc"
 
 
+def test_tableau_count_star_tautology_in_having_is_silently_stripped(
+    model: SemanticModel,
+) -> None:
+    """Tableau decorates aggregation queries with ``HAVING (COUNT(1) > 0)``
+    so empty source tables return zero rows instead of one row with NULL.
+    It's a tautology when data exists; we silently drop it instead of
+    rejecting the query with UNSUPPORTED_SQL_FEATURE.
+    """
+
+    sql = (
+        'SELECT SUM("Total Revenue") AS "sum:Total Revenue:ok" '
+        'FROM "orionbelt"."m" "m" HAVING (COUNT(1) > 0)'
+    )
+    q = translate_sql_to_query(sql, model)
+    assert q.select.measures == ["Total Revenue"]
+    # The tautology must not survive as a filter.
+    assert q.having == []
+
+
+def test_tableau_count_star_with_real_having_keeps_real(
+    model: SemanticModel,
+) -> None:
+    """A genuine HAVING predicate alongside the COUNT(1) tautology must
+    still apply — only the tautology is stripped.
+    """
+
+    sql = (
+        'SELECT "Customer Country", "Total Revenue" FROM m '
+        'HAVING "Total Revenue" > 1000 AND COUNT(*) > 0'
+    )
+    q = translate_sql_to_query(sql, model)
+    assert len(q.having) == 1
+    assert q.having[0].field == "Total Revenue"
+
+
 def test_raw_mode_having_rejected(model: SemanticModel) -> None:
     with pytest.raises(SQLTranslationError) as exc:
         translate_sql_to_query(

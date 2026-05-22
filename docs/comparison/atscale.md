@@ -274,7 +274,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 2. **Multi-rooted DAG modeling with explicit CFL multi-fact planning** — the ability to query across genuinely independent fact tables in one go without pre-designing a cube.
 3. **First-class declarative cumulative & period-over-period metric types** — turnkey alternatives to writing MDX calculated members.
 4. **RDF/SPARQL graph surface** for governance/lineage tooling outside the proprietary platform.
-5. **Apache Arrow Flight SQL** as a modern columnar wire protocol option.
+5. **A modern OSS SQL wire protocol surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
 6. **First-class DB-API 2.0 drivers** for direct programmatic access from Python.
 7. **MCP server (first-party)** for LLM/agent integration.
 8. **Plain-text portable model format** — OBML is a static YAML file that diffs in Git; AtScale models are richer but harder to version-control as plain text.

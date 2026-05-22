@@ -1,21 +1,21 @@
-"""OBSL ``ExecutionResult`` → Postgres wire type mapping (text format).
+"""OBSL ``ExecutionResult`` → Postgres wire type mapping.
 
-Step 2 lives here. The executor reports column types as one of four
-coarse hints — ``number`` / ``string`` / ``datetime`` / ``binary`` —
-which we collapse onto a small set of Postgres OIDs that every BI tool
-handles. Step 7 lands binary-format encoders and finer-grained OIDs
-(int4 vs int8, float8 vs numeric, timestamp vs date) once we surface
-the underlying Arrow types through ``ColumnMeta``.
+The executor reports column types as one of four coarse hints —
+``number`` / ``string`` / ``datetime`` / ``binary`` — which we
+collapse onto a small set of Postgres OIDs.
 
-Postgres wire text format is described in §52.2 of the PostgreSQL docs.
-Roughly: integers and floats use their literal decimal representation;
-timestamps use ``YYYY-MM-DD HH:MM:SS[.ffffff][+TZ]``; ``bytea`` uses the
-``\\xHEX`` form; booleans use ``t`` / ``f``; NULLs use the wire-level
-length-prefix sentinel ``-1`` (handled by ``build_data_row``, not here).
+Numbers are sent on the wire in **binary** format (8-byte IEEE 754
+big-endian, ``FLOAT8`` OID). Tableau's JDBC driver, like most
+Postgres drivers, parses numerics as binary regardless of
+``RowDescription.format_code``; text bytes silently decode as zero.
+Everything else (strings, dates, bytea) stays text — they're handled
+identically across drivers and text representation is canonical.
 """
 
 from __future__ import annotations
 
+import math
+import struct
 from datetime import date, datetime
 from datetime import time as dt_time
 from decimal import Decimal
@@ -36,33 +36,76 @@ OID_TIMESTAMPTZ: Final[int] = 1184
 
 
 def oid_for_type_hint(type_hint: str) -> int:
-    """Pick a Postgres OID for one of the executor's coarse type hints.
-
-    The hints come from ``service/db_executor.py``; ``"number"`` covers
-    everything from int4 to numeric, so we use NUMERIC's OID — it is the
-    only Postgres numeric type that BI tools never narrow.
-    """
+    """Pick a Postgres OID for one of the executor's coarse type hints."""
 
     if type_hint == "number":
-        return OID_NUMERIC
+        return OID_FLOAT8
     if type_hint == "datetime":
         return OID_TIMESTAMP
     if type_hint == "binary":
         return OID_BYTEA
-    # "string" and anything we don't yet recognise — TEXT is the safe
-    # default that every Postgres client accepts as a text-format value.
     return OID_TEXT
 
 
-def encode_text_value(value: object, type_hint: str) -> str | None:
-    """Render ``value`` for transmission in a Postgres text-format DataRow.
+def format_code_for_type_hint(type_hint: str) -> int:
+    """Server-default format code. 0 = text, 1 = binary.
 
-    Returns ``None`` when ``value`` is ``None`` so the caller (the wire
-    framer) can emit the ``-1`` NULL sentinel.
+    The actual format sent on the wire is governed by
+    ``Bind.result_formats`` (in the extended-query protocol) — see
+    :func:`encode_value`'s ``format_code`` parameter. This helper is
+    only consulted for the simple-Query path and the Parse-time
+    pre-execution cache. We default to **text** because:
+
+    * Simple Query is always text per the Postgres protocol;
+    * Pre-execution can't know what format Bind will request later;
+    * Text is cheap to convert to binary if Bind asks for it.
+    """
+
+    return 0
+
+
+def can_encode_binary(type_hint: str) -> bool:
+    """True when ``encode_value`` actually produces a binary payload.
+
+    Today only ``"number"`` (8-byte big-endian IEEE 754 FLOAT8) has
+    a binary encoder. Everything else falls through to text.
+
+    Used by the router to compute the *effective* per-column format
+    code: a Bind asking for binary on a column we can only emit as
+    text must be advertised as text in RowDescription, otherwise
+    binary-capable clients misdecode the text bytes per the OID. The
+    set is intentionally restricted; widening it requires both an
+    encoder (here) and a matching test that round-trips through a real
+    Postgres client.
+    """
+
+    return type_hint == "number"
+
+
+def encode_value(
+    value: object,
+    type_hint: str,
+    format_code: int = 0,
+) -> str | bytes | None:
+    """Encode ``value`` for one DataRow slot.
+
+    ``format_code`` 0 = text, 1 = binary; matches the per-column code
+    in ``Bind.result_formats``. For ``"number"`` columns:
+
+    * ``format_code=0`` → decimal-string text (e.g. ``"1329.87"``);
+    * ``format_code=1`` → 8 bytes big-endian IEEE 754 FLOAT8.
+
+    Other type hints currently always serialise as text — binary
+    representations for timestamps, bytea, etc. can land alongside
+    Step 7 of design/PLAN_postgres_wire.md. Returns ``None`` for SQL
+    NULL (the wire framer emits the ``-1`` length sentinel).
     """
 
     if value is None:
         return None
+
+    if type_hint == "number" and format_code == 1:
+        return _encode_float8_binary(value)
 
     if isinstance(value, bool):
         return "t" if value else "f"
@@ -71,13 +114,7 @@ def encode_text_value(value: object, type_hint: str) -> str | None:
         return str(value)
 
     if isinstance(value, datetime):
-        # ``isoformat`` uses ``T`` between the date and time; real
-        # Postgres uses a space.  BI tools accept both, but matching the
-        # canonical form keeps drivers happy.
-        formatted = value.isoformat(sep=" ")
-        # Postgres uses ``+00`` / ``+05:30`` style offsets — Python emits
-        # ``+00:00``; both parse cleanly so we leave it as-is.
-        return formatted
+        return value.isoformat(sep=" ")
 
     if isinstance(value, date):
         return value.isoformat()
@@ -88,7 +125,38 @@ def encode_text_value(value: object, type_hint: str) -> str | None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         if type_hint == "binary":
             return "\\x" + bytes(value).hex()
-        # Non-binary column carrying bytes — fall back to UTF-8 decode.
         return bytes(value).decode("utf-8", errors="replace")
 
     return str(value)
+
+
+# Backwards-compatibility shim — kept so existing call sites in the
+# catalog / canned paths keep working. New code should call
+# :func:`encode_value`.
+def encode_text_value(value: object, type_hint: str) -> str | bytes | None:
+    """Alias for :func:`encode_value` — accepted for legacy call sites."""
+
+    return encode_value(value, type_hint)
+
+
+def _encode_float8_binary(value: object) -> bytes:
+    """Postgres FLOAT8 binary format: 8 bytes IEEE 754 big-endian."""
+
+    if isinstance(value, bool):
+        # bool is an int subclass — guard before the numeric branch.
+        return struct.pack("!d", 1.0 if value else 0.0)
+    if isinstance(value, (int, float)):
+        return struct.pack("!d", float(value))
+    if isinstance(value, Decimal):
+        # Decimal → float loses precision past ~15 significant digits;
+        # acceptable for BI display, exact arithmetic stays in the DB.
+        try:
+            f = float(value)
+        except (OverflowError, ValueError):
+            f = math.nan
+        return struct.pack("!d", f)
+    # Last-ditch — try to coerce via str → float.
+    try:
+        return struct.pack("!d", float(str(value)))
+    except (TypeError, ValueError):
+        return struct.pack("!d", math.nan)

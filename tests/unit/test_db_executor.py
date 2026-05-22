@@ -93,6 +93,82 @@ class TestMapTypeCode:
     def test_none_defaults_to_string(self) -> None:
         assert _map_type_code(None) == "string"
 
+    def test_postgres_numeric_oid_maps_to_number(self) -> None:
+        """psycopg2/3 returns Postgres OIDs as integers in cursor.description.
+
+        The descriptive-name fallback can't see "NUMERIC" inside "1700",
+        which previously caused all DECIMAL/NUMERIC columns to surface
+        as TEXT on the pgwire surface and Tableau to display 0 / NULL
+        for measures.
+        """
+
+        assert _map_type_code(1700) == "number"  # NUMERIC
+        assert _map_type_code(701) == "number"  # FLOAT8
+        assert _map_type_code(700) == "number"  # FLOAT4
+        assert _map_type_code(20) == "number"  # INT8
+        assert _map_type_code(23) == "number"  # INT4
+        assert _map_type_code(21) == "number"  # INT2
+
+    def test_postgres_temporal_oids_map_to_datetime(self) -> None:
+        assert _map_type_code(1082) == "datetime"  # DATE
+        assert _map_type_code(1114) == "datetime"  # TIMESTAMP
+        assert _map_type_code(1184) == "datetime"  # TIMESTAMPTZ
+
+    def test_postgres_bytea_oid_maps_to_binary(self) -> None:
+        assert _map_type_code(17) == "binary"  # BYTEA
+
+
+class TestArrowTypeHint:
+    """Covers _arrow_type_to_hint — the Arrow path used by ADBC drivers."""
+
+    def test_standard_arrow_types(self) -> None:
+        import pyarrow as pa
+
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        assert _arrow_type_to_hint(pa.int32()) == "number"
+        assert _arrow_type_to_hint(pa.float64()) == "number"
+        assert _arrow_type_to_hint(pa.decimal128(18, 2)) == "number"
+        assert _arrow_type_to_hint(pa.string()) == "string"
+        assert _arrow_type_to_hint(pa.timestamp("us")) == "datetime"
+        assert _arrow_type_to_hint(pa.date32()) == "datetime"
+        assert _arrow_type_to_hint(pa.binary()) == "binary"
+
+    def test_opaque_numeric_maps_to_number(self) -> None:
+        """ADBC PG driver wraps NUMERIC in OpaqueType with ``type_name='numeric'``.
+
+        Before the fix, ``pa.types.is_decimal()`` returned False for
+        OpaqueType, so NUMERIC columns surfaced as "string" on the
+        pgwire surface and Tableau SUM rendered as 0.
+        """
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        class _FakeOpaque:
+            type_name = "numeric"
+            vendor_name = "PostgreSQL"
+
+        assert _arrow_type_to_hint(_FakeOpaque()) == "number"
+
+    def test_opaque_money_and_decimal_pg_names(self) -> None:
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        class _Money:
+            type_name = "money"
+
+        class _Decimal:
+            type_name = "decimal"
+
+        assert _arrow_type_to_hint(_Money()) == "number"
+        assert _arrow_type_to_hint(_Decimal()) == "number"
+
+    def test_opaque_interval_maps_to_datetime(self) -> None:
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        class _Interval:
+            type_name = "interval"
+
+        assert _arrow_type_to_hint(_Interval()) == "datetime"
+
 
 def _mock_get_connection(mock_conn: MagicMock):
     """Create a mock context manager for get_connection."""

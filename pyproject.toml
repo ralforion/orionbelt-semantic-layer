@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.4.0"
+version = "2.5.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -148,6 +148,7 @@ markers = [
     "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars) — run with: pytest -m snowflake",
     "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC) — run with: pytest -m bigquery",
     "databricks: requires a live Databricks workspace (DATABRICKS_* env vars) — run with: pytest -m databricks",
+    "dremio: requires the Dremio + OBSL docker-compose stack — see tests/integration/dremio/README.md",
 ]
 
 [tool.mypy]

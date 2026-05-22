@@ -185,7 +185,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         logger.warning(
             "MODEL_FILE is deprecated as of v2.4.0; use MODEL_FILES=<path> "
             "(comma-separated for multiple models). MODEL_FILE will be "
-            "removed in v2.5.0."
+            "removed in v2.6.0."
         )
         yaml_str, resolved = _read_model_file(settings.model_file, settings.model_dir)
         preloads.append((yaml_str, resolved))

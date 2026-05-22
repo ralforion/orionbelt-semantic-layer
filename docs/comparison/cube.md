@@ -6,8 +6,8 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (f
 
 ## TL;DR
 
-- **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), a **Postgres-wire SQL API** with the broadest BI-tool compatibility today, GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts, Twig templating for dynamic models, and the broadest data-source portfolio of the OSS semantic layers.
-- **OBSL wins on**: **richer modeling topologies** (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining `views`; **first-class declarative metric types** for cumulative and period-over-period (Cube has `rolling_window` and `time_shift` but they're query/measure patterns, not metric *types*); an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **Apache Arrow Flight SQL** as a modern columnar wire protocol (vs. Cube's Postgres wire); 8 first-class **DB-API 2.0 drivers**; an explicit **CFL multi-fact planner**; OSI ↔ OBML format conversion; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
+- **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts, Twig templating for dynamic models, and the broadest data-source portfolio of the OSS semantic layers.
+- **OBSL wins on**: **richer modeling topologies** (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining `views`; **first-class declarative metric types** for cumulative and period-over-period (Cube has `rolling_window` and `time_shift` but they're query/measure patterns, not metric *types*); an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; an explicit **CFL multi-fact planner**; OSI ↔ OBML format conversion; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
 - **Different niches**: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.
 
 Cube is the closest peer to OBSL in the OSS space — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.
@@ -79,20 +79,19 @@ Capabilities:
 
 **OBSL** has no materialization story. "Make this faster" is the warehouse's job (materialized views, dbt models, scheduled jobs).
 
-### 3.2 SQL wire protocol for BI tools (both have one)
+### 3.2 SQL wire protocols for BI tools (OBSL has both; Cube has Postgres wire only)
 
-Both projects expose a SQL wire protocol so BI tools can connect to the semantic layer like a database — just over **different wires**:
+Both projects expose a SQL wire protocol so BI tools can connect to the semantic layer like a database. As of OBSL v2.5.0, **OBSL ships two wires side-by-side** so you can pick the right transport per consumer:
 
 | | OBSL | Cube |
 |---|---|---|
-| Protocol | **Apache Arrow Flight SQL** (gRPC, port 8815) | **Postgres wire** (port 15432) |
-| Underlying format | Columnar (Arrow) — modern, efficient for analytics | Row-based (Postgres) |
-| BI tool support | DBeaver, Tableau (Flight SQL JDBC), Power BI (Flight SQL ODBC), `pyarrow.flight` | Tableau, Superset, Metabase, PowerBI, `psql`, anything with a Postgres driver |
-| Maturity in BI ecosystem | Newer (Arrow Flight SQL is the modern standard but tool support is still rolling out) | Very wide — anything that speaks Postgres wire works |
-| Self-hostable | Via `ob-flight-extension` package, daemon thread inside the API process | Built into Cube core |
-| OBSL also ships | 8 PEP 249 DB-API drivers (`ob-bigquery`, `ob-snowflake`, `ob-postgres`, `ob-mysql`, `ob-duckdb`, `ob-clickhouse`, `ob-databricks`, `ob-dremio`) for direct programmatic access | n/a |
+| PostgreSQL wire | ✅ port 5432 (configurable via `PGWIRE_PORT`) — works with Tableau, DBeaver, Superset, Metabase, Power BI, plain `psql`, **Dremio's Postgres-source connector**, anything with a Postgres driver | ✅ port 15432 |
+| Apache Arrow Flight SQL | ✅ gRPC port 8815 — columnar transport, JDBC/ODBC via Flight SQL drivers, `pyarrow.flight` programmatic | ❌ |
+| DB-API 2.0 drivers (PEP 249) | ✅ 8 first-party packages (`ob-{bigquery,snowflake,postgres,mysql,duckdb,clickhouse,databricks,dremio}`) for direct programmatic access | ❌ (SQL API supplants this) |
+| Read-only governance | Closed by design: raw SQL → `RAW_SQL_REJECTED`, DDL/DML → `WRITE_OPERATION_REJECTED`, catalog probes answered from the model | Cube SQL API rejects writes; raw SELECTs flow through |
+| Self-hostable | Postgres wire is built into the API process; Flight SQL via `ob-flight-extension` daemon thread | Built into Cube core |
 
-So this is a wash on capability, with Cube currently winning on **breadth of compatible tooling today** (Postgres wire is everywhere) and OBSL winning on **modern columnar transport** (Arrow Flight SQL is faster for analytical payloads, especially over the wire).
+So OBSL covers the **same broad-BI-tool surface** as Cube (Postgres wire is everywhere), **plus** Arrow Flight SQL for consumers that benefit from modern columnar transport (cheaper round-trips for analytical payloads), **plus** DB-API drivers for Python-native programmatic access. Pick the wire that matches the consumer — for an existing Tableau farm, point it at OBSL's pgwire and it just works.
 
 ### 3.3 Multi-API parity
 
@@ -104,11 +103,12 @@ Cube exposes the same semantic model through:
 
 OBSL exposes:
 - **REST API** (FastAPI)
+- **PostgreSQL wire** (TCP port 5432, v2.5.0+, BI-tool / `psql` / Dremio-source compatible)
 - **Arrow Flight SQL** (gRPC port 8815, JDBC/ODBC via Arrow Flight SQL drivers)
 - **DB-API 2.0 drivers** (8 PEP 249 packages)
 - **MCP**
 
-Cube uniquely has GraphQL; OBSL uniquely has DB-API drivers and the RDF/SPARQL surface. Both have REST + a SQL wire protocol + MCP.
+Cube uniquely has GraphQL; OBSL uniquely has Arrow Flight SQL, DB-API drivers, and the RDF/SPARQL surface. Both have REST + Postgres-wire SQL + MCP.
 
 ### 3.4 Multi-tenancy and row-level security
 
@@ -214,7 +214,7 @@ Cube wins on breadth (especially legacy enterprise sources); OBSL covers modern 
 |---|---|---|
 | REST API | Yes — first-party FastAPI service | Yes — `/cubejs-api/v1/load`, mature |
 | GraphQL | No | Yes |
-| SQL wire protocol | **Apache Arrow Flight SQL** (gRPC, columnar) — JDBC/ODBC via Flight SQL drivers | **Postgres wire** (port 15432) — works with anything that speaks Postgres |
+| SQL wire protocol | **PostgreSQL wire** (port 5432) **AND Apache Arrow Flight SQL** (gRPC, columnar) — pick per consumer | **Postgres wire** (port 15432) only |
 | DB-API 2.0 drivers | Yes — 8 PEP 249 drivers shipped (`ob-{bigquery,snowflake,postgres,mysql,duckdb,clickhouse,databricks,dremio}`) | No (SQL API supplants this) |
 | MCP | Yes — first-party server | Yes — first-party server |
 | Native SDKs | Python (FastAPI client) + DB-API drivers | JS/TS (`@cubejs-client/*`), React, Vue, Angular bindings |
@@ -247,7 +247,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | Feature | OBSL | Cube |
 |---|---|---|
 | Pre-aggregations / materialized rollups | ❌ | ✅ flagship |
-| SQL wire protocol for BI tools | ✅ Arrow Flight SQL (gRPC, columnar) | ✅ Postgres wire (row-based, broader BI tool support today) |
+| SQL wire protocol for BI tools | ✅ PostgreSQL wire **+** Arrow Flight SQL (two wires side-by-side, v2.5.0+) | ✅ Postgres wire only |
 | DB-API 2.0 drivers (PEP 249) | ✅ 8 drivers shipped | ❌ |
 | Interactive RDF/ontology graph in playground | ✅ vis-network ontology view | ❌ (schema browser only) |
 | GraphQL API | ❌ | ✅ |
@@ -273,7 +273,6 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 ### Pick **Cube** when:
 
 - You need **pre-aggregations** for sub-second analytics on large datasets — this is Cube's defining feature and OBSL has no equivalent.
-- Your BI tools speak **Postgres wire protocol** and you want the broadest tool compatibility today (vs. OBSL's Arrow Flight SQL, which is the modern columnar standard but has narrower current tool coverage).
 - You need **GraphQL** alongside REST (e.g. for a frontend that already uses Apollo).
 - You need first-class **multi-tenancy + RLS** without writing it yourself.
 - Your model needs **dynamic SQL via templating** (Twig/Jinja) — per-tenant table names, masking, conditional logic.
@@ -301,13 +300,12 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 ### To match Cube, OBSL would need:
 
 1. **Pre-aggregations / materialization** — declarative rollup definitions, refresh strategies, query routing. This is a major piece of infrastructure (a Cube-Store-equivalent or an integration with an external materialization engine like dbt/MaterializedView). OBSL's result cache shipped in v2.2.0 (file backend, freshness-derived TTL) addresses the "repeat-query" axis but not the "first-hit on a billion rows" axis pre-aggs cover.
-2. **Postgres-wire SQL API** — Arrow Flight SQL covers the BI-tool-connectivity use case via JDBC/ODBC drivers, but Postgres wire still has broader native tool support today (Tableau, Superset, Metabase, plain `psql`, etc.).
-3. **GraphQL API** — modest effort given the existing FastAPI surface.
-4. **Templating in the model** — Jinja2 or similar for compile-time dynamism.
-5. **Multi-tenancy primitives** — compile-time per-tenant model generation, runtime RLS hooks, JWT integration.
-6. **Field-level masking and access grants** — analogous to LookML's `required_access_grants`.
-7. **More dialects** — Trino/Presto, Redshift, MSSQL, Oracle if those markets matter.
-8. **Shared cache backend** for multi-replica deployments — current file backend is per-replica; Cube's Redis/Cube-Store layer is shared across the cluster.
+2. **GraphQL API** — modest effort given the existing FastAPI surface.
+3. **Templating in the model** — Jinja2 or similar for compile-time dynamism.
+4. **Multi-tenancy primitives** — compile-time per-tenant model generation, runtime RLS hooks, JWT integration.
+5. **Field-level masking and access grants** — analogous to LookML's `required_access_grants`.
+6. **More dialects** — Trino/Presto, Redshift, MSSQL, Oracle if those markets matter.
+7. **Shared cache backend** for multi-replica deployments — current file backend is per-replica; Cube's Redis/Cube-Store layer is shared across the cluster.
 
 ### To match OBSL, Cube would need:
 

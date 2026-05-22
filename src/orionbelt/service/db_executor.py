@@ -114,8 +114,17 @@ def _map_type_code(type_code: Any) -> str:
             return "binary"
     except ImportError:
         pass
+    # psycopg2 / psycopg3 expose ``cursor.description[i].type_code`` as a
+    # Postgres OID integer. ``str(1700)`` is ``"1700"`` — never matches
+    # the descriptive-name fallback below, so a column would default to
+    # "string" and a downstream BI client would receive the value as TEXT
+    # instead of a number. Recognise the well-known OIDs first.
+    if isinstance(type_code, int):
+        hint = _PG_OID_TO_HINT.get(type_code)
+        if hint is not None:
+            return hint
     # Fallback: inspect string representation of the type object (works for
-    # psycopg2, mysql-connector, pyodbc, etc. which expose descriptive names)
+    # mysql-connector, pyodbc, etc. which expose descriptive names)
     s = str(type_code).upper()
     if any(k in s for k in ("NUMBER", "NUMERIC", "DECIMAL", "INT", "FLOAT", "DOUBLE", "REAL")):
         return "number"
@@ -124,6 +133,42 @@ def _map_type_code(type_code: Any) -> str:
     if any(k in s for k in ("BINARY", "BLOB", "BYTEA", "BYTES")):
         return "binary"
     return "string"
+
+
+# Postgres type OIDs (pg_type.oid). Built from the official ``pg_type.h``
+# entries the drivers ship with. Only the categories we route to the
+# four coarse hints are listed; anything missing falls through to the
+# descriptive-name fallback and ultimately to "string".
+_PG_OID_TO_HINT: dict[int, str] = {
+    # Integers
+    20: "number",  # INT8
+    21: "number",  # INT2
+    23: "number",  # INT4
+    26: "number",  # OID
+    # Floating / exact numeric
+    700: "number",  # FLOAT4
+    701: "number",  # FLOAT8
+    1700: "number",  # NUMERIC
+    790: "number",  # MONEY
+    # Booleans — surfaced as "string" historically; keep that.
+    16: "string",  # BOOL
+    # Text-ish
+    18: "string",  # CHAR
+    19: "string",  # NAME
+    25: "string",  # TEXT
+    1042: "string",  # BPCHAR
+    1043: "string",  # VARCHAR
+    2950: "string",  # UUID
+    # Date / time
+    1082: "datetime",  # DATE
+    1083: "datetime",  # TIME
+    1114: "datetime",  # TIMESTAMP
+    1184: "datetime",  # TIMESTAMPTZ
+    1186: "datetime",  # INTERVAL
+    1266: "datetime",  # TIMETZ
+    # Binary
+    17: "binary",  # BYTEA
+}
 
 
 _DUCKDB_INT_PREFIXES = (
@@ -168,23 +213,48 @@ def _default_format_for_duckdb_type(type_obj: Any) -> str | None:
 
 
 def _arrow_type_to_hint(arrow_type: Any) -> str:
-    """Map a PyArrow type to a simple type hint string."""
+    """Map a PyArrow type to a simple type hint string.
+
+    ADBC's PostgreSQL driver wraps types Arrow can't represent natively
+    (NUMERIC, MONEY, INTERVAL, …) in ``OpaqueType``. ``pa.types.is_*``
+    helpers all return False for OpaqueType, so we'd fall back to
+    "string" — which is what caused Tableau measures to surface as TEXT
+    on the pgwire surface and SUM to render as 0. Inspect the
+    ``type_name`` attribute that OpaqueType carries to recover the
+    underlying Postgres type name.
+    """
     import pyarrow as pa
 
-    if (
-        pa.types.is_integer(arrow_type)
-        or pa.types.is_floating(arrow_type)
-        or pa.types.is_decimal(arrow_type)
-    ):
-        return "number"
-    if (
-        pa.types.is_timestamp(arrow_type)
-        or pa.types.is_date(arrow_type)
-        or pa.types.is_time(arrow_type)
-    ):
-        return "datetime"
-    if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
-        return "binary"
+    # ``pa.types.is_*`` helpers call ``t.id`` internally — non-DataType
+    # objects raise AttributeError. We catch that to keep the function
+    # robust to OpaqueType subclasses, mocks, and other types that may
+    # not implement the full PyArrow DataType protocol.
+    try:
+        if (
+            pa.types.is_integer(arrow_type)
+            or pa.types.is_floating(arrow_type)
+            or pa.types.is_decimal(arrow_type)
+        ):
+            return "number"
+        if (
+            pa.types.is_timestamp(arrow_type)
+            or pa.types.is_date(arrow_type)
+            or pa.types.is_time(arrow_type)
+        ):
+            return "datetime"
+        if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
+            return "binary"
+    except (AttributeError, TypeError):
+        pass
+    type_name = getattr(arrow_type, "type_name", None)
+    if isinstance(type_name, str):
+        lowered = type_name.lower()
+        if any(n in lowered for n in ("numeric", "decimal", "money")):
+            return "number"
+        if any(n in lowered for n in ("timestamp", "date", "time", "interval")):
+            return "datetime"
+        if "bytea" in lowered or "binary" in lowered:
+            return "binary"
     return "string"
 
 

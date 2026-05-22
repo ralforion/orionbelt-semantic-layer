@@ -269,6 +269,18 @@ dataObjects:
         code: COUNTRY
         abstractType: string
 
+  Products:
+    code: PRODUCTS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Product ID:
+        code: PRODUCT_ID
+        abstractType: string
+      Category:
+        code: CATEGORY
+        abstractType: string
+
   Orders:
     code: ORDERS
     database: WAREHOUSE
@@ -280,6 +292,9 @@ dataObjects:
       Order Customer ID:
         code: CUSTOMER_ID
         abstractType: string
+      Order Product ID:
+        code: PRODUCT_ID
+        abstractType: string
       Amount:
         code: AMOUNT
         abstractType: float
@@ -290,6 +305,12 @@ dataObjects:
           - Order Customer ID
         columnsTo:
           - Customer ID
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom:
+          - Order Product ID
+        columnsTo:
+          - Product ID
 
   Returns:
     code: RETURNS
@@ -318,12 +339,26 @@ dimensions:
     dataObject: Customers
     column: Country
     resultType: string
+  Product Category:
+    dataObject: Products
+    column: Category
+    resultType: string
 
 measures:
   Revenue:
     columns:
       - dataObject: Orders
         column: Amount
+    resultType: float
+    aggregation: sum
+  Electronics Revenue:
+    columns:
+      - dataObject: Orders
+        column: Amount
+    filters:
+      - column: {dataObject: Products, column: Category}
+        operator: equals
+        values: [{dataType: string, valueString: "Electronics"}]
     resultType: float
     aggregation: sum
   Total Refunds:
@@ -403,6 +438,37 @@ class TestCFLWithFilters:
         order_part = sql.split("ORDER BY")[1]
         assert '"Orders"' not in order_part
         assert '"Revenue"' in order_part
+
+    def test_cfl_leg_joins_objects_referenced_by_measure_filter(self) -> None:
+        """A filtered measure's FROM must include every table its filter touches.
+
+        ``Electronics Revenue`` is defined on Orders.Amount but its filter
+        references ``Products.Category``. In a multi-fact CFL query the
+        Orders-side leg's projection becomes
+        ``CASE WHEN Products.Category = 'Electronics' THEN Orders.Amount END``,
+        so the leg's FROM must JOIN Products. Without this fix the leg
+        emits ``"Products"."Category"`` against a FROM that only has
+        ``Orders LEFT JOIN Customers``, and the database returns
+        ``missing FROM-clause entry for table "Products"``.
+        """
+        model = _load_cfl_model()
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Electronics Revenue", "Total Refunds"],
+            ),
+        )
+        result = pipeline.compile(query, model, "postgres")
+        sql = result.sql
+        assert "composite_01" in sql  # CFL CTE
+        assert "UNION ALL" in sql
+        # The Orders-side leg must JOIN Products so the filter resolves.
+        orders_leg = sql.split("UNION ALL")[0]
+        assert "Products" in orders_leg, (
+            f"Orders-side CFL leg missing Products JOIN — would error "
+            f'`missing FROM-clause entry for table "Products"`. SQL:\n{orders_leg}'
+        )
 
     def test_cfl_without_filter(self) -> None:
         """CFL query without filters — no WHERE clause."""

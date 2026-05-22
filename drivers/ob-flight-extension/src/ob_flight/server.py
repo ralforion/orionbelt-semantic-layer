@@ -595,6 +595,43 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         if bare in _METADATA_VIEW_NAMES:
             return _MODE_CATALOG
 
+        # Schema-qualified metadata / label view. Three shapes the BI
+        # tools fire after picking a table from the schema tree:
+        #
+        #   FROM <model>.dimensions                       (2-part, pgjdbc/DBeaver pushdown)
+        #   FROM "orionbelt"."<model>"."dimensions"       (3-part, Tableau pushdown)
+        #   FROM <model>.model / FROM <model>.measures    (2-part, generic)
+        #
+        # All three are "metadata for THIS model" → route to the
+        # catalog where ``SELECT *`` is honoured. Bare label-view
+        # references (``FROM dimensions``) keep the OBSQL
+        # category-filtered virtual-table semantics so existing
+        # surface behaviour is preserved.
+        #
+        # Compare the schema qualifier against BOTH the
+        # ``_ob_model_id`` (stamped session name = pg_namespace
+        # nspname BI tools see in the tree) AND the OBML
+        # ``name:`` field — they can differ when the OBML doesn't
+        # declare ``name:`` explicitly and falls back to a filename
+        # stem, in which case ``model.name`` is empty and only the
+        # stamp is reliable.
+        schema = (
+            (getattr(table_node, "db", None) or table_node.text("db") or "")
+            .strip('"')
+            .strip("`")
+            .strip("'")
+            .lower()
+        )
+        stamped_name = (getattr(model, "_ob_model_id", "") or "").lower()
+        obml_name = (getattr(model, "name", "") or "").lower()
+        model_schemas = {n for n in (stamped_name, obml_name) if n}
+        if (
+            schema
+            and schema in model_schemas
+            and bare in (_LABEL_VIEW_NAMES + _METADATA_VIEW_NAMES + ("model",))
+        ):
+            return _MODE_CATALOG
+
         # Semantic — the model's virtual table, OR a per-category label view
         # (_dimensions/_measures/_metrics). Label views are aliases for the
         # model VT restricted to one category, so `SELECT "X" FROM _dimensions`
@@ -975,12 +1012,18 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 or "pg_catalog.pg_attribute" in target_sql
             ):
                 return self._catalog_columns_table(model)
-            if bare == "_dimensions_metadata":
+            if bare == "_dimensions_metadata" or bare == "dimensions":
                 return build_dimensions_data(model)
-            if bare == "_measures_metadata":
+            if bare == "_measures_metadata" or bare == "measures":
                 return build_measures_data(model)
-            if bare == "_metrics_metadata":
+            if bare == "_metrics_metadata" or bare == "metrics":
                 return build_metrics_data(model)
+            if bare == "model":
+                # ``SELECT * FROM <model>.model`` — column-shape probe
+                # from a BI tool clicking the model table. Same payload
+                # as the canonical ``information_schema.columns`` view
+                # (one row per dim/measure/metric).
+                return self._catalog_columns_table(model)
 
         # Unknown catalog probe — empty result. Tool moves on.
         return self._catalog_empty_table()
@@ -1111,15 +1154,36 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         self,
         catalog_filter: str | None,
         context: flight.ServerCallContext | None,
+        db_schema_filter: str | None = None,
     ) -> Any:
         """Resolve the model for a metadata request.
 
-        Priority: the protobuf-body ``catalog`` filter (field 1) wins over
-        the context-header / auto-resolve fallback in :meth:`_get_model`,
-        because Flight SQL clients use the body field to explicitly target
-        a catalog when browsing the schema tree in multi-model mode.
-        Unknown catalog → return None (empty metadata, no fallback).
+        v2.5.0 catalog layout exposes a single ``orionbelt`` catalog with
+        one schema per loaded model and a literal ``model`` table inside
+        each schema. Model resolution therefore moves to the
+        ``db_schema_filter_pattern`` (protobuf field 2): when a BI client
+        expands ``orionbelt.<model_name>`` in the schema tree, that
+        ``<model_name>`` arrives as the schema filter on the subsequent
+        GetTables / GetColumns call.
+
+        ``catalog_filter`` is honoured for legacy callers that still
+        pre-v2.5 emit ``catalog=<model>`` (the pre-flip layout exposed
+        models as catalogs) — it falls through as the second priority
+        so the obsql CLI ``--model`` flag and existing integration
+        tests keep working.
+
+        Unknown selector → ``None`` (empty metadata, no fallback) so
+        BI clients don't accidentally browse the wrong model.
         """
+        # db_schema_filter is the v2.5.0 selector — preferred.
+        if db_schema_filter and self._session_manager is not None:
+            try:
+                store = self._session_manager.get_store(db_schema_filter)
+                model, _ = self._stamp_model(store, db_schema_filter)
+                return model
+            except Exception:
+                return None
+        # catalog_filter is the legacy pre-flip selector — fall back.
         if catalog_filter and self._session_manager is not None:
             try:
                 store = self._session_manager.get_store(catalog_filter)
@@ -1139,18 +1203,22 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         *,
         table_filter: str | None = None,
         catalog_filter: str | None = None,
+        db_schema_filter: str | None = None,
     ) -> pa.Table:
         """Build the CommandGetTables response.
 
-        Lists the semantic virtual table + ``_dimensions``/``_measures``/
-        ``_metrics`` views. Data objects are intentionally hidden — they're
-        not queryable through the semantic layer. ``table_filter``, when
+        Lists the ``model`` virtual table + ``dimensions`` /
+        ``measures`` / ``metrics`` views and their ``_*_metadata``
+        siblings. Data objects are intentionally hidden — they're not
+        queryable through the semantic layer. ``table_filter``, when
         set, scopes the response to a single table name (DBeaver sends
-        one filter request per expanded tree node). ``catalog_filter``
-        (protobuf field 1) routes the response to that catalog's model
-        in multi-model mode.
+        one filter request per expanded tree node). v2.5.0 layout uses
+        ``db_schema_filter`` (protobuf field 2) for model selection;
+        ``catalog_filter`` is honoured as a legacy fallback.
         """
-        model = self._resolve_model_for_catalog(catalog_filter, context)
+        model = self._resolve_model_for_catalog(
+            catalog_filter, context, db_schema_filter=db_schema_filter
+        )
         return build_tables_table(model, table_filter=table_filter)
 
     def _build_columns_from_model(
@@ -1159,18 +1227,21 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         *,
         table_filter: str | None = None,
         catalog_filter: str | None = None,
+        db_schema_filter: str | None = None,
     ) -> pa.Table:
         """Build the CommandGetColumns response.
 
-        Returns dim / measure / metric columns of the semantic virtual
+        Returns dim / measure / metric columns of the ``model`` virtual
         table plus the introspection columns of each metadata view.
-        ``table_filter`` scopes the response to one table — without it,
-        DBeaver displays the unfiltered union under every view (the
-        cross-pollution bug v2.4.0 had until this commit).
-        ``catalog_filter`` (protobuf field 1) routes the response to the
-        matching catalog's model.
+        ``table_filter`` scopes the response to one table — without
+        it, DBeaver displays the unfiltered union under every view
+        (the cross-pollution bug v2.4.0 had until this commit).
+        ``db_schema_filter`` selects the model in v2.5.0;
+        ``catalog_filter`` is honoured as a legacy fallback.
         """
-        model = self._resolve_model_for_catalog(catalog_filter, context)
+        model = self._resolve_model_for_catalog(
+            catalog_filter, context, db_schema_filter=db_schema_filter
+        )
         return build_columns_table(model, table_filter=table_filter)
 
     def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> Any:
@@ -1349,24 +1420,38 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         clients (DBeaver) send one filter request per expanded node and
         expect the response scoped to that node's table name.
         """
-        from ob_flight.flight_sql import parse_catalog_filter, parse_table_filter
+        from ob_flight.flight_sql import (
+            parse_catalog_filter,
+            parse_db_schema_filter,
+            parse_table_filter,
+        )
 
         table_filter = parse_table_filter(cmd_value) if cmd_value else None
         catalog_filter = parse_catalog_filter(cmd_value) if cmd_value else None
+        db_schema_filter = parse_db_schema_filter(cmd_value) if cmd_value else None
 
         if type_url == CMD_GET_CATALOGS:
-            # One catalog per loaded model — this is what populates the
-            # "Database" dropdown in DBeaver/Tableau/Power BI.
+            # v2.5.0 layout: single ``orionbelt`` catalog. The
+            # ``Database`` dropdown in DBeaver/Tableau/Power BI shows
+            # one entry; the per-model selector is the schema dropdown.
             table = build_catalogs_table(self._list_available_model_names())
         elif type_url == CMD_GET_DB_SCHEMAS:
+            # One row per loaded model — DBeaver renders these under
+            # ``orionbelt`` in the schema tree.
             table = build_db_schemas_table(self._list_available_model_names())
         elif type_url == CMD_GET_TABLES:
             table = self._build_tables_from_model(
-                context, table_filter=table_filter, catalog_filter=catalog_filter
+                context,
+                table_filter=table_filter,
+                catalog_filter=catalog_filter,
+                db_schema_filter=db_schema_filter,
             )
         elif type_url == CMD_GET_COLUMNS:
             table = self._build_columns_from_model(
-                context, table_filter=table_filter, catalog_filter=catalog_filter
+                context,
+                table_filter=table_filter,
+                catalog_filter=catalog_filter,
+                db_schema_filter=db_schema_filter,
             )
         elif type_url == CMD_GET_TABLE_TYPES:
             table = build_table_types_table()

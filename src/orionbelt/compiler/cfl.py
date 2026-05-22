@@ -467,6 +467,23 @@ class CFLPlanner:
             # Compute reachability from this leg's fact object upfront
             reachable = graph.descendants(obj_name) | {obj_name}
 
+            # Collect table references from this leg's own-measure
+            # expressions. A measure like ``Electronics Sales`` is
+            # defined as ``SUM(CASE WHEN Products.productcat = …
+            # THEN Sales.salesamount END)`` — the CASE condition
+            # references Products, which must be joined into this
+            # leg's FROM. Without this, the generated SQL emits
+            # ``"Products"."productcat"`` against a FROM clause that
+            # only has Sales + Clients, and the database raises
+            # "missing FROM-clause entry for table Products".
+            measure_expr_objects: set[str] = set()
+            for m in measures:
+                self._collect_table_refs(m.expression, measure_expr_objects)
+            if cross_fact:
+                for m in cross_fact:
+                    if m.name in this_measure_names:
+                        self._collect_table_refs(m.expression, measure_expr_objects)
+
             # SELECT conformed dimensions — only emit real column refs for
             # dimensions reachable from this leg's fact AND whose `via:`
             # waypoint (if any) is also reachable from this leg's fact.
@@ -531,13 +548,18 @@ class CFLPlanner:
 
             # Determine the common root for this leg:
             # the deepest directed ancestor that can reach all dimension
-            # objects, measure's source object, and filter-referenced objects.
+            # objects, measure's source object, filter-referenced objects,
+            # and any objects referenced by this leg's measure expressions.
             # Only include dimensions reachable from this leg's fact object.
             leg_required = {
                 dim.object_name for dim in resolved.dimensions if dim.object_name in reachable
             }
             leg_required.add(obj_name)
             leg_required.update(filter_objects)
+            # Include objects referenced by measure expressions, but only
+            # those reachable from this leg's fact — cross-fact filter
+            # tables would otherwise pull unrelated facts into the leg.
+            leg_required.update(measure_expr_objects & reachable)
             lead = graph.find_common_root(leg_required)
             lead_obj = model.data_objects.get(lead)
 
@@ -554,7 +576,14 @@ class CFLPlanner:
                     leg_required,
                     via_constraints=resolved.via_constraints or None,
                 )
+                # Dedupe by alias so a dim reachable through multiple
+                # paths within one leg emits only one JOIN — postgres
+                # rejects "table specified more than once" when two
+                # role-played dims resolve to the same target object.
+                joined_aliases: set[str] = {lead}
                 for step in steps:
+                    if step.to_object in joined_aliases:
+                        continue
                     target_object = model.data_objects.get(step.to_object)
                     if target_object:
                         on_expr = graph.build_join_condition(step)
@@ -564,6 +593,7 @@ class CFLPlanner:
                             join_type=step.join_type,
                             alias=step.to_object,
                         )
+                        joined_aliases.add(step.to_object)
 
             # Capture leg info for explain
             leg_join_strs = (
@@ -937,7 +967,10 @@ class CFLPlanner:
                 all_needed,
                 via_constraints=via_constraints,
             )
+            joined_aliases: set[str] = {root}
             for step in steps:
+                if step.to_object in joined_aliases:
+                    continue
                 target_obj = model.data_objects.get(step.to_object)
                 if target_obj:
                     on_expr = graph.build_join_condition(step)
@@ -947,6 +980,7 @@ class CFLPlanner:
                         join_type=step.join_type,
                         alias=step.to_object,
                     )
+                    joined_aliases.add(step.to_object)
 
         return builder.build()
 

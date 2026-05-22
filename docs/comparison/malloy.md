@@ -192,7 +192,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 | RDF graph + SPARQL | Yes (`/graph`, `/sparql`) | No |
 | Format conversion | OSI ↔ OBML (`/convert/*`) | n/a |
 
-Both projects converge on REST + MCP for serving models. OBSL additionally exposes Arrow Flight SQL (JDBC-compatible) for BI tool integration; Malloy doesn't have a comparable BI-tool wire protocol.
+Both projects converge on REST + MCP for serving models. OBSL additionally exposes **two SQL wire protocols** for BI tool integration — PostgreSQL wire (v2.5.0+, works with Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector) and Arrow Flight SQL (gRPC, columnar; JDBC/ODBC via Flight SQL drivers). Malloy doesn't have a comparable BI-tool wire protocol.
 
 The authoring story differs more than it looks at first glance:
 - **Malloy's VS Code extension** is a language-aware editor with autocomplete, inline visualizations, and a model-design feel. Strong for analysts writing `.malloy` files by hand.

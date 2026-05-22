@@ -220,7 +220,7 @@ Environment variables or `.env` file (via pydantic-settings):
 | `DEFAULT_LOCALE` | — | BCP-47 locale used by `/v1/query/execute?format_values=true` when no `locale` query param is supplied |
 | `SESSION_TTL_SECONDS` | `1800` | Session timeout |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Cleanup sweep interval |
-| `MODEL_FILE` | — | **Deprecated, removed v2.5.0.** Path to OBML YAML for legacy single-model mode. Use `MODEL_FILES` instead. |
+| `MODEL_FILE` | — | **Deprecated, scheduled for removal in v2.6.0.** Path to OBML YAML for legacy single-model mode. Use `MODEL_FILES` instead. |
 | `MODEL_FILES` | — | Comma-separated OBML YAML paths for multi-model mode. Each model loads into its own internal session, addressable by the OBML `name:` field (fallback: filename stem; normalized to a valid identifier `[a-z][a-z0-9_]{0,62}`). BI tools select via Flight `database` catalog or pgwire `database=` URL parameter. Mutually exclusive with `MODEL_FILE`. |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FORMAT` | `console` | `console` (pretty), `json` (structured), `cloudrun` (JSON, no access logs) |

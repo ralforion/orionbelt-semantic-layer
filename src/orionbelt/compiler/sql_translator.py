@@ -556,14 +556,19 @@ def _reject_unsupported_structure(ast: exp.Select, errors: list[SemanticError]) 
     # Aggregate function calls outside the SELECT list (e.g. in WHERE / ORDER BY)
     # remain rejected — the SELECT loop has dedicated handling that matches
     # the wrapping aggregate against each measure's declared aggregation.
+    # Tableau-style ``HAVING (COUNT(1) > 0)`` / ``HAVING COUNT(*) > 0``
+    # tautologies are skipped — they're a BI-tool idiom for "return zero
+    # rows when the table is empty" and we drop them at filter-routing
+    # time, see :func:`_atom_to_query_filter`.
     select_aggs = {id(a) for a in ast.expressions if isinstance(a, exp.AggFunc)}
     select_aggs.update(
         id(a.this)
         for a in ast.expressions
         if isinstance(a, exp.Alias) and isinstance(a.this, exp.AggFunc)
     )
+    having_aggs = {id(a) for a in _collect_count_tautology_aggs(ast.args.get("having"))}
     for agg in ast.find_all(exp.AggFunc):
-        if id(agg) in select_aggs:
+        if id(agg) in select_aggs or id(agg) in having_aggs:
             continue
         errors.append(
             SemanticError(
@@ -574,6 +579,126 @@ def _reject_unsupported_structure(ast: exp.Select, errors: list[SemanticError]) 
                 ),
             )
         )
+
+
+def _collect_count_tautology_aggs(having_node: exp.Expression | None) -> list[exp.AggFunc]:
+    """Return ``COUNT(*) / COUNT(1)`` aggregates inside a HAVING tautology.
+
+    Tableau decorates aggregation queries with ``HAVING (COUNT(1) > 0)``
+    to drop the synthetic row Postgres returns for an empty source —
+    when there *is* data the predicate is always true, so we silently
+    skip it. Returns the aggregate nodes so the caller can exclude them
+    from the "aggregate outside SELECT list" rejection.
+    """
+
+    if having_node is None:
+        return []
+    expr = having_node.this if hasattr(having_node, "this") else having_node
+    found: list[exp.AggFunc] = []
+    for atom in _flatten_and(expr):
+        agg = _match_count_tautology(atom)
+        if agg is not None:
+            found.append(agg)
+    return found
+
+
+def _flatten_and(expr: exp.Expression) -> list[exp.Expression]:
+    """Like ``_walk_and`` but doesn't record errors — read-only."""
+
+    if isinstance(expr, exp.And):
+        return [*_flatten_and(expr.left), *_flatten_and(expr.right)]
+    if isinstance(expr, exp.Paren):
+        return _flatten_and(expr.this)
+    return [expr]
+
+
+def _match_count_tautology(atom: exp.Expression) -> exp.AggFunc | None:
+    """Return the COUNT aggregate iff ``atom`` is a tautology like
+    ``COUNT(*) > 0`` / ``COUNT(*) >= 1`` / ``COUNT(*) != 0`` — i.e.
+    a comparison that's trivially true for every non-empty group.
+
+    Tableau's connect-check emits ``HAVING COUNT(*) > 0`` on every
+    aggregate viz; quietly dropping it lets the query reach the
+    translator unchanged. Comparisons that are *not* tautological
+    (``COUNT(*) < 5``, ``COUNT(*) = 0``, ``COUNT(*) > 10``) are real
+    filters and must be preserved — silently dropping them would
+    widen the result set with no error, which is exactly the kind of
+    silently-wrong-number a semantic layer exists to prevent.
+    """
+
+    if not isinstance(atom, exp.Binary):
+        return None
+    left, right = atom.left, atom.right
+    # Either side can be the COUNT; the other must be a literal.
+    if isinstance(left, exp.Count) and isinstance(right, exp.Literal):
+        if not _is_count_star_or_one(left):
+            return None
+        return left if _is_nonempty_group_tautology(atom, right, count_on="left") else None
+    if isinstance(right, exp.Count) and isinstance(left, exp.Literal):
+        if not _is_count_star_or_one(right):
+            return None
+        return right if _is_nonempty_group_tautology(atom, left, count_on="right") else None
+    return None
+
+
+def _is_nonempty_group_tautology(
+    atom: exp.Binary,
+    literal: exp.Literal,
+    *,
+    count_on: str,
+) -> bool:
+    """True when the comparison is trivially satisfied on any non-empty group.
+
+    For COUNT(*) on the left: ``COUNT(*) > 0``, ``COUNT(*) >= 1``,
+    ``COUNT(*) != 0``, ``COUNT(*) <> 0`` are tautologies.
+    For COUNT(*) on the right the operands flip:
+    ``0 < COUNT(*)``, ``1 <= COUNT(*)``, ``0 != COUNT(*)``,
+    ``0 <> COUNT(*)``.
+    Anything else (``COUNT(*) < 5``, ``COUNT(*) = 0``, ``COUNT(*) > 10``)
+    is a real filter and must be preserved.
+    """
+
+    try:
+        n = int(str(literal.this))
+    except (TypeError, ValueError):
+        return False
+
+    # Normalize so we always reason as "COUNT(*) op n".
+    if count_on == "right":
+        # left = literal, right = COUNT; swap operator to its mirror.
+        op_node_for_count_left = _MIRROR_OPS.get(type(atom))
+        if op_node_for_count_left is None:
+            return False
+        op_type = op_node_for_count_left
+    else:
+        op_type = type(atom)
+
+    if op_type is exp.GT and n == 0:
+        return True
+    if op_type is exp.GTE and n in (0, 1):
+        return True
+    return bool(op_type is exp.NEQ and n == 0)
+
+
+# sqlglot expression types for comparison operators; used to mirror an
+# operator when the COUNT(*) appears on the right of the comparison.
+_MIRROR_OPS: dict[type[exp.Expression], type[exp.Expression]] = {
+    exp.GT: exp.LT,
+    exp.GTE: exp.LTE,
+    exp.LT: exp.GT,
+    exp.LTE: exp.GTE,
+    exp.EQ: exp.EQ,
+    exp.NEQ: exp.NEQ,
+}
+
+
+def _is_count_star_or_one(count: exp.Count) -> bool:
+    """``COUNT(*)`` and ``COUNT(1)`` count every row; treat them the same."""
+
+    inner = count.this
+    if isinstance(inner, exp.Star):
+        return True
+    return isinstance(inner, exp.Literal) and str(inner.this) in {"1", "*"}
 
 
 def _column_name(node: exp.Expression) -> str | None:
@@ -594,6 +719,13 @@ def _column_name(node: exp.Expression) -> str | None:
         return str(node.name)
     if isinstance(node, exp.Identifier):
         return str(node.this)
+    if isinstance(node, exp.Cast | exp.TryCast):
+        # CAST(<col> AS <type>) is a type coercion the BI tool added —
+        # Tableau wraps every dimension in CAST(... AS TEXT). The
+        # underlying column is what we resolve; the cast itself is a
+        # no-op in the semantic layer because dimensions already have
+        # their declared dataType.
+        return _column_name(node.this)
     if (
         isinstance(node, exp.Anonymous)
         and str(node.name).upper() == "MEASURE"
@@ -1004,6 +1136,10 @@ def _split_predicates(
     can lift this restriction by emitting :class:`QueryFilterGroup`.
     """
     for atom in _walk_and(expr, errors):
+        if force_having and _match_count_tautology(atom) is not None:
+            # ``HAVING COUNT(*) > 0`` / ``COUNT(1) > 0`` — Tableau idiom,
+            # silently drop. See :func:`_match_count_tautology`.
+            continue
         target = _atom_to_query_filter(atom, classify, canonical, errors)
         if target is None:
             continue

@@ -8,24 +8,30 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install dependencies first (cached layer — only reruns when pyproject.toml/uv.lock change).
-# `--extra flight-duckdb-only` pulls in pyarrow + ob-flight-extension + the 8 vendor
-# drivers so /v1/query/execute can actually run SQL against the baked-in
-# DuckDB demo file (and any other configured vendor).
+# OB_EXTRA selects which optional-dependency group to install:
+#   - flight-duckdb-only (default) — pyarrow + ob-flight-extension + ob-duckdb
+#     only. Smallest image; used by the Cloud Run demo which only needs
+#     the baked-in DuckDB seed.
+#   - flight — pyarrow + ob-flight-extension + all 8 vendor drivers
+#     (BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres,
+#     Snowflake). Required for integration tests that execute against a
+#     non-DuckDB backend (e.g. the Dremio Stage-2 suite).
 #
 # The vendor driver workspace members live under drivers/, so we copy
 # their pyproject.toml manifests before the sync so uv can resolve the
 # workspace graph. The actual driver source is copied alongside src/
 # below.
+ARG OB_EXTRA=flight-duckdb-only
 COPY pyproject.toml uv.lock README.md ./
 COPY drivers/ drivers/
-RUN uv sync --no-dev --no-install-project --frozen --extra flight-duckdb-only
+RUN uv sync --no-dev --no-install-project --frozen --extra ${OB_EXTRA}
 
 # Copy source and install the project itself
 COPY src/ src/
 COPY schema/ schema/
 COPY osi-obml/osi_obml_converter.py osi-obml/
 COPY osi-obml/osi-schema.json osi-obml/
-RUN uv sync --no-dev --no-editable --frozen --extra flight-duckdb-only
+RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
 
 # --- Runtime stage: minimal image ---
 FROM python:3.12-slim

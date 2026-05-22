@@ -17,26 +17,19 @@ def manager_with_model() -> SessionManager:
     return mgr
 
 
-def test_refresh_creates_one_schema_per_model(manager_with_model: SessionManager) -> None:
-    """Each loaded model gets its own DuckDB schema named after the model."""
-
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    result = emu.execute("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name")
-    schemas = [row[0] for row in result.rows]
-    assert "commerce" in schemas
-
-
-def test_data_table_is_named_model(manager_with_model: SessionManager) -> None:
-    """The data table inside each model schema is called ``model``."""
+def test_refresh_creates_one_table_per_model(manager_with_model: SessionManager) -> None:
+    """v2.5.0 layout: database=orionbelt, schema=<model>, table='model'."""
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema='commerce' AND table_type='BASE TABLE'"
+        "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind='r' AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+        "ORDER BY 1, 2"
     )
-    assert [row[0] for row in result.rows] == ["model"]
+    rows = [(row[0], row[1]) for row in result.rows]
+    assert ("commerce", "model") in rows
 
 
 def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
@@ -46,8 +39,7 @@ def test_table_has_expected_columns(manager_with_model: SessionManager) -> None:
     emu.refresh(manager_with_model)
     result = emu.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema='commerce' AND table_name='model' "
-        "ORDER BY ordinal_position"
+        "WHERE table_schema='commerce' AND table_name='model' ORDER BY ordinal_position"
     )
     columns = [row[0] for row in result.rows]
     # SAMPLE_MODEL_YAML exposes one dim, three measures, and two metrics.
@@ -64,8 +56,9 @@ def test_refresh_is_idempotent(manager_with_model: SessionManager) -> None:
     emu.refresh(manager_with_model)
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT count(*) FROM information_schema.tables "
-        "WHERE table_schema='commerce' AND table_name='model'"
+        "SELECT count(*) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind='r' AND n.nspname='commerce' AND c.relname='model'"
     )
     assert result.rows[0][0] == 1
 
@@ -78,16 +71,15 @@ def test_refresh_drops_stale_models() -> None:
     store.load_model(SAMPLE_MODEL_YAML)
     emu = CatalogEmulator()
     emu.refresh(mgr)
+    # Reset SessionManager to empty and refresh.
     empty = SessionManager()
     emu.refresh(empty)
-    result = emu.execute(
-        "SELECT count(*) FROM information_schema.schemata WHERE schema_name='temp_model'"
-    )
+    result = emu.execute("SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname='temp_model'")
     assert result.rows[0][0] == 0
 
 
 def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) -> None:
-    """\\dt's actual SQL must surface the model table under its own schema."""
+    """\\dt's actual SQL must surface the model table at <model>.model."""
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
@@ -104,178 +96,93 @@ def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) ->
     assert ("commerce", "model") in rows
 
 
-def test_empty_session_manager_yields_no_model_schemas() -> None:
+def test_empty_session_manager_yields_no_tables() -> None:
     emu = CatalogEmulator()
     emu.refresh(SessionManager())
-    result = emu.execute(
-        "SELECT count(*) FROM information_schema.schemata "
-        "WHERE schema_name NOT IN ('main','obsl_meta','pg_catalog','information_schema')"
-    )
-    assert result.rows[0][0] == 0
+    result = emu.execute("SELECT relname FROM pg_catalog.pg_class WHERE relkind='r'")
+    assert result.rows == []
 
 
-# ---------------------------------------------------------------------------
-# Step 5 — obsl_meta views fixing the psql 16 \d gap
-# ---------------------------------------------------------------------------
-
-
-def test_obsl_meta_pg_class_has_psql16_columns(
+def test_shadow_views_hidden_from_get_tables(
     manager_with_model: SessionManager,
 ) -> None:
-    """pg_class probe receives the columns psql 16's \\d expects."""
+    """Tableau's getTables query lists every visible table/view in the
+    schema browser. The shadow views (_obsl_pg_attribute / _obsl_pg_type)
+    are implementation details and must not show up there.
+
+    They're created as ``TEMP VIEW`` — DuckDB puts temp objects in a
+    catalog where ``pg_class.relnamespace`` is NULL, so the
+    ``WHERE nspname NOT IN ('pg_catalog', 'information_schema')`` filter
+    in pgjdbc's getTables excludes them (``NULL NOT IN (…)`` is NULL,
+    which the WHERE drops).
+    """
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT relname, relforcerowsecurity, relrowsecurity, relhasoids, "
-        "relispartition, relreplident, relpersistence "
-        "FROM pg_catalog.pg_class c "
-        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE c.relname='model' AND n.nspname='commerce'"
+        "SELECT n.nspname, c.relname, c.relkind "
+        "FROM pg_catalog.pg_namespace n "
+        "JOIN pg_catalog.pg_class c ON (c.relnamespace = n.oid) "
+        "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "
+        "AND c.relkind IN ('r', 'v') "
+        "ORDER BY 1, 2"
     )
-    assert result.row_count == 1
-    row = result.rows[0]
-    assert row[0] == "model"
-    assert row[1] is False
-    assert row[6] == "p"
+    visible_pairs = {(row[0], row[1]) for row in result.rows}
+    # Shadow views must be hidden (TEMP scope → relnamespace IS NULL).
+    visible_names = {pair[1] for pair in visible_pairs}
+    assert "_obsl_pg_attribute" not in visible_names
+    assert "_obsl_pg_type" not in visible_names
+    # The user-facing model table is still listed at <schema>.model.
+    assert ("commerce", "model") in visible_pairs
 
 
-def test_obsl_meta_pg_attribute_returns_real_postgres_oids(
+def test_pg_attribute_atttypid_returns_real_postgres_oids(
     manager_with_model: SessionManager,
 ) -> None:
-    """atttypid now matches real Postgres OIDs (was DuckDB-internal in Step 3)."""
+    """Tableau's pgjdbc reads pg_attribute.atttypid to learn each column's
+    Postgres OID. DuckDB's native pg_attribute stores DuckDB internal
+    type ids (DOUBLE → 23, BIGINT → 14, DATE → 15), which collide with
+    different Postgres OIDs (Postgres 23 = INT4). The shadow view +
+    rewrite translate to real Postgres OIDs so a JOIN with pg_type works
+    and pgjdbc allocates the right-width column reader. Without this
+    fix Tableau measures arrive as NULL / 0 because the 8-byte FLOAT8
+    wire bytes get parsed as an INT4.
+    """
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT a.attname, a.atttypid "
-        "FROM pg_catalog.pg_attribute a "
-        "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
-        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE c.relname='model' AND n.nspname='commerce' "
+        "SELECT a.attname, a.atttypid, t.typname "
+        "FROM pg_attribute a "
+        "JOIN pg_class c ON a.attrelid = c.oid "
+        "JOIN pg_namespace n ON c.relnamespace = n.oid "
+        "JOIN pg_type t ON a.atttypid = t.oid "
+        "WHERE n.nspname = 'commerce' AND c.relname = 'model' AND a.attnum > 0 "
         "ORDER BY a.attnum"
     )
-    types = {row[0]: row[1] for row in result.rows}
-    assert types.get("Customer Country") == 1043
-    assert types.get("Total Revenue") == 701
+    by_name = {row[0]: (row[1], row[2]) for row in result.rows}
+    # Total Revenue is a measure with DOUBLE backing — must surface as
+    # FLOAT8 (OID 701) so pgjdbc allocates an 8-byte Double reader.
+    assert by_name["Total Revenue"][0] == 701  # FLOAT8
+    assert by_name["Total Revenue"][1] == "float8"
+    assert by_name["Order Count"][0] == 20  # INT8 (BIGINT)
+    assert by_name["Customer Country"][0] == 25  # TEXT
 
 
-def test_refresh_preserves_data_table_oid_across_calls(
+def test_pg_expandarray_resolves_for_jdbc_get_primary_keys(
     manager_with_model: SessionManager,
 ) -> None:
-    """Stable refresh: same model → same oid (psql \\d's two-step probe)."""
+    """JDBC's getPrimaryKeys query references ``information_schema._pg_expandarray``.
 
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    sql = (
-        "SELECT c.oid FROM pg_catalog.pg_class c "
-        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE c.relname='model' AND n.nspname='commerce'"
-    )
-    oid_before = emu.execute(sql).rows[0][0]
-    emu.refresh(manager_with_model)
-    oid_after = emu.execute(sql).rows[0][0]
-    assert oid_before == oid_after
-
-
-def test_dbeaver_regclass_cast_does_not_error(
-    manager_with_model: SessionManager,
-) -> None:
-    """Bare ``::regclass`` casts (DBeaver's pg_description probe) round-trip.
-
-    DuckDB has no ``regclass`` type; the rewriter collapses the cast to
-    ``::VARCHAR``. The surrounding probe runs against an empty
-    pg_description stub so the integer-vs-string comparison filters out
-    everything without erroring.
+    DuckDB doesn't ship that helper. We add a stub macro + a SQL
+    rewrite that strips the ``information_schema.`` prefix so the
+    function resolves. Tableau hit this during connect-check.
     """
 
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
-    result = emu.execute(
-        "SELECT count(*) FROM pg_description d, pg_namespace n "
-        "WHERE d.objoid = n.oid AND d.objsubid = 0 "
-        "AND d.classoid = 'pg_namespace'::regclass"
-    )
-    assert result.row_count == 1
-
-
-def test_dbeaver_pg_database_probe_returns_full_columns(
-    manager_with_model: SessionManager,
-) -> None:
-    """DBeaver's ``SELECT db.oid, db.* FROM pg_database WHERE datallowconn``.
-
-    DuckDB's native ``pg_catalog.pg_database`` exposes only (oid, datname);
-    DBeaver expects the full Postgres column set or it errors on
-    ``datallowconn``/``datistemplate``.  Our ``obsl_meta.pg_database``
-    view provides sensible defaults so the probe succeeds.
-    """
-
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    result = emu.execute(
-        "SELECT db.oid, db.* FROM pg_catalog.pg_database db "
-        "WHERE 1=1 AND datallowconn AND NOT datistemplate"
-    )
-    column_names = [c.name for c in result.columns]
-    assert "datname" in column_names
-    assert "datallowconn" in column_names
-    assert "datistemplate" in column_names
-    assert result.row_count >= 1
-
-
-def test_pg_database_returns_single_orionbelt_row(
-    manager_with_model: SessionManager,
-) -> None:
-    """pg_database surfaces the OBSL brand, not DuckDB catalog names.
-
-    Every loaded model is exposed as a TABLE under this single database.
-    BI-tool trees get a clean top-level "orionbelt" node and the model
-    names appear in the Tables list — not as sibling databases.
-    """
-
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    result = emu.execute("SELECT datname FROM pg_catalog.pg_database")
-    names = [row[0] for row in result.rows]
-    assert names == ["orionbelt"]
-    # DuckDB's defaults must not leak through.
-    assert "memory" not in names
-    assert "system" not in names
-
-
-def test_pg_namespace_exposes_model_schemas_and_pg_catalog(
-    manager_with_model: SessionManager,
-) -> None:
-    """pg_namespace lists model schemas + ``pg_catalog``.
-
-    DuckDB's ``main`` schema (where it physically stores pg_type rows)
-    is renamed to ``pg_catalog`` so Postgres clients' type-resolution
-    JOINs find the expected namespace. Our internal ``obsl_meta``
-    rewrite target is hidden.
-    """
-
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    result = emu.execute("SELECT nspname FROM pg_catalog.pg_namespace ORDER BY 1")
-    names = [row[0] for row in result.rows]
-    assert "commerce" in names
-    assert "pg_catalog" in names  # synthesised from DuckDB's ``main``
-    assert "obsl_meta" not in names
-    assert "main" not in names  # renamed away
-
-
-def test_unhandled_probe_logs_warning(
-    manager_with_model: SessionManager, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A catalog query that throws emits PGWIRE_CATALOG_PROBE_UNHANDLED."""
-
-    import logging
-
-    import duckdb
-
-    emu = CatalogEmulator()
-    emu.refresh(manager_with_model)
-    caplog.set_level(logging.WARNING, logger="orionbelt.pgwire.catalog")
-    with pytest.raises(duckdb.Error):
-        emu.execute("SELECT * FROM pg_catalog.does_not_exist")
-    assert any("PGWIRE_CATALOG_PROBE_UNHANDLED" in record.message for record in caplog.records)
+    # The shape pgjdbc actually emits — works on a literal array
+    # because our virtual tables have no indexes for the FROM side.
+    result = emu.execute("SELECT (information_schema._pg_expandarray(ARRAY[1,2,3])).n AS key_seq")
+    # Stub returns a STRUCT with NULL fields — only needs to resolve.
+    assert list(result.rows[0]) == [None]

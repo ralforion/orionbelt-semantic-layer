@@ -10,10 +10,22 @@ from orionbelt.pgwire import types as pgtypes
 
 
 def test_oid_for_known_hints() -> None:
-    assert pgtypes.oid_for_type_hint("number") == pgtypes.OID_NUMERIC
+    # Numbers advertise FLOAT8 OID; the wire format is text, but JDBC
+    # parses text FLOAT8 correctly via ``Double.parseDouble``.
+    assert pgtypes.oid_for_type_hint("number") == pgtypes.OID_FLOAT8
     assert pgtypes.oid_for_type_hint("string") == pgtypes.OID_TEXT
     assert pgtypes.oid_for_type_hint("datetime") == pgtypes.OID_TIMESTAMP
     assert pgtypes.oid_for_type_hint("binary") == pgtypes.OID_BYTEA
+
+
+def test_format_code_default_is_text_for_everything() -> None:
+    """Server-default is text (0) for every hint. The actual wire format
+    is decided per-column by Bind.result_formats; this helper is only
+    used for the simple-Query path and Parse-time preexec where there
+    is no client-requested format yet.
+    """
+    for hint in ("number", "string", "datetime", "binary", "unknown"):
+        assert pgtypes.format_code_for_type_hint(hint) == 0
 
 
 def test_oid_for_unknown_hint_falls_back_to_text() -> None:
@@ -30,10 +42,30 @@ def test_encode_bool_emits_postgres_letters() -> None:
     assert pgtypes.encode_text_value(False, "string") == "f"
 
 
-def test_encode_numeric_types() -> None:
-    assert pgtypes.encode_text_value(42, "number") == "42"
-    assert pgtypes.encode_text_value(3.14, "number") == "3.14"
-    assert pgtypes.encode_text_value(Decimal("12345.6789"), "number") == "12345.6789"
+def test_encode_numeric_types_text() -> None:
+    # ``format_code=0`` (default) → decimal-string text.
+    assert pgtypes.encode_value(42, "number", 0) == "42"
+    assert pgtypes.encode_value(3.14, "number", 0) == "3.14"
+    assert pgtypes.encode_value(Decimal("12345.6789"), "number", 0) == "12345.6789"
+
+
+def test_encode_numeric_types_binary() -> None:
+    """``format_code=1`` → 8-byte big-endian IEEE 754 FLOAT8.
+
+    pgjdbc puts FLOAT8 in its ``binaryTransferEnable`` set, so it
+    requests ``result_formats=[…, 1, …]`` in Bind for numeric columns.
+    The server must honour that or pgjdbc throws
+    ``ArrayIndexOutOfBoundsException`` trying to read 8 bytes from a
+    7-byte text payload.
+    """
+    import struct as _struct
+
+    for v in (42, 3.14, Decimal("12345.6789")):
+        encoded = pgtypes.encode_value(v, "number", 1)
+        assert isinstance(encoded, bytes), f"{v!r} → {encoded!r}"
+        assert len(encoded) == 8
+        decoded = _struct.unpack("!d", encoded)[0]
+        assert abs(decoded - float(v)) < 1e-9
 
 
 def test_encode_datetime_uses_space_separator() -> None:

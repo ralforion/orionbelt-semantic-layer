@@ -1,0 +1,55 @@
+---
+# yaml-language-server: $schema=../../../../schema/obml-schema.json
+#
+# Stage-2 OBML model: OBSL compiles to Dremio SQL and executes against
+# the same Dremio container that issued the federation query.
+#
+# Backing data is Dremio's built-in INFORMATION_SCHEMA.COLUMNS, which is
+# always present without any dataset promotion. It has thousands of rows
+# (Dremio's own system catalogs), so dim/measure aggregation produces
+# meaningful, non-empty results out of the box.
+version: 1.0
+
+name: dremio_info_schema
+
+settings:
+  # Per-model dialect override — the OBSL pgwire router uses this in
+  # preference to the global DB_VENDOR so a single OBSL process can
+  # serve a DuckDB-backed model AND this Dremio-backed model from the
+  # same pgwire port.
+  defaultDialect: dremio
+
+dataObjects:
+  Columns:
+    code: COLUMNS
+    database: INFORMATION_SCHEMA
+    schema: ""
+    columns:
+      Table Schema:
+        code: TABLE_SCHEMA
+        abstractType: string
+      Table Name:
+        code: TABLE_NAME
+        abstractType: string
+      Column Name:
+        code: COLUMN_NAME
+        abstractType: string
+
+dimensions:
+  Table Schema:
+    dataObject: Columns
+    column: Table Schema
+    resultType: string
+
+  Table Name:
+    dataObject: Columns
+    column: Table Name
+    resultType: string
+
+measures:
+  Column Count:
+    aggregation: count
+    dataType: bigint
+    columns:
+      - dataObject: Columns
+        column: Column Name

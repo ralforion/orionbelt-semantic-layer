@@ -45,9 +45,7 @@ class Cursor:
         self._ob_timeout = ob_timeout
         self._rows: list[tuple[Any, ...]] = []
         self._pos: int = 0
-        self._description: (
-            tuple[tuple[str, Any, None, None, None, None, None], ...] | None
-        ) = None
+        self._description: tuple[tuple[str, Any, None, None, None, None, None], ...] | None = None
         self._rowcount: int = -1
         self._arrow_table: Any = None
 

@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "2.4.0"
+  project_version: "2.5.0"
   analytics:
     provider: google
     property: G-X19K4GX3EX
@@ -119,10 +119,10 @@ nav:
       - Quick Start: getting-started/quickstart.md
       - Docker & Deployment: getting-started/docker.md
       - Development: getting-started/development.md
+  - OBSQL: guide/semantic-ql.md
   - Guide:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
-      - OrionBelt Semantic QL (OBSQL): guide/semantic-ql.md
       - SQL Dialects: guide/dialects.md
       - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md

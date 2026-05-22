@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import struct
 from collections.abc import Awaitable, Callable
 
 from orionbelt.pgwire import protocol
@@ -34,10 +35,15 @@ logger = logging.getLogger(__name__)
 # sequence of one or more protocol frames terminated by the per-statement
 # reply (CommandComplete or ErrorResponse). The caller appends
 # ReadyForQuery. Steps 3+ extend this signature (parameters, portals).
-QueryHandler = Callable[[str, str], Awaitable[bytes]]
+QueryHandler = Callable[..., Awaitable[bytes]]
 
 
-async def _hello_world_handler(sql: str, database: str) -> bytes:
+async def _hello_world_handler(
+    sql: str,
+    database: str,
+    *,
+    result_formats: tuple[int, ...] = (),
+) -> bytes:
     """Fallback responder used when no router is wired in.
 
     Recognises ``SELECT 1`` so connectivity probes still work in
@@ -46,7 +52,7 @@ async def _hello_world_handler(sql: str, database: str) -> bytes:
     handler so misuse is loud rather than silent.
     """
 
-    del database  # unused — see SemanticRouter for the real path
+    del database, result_formats  # unused — see SemanticRouter for the real path
     normalised = sql.strip().rstrip(";").strip().lower()
     if normalised == "select 1":
         return (
@@ -127,6 +133,25 @@ class PgWireServer:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
+    # Maximum time we'll wait for the OS / client to drain a write
+    # before declaring the connection dead. A client that stopped
+    # reading (Tableau JDBC crashes / aborts mid-response) pins the
+    # event loop indefinitely without this — and the process becomes
+    # unresponsive to Ctrl+C until the socket OS-timeouts.
+    _WRITE_DRAIN_TIMEOUT_SECONDS: float = 10.0
+
+    async def _drain(self, writer: asyncio.StreamWriter) -> None:
+        """``writer.drain()`` with a hard timeout so a dead client
+        can't hang the server."""
+
+        try:
+            await asyncio.wait_for(
+                writer.drain(),
+                timeout=self._WRITE_DRAIN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise ConnectionError("pgwire write drain timed out") from exc
+
     async def _handle_connection(
         self,
         reader: asyncio.StreamReader,
@@ -175,7 +200,7 @@ class PgWireServer:
             # SSLRequest — reject (Step 1 has no TLS in-process), then
             # read the real StartupMessage on the same socket.
             writer.write(b"N")
-            await writer.drain()
+            await self._drain(writer)
             startup = await protocol.read_startup_message(reader.readexactly)
             if startup is None:
                 raise protocol.ProtocolError("Repeated SSLRequest on same socket")
@@ -189,7 +214,7 @@ class PgWireServer:
                     message=auth.error_message or "authentication failed",
                 )
             )
-            await writer.drain()
+            await self._drain(writer)
             return
 
         # Handshake complete: AuthOk + a small set of ParameterStatus
@@ -201,7 +226,7 @@ class PgWireServer:
             protocol.build_backend_key_data(pid=_fake_backend_pid(), secret=secrets.randbits(31))
         )
         writer.write(protocol.build_ready_for_query())
-        await writer.drain()
+        await self._drain(writer)
 
         logger.info(
             "pgwire session opened peer=%s user=%s database=%s",
@@ -241,14 +266,14 @@ class PgWireServer:
                         )
                     )
                 writer.write(protocol.build_ready_for_query())
-                await writer.drain()
+                await self._drain(writer)
                 continue
 
             # ---- Extended query protocol --------------------------------
             if tag == b"S":  # Sync — emit ReadyForQuery, clear skip flag
                 skip_until_sync = False
                 writer.write(protocol.build_ready_for_query())
-                await writer.drain()
+                await self._drain(writer)
                 continue
 
             if skip_until_sync:
@@ -258,7 +283,7 @@ class PgWireServer:
                 continue
 
             if tag == b"H":  # Flush — no-op; we already drain after each reply
-                await writer.drain()
+                await self._drain(writer)
                 continue
 
             try:
@@ -271,7 +296,7 @@ class PgWireServer:
                 )
 
             writer.write(reply_bytes)
-            await writer.drain()
+            await self._drain(writer)
 
             # Any ErrorResponse in extended-query mode triggers the
             # skip-until-Sync state described above.
@@ -285,7 +310,10 @@ class PgWireServer:
         extended: ExtendedSession,
     ) -> bytes:
         if tag == b"P":
-            return extended.parse(protocol.parse_parse(body))
+            return await asyncio.wait_for(
+                extended.parse(protocol.parse_parse(body)),
+                timeout=self.query_timeout,
+            )
         if tag == b"B":
             return await asyncio.wait_for(
                 extended.bind(protocol.parse_bind(body)),
@@ -314,20 +342,39 @@ class PgWireServer:
             writer.write(
                 protocol.build_error_response(severity="FATAL", code=code, message=message)
             )
-            await writer.drain()
+            await self._drain(writer)
         except Exception:
             pass
 
 
 def _contains_error_response(reply: bytes) -> bool:
-    """Quick scan: does this reply contain an ErrorResponse (``E``) frame?
+    """Return ``True`` when any frame in ``reply`` is an ErrorResponse (``E``).
 
     Extended-query mode requires the server to enter skip-until-Sync
-    after any error; the router emits errors as a single ``E`` frame so
-    a one-byte check is enough.
+    after any error. A bare ``startswith(b"E")`` check is not enough —
+    ``Describe('S')`` returns ``ParameterDescription`` (``t``) followed
+    by ``ErrorResponse`` (``E``) when the prepared statement is
+    invalid, and other compound replies follow the same shape. Walk
+    the frame boundaries by length prefix so the ``E`` is found
+    wherever it lands.
+
+    Postgres frame layout: 1-byte tag + 4-byte big-endian length (the
+    length field includes the four length bytes themselves).
     """
 
-    return reply.startswith(b"E")
+    offset = 0
+    end = len(reply)
+    while offset + 5 <= end:
+        if reply[offset : offset + 1] == b"E":
+            return True
+        (length,) = struct.unpack("!I", reply[offset + 1 : offset + 5])
+        if length < 4:
+            # Malformed / truncated frame — stop scanning rather than
+            # spin forever; the caller will see whatever frames we did
+            # parse.
+            return False
+        offset += 1 + length
+    return False
 
 
 def _startup_parameters() -> dict[str, str]:
@@ -335,6 +382,18 @@ def _startup_parameters() -> dict[str, str]:
 
     These mirror real Postgres values enough for BI tool driver
     handshakes. Step 3's catalog emulation expands the set.
+
+    ``search_path`` is included because pgjdbc 42.x reads it from the
+    cached startup parameters via
+    ``serverParameters.get("search_path").toString()``. Real Postgres
+    always emits a ``ParameterStatus`` for ``search_path`` after
+    AuthOk; without one the lookup returns ``null`` and the
+    ``.toString()`` call NPEs with
+    "Cannot invoke java.lang.CharSequence.toString() because
+    <parameter1> is null" — the DBeaver-on-every-activity NPE the
+    user kept hitting after the v2.5.0 layout flip. The value uses
+    the same ``"$user"`` macro real Postgres ships so clients don't
+    treat it as a literal schema name.
     """
 
     return {
@@ -346,6 +405,10 @@ def _startup_parameters() -> dict[str, str]:
         "integer_datetimes": "on",
         "standard_conforming_strings": "on",
         "application_name": "",
+        "search_path": '"$user", public',
+        "is_superuser": "off",
+        "session_authorization": "obsl",
+        "IntervalStyle": "postgres",
     }
 
 

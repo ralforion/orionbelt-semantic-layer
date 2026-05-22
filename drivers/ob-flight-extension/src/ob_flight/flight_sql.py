@@ -285,13 +285,25 @@ def parse_catalog_filter(value: bytes) -> str | None:
     """Extract the ``catalog`` protobuf field (1) from a Flight SQL
     ``CommandGetTables`` / ``CommandGetColumns`` body.
 
-    The Flight SQL spec exposes per-command catalog selection in addition
-    to the gRPC ``database`` / ``catalog`` headers. When set, BI clients
-    expect the metadata response scoped to that catalog (= model name in
-    OBSL's multi-model mode). Returning the wrong model's metadata for a
-    different selected catalog confused DBeaver's schema tree.
+    Under v2.5.0's catalog layout there is exactly one catalog,
+    ``orionbelt``, so the filter is informational rather than
+    model-selecting — model resolution moves to
+    :func:`parse_db_schema_filter`. Kept for legacy gRPC routing
+    paths that still emit ``catalog=<model>``.
     """
     return _parse_filter_field(value, target_field=1)
+
+
+def parse_db_schema_filter(value: bytes) -> str | None:
+    """Extract the ``db_schema_filter_pattern`` protobuf field (2) from a
+    Flight SQL ``CommandGetTables`` / ``CommandGetColumns`` body.
+
+    v2.5.0 layout: ``catalog=orionbelt``, ``db_schema=<model_name>``,
+    ``table=model``. The schema filter is what BI clients send to
+    scope GetTables / GetColumns to a single model — DBeaver's
+    schema-tree expand sends one filter per node.
+    """
+    return _parse_filter_field(value, target_field=2)
 
 
 def _parse_filter_field(value: bytes, *, target_field: int) -> str | None:
@@ -348,33 +360,39 @@ def is_flight_sql_command(data: bytes) -> bool:
     return "arrow.flight.protocol.sql" in type_url
 
 
-def build_catalogs_table(catalog_names: list[str] | None = None) -> pa.Table:
+def build_catalogs_table(model_names: list[str] | None = None) -> pa.Table:
     """Build response for CommandGetCatalogs.
 
-    In multi-model mode each loaded model is exposed as its own catalog —
-    pass the resolved model names list to populate the response so BI
-    tool catalog dropdowns show them. When ``catalog_names`` is empty or
-    None, returns the legacy single ``orionbelt`` placeholder for
-    backward compatibility with clients that only need *something*.
+    v2.5.0 layout exposes a single ``orionbelt`` catalog regardless of
+    how many models are loaded — models surface as schemas, not as
+    catalogs (see :func:`build_db_schemas_table`). This matches the
+    pgwire layout (``database=orionbelt``, ``schema=<model>``,
+    ``table=model``) so the same probing SQL is portable across
+    wires and BI tools see one consistent shape.
+
+    The ``model_names`` argument is accepted but ignored — kept in the
+    signature so the existing call site
+    (``build_catalogs_table(self._list_available_model_names())``)
+    continues to compile without churn.
     """
-    if not catalog_names:
-        return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
-    return pa.table({"catalog_name": list(catalog_names)}, schema=CATALOG_SCHEMA)
+    del model_names
+    return pa.table({"catalog_name": ["orionbelt"]}, schema=CATALOG_SCHEMA)
 
 
-def build_db_schemas_table(catalog_names: list[str] | None = None) -> pa.Table:
+def build_db_schemas_table(model_names: list[str] | None = None) -> pa.Table:
     """Build response for CommandGetDbSchemas.
 
-    In multi-model mode each loaded model is its own catalog with a single
-    ``model`` schema. Pass the resolved catalog/model names list to emit
-    one row per catalog. When empty/None, falls back to the legacy single
-    ``orionbelt`` row.
+    v2.5.0 layout: one row per loaded model, all under the
+    ``orionbelt`` catalog. The schema name IS the model name — that's
+    what BI tools display in their schema dropdown and what the
+    ``db_schema_filter`` on subsequent GetTables / GetColumns calls
+    selects on.
     """
-    catalogs = list(catalog_names) if catalog_names else ["orionbelt"]
+    schemas = list(model_names) if model_names else ["test"]
     return pa.table(
         {
-            "catalog_name": catalogs,
-            "db_schema_name": ["model"] * len(catalogs),
+            "catalog_name": ["orionbelt"] * len(schemas),
+            "db_schema_name": schemas,
         },
         schema=DB_SCHEMA_SCHEMA,
     )
@@ -399,7 +417,6 @@ def build_tables_table(
         LABEL_VIEW_NAMES,
         METADATA_VIEW_NAMES,
         model_to_virtual_table_schema,
-        model_virtual_table_name,
         object_to_schema,
         virtual_view_schema,
     )
@@ -411,27 +428,32 @@ def build_tables_table(
     table_schemas: list[bytes] = []
 
     has_objects = hasattr(model, "data_objects") and model.data_objects
-    # Each loaded model is exposed as its own catalog (see
-    # ``build_catalogs_table``). The model carries the catalog name on
-    # ``_ob_model_id`` (stamped by ``_stamp_model``); fall back to the
-    # legacy ``orionbelt`` placeholder when unstamped so BI clients still
-    # see *something*.
-    catalog_name = getattr(model, "_ob_model_id", None) or "orionbelt"
+    # v2.5.0 catalog layout: catalog=orionbelt, db_schema=<model_name>,
+    # table=model. Mirrors pgwire so the same SQL probes work on both
+    # wires. ``_ob_model_id`` is stamped by ``_stamp_model`` and IS the
+    # schema name BI clients see in their tree.
+    schema_name = getattr(model, "_ob_model_id", None) or "test"
 
     def _emit(name: str, kind: str, schema: pa.Schema) -> None:
         if not matches_filter(name, table_filter):
             return
         names.append(name)
-        catalogs.append(catalog_name)
-        schemas.append("model")
+        catalogs.append("orionbelt")
+        schemas.append(schema_name)
         types.append(kind)
         table_schemas.append(schema.serialize().to_pybytes())
 
-    # Semantic virtual table — first, canonical query surface
+    # Semantic virtual table — exposed as literal ``"model"`` so BI
+    # tools see ``orionbelt.<model_name>.model`` (matching pgwire's
+    # CREATE TABLE inside each model schema). The historical
+    # ``model_virtual_table_name(model)`` form is preserved as a query
+    # alias inside the SQL classifier — both
+    # ``FROM <model_name>`` and ``FROM model`` resolve to the same
+    # semantic surface.
     if has_objects:
         vt_schema = model_to_virtual_table_schema(model)
         if len(vt_schema) > 0:
-            _emit(model_virtual_table_name(model), "TABLE", vt_schema)
+            _emit("model", "TABLE", vt_schema)
 
     # Data-object tables — only exposed when an internal caller passes
     # expose_data_objects=True (none do in v2.4.0+). Preserved for tooling.
@@ -507,13 +529,15 @@ def build_columns_table(
         LABEL_VIEW_NAMES,
         METADATA_VIEW_NAMES,
         model_to_virtual_table_schema,
-        model_virtual_table_name,
         object_to_schema,
         virtual_view_schema,
     )
 
     rows: list[tuple[str, str, str, str, str, str, int, str, int]] = []
-    catalog_name = getattr(model, "_ob_model_id", None) or "orionbelt"
+    # v2.5.0 catalog layout: catalog=orionbelt, db_schema=<model_name>,
+    # table=model (data) + the metadata view names. See
+    # ``build_tables_table`` for the matching shape.
+    schema_name = getattr(model, "_ob_model_id", None) or "test"
 
     def _emit_schema(table_name: str, schema: pa.Schema) -> None:
         if not matches_filter(table_name, table_filter):
@@ -522,8 +546,8 @@ def build_columns_table(
             jdbc_name = _arrow_type_to_jdbc_name(field_.type)
             rows.append(
                 (
-                    catalog_name,
-                    "model",
+                    "orionbelt",
+                    schema_name,
                     table_name,
                     field_.name,
                     jdbc_name,
@@ -535,7 +559,7 @@ def build_columns_table(
             )
 
     if hasattr(model, "data_objects") and model.data_objects:
-        _emit_schema(model_virtual_table_name(model), model_to_virtual_table_schema(model))
+        _emit_schema("model", model_to_virtual_table_schema(model))
 
         if expose_data_objects:
             for obj_name, obj in model.data_objects.items():

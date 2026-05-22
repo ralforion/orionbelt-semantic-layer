@@ -6,8 +6,8 @@ Allows users to do: ``from ob_dremio.exceptions import ProgrammingError``
 from __future__ import annotations
 
 from ob_driver_core.exceptions import (
-    DataError,
     DatabaseError,
+    DataError,
     Error,
     IntegrityError,
     InterfaceError,
