@@ -59,6 +59,27 @@ OrionBelt Semantic Layer is an **API-first** semantic engine and query planner f
 
 API explorer: [Swagger UI](https://orionbelt.ralforion.com/docs) | [ReDoc](https://orionbelt.ralforion.com/redoc)
 
+> **Want to try the PostgreSQL wire surface?** Cloud Run is HTTPS-only, so the public demo can't expose ports 5432 (pgwire) or 8815 (Flight SQL). Spin the same demo up locally in two commands — it includes the baked-in `orionbelt_1_commerce` DuckDB dataset and the full OBSQL surface:
+>
+> ```bash
+> docker run --rm -d --name orionbelt-demo \
+>   -p 8080:8080 -p 5432:5432 -p 8815:8815 \
+>   -e PGWIRE_ENABLED=true \
+>   -e FLIGHT_ENABLED=true \
+>   ralforion/orionbelt-api:latest
+>
+> # REST + Gradio UI:   http://localhost:8080/ui
+> # pgwire (any psql / DBeaver / Tableau / Power BI):
+> psql "host=localhost port=5432 user=obsl dbname=orionbelt_1_commerce sslmode=disable" \
+>   -c 'SELECT "Client Name", "Total Sales" LIMIT 5'
+> # Flight SQL smoke test:
+> uv run python examples/obsql.py 'SELECT "Client Name", "Total Sales" LIMIT 5'
+>
+> docker stop orionbelt-demo
+> ```
+>
+> The container ships with `PGWIRE_AUTH_MODE=trust` (default), so it's safe for `localhost` but **not** safe to expose to the public internet — SCRAM/password auth is on the roadmap before that becomes the recommended pattern.
+
 ### Option B: Google Colab (no install)
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries across dialects, execute against DuckDB, and see results. Requires Python 3.12 runtime.
