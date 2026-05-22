@@ -399,9 +399,15 @@ class SemanticRouter:
         model_names = self._loaded_model_names()
         for table in parsed.find_all(exp.Table):
             schema = (table.db or "").lower() or (table.text("db") or "").lower()
-            if schema and schema in model_names:
+            tname = (table.name or "").lower()
+            # ``<model>.model`` (the data virtual table, fully qualified
+            # by Tableau / Dremio pushdown) is the OBSQL data path —
+            # ``_unwrap_model_qualifier`` strips ``."model"`` so the
+            # translator sees ``FROM "<model>"``. Routing it to the
+            # catalog instead returns an empty column-shape table.
+            if schema and schema in model_names and tname != "model":
                 return True
-            if schema == "model" and (table.name or "").lower() in _METADATA_VIEW_NAMES:
+            if schema == "model" and tname in _METADATA_VIEW_NAMES:
                 return True
         return False
 
