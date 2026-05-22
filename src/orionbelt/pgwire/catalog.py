@@ -23,6 +23,7 @@ fidelity.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import re
 import threading
@@ -601,6 +602,13 @@ class CatalogEmulator:
         # Tracked as a list of schemas we've registered, so refresh()
         # can drop schemas whose model has gone away.
         self._registered_schemas: list[str] = []
+        # Per-schema fingerprint of the last-applied table DDL. We
+        # only re-CREATE the ``model`` table when its column shape
+        # actually changed; idempotent refreshes preserve the
+        # DuckDB-assigned ``pg_class.oid`` so BI-tool driver caches
+        # (DBeaver, pgjdbc, psql ``\d``) keep matching across the
+        # rapid-fire catalog probes a schema-tree refresh emits.
+        self._schema_ddl_fingerprints: dict[str, str] = {}
         with contextlib.suppress(Exception):
             self._con.execute(f"ATTACH ':memory:' AS \"{CATALOG_SCHEMA}\"")
         # Stub macros and shadow views live in the orionbelt DB so they
@@ -644,6 +652,7 @@ class CatalogEmulator:
                     self._con.execute(
                         f'DROP SCHEMA IF EXISTS "{CATALOG_SCHEMA}"."{schema}" CASCADE'
                     )
+                self._schema_ddl_fingerprints.pop(schema, None)
             self._registered_schemas = [s for s in self._registered_schemas if s in desired_schemas]
 
             for store_target, model in _iter_loaded_models(session_manager):
@@ -658,9 +667,19 @@ class CatalogEmulator:
                 ddl = _build_table_ddl(schema, model)
                 if ddl is None:
                     continue
-                # Drop the existing ``model`` table so re-creates pick
-                # up column changes. ``CREATE OR REPLACE TABLE`` doesn't
-                # exist for table-from-columns shape in DuckDB.
+                # Idempotent path: skip the DROP + CREATE when the
+                # table's column shape is unchanged. Re-running DROP
+                # TABLE / CREATE TABLE assigns a fresh
+                # ``pg_class.oid`` each time, which breaks DBeaver's
+                # column-list panel — DBeaver caches the table oid
+                # from one probe and uses it in ``WHERE c.oid = $1``
+                # on the next, so a shifted oid silently returns
+                # zero columns. The fingerprint covers the metadata
+                # views too because their DDLs are deterministic
+                # functions of the same model.
+                fingerprint = _ddl_fingerprint(ddl, model)
+                if self._schema_ddl_fingerprints.get(schema) == fingerprint:
+                    continue
                 with contextlib.suppress(Exception):
                     self._con.execute(f'DROP TABLE IF EXISTS "{CATALOG_SCHEMA}"."{schema}"."model"')
                 # Per-model metadata views (dimensions / measures /
@@ -678,6 +697,7 @@ class CatalogEmulator:
                         "Failed to register catalog table for model '%s'", store_target
                     )
                     continue
+                self._schema_ddl_fingerprints[schema] = fingerprint
 
     # ------------------------------------------------------------------
     # Execute — run a catalog/info-schema query through DuckDB.
@@ -789,6 +809,24 @@ def _safe_model_table_name(name: str) -> str:
     if _SAFE_TABLE_NAME.match(name):
         return name
     return name.replace('"', '""')
+
+
+def _ddl_fingerprint(table_ddl: str, model: SemanticModel) -> str:
+    """SHA-1 of the model's catalog-visible surface.
+
+    Covers both the ``CREATE TABLE`` shape and the labels feeding the
+    per-model metadata views, so a change in any dimension / measure /
+    metric definition (rename, type swap, add, remove) invalidates the
+    fingerprint and triggers a re-CREATE. Identical models hash to the
+    same value so repeat refresh() calls become no-ops and the DuckDB
+    ``pg_class.oid`` stays stable across BI-tool catalog probes.
+    """
+
+    parts = [table_ddl]
+    parts.extend(f"d:{label}" for label in sorted(model.dimensions))
+    parts.extend(f"u:{label}" for label in sorted(model.measures))
+    parts.extend(f"m:{label}" for label in sorted(model.metrics))
+    return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
 def _build_table_ddl(schema: str, model: SemanticModel) -> str | None:
