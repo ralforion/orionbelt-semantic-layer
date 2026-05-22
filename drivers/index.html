@@ -2709,7 +2709,7 @@
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Your Python App              OrionBelt API           Database
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>┌──────────────┐   HTTP      ┌──────────────┐
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│ import ob_*  │ ─────────►  │ /v1/query/sql│  OBML → SQL
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│              │ ◄─────────  │ (MODEL_FILE) │
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│              │ ◄─────────  │ (MODEL_FILES)│
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│ cursor       │             └──────────────┘
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│  .execute()  │   native protocol
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│  .fetchall() │ ─────────────────────────────► Snowflake / PG / ...
@@ -2722,10 +2722,11 @@
 <li>Plain SQL queries bypass the API entirely</li>
 </ol>
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
-<p>The OrionBelt REST API must be running in <strong>single-model mode</strong>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">MODEL_FILE</span><span class="o">=</span>models/sales.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
+<p>The OrionBelt REST API must be running with at least one model preloaded:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Multi-model (preferred): name each model with the OBML `name:` field</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nv">MODEL_FILES</span><span class="o">=</span>models/sales.obml.yaml,models/marketing.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span></code></pre></div>
-<p>This auto-creates a default session and enables the <code>/v1/query/sql</code> shortcut endpoint.</p>
+<p>The driver picks a model via the <code>database</code> parameter (matches the OBML <code>name:</code>). With a single file loaded, the <code>/v1/query/sql</code> shortcut auto-resolves it without a <code>database</code> hint.</p>
 <h2 id="usage-examples">Usage Examples<a class="headerlink" href="#usage-examples" title="Permanent link">&para;</a></h2>
 <h3 id="duckdb-in-process-no-server-needed">DuckDB (in-process, no server needed)<a class="headerlink" href="#duckdb-in-process-no-server-needed" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">ob_duckdb</span>
@@ -2906,14 +2907,14 @@
 <div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>DBeaver / Tableau / Power BI
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>        | Arrow Flight (gRPC, port 8815)
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>        v
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>┌────────────────────────────┐
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>│  OrionBelt API             │
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>│  ├── REST API  (:8080)     │  FastAPI endpoints
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>│  └── Flight SQL (:8815)    │  Arrow Flight server (daemon thread)
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>│       ├── OBML detection   │
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>│       ├── CompilationPipeline (direct, no HTTP hop)
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>│       └── Vendor driver    │  executes compiled SQL
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>└────────────┬───────────────┘
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>┌────────────────────────────────┐
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>│  OrionBelt API                 │
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>│  ├── REST API  (:8080)         │  FastAPI endpoints
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>│  └── Flight SQL (:8815)        │  Arrow Flight server (daemon thread)
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>│       ├── OBML detection       │
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>│       ├── CompilationPipeline  │  (direct, no HTTP hop)
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>│       └── Vendor driver        │  executes compiled SQL
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>└────────────┬───────────────────┘
 </span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>             | outbound TCP/HTTPS
 </span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>             v
 </span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>   Snowflake / PostgreSQL / ClickHouse / Databricks / Dremio / DuckDB
@@ -3102,7 +3103,7 @@
 <li><strong>Download</strong> the <a href="https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver">Arrow Flight SQL JDBC driver</a> JAR (19.0.0 or newer) and install in Driver Manager:</li>
 </ol>
 <p align="center">
-  <img src="assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
+  <img src="../assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
 </p>
 
 <ol>
@@ -3137,12 +3138,12 @@ views. <code>SHOW TABLES</code>, <code>DESCRIBE</code>, and <code>information_sc
 out of the box and are answered from the model — they never touch the
 warehouse.</p>
 <p align="center">
-  <img src="assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
+  <img src="../assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
 <p>You can also query the virtual OBML tables:</p>
 <p align="center">
-  <img src="assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
+  <img src="../assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
 <h4 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h4>
