@@ -595,6 +595,31 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         if bare in _METADATA_VIEW_NAMES:
             return _MODE_CATALOG
 
+        # Schema-qualified metadata / label view —
+        # ``SELECT * FROM <model>.dimensions`` is the BI-tool double-
+        # click path on the pgwire layout (database=orionbelt,
+        # schema=<model>, table='model'). On Flight the resolved
+        # ``model`` is the connection's model, so a matching schema
+        # qualifier means "metadata rows for THIS model" — route to
+        # catalog where ``SELECT *`` is honoured. Bare label-view
+        # references (``FROM dimensions``) keep the OBSQL category-
+        # filtered virtual-table semantics so existing surface
+        # behaviour is preserved.
+        schema = (
+            (getattr(table_node, "db", None) or table_node.text("db") or "")
+            .strip('"')
+            .strip("`")
+            .strip("'")
+            .lower()
+        )
+        model_name = (getattr(model, "name", "") or "").lower()
+        if (
+            schema
+            and schema == model_name
+            and bare in (_LABEL_VIEW_NAMES + _METADATA_VIEW_NAMES + ("model",))
+        ):
+            return _MODE_CATALOG
+
         # Semantic — the model's virtual table, OR a per-category label view
         # (_dimensions/_measures/_metrics). Label views are aliases for the
         # model VT restricted to one category, so `SELECT "X" FROM _dimensions`
@@ -975,12 +1000,18 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 or "pg_catalog.pg_attribute" in target_sql
             ):
                 return self._catalog_columns_table(model)
-            if bare == "_dimensions_metadata":
+            if bare == "_dimensions_metadata" or bare == "dimensions":
                 return build_dimensions_data(model)
-            if bare == "_measures_metadata":
+            if bare == "_measures_metadata" or bare == "measures":
                 return build_measures_data(model)
-            if bare == "_metrics_metadata":
+            if bare == "_metrics_metadata" or bare == "metrics":
                 return build_metrics_data(model)
+            if bare == "model":
+                # ``SELECT * FROM <model>.model`` — column-shape probe
+                # from a BI tool clicking the model table. Same payload
+                # as the canonical ``information_schema.columns`` view
+                # (one row per dim/measure/metric).
+                return self._catalog_columns_table(model)
 
         # Unknown catalog probe — empty result. Tool moves on.
         return self._catalog_empty_table()

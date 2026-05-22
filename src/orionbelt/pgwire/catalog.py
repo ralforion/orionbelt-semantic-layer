@@ -235,6 +235,20 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             (2950, 'uuid',        'U', 16,  'b', false, -1, 0, 0, 0)
         ) AS t(oid, typname, typcategory, typlen, typtype, typnotnull,
                typtypmod, typbasetype, typelem, typrelid)""",
+    # Shadow pg_class that replaces NULL ``aclitem[]`` / ``text[]``
+    # columns with non-NULL empty-array literals. pgjdbc inside
+    # DBeaver and other BI clients reads ``relacl`` / ``reloptions``
+    # during schema-tree refresh and NPEs on NULL with the message
+    # "Cannot invoke java.lang.CharSequence.toString() because
+    # <parameter1> is null". DuckDB's native pg_class always returns
+    # NULL for these (no ACL system, no per-table reloptions). Keep
+    # all other columns intact via SELECT * EXCLUDE so existing
+    # introspection probes work unchanged.
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_class AS
+        SELECT * EXCLUDE (relacl, reloptions),
+               COALESCE(CAST(relacl AS VARCHAR), '{}') AS relacl,
+               COALESCE(CAST(reloptions AS VARCHAR), '{}') AS reloptions
+        FROM pg_catalog.pg_class""",
     # Shadow pg_namespace that hides DuckDB's internal ``main`` schema
     # from BI-tool schema browsers. The branded ``orionbelt`` ATTACHed
     # DB owns one schema per loaded model; ``main`` is DuckDB's own
@@ -405,6 +419,17 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?<![.\w])pg_namespace\b", re.IGNORECASE),
         "_obsl_pg_namespace",
+    ),
+    # pg_class — replace NULL acl-typed columns with non-NULL empty
+    # literals so pgjdbc schema-tree refresh doesn't NPE on
+    # ``relacl`` / ``reloptions``.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_class\b", re.IGNORECASE),
+        "_obsl_pg_class",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_class\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_class",
     ),
     # Function / operator references prefixed with pg_catalog. — strip
     # the prefix so DuckDB resolves against the unqualified built-in or
