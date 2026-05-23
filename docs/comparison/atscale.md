@@ -111,9 +111,9 @@ AtScale ships first-class enterprise primitives:
 | OBSL | AtScale | Notes |
 |---|---|---|
 | `Metric` `type: derived` | Calculated members (MDX expressions) | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Time-intelligence MDX (`Aggregate(YTD([Date].CurrentMember), [Sales])`) — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Time-intelligence MDX: <pre><code>Aggregate(<br>  YTD([Date].CurrentMember),<br>  [Sales]<br>)</code></pre> — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Calculated members using `ParallelPeriod` / `Lag` MDX functions | Both expressive; AtScale is more flexible (full MDX), OBSL is more turnkey |
-| `Metric` `type: window` (v2.6+) — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` | MDX `Rank()`, `Lag()`, `Lead()` in calculated members | OBSL exposes these as declarative metric types; AtScale expresses them via MDX |
+| `Metric` `type: window` (v2.6+) — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | MDX `Rank()`, `Lag()`, `Lead()` in calculated members | OBSL exposes these as declarative metric types; AtScale expresses them via MDX |
 | Reusable filter context / filtered measures | Named sets, perspectives | Comparable |
 | Hierarchical aggregation | Limited (use grains) | First-class via hierarchies and `Aggregate()` |
 

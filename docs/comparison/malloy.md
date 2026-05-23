@@ -17,9 +17,9 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 | Aspect | OBSL (OBML) | Malloy |
 |---|---|---|
 | Format | Declarative YAML (`OBML`) | A purpose-built **language** (`.malloy` files) — both modeling *and* querying |
-| Source of truth | YAML model file | `.malloy` source files; `source: foo is duckdb.table('...') extend { ... }` |
-| Top-level objects | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `source` (with extensions: `dimension:`, `measure:`, `view:`, `join_one:`, `join_many:`) |
-| Queries | JSON `QueryObject` (`select`, `where`, `having`, `order_by`, ...) | Malloy query syntax: `run: source -> { group_by: ...; aggregate: ...; nest: ... }` |
+| Source of truth | YAML model file | `.malloy` source files: <pre><code>source: foo is<br>  duckdb.table('...')<br>  extend { ... }</code></pre> |
+| Top-level objects | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `source` with extensions: `dimension:`, `measure:`, `view:`, `join_one:`, `join_many:` |
+| Queries | JSON `QueryObject` (`select`, `where`, `having`, `order_by`, ...) | Malloy query syntax: <pre><code>run: source -> {<br>  group_by: ...<br>  aggregate: ...<br>  nest: ...<br>}</code></pre> |
 | Embedding | Drop-in compiler, no client language needed | Requires a Malloy-aware client/parser |
 
 **Key cultural difference**: Malloy is a *language*; OBSL is a *contract*. Malloy gives expressiveness in a `.malloy` file. OBSL gives a stable JSON over HTTP that any tool, agent, or LLM can call without learning a DSL.
@@ -135,8 +135,8 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 |---|---|---|
 | `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) | Composed by referencing other measures inside aggregate expressions | Both first-class |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
-| `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer has a `big_value { comparison_field=... }` for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
-| `Metric` `type: window` (v2.6+) — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
+| `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br>  comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
+| `Metric` `type: window` (v2.6+) — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
 
 **Different philosophies**: OBSL prefers reusable metric definitions (write once, every query gets PoP / window / cumulative). Malloy prefers expressive ad-hoc queries (write the comparison in the query itself). Either fits depending on whether you're publishing a metrics catalog or empowering analysts. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
