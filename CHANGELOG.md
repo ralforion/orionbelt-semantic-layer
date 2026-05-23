@@ -2,6 +2,42 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.6.0] - 2026-05-23
+
+### Added
+
+- **Trend Analysis primitives.** Four additive surface extensions for FP&A / finance workloads:
+  - **`partitionBy` on `MetricType.CUMULATIVE`** — per-dimension rolling windows (e.g. 12-month MA per country). Threads through resolution into the cumulative window's `PARTITION BY` clause, composes with grain-to-date. Default `[]` preserves v2.5 SQL exactly.
+  - **`MetricType.WINDOW`** — single-row window functions (`rank` / `dense_rank` / `row_number` / `ntile` / `lag` / `lead` / `first_value` / `last_value`). New `compiler/window_wrap.py` runs after `cumulative_wrap` so window metrics compose with cumulative outputs (e.g. ranking a moving average). New fields: `windowFunction`, `offset`, `buckets`, `orderDirection`, `defaultValue`.
+  - **9 statistical aggregates** on `Measure.aggregation`: `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`. Column arity validated at model-load time. ClickHouse maps to camelCase (`stddevPop`, `covarSamp`, etc.); MySQL rejects correlation/covariance/regression; BigQuery + ClickHouse reject linear regression — all with hard `UnsupportedAggregationError` at compile time, no silent fallback.
+  - **Composition over `DERIVED`** — derived metrics already compose any metric by name, so MA-crossover signals, MoM deltas, and similar emerge with zero new compiler work.
+  - New guide: [Trend Analysis](docs/guide/trend-analysis.md).
+- **OSI v0.2 spec compatibility.** Converter emits `version: "0.2.0.dev0"` to match the upstream OSI spec evolution:
+  - **`primary_key` first-class** — per-column `primaryKey: true` flags map to the OSI dataset's `primary_key` array (composite supported, declaration order preserved).
+  - **`unique_keys` first-class** — round-trip via OBSL-vendor `customExtensions` (`obml_unique_keys`); OBML has no native unique-key concept yet.
+  - **Field `label` first-class** — round-trip via OBSL-vendor `customExtensions` (`obml_field_label`).
+  - **Top-level `dialects` / `vendors` informational arrays** emitted on every doc.
+  - **`MAQL` dialect** and **`GOODDATA` vendor** added to the known-enum tuples; MAQL-only metric expressions pass through the existing fallback without crashing.
+  - **Legacy v0.1.x reader** — `_normalize_legacy_v01()` promotes pre-v0.2 `obml_primary_key` / `obml_unique_keys` `custom_extensions` payloads into v0.2 first-class fields before parsing, so existing OSI v0.1.1 inputs continue to load.
+  - **Vendored schema refreshed** to upstream `main` (`osi-obml/osi-schema.json`); `scripts/refresh-osi-schema.sh` keeps the vendored copy in sync.
+- **OSI input validation on `POST /v1/convert/osi-to-obml`.** Response gains an optional `input_validation` field carrying Draft 2020-12 schema errors and semantic errors for the source OSI document. Advisory by default — the endpoint still returns 200 with the converted output even when input fails strict v0.2 validation, because the legacy v0.1 shim still produces correct OBML.
+
+### Changed
+
+- **Breaking (output format):** OBML → OSI conversion now emits OSI v0.2.0.dev0. Downstream consumers pinning to v0.1.1 will reject v2.6 output. Migration path: parse the output with any v0.2-aware reader, or use the OSI-side legacy shim on the reverse direction (the converter still reads v0.1 inputs).
+- **`/v1/convert/osi-to-obml` response shape:** new optional `input_validation: ValidationDetail | None` field. Existing clients see no break (the field is optional and `null` on the obml-to-osi endpoint where input-side validation isn't wired yet).
+
+### Propagated
+
+- **OBML JSON Schema** (`schema/obml-schema.json`) — new metric fields, `WindowFunctionKind` enum, statistical aggregations.
+- **OBML reference markdown** (`src/orionbelt/obml_reference.py`) — documents `MetricType.WINDOW`, `partitionBy`, and statistical aggregates.
+- **OBSL ontology** (`ontology/obsl.ttl`) — new `obsl:WindowMetric` class plus `partitionBy`, `windowFunction`, `windowOffset`, `windowBuckets`, `orderDirection`, `windowDefaultValue` datatype properties. Disjointness with other metric subtypes asserted.
+- **MkDocs** — new `docs/guide/trend-analysis.md` under the Guide nav. `docs/guide/model-format.md` lists the four metric types, the `partitionBy` + window-metric fields, and the statistical-aggregate arity rules. `docs/guide/osi.md` documents the v0.2 bump and the legacy reader shim. Comparison docs (dbt / Cube / LookML / Malloy / AtScale) refreshed to reflect the new differentiation surfaces.
+
+### Tests
+
++72 new (43 trend-analysis unit + 9 OSI roundtrip for v2.6 fields + 16 OSI v0.2 compat + 4 convert-endpoint integration). Total suite: **2081 passed, 159 skipped**.
+
 ## [2.5.0] - 2026-05-22
 
 ### Added

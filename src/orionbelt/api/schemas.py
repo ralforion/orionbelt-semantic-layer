@@ -800,7 +800,17 @@ class ConvertResponse(BaseModel):
     output_yaml: str = Field(description="Converted YAML content")
     warnings: list[str] = Field(default_factory=list, description="Conversion warnings")
     validation: ValidationDetail = Field(
-        default_factory=ValidationDetail, description="Validation results"
+        default_factory=ValidationDetail,
+        description="Validation results for the converted output",
+    )
+    input_validation: ValidationDetail | None = Field(
+        default=None,
+        description=(
+            "Validation results for the source input, when the endpoint runs an "
+            "input-side schema check (e.g. /convert/osi-to-obml validates the OSI "
+            "input against the vendored OSI v0.2 schema). None when no input-side "
+            "validation runs."
+        ),
     )
 
 

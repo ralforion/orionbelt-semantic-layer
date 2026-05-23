@@ -1,13 +1,13 @@
 # OBSL vs LookML / Looker
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**, the modeling language behind Google Cloud's **Looker** BI platform. Captured 2026-05-01.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**, the modeling language behind Google Cloud's **Looker** BI platform. Captured 2026-05-23.
 
 ---
 
 ## TL;DR
 
 - **LookML wins on**: deep BI integration (drill fields, parameters, Liquid templating, PDTs, access filters/grants), `dimension_group` auto-timeframe expansion, symmetric aggregates (Looker invented the term), the broadest warehouse connector portfolio, and a polished proprietary IDE/UI.
-- **OBSL wins on**: being **open-source and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class cumulative and period-over-period metric types** (LookML expresses these via table calculations or filtered measures, not declarative metric types), an **RDF/SPARQL graph view** of the model, an explicit **CFL multi-fact planner**, and an MCP server for LLM/agent integration.
+- **OBSL wins on**: being **open-source and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class metric types** for cumulative (with `partitionBy` v2.6+), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, v2.6+) where LookML expresses these via table calculations or filtered measures — not declarative metric types, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*, v2.6+), an **RDF/SPARQL graph view** of the model, an explicit **CFL multi-fact planner**, and an MCP server for LLM/agent integration.
 - **Different niches**: LookML is "the modeling language for Looker, your BI platform." OBSL is "an embeddable semantic compiler that exposes metrics over a stable API to apps, agents, and BI tools you didn't have to buy."
 
 LookML and Looker are inseparable in practice — you cannot run LookML without Looker. So this is also a comparison of build-vs-buy on the runtime.

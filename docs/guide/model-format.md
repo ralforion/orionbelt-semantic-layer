@@ -372,7 +372,7 @@ measures:
 |----------|------|----------|-------------|
 | `columns` | list | No | List of column references (`dataObject`+`column`) for simple single-column measures |
 | `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
-| `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `listagg` |
+| `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical (v2.6+): `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
 | `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |
 | `total` | bool | No | Grand total shorthand (equivalent to `grain: { mode: FIXED }`) |
@@ -402,6 +402,22 @@ measures:
 | `median` | `MEDIAN(expr)` | Median value (`PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ...)` in Postgres) |
 | `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
+
+#### Statistical aggregates (v2.6+)
+
+Single-column aggregates take exactly one entry in `columns`; two-column aggregates take exactly two (arity is enforced at model-load time, error code `INVALID_AGGREGATION_INPUTS`). Dialect coverage varies — MySQL has no correlation / covariance / regression; BigQuery and ClickHouse lack the linear-regression family. Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at compile time. See [Trend Analysis](trend-analysis.md#statistical-aggregates-on-measure) for the full coverage matrix and a worked example.
+
+| Type | SQL | Arity |
+|------|-----|:---:|
+| `stddev`, `stddev_samp` | `STDDEV_SAMP(x)` | 1 |
+| `stddev_pop` | `STDDEV_POP(x)` | 1 |
+| `variance`, `var_samp` | `VAR_SAMP(x)` | 1 |
+| `var_pop` | `VAR_POP(x)` | 1 |
+| `corr` | `CORR(x, y)` | 2 |
+| `covar_pop` | `COVAR_POP(x, y)` | 2 |
+| `covar_samp` | `COVAR_SAMP(x, y)` | 2 |
+| `regr_slope` | `REGR_SLOPE(y, x)` | 2 |
+| `regr_intercept` | `REGR_INTERCEPT(y, x)` | 2 |
 
 ### Expression Placeholders
 
@@ -514,7 +530,7 @@ The `delimiter` defaults to `","` if omitted. The `withinGroup` clause is option
 
 ## Metrics
 
-Metrics come in three types: **derived** (composite expression), **cumulative** (window function over a measure), and **period-over-period** (time comparison).
+Metrics come in four types: **derived** (composite expression), **cumulative** (window function over a measure), **period-over-period** (time comparison), and **window** (rank / lag / lead / ntile / first/last value — single-row window functions, v2.6+).
 
 ### Derived Metrics
 
@@ -584,6 +600,9 @@ metrics:
 !!! note "Time dimension requirement"
     The `timeDimension` must be included in the query's selected dimensions. Cumulative metrics without their time dimension in the SELECT will raise a validation error.
 
+!!! tip "Partition by dimension (v2.6+)"
+    Add `partitionBy: [Country, ...]` to compute per-entity rolling windows (e.g. 12-month MA per country). Every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
+
 ### Period-over-Period Metrics
 
 A **period-over-period metric** compares a measure against a prior time period. The `expression` references the base measure, and the `periodOverPeriod` block configures how to shift time and compute the comparison.
@@ -625,18 +644,58 @@ Four comparison modes are available:
 
 For a detailed guide on PoP metrics, including CTE architecture, filter push-down, and dialect-specific SQL examples, see the [Period-over-Period Metrics](period-over-period.md) guide.
 
+### Window Metrics (v2.6+)
+
+A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction.
+
+```yaml
+metrics:
+  # Rank revenue within each quarter
+  Revenue Rank by Quarter:
+    type: window
+    windowFunction: dense_rank
+    measure: Revenue
+    orderDirection: desc
+    partitionBy: [Quarter]
+
+  # Prior-month revenue side-by-side with the current row
+  Revenue Prior Month:
+    type: window
+    windowFunction: lag
+    measure: Revenue
+    offset: 1
+    timeDimension: Order Date
+    partitionBy: [Country]
+
+  # Quartile bucket
+  Revenue Quartile:
+    type: window
+    windowFunction: ntile
+    measure: Revenue
+    buckets: 4
+    partitionBy: [Year]
+```
+
+Window metrics compose freely with derived metrics — `expression: '{[Revenue]} - {[Revenue Prior Month]}'` yields a MoM delta without writing any SQL. See [Trend Analysis](trend-analysis.md#2-window-metrics-rank-lag-lead-ntile-firstlast-value) for the full feature surface, validation rules, and dialect coverage.
+
 ### Metric Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `type` | `"derived"` \| `"cumulative"` \| `"period_over_period"` | `"derived"` | Metric category |
+| `type` | `"derived"` \| `"cumulative"` \| `"period_over_period"` \| `"window"` | `"derived"` | Metric category |
 | `expression` | string | — | Expression with `{[Measure Name]}` placeholders (required for derived and period_over_period) |
-| `measure` | string | — | Name of base measure (required for cumulative) |
-| `timeDimension` | string | — | Dimension used for ordering (required for cumulative) |
+| `measure` | string | — | Name of base measure (required for cumulative and window) |
+| `timeDimension` | string | — | Dimension used for ordering (required for cumulative and for lag/lead window metrics) |
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
 | `window` | integer | — | Rolling window size in periods (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
+| `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics (v2.6+). Each entry must be a model dimension in the query's SELECT. |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
+| `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics, v2.6+) |
+| `offset` | integer | — | Row offset for `lag` / `lead` (>= 1, v2.6+) |
+| `buckets` | integer | — | Bucket count for `ntile` (>= 2, v2.6+) |
+| `orderDirection` | `"asc"` \| `"desc"` | `"desc"` | Window `ORDER BY` direction (v2.6+) |
+| `defaultValue` | scalar | — | Default value for `lag` / `lead` when the offset row is absent (v2.6+) |
 | `dataType` | string | — | OBML data type (e.g. `decimal(18, 4)`). Overrides automatic type inference for CAST wrapping. |
 | `label` | string | — | Display label |
 | `description` | string | — | Business description |

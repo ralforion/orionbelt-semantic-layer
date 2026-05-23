@@ -137,7 +137,17 @@ class MySQLDialect(Dialect):
             supports_time_travel=False,
             supports_semi_structured=False,
             supports_union_all_by_name=False,
-            unsupported_aggregations=["mode", "median"],
+            unsupported_aggregations=[
+                "mode",
+                "median",
+                # MySQL has no first-class correlation, covariance, or regression
+                # aggregates. Variance / standard deviation are supported natively.
+                "corr",
+                "covar_pop",
+                "covar_samp",
+                "regr_slope",
+                "regr_intercept",
+            ],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:

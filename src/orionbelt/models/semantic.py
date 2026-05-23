@@ -33,6 +33,39 @@ class AggregationType(StrEnum):
     MEDIAN = "median"
     MODE = "mode"
     LISTAGG = "listagg"
+    # Statistical aggregates (v2.6+) — spread, association, regression
+    STDDEV = "stddev"
+    STDDEV_POP = "stddev_pop"
+    VARIANCE = "variance"
+    VAR_POP = "var_pop"
+    CORR = "corr"
+    COVAR_POP = "covar_pop"
+    COVAR_SAMP = "covar_samp"
+    REGR_SLOPE = "regr_slope"
+    REGR_INTERCEPT = "regr_intercept"
+
+
+# Aggregations that take two columns. Compiled to ``AGG(col_a, col_b)`` —
+# the order in ``Measure.columns`` is significant.
+TWO_COLUMN_AGGREGATIONS: frozenset[str] = frozenset(
+    {
+        AggregationType.CORR.value,
+        AggregationType.COVAR_POP.value,
+        AggregationType.COVAR_SAMP.value,
+        AggregationType.REGR_SLOPE.value,
+        AggregationType.REGR_INTERCEPT.value,
+    }
+)
+
+# Aggregations that require exactly one column.
+SINGLE_COLUMN_STATISTICAL_AGGREGATIONS: frozenset[str] = frozenset(
+    {
+        AggregationType.STDDEV.value,
+        AggregationType.STDDEV_POP.value,
+        AggregationType.VARIANCE.value,
+        AggregationType.VAR_POP.value,
+    }
+)
 
 
 class JoinType(StrEnum):
@@ -69,6 +102,26 @@ class MetricType(StrEnum):
     DERIVED = "derived"
     CUMULATIVE = "cumulative"
     PERIOD_OVER_PERIOD = "period_over_period"
+    WINDOW = "window"
+
+
+class WindowFunctionKind(StrEnum):
+    """SQL window-function family for ``MetricType.WINDOW``.
+
+    Single-row-output window functions (no aggregation):
+    ranking, offsetting, and positional. Aggregating window
+    functions (SUM/AVG over a frame) belong to
+    ``MetricType.CUMULATIVE``.
+    """
+
+    RANK = "rank"
+    DENSE_RANK = "dense_rank"
+    ROW_NUMBER = "row_number"
+    NTILE = "ntile"
+    LAG = "lag"
+    LEAD = "lead"
+    FIRST_VALUE = "first_value"
+    LAST_VALUE = "last_value"
 
 
 class PeriodOverPeriodComparison(StrEnum):
@@ -427,6 +480,29 @@ class Measure(BaseModel):
             raise ValueError("'total: true' and 'grain' are mutually exclusive")
         return self
 
+    @model_validator(mode="after")
+    def _validate_statistical_aggregation_arity(self) -> Measure:
+        """Reject malformed statistical aggregates at model-load time.
+
+        Two-column aggregates (``corr``, ``covar_*``, ``regr_*``) require
+        exactly two entries in ``columns``. Single-column statistical
+        aggregates (``stddev``, ``stddev_pop``, ``variance``, ``var_pop``)
+        require exactly one. Expression-based measures bypass the check
+        because they can compose any column reference.
+        """
+        agg = self.aggregation.lower()
+        if self.expression is not None:
+            return self
+        if agg in TWO_COLUMN_AGGREGATIONS and len(self.columns) != 2:
+            raise ValueError(
+                f"Aggregation '{agg}' requires exactly 2 columns, got {len(self.columns)}"
+            )
+        if agg in SINGLE_COLUMN_STATISTICAL_AGGREGATIONS and len(self.columns) != 1:
+            raise ValueError(
+                f"Aggregation '{agg}' requires exactly 1 column, got {len(self.columns)}"
+            )
+        return self
+
 
 class Metric(BaseModel):
     """A metric: derived expression, cumulative window, or period-over-period comparison.
@@ -448,8 +524,17 @@ class Metric(BaseModel):
     cumulative_type: CumulativeAggType = Field(CumulativeAggType.SUM, alias="cumulativeType")
     window: int | None = None
     grain_to_date: GrainToDate | None = Field(None, alias="grainToDate")
+    # Per-dimension partitioning for cumulative + window metrics. Each entry
+    # must be a model dimension reachable from the measure's source object.
+    partition_by: list[str] = Field(default_factory=list, alias="partitionBy")
     # Period-over-Period metrics
     period_over_period: PeriodOverPeriod | None = Field(None, alias="periodOverPeriod")
+    # Window metrics (rank / lag / lead / ntile / first_value / last_value)
+    window_function: WindowFunctionKind | None = Field(None, alias="windowFunction")
+    offset: int | None = None
+    buckets: int | None = None
+    order_direction: str = Field("desc", alias="orderDirection")
+    default_value: str | int | float | bool | None = Field(None, alias="defaultValue")
     # Common
     data_type: str | None = Field(None, alias="dataType")
     description: str | None = None
@@ -472,6 +557,8 @@ class Metric(BaseModel):
         if self.type == MetricType.DERIVED:
             if not self.expression:
                 raise ValueError("Derived metrics require 'expression'")
+            if self.partition_by:
+                raise ValueError("Derived metrics must not have 'partitionBy'")
         elif self.type == MetricType.CUMULATIVE:
             if not self.measure:
                 raise ValueError("Cumulative metrics require 'measure'")
@@ -497,6 +584,42 @@ class Metric(BaseModel):
                 raise ValueError(
                     "Period-over-period metrics must not have 'window' or 'grainToDate'"
                 )
+            if self.partition_by:
+                raise ValueError("Period-over-period metrics must not have 'partitionBy'")
+        elif self.type == MetricType.WINDOW:
+            if self.window_function is None:
+                raise ValueError("Window metrics require 'windowFunction'")
+            if not self.measure and self.window_function not in {
+                WindowFunctionKind.ROW_NUMBER,
+                WindowFunctionKind.NTILE,
+            }:
+                # row_number / ntile can rank without an explicit measure, falling back
+                # to ordering on the time dimension. All other window functions take
+                # the measure as their argument or ORDER BY input.
+                raise ValueError(
+                    f"Window metric with function '{self.window_function.value}' requires 'measure'"
+                )
+            if self.expression:
+                raise ValueError("Window metrics must not have 'expression'")
+            if self.window is not None or self.grain_to_date is not None:
+                raise ValueError("Window metrics must not have 'window' or 'grainToDate'")
+            if self.window_function in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
+                if self.offset is None or self.offset < 1:
+                    raise ValueError(
+                        f"Window metric with function '{self.window_function.value}' "
+                        f"requires positive 'offset'"
+                    )
+                if not self.time_dimension:
+                    raise ValueError(
+                        f"Window metric with function '{self.window_function.value}' "
+                        f"requires 'timeDimension'"
+                    )
+            if self.window_function == WindowFunctionKind.NTILE and (
+                self.buckets is None or self.buckets < 2
+            ):
+                raise ValueError("Window metric with function 'ntile' requires 'buckets' >= 2")
+            if self.order_direction.lower() not in {"asc", "desc"}:
+                raise ValueError("'orderDirection' must be 'asc' or 'desc'")
         return self
 
 

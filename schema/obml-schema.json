@@ -642,7 +642,7 @@
         },
         "aggregation": {
           "type": "string",
-          "description": "Aggregation Function (sum,min,max,any_value,median,mode,listagg, etc.)"
+          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept."
         },
         "distinct": {
           "type": "boolean",
@@ -749,6 +749,19 @@
       "description": "Comparison type for period-over-period metrics",
       "enum": ["ratio", "difference", "previousValue", "percentChange"]
     },
+    "windowFunctionKind": {
+      "description": "SQL window-function family for MetricType.WINDOW",
+      "enum": [
+        "rank",
+        "dense_rank",
+        "row_number",
+        "ntile",
+        "lag",
+        "lead",
+        "first_value",
+        "last_value"
+      ]
+    },
     "periodOverPeriod": {
       "type": "object",
       "description": "Period-over-period configuration — compares a measure against a prior time period",
@@ -787,8 +800,8 @@
           "type": "string"
         },
         "type": {
-          "description": "Metric category: derived (expression-based), cumulative (window function), or period_over_period (time comparison)",
-          "enum": ["derived", "cumulative", "period_over_period"],
+          "description": "Metric category: derived (expression-based), cumulative (windowed aggregation over a measure), period_over_period (time comparison), or window (rank/lag/lead/ntile/first_value/last_value).",
+          "enum": ["derived", "cumulative", "period_over_period", "window"],
           "default": "derived"
         },
         "expression": {
@@ -817,9 +830,38 @@
           "$ref": "#/definitions/grainToDate",
           "description": "Reset boundary for grain-to-date (e.g. month for MTD). Mutually exclusive with window."
         },
+        "partitionBy": {
+          "type": "array",
+          "description": "Dimensions used as PARTITION BY keys for cumulative or window metrics. Each entry must be a dimension defined in the model and selected in the query. Default: [] (no partition).",
+          "items": { "type": "string" },
+          "default": []
+        },
         "periodOverPeriod": {
           "$ref": "#/definitions/periodOverPeriod",
           "description": "Period-over-period configuration (required for period_over_period metrics)"
+        },
+        "windowFunction": {
+          "$ref": "#/definitions/windowFunctionKind",
+          "description": "Window-function family (required for window metrics)"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Row offset for LAG/LEAD (must be >= 1)",
+          "minimum": 1
+        },
+        "buckets": {
+          "type": "integer",
+          "description": "Bucket count for NTILE (must be >= 2)",
+          "minimum": 2
+        },
+        "orderDirection": {
+          "type": "string",
+          "enum": ["asc", "desc"],
+          "default": "desc",
+          "description": "Window ORDER BY direction (default 'desc' for ranking; 'asc' is natural for ROW_NUMBER over time)"
+        },
+        "defaultValue": {
+          "description": "Default value for LAG/LEAD (NULL when omitted)"
         },
         "description": {
           "type": "string",
@@ -872,8 +914,21 @@
         },
         {
           "if": {
+            "properties": { "type": { "const": "window" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["windowFunction"]
+          }
+        },
+        {
+          "if": {
             "not": {
-              "properties": { "type": { "enum": ["cumulative", "period_over_period"] } },
+              "properties": {
+                "type": {
+                  "enum": ["cumulative", "period_over_period", "window"]
+                }
+              },
               "required": ["type"]
             }
           },

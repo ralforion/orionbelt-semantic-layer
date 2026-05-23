@@ -7,7 +7,7 @@
   "properties": {
     "version": {
       "type": "string",
-      "const": "0.1.1",
+      "const": "0.2.0.dev0",
       "description": "OSI specification version"
     },
     "dialects": {
@@ -19,7 +19,7 @@
     },
     "vendors": {
       "type": "array",
-      "description": "Supported vendors for custom extensions (enumeration definition)",
+      "description": "List of vendor names used in custom extensions within this model",
       "items": {
         "$ref": "#/$defs/Vendor"
       }
@@ -37,13 +37,13 @@
   "$defs": {
     "Dialect": {
       "type": "string",
-      "enum": ["ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS"],
+      "enum": ["ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL"],
       "description": "Supported SQL and expression language dialects"
     },
     "Vendor": {
       "type": "string",
-      "enum": ["COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS"],
-      "description": "Supported vendors for custom extensions"
+      "examples": ["COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA"],
+      "description": "Vendor name for custom extensions. Any string value is accepted."
     },
     "AIContext": {
       "description": "Additional context for AI tools",

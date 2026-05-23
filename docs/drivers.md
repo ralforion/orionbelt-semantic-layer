@@ -23,14 +23,14 @@ All drivers work against the **OrionBelt REST API in single-model mode** (`MODEL
 ## How Drivers Work
 
 ```
-Your Python App              OrionBelt API           Database
-┌──────────────┐   HTTP      ┌──────────────┐
-│ import ob_*  │ ─────────►  │ /v1/query/sql│  OBML → SQL
-│              │ ◄─────────  │ (MODEL_FILE) │
-│ cursor       │             └──────────────┘
-│  .execute()  │   native protocol
-│  .fetchall() │ ─────────────────────────────► Snowflake / PG / ...
-└──────────────┘
+Your Python App               OrionBelt API           Database
+┌───────────────┐   HTTP      ┌───────────────┐
+│ import ob_*   │ ─────────►  │ /v1/query/sql │  OBML → SQL
+│               │ ◄─────────  │ (MODEL_FILES) │
+│ cursor        │             └───────────────┘
+│  .execute()   │   native protocol
+│  .fetchall()  │ ─────────────────────────────► Snowflake / PG / ...
+└───────────────┘
 ```
 
 1. `cur.execute(query)` checks if the query is OBML (starts with `select:` + has `dimensions`/`measures`)
@@ -40,13 +40,14 @@ Your Python App              OrionBelt API           Database
 
 ## Prerequisites
 
-The OrionBelt REST API must be running in **single-model mode**:
+The OrionBelt REST API must be running with at least one model preloaded:
 
 ```bash
-MODEL_FILE=models/sales.obml.yaml uv run orionbelt-api
+# Multi-model (preferred): name each model with the OBML `name:` field
+MODEL_FILES=models/sales.obml.yaml,models/marketing.obml.yaml uv run orionbelt-api
 ```
 
-This auto-creates a default session and enables the `/v1/query/sql` shortcut endpoint.
+The driver picks a model via the `database` parameter (matches the OBML `name:`). With a single file loaded, the `/v1/query/sql` shortcut auto-resolves it without a `database` hint.
 
 ## Usage Examples
 
@@ -220,18 +221,18 @@ The `ob-flight-extension` package adds an Arrow Flight SQL endpoint to the Orion
 
 ```
 DBeaver / Tableau / Power BI
-        | Arrow Flight (gRPC, port 8815)
-        v
-┌────────────────────────────┐
-│  OrionBelt API             │
-│  ├── REST API  (:8080)     │  FastAPI endpoints
-│  └── Flight SQL (:8815)    │  Arrow Flight server (daemon thread)
-│       ├── OBML detection   │
-│       ├── CompilationPipeline (direct, no HTTP hop)
-│       └── Vendor driver    │  executes compiled SQL
-└────────────┬───────────────┘
-             | outbound TCP/HTTPS
-             v
+        │ Arrow Flight (gRPC, port 8815)
+        ▼
+┌────────────────────────────────┐
+│  OrionBelt API                 │
+│  ├── REST API  (:8080)         │  FastAPI endpoints
+│  └── Flight SQL (:8815)        │  Arrow Flight server (daemon thread)
+│        ├── OBML detection      │
+│        ├── CompilationPipeline │  (direct, no HTTP hop)
+│        └── Vendor driver       │  executes compiled SQL
+└────────────┬───────────────────┘
+             │ outbound TCP/HTTPS
+             ▼
    Snowflake / PostgreSQL / ClickHouse / Databricks / Dremio / DuckDB
    (cloud or on-premise, wherever the database is)
 ```
@@ -389,7 +390,7 @@ The Flight extension is **not needed** for Cloud Run deployments. Cloud Run uses
 1. **Download** the [Arrow Flight SQL JDBC driver](https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver) JAR (19.0.0 or newer) and install in Driver Manager:
 
 <p align="center">
-  <img src="../docs/assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
+  <img src="../assets/apache_arrow_flight_driver.png" alt="Apache Arrow Flight SQL JSDB Driver" width="600">
 </p>
 
 2. **New Connection** > Apache Arrow Flight SQL
@@ -419,20 +420,24 @@ FROM   sales
 LIMIT  100
 ```
 
-The schema browser shows the model's virtual table (one row per loaded
-model) plus the `_dimensions` / `_measures` / `_metrics` introspection
-views. `SHOW TABLES`, `DESCRIBE`, and `information_schema.tables` work
-out of the box and are answered from the model — they never touch the
-warehouse.
+Each loaded model appears in the schema browser as its own schema
+(`orionbelt.<model_name>`) containing a virtual table named `model`
+(columns = all dimensions + measures + metrics) and six introspection
+views: `dimensions` / `measures` / `metrics` for BI-tool picker side
+panels (one column per label) and `_dimensions_metadata` /
+`_measures_metadata` / `_metrics_metadata` for full attribute rows
+(name, data object, type, time grain, description, …). `SHOW TABLES`,
+`DESCRIBE`, `information_schema.*`, and `pg_catalog.*` queries are
+answered from the model and never touch the warehouse.
 
 <p align="center">
-  <img src="../docs/assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
+  <img src="../assets/arrow_flight_dbeaver.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
 You can also query the virtual OBML tables:
 
 <p align="center">
-  <img src="../docs/assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
+  <img src="../assets/arrow_flight_dbeaver_metrics.png" alt="Arrow Flight DBeaver" width="900">
 </p>
 
 #### Troubleshooting

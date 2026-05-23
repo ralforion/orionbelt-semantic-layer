@@ -2,8 +2,12 @@
 """
 OSI ↔ OBML Bidirectional Converter
 ===================================
-Converts between Open Semantic Interchange (OSI v0.1.1) YAML models
+Converts between Open Semantic Interchange (OSI v0.2.0.dev0) YAML models
 and OrionBelt Markup Language (OBML v1.0) YAML models.
+
+OSI v0.1.1 inputs are still accepted on read — the legacy shim
+``_normalize_legacy_v01`` promotes pre-v0.2 custom_extensions into the
+v0.2 first-class fields before regular parsing runs.
 
 Author: OrionBelt / RALFORION
 """
@@ -16,6 +20,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ─── Spec version pin ───────────────────────────────────────────────────────
+# Single source of truth for the OSI spec we emit. Bump when upstream cuts
+# a stable v0.2.0 (drop the ``.dev0`` suffix). All read paths accept both
+# 0.1.x (via the legacy shim) and 0.2.x.
+_OSI_VERSION = "0.2.0.dev0"
+
+# Dialect / vendor enum extras new in v0.2.0.dev0
+_OSI_KNOWN_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL")
+_OSI_KNOWN_VENDORS = ("COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA")
 
 # ─── Type mapping ───────────────────────────────────────────────────────────
 
@@ -59,7 +73,56 @@ class OSItoOBML:
         self.default_schema = default_schema
         self.warnings: list[str] = []
 
+    def _normalize_legacy_v01(self) -> None:
+        """Promote OSI v0.1.x payloads to the v0.2 shape, in place.
+
+        The v0.2 spec promotes ``primary_key`` and ``unique_keys`` to
+        first-class dataset fields. v0.1.x serializers (including ours
+        pre-bump) stash both under ``custom_extensions`` with vendor
+        ``OBSL`` and keys ``obml_primary_key`` / ``obml_unique_keys``.
+        This shim runs before parsing so the rest of the converter can
+        assume v0.2 shape regardless of input version.
+
+        No-op for documents that already declare ``version`` >= 0.2 or
+        that have nothing to migrate.
+        """
+        version = str(self.osi.get("version", ""))
+        if version and not version.startswith(("0.1", "0.0")):
+            return  # already v0.2+ (or future) — nothing to do
+
+        models = self.osi.get("semantic_model", [])
+        if not isinstance(models, list):
+            return
+
+        for model in models:
+            for ds in model.get("datasets", []) or []:
+                # Promote legacy primary_key / unique_keys from OBSL extras
+                # only if the dataset doesn't already declare them.
+                legacy = self._extract_obml_extras(ds)
+                if not legacy:
+                    continue
+                if "primary_key" not in ds and legacy.get("obml_primary_key"):
+                    pk = legacy["obml_primary_key"]
+                    if isinstance(pk, list) and all(isinstance(c, str) for c in pk):
+                        ds["primary_key"] = list(pk)
+                if "unique_keys" not in ds and legacy.get("obml_unique_keys"):
+                    uk = legacy["obml_unique_keys"]
+                    if isinstance(uk, list) and all(
+                        isinstance(g, list) and all(isinstance(c, str) for c in g) for g in uk
+                    ):
+                        ds["unique_keys"] = [list(g) for g in uk]
+
+        if version.startswith(("0.0", "0.1")):
+            self.warnings.append(
+                f"OSI input declares version '{version}'; legacy v0.1.x "
+                f"compatibility shim applied. Output target is v{_OSI_VERSION}."
+            )
+
     def convert(self) -> dict:
+        # v0.1.x inputs need the legacy shim to promote pre-v0.2
+        # custom_extensions into v0.2 first-class fields before we parse.
+        self._normalize_legacy_v01()
+
         models = self.osi.get("semantic_model", [])
         if not models:
             raise ValueError("No semantic_model found in OSI input")
@@ -169,6 +232,28 @@ class OSItoOBML:
             col_name, col_obj = self._convert_field(field)
             columns[col_name] = col_obj
 
+        # ── Primary key flag propagation (OSI v0.2 first-class) ──
+        # ``primary_key`` lists physical column codes; mark every matching
+        # column with ``primaryKey: true``. Unknown PK columns surface as
+        # a warning (the spec couples PK to relationship cardinality, so
+        # silently dropping is unsafe).
+        pk_codes = ds.get("primary_key") or []
+        if pk_codes:
+            code_to_col = {col.get("code"): (cname, col) for cname, col in columns.items()}
+            unknown_pks: list[str] = []
+            for pk_code in pk_codes:
+                hit = code_to_col.get(pk_code)
+                if hit is None:
+                    unknown_pks.append(pk_code)
+                    continue
+                _, col = hit
+                col["primaryKey"] = True
+            if unknown_pks:
+                self.warnings.append(
+                    f"Dataset '{name}' primary_key references unknown columns: "
+                    f"{unknown_pks}. Ignored."
+                )
+
         if columns:
             do["columns"] = columns
         else:
@@ -219,6 +304,18 @@ class OSItoOBML:
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
+
+        # ── Unique keys roundtrip (OBML has no native concept) ──
+        # Persist the OSI ``unique_keys`` array into the OBSL-vendor
+        # customExtensions so the OBML → OSI direction can emit it back.
+        unique_keys = ds.get("unique_keys") or []
+        if unique_keys:
+            do.setdefault("customExtensions", []).append(
+                {
+                    "vendor": "OBSL",
+                    "data": json.dumps({"obml_unique_keys": [list(g) for g in unique_keys]}),
+                }
+            )
 
         return name, do
 
@@ -295,6 +392,17 @@ class OSItoOBML:
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
+
+        # ── Field label roundtrip (OSI v0.2 first-class) ──
+        # OBML has no native column label today; preserve via OBSL-vendor
+        # customExtensions so the reverse direction can emit it back.
+        if field.get("label"):
+            col.setdefault("customExtensions", []).append(
+                {
+                    "vendor": "OBSL",
+                    "data": json.dumps({"obml_field_label": field["label"]}),
+                }
+            )
 
         return name, col
 
@@ -506,6 +614,14 @@ class OSItoOBML:
                 metrics[name] = pop_metric
                 continue
 
+            # Check for window metric (rank/lag/lead/ntile/first_value/last_value)
+            if obml_extras.get("obml_metric_type") == "window":
+                window_metric = self._reconstruct_window_metric(
+                    name, obml_extras, osi_description, osi_synonyms
+                )
+                metrics[name] = window_metric
+                continue
+
             expr_text = self._get_ansi_expression(m.get("expression", {}))
             if not expr_text:
                 self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
@@ -614,6 +730,47 @@ class OSItoOBML:
             metric_def["window"] = extras["obml_cumulative_window"]
         if extras.get("obml_cumulative_grain_to_date"):
             metric_def["grainToDate"] = extras["obml_cumulative_grain_to_date"]
+        if extras.get("obml_partition_by"):
+            metric_def["partitionBy"] = list(extras["obml_partition_by"])
+        if description:
+            metric_def["description"] = description
+        if extras.get("obml_format"):
+            metric_def["format"] = extras["obml_format"]
+        if extras.get("obml_data_type"):
+            metric_def["dataType"] = extras["obml_data_type"]
+        if extras.get("obml_owner"):
+            metric_def["owner"] = extras["obml_owner"]
+        if synonyms:
+            metric_def["synonyms"] = synonyms
+        return metric_def
+
+    @staticmethod
+    def _reconstruct_window_metric(
+        name: str,
+        extras: dict,
+        description: str | None,
+        synonyms: list[str],
+    ) -> dict:
+        """Reconstruct an OBML window metric from custom_extensions data."""
+        metric_def: dict[str, Any] = {
+            "type": "window",
+            "windowFunction": extras["obml_window_function"],
+        }
+        if extras.get("obml_window_measure"):
+            metric_def["measure"] = extras["obml_window_measure"]
+        if extras.get("obml_window_time_dimension"):
+            metric_def["timeDimension"] = extras["obml_window_time_dimension"]
+        if extras.get("obml_window_offset") is not None:
+            metric_def["offset"] = extras["obml_window_offset"]
+        if extras.get("obml_window_buckets") is not None:
+            metric_def["buckets"] = extras["obml_window_buckets"]
+        order_dir = extras.get("obml_order_direction", "desc")
+        if order_dir != "desc":
+            metric_def["orderDirection"] = order_dir
+        if extras.get("obml_window_default_value") is not None:
+            metric_def["defaultValue"] = extras["obml_window_default_value"]
+        if extras.get("obml_partition_by"):
+            metric_def["partitionBy"] = list(extras["obml_partition_by"])
         if description:
             metric_def["description"] = description
         if extras.get("obml_format"):
@@ -892,7 +1049,11 @@ class OBMLtoOSI:
         self.warnings: list[str] = []
 
     def convert(self) -> dict:
-        osi: dict[str, Any] = {"version": "0.1.1"}
+        osi: dict[str, Any] = {"version": _OSI_VERSION}
+        # Vendor names accumulate as we emit custom_extensions so we can
+        # populate the v0.2 top-level ``vendors`` informational array at the
+        # end of the conversion.
+        self._used_vendors: set[str] = {"COMMON"}
 
         data_objects = self.obml.get("dataObjects", {})
         obml_dimensions = self.obml.get("dimensions", {})
@@ -955,7 +1116,20 @@ class OBMLtoOSI:
         ]
 
         osi["semantic_model"] = [sem_model]
+
+        # v0.2 informational enums — only what's actually used in the doc.
+        # ANSI_SQL is always emitted (every OBML measure compiles via it).
+        osi["dialects"] = ["ANSI_SQL"]
+        vendors_emitted = sorted(self._used_vendors)
+        if vendors_emitted:
+            osi["vendors"] = vendors_emitted
+
         return osi
+
+    def _record_vendor(self, vendor_name: str) -> None:
+        """Record a vendor seen during emission; populates the top-level
+        ``vendors`` informational array. Safe to call repeatedly."""
+        self._used_vendors.add(vendor_name)
 
     def _convert_data_object(
         self, do_name: str, do_obj: dict, obml_dimensions: dict
@@ -974,6 +1148,42 @@ class OBMLtoOSI:
             "name": osi_name,
             "source": source,
         }
+
+        # ── Primary key (v0.2 first-class) ──────────────────────────
+        # Collect columns flagged with ``primaryKey: true`` in OBML order
+        # (TrackedLoader / Python dict preserves declaration order, which
+        # is significant for composite PKs).
+        pk_columns = [
+            col_name
+            for col_name, col in (do_obj.get("columns", {}) or {}).items()
+            if col.get("primaryKey")
+        ]
+        # Use the physical ``code`` for each column when present — OSI
+        # field names mirror the physical column code (see _convert_column).
+        if pk_columns:
+            columns_map = do_obj.get("columns", {}) or {}
+            dataset["primary_key"] = [
+                columns_map[c].get("code", c.lower().replace(" ", "_")) for c in pk_columns
+            ]
+
+        # ── Unique keys (v0.2 first-class, lossless roundtrip via OBSL) ──
+        # OBML doesn't model unique keys natively today; round-trip via the
+        # ``OBSL``-vendor ``obml_unique_keys`` payload that originated from
+        # a prior OSI → OBML conversion (or hand-authored OBML).
+        unique_keys_extra: list[list[str]] | None = None
+        for ext in do_obj.get("customExtensions", []) or []:
+            if ext.get("vendor") != "OBSL":
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            uk = data.get("obml_unique_keys")
+            if isinstance(uk, list) and all(isinstance(g, list) for g in uk):
+                unique_keys_extra = [list(g) for g in uk]
+                break
+        if unique_keys_extra:
+            dataset["unique_keys"] = unique_keys_extra
 
         if do_obj.get("description"):
             dataset["description"] = do_obj["description"]
@@ -1085,6 +1295,22 @@ class OBMLtoOSI:
             field["description"] = col_obj["comment"]
         else:
             field["description"] = col_name  # Use display name as description
+
+        # ── Field label (OSI v0.2 first-class) ──
+        # Surfaced from OBSL-vendor customExtensions ``obml_field_label`` —
+        # round-trip path for OSI → OBML → OSI fidelity. OBML has no
+        # native column ``label`` today.
+        for ext in col_obj.get("customExtensions", []) or []:
+            if ext.get("vendor") != "OBSL":
+                continue
+            try:
+                ext_label_data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if ext_label_data.get("obml_field_label"):
+                field["label"] = ext_label_data["obml_field_label"]
+                self._record_vendor("OBSL")
+                break
 
         # Restore ai_context from customExtensions (OSI vendor) if present
         ai_ctx: dict[str, Any] = {}
@@ -1238,6 +1464,10 @@ class OBMLtoOSI:
                 osi_metric = self._convert_obml_pop_metric(
                     metric_name, metric_obj, obml_measures, data_objects
                 )
+            elif metric_obj.get("type") == "window":
+                osi_metric = self._convert_obml_window_metric(
+                    metric_name, metric_obj, obml_measures, data_objects
+                )
             else:
                 osi_metric = self._convert_obml_metric(
                     metric_name, metric_obj, obml_measures, data_objects
@@ -1285,22 +1515,24 @@ class OBMLtoOSI:
             self.warnings.append(f"Measure '{name}' has no columns; skipped.")
             return None
 
-        # Build SQL expression from columns reference
-        col_ref = columns[0]
-        do_name = col_ref.get("dataObject", "")
-        col_name = col_ref.get("column", "")
-
-        # Resolve to code
-        do_obj = data_objects.get(do_name, {})
-        col_code = (
-            do_obj.get("columns", {})
-            .get(col_name, {})
-            .get("code", col_name.lower().replace(" ", "_"))
-        )
-        do_code = do_obj.get("code", do_name.lower().replace(" ", "_"))
+        # Build SQL expression from one-or-more column references.
+        # Multi-column aggregations (CORR, COVAR_*, REGR_*) emit
+        # ``AGG(col_a, col_b)`` with arguments in declaration order.
+        def _col_to_sql(col_ref: dict) -> str:
+            do_name_local = col_ref.get("dataObject", "")
+            col_name_local = col_ref.get("column", "")
+            do_obj_local = data_objects.get(do_name_local, {})
+            col_code_local = (
+                do_obj_local.get("columns", {})
+                .get(col_name_local, {})
+                .get("code", col_name_local.lower().replace(" ", "_"))
+            )
+            do_code_local = do_obj_local.get("code", do_name_local.lower().replace(" ", "_"))
+            return f"{do_code_local}.{col_code_local}"
 
         distinct_kw = "DISTINCT " if distinct else ""
-        expr = f"{agg}({distinct_kw}{do_code}.{col_code})"
+        col_sql = ", ".join(_col_to_sql(c) for c in columns)
+        expr = f"{agg}({distinct_kw}{col_sql})"
 
         result = {
             "name": name,
@@ -1512,6 +1744,8 @@ class OBMLtoOSI:
             ext_data["obml_cumulative_window"] = window_size
         if grain:
             ext_data["obml_cumulative_grain_to_date"] = grain
+        if metric.get("partitionBy"):
+            ext_data["obml_partition_by"] = list(metric["partitionBy"])
         if metric.get("format"):
             ext_data["obml_format"] = metric["format"]
         if metric.get("dataType"):
@@ -1600,6 +1834,120 @@ class OBMLtoOSI:
             "obml_pop_offset_grain": offset_grain,
             "obml_pop_comparison": comparison,
         }
+        if metric.get("format"):
+            ext_data["obml_format"] = metric["format"]
+        if metric.get("dataType"):
+            ext_data["obml_data_type"] = metric["dataType"]
+        if metric.get("owner"):
+            ext_data["obml_owner"] = metric["owner"]
+
+        result["custom_extensions"] = [
+            {
+                "vendor_name": "COMMON",
+                "data": json.dumps(ext_data),
+            }
+        ]
+
+        return result
+
+    def _convert_obml_window_metric(
+        self,
+        name: str,
+        metric: dict,
+        obml_measures: dict,
+        data_objects: dict,
+    ) -> dict | None:
+        """Convert an OBML window metric (rank/lag/lead/ntile/...) to an OSI metric.
+
+        Window metrics have no direct OSI equivalent. We generate an
+        approximate ANSI SQL expression for readability and persist the
+        full OBML window configuration in ``custom_extensions`` (vendor
+        ``COMMON``) for lossless OSI → OBML reconstruction.
+        """
+        window_fn = (metric.get("windowFunction") or "").upper()
+        if not window_fn:
+            self.warnings.append(f"Window metric '{name}' has no windowFunction; skipped.")
+            return None
+
+        measure_name = metric.get("measure")
+        time_dim = metric.get("timeDimension")
+        order_dir = metric.get("orderDirection", "desc").upper()
+        offset = metric.get("offset")
+        buckets = metric.get("buckets")
+        default_value = metric.get("defaultValue")
+        partition_by = metric.get("partitionBy", []) or []
+
+        measure_def = obml_measures.get(measure_name, {}) if measure_name else {}
+        inner_sql = (
+            self._measure_to_sql(measure_def, data_objects) if measure_def else (measure_name or "")
+        )
+
+        # Build approximate ANSI SQL expression
+        args: list[str] = []
+        order_expr: str | None = None
+        if window_fn in {"LAG", "LEAD"} and inner_sql:
+            args.append(inner_sql)
+            if offset is not None:
+                args.append(str(offset))
+            if default_value is not None:
+                args.append(
+                    f"'{default_value}'" if isinstance(default_value, str) else str(default_value)
+                )
+        elif window_fn == "NTILE" and buckets is not None:
+            args.append(str(buckets))
+        elif window_fn in {"FIRST_VALUE", "LAST_VALUE"} and inner_sql:
+            args.append(inner_sql)
+        # RANK / DENSE_RANK / ROW_NUMBER take no positional args
+
+        if window_fn in {"RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE"} and inner_sql:
+            order_expr = f"{inner_sql} {order_dir}"
+        elif window_fn in {"LAG", "LEAD"} and time_dim:
+            order_expr = f'"{time_dim}"'
+        elif window_fn in {"FIRST_VALUE", "LAST_VALUE"} and time_dim:
+            order_expr = f'"{time_dim}" {order_dir}'
+
+        partition_sql = (
+            "PARTITION BY " + ", ".join(f'"{p}"' for p in partition_by) if partition_by else ""
+        )
+        order_sql = f"ORDER BY {order_expr}" if order_expr else ""
+        over_inner = " ".join(p for p in (partition_sql, order_sql) if p)
+        sql_expr = f"{window_fn}({', '.join(args)}) OVER ({over_inner})"
+
+        result: dict[str, Any] = {
+            "name": name,
+            "expression": {
+                "dialects": [
+                    {
+                        "dialect": "ANSI_SQL",
+                        "expression": sql_expr,
+                    }
+                ]
+            },
+            "description": metric.get("description", name),
+        }
+
+        obml_synonyms = metric.get("synonyms", [])
+        ai_synonyms = [s for s in obml_synonyms if s != name]
+        if ai_synonyms:
+            result["ai_context"] = {"synonyms": ai_synonyms}
+
+        ext_data: dict[str, Any] = {
+            "obml_metric_type": "window",
+            "obml_window_function": window_fn.lower(),
+            "obml_order_direction": metric.get("orderDirection", "desc"),
+        }
+        if measure_name:
+            ext_data["obml_window_measure"] = measure_name
+        if time_dim:
+            ext_data["obml_window_time_dimension"] = time_dim
+        if offset is not None:
+            ext_data["obml_window_offset"] = offset
+        if buckets is not None:
+            ext_data["obml_window_buckets"] = buckets
+        if default_value is not None:
+            ext_data["obml_window_default_value"] = default_value
+        if partition_by:
+            ext_data["obml_partition_by"] = list(partition_by)
         if metric.get("format"):
             ext_data["obml_format"] = metric["format"]
         if metric.get("dataType"):

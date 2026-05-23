@@ -365,7 +365,15 @@ class TestMySQLDialect:
         assert dialect.capabilities.supports_ilike is False
         assert dialect.capabilities.supports_arrays is False
         assert dialect.capabilities.supports_union_all_by_name is False
-        assert dialect.capabilities.unsupported_aggregations == ["mode", "median"]
+        assert dialect.capabilities.unsupported_aggregations == [
+            "mode",
+            "median",
+            "corr",
+            "covar_pop",
+            "covar_samp",
+            "regr_slope",
+            "regr_intercept",
+        ]
 
     def test_quote_identifier(self, dialect: MySQLDialect) -> None:
         assert dialect.quote_identifier("col") == "`col`"

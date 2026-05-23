@@ -53,6 +53,7 @@ from orionbelt.models.semantic import (
     PeriodOverPeriodComparison,
     SemanticModel,
     TimeGrain,
+    WindowFunctionKind,
 )
 
 _COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
@@ -156,6 +157,7 @@ class ResolvedMeasure:
     cumulative_type: CumulativeAggType = CumulativeAggType.SUM
     cumulative_window: int | None = None
     cumulative_grain_to_date: GrainToDate | None = None
+    cumulative_partition_by: list[str] = field(default_factory=list)
     # Period-over-period metric fields
     is_pop: bool = False
     pop_base_measure: str | None = None
@@ -164,6 +166,16 @@ class ResolvedMeasure:
     pop_offset: int = -1
     pop_offset_grain: TimeGrain | None = None
     pop_comparison: PeriodOverPeriodComparison | None = None
+    # Window metric fields (rank / lag / lead / ntile / first_value / last_value)
+    is_window: bool = False
+    window_function: WindowFunctionKind | None = None
+    window_base_measure: str | None = None
+    window_time_dimension: str | None = None
+    window_partition_by: list[str] = field(default_factory=list)
+    window_offset: int | None = None
+    window_buckets: int | None = None
+    window_order_direction: str = "desc"
+    window_default_value: str | int | float | bool | None = None
 
 
 @dataclass
@@ -253,6 +265,11 @@ class ResolvedQuery:
     def has_pop(self) -> bool:
         """Check if any selected metric is period-over-period."""
         return any(m.is_pop for m in self.measures)
+
+    @property
+    def has_window(self) -> bool:
+        """Check if any selected metric is a window (rank/lag/lead/ntile/...)."""
+        return any(m.is_window for m in self.measures)
 
 
 @dataclass
@@ -861,7 +878,180 @@ class QueryResolver:
             return self._resolve_cumulative_metric(ctx, name, metric)
         if metric.type == MetricType.PERIOD_OVER_PERIOD:
             return self._resolve_pop_metric(ctx, name, metric)
+        if metric.type == MetricType.WINDOW:
+            return self._resolve_window_metric(ctx, name, metric)
         return self._resolve_derived_metric(ctx, name, metric)
+
+    def _validate_partition_dimensions(
+        self,
+        ctx: _ResolutionContext,
+        metric_name: str,
+        partition_by: list[str],
+        path_template: str,
+    ) -> bool:
+        """Validate every partitionBy entry references a model dimension
+        present in the query's SELECT. Returns False (and accumulates errors)
+        on any failure. Reachability to the measure source is enforced
+        transitively by ``required_objects`` reachability later in resolution.
+        """
+        if not partition_by:
+            return True
+        dim_names = {d.name for d in ctx.result.dimensions}
+        for dim_name in partition_by:
+            if dim_name not in ctx.model.dimensions:
+                ctx.errors.append(
+                    SemanticError(
+                        code="UNKNOWN_PARTITION_DIMENSION",
+                        message=(
+                            f"Metric '{metric_name}' references unknown partition "
+                            f"dimension '{dim_name}'"
+                        ),
+                        path=path_template.format(metric_name),
+                    )
+                )
+                return False
+            if dim_name not in dim_names:
+                ctx.errors.append(
+                    SemanticError(
+                        code="UNKNOWN_PARTITION_DIMENSION",
+                        message=(
+                            f"Metric '{metric_name}' requires partitionBy dimension "
+                            f"'{dim_name}' to be in the query's selected dimensions"
+                        ),
+                        path=path_template.format(metric_name),
+                    )
+                )
+                return False
+        return True
+
+    def _resolve_window_metric(
+        self, ctx: _ResolutionContext, name: str, metric: Metric
+    ) -> ResolvedMeasure | None:
+        """Resolve a window metric (rank/lag/lead/ntile/first_value/last_value)."""
+        if metric.window_function is None:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_METRIC",
+                    message=f"Window metric '{name}' missing required 'windowFunction'",
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
+
+        wf = metric.window_function
+        base_measure_name = metric.measure
+        base_aggregation = ""
+
+        # Validate referenced measure (if any) exists
+        if base_measure_name is not None:
+            base_measure = ctx.model.measures.get(base_measure_name)
+            if base_measure is None:
+                ctx.errors.append(
+                    SemanticError(
+                        code="UNKNOWN_MEASURE",
+                        message=(
+                            f"Window metric '{name}' references unknown "
+                            f"measure '{base_measure_name}'"
+                        ),
+                        path=f"metrics.{name}.measure",
+                    )
+                )
+                return None
+            base_aggregation = base_measure.aggregation
+            if base_measure_name not in ctx.result.metric_components:
+                comp = self._resolve_measure(ctx, base_measure_name)
+                if comp:
+                    ctx.result.metric_components[base_measure_name] = comp
+
+        # timeDimension is required for LAG/LEAD, optional otherwise (RANK uses measure value)
+        if metric.time_dimension is not None:
+            dim = ctx.model.dimensions.get(metric.time_dimension)
+            if dim is None:
+                ctx.errors.append(
+                    SemanticError(
+                        code="UNKNOWN_DIMENSION",
+                        message=(
+                            f"Window metric '{name}' references unknown "
+                            f"timeDimension '{metric.time_dimension}'"
+                        ),
+                        path=f"metrics.{name}.timeDimension",
+                    )
+                )
+                return None
+            dim_names = {d.name for d in ctx.result.dimensions}
+            if metric.time_dimension not in dim_names:
+                ctx.errors.append(
+                    SemanticError(
+                        code="WINDOW_TIME_DIMENSION_NOT_IN_SELECT",
+                        message=(
+                            f"Window metric '{name}' requires timeDimension "
+                            f"'{metric.time_dimension}' to be in the query's selected dimensions"
+                        ),
+                        path=f"metrics.{name}.timeDimension",
+                    )
+                )
+                return None
+        elif wf in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_LAG_LEAD",
+                    message=(
+                        f"Window metric '{name}' with function '{wf.value}' "
+                        f"requires 'timeDimension'"
+                    ),
+                    path=f"metrics.{name}",
+                )
+            )
+            return None
+
+        if wf == WindowFunctionKind.NTILE and (metric.buckets is None or metric.buckets < 2):
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_NTILE_BUCKETS",
+                    message=(
+                        f"Window metric '{name}' with function 'ntile' requires 'buckets' >= 2"
+                    ),
+                    path=f"metrics.{name}.buckets",
+                )
+            )
+            return None
+
+        if wf in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD} and (
+            metric.offset is None or metric.offset < 1
+        ):
+            ctx.errors.append(
+                SemanticError(
+                    code="INVALID_LAG_LEAD",
+                    message=(
+                        f"Window metric '{name}' with function '{wf.value}' "
+                        f"requires positive 'offset'"
+                    ),
+                    path=f"metrics.{name}.offset",
+                )
+            )
+            return None
+
+        if not self._validate_partition_dimensions(
+            ctx, name, metric.partition_by, "metrics.{}.partitionBy"
+        ):
+            return None
+
+        return ResolvedMeasure(
+            name=name,
+            aggregation=base_aggregation,
+            expression=ColumnRef(name=base_measure_name or name),
+            is_expression=True,
+            component_measures=[base_measure_name] if base_measure_name else [],
+            is_window=True,
+            window_function=wf,
+            window_base_measure=base_measure_name,
+            window_time_dimension=metric.time_dimension,
+            window_partition_by=list(metric.partition_by),
+            window_offset=metric.offset,
+            window_buckets=metric.buckets,
+            window_order_direction=metric.order_direction.lower(),
+            window_default_value=metric.default_value,
+        )
 
     def _resolve_derived_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric
@@ -966,6 +1156,12 @@ class QueryResolver:
             )
             return None
 
+        # Validate partitionBy dimensions
+        if not self._validate_partition_dimensions(
+            ctx, name, metric.partition_by, "metrics.{}.partitionBy"
+        ):
+            return None
+
         # Resolve the base measure as a component (reuse existing resolution)
         if metric.measure not in ctx.result.metric_components:
             comp = self._resolve_measure(ctx, metric.measure)
@@ -986,6 +1182,7 @@ class QueryResolver:
             cumulative_type=metric.cumulative_type,
             cumulative_window=metric.window,
             cumulative_grain_to_date=metric.grain_to_date,
+            cumulative_partition_by=list(metric.partition_by),
         )
 
     def _resolve_pop_metric(
@@ -1162,6 +1359,9 @@ class QueryResolver:
         if metric:
             if metric.type == MetricType.CUMULATIVE and metric.measure:
                 # Cumulative metric: source objects come from the referenced measure
+                result.update(self._get_measure_source_objects(ctx, metric.measure))
+            elif metric.type == MetricType.WINDOW and metric.measure:
+                # Window metric: source objects come from the referenced measure
                 result.update(self._get_measure_source_objects(ctx, metric.measure))
             elif metric.expression:
                 # Derived or PoP metric: parse expression for measure references

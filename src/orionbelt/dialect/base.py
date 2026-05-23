@@ -230,6 +230,19 @@ class Dialect(ABC):
         """
         return name
 
+    def _check_aggregation_supported(self, name: str) -> None:
+        """Raise ``UnsupportedAggregationError`` when the dialect doesn't support
+        the given aggregation. Matches case-insensitively against
+        ``capabilities.unsupported_aggregations`` (lowercase OBML names).
+
+        Existing per-function compile overrides (``_compile_mode``,
+        ``_compile_median``) still raise directly — this generic gate is a
+        catch-all for purely-standard aggregations like ``REGR_SLOPE`` where
+        no special compile path exists.
+        """
+        if name.lower() in {a.lower() for a in self.capabilities.unsupported_aggregations}:
+            raise UnsupportedAggregationError(self.name, name.lower())
+
     def _compile_median(self, args: list[Expr]) -> str:
         """Compile MEDIAN — default uses MEDIAN(col).
 
@@ -470,6 +483,11 @@ class Dialect(ABC):
                 order_by=order_by,
                 separator=separator,
             ):
+                # Reject aggregations explicitly listed as unsupported by the dialect.
+                # Per-function overrides (_compile_mode etc.) still apply for cases
+                # that have a special compile path; this catches plain aggregates
+                # like REGR_SLOPE that have no override.
+                self._check_aggregation_supported(fname)
                 # LISTAGG: dialect-specific rendering
                 if fname.upper() == "LISTAGG":
                     return self._compile_listagg(args, distinct, order_by, separator)

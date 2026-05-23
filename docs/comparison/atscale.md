@@ -1,13 +1,13 @@
 # OBSL vs AtScale
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale** — the enterprise "universal semantic layer" with deep OLAP heritage and native MDX/DAX support. Captured 2026-05-01.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale** — the enterprise "universal semantic layer" with deep OLAP heritage and native MDX/DAX support. Captured 2026-05-23.
 
 ---
 
 ## TL;DR
 
 - **AtScale wins on**: enterprise OLAP capabilities (true hierarchies, parent-child, ragged, time-intelligence), **native MDX support** for Excel pivot tables and SSAS-protocol clients (no other peer in this comparison set has this), **DAX support** for Power BI live connections, **autonomous aggregates** (machine-learned auto-rollups similar to Cube pre-aggregations but more automated), enterprise governance (RLS, perspectives, lineage), and broad legacy/cloud warehouse coverage.
-- **OBSL wins on**: being **open-source and self-hostable for production with no licensing tier** (AtScale offers a free Developer Community Edition for evaluation, but production multi-user deployments require an enterprise license), a **simple JSON Query API** consumable by any client, **first-class declarative cumulative and period-over-period metric types**, an **RDF/SPARQL graph view** of the model, **named secondary join paths**, **multi-rooted DAG topology with the CFL planner**, an **interactive ontology-graph playground**, OSI ↔ OBML format conversion, and a much smaller operational footprint.
+- **OBSL wins on**: being **open-source and self-hostable for production with no licensing tier** (AtScale offers a free Developer Community Edition for evaluation, but production multi-user deployments require an enterprise license), a **simple JSON Query API** consumable by any client, **first-class declarative metric types** for cumulative (with `partitionBy` v2.6+), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, v2.6+), **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*, v2.6+), an **RDF/SPARQL graph view** of the model, **named secondary join paths**, **multi-rooted DAG topology with the CFL planner**, an **interactive ontology-graph playground**, **OSI v0.2 ↔ OBML format conversion** (v2.6+), and a much smaller operational footprint.
 - **Different niches**: AtScale is "the enterprise OLAP semantic layer for Excel/PowerBI/Tableau shops that need MDX." OBSL is "the open-source, embeddable semantic compiler for apps, agents, and modern BI tools that speak Arrow Flight SQL or REST."
 
 AtScale is the only peer in this comparison set that natively speaks **MDX**, the OLAP wire protocol that Excel and SSAS clients use. That's a real moat for organizations standardized on Microsoft BI tooling. OBSL doesn't compete on that axis.

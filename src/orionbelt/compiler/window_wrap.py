@@ -1,0 +1,257 @@
+"""Wrapper CTE for ``MetricType.WINDOW`` — rank, lag, lead, ntile, first/last value.
+
+These are single-row-output window functions (no aggregation frame). The wrap
+mirrors :mod:`orionbelt.compiler.cumulative_wrap`: the planner output becomes
+a base CTE, and the outer query applies the window functions over the
+already-aggregated rows.
+
+Window metrics never resize the result set — every row gets one ranking,
+prior-value, or bucket assignment. They compose naturally with ``DERIVED``
+metrics, so the outer query exposes them by their declared metric name.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from orionbelt.ast.nodes import (
+    CTE,
+    AliasedExpr,
+    ColumnRef,
+    Expr,
+    From,
+    Literal,
+    OrderByItem,
+    Select,
+    WindowFunction,
+)
+from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.models.semantic import WindowFunctionKind
+
+if TYPE_CHECKING:
+    from orionbelt.dialect.base import Dialect
+    from orionbelt.models.semantic import SemanticModel
+
+
+_WINDOW_FUNCTION_NAMES: dict[WindowFunctionKind, str] = {
+    WindowFunctionKind.RANK: "RANK",
+    WindowFunctionKind.DENSE_RANK: "DENSE_RANK",
+    WindowFunctionKind.ROW_NUMBER: "ROW_NUMBER",
+    WindowFunctionKind.NTILE: "NTILE",
+    WindowFunctionKind.LAG: "LAG",
+    WindowFunctionKind.LEAD: "LEAD",
+    WindowFunctionKind.FIRST_VALUE: "FIRST_VALUE",
+    WindowFunctionKind.LAST_VALUE: "LAST_VALUE",
+}
+
+
+def _build_window_call(measure: ResolvedMeasure) -> WindowFunction:
+    """Build the window-function AST node for a ``MetricType.WINDOW`` metric."""
+    assert measure.window_function is not None
+    kind = measure.window_function
+    func_name = _WINDOW_FUNCTION_NAMES[kind]
+
+    base_ref: Expr | None = (
+        ColumnRef(name=measure.window_base_measure) if measure.window_base_measure else None
+    )
+    desc = measure.window_order_direction.lower() == "desc"
+
+    args: list[Expr] = []
+    order_by: list[OrderByItem] = []
+
+    if kind in {WindowFunctionKind.RANK, WindowFunctionKind.DENSE_RANK}:
+        # RANK() ordered by the base measure (or the time dimension if no measure)
+        if base_ref is not None:
+            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+        elif measure.window_time_dimension:
+            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+    elif kind == WindowFunctionKind.ROW_NUMBER:
+        # ROW_NUMBER() — order by the measure if given, otherwise by time dim
+        if base_ref is not None:
+            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+        elif measure.window_time_dimension:
+            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+    elif kind == WindowFunctionKind.NTILE:
+        assert measure.window_buckets is not None
+        args = [Literal.number(measure.window_buckets)]
+        if base_ref is not None:
+            order_by = [OrderByItem(expr=base_ref, desc=desc)]
+        elif measure.window_time_dimension:
+            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+    elif kind in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
+        assert base_ref is not None
+        assert measure.window_offset is not None
+        assert measure.window_time_dimension is not None
+        args = [base_ref, Literal.number(measure.window_offset)]
+        if measure.window_default_value is not None:
+            args.append(Literal(value=measure.window_default_value))
+        # LAG/LEAD always order ascending by time (semantics: prior/next in time)
+        order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=False)]
+    elif kind in {WindowFunctionKind.FIRST_VALUE, WindowFunctionKind.LAST_VALUE}:
+        assert base_ref is not None
+        args = [base_ref]
+        if measure.window_time_dimension:
+            order_by = [OrderByItem(expr=ColumnRef(name=measure.window_time_dimension), desc=desc)]
+
+    partition_by: list[Expr] = [
+        ColumnRef(name=dim_name) for dim_name in measure.window_partition_by
+    ]
+
+    return WindowFunction(
+        func_name=func_name,
+        args=args,
+        partition_by=partition_by,
+        order_by=order_by,
+    )
+
+
+def _apply_metric_cast(
+    expr: Expr,
+    metric_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a window expression with the metric's declared dataType cast.
+
+    Same shape as ``cumulative_wrap._apply_metric_cast``: honours an
+    explicit ``dataType:`` on the window metric so the projected column
+    matches what the model declares (avoids INT/FLOAT confusion when a
+    user declares ``dataType: integer`` on a RANK metric).
+    """
+    if model is None or dialect is None:
+        return expr
+    metric = model.metrics.get(metric_name)
+    if metric is None:
+        return expr
+    resolved_type = resolve_metric_data_type(metric, model.settings)
+    if resolved_type is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved_type)
+
+
+def _get_alias(expr: Expr) -> str | None:
+    if isinstance(expr, AliasedExpr):
+        return expr.alias
+    return None
+
+
+def wrap_with_window(
+    ast: Select,
+    resolved: ResolvedQuery,
+    *,
+    model: SemanticModel | None = None,
+    dialect: Dialect | None = None,
+) -> Select:
+    """Wrap a planner AST with a CTE + outer query for ``MetricType.WINDOW`` metrics.
+
+    Runs after ``cumulative_wrap`` so window metrics can reference cumulative
+    or derived metrics declared in the same model (the outer wrap selects
+    every measure / metric alias from the base CTE by name).
+
+    Returns ``ast`` unchanged when no window metrics are present.
+    """
+    if not resolved.has_window:
+        return ast
+
+    window_measures: list[ResolvedMeasure] = [m for m in resolved.measures if m.is_window]
+    direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
+    window_names = {m.name for m in window_measures}
+
+    # --- Build base CTE columns ---
+    base_columns: list[Expr] = []
+    for col_node in ast.columns:
+        alias = _get_alias(col_node)
+        if alias and alias in window_names:
+            win_metric = next(m for m in window_measures if m.name == alias)
+            base_name = win_metric.window_base_measure
+            if base_name and base_name not in direct_measure_names:
+                comp = resolved.metric_components.get(base_name)
+                if comp:
+                    already_in_base = any(_get_alias(c) == base_name for c in base_columns)
+                    if not already_in_base:
+                        base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
+        else:
+            base_columns.append(col_node)
+
+    base_cte_query = Select(
+        columns=base_columns,
+        from_=ast.from_,
+        joins=ast.joins,
+        where=ast.where,
+        group_by=ast.group_by,
+        having=ast.having,
+        order_by=[],
+        limit=None,
+        offset=None,
+        ctes=[],
+        grouping=ast.grouping,
+    )
+
+    cte_name = "window_base"
+    base_cte = CTE(name=cte_name, query=base_cte_query)
+
+    # --- Build outer SELECT ---
+    outer_columns: list[Expr] = []
+
+    for dim in resolved.dimensions:
+        outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
+
+    for m in resolved.measures:
+        if m.is_window:
+            window_expr: Expr = _build_window_call(m)
+            window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
+            outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
+        else:
+            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+
+    # --- ORDER BY remapping ---
+    outer_order_by = _build_outer_order_by(resolved)
+
+    all_ctes = list(ast.ctes) + [base_cte]
+
+    return Select(
+        columns=outer_columns,
+        from_=From(source=cte_name, alias=cte_name),
+        joins=[],
+        where=None,
+        group_by=[],
+        having=None,
+        order_by=outer_order_by,
+        limit=ast.limit,
+        offset=ast.offset,
+        ctes=all_ctes,
+    )
+
+
+def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
+    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
+    from orionbelt.compiler.star import _nulls_last
+
+    col_to_dim: dict[tuple[str, str | None], str] = {
+        (d.source_column, d.object_name): d.name for d in resolved.dimensions
+    }
+    order_by: list[OrderByItem] = []
+    for expr, desc, nulls in resolved.order_by_exprs:
+        nl = _nulls_last(nulls)
+        if isinstance(expr, Literal):
+            order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
+        elif isinstance(expr, ColumnRef):
+            dim_name = col_to_dim.get((expr.name, expr.table))
+            name = dim_name if dim_name else expr.name
+            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc, nulls_last=nl))
+        else:
+            matched = False
+            for m in resolved.measures:
+                if m.expression == expr:
+                    order_by.append(
+                        OrderByItem(expr=ColumnRef(name=m.name), desc=desc, nulls_last=nl)
+                    )
+                    matched = True
+                    break
+            if not matched:
+                order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
+    return order_by
+
+
+__all__ = ["wrap_with_window"]
