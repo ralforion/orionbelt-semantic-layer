@@ -2253,21 +2253,21 @@
 </tr>
 <tr>
 <td>First-class window metric (rank / lag / lead / ntile / first_value / last_value, v2.6+)</td>
-<td>✅</td>
+<td>✅ declarative</td>
 <td>❌</td>
 <td>Per-query calculations</td>
 <td>Table calcs (UI-side)</td>
-<td>❌</td>
+<td>Via <code>type: number</code> + raw SQL</td>
 <td>Via MDX calculated members</td>
 </tr>
 <tr>
-<td>Statistical / regression aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>, v2.6+)</td>
-<td>✅ 9 functions</td>
-<td>Partial (basic <code>stddev</code> only)</td>
-<td>Partial (basic <code>stddev</code> only)</td>
-<td>Partial (via raw <code>sql:</code>)</td>
-<td>❌</td>
-<td>Limited</td>
+<td>Statistical / regression aggregates as first-class measure types (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>, v2.6+)</td>
+<td>✅ 9 declarative aggregations (arity-validated, per-dialect gated)</td>
+<td>Basic <code>stddev</code> only as first-class</td>
+<td>Basic <code>stddev</code> only as first-class</td>
+<td>Via <code>type: number</code> + raw SQL</td>
+<td>Via <code>type: number</code> + raw SQL</td>
+<td>Via MDX calculated members</td>
 </tr>
 <tr>
 <td>Conversion / funnel metrics</td>

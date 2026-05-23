@@ -1849,6 +1849,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2377,6 +2405,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2795,6 +2851,45 @@
 <p><strong>Pre-aggregations are still Cube-only.</strong> OBSL caches <em>the result of a query that ran against the warehouse</em>; Cube can additionally pre-materialise rollups in Cube Store and route queries through them, which is a different category of optimisation. If your bottleneck is repeat queries, OBSL's result cache helps. If it's queries that scan billions of rows even on first hit, you still need Cube's pre-aggs (or warehouse-side materialised views, or dbt incremental models).</p>
 <hr />
 <h2 id="4-metric-types">4. Metric types<a class="headerlink" href="#4-metric-types" title="Permanent link">&para;</a></h2>
+<h3 id="41-aggregation-surface-on-measure">4.1 Aggregation surface on <code>Measure</code><a class="headerlink" href="#41-aggregation-surface-on-measure" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>OBSL</th>
+<th>Cube</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Standard</td>
+<td><code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code></td>
+<td><code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>count_distinct_approx</code>, <code>avg</code>, <code>min</code>, <code>max</code></td>
+</tr>
+<tr>
+<td>Shape</td>
+<td><code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code></td>
+<td><code>string</code>, <code>time</code>, <code>boolean</code>, <code>number</code> (generic — wraps any aggregate SQL expression)</td>
+</tr>
+<tr>
+<td>Statistical (v2.6+)</td>
+<td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
+<td>Via <code>type: number</code> + raw <code>sql: STDDEV(...)</code> — not a first-class measure type</td>
+</tr>
+<tr>
+<td>Association / regression (v2.6+)</td>
+<td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
+<td>Via <code>type: number</code> + raw SQL — not a first-class measure type</td>
+</tr>
+<tr>
+<td>Grand totals</td>
+<td><code>total: bool</code> on the measure</td>
+<td>n/a — done at query/visualization time</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The honest difference</strong>: Cube's <code>type: number</code> is a generic escape hatch — anything the warehouse can express in SQL is reachable, but the model authors write raw SQL that's dialect-specific, arity-unchecked, and opaque to validation. OBSL ships these as first-class declarative aggregations with arity validation (2-column for <code>corr</code> / <code>covar_*</code> / <code>regr_*</code>), per-dialect gating (<code>UNSUPPORTED_AGGREGATION_FOR_DIALECT</code> at compile time), and identical YAML across all 8 dialects. Both approaches reach the same SQL functions in the end; the difference is who owns dialect portability.</p>
+<h3 id="42-metric-types">4.2 Metric types<a class="headerlink" href="#42-metric-types" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -2805,11 +2900,6 @@
 </thead>
 <tbody>
 <tr>
-<td><code>Measure</code> — 10 standard aggregations (<code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code>, <code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code>) <strong>+ 9 statistical aggregations (v2.6+)</strong> (<code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code>, <code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code>) + <code>total: bool</code> for grand totals</td>
-<td><code>measures</code> (<code>type: sum/count/count_distinct/avg/min/max/number/string/time/boolean</code>)</td>
-<td>OBSL has the wider aggregate surface — Cube has no statistical / regression aggregates as first-class measure types</td>
-</tr>
-<tr>
 <td><code>Metric</code> <code>type: derived</code></td>
 <td><code>measure: { type: number; sql: ... }</code> referencing other measures</td>
 <td>Both first-class</td>
@@ -2817,7 +2907,7 @@
 <tr>
 <td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
 <td><code>measure: { rolling_window: { trailing: '7 day', offset: 'end' } }</code> — rolling only</td>
-<td>Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no partition-by surface as declarative types</td>
+<td>Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no <code>partitionBy</code> as declarative types</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> (4 comparison modes)</td>
@@ -2826,23 +2916,18 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: window</code> (v2.6+) — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
-<td>—</td>
-<td><strong>Gap in Cube</strong> — no first-class rank / lag / lead surface; users compose raw SQL</td>
+<td>Via <code>type: number</code> + raw window-function SQL</td>
+<td>OBSL ships these as declarative metric types; Cube reaches them via the same <code>type: number</code> escape hatch</td>
 </tr>
 <tr>
 <td>Reusable filter context / filtered measures</td>
 <td><code>segments</code> (named, reusable filter sets) + <code>filters</code> on individual measure definitions</td>
 <td>Comparable</td>
 </tr>
-<tr>
-<td>Grand totals (<code>total: true</code>)</td>
-<td>n/a — done at query/visualization time</td>
-<td>OBSL has it as a measure attribute</td>
-</tr>
 </tbody>
 </table>
 <p><strong>Different philosophies</strong>: OBSL bakes time-aware metrics into the model (write once, every query gets the comparison). Cube treats time comparisons as query-time concerns (more flexible, but the consumer has to know how to ask). Either fits depending on whether you're publishing a metrics catalog or empowering query authors.</p>
-<p>See <a href="../../guide/trend-analysis/">Trend Analysis</a> for the full v2.6 metric / aggregation surface (window functions, statistical aggregates, dialect coverage matrix).</p>
+<p>See <a href="../../guide/trend-analysis/">Trend Analysis</a> for OBSL's full v2.6 surface (window functions, statistical aggregates, dialect coverage matrix).</p>
 <hr />
 <h2 id="5-joins">5. Joins<a class="headerlink" href="#5-joins" title="Permanent link">&para;</a></h2>
 <table>
@@ -3175,12 +3260,12 @@
 <tr>
 <td>First-class window metric type (rank / lag / lead / ntile / first_value / last_value)</td>
 <td>✅ (v2.6+)</td>
-<td>❌</td>
+<td>Via <code>type: number</code> + raw SQL</td>
 </tr>
 <tr>
-<td>Statistical aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>)</td>
-<td>✅ 9 functions (v2.6+)</td>
-<td>❌</td>
+<td>Statistical aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>) as first-class measure types</td>
+<td>✅ 9 declarative aggregations (v2.6+)</td>
+<td>Via <code>type: number</code> + raw SQL</td>
 </tr>
 <tr>
 <td>Multi-rooted DAG modeling</td>
@@ -3262,8 +3347,8 @@
 <h3 id="to-match-obsl-cube-would-need">To match OBSL, Cube would need:<a class="headerlink" href="#to-match-obsl-cube-would-need" title="Permanent link">&para;</a></h3>
 <ol>
 <li><strong>First-class cumulative &amp; period-over-period metric types</strong> — declarative versions of what's currently <code>rolling_window</code> and query-side <code>time_shift</code>, including per-dimension <code>partitionBy</code> on cumulative.</li>
-<li><strong>First-class window metric type</strong> — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code> as declarative metric types instead of raw SQL.</li>
-<li><strong>Statistical aggregate functions</strong> — <code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_slope</code>, <code>regr_intercept</code> as first-class measure aggregations.</li>
+<li><strong>First-class window metric type</strong> — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code> as declarative metric types rather than reaching them through <code>type: number</code> + raw window-function SQL.</li>
+<li><strong>First-class statistical / regression aggregations</strong> — <code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_slope</code>, <code>regr_intercept</code> as declarative measure types with arity validation and per-dialect gating, rather than via <code>type: number</code> + raw SQL.</li>
 <li><strong>Multi-rooted DAG modeling</strong> — the ability to query across genuinely independent fact tables in one go without the consumer needing to pre-design a <code>view</code>.</li>
 <li><strong>Named secondary join paths</strong> with per-query selection.</li>
 <li><strong>RDF/SPARQL graph surface</strong> for governance/lineage.</li>

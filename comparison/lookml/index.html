@@ -1832,6 +1832,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2399,6 +2427,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2776,6 +2832,45 @@
 <p><strong>OBSL</strong> carries minimal UI metadata. Rendering is the consumer's job.</p>
 <hr />
 <h2 id="4-metric-types">4. Metric types<a class="headerlink" href="#4-metric-types" title="Permanent link">&para;</a></h2>
+<h3 id="41-aggregation-surface-on-measure">4.1 Aggregation surface on <code>Measure</code><a class="headerlink" href="#41-aggregation-surface-on-measure" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>OBSL</th>
+<th>LookML</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Standard</td>
+<td><code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code></td>
+<td><code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>average</code>, <code>min</code>, <code>max</code></td>
+</tr>
+<tr>
+<td>Shape</td>
+<td><code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code></td>
+<td><code>sum_distinct</code>, <code>average_distinct</code>, <code>median</code>, <code>median_distinct</code>, <code>percentile</code>, <code>percentile_distinct</code>, <code>list</code>, <code>number</code>, <code>string</code>, <code>date</code>, <code>yesno</code></td>
+</tr>
+<tr>
+<td>Statistical (v2.6+)</td>
+<td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
+<td>Via <code>type: number</code> + raw <code>sql: STDDEV(...)</code> — not first-class measure types</td>
+</tr>
+<tr>
+<td>Association / regression (v2.6+)</td>
+<td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
+<td>Via <code>type: number</code> + raw SQL — not first-class measure types</td>
+</tr>
+<tr>
+<td>Grand totals</td>
+<td><code>total: bool</code> on the measure</td>
+<td>Looker UI checkbox (<code>totals: yes</code>) — visualization-time, not the model</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The honest difference</strong>: LookML wins decisively on aggregate-variant <em>shape</em> — <code>sum_distinct</code>, <code>percentile_*</code>, <code>median_distinct</code> are all first-class measure types Looker authors reach for daily. OBSL's <code>any_value</code> / <code>mode</code> / <code>listagg</code> cover a different slice. On the statistical side, OBSL ships 9 first-class declarative aggregations with arity validation and per-dialect gating; LookML reaches the same SQL through <code>type: number</code> + raw SQL — works, but not validated and not portable across dialects.</p>
+<h3 id="42-metric-types">4.2 Metric types<a class="headerlink" href="#42-metric-types" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -2785,11 +2880,6 @@
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><code>Measure</code> — 10 standard aggregations (<code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code>, <code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code>) <strong>+ 9 statistical aggregations (v2.6+)</strong> (<code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code>, <code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code>) + <code>total: bool</code> for grand totals</td>
-<td><code>measure: { type: sum/avg/count/count_distinct/sum_distinct/percentile/median/... }</code></td>
-<td>LookML has more "shape" aggregate variants (<code>sum_distinct</code>, <code>percentile_*</code>), OBSL has the wider statistical / regression surface (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>) as first-class declarative aggregates</td>
-</tr>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
 <td><code>measure: { type: number; sql: ...references other measures... }</code></td>
@@ -2817,7 +2907,7 @@
 </tr>
 </tbody>
 </table>
-<p>Bottom line: LookML wins on aggregate-variant <em>shape</em> (sum_distinct, percentile families) and on UI-side table-calc breadth; OBSL wins on <strong>statistical/regression aggregates</strong> and on <strong>time/window/PoP/cumulative as declarative metric types</strong> that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See <a href="../../guide/trend-analysis/">Trend Analysis</a> for the full v2.6 metric / aggregation surface.</p>
+<p>Bottom line: LookML wins on aggregate-variant <em>shape</em> (<code>sum_distinct</code>, <code>percentile_*</code>, <code>median_distinct</code>) and on UI-side table-calc breadth; OBSL wins on <strong>first-class statistical/regression aggregates</strong> and on <strong>time/window/PoP/cumulative as declarative metric types</strong> that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See <a href="../../guide/trend-analysis/">Trend Analysis</a> for the full v2.6 metric / aggregation surface.</p>
 <hr />
 <h2 id="5-joins">5. Joins<a class="headerlink" href="#5-joins" title="Permanent link">&para;</a></h2>
 <table>
@@ -3156,9 +3246,14 @@
 <td>❌ (table calculations only — dashboard-side)</td>
 </tr>
 <tr>
-<td>Statistical aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>)</td>
-<td>✅ 9 functions (v2.6+)</td>
-<td>Partial — some via raw <code>sql:</code>, none as first-class measure types</td>
+<td>First-class statistical / regression aggregates as measure types</td>
+<td>✅ 9 declarative aggregations (v2.6+)</td>
+<td>Via <code>type: number</code> + raw SQL — not first-class measure types</td>
+</tr>
+<tr>
+<td>First-class <code>sum_distinct</code> / <code>percentile_*</code> / <code>median_distinct</code> measure types</td>
+<td>❌</td>
+<td>✅</td>
 </tr>
 <tr>
 <td>RDF/SPARQL graph view</td>

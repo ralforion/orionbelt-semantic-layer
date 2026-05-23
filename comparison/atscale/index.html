@@ -1877,6 +1877,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2377,6 +2405,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="4. Metric types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-aggregation-surface-on-measure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Aggregation surface on Measure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-metric-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Metric types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2720,6 +2776,45 @@
 <p><strong>OBSL</strong> has session-scoped models (TTL, max-age, rate limits) but no first-class user/auth model.</p>
 <hr />
 <h2 id="4-metric-types">4. Metric types<a class="headerlink" href="#4-metric-types" title="Permanent link">&para;</a></h2>
+<h3 id="41-aggregation-surface-on-measure">4.1 Aggregation surface on <code>Measure</code><a class="headerlink" href="#41-aggregation-surface-on-measure" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>OBSL</th>
+<th>AtScale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Standard</td>
+<td><code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code></td>
+<td><code>sum</code>, <code>count</code>, <code>distinct count</code>, <code>avg</code>, <code>min</code>, <code>max</code></td>
+</tr>
+<tr>
+<td>Shape</td>
+<td><code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code></td>
+<td>Semi-additive measures (last non-empty, first non-empty) — OLAP-native</td>
+</tr>
+<tr>
+<td>Statistical (v2.6+)</td>
+<td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
+<td>Via MDX calculated members (<code>Stdev</code>, <code>Var</code>) — not first-class measure types</td>
+</tr>
+<tr>
+<td>Association / regression (v2.6+)</td>
+<td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
+<td>Via MDX calculated members — not first-class measure types</td>
+</tr>
+<tr>
+<td>Grand totals</td>
+<td><code>total: bool</code> on the measure</td>
+<td>Native to OLAP — every grain rolls up by construction</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The honest difference</strong>: AtScale's OLAP heritage gives it stronger <em>semi-additive</em> primitives (last-value, opening / closing balances) that OBSL doesn't model. OBSL's statistical / regression aggregations are first-class declarative measure types with arity validation and dialect gating; AtScale reaches the same functions through MDX calculated members. Different mental models — both can compute the same SQL.</p>
+<h3 id="42-metric-types">4.2 Metric types<a class="headerlink" href="#42-metric-types" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -2729,11 +2824,6 @@
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><code>Measure</code> — 10 standard aggregations (<code>sum</code>, <code>count</code>, <code>count_distinct</code>, <code>avg</code>, <code>min</code>, <code>max</code>, <code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code>) <strong>+ 9 statistical aggregations (v2.6+)</strong> (<code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code>, <code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code>) + <code>total: bool</code> for grand totals</td>
-<td>Measures with rich aggregation types (sum, count, distinct count, min, max, average, semi-additive measures)</td>
-<td>Both first-class. AtScale has stronger semi-additive types (last non-empty, etc.); OBSL has the wider statistical / regression surface as first-class declarative aggregates</td>
-</tr>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
 <td>Calculated members (MDX expressions)</td>
@@ -2766,7 +2856,7 @@
 </tr>
 </tbody>
 </table>
-<p>For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP/window/statistical metrics that you want declared once and reused everywhere, OBSL is more turnkey. See <a href="../../guide/trend-analysis/">Trend Analysis</a> for the full v2.6 metric / aggregation surface (dialect coverage matrix included).</p>
+<p>For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP/window/statistical metrics that you want declared once and reused everywhere, OBSL is more turnkey. See <a href="../../guide/trend-analysis/">Trend Analysis</a> for the full v2.6 metric / aggregation surface.</p>
 <hr />
 <h2 id="5-joins-relationships">5. Joins / relationships<a class="headerlink" href="#5-joins-relationships" title="Permanent link">&para;</a></h2>
 <table>
@@ -3116,9 +3206,14 @@
 <td>Via MDX calculated members</td>
 </tr>
 <tr>
-<td>Statistical aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>)</td>
-<td>✅ 9 functions (v2.6+)</td>
-<td>Limited; not first-class as measure types</td>
+<td>First-class statistical / regression aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>) as measure types</td>
+<td>✅ 9 declarative aggregations (v2.6+)</td>
+<td>Via MDX calculated members — not first-class measure types</td>
+</tr>
+<tr>
+<td>Semi-additive measures (last/first non-empty)</td>
+<td>❌</td>
+<td>✅ first-class OLAP</td>
 </tr>
 <tr>
 <td>Apache Arrow Flight SQL</td>
