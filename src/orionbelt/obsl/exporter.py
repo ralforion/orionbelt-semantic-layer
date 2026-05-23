@@ -196,11 +196,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.Metric, "Metric"),
         (OBSL.CumulativeMetric, "Cumulative Metric"),
         (OBSL.PeriodOverPeriodMetric, "Period-over-Period Metric"),
+        (OBSL.WindowMetric, "Window Metric"),
     ):
         g.add((cls, RDF.type, OWL.Class))
         g.add((cls, RDFS.label, Literal(label)))
     g.add((OBSL.CumulativeMetric, RDFS.subClassOf, OBSL.Metric))
     g.add((OBSL.PeriodOverPeriodMetric, RDFS.subClassOf, OBSL.Metric))
+    g.add((OBSL.WindowMetric, RDFS.subClassOf, OBSL.Metric))
 
     # -- OWL axioms ------------------------------------------------------------
 
@@ -212,6 +214,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
 
     # Metric subtypes are disjoint with each other.
     g.add((OBSL.CumulativeMetric, OWL.disjointWith, OBSL.PeriodOverPeriodMetric))
+    g.add((OBSL.CumulativeMetric, OWL.disjointWith, OBSL.WindowMetric))
+    g.add((OBSL.PeriodOverPeriodMetric, OWL.disjointWith, OBSL.WindowMetric))
 
     # Functional properties — at most one value.
     for prop in (
@@ -536,6 +540,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((met_uri, OBSL.window, Literal(met.window)))
             if met.grain_to_date is not None:
                 g.add((met_uri, OBSL.grainToDate, Literal(met.grain_to_date.value)))
+            for part_dim in met.partition_by:
+                g.add((met_uri, OBSL.partitionBy, Literal(part_dim)))
 
         # Period-over-period metric extended properties
         if met.type == MetricType.PERIOD_OVER_PERIOD and met.period_over_period:
@@ -546,6 +552,22 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((met_uri, OBSL.offset, Literal(pop.offset)))
             g.add((met_uri, OBSL.offsetGrain, Literal(pop.offset_grain.value)))
             g.add((met_uri, OBSL.comparison, Literal(pop.comparison.value)))
+
+        # Window metric extended properties
+        if met.type == MetricType.WINDOW and met.window_function is not None:
+            g.add((met_uri, RDF.type, OBSL.WindowMetric))
+            g.add((met_uri, OBSL.windowFunction, Literal(met.window_function.value)))
+            if met.time_dimension:
+                g.add((met_uri, OBSL.timeDimension, _dimension_uri(model_id, met.time_dimension)))
+            if met.offset is not None:
+                g.add((met_uri, OBSL.windowOffset, Literal(met.offset)))
+            if met.buckets is not None:
+                g.add((met_uri, OBSL.windowBuckets, Literal(met.buckets)))
+            g.add((met_uri, OBSL.orderDirection, Literal(met.order_direction)))
+            if met.default_value is not None:
+                g.add((met_uri, OBSL.windowDefaultValue, Literal(str(met.default_value))))
+            for part_dim in met.partition_by:
+                g.add((met_uri, OBSL.partitionBy, Literal(part_dim)))
 
         if met.description:
             g.add((met_uri, RDFS.comment, Literal(met.description)))

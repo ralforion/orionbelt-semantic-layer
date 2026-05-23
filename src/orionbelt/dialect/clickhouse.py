@@ -73,6 +73,11 @@ class ClickHouseDialect(Dialect):
             supports_arrays=True,
             supports_window_filters=False,
             supports_ilike=True,
+            # ClickHouse offers ``simpleLinearRegression(x, y)`` returning a
+            # ``(k, b)`` tuple. Composing transparent ``REGR_SLOPE`` /
+            # ``REGR_INTERCEPT`` would mean silently tuple-indexing — better
+            # to reject and let the user opt in via a DERIVED metric.
+            unsupported_aggregations=["regr_slope", "regr_intercept"],
         )
 
     def quote_identifier(self, name: str) -> str:
@@ -187,6 +192,18 @@ class ClickHouseDialect(Dialect):
 
     _FUNCTION_NAME_MAP: dict[str, str] = {
         "ANY_VALUE": "any",
+        # Statistical aggregates: ClickHouse uses camelCase rather than the
+        # SQL-standard underscore names. Mappings cover every supported
+        # function in OBML's aggregation surface.
+        "STDDEV": "stddevSamp",
+        "STDDEV_SAMP": "stddevSamp",
+        "STDDEV_POP": "stddevPop",
+        "VARIANCE": "varSamp",
+        "VAR_SAMP": "varSamp",
+        "VAR_POP": "varPop",
+        "CORR": "corr",
+        "COVAR_POP": "covarPop",
+        "COVAR_SAMP": "covarSamp",
     }
 
     def _map_function_name(self, name: str) -> str:

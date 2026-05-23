@@ -587,6 +587,7 @@ class ReferenceResolver:
                         cumulative_type=raw_metric.get("cumulativeType", "sum"),
                         window=raw_metric.get("window"),
                         grain_to_date=raw_metric.get("grainToDate"),
+                        partition_by=list(raw_metric.get("partitionBy", []) or []),
                         data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),
                         format=raw_metric.get("format"),
@@ -598,7 +599,7 @@ class ReferenceResolver:
                     # Period-over-period metric: validate expression + PoP config
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
-                        name, expression, measures, errors, source_map
+                        name, expression, measures, errors, source_map, metrics
                     )
 
                     raw_pop = raw_metric.get("periodOverPeriod")
@@ -658,11 +659,64 @@ class ReferenceResolver:
                         synonyms=raw_metric.get("synonyms", []),
                         custom_extensions=_parse_extensions(raw_metric),
                     )
+                elif metric_type == MetricType.WINDOW:
+                    # Window metric (rank/lag/lead/ntile/first_value/last_value)
+                    ref_measure = raw_metric.get("measure")
+                    if ref_measure and ref_measure not in measures:
+                        span = source_map.get(f"metrics.{name}.measure") if source_map else None
+                        errors.append(
+                            SemanticError(
+                                code="UNKNOWN_MEASURE",
+                                message=(
+                                    f"Window metric '{name}' references "
+                                    f"unknown measure '{ref_measure}'"
+                                ),
+                                path=f"metrics.{name}.measure",
+                                span=span,
+                            )
+                        )
+
+                    win_time_dim = raw_metric.get("timeDimension", "")
+                    if win_time_dim and win_time_dim not in dimensions:
+                        span = (
+                            source_map.get(f"metrics.{name}.timeDimension") if source_map else None
+                        )
+                        errors.append(
+                            SemanticError(
+                                code="WINDOW_UNKNOWN_TIME_DIMENSION",
+                                message=(
+                                    f"Window metric '{name}' references "
+                                    f"unknown time dimension '{win_time_dim}'"
+                                ),
+                                path=f"metrics.{name}.timeDimension",
+                                span=span,
+                                suggestions=_suggest_similar(win_time_dim, list(dimensions.keys())),
+                            )
+                        )
+
+                    metrics[name] = Metric(
+                        label=name,
+                        type=MetricType.WINDOW,
+                        measure=ref_measure,
+                        time_dimension=raw_metric.get("timeDimension"),
+                        window_function=raw_metric.get("windowFunction"),
+                        offset=raw_metric.get("offset"),
+                        buckets=raw_metric.get("buckets"),
+                        order_direction=raw_metric.get("orderDirection", "desc"),
+                        default_value=raw_metric.get("defaultValue"),
+                        partition_by=list(raw_metric.get("partitionBy", []) or []),
+                        data_type=raw_metric.get("dataType"),
+                        description=raw_metric.get("description"),
+                        format=raw_metric.get("format"),
+                        owner=raw_metric.get("owner"),
+                        synonyms=raw_metric.get("synonyms", []),
+                        custom_extensions=_parse_extensions(raw_metric),
+                    )
                 else:
                     # Derived metric (default)
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
-                        name, expression, measures, errors, source_map
+                        name, expression, measures, errors, source_map, metrics
                     )
 
                     metrics[name] = Metric(
@@ -984,8 +1038,16 @@ class ReferenceResolver:
         measures: dict[str, Measure],
         errors: list[SemanticError],
         source_map: SourceMap | None,
+        metrics: dict[str, Metric] | None = None,
     ) -> None:
-        """Validate {[Measure Name]} references in a metric expression."""
+        """Validate {[Measure Name]} references in a metric expression.
+
+        References can resolve to either measures or already-defined metrics
+        (typically cumulative or window metrics that have been parsed earlier
+        in the same model). ``metrics`` defaults to ``None`` so existing
+        callers continue to work; the caller passes the in-progress metrics
+        dict to enable cross-metric composition.
+        """
         span = source_map.get(f"metrics.{metric_name}.expression") if source_map else None
 
         valid_refs = re.findall(r"\{\[([^\]{}\[]+)\]\}", expression)
@@ -1063,15 +1125,19 @@ class ReferenceResolver:
                 )
             )
 
+        known_metrics = metrics or {}
         for ref_name in valid_refs:
-            if ref_name not in measures:
+            if ref_name not in measures and ref_name not in known_metrics:
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_MEASURE_REF",
                         message=(f"Metric '{metric_name}' references unknown measure '{ref_name}'"),
                         path=f"metrics.{metric_name}.expression",
                         span=span,
-                        suggestions=_suggest_similar(ref_name, list(measures.keys())),
+                        suggestions=_suggest_similar(
+                            ref_name,
+                            list(measures.keys()) + list(known_metrics.keys()),
+                        ),
                     )
                 )
 

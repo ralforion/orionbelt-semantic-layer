@@ -71,6 +71,11 @@ obsl:PeriodOverPeriodMetric a owl:Class ;
     rdfs:label "Period-over-Period Metric" ;
     rdfs:comment "A metric that compares a measure's value across consecutive time periods using a date spine.  Supports ratio, difference, previous value, and percent change." .
 
+obsl:WindowMetric a owl:Class ;
+    rdfs:subClassOf obsl:Metric ;
+    rdfs:label "Window Metric" ;
+    rdfs:comment "A metric that applies a single-row-output SQL window function (RANK, DENSE_RANK, ROW_NUMBER, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE) optionally partitioned and ordered." .
+
 # =============================================================================
 # 2. OBJECT PROPERTIES --- Model composition
 # =============================================================================
@@ -379,6 +384,44 @@ obsl:comparison a owl:DatatypeProperty ;
     rdfs:label "comparison" ;
     rdfs:comment "Comparison type for a period-over-period metric: ratio, difference, previousValue, percentChange." ;
     rdfs:domain obsl:PeriodOverPeriodMetric ;
+    rdfs:range xsd:string .
+
+# Per-dimension partitioning for cumulative and window metrics. Each entry
+# is the label of a model dimension. Multi-valued.
+obsl:partitionBy a owl:DatatypeProperty ;
+    rdfs:label "partition by" ;
+    rdfs:comment "Dimension label used as a PARTITION BY key for a cumulative or window metric.  Multi-valued; ordered." ;
+    rdfs:range xsd:string .
+
+# Window-metric properties: the function family and its arguments.
+obsl:windowFunction a owl:DatatypeProperty ;
+    rdfs:label "window function" ;
+    rdfs:comment "Window function family for a window metric: rank, dense_rank, row_number, ntile, lag, lead, first_value, last_value." ;
+    rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:string .
+
+obsl:windowOffset a owl:DatatypeProperty ;
+    rdfs:label "window offset" ;
+    rdfs:comment "Row offset for LAG / LEAD window metrics (>= 1)." ;
+    rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:integer .
+
+obsl:windowBuckets a owl:DatatypeProperty ;
+    rdfs:label "window buckets" ;
+    rdfs:comment "Bucket count for NTILE window metrics (>= 2)." ;
+    rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:integer .
+
+obsl:orderDirection a owl:DatatypeProperty ;
+    rdfs:label "order direction" ;
+    rdfs:comment "ORDER BY direction for the window OVER clause: asc or desc.  Defaults to desc." ;
+    rdfs:domain obsl:WindowMetric ;
+    rdfs:range xsd:string .
+
+obsl:windowDefaultValue a owl:DatatypeProperty ;
+    rdfs:label "window default value" ;
+    rdfs:comment "Default value to substitute when LAG / LEAD would return NULL (the three-argument form)." ;
+    rdfs:domain obsl:WindowMetric ;
     rdfs:range xsd:string .
 
 # =============================================================================

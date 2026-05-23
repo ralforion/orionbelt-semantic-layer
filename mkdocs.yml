@@ -126,6 +126,7 @@ nav:
       - SQL Dialects: guide/dialects.md
       - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md
+      - Trend Analysis: guide/trend-analysis.md
       - Compilation Pipeline: guide/compilation.md
       - Correctness & Drift Tests: guide/correctness-and-drift-tests.md
       - OBSL Graph & SPARQL: guide/obsl.md

@@ -64,11 +64,20 @@ def _build_cumulative_window(
     measure: ResolvedMeasure,
     time_dim_name: str,
 ) -> Expr:
-    """Build the window function expression for a cumulative metric."""
+    """Build the window function expression for a cumulative metric.
+
+    ``cumulative_partition_by`` adds additional ``PARTITION BY`` keys beyond
+    the implicit ``DATE_TRUNC(grain, time)`` partition for grain-to-date.
+    For rolling and running totals, partition keys are the dimension names
+    only — the underlying ``base`` CTE already exposes them as bare aliases.
+    """
     func_name = _CUMULATIVE_AGG_MAP[measure.cumulative_type]
     base_ref = ColumnRef(name=measure.cumulative_measure or measure.name)
     time_ref = ColumnRef(name=time_dim_name)
     order_by = [OrderByItem(expr=time_ref)]
+    extra_partitions: list[Expr] = [
+        ColumnRef(name=dim_name) for dim_name in measure.cumulative_partition_by
+    ]
 
     if measure.cumulative_grain_to_date is not None:
         # Grain-to-date: PARTITION BY DATE_TRUNC(grain, time_dim), unbounded frame
@@ -80,7 +89,7 @@ def _build_cumulative_window(
         return WindowFunction(
             func_name=func_name,
             args=[base_ref],
-            partition_by=[partition_expr],
+            partition_by=[partition_expr, *extra_partitions],
             order_by=order_by,
             frame=WindowFrame(
                 mode="ROWS",
@@ -95,6 +104,7 @@ def _build_cumulative_window(
         return WindowFunction(
             func_name=func_name,
             args=[base_ref],
+            partition_by=extra_partitions,
             order_by=order_by,
             frame=WindowFrame(
                 mode="ROWS",
@@ -107,6 +117,7 @@ def _build_cumulative_window(
     return WindowFunction(
         func_name=func_name,
         args=[base_ref],
+        partition_by=extra_partitions,
         order_by=order_by,
         frame=WindowFrame(
             mode="ROWS",

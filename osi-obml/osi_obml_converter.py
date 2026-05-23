@@ -506,6 +506,14 @@ class OSItoOBML:
                 metrics[name] = pop_metric
                 continue
 
+            # Check for window metric (rank/lag/lead/ntile/first_value/last_value)
+            if obml_extras.get("obml_metric_type") == "window":
+                window_metric = self._reconstruct_window_metric(
+                    name, obml_extras, osi_description, osi_synonyms
+                )
+                metrics[name] = window_metric
+                continue
+
             expr_text = self._get_ansi_expression(m.get("expression", {}))
             if not expr_text:
                 self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
@@ -614,6 +622,47 @@ class OSItoOBML:
             metric_def["window"] = extras["obml_cumulative_window"]
         if extras.get("obml_cumulative_grain_to_date"):
             metric_def["grainToDate"] = extras["obml_cumulative_grain_to_date"]
+        if extras.get("obml_partition_by"):
+            metric_def["partitionBy"] = list(extras["obml_partition_by"])
+        if description:
+            metric_def["description"] = description
+        if extras.get("obml_format"):
+            metric_def["format"] = extras["obml_format"]
+        if extras.get("obml_data_type"):
+            metric_def["dataType"] = extras["obml_data_type"]
+        if extras.get("obml_owner"):
+            metric_def["owner"] = extras["obml_owner"]
+        if synonyms:
+            metric_def["synonyms"] = synonyms
+        return metric_def
+
+    @staticmethod
+    def _reconstruct_window_metric(
+        name: str,
+        extras: dict,
+        description: str | None,
+        synonyms: list[str],
+    ) -> dict:
+        """Reconstruct an OBML window metric from custom_extensions data."""
+        metric_def: dict[str, Any] = {
+            "type": "window",
+            "windowFunction": extras["obml_window_function"],
+        }
+        if extras.get("obml_window_measure"):
+            metric_def["measure"] = extras["obml_window_measure"]
+        if extras.get("obml_window_time_dimension"):
+            metric_def["timeDimension"] = extras["obml_window_time_dimension"]
+        if extras.get("obml_window_offset") is not None:
+            metric_def["offset"] = extras["obml_window_offset"]
+        if extras.get("obml_window_buckets") is not None:
+            metric_def["buckets"] = extras["obml_window_buckets"]
+        order_dir = extras.get("obml_order_direction", "desc")
+        if order_dir != "desc":
+            metric_def["orderDirection"] = order_dir
+        if extras.get("obml_window_default_value") is not None:
+            metric_def["defaultValue"] = extras["obml_window_default_value"]
+        if extras.get("obml_partition_by"):
+            metric_def["partitionBy"] = list(extras["obml_partition_by"])
         if description:
             metric_def["description"] = description
         if extras.get("obml_format"):
@@ -1238,6 +1287,10 @@ class OBMLtoOSI:
                 osi_metric = self._convert_obml_pop_metric(
                     metric_name, metric_obj, obml_measures, data_objects
                 )
+            elif metric_obj.get("type") == "window":
+                osi_metric = self._convert_obml_window_metric(
+                    metric_name, metric_obj, obml_measures, data_objects
+                )
             else:
                 osi_metric = self._convert_obml_metric(
                     metric_name, metric_obj, obml_measures, data_objects
@@ -1285,22 +1338,24 @@ class OBMLtoOSI:
             self.warnings.append(f"Measure '{name}' has no columns; skipped.")
             return None
 
-        # Build SQL expression from columns reference
-        col_ref = columns[0]
-        do_name = col_ref.get("dataObject", "")
-        col_name = col_ref.get("column", "")
-
-        # Resolve to code
-        do_obj = data_objects.get(do_name, {})
-        col_code = (
-            do_obj.get("columns", {})
-            .get(col_name, {})
-            .get("code", col_name.lower().replace(" ", "_"))
-        )
-        do_code = do_obj.get("code", do_name.lower().replace(" ", "_"))
+        # Build SQL expression from one-or-more column references.
+        # Multi-column aggregations (CORR, COVAR_*, REGR_*) emit
+        # ``AGG(col_a, col_b)`` with arguments in declaration order.
+        def _col_to_sql(col_ref: dict) -> str:
+            do_name_local = col_ref.get("dataObject", "")
+            col_name_local = col_ref.get("column", "")
+            do_obj_local = data_objects.get(do_name_local, {})
+            col_code_local = (
+                do_obj_local.get("columns", {})
+                .get(col_name_local, {})
+                .get("code", col_name_local.lower().replace(" ", "_"))
+            )
+            do_code_local = do_obj_local.get("code", do_name_local.lower().replace(" ", "_"))
+            return f"{do_code_local}.{col_code_local}"
 
         distinct_kw = "DISTINCT " if distinct else ""
-        expr = f"{agg}({distinct_kw}{do_code}.{col_code})"
+        col_sql = ", ".join(_col_to_sql(c) for c in columns)
+        expr = f"{agg}({distinct_kw}{col_sql})"
 
         result = {
             "name": name,
@@ -1512,6 +1567,8 @@ class OBMLtoOSI:
             ext_data["obml_cumulative_window"] = window_size
         if grain:
             ext_data["obml_cumulative_grain_to_date"] = grain
+        if metric.get("partitionBy"):
+            ext_data["obml_partition_by"] = list(metric["partitionBy"])
         if metric.get("format"):
             ext_data["obml_format"] = metric["format"]
         if metric.get("dataType"):
@@ -1600,6 +1657,122 @@ class OBMLtoOSI:
             "obml_pop_offset_grain": offset_grain,
             "obml_pop_comparison": comparison,
         }
+        if metric.get("format"):
+            ext_data["obml_format"] = metric["format"]
+        if metric.get("dataType"):
+            ext_data["obml_data_type"] = metric["dataType"]
+        if metric.get("owner"):
+            ext_data["obml_owner"] = metric["owner"]
+
+        result["custom_extensions"] = [
+            {
+                "vendor_name": "COMMON",
+                "data": json.dumps(ext_data),
+            }
+        ]
+
+        return result
+
+    def _convert_obml_window_metric(
+        self,
+        name: str,
+        metric: dict,
+        obml_measures: dict,
+        data_objects: dict,
+    ) -> dict | None:
+        """Convert an OBML window metric (rank/lag/lead/ntile/...) to an OSI metric.
+
+        Window metrics have no direct OSI equivalent. We generate an
+        approximate ANSI SQL expression for readability and persist the
+        full OBML window configuration in ``custom_extensions`` (vendor
+        ``COMMON``) for lossless OSI → OBML reconstruction.
+        """
+        window_fn = (metric.get("windowFunction") or "").upper()
+        if not window_fn:
+            self.warnings.append(f"Window metric '{name}' has no windowFunction; skipped.")
+            return None
+
+        measure_name = metric.get("measure")
+        time_dim = metric.get("timeDimension")
+        order_dir = metric.get("orderDirection", "desc").upper()
+        offset = metric.get("offset")
+        buckets = metric.get("buckets")
+        default_value = metric.get("defaultValue")
+        partition_by = metric.get("partitionBy", []) or []
+
+        measure_def = obml_measures.get(measure_name, {}) if measure_name else {}
+        inner_sql = (
+            self._measure_to_sql(measure_def, data_objects)
+            if measure_def
+            else (measure_name or "")
+        )
+
+        # Build approximate ANSI SQL expression
+        args: list[str] = []
+        order_expr: str | None = None
+        if window_fn in {"LAG", "LEAD"} and inner_sql:
+            args.append(inner_sql)
+            if offset is not None:
+                args.append(str(offset))
+            if default_value is not None:
+                args.append(
+                    f"'{default_value}'" if isinstance(default_value, str) else str(default_value)
+                )
+        elif window_fn == "NTILE" and buckets is not None:
+            args.append(str(buckets))
+        elif window_fn in {"FIRST_VALUE", "LAST_VALUE"} and inner_sql:
+            args.append(inner_sql)
+        # RANK / DENSE_RANK / ROW_NUMBER take no positional args
+
+        if window_fn in {"RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE"} and inner_sql:
+            order_expr = f"{inner_sql} {order_dir}"
+        elif window_fn in {"LAG", "LEAD"} and time_dim:
+            order_expr = f'"{time_dim}"'
+        elif window_fn in {"FIRST_VALUE", "LAST_VALUE"} and time_dim:
+            order_expr = f'"{time_dim}" {order_dir}'
+
+        partition_sql = (
+            "PARTITION BY " + ", ".join(f'"{p}"' for p in partition_by) if partition_by else ""
+        )
+        order_sql = f"ORDER BY {order_expr}" if order_expr else ""
+        over_inner = " ".join(p for p in (partition_sql, order_sql) if p)
+        sql_expr = f"{window_fn}({', '.join(args)}) OVER ({over_inner})"
+
+        result: dict[str, Any] = {
+            "name": name,
+            "expression": {
+                "dialects": [
+                    {
+                        "dialect": "ANSI_SQL",
+                        "expression": sql_expr,
+                    }
+                ]
+            },
+            "description": metric.get("description", name),
+        }
+
+        obml_synonyms = metric.get("synonyms", [])
+        ai_synonyms = [s for s in obml_synonyms if s != name]
+        if ai_synonyms:
+            result["ai_context"] = {"synonyms": ai_synonyms}
+
+        ext_data: dict[str, Any] = {
+            "obml_metric_type": "window",
+            "obml_window_function": window_fn.lower(),
+            "obml_order_direction": metric.get("orderDirection", "desc"),
+        }
+        if measure_name:
+            ext_data["obml_window_measure"] = measure_name
+        if time_dim:
+            ext_data["obml_window_time_dimension"] = time_dim
+        if offset is not None:
+            ext_data["obml_window_offset"] = offset
+        if buckets is not None:
+            ext_data["obml_window_buckets"] = buckets
+        if default_value is not None:
+            ext_data["obml_window_default_value"] = default_value
+        if partition_by:
+            ext_data["obml_partition_by"] = list(partition_by)
         if metric.get("format"):
             ext_data["obml_format"] = metric["format"]
         if metric.get("dataType"):

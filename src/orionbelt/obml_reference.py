@@ -131,8 +131,108 @@ categorical, additive, non-additive
 
 ## Aggregation Values
 
-sum, count, count_distinct, avg, min, max,
+Core: sum, count, count_distinct, avg, min, max,
 any_value, median, mode, listagg
+
+Statistical (v2.6+): stddev, stddev_pop, variance, var_pop,
+corr, covar_pop, covar_samp, regr_slope, regr_intercept
+
+Single-column statistical aggregates (stddev, stddev_pop, variance, var_pop)
+require exactly one column. Two-column aggregates (corr, covar_pop,
+covar_samp, regr_slope, regr_intercept) require exactly two columns:
+
+```yaml
+measures:
+  Revenue Spend Correlation:
+    aggregation: corr
+    columns:
+      - dataObject: Orders
+        column: Revenue
+      - dataObject: Marketing
+        column: Spend
+```
+
+Dialect coverage:
+
+| Aggregation | Postgres | Snowflake | BigQuery | Databricks | DuckDB | ClickHouse | MySQL | Dremio |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| stddev, stddev_pop, variance, var_pop | yes | yes | yes | yes | yes | yes | yes | yes |
+| corr, covar_pop, covar_samp | yes | yes | yes | yes | yes | yes | no | yes |
+| regr_slope, regr_intercept | yes | yes | no | yes | yes | no | no | yes |
+
+Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at
+compile time — express via a derived metric (e.g.
+`{[Covariance]} / {[Variance X]}`) if you need the gap covered.
+
+## Metric Types
+
+OBML supports four metric types — pick by setting `type:`:
+
+- `derived` (default) — expression composing existing measures
+- `cumulative` — windowed aggregation (running, rolling, grain-to-date)
+- `period_over_period` — current vs. prior-period comparison
+- `window` — single-row window functions (rank, lag, lead, ntile,
+  first_value, last_value)
+
+### Cumulative — partitioning by dimension (v2.6+)
+
+The optional `partitionBy:` list adds `PARTITION BY` keys alongside the
+implicit `ORDER BY <timeDimension>`. Useful for per-entity moving
+averages, per-region running totals, etc.
+
+```yaml
+metrics:
+  Revenue MA12 by Country:
+    type: cumulative
+    measure: Revenue
+    timeDimension: order_month
+    cumulativeType: avg
+    window: 12
+    partitionBy: [Country]
+```
+
+Every entry must be a dimension defined in the model and present in the
+query's SELECT. Default `[]` preserves prior behavior (no partition).
+
+### Window — rank, lag, lead, ntile, first/last value (v2.6+)
+
+```yaml
+metrics:
+  Revenue Rank by Quarter:
+    type: window
+    windowFunction: dense_rank
+    measure: Revenue
+    orderDirection: desc
+    partitionBy: [Quarter]
+
+  Revenue Prior Month:
+    type: window
+    windowFunction: lag
+    measure: Revenue
+    offset: 1
+    timeDimension: order_month
+    partitionBy: [Country]
+
+  Revenue Quartile:
+    type: window
+    windowFunction: ntile
+    measure: Revenue
+    buckets: 4
+    partitionBy: [Year]
+```
+
+- `windowFunction:` one of `rank | dense_rank | row_number | ntile |
+  lag | lead | first_value | last_value` (required)
+- `measure:` base measure (required except for ROW_NUMBER / NTILE that
+  rank over time alone)
+- `partitionBy:` dimensions to partition by (optional, default `[]`)
+- `orderDirection:` `asc` or `desc` (default `desc`)
+- `offset:` integer >= 1 (LAG/LEAD only)
+- `buckets:` integer >= 2 (NTILE only)
+- `timeDimension:` required for LAG/LEAD
+
+Window metrics compose freely with derived metrics — e.g.
+`'{[Revenue]} - {[Revenue Prior Month]}'`.
 
 ## 5. synonyms — alternative names (optional, LLM hints)
 

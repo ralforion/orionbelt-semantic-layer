@@ -16,6 +16,7 @@ from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
+from orionbelt.compiler.window_wrap import wrap_with_window
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryObject
@@ -70,6 +71,7 @@ class ExplainPlan:
     has_filter_context: bool = False
     has_cumulative: bool = False
     has_pop: bool = False
+    has_window: bool = False
     cfl_legs: list[ExplainCflLeg] = field(default_factory=list)
 
 
@@ -202,7 +204,10 @@ class CompilationPipeline:
             # know subtotal rows have NULL in rolled-up dims with no flag
             # to disambiguate them from real-NULL detail rows.
             if resolved.grouping is not None and (
-                resolved.has_totals or resolved.has_pop or resolved.has_cumulative
+                resolved.has_totals
+                or resolved.has_pop
+                or resolved.has_cumulative
+                or resolved.has_window
             ):
                 resolved.warnings.append(
                     warning(
@@ -267,6 +272,11 @@ class CompilationPipeline:
             # window — otherwise cumulative output is silently DOUBLE
             # regardless of the metric's declared type.
             wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved, model=model, dialect=dialect)
+
+            # Wrap with window CTE (rank / lag / lead / ntile / first/last value).
+            # Runs after cumulative so window metrics can compose over cumulative
+            # outputs (e.g. ranking a moving average).
+            wrapped_ast = wrap_with_window(wrapped_ast, resolved, model=model, dialect=dialect)
 
             # Drop HAVING-only auto-included measures from the final SELECT
             # so the user only sees the columns they asked for.
@@ -430,5 +440,6 @@ class CompilationPipeline:
             has_filter_context=resolved.has_filter_context,
             has_cumulative=resolved.has_cumulative,
             has_pop=resolved.has_pop,
+            has_window=resolved.has_window,
             cfl_legs=cfl_leg_explains,
         )

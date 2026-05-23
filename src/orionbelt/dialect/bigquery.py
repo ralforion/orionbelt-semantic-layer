@@ -73,6 +73,10 @@ class BigQueryDialect(Dialect):
             supports_window_filters=True,
             supports_ilike=False,
             supports_semi_structured=True,
+            # BigQuery exposes CORR / COVAR_POP / COVAR_SAMP and the variance /
+            # stddev family. Linear regression requires ``ML.LINEAR_REG`` or
+            # manual COVAR/VAR composition; we don't emulate transparently.
+            unsupported_aggregations=["regr_slope", "regr_intercept"],
         )
 
     def quote_identifier(self, name: str) -> str:
