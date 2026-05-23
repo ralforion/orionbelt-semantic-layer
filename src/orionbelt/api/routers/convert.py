@@ -81,6 +81,14 @@ async def osi_to_obml(body: ConvertRequest) -> ConvertResponse:
     data = _parse_yaml(body.input_yaml)
     mod = _get_converter_module()
 
+    # Validate the OSI input against the vendored OSI v0.2 schema before
+    # we touch the converter. Advisory by default — the result lands in
+    # ``input_validation`` on the response so callers can surface or
+    # ignore as they prefer. v0.1.x inputs run through the legacy shim
+    # inside ``OSItoOBML.convert`` so schema_errors here may still be
+    # spurious for legacy docs; in that case the conversion still runs.
+    input_validation = _run_validation(mod.validate_osi, data)
+
     try:
         converter = mod.OSItoOBML(data)
         result = converter.convert()
@@ -99,6 +107,7 @@ async def osi_to_obml(body: ConvertRequest) -> ConvertResponse:
         output_yaml=output_yaml,
         warnings=warnings,
         validation=validation,
+        input_validation=input_validation,
     )
 
 
