@@ -2831,7 +2831,7 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
-<td>Time-intelligence MDX (<code>Aggregate(YTD([Date].CurrentMember), [Sales])</code>) — idiomatic OLAP</td>
+<td>Time-intelligence MDX: <pre><code>Aggregate(<br>  YTD([Date].CurrentMember),<br>  [Sales]<br>)</code></pre> — idiomatic OLAP</td>
 <td>Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative</td>
 </tr>
 <tr>
@@ -2840,7 +2840,7 @@
 <td>Both expressive; AtScale is more flexible (full MDX), OBSL is more turnkey</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>MDX <code>Rank()</code>, <code>Lag()</code>, <code>Lead()</code> in calculated members</td>
 <td>OBSL exposes these as declarative metric types; AtScale expresses them via MDX</td>
 </tr>

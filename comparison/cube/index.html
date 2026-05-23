@@ -2716,12 +2716,12 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: cumulative</code></td>
-<td><code>measure: { type: sum; rolling_window: { trailing: '7 day' } }</code></td>
+<td><pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day</code></pre></td>
 <td>Cube has rolling windows but they live on individual measures, not as a separate metric type</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code></td>
-<td><code>time_shift</code> in queries (<code>compareDateRange</code>, <code>time_shift: { interval: '1 year', type: 'prior' }</code>)</td>
+<td><code>time_shift</code> in queries (<code>compareDateRange</code>, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre>)</td>
 <td>Cube does PoP at <em>query time</em>, not in the model</td>
 </tr>
 <tr>
@@ -2868,8 +2868,8 @@
 </tr>
 <tr>
 <td>Shape</td>
-<td><code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code></td>
-<td><code>string</code>, <code>time</code>, <code>boolean</code>, <code>number</code> (generic — wraps any aggregate SQL expression)</td>
+<td><code>any_value</code>, <code>median</code>,<br><code>mode</code>, <code>listagg</code></td>
+<td><code>string</code>, <code>time</code>, <code>boolean</code>,<br><code>number</code> (generic — wraps any<br>aggregate SQL expression)</td>
 </tr>
 <tr>
 <td>Statistical (v2.6+)</td>
@@ -2901,27 +2901,27 @@
 <tbody>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
-<td><code>measure: { type: number; sql: ... }</code> referencing other measures</td>
+<td><pre><code>measure:<br>  type: number<br>  sql: "{revenue} / {orders}"</code></pre></td>
 <td>Both first-class</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
-<td><code>measure: { rolling_window: { trailing: '7 day', offset: 'end' } }</code> — rolling only</td>
+<td><pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day<br>    offset: end</code></pre> rolling only</td>
 <td>Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no <code>partitionBy</code> as declarative types</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> (4 comparison modes)</td>
-<td>Query-side: <code>compareDateRange</code> parameter or <code>time_shift: { interval: '1 year', type: 'prior' }</code></td>
+<td>Query-side: <code>compareDateRange</code> parameter, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre></td>
 <td>Cube does PoP at query time, not as a model-defined metric</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Via <code>type: number</code> + raw window-function SQL</td>
 <td>OBSL ships these as declarative metric types; Cube reaches them via the same <code>type: number</code> escape hatch</td>
 </tr>
 <tr>
 <td>Reusable filter context / filtered measures</td>
-<td><code>segments</code> (named, reusable filter sets) + <code>filters</code> on individual measure definitions</td>
+<td><code>segments</code> + per-measure <code>filters</code></td>
 <td>Comparable</td>
 </tr>
 </tbody>

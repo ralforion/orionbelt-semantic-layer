@@ -2665,17 +2665,17 @@
 <tr>
 <td>Source of truth</td>
 <td>YAML model file</td>
-<td><code>.malloy</code> source files; <code>source: foo is duckdb.table('...') extend { ... }</code></td>
+<td><code>.malloy</code> source files: <pre><code>source: foo is<br>  duckdb.table('...')<br>  extend { ... }</code></pre></td>
 </tr>
 <tr>
 <td>Top-level objects</td>
 <td><code>dataObjects</code>, <code>dimensions</code>, <code>measures</code>, <code>metrics</code>, <code>filters</code></td>
-<td><code>source</code> (with extensions: <code>dimension:</code>, <code>measure:</code>, <code>view:</code>, <code>join_one:</code>, <code>join_many:</code>)</td>
+<td><code>source</code> with extensions: <code>dimension:</code>, <code>measure:</code>, <code>view:</code>, <code>join_one:</code>, <code>join_many:</code></td>
 </tr>
 <tr>
 <td>Queries</td>
 <td>JSON <code>QueryObject</code> (<code>select</code>, <code>where</code>, <code>having</code>, <code>order_by</code>, ...)</td>
-<td>Malloy query syntax: <code>run: source -&gt; { group_by: ...; aggregate: ...; nest: ... }</code></td>
+<td>Malloy query syntax: <pre><code>run: source -&gt; {<br>  group_by: ...<br>  aggregate: ...<br>  nest: ...<br>}</code></pre></td>
 </tr>
 <tr>
 <td>Embedding</td>
@@ -2829,11 +2829,11 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> with 4 comparison modes</td>
-<td>Pattern via <code>prior_period</code> style queries; renderer has a <code>big_value { comparison_field=... }</code> for visual deltas</td>
+<td>Pattern via <code>prior_period</code> style queries; renderer's <pre><code>big_value {<br>  comparison_field = ...<br>}</code></pre> for visual deltas</td>
 <td>OBSL has a dedicated metric type; Malloy treats it as "just write the query"</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Calculations (<code>rank()</code>, <code>lag()</code>, <code>first_value()</code>) inside queries</td>
 <td>OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy)</td>
 </tr>

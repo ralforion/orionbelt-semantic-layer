@@ -2849,8 +2849,8 @@
 </tr>
 <tr>
 <td>Shape</td>
-<td><code>any_value</code>, <code>median</code>, <code>mode</code>, <code>listagg</code></td>
-<td><code>sum_distinct</code>, <code>average_distinct</code>, <code>median</code>, <code>median_distinct</code>, <code>percentile</code>, <code>percentile_distinct</code>, <code>list</code>, <code>number</code>, <code>string</code>, <code>date</code>, <code>yesno</code></td>
+<td><code>any_value</code>, <code>median</code>,<br><code>mode</code>, <code>listagg</code></td>
+<td><code>sum_distinct</code>, <code>average_distinct</code>,<br><code>median</code>, <code>median_distinct</code>,<br><code>percentile</code>, <code>percentile_distinct</code>,<br><code>list</code>, <code>number</code>, <code>string</code>,<br><code>date</code>, <code>yesno</code></td>
 </tr>
 <tr>
 <td>Statistical (v2.6+)</td>
@@ -2882,7 +2882,7 @@
 <tbody>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
-<td><code>measure: { type: number; sql: ...references other measures... }</code></td>
+<td><pre><code>measure: revenue_per_order {<br>  type: number<br>  sql: ${revenue} / ${orders} ;;<br>}</code></pre></td>
 <td>Both first-class</td>
 </tr>
 <tr>
@@ -2892,17 +2892,17 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> (4 comparison modes)</td>
-<td>Patterns: filtered measures (<code>{% if date.is_in_period %} ... {% endif %}</code>) or table calculations</td>
+<td>Filtered measures with Liquid: <pre><code>{% if date.is_in_period %}<br>  ...<br>{% endif %}</code></pre> or table calculations</td>
 <td>OBSL has a dedicated metric type</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>, <code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Looker table calculations (<code>rank()</code>, <code>offset()</code>, <code>pivot_offset()</code>) — UI-side, not LookML model</td>
 <td>OBSL ships these as declarative metric types reusable across every consumer; Looker's equivalents live in the dashboard layer</td>
 </tr>
 <tr>
 <td><code>Measure.filterContext</code> / <code>filteredMeasures</code></td>
-<td>Filtered measure pattern: <code>measure: { type: sum; filters: [is_paid: "yes"] }</code></td>
+<td><pre><code>measure: paid_revenue {<br>  type: sum<br>  filters: [is_paid: "yes"]<br>}</code></pre></td>
 <td>Comparable</td>
 </tr>
 </tbody>
