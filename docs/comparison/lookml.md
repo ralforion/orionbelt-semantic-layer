@@ -119,13 +119,14 @@ LookML carries UI metadata: `drill_fields: [order_id, customer_name, ...]`, `val
 
 | OBSL | LookML | Notes |
 |---|---|---|
-| `Measure` (sum/avg/count/min/max, `total: bool`) | `measure: { type: sum/avg/count/count_distinct/... }` | LookML has more aggregate types out of the box (`sum_distinct`, `percentile`, `median`, etc.) |
+| `Measure` — 10 standard aggregations (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`) **+ 9 statistical aggregations (v2.6+)** (`stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`) + `total: bool` for grand totals | `measure: { type: sum/avg/count/count_distinct/sum_distinct/percentile/median/... }` | LookML has more "shape" aggregate variants (`sum_distinct`, `percentile_*`), OBSL has the wider statistical / regression surface (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*) as first-class declarative aggregates |
 | `Metric` `type: derived` | `measure: { type: number; sql: ...references other measures... }` | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date) | `type: running_total` (basic), or table calculations in UI for richer cases | OBSL has richer **declarative** cumulative |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | `type: running_total` (basic), or table calculations in UI for richer cases | OBSL has richer **declarative** cumulative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Patterns: filtered measures (`{% if date.is_in_period %} ... {% endif %}`) or table calculations | OBSL has a dedicated metric type |
+| `Metric` `type: window` (v2.6+) — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` | Looker table calculations (`rank()`, `offset()`, `pivot_offset()`) — UI-side, not LookML model | OBSL ships these as declarative metric types reusable across every consumer; Looker's equivalents live in the dashboard layer |
 | `Measure.filterContext` / `filteredMeasures` | Filtered measure pattern: `measure: { type: sum; filters: [is_paid: "yes"] }` | Comparable |
 
-Bottom line: LookML's **breadth of aggregate types** is wider; OBSL's **time-aware metric types** (cumulative/PoP) are more declarative and reusable. Looker-style PoP usually ends up as a *table calculation* in the UI — not portable to other consumers.
+Bottom line: LookML wins on aggregate-variant *shape* (sum_distinct, percentile families) and on UI-side table-calc breadth; OBSL wins on **statistical/regression aggregates** and on **time/window/PoP/cumulative as declarative metric types** that survive across every consumer (BI tool, agent, JSON API) without re-implementing the table calc. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
 ---
 
@@ -229,7 +230,9 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 | Drill fields / UI metadata | Minimal | ✅ |
 | Symmetric aggregates | ❌ (uses CFL instead) | ✅ |
 | First-class PoP metric type | ✅ | ❌ (table calc / filtered measures) |
-| First-class cumulative metric type | ✅ | Partial (`running_total` only) |
+| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | Partial (`running_total` only) |
+| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | ❌ (table calculations only — dashboard-side) |
+| Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) | ✅ 9 functions (v2.6+) | Partial — some via raw `sql:`, none as first-class measure types |
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Named secondary join paths | ✅ | ❌ |
 | Explicit CFL multi-fact planner | ✅ | n/a |

@@ -119,12 +119,13 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 
 | OBSL | Malloy | Notes |
 |---|---|---|
-| `Measure` (sum/avg/count/min/max, `total: bool` for grand totals) | `measure:` declarations inside `source` | Both first-class |
+| `Measure` — 10 standard aggregations (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`) **+ 9 statistical aggregations (v2.6+)** (`stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`) + `total: bool` for grand totals | `measure:` declarations inside `source` (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `stddev`, etc.) | Both first-class. OBSL has a wider statistical / regression surface (`corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`) as declarative measure aggregations |
 | `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) | Composed by referencing other measures inside aggregate expressions | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
 | `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer has a `big_value { comparison_field=... }` for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
+| `Metric` `type: window` (v2.6+) — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
 
-**Different philosophies**: OBSL prefers reusable metric definitions (write once, every query gets PoP). Malloy prefers expressive ad-hoc queries (write the comparison in the query itself). Either fits depending on whether you're publishing a metrics catalog or empowering analysts.
+**Different philosophies**: OBSL prefers reusable metric definitions (write once, every query gets PoP / window / cumulative). Malloy prefers expressive ad-hoc queries (write the comparison in the query itself). Either fits depending on whether you're publishing a metrics catalog or empowering analysts. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
 ---
 
@@ -224,7 +225,9 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 | Explicit CFL multi-fact planner | ✅ | n/a (symmetric aggregates) |
 | OSI ↔ OBML conversion | ✅ | ❌ |
 | First-class PoP metric type | ✅ | ❌ (ad-hoc) |
-| First-class cumulative metric type | ✅ | ❌ (calculations) |
+| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | ❌ (calculations) |
+| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | ❌ (calculations per-query) |
+| Statistical aggregates (`corr`, `covar_*`, `regr_*` in addition to `stddev` / `variance`) | ✅ 9 functions (v2.6+) | Partial — Malloy ships basic `stddev` / `variance` but no `corr` / `covar_*` / `regr_*` as first-class measure types |
 | Dialect breadth (ClickHouse/Databricks/Dremio) | ✅ | ❌ |
 | Trino/Presto | ❌ | ✅ |
 | VS Code-native authoring | ✅ via Jupyter notebook (also one-click in Colab) | ✅ first-party extension with autocomplete + inline viz |

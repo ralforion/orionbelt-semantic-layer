@@ -96,14 +96,15 @@ AtScale ships first-class enterprise primitives:
 
 | OBSL | AtScale | Notes |
 |---|---|---|
-| `Measure` (sum/avg/count/min/max, `total: bool`) | Measures with rich aggregation types (sum, count, distinct count, min, max, average, semi-additive measures) | Both first-class; AtScale has more built-in semi-additive types |
+| `Measure` — 10 standard aggregations (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`) **+ 9 statistical aggregations (v2.6+)** (`stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`) + `total: bool` for grand totals | Measures with rich aggregation types (sum, count, distinct count, min, max, average, semi-additive measures) | Both first-class. AtScale has stronger semi-additive types (last non-empty, etc.); OBSL has the wider statistical / regression surface as first-class declarative aggregates |
 | `Metric` `type: derived` | Calculated members (MDX expressions) | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date) | Time-intelligence MDX (`Aggregate(YTD([Date].CurrentMember), [Sales])`) — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Time-intelligence MDX (`Aggregate(YTD([Date].CurrentMember), [Sales])`) — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Calculated members using `ParallelPeriod` / `Lag` MDX functions | Both expressive; AtScale is more flexible (full MDX), OBSL is more turnkey |
+| `Metric` `type: window` (v2.6+) — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` | MDX `Rank()`, `Lag()`, `Lead()` in calculated members | OBSL exposes these as declarative metric types; AtScale expresses them via MDX |
 | Reusable filter context / filtered measures | Named sets, perspectives | Comparable |
 | Hierarchical aggregation | Limited (use grains) | First-class via hierarchies and `Aggregate()` |
 
-For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP that you want declared once and reused everywhere, OBSL is more turnkey.
+For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP/window/statistical metrics that you want declared once and reused everywhere, OBSL is more turnkey. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface (dialect coverage matrix included).
 
 ---
 
@@ -211,7 +212,9 @@ The free **Developer Community Edition** lowers the barrier for evaluation, prot
 | Multi-rooted DAG modeling | ✅ via CFL | ❌ (cube-rooted) |
 | Named secondary join paths (per-query) | ✅ | Role-playing dimensions are model-time, not query-time |
 | First-class declarative PoP metric type | ✅ | Via MDX (more flexible but less turnkey) |
-| First-class declarative cumulative metric type | ✅ | Via MDX time intelligence |
+| First-class declarative cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | Via MDX time intelligence |
+| First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | Via MDX calculated members |
+| Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) | ✅ 9 functions (v2.6+) | Limited; not first-class as measure types |
 | Apache Arrow Flight SQL | ✅ | ❌ |
 | DB-API 2.0 drivers | ✅ 8 drivers | ❌ |
 | RDF/SPARQL graph view | ✅ | ❌ |
