@@ -629,13 +629,13 @@ Stateless endpoints for converting between [OSI (Open Semantic Interchange)](htt
 
 ### `POST /v1/convert/osi-to-obml`
 
-Convert an OSI YAML model to OBML format.
+Convert an OSI YAML model to OBML format. OBSL v2.6+ emits and validates against [OSI v0.2.0.dev0](https://github.com/open-semantic-interchange/OSI/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
 
 **Request:**
 
 ```json
 {
-  "input_yaml": "version: \"0.1.1\"\nsemantic_model:\n  - name: my_model\n    ..."
+  "input_yaml": "version: \"0.2.0.dev0\"\nsemantic_model:\n  - name: my_model\n    ..."
 }
 ```
 
@@ -653,9 +653,20 @@ Convert an OSI YAML model to OBML format.
     "schema_errors": [],
     "semantic_errors": [],
     "semantic_warnings": []
+  },
+  "input_validation": {
+    "schema_valid": true,
+    "semantic_valid": true,
+    "schema_errors": [],
+    "semantic_errors": [],
+    "semantic_warnings": []
   }
 }
 ```
+
+**v2.6+** — the new `input_validation` field carries the result of running the **OSI input** against the vendored OSI v0.2 schema (Draft 2020-12). Advisory by default: the endpoint still returns 200 with the converted output when input fails strict v0.2 validation, because the legacy reader shim still produces correct OBML for v0.1.x documents. Inspect `input_validation.schema_errors` if you need a hard gate on the source format.
+
+The `validation` field (unchanged from v2.5) reports the OBML **output**.
 
 **Error (400):** Invalid YAML input.
 
@@ -663,7 +674,7 @@ Convert an OSI YAML model to OBML format.
 
 ### `POST /v1/convert/obml-to-osi`
 
-Convert an OBML YAML model to OSI format.
+Convert an OBML YAML model to OSI format. OBSL v2.6+ emits OSI v0.2.0.dev0 (`version: "0.2.0.dev0"` at the top level, `primary_key` / `unique_keys` first-class, informational `dialects` / `vendors` arrays).
 
 **Request:**
 
@@ -678,7 +689,7 @@ Convert an OBML YAML model to OSI format.
 
 The `model_name`, `model_description`, and `ai_instructions` fields are optional (defaults: `"semantic_model"`, `""`, `""`).
 
-**Response (200):** Same structure as `POST /v1/convert/osi-to-obml`.
+**Response (200):** Same structure as `POST /v1/convert/osi-to-obml`. The `input_validation` field is always `null` here — input-side OBML validation isn't wired on this endpoint yet (output-side `validation` still runs against the OSI v0.2 schema).
 
 **Error (400):** Invalid YAML input.
 

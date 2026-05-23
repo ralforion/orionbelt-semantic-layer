@@ -1,13 +1,13 @@
 # OBSL vs Malloy
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** (the open-source data language and semantic modeling tool from the Malloy Data project). Captured 2026-05-01.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** (the open-source data language and semantic modeling tool from the Malloy Data project). Captured 2026-05-23.
 
 ---
 
 ## TL;DR
 
 - **Malloy wins on**: expressive query language (pipeline operator `->`, refinements, nesting), **symmetric aggregates** that handle fanout automatically, hierarchical query results via `nest:`, and a polished VS Code extension with autocomplete and inline visualizations (OBSL has a different VS Code path via its Jupyter notebook, but it's a Python-driven loop rather than a language-aware editor).
-- **OBSL wins on**: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, **first-class metric types** for cumulative and period-over-period (Malloy expresses these ad-hoc per query), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.
+- **OBSL wins on**: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, **first-class metric types** for cumulative (with `partitionBy` v2.6+), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, v2.6+) where Malloy expresses these ad-hoc per query, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*, v2.6+), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.
 - **Different niches**: Malloy is "a new query language with semantic modeling baked in" — best for analyst-driven exploration and BI development. OBSL is "an API-first semantic compiler" — best for embedding into SaaS products and exposing metrics to LLMs/agents/external apps without teaching them a DSL.
 
 ---

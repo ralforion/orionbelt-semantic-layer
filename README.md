@@ -457,6 +457,7 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 | Query Language | [guide/query-language](https://ralforion.com/orionbelt-semantic-layer/guide/query-language/) |
 | SQL Dialects | [guide/dialects](https://ralforion.com/orionbelt-semantic-layer/guide/dialects/) |
 | Period-over-Period Metrics | [guide/period-over-period](https://ralforion.com/orionbelt-semantic-layer/guide/period-over-period/) |
+| Trend Analysis (rank / lag / lead / ntile, partitioned MAs, statistical aggregates) | [guide/trend-analysis](https://ralforion.com/orionbelt-semantic-layer/guide/trend-analysis/) |
 | Compilation Pipeline | [guide/compilation](https://ralforion.com/orionbelt-semantic-layer/guide/compilation/) |
 | OBSL Graph & SPARQL | [guide/obsl](https://ralforion.com/orionbelt-semantic-layer/guide/obsl/) |
 | Gradio UI | [guide/ui](https://ralforion.com/orionbelt-semantic-layer/guide/ui/) |
@@ -484,7 +485,7 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)** — Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, OSI interop, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)** — Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, **OSI v0.2 interop (v2.6.0+)** with bidirectional schema validation, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides, **Trend Analysis (v2.6.0+)** — partitioned rolling windows, `MetricType.WINDOW` for rank/lag/lead/ntile, 9 statistical aggregates (CORR, COVAR_*, REGR_*, STDDEV_*, VAR_*) |
 | In progress | Additional dialects, CLI tool, pgwire SCRAM/password auth (unified auth subsystem) |
 | Planned | Authentication & API tokens, CLI for automation & CI/CD, DDL view generation (CREATE VIEW from queries), additional BI tool integrations, pre-aggregation / materialization layer |
 
