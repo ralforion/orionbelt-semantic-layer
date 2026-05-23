@@ -94,9 +94,22 @@ AtScale ships first-class enterprise primitives:
 
 ## 4. Metric types
 
+### 4.1 Aggregation surface on `Measure`
+
+| Family | OBSL | AtScale |
+|---|---|---|
+| Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `distinct count`, `avg`, `min`, `max` |
+| Shape | `any_value`, `median`, `mode`, `listagg` | Semi-additive measures (last non-empty, first non-empty) — OLAP-native |
+| Statistical (v2.6+) | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via MDX calculated members (`Stdev`, `Var`) — not first-class measure types |
+| Association / regression (v2.6+) | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via MDX calculated members — not first-class measure types |
+| Grand totals | `total: bool` on the measure | Native to OLAP — every grain rolls up by construction |
+
+**The honest difference**: AtScale's OLAP heritage gives it stronger *semi-additive* primitives (last-value, opening / closing balances) that OBSL doesn't model. OBSL's statistical / regression aggregations are first-class declarative measure types with arity validation and dialect gating; AtScale reaches the same functions through MDX calculated members. Different mental models — both can compute the same SQL.
+
+### 4.2 Metric types
+
 | OBSL | AtScale | Notes |
 |---|---|---|
-| `Measure` — 10 standard aggregations (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`) **+ 9 statistical aggregations (v2.6+)** (`stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept`) + `total: bool` for grand totals | Measures with rich aggregation types (sum, count, distinct count, min, max, average, semi-additive measures) | Both first-class. AtScale has stronger semi-additive types (last non-empty, etc.); OBSL has the wider statistical / regression surface as first-class declarative aggregates |
 | `Metric` `type: derived` | Calculated members (MDX expressions) | Both first-class |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Time-intelligence MDX (`Aggregate(YTD([Date].CurrentMember), [Sales])`) — idiomatic OLAP | Both expressive; OBSL is YAML-declarative, AtScale is MDX-declarative |
 | `Metric` `type: period_over_period` (4 comparison modes) | Calculated members using `ParallelPeriod` / `Lag` MDX functions | Both expressive; AtScale is more flexible (full MDX), OBSL is more turnkey |
@@ -104,7 +117,7 @@ AtScale ships first-class enterprise primitives:
 | Reusable filter context / filtered measures | Named sets, perspectives | Comparable |
 | Hierarchical aggregation | Limited (use grains) | First-class via hierarchies and `Aggregate()` |
 
-For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP/window/statistical metrics that you want declared once and reused everywhere, OBSL is more turnkey. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface (dialect coverage matrix included).
+For complex OLAP-style metrics (MDX is genuinely more expressive than any YAML format), AtScale wins on flexibility. For straightforward cumulative/PoP/window/statistical metrics that you want declared once and reused everywhere, OBSL is more turnkey. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
 ---
 
@@ -214,7 +227,8 @@ The free **Developer Community Edition** lowers the barrier for evaluation, prot
 | First-class declarative PoP metric type | ✅ | Via MDX (more flexible but less turnkey) |
 | First-class declarative cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | Via MDX time intelligence |
 | First-class declarative window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | Via MDX calculated members |
-| Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) | ✅ 9 functions (v2.6+) | Limited; not first-class as measure types |
+| First-class statistical / regression aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as measure types | ✅ 9 declarative aggregations (v2.6+) | Via MDX calculated members — not first-class measure types |
+| Semi-additive measures (last/first non-empty) | ❌ | ✅ first-class OLAP |
 | Apache Arrow Flight SQL | ✅ | ❌ |
 | DB-API 2.0 drivers | ✅ 8 drivers | ❌ |
 | RDF/SPARQL graph view | ✅ | ❌ |
