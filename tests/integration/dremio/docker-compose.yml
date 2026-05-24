@@ -50,6 +50,7 @@ services:
       DREMIO_PASSWORD: obsl_admin_pw_123!
     volumes:
       - ./stage2:/app/stage2:ro
+      - raw_export:/app/raw_export
     ports:
       - "18080:8080"
       - "15432:5432"
@@ -60,6 +61,20 @@ services:
       retries: 30
       start_period: 5s
 
+  ui:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile.ui
+    image: orionbelt-ui:dremio-test
+    environment:
+      PORT: "7860"
+      API_BASE_URL: http://obsl:8080
+    ports:
+      - "17860:7860"
+    depends_on:
+      obsl:
+        condition: service_healthy
+
   dremio:
     image: dremio/dremio-oss:latest
     ports:
@@ -67,6 +82,8 @@ services:
       - "31010:31010"
     environment:
       DREMIO_JAVA_SERVER_EXTRA_OPTS: -Xms1g -Xmx2g
+    volumes:
+      - raw_export:/raw_export:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9047/apiv2/server_status || exit 1"]
       interval: 5s
@@ -76,3 +93,6 @@ services:
     depends_on:
       obsl:
         condition: service_healthy
+
+volumes:
+  raw_export:

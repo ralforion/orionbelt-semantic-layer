@@ -131,6 +131,91 @@ Self-hosted Metabase ships a Postgres connector.
 | Aggregation queries return rows | ✅ |
 | Custom-SQL questions with raw SQL | ⚠ only OBSL-shaped SQL works |
 
+## 6. Dremio SQL Runner — catalog flip & Calcite quirks
+
+Dremio is a federated query engine, not a passive Postgres client: every
+query you write in its SQL Runner is parsed and validated by Apache
+Calcite before any pushdown to OBSL. That introduces two shape
+constraints that tools connecting directly to pgwire (DBeaver, Tableau,
+psql) never hit.
+
+### Address the model as `<schema>."model"`
+
+The v2.5 pgwire catalog layout is
+`database=<source>, schema=<model_name>, table=model`. Dremio's catalog
+reflection sees `<model_name>` as a **schema (CONTAINER)** — you cannot
+write `FROM <model_name>` in Dremio because Calcite will not bind a
+`FROM` clause to a schema. The pgwire surface exposes a special `model`
+view in each schema that routes through OBSQL — that's the queryable
+dataset.
+
+```sql
+-- ❌ wrong: Dremio resolves the schema, not a table
+SELECT "Country Name", "Total Sales"
+  FROM obsl_pg.orionbelt_1_commerce;
+-- Error: Object 'obsl_pg.orionbelt_1_commerce' not found
+
+-- ✅ right: 3-part name with the magic "model" table
+SELECT "Country Name", "Total Sales"
+  FROM obsl_pg.orionbelt_1_commerce."model";
+```
+
+Tools that connect direct to pgwire (`localhost:5432`, no Dremio in the
+middle) accept the bare model name because they do not pre-validate
+against pg_class — the bare name is unwrapped server-side. The 3-part
+form also works direct, so it's the portable shape.
+
+### Calcite ROLLUP / CUBE syntax, not MySQL `WITH ROLLUP`
+
+OBSL's pgwire accepts both MySQL trailing `... WITH ROLLUP` and standard
+`GROUP BY ROLLUP(...)`. Calcite only knows the standard form, so through
+Dremio:
+
+```sql
+-- ❌ MySQL syntax — Calcite parser error
+GROUP BY "Country Name" WITH ROLLUP
+
+-- ✅ Calcite-standard
+GROUP BY ROLLUP("Country Name")
+GROUP BY CUBE("Country Name", "Sales Year")
+GROUP BY GROUPING SETS (("Country Name"), ("Sales Year"), ())
+```
+
+### Wrap every measure in `SUM(...)` — even non-additive ones
+
+Calcite enforces "expression must be aggregated or appear in GROUP BY"
+whenever there is a `GROUP BY`. OBSL measures arrive on the wire as
+**already-aggregated values**, so any wrapper would double-aggregate in
+a normal warehouse — but OBSL recognizes the `SUM(<measure-label>)`
+pattern as a no-op shim and passes the measure through unchanged. The
+measure's own `aggregation:` field (defined in OBML) decides what
+actually runs.
+
+```sql
+-- ✅ The SUM is a syntactic shim, NOT a semantic instruction.
+-- "Total Sales" still resolves to its OBML-defined aggregation
+-- (which may be SUM, COUNT_DISTINCT, AVG, …).
+SELECT "Country Name", SUM("Total Sales") AS sales
+  FROM obsl_pg.orionbelt_1_commerce."model"
+  GROUP BY ROLLUP("Country Name");
+```
+
+`SUM` is the only wrapper OBSL recognizes. Everything else fails:
+
+| Through Dremio | Result |
+|---|---|
+| `SUM("Total Sales")` | ✅ wrapper stripped, OBML aggregation applied |
+| `"Total Sales"` (bare, in `GROUP BY` query) | ❌ Calcite: `Expression 'Total Sales' is not being grouped` |
+| `AVG("Total Sales")` | ❌ Dremio rewrites as `SUM(x)/COUNT(x)` in subqueries → OBSL: `Aggregate call SUM(...) outside the SELECT list is not supported` |
+| `COUNT(*)` | ❌ OBSL: `Aggregate COUNT(*) must wrap a single measure label` |
+| `MIN`, `MAX`, `COUNT(measure)` | ❌ same shape as `AVG`: not the recognized shim |
+
+Calcite (and Dremio) ship no support for ANSI SQL:2023's `MEASURE` /
+`AGG()` semantic-aware aggregation primitives, so the `SUM`-wrap shim
+is the only working bridge today. Clients that go direct to pgwire have
+no such constraint — bare measure labels work in `GROUP BY`,
+`ROLLUP`, and `HAVING`.
+
 ## Known limitations
 
 These constraints are documented in
