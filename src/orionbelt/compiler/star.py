@@ -53,7 +53,15 @@ def _substitute_measure_refs(
     expr: Expr,
     components: dict[str, ResolvedMeasure],
 ) -> Expr:
-    """Walk a metric AST tree and replace ColumnRef placeholders with aggregate expressions."""
+    """Walk a metric AST tree and replace ColumnRef placeholders with aggregate expressions.
+
+    Recurses through ``BinaryOp`` and ``FunctionCall.args`` so a metric
+    formula like ``{Total Sales} / NULLIF({Order Count}, 0)`` correctly
+    inlines both refs (the FunctionCall wraps the divisor; without
+    recursion into ``args`` the inner ref would survive as a bare
+    ColumnRef and the compiler would emit ``NULLIF("Order Count", 0)``
+    against a non-existent column).
+    """
     if isinstance(expr, ColumnRef) and expr.table is None and expr.name in components:
         return components[expr.name].expression
     if isinstance(expr, BinaryOp):
@@ -61,11 +69,25 @@ def _substitute_measure_refs(
         new_right = _substitute_measure_refs(expr.right, components)
         if new_left is not expr.left or new_right is not expr.right:
             return BinaryOp(left=new_left, op=expr.op, right=new_right)
+    if isinstance(expr, FunctionCall):
+        new_args = [_substitute_measure_refs(a, components) for a in expr.args]
+        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
+            return FunctionCall(
+                name=expr.name,
+                args=new_args,
+                distinct=expr.distinct,
+                order_by=expr.order_by,
+                separator=expr.separator,
+            )
     return expr
 
 
 def _expand_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
-    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions."""
+    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
+
+    Recurses through ``BinaryOp`` and ``FunctionCall.args`` for the same
+    reason as :func:`_substitute_measure_refs`.
+    """
     if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
         return measure_exprs[expr.name]
     if isinstance(expr, BinaryOp):
@@ -73,6 +95,16 @@ def _expand_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
         new_right = _expand_measure_refs(expr.right, measure_exprs)
         if new_left is not expr.left or new_right is not expr.right:
             return BinaryOp(left=new_left, op=expr.op, right=new_right)
+    if isinstance(expr, FunctionCall):
+        new_args = [_expand_measure_refs(a, measure_exprs) for a in expr.args]
+        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
+            return FunctionCall(
+                name=expr.name,
+                args=new_args,
+                distinct=expr.distinct,
+                order_by=expr.order_by,
+                separator=expr.separator,
+            )
     return expr
 
 

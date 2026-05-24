@@ -259,24 +259,29 @@ class JoinGraph:
         return steps
 
     def build_join_condition(self, step: JoinStep) -> Expr:
-        """Build the ON clause expression for a join step."""
+        """Build the ON clause expression for a join step.
+
+        Routes both sides through ``make_column_expr`` so a computed
+        join key (``expression:`` instead of ``code:`` on the column)
+        inlines its template body. Without this, a join on a computed
+        key would render ``"obj"."" = "other"."key"`` and the database
+        would error on the zero-length identifier.
+        """
+        from orionbelt.compiler.resolution import make_column_expr
+
         conditions: list[Expr] = []
         for from_c, to_c in zip(step.from_columns, step.to_columns, strict=True):
-            # Resolve to physical column names
             from_obj = self._model.data_objects.get(step.from_object)
             to_obj = self._model.data_objects.get(step.to_object)
             if from_obj and from_c in from_obj.columns:
-                from_col = from_obj.columns[from_c].code
+                left_expr: Expr = make_column_expr(self._model, step.from_object, from_c)
             else:
-                from_col = from_c
-            to_col = to_obj.columns[to_c].code if to_obj and to_c in to_obj.columns else to_c
-            conditions.append(
-                BinaryOp(
-                    left=ColumnRef(name=from_col, table=step.from_object),
-                    op="=",
-                    right=ColumnRef(name=to_col, table=step.to_object),
-                )
-            )
+                left_expr = ColumnRef(name=from_c, table=step.from_object)
+            if to_obj and to_c in to_obj.columns:
+                right_expr: Expr = make_column_expr(self._model, step.to_object, to_c)
+            else:
+                right_expr = ColumnRef(name=to_c, table=step.to_object)
+            conditions.append(BinaryOp(left=left_expr, op="=", right=right_expr))
 
         if not conditions:
             msg = f"Join from '{step.from_object}' to '{step.to_object}' has no join columns"

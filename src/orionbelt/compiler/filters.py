@@ -7,7 +7,6 @@ from typing import TypedDict
 from orionbelt.ast.nodes import (
     Between,
     BinaryOp,
-    ColumnRef,
     Expr,
     FunctionCall,
     InList,
@@ -334,7 +333,14 @@ def _build_single_measure_filter(
         )
         return None
 
-    col: Expr = ColumnRef(name=obj_col.code, table=mf.column.view)
+    # Route through ``make_column_expr`` so a measure-level filter on a
+    # computed (``expression:``) column inlines the template body.
+    # Without this, a filter like ``WHERE "Has Financial Row" = false``
+    # where ``Has Financial Row`` is computed compiled to ``(1 = FALSE)``
+    # (operator-does-not-exist at the DB).
+    from orionbelt.compiler.resolution import make_column_expr
+
+    col: Expr = make_column_expr(model, mf.column.view, mf.column.column)
     op_str = mf.operator.lower()
 
     # Extract values

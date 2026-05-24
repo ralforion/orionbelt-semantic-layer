@@ -782,15 +782,22 @@ class QueryResolver:
         if measure.expression:
             return self._expand_expression(ctx, measure)
 
-        # Build column references for all columns
+        # Build column references for all columns. Routes through
+        # ``make_column_expr`` so a measure column that points at a
+        # computed (``expression:``) column inlines the template body
+        # — without this, ``count_distinct`` over an ``expression:``
+        # column would emit ``COUNT(DISTINCT "obj"."")`` (zero-length
+        # identifier, DB error).
         args: list[Expr] = []
         if measure.columns:
             for ref in measure.columns:
                 obj_name = ref.view or ""
                 col_name = ref.column or ""
                 obj = ctx.model.data_objects.get(obj_name)
-                source = obj.columns[col_name].code if obj and col_name in obj.columns else col_name
-                args.append(ColumnRef(name=source, table=obj_name))
+                if obj and col_name in obj.columns:
+                    args.append(make_column_expr(ctx.model, obj_name, col_name))
+                else:
+                    args.append(ColumnRef(name=col_name, table=obj_name))
         if not args:
             args = [Literal.number(1)]
 
@@ -810,16 +817,12 @@ class QueryResolver:
                 wg_obj_name = wg.column.view or ""
                 wg_col_name = wg.column.column or ""
                 wg_obj = ctx.model.data_objects.get(wg_obj_name)
-                wg_source = (
-                    wg_obj.columns[wg_col_name].code
-                    if wg_obj and wg_col_name in wg_obj.columns
-                    else wg_col_name
-                )
+                if wg_obj and wg_col_name in wg_obj.columns:
+                    wg_expr: Expr = make_column_expr(ctx.model, wg_obj_name, wg_col_name)
+                else:
+                    wg_expr = ColumnRef(name=wg_col_name, table=wg_obj_name)
                 order_by = [
-                    OrderByItem(
-                        expr=ColumnRef(name=wg_source, table=wg_obj_name),
-                        desc=wg.order.upper() == "DESC",
-                    )
+                    OrderByItem(expr=wg_expr, desc=wg.order.upper() == "DESC"),
                 ]
 
         result = FunctionCall(
@@ -1470,7 +1473,11 @@ class QueryResolver:
         if not self._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
             return None
 
-        col_expr: Expr = ColumnRef(name=col.code, table=mf.data_object)
+        # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
+        # computed column inlines the expression — without this a filter
+        # on a boolean ``expression:`` column emitted ``(1 = FALSE)``
+        # because the empty ``code:`` was collapsed by the CAST.
+        col_expr: Expr = make_column_expr(ctx.model, mf.data_object, mf.column)
         qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
         if filter_expr is None:
