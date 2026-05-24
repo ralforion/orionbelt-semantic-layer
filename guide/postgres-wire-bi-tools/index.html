@@ -1255,6 +1255,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#6-dremio-sql-runner-catalog-flip-calcite-quirks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Dremio SQL Runner — catalog flip &amp; Calcite quirks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Dremio SQL Runner — catalog flip &amp; Calcite quirks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#address-the-model-as-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Address the model as &lt;schema&gt;."model"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#calcite-rollup-cube-syntax-not-mysql-with-rollup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calcite ROLLUP / CUBE syntax, not MySQL WITH ROLLUP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wrap-every-measure-in-sum-even-non-additive-ones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrap every measure in SUM(...) — even non-additive ones
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#known-limitations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2136,6 +2186,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#6-dremio-sql-runner-catalog-flip-calcite-quirks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Dremio SQL Runner — catalog flip &amp; Calcite quirks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Dremio SQL Runner — catalog flip &amp; Calcite quirks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#address-the-model-as-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Address the model as &lt;schema&gt;."model"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#calcite-rollup-cube-syntax-not-mysql-with-rollup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calcite ROLLUP / CUBE syntax, not MySQL WITH ROLLUP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wrap-every-measure-in-sum-even-non-additive-ones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrap every measure in SUM(...) — even non-additive ones
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#known-limitations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2380,6 +2480,96 @@ becomes a network round-trip.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="6-dremio-sql-runner-catalog-flip-calcite-quirks">6. Dremio SQL Runner — catalog flip &amp; Calcite quirks<a class="headerlink" href="#6-dremio-sql-runner-catalog-flip-calcite-quirks" title="Permanent link">&para;</a></h2>
+<p>Dremio is a federated query engine, not a passive Postgres client: every
+query you write in its SQL Runner is parsed and validated by Apache
+Calcite before any pushdown to OBSL. That introduces two shape
+constraints that tools connecting directly to pgwire (DBeaver, Tableau,
+psql) never hit.</p>
+<h3 id="address-the-model-as-schemamodel">Address the model as <code>&lt;schema&gt;."model"</code><a class="headerlink" href="#address-the-model-as-schemamodel" title="Permanent link">&para;</a></h3>
+<p>The v2.5 pgwire catalog layout is
+<code>database=&lt;source&gt;, schema=&lt;model_name&gt;, table=model</code>. Dremio's catalog
+reflection sees <code>&lt;model_name&gt;</code> as a <strong>schema (CONTAINER)</strong> — you cannot
+write <code>FROM &lt;model_name&gt;</code> in Dremio because Calcite will not bind a
+<code>FROM</code> clause to a schema. The pgwire surface exposes a special <code>model</code>
+view in each schema that routes through OBSQL — that's the queryable
+dataset.</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">-- ❌ wrong: Dremio resolves the schema, not a table</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">SELECT</span><span class="w"> </span><span class="ss">&quot;Country Name&quot;</span><span class="p">,</span><span class="w"> </span><span class="ss">&quot;Total Sales&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">obsl_pg</span><span class="p">.</span><span class="n">orionbelt_1_commerce</span><span class="p">;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1">-- Error: Object &#39;obsl_pg.orionbelt_1_commerce&#39; not found</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1">-- ✅ right: 3-part name with the magic &quot;model&quot; table</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">SELECT</span><span class="w"> </span><span class="ss">&quot;Country Name&quot;</span><span class="p">,</span><span class="w"> </span><span class="ss">&quot;Total Sales&quot;</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">obsl_pg</span><span class="p">.</span><span class="n">orionbelt_1_commerce</span><span class="p">.</span><span class="ss">&quot;model&quot;</span><span class="p">;</span>
+</span></code></pre></div>
+<p>Tools that connect direct to pgwire (<code>localhost:5432</code>, no Dremio in the
+middle) accept the bare model name because they do not pre-validate
+against pg_class — the bare name is unwrapped server-side. The 3-part
+form also works direct, so it's the portable shape.</p>
+<h3 id="calcite-rollup-cube-syntax-not-mysql-with-rollup">Calcite ROLLUP / CUBE syntax, not MySQL <code>WITH ROLLUP</code><a class="headerlink" href="#calcite-rollup-cube-syntax-not-mysql-with-rollup" title="Permanent link">&para;</a></h3>
+<p>OBSL's pgwire accepts both MySQL trailing <code>... WITH ROLLUP</code> and standard
+<code>GROUP BY ROLLUP(...)</code>. Calcite only knows the standard form, so through
+Dremio:</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1">-- ❌ MySQL syntax — Calcite parser error</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="ss">&quot;Country Name&quot;</span><span class="w"> </span><span class="k">WITH</span><span class="w"> </span><span class="k">ROLLUP</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1">-- ✅ Calcite-standard</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">ROLLUP</span><span class="p">(</span><span class="ss">&quot;Country Name&quot;</span><span class="p">)</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">CUBE</span><span class="p">(</span><span class="ss">&quot;Country Name&quot;</span><span class="p">,</span><span class="w"> </span><span class="ss">&quot;Sales Year&quot;</span><span class="p">)</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">GROUPING</span><span class="w"> </span><span class="k">SETS</span><span class="w"> </span><span class="p">((</span><span class="ss">&quot;Country Name&quot;</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="ss">&quot;Sales Year&quot;</span><span class="p">),</span><span class="w"> </span><span class="p">())</span>
+</span></code></pre></div>
+<h3 id="wrap-every-measure-in-sum-even-non-additive-ones">Wrap every measure in <code>SUM(...)</code> — even non-additive ones<a class="headerlink" href="#wrap-every-measure-in-sum-even-non-additive-ones" title="Permanent link">&para;</a></h3>
+<p>Calcite enforces "expression must be aggregated or appear in GROUP BY"
+whenever there is a <code>GROUP BY</code>. OBSL measures arrive on the wire as
+<strong>already-aggregated values</strong>, so any wrapper would double-aggregate in
+a normal warehouse — but OBSL recognizes the <code>SUM(&lt;measure-label&gt;)</code>
+pattern as a no-op shim and passes the measure through unchanged. The
+measure's own <code>aggregation:</code> field (defined in OBML) decides what
+actually runs.</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1">-- ✅ The SUM is a syntactic shim, NOT a semantic instruction.</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="c1">-- &quot;Total Sales&quot; still resolves to its OBML-defined aggregation</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1">-- (which may be SUM, COUNT_DISTINCT, AVG, …).</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">SELECT</span><span class="w"> </span><span class="ss">&quot;Country Name&quot;</span><span class="p">,</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="ss">&quot;Total Sales&quot;</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">sales</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">obsl_pg</span><span class="p">.</span><span class="n">orionbelt_1_commerce</span><span class="p">.</span><span class="ss">&quot;model&quot;</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">ROLLUP</span><span class="p">(</span><span class="ss">&quot;Country Name&quot;</span><span class="p">);</span>
+</span></code></pre></div>
+<p><code>SUM</code> is the only wrapper OBSL recognizes. Everything else fails:</p>
+<table>
+<thead>
+<tr>
+<th>Through Dremio</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SUM("Total Sales")</code></td>
+<td>✅ wrapper stripped, OBML aggregation applied</td>
+</tr>
+<tr>
+<td><code>"Total Sales"</code> (bare, in <code>GROUP BY</code> query)</td>
+<td>❌ Calcite: <code>Expression 'Total Sales' is not being grouped</code></td>
+</tr>
+<tr>
+<td><code>AVG("Total Sales")</code></td>
+<td>❌ Dremio rewrites as <code>SUM(x)/COUNT(x)</code> in subqueries → OBSL: <code>Aggregate call SUM(...) outside the SELECT list is not supported</code></td>
+</tr>
+<tr>
+<td><code>COUNT(*)</code></td>
+<td>❌ OBSL: <code>Aggregate COUNT(*) must wrap a single measure label</code></td>
+</tr>
+<tr>
+<td><code>MIN</code>, <code>MAX</code>, <code>COUNT(measure)</code></td>
+<td>❌ same shape as <code>AVG</code>: not the recognized shim</td>
+</tr>
+</tbody>
+</table>
+<p>Calcite (and Dremio) ship no support for ANSI SQL:2023's <code>MEASURE</code> /
+<code>AGG()</code> semantic-aware aggregation primitives, so the <code>SUM</code>-wrap shim
+is the only working bridge today. Clients that go direct to pgwire have
+no such constraint — bare measure labels work in <code>GROUP BY</code>,
+<code>ROLLUP</code>, and <code>HAVING</code>.</p>
 <h2 id="known-limitations">Known limitations<a class="headerlink" href="#known-limitations" title="Permanent link">&para;</a></h2>
 <p>These constraints are documented in
 <a href="https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md">design/PLAN_postgres_wire.md §10</a>:</p>
@@ -2422,7 +2612,7 @@ becomes a network round-trip.</p>
 <h2 id="reporting-a-tool-that-fails">Reporting a tool that fails<a class="headerlink" href="#reporting-a-tool-that-fails" title="Permanent link">&para;</a></h2>
 <p>Catalog probes that OBSL doesn't understand log a single warning per
 unique SQL shape:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>WARNING ... PGWIRE_CATALOG_PROBE_UNHANDLED dialect=duckdb error=...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING ... PGWIRE_CATALOG_PROBE_UNHANDLED dialect=duckdb error=...
 </span></code></pre></div>
 <p>If a BI tool fails to connect, scrape that line out of the server log
 and open an issue against
