@@ -181,40 +181,66 @@ GROUP BY CUBE("Country Name", "Sales Year")
 GROUP BY GROUPING SETS (("Country Name"), ("Sales Year"), ())
 ```
 
-### Wrap every measure in `SUM(...)` — even non-additive ones
+### Aggregation through Dremio: what actually works
 
 Calcite enforces "expression must be aggregated or appear in GROUP BY"
 whenever there is a `GROUP BY`. OBSL measures arrive on the wire as
-**already-aggregated values**, so any wrapper would double-aggregate in
-a normal warehouse — but OBSL recognizes the `SUM(<measure-label>)`
-pattern as a no-op shim and passes the measure through unchanged. The
-measure's own `aggregation:` field (defined in OBML) decides what
-actually runs.
+**already-aggregated values**, so OBSL refuses any wrapping aggregate
+that would *change* the measure's declared math. The supported shims
+are:
+
+| OBSL accepts | Meaning |
+|---|---|
+| Bare measure label | Works **only without `GROUP BY`** — Dremio pushes the SELECT down whole, OBSL applies the OBML `aggregation:` server-side |
+| Wrapping aggregate that **matches** the measure's declared agg | e.g. `SUM("Total Sales")` on a `sum:`-declared measure, `COUNT(DISTINCT "Sales Order Count")` on a `count_distinct:`-declared measure |
+| `MEASURE("<label>")` | The portable semantic shim — but **Calcite has no `MEASURE()` operator** ([CALCITE-4496](https://issues.apache.org/jira/browse/CALCITE-4496)), so Dremio rejects it before it reaches the wire |
+
+Calcite also **rewrites** several aggregates into subqueries that OBSL
+does not support — `AVG(x)` → `SUM(x)/COUNT(x)`, `COUNT(DISTINCT x)` →
+correlated subquery — so even the "matching wrapper" pattern often
+fails to pass through Dremio cleanly. In practice this means:
+
+| Through Dremio | Result |
+|---|---|
+| Bare measure, no `GROUP BY` | ✅ works for **any** aggregation type |
+| `SUM(<sum-declared measure>)` with `GROUP BY` / `ROLLUP` / `CUBE` | ✅ wrapper accepted; OBML aggregation applied |
+| `SUM(<non-sum measure>)` with `GROUP BY` | ❌ OBSL: *"Measure `…` is declared as `…` — applying `SUM` would change its math"* |
+| `COUNT(DISTINCT <count-distinct measure>)` | ❌ Dremio rewrites as subquery → OBSL: *"Subqueries not supported"* |
+| `AVG(<any measure>)` | ❌ Dremio rewrites as `SUM/COUNT` subqueries |
+| `MEASURE(<any measure>)` | ❌ Calcite: *"No match found for function signature MEASURE(…)"* |
+| `COUNT(*)` | ❌ OBSL: *"Aggregate `COUNT(*)` must wrap a single measure label"* |
 
 ```sql
--- ✅ The SUM is a syntactic shim, NOT a semantic instruction.
--- "Total Sales" still resolves to its OBML-defined aggregation
--- (which may be SUM, COUNT_DISTINCT, AVG, …).
+-- ✅ Bare label — works for any measure, no GROUP BY:
+SELECT "Country Name", "Sales Order Count", "Total Sales"
+  FROM obsl_pg.orionbelt_1_commerce."model"
+  LIMIT 10;
+
+-- ✅ SUM-wrap on a sum-declared measure, with grouping:
 SELECT "Country Name", SUM("Total Sales") AS sales
   FROM obsl_pg.orionbelt_1_commerce."model"
   GROUP BY ROLLUP("Country Name");
 ```
 
-`SUM` is the only wrapper OBSL recognizes. Everything else fails:
+### Working around the AVG / COUNT_DISTINCT gap through Dremio
 
-| Through Dremio | Result |
-|---|---|
-| `SUM("Total Sales")` | ✅ wrapper stripped, OBML aggregation applied |
-| `"Total Sales"` (bare, in `GROUP BY` query) | ❌ Calcite: `Expression 'Total Sales' is not being grouped` |
-| `AVG("Total Sales")` | ❌ Dremio rewrites as `SUM(x)/COUNT(x)` in subqueries → OBSL: `Aggregate call SUM(...) outside the SELECT list is not supported` |
-| `COUNT(*)` | ❌ OBSL: `Aggregate COUNT(*) must wrap a single measure label` |
-| `MIN`, `MAX`, `COUNT(measure)` | ❌ same shape as `AVG`: not the recognized shim |
+If you need an averaged or count-distinct measure **with `GROUP BY`** in
+Dremio, three options:
 
-Calcite (and Dremio) ship no support for ANSI SQL:2023's `MEASURE` /
-`AGG()` semantic-aware aggregation primitives, so the `SUM`-wrap shim
-is the only working bridge today. Clients that go direct to pgwire have
-no such constraint — bare measure labels work in `GROUP BY`,
-`ROLLUP`, and `HAVING`.
+1. **Skip Dremio for the measure query** — point the BI tool directly at
+   OBSL pgwire (`:5432`). Bare measure labels work in `GROUP BY` /
+   `ROLLUP` / `HAVING` because OBSL parses the SQL itself; the
+   Calcite-imposed "wrap or group" rule never applies.
+2. **Express the average as a sum-decomposed derived metric in OBML.**
+   `expression: '{[Total Sales]} / {[Sales Order Count]}'` — both inputs
+   are SUM/COUNT-style measures, the metric inherits the
+   `aggregation: sum` shim path, and through Dremio you wrap the metric
+   in `SUM(...)` like any other additive measure.
+3. **Wait for Calcite `MEASURE()` support to land in Dremio** — Calcite
+   has parser tokens for SQL:2023 `MEASURE` / `AGG()` but no
+   implementation. Until [CALCITE-4496](https://issues.apache.org/jira/browse/CALCITE-4496)
+   ships and Dremio picks it up, semantic-aware aggregation through
+   Calcite is blocked upstream.
 
 ## Known limitations
 
