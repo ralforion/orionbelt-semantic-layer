@@ -7,7 +7,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (f
 ## TL;DR
 
 - **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts, Twig templating for dynamic models, and the broadest data-source portfolio of the OSS semantic layers.
-- **OBSL wins on**: **richer modeling topologies** (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining `views`; **first-class declarative metric types** for cumulative (with `partitionBy` v2.6+), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, v2.6+) where Cube has `rolling_window` and `time_shift` but they're query/measure patterns, not metric *types*, and no native rank/lag surface; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*, v2.6+); an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; an explicit **CFL multi-fact planner**; **OSI v0.2 ↔ OBML format conversion** (v2.6+); and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
+- **OBSL wins on**: **richer modeling topologies** (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining `views`; **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Cube has `rolling_window` and `time_shift` but they're query/measure patterns, not metric *types*, and no native rank/lag surface; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*); an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; an explicit **CFL multi-fact planner**; **OSI v0.2 ↔ OBML format conversion**; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
 - **Different niches**: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.
 
 Cube is the closest peer to OBSL in the OSS space — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.
@@ -36,8 +36,8 @@ Cube is the closest peer to OBSL in the OSS space — both are self-hostable, bo
 | `Dimension` (model-scoped) | n/a — dimensions live inside cubes | OBSL has model-scoped dimensions; Cube does not |
 | `Measure` | `measures` on a cube | |
 | `Metric` `type: derived` | `measure: { type: number; sql: ... }` referencing other measures | Both first-class |
-| `Metric` `type: cumulative` | <pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day</code></pre> | Cube has rolling windows but they live on individual measures, not as a separate metric type |
-| `Metric` `type: period_over_period` | `time_shift` in queries (`compareDateRange`, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre>) | Cube does PoP at *query time*, not in the model |
+| `Metric` `type: cumulative` | <pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day</code></pre> | Cube has rolling windows but they live on individual measures, not as a separate metric type |
+| `Metric` `type: period_over_period` | `time_shift` in queries (`compareDateRange`, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre>) | Cube does PoP at *query time*, not in the model |
 | `DataObjectJoin` | `joins:` inside a cube with `relationship: many_to_one`/`one_to_many`/`one_to_one` | Cube uses relationship-driven symmetric aggregates |
 | Combining multiple data objects in one query | Native via join graph + CFL | `view` entity required to combine cubes; views are first-class but distinct from cubes |
 | `secondary: true` + `pathName` | n/a — multiple joins between the same pair require workarounds | No path-name primitive |
@@ -54,20 +54,20 @@ Pre-aggregations are materialized rollups that Cube builds, refreshes, and route
 
 ```yaml
 cubes:
-  - name: orders
-    pre_aggregations:
-      - name: monthly_revenue
-        measures: [total_revenue, order_count]
-        dimensions: [status]
-        time_dimension: created_at
-        granularity: month
-        partition_granularity: month
-        refresh_key:
-          every: 1 hour
-        build_range_start:
-          sql: SELECT DATE('2020-01-01')
-        build_range_end:
-          sql: SELECT NOW()
+ - name: orders
+ pre_aggregations:
+ - name: monthly_revenue
+ measures: [total_revenue, order_count]
+ dimensions: [status]
+ time_dimension: created_at
+ granularity: month
+ partition_granularity: month
+ refresh_key:
+ every: 1 hour
+ build_range_start:
+ sql: SELECT DATE('2020-01-01')
+ build_range_end:
+ sql: SELECT NOW()
 ```
 
 Capabilities:
@@ -146,8 +146,8 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count_distinct`, `count_distinct_approx`, `avg`, `min`, `max` |
 | Shape | `any_value`, `median`,<br>`mode`, `listagg` | `string`, `time`, `boolean`,<br>`number` (generic — wraps any<br>aggregate SQL expression) |
-| Statistical (v2.6+) | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via `type: number` + raw `sql: STDDEV(...)` — not a first-class measure type |
-| Association / regression (v2.6+) | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via `type: number` + raw SQL — not a first-class measure type |
+| Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | Via `type: number` + raw `sql: STDDEV(...)` — not a first-class measure type |
+| Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via `type: number` + raw SQL — not a first-class measure type |
 | Grand totals | `total: bool` on the measure | n/a — done at query/visualization time |
 
 **The honest difference**: Cube's `type: number` is a generic escape hatch — anything the warehouse can express in SQL is reachable, but the model authors write raw SQL that's dialect-specific, arity-unchecked, and opaque to validation. OBSL ships these as first-class declarative aggregations with arity validation (2-column for `corr` / `covar_*` / `regr_*`), per-dialect gating (`UNSUPPORTED_AGGREGATION_FOR_DIALECT` at compile time), and identical YAML across all 8 dialects. Both approaches reach the same SQL functions in the end; the difference is who owns dialect portability.
@@ -156,10 +156,10 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 
 | OBSL | Cube | Notes |
 |---|---|---|
-| `Metric` `type: derived` | <pre><code>measure:<br>  type: number<br>  sql: "{revenue} / {orders}"</code></pre> | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | <pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day<br>    offset: end</code></pre> rolling only | Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no `partitionBy` as declarative types |
-| `Metric` `type: period_over_period` (4 comparison modes) | Query-side: `compareDateRange` parameter, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre> | Cube does PoP at query time, not as a model-defined metric |
-| `Metric` `type: window` (v2.6+) — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Via `type: number` + raw window-function SQL | OBSL ships these as declarative metric types; Cube reaches them via the same `type: number` escape hatch |
+| `Metric` `type: derived` | <pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre> | Both first-class |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | <pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day<br> offset: end</code></pre> rolling only | Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no `partitionBy` as declarative types |
+| `Metric` `type: period_over_period` (4 comparison modes) | Query-side: `compareDateRange` parameter, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre> | Cube does PoP at query time, not as a model-defined metric |
+| `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Via `type: number` + raw window-function SQL | OBSL ships these as declarative metric types; Cube reaches them via the same `type: number` escape hatch |
 | Reusable filter context / filtered measures | `segments` + per-measure `filters` | Comparable |
 
 **Different philosophies**: OBSL bakes time-aware metrics into the model (write once, every query gets the comparison). Cube treats time comparisons as query-time concerns (more flexible, but the consumer has to know how to ask). Either fits depending on whether you're publishing a metrics catalog or empowering query authors.
@@ -271,9 +271,9 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | Row-level security in model | ❌ | ✅ via `query_rewrite` |
 | Field-level masking | ❌ | ✅ via Twig conditionals |
 | First-class PoP metric type | ✅ (4 comparison modes) | ❌ (`time_shift` at query time) |
-| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | Partial (`rolling_window` only) |
-| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | Via `type: number` + raw SQL |
-| Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as first-class measure types | ✅ 9 declarative aggregations (v2.6+) | Via `type: number` + raw SQL |
+| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Partial (`rolling_window` only) |
+| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via `type: number` + raw SQL |
+| Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as first-class measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL |
 | Multi-rooted DAG modeling | ✅ via CFL | ❌ (single-rooted cubes + views) |
 | Named secondary join paths | ✅ | ❌ |
 | Symmetric aggregates | ❌ (uses CFL) | ✅ |

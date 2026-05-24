@@ -2,6 +2,27 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.6.1] - 2026-05-24
+
+### Fixed
+
+- **Derived metric referencing a window metric now wraps correctly.** A derived metric like ``MoM Delta = {[Revenue]} - {[Revenue Prior Month]}`` selected without ``Revenue Prior Month`` also in the SELECT used to compile as ``SUM(amount) - "Revenue"`` — no ``LAG``, no window CTE, broken SQL. Even when both were selected together the substitution baked the window metric's inner aggregate into the outer expression, producing ``Revenue - Revenue`` (always zero) instead of the intended ``Revenue - LAG(Revenue)``. ``compiler/window_wrap.py`` now detects deferred derived metrics (DDMs), pulls every transitively-referenced window metric's base measure into the ``window_base`` CTE, and inlines ``_build_window_call(...)`` for window-component references at the outer SELECT — yielding ``"Revenue" - LAG("Revenue", 1) OVER (...)`` regardless of which combination of metrics appears in the SELECT.
+- **Two-column statistical aggregates (`corr` / `covar_*` / `regr_*`) rejected cleanly in CFL.** The previous concat-count path emitted ``CORR(CAST(f0 AS VARCHAR) || '|' || CAST(f1 AS VARCHAR))`` — one argument, garbage types. New ``UnsupportedAggregationForCFLError`` (inherits ``UnsupportedAggregationError`` so existing router catches translate it transparently) is raised before the multi-fact branch. Single-fact queries using the same measures continue to compile through the star planner unchanged.
+- **Expression-based two-column statistical aggregates rejected at model-load.** ``aggregation: corr`` combined with ``expression: "{a} + {b}"`` used to slip past arity validation and compile to invalid ``CORR((a + b))``. The validator now rejects ``expression:`` for two-column aggregates with guidance to use ``columns:`` (define computed columns on the data object for per-argument transformations). Single-column statistical aggregates (``stddev`` etc.) still accept ``expression:`` since ``STDDEV(<scalar>)`` is valid SQL.
+- **Window metric inherits base measure's declared dataType.** ``window_wrap`` now applies ``_apply_measure_cast`` when projecting the base measure into the ``window_base`` CTE, mirroring ``cumulative_wrap``. A ``LAG`` over a ``decimal(18, 2)`` measure no longer operates on uncast ``SUM(...)``.
+- **ORDER BY on window / cumulative / period-over-period metric resolves to the wrapped alias.** Previously ``_resolve_order_by_field`` returned ``meas.expression``, so ``ORDER BY "Revenue Prior Month" DESC`` silently rewrote to ``ORDER BY "Revenue" DESC`` (the lag-input). Now returns a table-less ``ColumnRef`` for wrapped metrics — same pattern as ``coalesce_aliases`` — so the outer SELECT binds the windowed output.
+- **OSI converter emits all columns of multi-column measures.** ``_measure_to_sql`` only emitted ``columns[0]``, so a derived metric that referenced a two-column ``corr`` measure exported wrong OSI SQL even though the standalone measure path was already correct. Now iterates every column in declaration order.
+
+### Added
+
+- **Idempotent-wrap shim extended to metrics and non-matching measures.** OBSL's natural-SQL surface previously accepted ``SUM(<sum-declared measure>)`` as a syntactic shim (stripped, declared aggregation applied). Calcite-validating BI tools (Dremio, Spark, Flink) cannot mirror each measure's declared aggregation when ``GROUP BY`` is present, so the rule is generalised: any wrap from ``{SUM, MIN, MAX, AVG, MEDIAN}`` is accepted on metrics (whose values are evaluated per grain — wrap-over-singleton is provably a no-op) and on non-matching measures (same reasoning). ``COUNT`` / ``COUNT(DISTINCT)`` remain restricted to matching-aggregation acceptance because they change cardinality. Error messages now name every viable alternative.
+- **``AGG()`` and ``AGGREGATE()`` accepted as ``MEASURE()`` aliases.** Three portable spellings for the explicit measure-marker syntax — Snowflake / Databricks ship ``MEASURE()``; Calcite-style proposals and some BI tools emit ``AGG()`` or ``AGGREGATE()``.
+
+### Docs
+
+- New section in ``docs/guide/postgres-wire-bi-tools.md``: **"6. Dremio SQL Runner — catalog flip & Calcite quirks"**. Documents three gotchas that Calcite-validating BI tools hit (address the model as ``<schema>."model"``, use Calcite-standard ``ROLLUP``/``CUBE`` syntax, wrap measures in idempotent aggregates because Calcite has no ``MEASURE()``), plus the AVG / COUNT_DISTINCT workaround playbook.
+- Removed redundant ``(v2.6+)`` parenthetical version stamps across docs / comparison pages now that the v2.6 surface is mature. Earlier-version stamps are retained for readers on older OBSL builds.
+
 ## [2.6.0] - 2026-05-23
 
 ### Added

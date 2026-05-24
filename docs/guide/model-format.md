@@ -7,26 +7,26 @@ OrionBelt ML (OBML) is the YAML-based format for defining semantic models in Ori
 ```yaml
 # yaml-language-server: $schema=schema/obml-schema.json
 version: 1.0
-owner: team-data           # Optional: model-level owner
+owner: team-data # Optional: model-level owner
 
-settings:     # Optional: model-level compilation settings
-  defaultNumericDataType: "decimal(18, 4)"
-  defaultTimezone: "Europe/Zagreb"
+settings: # Optional: model-level compilation settings
+ defaultNumericDataType: "decimal(18, 4)"
+ defaultTimezone: "Europe/Zagreb"
 
-dataObjects:  # Database tables/views with columns and joins
-  ...
+dataObjects: # Database tables/views with columns and joins
+ ...
 
-dimensions:   # Named dimensions referencing data object columns
-  ...
+dimensions: # Named dimensions referencing data object columns
+ ...
 
-measures:     # Aggregations with expressions
-  ...
+measures: # Aggregations with expressions
+ ...
 
-metrics:      # Composite metrics combining measures
-  ...
+metrics: # Composite metrics combining measures
+ ...
 
-filters:      # Optional: static WHERE conditions applied to every query
-  ...
+filters: # Optional: static WHERE conditions applied to every query
+ ...
 ```
 
 The four main sections (`dataObjects`, `dimensions`, `measures`, `metrics`) are dictionaries keyed by name. The optional `filters` section is a list.
@@ -40,20 +40,20 @@ version: 1.0
 owner: team-data
 
 dataObjects:
-  Orders:
-    owner: team-sales
-    columns:
-      Price:
-        owner: team-finance
+ Orders:
+ owner: team-sales
+ columns:
+ Price:
+ owner: team-finance
 dimensions:
-  Country:
-    owner: team-analytics
+ Country:
+ owner: team-analytics
 measures:
-  Revenue:
-    owner: team-analytics
+ Revenue:
+ owner: team-analytics
 metrics:
-  Revenue per Order:
-    owner: team-analytics
+ Revenue per Order:
+ owner: team-analytics
 ```
 
 ## Data Objects
@@ -62,31 +62,31 @@ A **data object** maps to a database table or custom SQL statement. Each data ob
 
 ```yaml
 dataObjects:
-  Orders:
-    code: ORDERS              # Table name or custom SQL
-    database: WAREHOUSE         # Database/catalog
-    schema: PUBLIC              # Schema
-    columns:
-      Order ID:
-        code: ORDER_ID        # Physical column name
-        abstractType: string
-      Order Date:
-        code: ORDER_DATE
-        abstractType: date
-      Customer ID:
-        code: CUSTOMER_ID
-        abstractType: string
-      Price:
-        code: PRICE
-        abstractType: float
-        numClass: non-additive
-    joins:
-      - joinType: many-to-one
-        joinTo: Customers
-        columnsFrom:
-          - Customer ID
-        columnsTo:
-          - Customer ID
+ Orders:
+ code: ORDERS # Table name or custom SQL
+ database: WAREHOUSE # Database/catalog
+ schema: PUBLIC # Schema
+ columns:
+ Order ID:
+ code: ORDER_ID # Physical column name
+ abstractType: string
+ Order Date:
+ code: ORDER_DATE
+ abstractType: date
+ Customer ID:
+ code: CUSTOMER_ID
+ abstractType: string
+ Price:
+ code: PRICE
+ abstractType: float
+ numClass: non-additive
+ joins:
+ - joinType: many-to-one
+ joinTo: Customers
+ columnsFrom:
+ - Customer ID
+ columnsTo:
+ - Customer ID
 ```
 
 ### Data Object Properties
@@ -124,38 +124,38 @@ A column with `expression` instead of `code` defines a **computed column**: a co
 
 ```yaml
 dataObjects:
-  Date:
-    code: date_dim
-    columns:
-      Year:
-        code: d_year
-        abstractType: int
-      Month of Year:
-        code: d_moy
-        abstractType: int
-      Year-Month:
-        # Combines year and month-of-year into one int like 200011 — useful
-        # as a sortable, single-column time bucket.
-        expression: "({Year} * 100 + {Month of Year})"
-        abstractType: int
+ Date:
+ code: date_dim
+ columns:
+ Year:
+ code: d_year
+ abstractType: int
+ Month of Year:
+ code: d_moy
+ abstractType: int
+ Year-Month:
+ # Combines year and month-of-year into one int like 200011 — useful
+ # as a sortable, single-column time bucket.
+ expression: "({Year} * 100 + {Month of Year})"
+ abstractType: int
 ```
 
 The `Year-Month` column behaves like any other column afterwards: surface it through a dimension, group by it, sort by it.
 
 ```yaml
 dimensions:
-  Year-Month:
-    dataObject: Date
-    column: Year-Month
-    resultType: int
+ Year-Month:
+ dataObject: Date
+ column: Year-Month
+ resultType: int
 ```
 
 Generated SQL substitutes the expression in place of the column reference:
 
 ```sql
 SELECT (("Date"."d_year" * 100) + "Date"."d_moy") AS "Year-Month",
-       SUM("Store Sales"."ss_ext_sales_price") AS "Store Sales Amount"
-FROM   "tpcds"."store_sales" AS "Store Sales"
+ SUM("Store Sales"."ss_ext_sales_price") AS "Store Sales Amount"
+FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."date_dim" AS "Date" ON ...
 GROUP BY (("Date"."d_year" * 100) + "Date"."d_moy")
 ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
@@ -190,7 +190,7 @@ Joins define relationships between data objects. The data object that declares t
 | `pathName` | string | No | Unique name for this join path (required when `secondary: true`) |
 
 !!! note "Fact tables declare joins"
-    By convention, fact tables (e.g., `Orders`) declare joins to dimension tables (e.g., `Customers`, `Products`). The compiler uses this to identify fact tables — data objects with joins are preferred as base objects during query resolution.
+ By convention, fact tables (e.g., `Orders`) declare joins to dimension tables (e.g., `Customers`, `Products`). The compiler uses this to identify fact tables — data objects with joins are preferred as base objects during query resolution.
 
 ### Secondary Joins
 
@@ -198,32 +198,32 @@ When a data object has multiple relationships to the same target (e.g., a `Fligh
 
 ```yaml
 dataObjects:
-  Flights:
-    code: FLIGHTS
-    database: WAREHOUSE
-    schema: PUBLIC
-    columns:
-      Departure Airport:
-        code: DEP_AIRPORT
-        abstractType: string
-      Arrival Airport:
-        code: ARR_AIRPORT
-        abstractType: string
-    joins:
-      - joinType: many-to-one
-        joinTo: Airports
-        columnsFrom:
-          - Departure Airport
-        columnsTo:
-          - Airport ID
-      - joinType: many-to-one
-        joinTo: Airports
-        secondary: true
-        pathName: arrival
-        columnsFrom:
-          - Arrival Airport
-        columnsTo:
-          - Airport ID
+ Flights:
+ code: FLIGHTS
+ database: WAREHOUSE
+ schema: PUBLIC
+ columns:
+ Departure Airport:
+ code: DEP_AIRPORT
+ abstractType: string
+ Arrival Airport:
+ code: ARR_AIRPORT
+ abstractType: string
+ joins:
+ - joinType: many-to-one
+ joinTo: Airports
+ columnsFrom:
+ - Departure Airport
+ columnsTo:
+ - Airport ID
+ - joinType: many-to-one
+ joinTo: Airports
+ secondary: true
+ pathName: arrival
+ columnsFrom:
+ - Arrival Airport
+ columnsTo:
+ - Airport ID
 ```
 
 Rules:
@@ -239,10 +239,10 @@ Columns are referenced using the `dataObject` + `column` pair throughout the mod
 
 ```yaml
 dimensions:
-  Product Name:
-    dataObject: Products
-    column: Product Name
-    resultType: string
+ Product Name:
+ dataObject: Products
+ column: Product Name
+ resultType: string
 ```
 
 Column names must be unique within each data object. Dimensions, measures, and metrics must have unique names across the whole model.
@@ -253,16 +253,16 @@ A **dimension** defines a business attribute used for grouping (GROUP BY) in que
 
 ```yaml
 dimensions:
-  Customer Country:
-    dataObject: Customers
-    column: Country
-    resultType: string
+ Customer Country:
+ dataObject: Customers
+ column: Country
+ resultType: string
 
-  Order Date:
-    dataObject: Orders
-    column: Order Date
-    resultType: date
-    timeGrain: month
+ Order Date:
+ dataObject: Orders
+ column: Order Date
+ resultType: date
+ timeGrain: month
 ```
 
 ### Dimension Properties
@@ -285,25 +285,25 @@ When multiple fact tables join to the same dimension table, use `via` to scope a
 
 ```yaml
 dimensions:
-  # Without via: the compiler picks the shortest path (may be ambiguous)
-  EmployeeName:
-    dataObject: Employees
-    column: employeename
-    resultType: string
+ # Without via: the compiler picks the shortest path (may be ambiguous)
+ EmployeeName:
+ dataObject: Employees
+ column: employeename
+ resultType: string
 
-  # With via: scoped to Sales context — joins Sales → Employees
-  SalesEmployee:
-    dataObject: Employees
-    column: employeename
-    resultType: string
-    via: Sales
+ # With via: scoped to Sales context — joins Sales → Employees
+ SalesEmployee:
+ dataObject: Employees
+ column: employeename
+ resultType: string
+ via: Sales
 
-  # With via: scoped to Returns context — joins Returns → Employees
-  ReturnEmployee:
-    dataObject: Employees
-    column: employeename
-    resultType: string
-    via: Returns
+ # With via: scoped to Returns context — joins Returns → Employees
+ ReturnEmployee:
+ dataObject: Employees
+ column: employeename
+ resultType: string
+ via: Returns
 ```
 
 The `via` data object must be reachable from the query's base object, and the dimension's `dataObject` must be reachable from `via` in the directed join graph. The compiler validates this at model load time.
@@ -318,11 +318,11 @@ Set `timeGrain` to apply time grain truncation:
 
 ```yaml
 dimensions:
-  Order Month:
-    dataObject: Orders
-    column: Order Date
-    resultType: date
-    timeGrain: month
+ Order Month:
+ dataObject: Orders
+ column: Order Date
+ resultType: date
+ timeGrain: month
 ```
 
 This generates `date_trunc('month', col)` in Postgres/Snowflake or `toStartOfMonth(col)` in ClickHouse.
@@ -337,12 +337,12 @@ A **measure** defines an aggregate computation over data object columns.
 
 ```yaml
 measures:
-  Order Count:
-    columns:
-      - dataObject: Orders
-        column: Order ID
-    resultType: int
-    aggregation: count
+ Order Count:
+ columns:
+ - dataObject: Orders
+ column: Order ID
+ resultType: int
+ aggregation: count
 ```
 
 ### Expression Measure (computed from columns)
@@ -351,19 +351,19 @@ Reference columns directly in the expression using `{[DataObject].[Column]}`:
 
 ```yaml
 measures:
-  Revenue:
-    resultType: float
-    aggregation: sum
-    expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
+ Revenue:
+ resultType: float
+ aggregation: sum
+ expression: '{[Orders].[Price]} * {[Orders].[Quantity]}'
 ```
 
 ```yaml
 measures:
-  Profit:
-    resultType: float
-    aggregation: sum
-    expression: '{[Sales].[Salesamount]} - {[Sales].[Salescosts]}'
-    total: true
+ Profit:
+ resultType: float
+ aggregation: sum
+ expression: '{[Sales].[Salesamount]} - {[Sales].[Salescosts]}'
+ total: true
 ```
 
 ### Measure Properties
@@ -372,7 +372,7 @@ measures:
 |----------|------|----------|-------------|
 | `columns` | list | No | List of column references (`dataObject`+`column`) for simple single-column measures |
 | `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
-| `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical (v2.6+): `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
+| `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical: `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
 | `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |
 | `total` | bool | No | Grand total shorthand (equivalent to `grain: { mode: FIXED }`) |
@@ -403,7 +403,7 @@ measures:
 | `mode` | `MODE(expr)` | Most frequent value (`MODE() WITHIN GROUP (ORDER BY ...)` in Postgres, `topK(1)(col)[1]` in ClickHouse; not supported in Dremio) |
 | `listagg` | `LISTAGG(expr, sep)` | Concatenated values (dialect-specific: `STRING_AGG` in Postgres, `ARRAY_JOIN(COLLECT_LIST(...))` in Databricks, `arrayStringConcat(groupArray(...))` in ClickHouse) |
 
-#### Statistical aggregates (v2.6+)
+#### Statistical aggregates
 
 Single-column aggregates take exactly one entry in `columns`; two-column aggregates take exactly two (arity is enforced at model-load time, error code `INVALID_AGGREGATION_INPUTS`). Dialect coverage varies — MySQL has no correlation / covariance / regression; BigQuery and ClickHouse lack the linear-regression family. Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at compile time. See [Trend Analysis](trend-analysis.md#statistical-aggregates-on-measure) for the full coverage matrix and a worked example.
 
@@ -433,18 +433,18 @@ Apply filters to a measure so it only aggregates matching rows. The `filters` pr
 
 ```yaml
 measures:
-  Sales Profit Ratio:
-    resultType: float
-    aggregation: sum
-    expression: '({[Sales].[Salesamount]} / {[Sales].[Salescosts]}) * 100'
-    filters:
-      - column:
-          dataObject: Sales
-          column: Salescosts
-        operator: gt
-        values:
-          - dataType: float
-            valueFloat: 100.00
+ Sales Profit Ratio:
+ resultType: float
+ aggregation: sum
+ expression: '({[Sales].[Salesamount]} / {[Sales].[Salescosts]}) * 100'
+ filters:
+ - column:
+ dataObject: Sales
+ column: Salescosts
+ operator: gt
+ values:
+ - dataType: float
+ valueFloat: 100.00
 ```
 
 #### Multiple filters with AND/OR logic
@@ -453,29 +453,29 @@ Use filter groups for boolean combinations:
 
 ```yaml
 measures:
-  Domestic Revenue:
-    columns:
-      - dataObject: Line Items
-        column: Extended Price
-    resultType: float
-    aggregation: sum
-    filters:
-      - logic: or
-        filters:
-          - column:
-              dataObject: Nations
-              column: Name
-            operator: equals
-            values:
-              - dataType: string
-                valueString: UNITED STATES
-          - column:
-              dataObject: Nations
-              column: Name
-            operator: equals
-            values:
-              - dataType: string
-                valueString: CANADA
+ Domestic Revenue:
+ columns:
+ - dataObject: Line Items
+ column: Extended Price
+ resultType: float
+ aggregation: sum
+ filters:
+ - logic: or
+ filters:
+ - column:
+ dataObject: Nations
+ column: Name
+ operator: equals
+ values:
+ - dataType: string
+ valueString: UNITED STATES
+ - column:
+ dataObject: Nations
+ column: Name
+ operator: equals
+ values:
+ - dataType: string
+ valueString: CANADA
 ```
 
 #### Filter Group Properties
@@ -493,17 +493,17 @@ Multiple top-level filters are combined with **AND**. Filter groups and leaf fil
 Filtered measures compile to `CASE WHEN` inside the aggregate function. The implicit `ELSE NULL` is ignored by all aggregate functions (SUM, COUNT, AVG, etc.):
 
 ```sql
--- Unfiltered:   SUM("extendedprice" * (1 - "discount"))
--- Filtered:     SUM(CASE WHEN "returnflag" = 'R'
---                        THEN "extendedprice" * (1 - "discount") END)
+-- Unfiltered: SUM("extendedprice" * (1 - "discount"))
+-- Filtered: SUM(CASE WHEN "returnflag" = 'R'
+-- THEN "extendedprice" * (1 - "discount") END)
 ```
 
 This works with all planners (star, CFL, cumulative, period-over-period) and all 8 dialects. Filtered measures can be combined with unfiltered measures in ratio metrics:
 
 ```yaml
 metrics:
-  Return Rate:
-    expression: "{[Returned Revenue]} / {[Revenue]}"
+ Return Rate:
+ expression: "{[Returned Revenue]} / {[Revenue]}"
 ```
 
 ### LISTAGG Measures
@@ -512,25 +512,25 @@ Use `listagg` to concatenate column values into a delimited string. OrionBelt re
 
 ```yaml
 measures:
-  Product Names:
-    columns:
-      - dataObject: Products
-        column: Product Name
-    resultType: string
-    aggregation: listagg
-    delimiter: ', '
-    withinGroup:
-      column:
-        dataObject: Products
-        column: Product Name
-      order: ASC
+ Product Names:
+ columns:
+ - dataObject: Products
+ column: Product Name
+ resultType: string
+ aggregation: listagg
+ delimiter: ', '
+ withinGroup:
+ column:
+ dataObject: Products
+ column: Product Name
+ order: ASC
 ```
 
 The `delimiter` defaults to `","` if omitted. The `withinGroup` clause is optional and specifies ordering of the concatenated values.
 
 ## Metrics
 
-Metrics come in four types: **derived** (composite expression), **cumulative** (window function over a measure), **period-over-period** (time comparison), and **window** (rank / lag / lead / ntile / first/last value — single-row window functions, v2.6+).
+Metrics come in four types: **derived** (composite expression), **cumulative** (window function over a measure), **period-over-period** (time comparison), and **window** (rank / lag / lead / ntile / first/last value — single-row window functions).
 
 ### Derived Metrics
 
@@ -538,11 +538,11 @@ A **derived metric** combines multiple measures into a KPI. The expression refer
 
 ```yaml
 metrics:
-  Revenue per Order:
-    expression: '{[Revenue]} / {[Order Count]}'
+ Revenue per Order:
+ expression: '{[Revenue]} / {[Order Count]}'
 
-  Net Revenue:
-    expression: '{[Sales Amount]} - {[Return Amount]}'
+ Net Revenue:
+ expression: '{[Sales Amount]} - {[Return Amount]}'
 ```
 
 All artefacts (data objects, dimensions, measures, metrics) have unique names. The `{[Name]}` placeholders in a metric expression must match existing measure names exactly.
@@ -559,49 +559,49 @@ A **cumulative metric** applies a window function to an existing measure, ordere
 
 ```yaml
 metrics:
-  # Running total (unbounded cumulative sum)
-  Cumulative Revenue:
-    type: cumulative
-    measure: Revenue
-    timeDimension: Order Date
-    description: Running total of revenue
+ # Running total (unbounded cumulative sum)
+ Cumulative Revenue:
+ type: cumulative
+ measure: Revenue
+ timeDimension: Order Date
+ description: Running total of revenue
 
-  # Rolling 7-period average
-  7-Day Rolling Avg Revenue:
-    type: cumulative
-    measure: Revenue
-    timeDimension: Order Date
-    cumulativeType: avg
-    window: 7
+ # Rolling 7-period average
+ 7-Day Rolling Avg Revenue:
+ type: cumulative
+ measure: Revenue
+ timeDimension: Order Date
+ cumulativeType: avg
+ window: 7
 
-  # Month-to-Date (resets each month)
-  MTD Revenue:
-    type: cumulative
-    measure: Revenue
-    timeDimension: Order Date
-    grainToDate: month
+ # Month-to-Date (resets each month)
+ MTD Revenue:
+ type: cumulative
+ measure: Revenue
+ timeDimension: Order Date
+ grainToDate: month
 
-  # Year-to-Date (resets each year)
-  YTD Revenue:
-    type: cumulative
-    measure: Revenue
-    timeDimension: Order Date
-    grainToDate: year
+ # Year-to-Date (resets each year)
+ YTD Revenue:
+ type: cumulative
+ measure: Revenue
+ timeDimension: Order Date
+ grainToDate: year
 
-  # Rolling peak
-  30-Day Peak Revenue:
-    type: cumulative
-    measure: Revenue
-    timeDimension: Order Date
-    cumulativeType: max
-    window: 30
+ # Rolling peak
+ 30-Day Peak Revenue:
+ type: cumulative
+ measure: Revenue
+ timeDimension: Order Date
+ cumulativeType: max
+ window: 30
 ```
 
 !!! note "Time dimension requirement"
-    The `timeDimension` must be included in the query's selected dimensions. Cumulative metrics without their time dimension in the SELECT will raise a validation error.
+ The `timeDimension` must be included in the query's selected dimensions. Cumulative metrics without their time dimension in the SELECT will raise a validation error.
 
-!!! tip "Partition by dimension (v2.6+)"
-    Add `partitionBy: [Country, ...]` to compute per-entity rolling windows (e.g. 12-month MA per country). Every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
+!!! tip "Partition by dimension"
+ Add `partitionBy: [Country, ...]` to compute per-entity rolling windows (e.g. 12-month MA per country). Every entry must be a model dimension present in the query's SELECT. See [Trend Analysis](trend-analysis.md#1-partitioned-rolling-windows) for worked examples.
 
 ### Period-over-Period Metrics
 
@@ -609,25 +609,25 @@ A **period-over-period metric** compares a measure against a prior time period. 
 
 ```yaml
 metrics:
-  Revenue YoY Growth:
-    type: period_over_period
-    expression: '{[Revenue]}'
-    periodOverPeriod:
-      timeDimension: Order Date
-      grain: month
-      offset: -1
-      offsetGrain: year
-      comparison: percentChange
+ Revenue YoY Growth:
+ type: period_over_period
+ expression: '{[Revenue]}'
+ periodOverPeriod:
+ timeDimension: Order Date
+ grain: month
+ offset: -1
+ offsetGrain: year
+ comparison: percentChange
 
-  Revenue MoM Diff:
-    type: period_over_period
-    expression: '{[Revenue]}'
-    periodOverPeriod:
-      timeDimension: Order Date
-      grain: month
-      offset: -1
-      offsetGrain: month
-      comparison: difference
+ Revenue MoM Diff:
+ type: period_over_period
+ expression: '{[Revenue]}'
+ periodOverPeriod:
+ timeDimension: Order Date
+ grain: month
+ offset: -1
+ offsetGrain: month
+ comparison: difference
 ```
 
 Four comparison modes are available:
@@ -640,40 +640,40 @@ Four comparison modes are available:
 | `previousValue` | `prev` | Prior period value alongside current |
 
 !!! note "Time dimension requirement"
-    The `timeDimension` must be included in the query's selected dimensions. All PoP metrics in a single query must share the same `timeDimension` and `grain`.
+ The `timeDimension` must be included in the query's selected dimensions. All PoP metrics in a single query must share the same `timeDimension` and `grain`.
 
 For a detailed guide on PoP metrics, including CTE architecture, filter push-down, and dialect-specific SQL examples, see the [Period-over-Period Metrics](period-over-period.md) guide.
 
-### Window Metrics (v2.6+)
+### Window Metrics
 
 A **window metric** wraps a single-row SQL window function — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`. Use `partitionBy:` to scope to subgroups and `orderDirection:` to flip ranking direction.
 
 ```yaml
 metrics:
-  # Rank revenue within each quarter
-  Revenue Rank by Quarter:
-    type: window
-    windowFunction: dense_rank
-    measure: Revenue
-    orderDirection: desc
-    partitionBy: [Quarter]
+ # Rank revenue within each quarter
+ Revenue Rank by Quarter:
+ type: window
+ windowFunction: dense_rank
+ measure: Revenue
+ orderDirection: desc
+ partitionBy: [Quarter]
 
-  # Prior-month revenue side-by-side with the current row
-  Revenue Prior Month:
-    type: window
-    windowFunction: lag
-    measure: Revenue
-    offset: 1
-    timeDimension: Order Date
-    partitionBy: [Country]
+ # Prior-month revenue side-by-side with the current row
+ Revenue Prior Month:
+ type: window
+ windowFunction: lag
+ measure: Revenue
+ offset: 1
+ timeDimension: Order Date
+ partitionBy: [Country]
 
-  # Quartile bucket
-  Revenue Quartile:
-    type: window
-    windowFunction: ntile
-    measure: Revenue
-    buckets: 4
-    partitionBy: [Year]
+ # Quartile bucket
+ Revenue Quartile:
+ type: window
+ windowFunction: ntile
+ measure: Revenue
+ buckets: 4
+ partitionBy: [Year]
 ```
 
 Window metrics compose freely with derived metrics — `expression: '{[Revenue]} - {[Revenue Prior Month]}'` yields a MoM delta without writing any SQL. See [Trend Analysis](trend-analysis.md#2-window-metrics-rank-lag-lead-ntile-firstlast-value) for the full feature surface, validation rules, and dialect coverage.
@@ -689,13 +689,13 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 | `cumulativeType` | `"sum"` \| `"avg"` \| `"min"` \| `"max"` \| `"count"` | `"sum"` | Window aggregation function |
 | `window` | integer | — | Rolling window size in periods (mutually exclusive with `grainToDate`) |
 | `grainToDate` | `"year"` \| `"quarter"` \| `"month"` \| `"week"` | — | Reset boundary (mutually exclusive with `window`) |
-| `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics (v2.6+). Each entry must be a model dimension in the query's SELECT. |
+| `partitionBy` | list | `[]` | Dimensions used as `PARTITION BY` keys for cumulative or window metrics. Each entry must be a model dimension in the query's SELECT. |
 | `periodOverPeriod` | object | — | Period-over-period configuration (required for period_over_period) |
-| `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics, v2.6+) |
-| `offset` | integer | — | Row offset for `lag` / `lead` (>= 1, v2.6+) |
-| `buckets` | integer | — | Bucket count for `ntile` (>= 2, v2.6+) |
-| `orderDirection` | `"asc"` \| `"desc"` | `"desc"` | Window `ORDER BY` direction (v2.6+) |
-| `defaultValue` | scalar | — | Default value for `lag` / `lead` when the offset row is absent (v2.6+) |
+| `windowFunction` | `"rank"` \| `"dense_rank"` \| `"row_number"` \| `"ntile"` \| `"lag"` \| `"lead"` \| `"first_value"` \| `"last_value"` | — | Window function family (required for window metrics) |
+| `offset` | integer | — | Row offset for `lag` / `lead` (>= 1) |
+| `buckets` | integer | — | Bucket count for `ntile` (>= 2) |
+| `orderDirection` | `"asc"` \| `"desc"` | `"desc"` | Window `ORDER BY` direction |
+| `defaultValue` | scalar | — | Default value for `lag` / `lead` when the offset row is absent |
 | `dataType` | string | — | OBML data type (e.g. `decimal(18, 4)`). Overrides automatic type inference for CAST wrapping. |
 | `label` | string | — | Display label |
 | `description` | string | — | Business description |
@@ -742,11 +742,11 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
 
 ```yaml
 measures:
-  Revenue:
-    resultType: float
-    aggregation: sum
-    expression: "{[Orders].[Price]}"
-    dataType: "decimal(38, 8)"
+ Revenue:
+ resultType: float
+ aggregation: sum
+ expression: "{[Orders].[Price]}"
+ dataType: "decimal(38, 8)"
 ```
 
 ### Model-Level Default
@@ -756,15 +756,15 @@ Override the built-in default for all numeric measures/metrics in the model:
 ```yaml
 version: "1.0"
 settings:
-  defaultNumericDataType: "decimal(18, 4)"
+ defaultNumericDataType: "decimal(18, 4)"
 
 dataObjects:
-  # ...
+ # ...
 measures:
-  Revenue:
-    aggregation: sum
-    expression: "{[Orders].[Price]}"
-    # Will use decimal(18, 4) instead of built-in decimal(18, 2)
+ Revenue:
+ aggregation: sum
+ expression: "{[Orders].[Price]}"
+ # Will use decimal(18, 4) instead of built-in decimal(18, 2)
 ```
 
 ### Dialect-Specific Type Mapping
@@ -781,31 +781,31 @@ Each dialect enforces its own maximum decimal precision (Postgres: 131072; Snowf
 
 ```yaml
 measures:
-  Revenue:
-    aggregation: sum
-    expression: "{[Orders].[Price]}"
-    dataType: "decimal(18, 2)"
+ Revenue:
+ aggregation: sum
+ expression: "{[Orders].[Price]}"
+ dataType: "decimal(18, 2)"
 ```
 
 Compiles to:
 
 === "Postgres"
 
-    ```sql
-    SELECT CAST(SUM("Orders"."PRICE") AS NUMERIC(18, 2)) AS "Revenue"
-    ```
+ ```sql
+ SELECT CAST(SUM("Orders"."PRICE") AS NUMERIC(18, 2)) AS "Revenue"
+ ```
 
 === "Snowflake"
 
-    ```sql
-    SELECT CAST(SUM("Orders"."PRICE") AS NUMBER(18, 2)) AS "Revenue"
-    ```
+ ```sql
+ SELECT CAST(SUM("Orders"."PRICE") AS NUMBER(18, 2)) AS "Revenue"
+ ```
 
 === "ClickHouse"
 
-    ```sql
-    SELECT CAST(SUM("Orders"."PRICE") AS Decimal(18, 2)) AS "Revenue"
-    ```
+ ```sql
+ SELECT CAST(SUM("Orders"."PRICE") AS Decimal(18, 2)) AS "Revenue"
+ ```
 
 ## Display Formatting
 
@@ -824,17 +824,17 @@ Dimensions, measures, and metrics support a `format` property that defines how v
 
 ```yaml
 measures:
-  Revenue:
-    aggregation: sum
-    expression: "{[Orders].[Price]}"
-    dataType: "decimal(18, 2)"
-    format: "#,##0.00"
+ Revenue:
+ aggregation: sum
+ expression: "{[Orders].[Price]}"
+ dataType: "decimal(18, 2)"
+ format: "#,##0.00"
 
 metrics:
-  Return Rate:
-    expression: "{[Total Returns]} / {[Total Sales]}"
-    dataType: "decimal(5, 4)"
-    format: "0.00%"
+ Return Rate:
+ expression: "{[Total Returns]} / {[Total Sales]}"
+ dataType: "decimal(5, 4)"
+ format: "0.00%"
 ```
 
 ### Locale-Aware Rendering
@@ -853,10 +853,10 @@ Format patterns are returned in the column metadata of the execute response:
 
 ```json
 {
-  "columns": [
-    {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"},
-    {"name": "Return Rate", "type": "decimal(5, 4)", "format": "0.00%"}
-  ]
+ "columns": [
+ {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"},
+ {"name": "Return Rate", "type": "decimal(5, 4)", "format": "0.00%"}
+ ]
 }
 ```
 
@@ -871,7 +871,7 @@ OrionBelt supports timezone-aware serialization of temporal query results. When 
 ```yaml
 version: "1.0"
 settings:
-  defaultTimezone: "Europe/Zagreb"
+ defaultTimezone: "Europe/Zagreb"
 ```
 
 | Setting | Type | Default | Description |
@@ -924,27 +924,27 @@ Zero microseconds are elided for cleaner output. UTC offsets (`+00:00`) use the 
 ```yaml
 version: "1.0"
 settings:
-  defaultNumericDataType: "decimal(18, 2)"
-  defaultTimezone: "Europe/Zagreb"
+ defaultNumericDataType: "decimal(18, 2)"
+ defaultTimezone: "Europe/Zagreb"
 
 dataObjects:
-  Orders:
-    code: ORDERS
-    columns:
-      Order Date: { code: ORDER_DATE, abstractType: timestamp }
-      Price: { code: PRICE, abstractType: float }
+ Orders:
+ code: ORDERS
+ columns:
+ Order Date: { code: ORDER_DATE, abstractType: timestamp }
+ Price: { code: PRICE, abstractType: float }
 
 dimensions:
-  Order Date:
-    dataObject: Orders
-    column: Order Date
-    resultType: date
+ Order Date:
+ dataObject: Orders
+ column: Order Date
+ resultType: date
 
 measures:
-  Revenue:
-    aggregation: sum
-    expression: "{[Orders].[Price]}"
-    dataType: "decimal(18, 2)"
+ Revenue:
+ aggregation: sum
+ expression: "{[Orders].[Price]}"
+ dataType: "decimal(18, 2)"
 ```
 
 When executing this model, timestamps in the `Order Date` column will be serialized with the `Europe/Zagreb` offset (e.g. `+01:00` in winter, `+02:00` in summer).
@@ -955,28 +955,28 @@ All five element levels (data object, column, dimension, measure, metric) suppor
 
 ```yaml
 dataObjects:
-  Customers:
-    code: CUSTOMERS
-    database: WAREHOUSE
-    schema: PUBLIC
-    synonyms: [client, buyer, purchaser]
-    columns:
-      Country:
-        code: COUNTRY
-        abstractType: string
-        synonyms: [nation, region]
+ Customers:
+ code: CUSTOMERS
+ database: WAREHOUSE
+ schema: PUBLIC
+ synonyms: [client, buyer, purchaser]
+ columns:
+ Country:
+ code: COUNTRY
+ abstractType: string
+ synonyms: [nation, region]
 
 dimensions:
-  Customer Country:
-    dataObject: Customers
-    column: Country
-    synonyms: [client country, buyer country]
+ Customer Country:
+ dataObject: Customers
+ column: Country
+ synonyms: [client country, buyer country]
 
 measures:
-  Revenue:
-    aggregation: sum
-    expression: '{[Orders].[Amount]}'
-    synonyms: [sales, income, turnover]
+ Revenue:
+ aggregation: sum
+ expression: '{[Orders].[Amount]}'
+ synonyms: [sales, income, turnover]
 ```
 
 Synonyms are surfaced in the `describe_model` response (REST API and MCP) so LLMs can match user intent to the correct dimension, measure, or data object even when the user uses different terminology.
@@ -987,10 +987,10 @@ All six levels (model, data object, column, dimension, measure, metric) support 
 
 ```yaml
 customExtensions:
-  - vendor: OSI
-    data: '{"instructions": "Use for retail analytics", "synonyms": ["sales"]}'
-  - vendor: GOVERNANCE
-    data: '{"owner": "data-team", "classification": "internal"}'
+ - vendor: OSI
+ data: '{"instructions": "Use for retail analytics", "synonyms": ["sales"]}'
+ - vendor: GOVERNANCE
+ data: '{"owner": "data-team", "classification": "internal"}'
 ```
 
 ### Custom Extension Properties
@@ -1012,20 +1012,20 @@ A model can declare **static filters** — mandatory WHERE conditions applied to
 
 ```yaml
 filters:
-  - dataObject: Orders
-    column: Status
-    operator: equals
-    value: completed
-  - dataObject: Orders
-    column: Order Date
-    operator: ">="
-    value: 2026-01-01
-  - dataObject: Customers
-    column: Region
-    operator: in
-    values:
-      - EMEA
-      - APAC
+ - dataObject: Orders
+ column: Status
+ operator: equals
+ value: completed
+ - dataObject: Orders
+ column: Order Date
+ operator: ">="
+ value: 2026-01-01
+ - dataObject: Customers
+ column: Region
+ operator: in
+ values:
+ - EMEA
+ - APAC
 ```
 
 Multiple static filters are combined with **AND**. They are always injected before any query-time filters and cannot be overridden at query time.
@@ -1065,37 +1065,37 @@ Date and timestamp values follow ISO 8601 format. They can be written as bare YA
 
 ```yaml
 filters:
-  # Bare date — YAML parses as date, coerced to ISO string
-  - dataObject: Orders
-    column: Order Date
-    operator: ">="
-    value: 2026-01-01
+ # Bare date — YAML parses as date, coerced to ISO string
+ - dataObject: Orders
+ column: Order Date
+ operator: ">="
+ value: 2026-01-01
 
-  # ISO timestamp with timezone
-  - dataObject: Orders
-    column: Created At
-    operator: ">="
-    value: 2026-01-01T00:00:00Z
+ # ISO timestamp with timezone
+ - dataObject: Orders
+ column: Created At
+ operator: ">="
+ value: 2026-01-01T00:00:00Z
 
-  # ISO timestamp with offset
-  - dataObject: Orders
-    column: Created At
-    operator: "<"
-    value: 2026-07-01T00:00:00+02:00
+ # ISO timestamp with offset
+ - dataObject: Orders
+ column: Created At
+ operator: "<"
+ value: 2026-07-01T00:00:00+02:00
 
-  # Quoted string — works identically
-  - dataObject: Orders
-    column: Order Date
-    operator: "<"
-    value: "2027-01-01"
+ # Quoted string — works identically
+ - dataObject: Orders
+ column: Order Date
+ operator: "<"
+ value: "2027-01-01"
 
-  # Date range
-  - dataObject: Orders
-    column: Order Date
-    operator: between
-    values:
-      - "2026-01-01"
-      - "2026-12-31"
+ # Date range
+ - dataObject: Orders
+ column: Order Date
+ operator: between
+ values:
+ - "2026-01-01"
+ - "2026-12-31"
 ```
 
 All ISO 8601 variants are supported:
@@ -1119,17 +1119,17 @@ Static filters are injected **before** query-time `where` filters. Both sets are
 ```yaml
 # Model-level: always applied
 filters:
-  - dataObject: Orders
-    column: Status
-    operator: equals
-    value: completed
+ - dataObject: Orders
+ column: Status
+ operator: equals
+ value: completed
 ```
 
 ```json
 // Query-time: added on top
 {
-  "select": { "dimensions": ["Customer Country"], "measures": ["Total Revenue"] },
-  "where": [{ "field": "Customer Country", "op": "equals", "value": "Germany" }]
+ "select": { "dimensions": ["Customer Country"], "measures": ["Total Revenue"] },
+ "where": [{ "field": "Customer Country", "op": "equals", "value": "Germany" }]
 }
 ```
 
@@ -1141,15 +1141,15 @@ The optional `refresh:` block on a `dataObject` declares the freshness contract 
 
 ```yaml
 dataObjects:
-  Orders:
-    code: ORDERS
-    database: WAREHOUSE
-    schema: PUBLIC
-    refresh:
-      mode: interval     # or: heartbeat | static
-      interval: 1h       # required for interval mode
-    columns:
-      ...
+ Orders:
+ code: ORDERS
+ database: WAREHOUSE
+ schema: PUBLIC
+ refresh:
+ mode: interval # or: heartbeat | static
+ interval: 1h # required for interval mode
+ columns:
+ ...
 ```
 
 Two `dataObject` entries that map to the same physical table should declare equivalent contracts. When they disagree, OBSL emits a `SHARED_TABLE_CONTRACT_DISAGREEMENT` warning at load time and applies the strictest contract.
@@ -1160,28 +1160,28 @@ The optional top-level `examples:` block lists canonical queries authored alongs
 
 ```yaml
 examples:
-  - name: revenue_by_country
-    description: "Total completed-order revenue, broken down by customer country, last 90 days."
-    intent_tags: [revenue, geography, "trailing window"]
-    query:
-      select:
-        dimensions: ["Customer Country"]
-        measures: ["Total Revenue"]
-      where:
-        - field: "Order Date"
-          op: ">="
-          value: "2026-01-01"
-      order_by:
-        - { field: "Total Revenue", direction: "desc" }
-      limit: 100
+ - name: revenue_by_country
+ description: "Total completed-order revenue, broken down by customer country, last 90 days."
+ intent_tags: [revenue, geography, "trailing window"]
+ query:
+ select:
+ dimensions: ["Customer Country"]
+ measures: ["Total Revenue"]
+ where:
+ - field: "Order Date"
+ op: ">="
+ value: "2026-01-01"
+ order_by:
+ - { field: "Total Revenue", direction: "desc" }
+ limit: 100
 
-  - name: refund_rate_by_product
-    description: "Returns as percentage of sales, by product."
-    intent_tags: [returns, rate, product]
-    query:
-      select:
-        dimensions: ["Product Name"]
-        measures: ["Refund Rate"]
+ - name: refund_rate_by_product
+ description: "Returns as percentage of sales, by product."
+ intent_tags: [returns, rate, product]
+ query:
+ select:
+ dimensions: ["Product Name"]
+ measures: ["Refund Rate"]
 ```
 
 | Field | Type | Required | Description |

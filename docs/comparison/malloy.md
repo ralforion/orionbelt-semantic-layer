@@ -7,7 +7,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 ## TL;DR
 
 - **Malloy wins on**: expressive query language (pipeline operator `->`, refinements, nesting), **symmetric aggregates** that handle fanout automatically, hierarchical query results via `nest:`, and a polished VS Code extension with autocomplete and inline visualizations (OBSL has a different VS Code path via its Jupyter notebook, but it's a Python-driven loop rather than a language-aware editor).
-- **OBSL wins on**: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, **first-class metric types** for cumulative (with `partitionBy` v2.6+), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value, v2.6+) where Malloy expresses these ad-hoc per query, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*, v2.6+), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.
+- **OBSL wins on**: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, **first-class metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Malloy expresses these ad-hoc per query, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.
 - **Different niches**: Malloy is "a new query language with semantic modeling baked in" — best for analyst-driven exploration and BI development. OBSL is "an API-first semantic compiler" — best for embedding into SaaS products and exposing metrics to LLMs/agents/external apps without teaching them a DSL.
 
 ---
@@ -17,9 +17,9 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 | Aspect | OBSL (OBML) | Malloy |
 |---|---|---|
 | Format | Declarative YAML (`OBML`) | A purpose-built **language** (`.malloy` files) — both modeling *and* querying |
-| Source of truth | YAML model file | `.malloy` source files: <pre><code>source: foo is<br>  duckdb.table('...')<br>  extend { ... }</code></pre> |
+| Source of truth | YAML model file | `.malloy` source files: <pre><code>source: foo is<br> duckdb.table('...')<br> extend { ... }</code></pre> |
 | Top-level objects | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `source` with extensions: `dimension:`, `measure:`, `view:`, `join_one:`, `join_many:` |
-| Queries | JSON `QueryObject` (`select`, `where`, `having`, `order_by`, ...) | Malloy query syntax: <pre><code>run: source -> {<br>  group_by: ...<br>  aggregate: ...<br>  nest: ...<br>}</code></pre> |
+| Queries | JSON `QueryObject` (`select`, `where`, `having`, `order_by`, ...) | Malloy query syntax: <pre><code>run: source -> {<br> group_by: ...<br> aggregate: ...<br> nest: ...<br>}</code></pre> |
 | Embedding | Drop-in compiler, no client language needed | Requires a Malloy-aware client/parser |
 
 **Key cultural difference**: Malloy is a *language*; OBSL is a *contract*. Malloy gives expressiveness in a `.malloy` file. OBSL gives a stable JSON over HTTP that any tool, agent, or LLM can call without learning a DSL.
@@ -32,21 +32,21 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 
 ```malloy
 source: flights is duckdb.table('flights.parquet') extend {
-  measure: flight_count is count()
-  view: by_carrier is {
-    group_by: carrier
-    aggregate: flight_count
-    limit: 10
-  }
+ measure: flight_count is count()
+ view: by_carrier is {
+ group_by: carrier
+ aggregate: flight_count
+ limit: 10
+ }
 }
 
 run: flights -> by_carrier + {
-  where: distance > 1000
-  nest: top_origins is {
-    group_by: origin
-    aggregate: flight_count
-    limit: 3
-  }
+ where: distance > 1000
+ nest: top_origins is {
+ group_by: origin
+ aggregate: flight_count
+ limit: 3
+ }
 }
 ```
 
@@ -55,17 +55,17 @@ run: flights -> by_carrier + {
 ```yaml
 # Model
 metrics:
-  - name: flight_count
-    type: derived
-    expr: "{[Flights].[Count]}"
+ - name: flight_count
+ type: derived
+ expr: "{[Flights].[Count]}"
 ```
 
 ```json
 // Query
 {
-  "select": { "dimensions": ["Carrier"], "measures": ["flight_count"] },
-  "where": [{ "field": "Distance", "op": ">", "value": 1000 }],
-  "limit": 10
+ "select": { "dimensions": ["Carrier"], "measures": ["flight_count"] },
+ "where": [{ "field": "Distance", "op": ">", "value": 1000 }],
+ "limit": 10
 }
 ```
 
@@ -95,9 +95,9 @@ Malloy returns hierarchical (tree-shaped) results in a single query — a parent
 
 ```malloy
 run: flights -> {
-  group_by: origin
-  aggregate: flight_count
-  nest: top_carriers is { group_by: carrier; aggregate: flight_count; limit: 3 }
+ group_by: origin
+ aggregate: flight_count
+ nest: top_carriers is { group_by: carrier; aggregate: flight_count; limit: 3 }
 }
 ```
 
@@ -123,20 +123,20 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 |---|---|---|
 | Standard | `sum`, `count`, `count_distinct`, `avg`, `min`, `max` | `sum`, `count`, `count(distinct ...)`, `avg`, `min`, `max` |
 | Shape | `any_value`, `median`, `mode`, `listagg` | `string_agg`, `percent`, `avg_moving` (built-in helpers) |
-| Statistical (v2.6+) | `stddev`, `stddev_pop`, `variance`, `var_pop` | `stddev` (basic) |
-| Association / regression (v2.6+) | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via raw SQL in `sql:` literal — not first-class |
+| Statistical | `stddev`, `stddev_pop`, `variance`, `var_pop` | `stddev` (basic) |
+| Association / regression | `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` | Via raw SQL in `sql:` literal — not first-class |
 | Grand totals | `total: bool` on the measure | Via query-level `nest:` patterns |
 
-**The honest difference**: Malloy and OBSL both expose declarative measure aggregations (this is closer parity than with Cube / LookML / AtScale). The structural gap is the **association / regression family** (`corr`, `covar_*`, `regr_*`) — first-class in OBSL v2.6+, not in Malloy. Both can compute them; OBSL gates them per-dialect at compile time and validates 2-column arity, Malloy expects you to drop into raw SQL.
+**The honest difference**: Malloy and OBSL both expose declarative measure aggregations (this is closer parity than with Cube / LookML / AtScale). The structural gap is the **association / regression family** (`corr`, `covar_*`, `regr_*`) — first-class in OBSL, not in Malloy. Both can compute them; OBSL gates them per-dialect at compile time and validates 2-column arity, Malloy expects you to drop into raw SQL.
 
 ### 4.2 Metric types
 
 | OBSL | Malloy | Notes |
 |---|---|---|
 | `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) | Composed by referencing other measures inside aggregate expressions | Both first-class |
-| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy` v2.6+**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
-| `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br>  comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
-| `Metric` `type: window` (v2.6+) — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
+| `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
+| `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br> comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
+| `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |
 
 **Different philosophies**: OBSL prefers reusable metric definitions (write once, every query gets PoP / window / cumulative). Malloy prefers expressive ad-hoc queries (write the comparison in the query itself). Either fits depending on whether you're publishing a metrics catalog or empowering analysts. See [Trend Analysis](../guide/trend-analysis.md) for the full v2.6 metric / aggregation surface.
 
@@ -238,9 +238,9 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 | Explicit CFL multi-fact planner | ✅ | n/a (symmetric aggregates) |
 | OSI ↔ OBML conversion | ✅ | ❌ |
 | First-class PoP metric type | ✅ | ❌ (ad-hoc) |
-| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy` v2.6+) | ❌ (calculations) |
-| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ (v2.6+) | ❌ (calculations per-query) |
-| First-class association / regression aggregates (`corr`, `covar_*`, `regr_*`) | ✅ (v2.6+) | ❌ — Malloy ships basic `stddev` but `corr` / `covar_*` / `regr_*` require raw SQL |
+| First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | ❌ (calculations) |
+| First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | ❌ (calculations per-query) |
+| First-class association / regression aggregates (`corr`, `covar_*`, `regr_*`) | ✅ | ❌ — Malloy ships basic `stddev` but `corr` / `covar_*` / `regr_*` require raw SQL |
 | Dialect breadth (ClickHouse/Databricks/Dremio) | ✅ | ❌ |
 | Trino/Presto | ❌ | ✅ |
 | VS Code-native authoring | ✅ via Jupyter notebook (also one-click in Colab) | ✅ first-party extension with autocomplete + inline viz |

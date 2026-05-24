@@ -4,7 +4,7 @@
 
 OrionBelt includes a bidirectional converter between OBML and the [OSI specification](https://github.com/open-semantic-interchange/OSI) format. The converter handles structural differences between the two formats — including metric decomposition, relationship restructuring, and lossless `ai_context` preservation via `customExtensions` — with built-in validation for both directions.
 
-## Spec version (OBSL v2.6+)
+## Spec version
 
 OBSL v2.6 emits **OSI v0.2.0.dev0** (the latest draft in the upstream `core-spec/` at release time). The vendored schema lives at `osi-obml/osi-schema.json`; refresh it with `scripts/refresh-osi-schema.sh` when upstream advances.
 
