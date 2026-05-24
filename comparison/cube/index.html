@@ -2050,7 +2050,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
       
     </li>
@@ -2606,7 +2606,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
                   </div>
                 </div>
@@ -2631,7 +2631,7 @@
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Cube wins on</strong>: <strong>pre-aggregations</strong> (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via <code>query_rewrite</code> + JWT security contexts, Twig templating for dynamic models, and the broadest data-source portfolio of the OSS semantic layers.</li>
-<li><strong>OBSL wins on</strong>: <strong>richer modeling topologies</strong> (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining <code>views</code>; <strong>first-class declarative metric types</strong> for cumulative (with <code>partitionBy</code> v2.6+), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value, v2.6+) where Cube has <code>rolling_window</code> and <code>time_shift</code> but they're query/measure patterns, not metric <em>types</em>, and no native rank/lag surface; <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>, v2.6+); an <strong>RDF/SPARQL graph view</strong> of the model and a matching <strong>interactive ontology-graph playground</strong>; <strong>two SQL wire protocols</strong> — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class <strong>DB-API 2.0 drivers</strong>; an explicit <strong>CFL multi-fact planner</strong>; <strong>OSI v0.2 ↔ OBML format conversion</strong> (v2.6+); and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).</li>
+<li><strong>OBSL wins on</strong>: <strong>richer modeling topologies</strong> (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining <code>views</code>; <strong>first-class declarative metric types</strong> for cumulative (with <code>partitionBy</code>), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value) where Cube has <code>rolling_window</code> and <code>time_shift</code> but they're query/measure patterns, not metric <em>types</em>, and no native rank/lag surface; <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>); an <strong>RDF/SPARQL graph view</strong> of the model and a matching <strong>interactive ontology-graph playground</strong>; <strong>two SQL wire protocols</strong> — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class <strong>DB-API 2.0 drivers</strong>; an explicit <strong>CFL multi-fact planner</strong>; <strong>OSI v0.2 ↔ OBML format conversion</strong>; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).</li>
 <li><strong>Different niches</strong>: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.</li>
 </ul>
 <p>Cube is the closest peer to OBSL in the OSS space — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.</p>
@@ -2716,12 +2716,12 @@
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: cumulative</code></td>
-<td><pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day</code></pre></td>
+<td><pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day</code></pre></td>
 <td>Cube has rolling windows but they live on individual measures, not as a separate metric type</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code></td>
-<td><code>time_shift</code> in queries (<code>compareDateRange</code>, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre>)</td>
+<td><code>time_shift</code> in queries (<code>compareDateRange</code>, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre>)</td>
 <td>Cube does PoP at <em>query time</em>, not in the model</td>
 </tr>
 <tr>
@@ -2756,20 +2756,20 @@
 <h3 id="31-pre-aggregations-cubes-flagship">3.1 Pre-aggregations (Cube's flagship)<a class="headerlink" href="#31-pre-aggregations-cubes-flagship" title="Permanent link">&para;</a></h3>
 <p>Pre-aggregations are materialized rollups that Cube builds, refreshes, and routes queries through automatically. This is the single biggest Cube feature OBSL has no answer for.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">cubes</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">orders</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">pre_aggregations</span><span class="p">:</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">monthly_revenue</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">        </span><span class="nt">measures</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">total_revenue</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">order_count</span><span class="p p-Indicator">]</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">        </span><span class="nt">dimensions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">status</span><span class="p p-Indicator">]</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">        </span><span class="nt">time_dimension</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">created_at</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">        </span><span class="nt">granularity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">        </span><span class="nt">partition_granularity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">        </span><span class="nt">refresh_key</span><span class="p">:</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">          </span><span class="nt">every</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1 hour</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">        </span><span class="nt">build_range_start</span><span class="p">:</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">          </span><span class="nt">sql</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SELECT DATE(&#39;2020-01-01&#39;)</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">        </span><span class="nt">build_range_end</span><span class="p">:</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">          </span><span class="nt">sql</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SELECT NOW()</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w"> </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">orders</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w"> </span><span class="nt">pre_aggregations</span><span class="p">:</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w"> </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">monthly_revenue</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w"> </span><span class="nt">measures</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">total_revenue</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">order_count</span><span class="p p-Indicator">]</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w"> </span><span class="nt">dimensions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">status</span><span class="p p-Indicator">]</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w"> </span><span class="nt">time_dimension</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">created_at</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w"> </span><span class="nt">granularity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w"> </span><span class="nt">partition_granularity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">month</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w"> </span><span class="nt">refresh_key</span><span class="p">:</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w"> </span><span class="nt">every</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1 hour</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w"> </span><span class="nt">build_range_start</span><span class="p">:</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w"> </span><span class="nt">sql</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SELECT DATE(&#39;2020-01-01&#39;)</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w"> </span><span class="nt">build_range_end</span><span class="p">:</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w"> </span><span class="nt">sql</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SELECT NOW()</span>
 </span></code></pre></div>
 <p>Capabilities:
 - <strong>Rollup</strong> (most common), <strong>original_sql</strong>, <strong>rollup_join</strong>, <strong>rollup_lambda</strong> strategies
@@ -2872,12 +2872,12 @@
 <td><code>string</code>, <code>time</code>, <code>boolean</code>,<br><code>number</code> (generic — wraps any<br>aggregate SQL expression)</td>
 </tr>
 <tr>
-<td>Statistical (v2.6+)</td>
+<td>Statistical</td>
 <td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
 <td>Via <code>type: number</code> + raw <code>sql: STDDEV(...)</code> — not a first-class measure type</td>
 </tr>
 <tr>
-<td>Association / regression (v2.6+)</td>
+<td>Association / regression</td>
 <td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
 <td>Via <code>type: number</code> + raw SQL — not a first-class measure type</td>
 </tr>
@@ -2901,21 +2901,21 @@
 <tbody>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
-<td><pre><code>measure:<br>  type: number<br>  sql: "{revenue} / {orders}"</code></pre></td>
+<td><pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre></td>
 <td>Both first-class</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
-<td><pre><code>measure:<br>  type: sum<br>  rolling_window:<br>    trailing: 7 day<br>    offset: end</code></pre> rolling only</td>
+<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code></strong>)</td>
+<td><pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day<br> offset: end</code></pre> rolling only</td>
 <td>Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no <code>partitionBy</code> as declarative types</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> (4 comparison modes)</td>
-<td>Query-side: <code>compareDateRange</code> parameter, or <pre><code>time_shift:<br>  interval: 1 year<br>  type: prior</code></pre></td>
+<td>Query-side: <code>compareDateRange</code> parameter, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre></td>
 <td>Cube does PoP at query time, not as a model-defined metric</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Via <code>type: number</code> + raw window-function SQL</td>
 <td>OBSL ships these as declarative metric types; Cube reaches them via the same <code>type: number</code> escape hatch</td>
 </tr>
@@ -3254,17 +3254,17 @@
 </tr>
 <tr>
 <td>First-class cumulative metric type</td>
-<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code> v2.6+)</td>
+<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code>)</td>
 <td>Partial (<code>rolling_window</code> only)</td>
 </tr>
 <tr>
 <td>First-class window metric type (rank / lag / lead / ntile / first_value / last_value)</td>
-<td>✅ (v2.6+)</td>
+<td>✅</td>
 <td>Via <code>type: number</code> + raw SQL</td>
 </tr>
 <tr>
 <td>Statistical aggregates (<code>stddev</code>, <code>variance</code>, <code>corr</code>, <code>covar_*</code>, <code>regr_*</code>) as first-class measure types</td>
-<td>✅ 9 declarative aggregations (v2.6+)</td>
+<td>✅ 9 declarative aggregations</td>
 <td>Via <code>type: number</code> + raw SQL</td>
 </tr>
 <tr>

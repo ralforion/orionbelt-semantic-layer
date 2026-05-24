@@ -2033,7 +2033,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
       
     </li>
@@ -2628,7 +2628,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
                   </div>
                 </div>
@@ -2653,7 +2653,7 @@
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>LookML wins on</strong>: deep BI integration (drill fields, parameters, Liquid templating, PDTs, access filters/grants), <code>dimension_group</code> auto-timeframe expansion, symmetric aggregates (Looker invented the term), the broadest warehouse connector portfolio, and a polished proprietary IDE/UI.</li>
-<li><strong>OBSL wins on</strong>: being <strong>open-source and self-hostable</strong> (LookML is Looker-only — proprietary, paid, vendor-locked), a <strong>language-agnostic JSON Query API</strong> consumable by any client, <strong>richer modeling topologies</strong> (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, <strong>first-class metric types</strong> for cumulative (with <code>partitionBy</code> v2.6+), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value, v2.6+) where LookML expresses these via table calculations or filtered measures — not declarative metric types, <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>, v2.6+), an <strong>RDF/SPARQL graph view</strong> of the model, an explicit <strong>CFL multi-fact planner</strong>, and an MCP server for LLM/agent integration.</li>
+<li><strong>OBSL wins on</strong>: being <strong>open-source and self-hostable</strong> (LookML is Looker-only — proprietary, paid, vendor-locked), a <strong>language-agnostic JSON Query API</strong> consumable by any client, <strong>richer modeling topologies</strong> (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, <strong>first-class metric types</strong> for cumulative (with <code>partitionBy</code>), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value) where LookML expresses these via table calculations or filtered measures — not declarative metric types, <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>), an <strong>RDF/SPARQL graph view</strong> of the model, an explicit <strong>CFL multi-fact planner</strong>, and an MCP server for LLM/agent integration.</li>
 <li><strong>Different niches</strong>: LookML is "the modeling language for Looker, your BI platform." OBSL is "an embeddable semantic compiler that exposes metrics over a stable API to apps, agents, and BI tools you didn't have to buy."</li>
 </ul>
 <p>LookML and Looker are inseparable in practice — you cannot run LookML without Looker. So this is also a comparison of build-vs-buy on the runtime.</p>
@@ -2796,9 +2796,9 @@
 <h3 id="32-dimension_group-time-auto-expansion">3.2 <code>dimension_group</code> (time auto-expansion)<a class="headerlink" href="#32-dimension_group-time-auto-expansion" title="Permanent link">&para;</a></h3>
 <p>A single LookML declaration generates many time-grain dimensions:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>dimension_group: created {
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  type: time
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  timeframes: [raw, date, week, month, quarter, year, day_of_week]
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  sql: ${TABLE}.created_at ;;
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a> type: time
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a> timeframes: [raw, date, week, month, quarter, year, day_of_week]
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a> sql: ${TABLE}.created_at ;;
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>}
 </span></code></pre></div>
 <p>That produces <code>created_raw</code>, <code>created_date</code>, <code>created_week</code>, etc. as separate dimensions, each ready to group by.</p>
@@ -2806,18 +2806,18 @@
 <h3 id="33-liquid-templating-parameters">3.3 Liquid templating + parameters<a class="headerlink" href="#33-liquid-templating-parameters" title="Permanent link">&para;</a></h3>
 <p>LookML embeds Liquid (Shopify's template language) for dynamic SQL and UI logic. Combined with <code>parameter:</code>, this drives dynamic dimensions, swappable measures, and personalization on user attributes.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>parameter: metric_selector {
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  type: unquoted
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  allowed_value: { value: &quot;revenue&quot; }
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  allowed_value: { value: &quot;profit&quot; }
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a> type: unquoted
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a> allowed_value: { value: &quot;revenue&quot; }
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a> allowed_value: { value: &quot;profit&quot; }
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>}
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>measure: selected_metric {
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  type: sum
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  sql: {% if metric_selector._parameter_value == &#39;revenue&#39; %}
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>         ${TABLE}.revenue
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>       {% else %}
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>         ${TABLE}.profit
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>       {% endif %} ;;
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a> type: sum
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a> sql: {% if metric_selector._parameter_value == &#39;revenue&#39; %}
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a> ${TABLE}.revenue
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a> {% else %}
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a> ${TABLE}.profit
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a> {% endif %} ;;
 </span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>}
 </span></code></pre></div>
 <p><strong>OBSL</strong> has no equivalent. The model is static YAML — runtime swapping is handled by the consumer composing different queries, or by maintaining multiple measure definitions.</p>
@@ -2853,12 +2853,12 @@
 <td><code>sum_distinct</code>, <code>average_distinct</code>,<br><code>median</code>, <code>median_distinct</code>,<br><code>percentile</code>, <code>percentile_distinct</code>,<br><code>list</code>, <code>number</code>, <code>string</code>,<br><code>date</code>, <code>yesno</code></td>
 </tr>
 <tr>
-<td>Statistical (v2.6+)</td>
+<td>Statistical</td>
 <td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
 <td>Via <code>type: number</code> + raw <code>sql: STDDEV(...)</code> — not first-class measure types</td>
 </tr>
 <tr>
-<td>Association / regression (v2.6+)</td>
+<td>Association / regression</td>
 <td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
 <td>Via <code>type: number</code> + raw SQL — not first-class measure types</td>
 </tr>
@@ -2882,27 +2882,27 @@
 <tbody>
 <tr>
 <td><code>Metric</code> <code>type: derived</code></td>
-<td><pre><code>measure: revenue_per_order {<br>  type: number<br>  sql: ${revenue} / ${orders} ;;<br>}</code></pre></td>
+<td><pre><code>measure: revenue_per_order {<br> type: number<br> sql: ${revenue} / ${orders} ;;<br>}</code></pre></td>
 <td>Both first-class</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
+<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code></strong>)</td>
 <td><code>type: running_total</code> (basic), or table calculations in UI for richer cases</td>
 <td>OBSL has richer <strong>declarative</strong> cumulative</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> (4 comparison modes)</td>
-<td>Filtered measures with Liquid: <pre><code>{% if date.is_in_period %}<br>  ...<br>{% endif %}</code></pre> or table calculations</td>
+<td>Filtered measures with Liquid: <pre><code>{% if date.is_in_period %}<br> ...<br>{% endif %}</code></pre> or table calculations</td>
 <td>OBSL has a dedicated metric type</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Looker table calculations (<code>rank()</code>, <code>offset()</code>, <code>pivot_offset()</code>) — UI-side, not LookML model</td>
 <td>OBSL ships these as declarative metric types reusable across every consumer; Looker's equivalents live in the dashboard layer</td>
 </tr>
 <tr>
 <td><code>Measure.filterContext</code> / <code>filteredMeasures</code></td>
-<td><pre><code>measure: paid_revenue {<br>  type: sum<br>  filters: [is_paid: "yes"]<br>}</code></pre></td>
+<td><pre><code>measure: paid_revenue {<br> type: sum<br> filters: [is_paid: "yes"]<br>}</code></pre></td>
 <td>Comparable</td>
 </tr>
 </tbody>
@@ -3247,17 +3247,17 @@
 </tr>
 <tr>
 <td>First-class cumulative metric type</td>
-<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code> v2.6+)</td>
+<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code>)</td>
 <td>Partial (<code>running_total</code> only)</td>
 </tr>
 <tr>
 <td>First-class window metric type (rank / lag / lead / ntile / first_value / last_value)</td>
-<td>✅ (v2.6+)</td>
+<td>✅</td>
 <td>❌ (table calculations only — dashboard-side)</td>
 </tr>
 <tr>
 <td>First-class statistical / regression aggregates as measure types</td>
-<td>✅ 9 declarative aggregations (v2.6+)</td>
+<td>✅ 9 declarative aggregations</td>
 <td>Via <code>type: number</code> + raw SQL — not first-class measure types</td>
 </tr>
 <tr>

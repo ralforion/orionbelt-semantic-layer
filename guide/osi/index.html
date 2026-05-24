@@ -1217,10 +1217,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#spec-version-obsl-v26" class="md-nav__link">
+  <a href="#spec-version" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Spec version (OBSL v2.6+)
+        Spec version
       
     </span>
   </a>
@@ -1265,7 +1265,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
       
     </li>
@@ -2026,10 +2026,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#spec-version-obsl-v26" class="md-nav__link">
+  <a href="#spec-version" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Spec version (OBSL v2.6+)
+        Spec version
       
     </span>
   </a>
@@ -2074,7 +2074,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
                   </div>
                 </div>
@@ -2096,7 +2096,7 @@
 <h1 id="osi-interoperability">OSI Interoperability<a class="headerlink" href="#osi-interoperability" title="Permanent link">&para;</a></h1>
 <p><strong>OSI (Open Semantic Interchange)</strong> is an open standard for portable semantic models, founded with the goal of letting metric and dimension definitions move between BI tools, semantic layers, and data platforms without rewriting. See <a href="https://open-semantic-interchange.org/">open-semantic-interchange.org</a> for the specification and contributor list.</p>
 <p>OrionBelt includes a bidirectional converter between OBML and the <a href="https://github.com/open-semantic-interchange/OSI">OSI specification</a> format. The converter handles structural differences between the two formats — including metric decomposition, relationship restructuring, and lossless <code>ai_context</code> preservation via <code>customExtensions</code> — with built-in validation for both directions.</p>
-<h2 id="spec-version-obsl-v26">Spec version (OBSL v2.6+)<a class="headerlink" href="#spec-version-obsl-v26" title="Permanent link">&para;</a></h2>
+<h2 id="spec-version">Spec version<a class="headerlink" href="#spec-version" title="Permanent link">&para;</a></h2>
 <p>OBSL v2.6 emits <strong>OSI v0.2.0.dev0</strong> (the latest draft in the upstream <code>core-spec/</code> at release time). The vendored schema lives at <code>osi-obml/osi-schema.json</code>; refresh it with <code>scripts/refresh-osi-schema.sh</code> when upstream advances.</p>
 <p><strong>Breaking change vs. OBSL v2.5</strong> — the previous release emitted OSI v0.1.1. Downstream consumers pinning to v0.1 will reject v2.6 output. The converter still <strong>reads</strong> v0.1.x inputs via the legacy shim <code>_normalize_legacy_v01()</code>, which promotes pre-v0.2 <code>custom_extensions</code> payloads (<code>obml_primary_key</code>, <code>obml_unique_keys</code>) into the v0.2 first-class fields before parsing.</p>
 <p>What's new in v0.2 that OBSL now round-trips:</p>

@@ -2000,7 +2000,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
       
     </li>
@@ -2618,7 +2618,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.0
+  OrionBelt v2.6.1
 </div>
                   </div>
                 </div>
@@ -2643,7 +2643,7 @@
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Malloy wins on</strong>: expressive query language (pipeline operator <code>-&gt;</code>, refinements, nesting), <strong>symmetric aggregates</strong> that handle fanout automatically, hierarchical query results via <code>nest:</code>, and a polished VS Code extension with autocomplete and inline visualizations (OBSL has a different VS Code path via its Jupyter notebook, but it's a Python-driven loop rather than a language-aware editor).</li>
-<li><strong>OBSL wins on</strong>: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), <strong>richer modeling topologies</strong> (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, <strong>first-class metric types</strong> for cumulative (with <code>partitionBy</code> v2.6+), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value, v2.6+) where Malloy expresses these ad-hoc per query, <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>, v2.6+), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.</li>
+<li><strong>OBSL wins on</strong>: more dialects (8 vs. ~6, with ClickHouse/Databricks/Dremio unique to OBSL), <strong>richer modeling topologies</strong> (multi-rooted DAG with first-class named secondary join paths) where Malloy assumes a single-rooted source tree, <strong>first-class metric types</strong> for cumulative (with <code>partitionBy</code>), period-over-period, and <strong>window</strong> (rank / lag / lead / ntile / first_value / last_value) where Malloy expresses these ad-hoc per query, <strong>9 statistical aggregates</strong> (CORR / COVAR_<em> / REGR_</em> / STDDEV_<em> / VAR_</em>), an RDF/SPARQL graph view of the model, an explicit CFL planner, and a stable JSON Query API that's trivial for non-Malloy clients to call.</li>
 <li><strong>Different niches</strong>: Malloy is "a new query language with semantic modeling baked in" — best for analyst-driven exploration and BI development. OBSL is "an API-first semantic compiler" — best for embedding into SaaS products and exposing metrics to LLMs/agents/external apps without teaching them a DSL.</li>
 </ul>
 <hr />
@@ -2665,7 +2665,7 @@
 <tr>
 <td>Source of truth</td>
 <td>YAML model file</td>
-<td><code>.malloy</code> source files: <pre><code>source: foo is<br>  duckdb.table('...')<br>  extend { ... }</code></pre></td>
+<td><code>.malloy</code> source files: <pre><code>source: foo is<br> duckdb.table('...')<br> extend { ... }</code></pre></td>
 </tr>
 <tr>
 <td>Top-level objects</td>
@@ -2675,7 +2675,7 @@
 <tr>
 <td>Queries</td>
 <td>JSON <code>QueryObject</code> (<code>select</code>, <code>where</code>, <code>having</code>, <code>order_by</code>, ...)</td>
-<td>Malloy query syntax: <pre><code>run: source -&gt; {<br>  group_by: ...<br>  aggregate: ...<br>  nest: ...<br>}</code></pre></td>
+<td>Malloy query syntax: <pre><code>run: source -&gt; {<br> group_by: ...<br> aggregate: ...<br> nest: ...<br>}</code></pre></td>
 </tr>
 <tr>
 <td>Embedding</td>
@@ -2689,35 +2689,35 @@
 <h2 id="2-query-model">2. Query model<a class="headerlink" href="#2-query-model" title="Permanent link">&para;</a></h2>
 <h3 id="malloy">Malloy<a class="headerlink" href="#malloy" title="Permanent link">&para;</a></h3>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>source: flights is duckdb.table(&#39;flights.parquet&#39;) extend {
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  measure: flight_count is count()
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  view: by_carrier is {
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    group_by: carrier
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    aggregate: flight_count
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    limit: 10
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  }
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a> measure: flight_count is count()
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a> view: by_carrier is {
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a> group_by: carrier
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a> aggregate: flight_count
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a> limit: 10
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a> }
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>}
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>run: flights -&gt; by_carrier + {
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  where: distance &gt; 1000
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  nest: top_origins is {
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    group_by: origin
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    aggregate: flight_count
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    limit: 3
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>  }
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a> where: distance &gt; 1000
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a> nest: top_origins is {
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a> group_by: origin
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a> aggregate: flight_count
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a> limit: 3
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a> }
 </span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>}
 </span></code></pre></div>
 <h3 id="obsl">OBSL<a class="headerlink" href="#obsl" title="Permanent link">&para;</a></h3>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Model</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">metrics</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight_count</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">derived</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">expr</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{[Flights].[Count]}&quot;</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w"> </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight_count</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">derived</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w"> </span><span class="nt">expr</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{[Flights].[Count]}&quot;</span>
 </span></code></pre></div>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// Query</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="p">{</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">&quot;select&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;dimensions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;Carrier&quot;</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;measures&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;flight_count&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">&quot;where&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">&quot;field&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Distance&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="w"> </span><span class="p">}],</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">&quot;limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w"> </span><span class="nt">&quot;select&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;dimensions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;Carrier&quot;</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;measures&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;flight_count&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w"> </span><span class="nt">&quot;where&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">&quot;field&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Distance&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="w"> </span><span class="p">}],</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w"> </span><span class="nt">&quot;limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span>
 </span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">}</span>
 </span></code></pre></div>
 <p><strong>Trade-off</strong>: Malloy's pipeline-and-refinement syntax is more expressive and composable; OBSL's JSON is dumber but trivial for any client (curl, Python, an LLM tool call) to produce.</p>
@@ -2756,9 +2756,9 @@
 <h3 id="32-nested-queries-nest">3.2 Nested queries (<code>nest:</code>)<a class="headerlink" href="#32-nested-queries-nest" title="Permanent link">&para;</a></h3>
 <p>Malloy returns hierarchical (tree-shaped) results in a single query — a parent group_by row contains a child query result inline. This is uniquely powerful for dashboard-style "row + drill-down" data.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>run: flights -&gt; {
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  group_by: origin
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  aggregate: flight_count
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  nest: top_carriers is { group_by: carrier; aggregate: flight_count; limit: 3 }
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a> group_by: origin
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a> aggregate: flight_count
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a> nest: top_carriers is { group_by: carrier; aggregate: flight_count; limit: 3 }
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>}
 </span></code></pre></div>
 <p>OBSL has <strong>no equivalent</strong>. OBSL queries return flat tabular result sets. To produce a parent/child shape you'd run multiple queries.</p>
@@ -2790,12 +2790,12 @@
 <td><code>string_agg</code>, <code>percent</code>, <code>avg_moving</code> (built-in helpers)</td>
 </tr>
 <tr>
-<td>Statistical (v2.6+)</td>
+<td>Statistical</td>
 <td><code>stddev</code>, <code>stddev_pop</code>, <code>variance</code>, <code>var_pop</code></td>
 <td><code>stddev</code> (basic)</td>
 </tr>
 <tr>
-<td>Association / regression (v2.6+)</td>
+<td>Association / regression</td>
 <td><code>corr</code>, <code>covar_pop</code>, <code>covar_samp</code>, <code>regr_slope</code>, <code>regr_intercept</code></td>
 <td>Via raw SQL in <code>sql:</code> literal — not first-class</td>
 </tr>
@@ -2806,7 +2806,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>The honest difference</strong>: Malloy and OBSL both expose declarative measure aggregations (this is closer parity than with Cube / LookML / AtScale). The structural gap is the <strong>association / regression family</strong> (<code>corr</code>, <code>covar_*</code>, <code>regr_*</code>) — first-class in OBSL v2.6+, not in Malloy. Both can compute them; OBSL gates them per-dialect at compile time and validates 2-column arity, Malloy expects you to drop into raw SQL.</p>
+<p><strong>The honest difference</strong>: Malloy and OBSL both expose declarative measure aggregations (this is closer parity than with Cube / LookML / AtScale). The structural gap is the <strong>association / regression family</strong> (<code>corr</code>, <code>covar_*</code>, <code>regr_*</code>) — first-class in OBSL, not in Malloy. Both can compute them; OBSL gates them per-dialect at compile time and validates 2-column arity, Malloy expects you to drop into raw SQL.</p>
 <h3 id="42-metric-types">4.2 Metric types<a class="headerlink" href="#42-metric-types" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -2823,17 +2823,17 @@
 <td>Both first-class</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code> v2.6+</strong>)</td>
+<td><code>Metric</code> <code>type: cumulative</code> (running, rolling, grain-to-date, <strong>per-dimension <code>partitionBy</code></strong>)</td>
 <td>Express via <strong>calculations</strong> (window functions) inside queries</td>
 <td>OBSL is declarative; Malloy is per-query</td>
 </tr>
 <tr>
 <td><code>Metric</code> <code>type: period_over_period</code> with 4 comparison modes</td>
-<td>Pattern via <code>prior_period</code> style queries; renderer's <pre><code>big_value {<br>  comparison_field = ...<br>}</code></pre> for visual deltas</td>
+<td>Pattern via <code>prior_period</code> style queries; renderer's <pre><code>big_value {<br> comparison_field = ...<br>}</code></pre> for visual deltas</td>
 <td>OBSL has a dedicated metric type; Malloy treats it as "just write the query"</td>
 </tr>
 <tr>
-<td><code>Metric</code> <code>type: window</code> (v2.6+) — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
+<td><code>Metric</code> <code>type: window</code> — <br><code>rank</code>, <code>dense_rank</code>, <code>row_number</code>, <code>ntile</code>,<br><code>lag</code>, <code>lead</code>, <code>first_value</code>, <code>last_value</code></td>
 <td>Calculations (<code>rank()</code>, <code>lag()</code>, <code>first_value()</code>) inside queries</td>
 <td>OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy)</td>
 </tr>
@@ -3141,17 +3141,17 @@
 </tr>
 <tr>
 <td>First-class cumulative metric type</td>
-<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code> v2.6+)</td>
+<td>✅ (running, rolling, grain-to-date, <code>partitionBy</code>)</td>
 <td>❌ (calculations)</td>
 </tr>
 <tr>
 <td>First-class window metric type (rank / lag / lead / ntile / first_value / last_value)</td>
-<td>✅ (v2.6+)</td>
+<td>✅</td>
 <td>❌ (calculations per-query)</td>
 </tr>
 <tr>
 <td>First-class association / regression aggregates (<code>corr</code>, <code>covar_*</code>, <code>regr_*</code>)</td>
-<td>✅ (v2.6+)</td>
+<td>✅</td>
 <td>❌ — Malloy ships basic <code>stddev</code> but <code>corr</code> / <code>covar_*</code> / <code>regr_*</code> require raw SQL</td>
 </tr>
 <tr>
