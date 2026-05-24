@@ -71,6 +71,10 @@ _OBML_V26: dict[str, Any] = {
         },
     },
     "metrics": {
+        "Corr Doubled": {
+            "type": "derived",
+            "expression": "2 * {[Revenue Spend Corr]}",
+        },
         "Revenue MA3 by Country": {
             "type": "cumulative",
             "measure": "Revenue",
@@ -159,6 +163,24 @@ class TestObmlToOsiV26:
         expr = m["expression"]["dialects"][0]["expression"]
         # CORR(orders.amount, orders.spend) — column order preserved
         assert expr.upper().startswith("CORR(")
+        assert "AMOUNT" in expr.upper()
+        assert "SPEND" in expr.upper()
+        assert expr.upper().index("AMOUNT") < expr.upper().index("SPEND")
+
+    def test_derived_metric_referencing_multi_col_measure_emits_all_columns(
+        self,
+    ) -> None:
+        """Regression: a derived metric that references a two-column
+        stat-aggregate measure must inline ALL columns when serialized
+        to OSI SQL. Before the fix, ``_measure_to_sql`` only emitted
+        ``columns[0]`` so the derived expression carried garbage
+        ``CORR(orders.amount)``.
+        """
+        m = _osi_metric(self.osi, "Corr Doubled")
+        expr = m["expression"]["dialects"][0]["expression"]
+        # Both columns from the referenced measure must appear,
+        # in declaration order, inside the derived expression.
+        assert "CORR(" in expr.upper()
         assert "AMOUNT" in expr.upper()
         assert "SPEND" in expr.upper()
         assert expr.upper().index("AMOUNT") < expr.upper().index("SPEND")

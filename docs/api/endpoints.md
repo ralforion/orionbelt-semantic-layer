@@ -12,8 +12,8 @@ Returns the service status and version.
 
 ```json
 {
-  "status": "ok",
-  "version": "2.5.0"
+ "status": "ok",
+ "version": "2.5.0"
 }
 ```
 
@@ -29,10 +29,10 @@ Create a new session. Each session has its own model store.
 
 ```json
 {
-  "metadata": {
-    "user": "alice",
-    "purpose": "revenue analysis"
-  }
+ "metadata": {
+ "user": "alice",
+ "purpose": "revenue analysis"
+ }
 }
 ```
 
@@ -40,14 +40,14 @@ Create a new session. Each session has its own model store.
 
 ```json
 {
-  "session_id": "a1b2c3d4e5f6",
-  "created_at": "2025-01-15T10:30:00Z",
-  "last_accessed_at": "2025-01-15T10:30:00Z",
-  "model_count": 0,
-  "metadata": {
-    "user": "alice",
-    "purpose": "revenue analysis"
-  }
+ "session_id": "a1b2c3d4e5f6",
+ "created_at": "2025-01-15T10:30:00Z",
+ "last_accessed_at": "2025-01-15T10:30:00Z",
+ "model_count": 0,
+ "metadata": {
+ "user": "alice",
+ "purpose": "revenue analysis"
+ }
 }
 ```
 
@@ -59,15 +59,15 @@ List all active sessions.
 
 ```json
 {
-  "sessions": [
-    {
-      "session_id": "a1b2c3d4e5f6",
-      "created_at": "2025-01-15T10:30:00Z",
-      "last_accessed_at": "2025-01-15T10:35:00Z",
-      "model_count": 2,
-      "metadata": {}
-    }
-  ]
+ "sessions": [
+ {
+ "session_id": "a1b2c3d4e5f6",
+ "created_at": "2025-01-15T10:30:00Z",
+ "last_accessed_at": "2025-01-15T10:35:00Z",
+ "model_count": 2,
+ "metadata": {}
+ }
+ ]
 }
 ```
 
@@ -96,14 +96,14 @@ Close a session and release its resources.
 Load an OBML semantic model into a session. The model is parsed, validated, and stored.
 
 !!! note "Single-model mode"
-    Returns **403 Forbidden** when `MODEL_FILE` is configured. The model is pre-loaded automatically.
+ Returns **403 Forbidden** when `MODEL_FILE` is configured. The model is pre-loaded automatically.
 
 **Request:**
 
 ```json
 {
-  "model_yaml": "version: 1.0\ndataObjects:\n  Orders:\n    code: ORDERS\n    ...",
-  "dedup": true
+ "model_yaml": "version: 1.0\ndataObjects:\n Orders:\n code: ORDERS\n ...",
+ "dedup": true
 }
 ```
 
@@ -119,22 +119,22 @@ Load an OBML semantic model into a session. The model is parsed, validated, and 
 
 ```json
 {
-  "model_id": "abcd1234",
-  "data_objects": 2,
-  "dimensions": 3,
-  "measures": 2,
-  "metrics": 1,
-  "warnings": [],
-  "model_load": "fresh",
-  "health": {
-    "status": "ok",
-    "data_objects": 2,
-    "joins": 1,
-    "orphan_data_objects": [],
-    "fan_trap_risks": [],
-    "unreachable_dimensions": [],
-    "warnings_count": 0
-  }
+ "model_id": "abcd1234",
+ "data_objects": 2,
+ "dimensions": 3,
+ "measures": 2,
+ "metrics": 1,
+ "warnings": [],
+ "model_load": "fresh",
+ "health": {
+ "status": "ok",
+ "data_objects": 2,
+ "joins": 1,
+ "orphan_data_objects": [],
+ "fan_trap_risks": [],
+ "unreachable_dimensions": [],
+ "warnings_count": 0
+ }
 }
 ```
 
@@ -160,12 +160,12 @@ Every `warnings` list in this API uses the same shape so agents can branch on st
 
 ```json
 {
-  "code": "FAN_TRAP_RISK",
-  "severity": "warning",
-  "message": "Measure 'Revenue' (SUM): cross-join through 'Movie Directors' …",
-  "path": "select.measures[0]",
-  "hint": "Add the junction-table dimension to the GROUP BY, …",
-  "context": { "measure": "Revenue", "junction": "Movie Directors" }
+ "code": "FAN_TRAP_RISK",
+ "severity": "warning",
+ "message": "Measure 'Revenue' (SUM): cross-join through 'Movie Directors' …",
+ "path": "select.measures[0]",
+ "hint": "Add the junction-table dimension to the GROUP BY, …",
+ "context": { "measure": "Revenue", "junction": "Movie Directors" }
 }
 ```
 
@@ -185,13 +185,13 @@ List all models loaded in a session.
 
 ```json
 [
-  {
-    "model_id": "abcd1234",
-    "data_objects": 2,
-    "dimensions": 3,
-    "measures": 2,
-    "metrics": 1
-  }
+ {
+ "model_id": "abcd1234",
+ "data_objects": 2,
+ "dimensions": 3,
+ "measures": 2,
+ "metrics": 1
+ }
 ]
 ```
 
@@ -203,26 +203,26 @@ Describe a model's contents — data objects (with fields and joins), dimensions
 
 ```json
 {
-  "model_id": "abcd1234",
-  "data_objects": [
-    {
-      "label": "Orders",
-      "code": "WAREHOUSE.PUBLIC.ORDERS",
-      "columns": ["Order ID", "Price", "Quantity"],
-      "join_targets": ["Customers"]
-    }
-  ],
-  "dimensions": [
-    {
-      "name": "Country",
-      "result_type": "string",
-      "data_object": "Customers",
-      "column": "Country",
-      "time_grain": null
-    }
-  ],
-  "measures": [...],
-  "metrics": [...]
+ "model_id": "abcd1234",
+ "data_objects": [
+ {
+ "label": "Orders",
+ "code": "WAREHOUSE.PUBLIC.ORDERS",
+ "columns": ["Order ID", "Price", "Quantity"],
+ "join_targets": ["Customers"]
+ }
+ ],
+ "dimensions": [
+ {
+ "name": "Country",
+ "result_type": "string",
+ "data_object": "Customers",
+ "column": "Country",
+ "time_grain": null
+ }
+ ],
+ "measures": [...],
+ "metrics": [...]
 }
 ```
 
@@ -233,7 +233,7 @@ Describe a model's contents — data objects (with fields and joins), dimensions
 Remove a model from a session.
 
 !!! note "Single-model mode"
-    Returns **403 Forbidden** when `MODEL_FILE` is configured.
+ Returns **403 Forbidden** when `MODEL_FILE` is configured.
 
 **Response (204):** No content.
 
@@ -253,7 +253,7 @@ Validate OBML YAML within a session context. Does not store the model.
 
 ```json
 {
-  "model_yaml": "version: 1.0\ndataObjects:\n  ..."
+ "model_yaml": "version: 1.0\ndataObjects:\n ..."
 }
 ```
 
@@ -261,9 +261,9 @@ Validate OBML YAML within a session context. Does not store the model.
 
 ```json
 {
-  "valid": true,
-  "errors": [],
-  "warnings": []
+ "valid": true,
+ "errors": [],
+ "warnings": []
 }
 ```
 
@@ -271,15 +271,15 @@ Validate OBML YAML within a session context. Does not store the model.
 
 ```json
 {
-  "valid": false,
-  "errors": [
-    {
-      "code": "UNKNOWN_DATA_OBJECT",
-      "message": "Data object 'Unknown' not found",
-      "path": "dimensions.Bad.dataObject"
-    }
-  ],
-  "warnings": []
+ "valid": false,
+ "errors": [
+ {
+ "code": "UNKNOWN_DATA_OBJECT",
+ "message": "Data object 'Unknown' not found",
+ "path": "dimensions.Bad.dataObject"
+ }
+ ],
+ "warnings": []
 }
 ```
 
@@ -295,25 +295,25 @@ Compile a semantic query against a model loaded in the session.
 
 ```json
 {
-  "model_id": "abcd1234",
-  "query": {
-    "select": {
-      "dimensions": ["Customer Country"],
-      "measures": ["Revenue"]
-    },
-    "where": [
-      {
-        "field": "Customer Segment",
-        "op": "in",
-        "value": ["SMB", "MidMarket"]
-      }
-    ],
-    "order_by": [
-      { "field": "Revenue", "direction": "desc" }
-    ],
-    "limit": 1000
-  },
-  "dialect": "postgres"
+ "model_id": "abcd1234",
+ "query": {
+ "select": {
+ "dimensions": ["Customer Country"],
+ "measures": ["Revenue"]
+ },
+ "where": [
+ {
+ "field": "Customer Segment",
+ "op": "in",
+ "value": ["SMB", "MidMarket"]
+ }
+ ],
+ "order_by": [
+ { "field": "Revenue", "direction": "desc" }
+ ],
+ "limit": 1000
+ },
+ "dialect": "postgres"
 }
 ```
 
@@ -321,28 +321,28 @@ Compile a semantic query against a model loaded in the session.
 
 ```json
 {
-  "sql": "SELECT ...",
-  "dialect": "postgres",
-  "sql_valid": true,
-  "explain": {
-    "planner": "Star Schema",
-    "planner_reason": "All measures come from a single fact table",
-    "base_object": "Orders",
-    "base_object_reason": "Orders has the most joins and contains all requested measures",
-    "joins": [
-      {
-        "from_object": "Orders",
-        "to_object": "Customers",
-        "join_columns": ["CUSTOMER_ID"],
-        "reason": "Required for dimension 'Customer Country'"
-      }
-    ],
-    "where_filter_count": 1,
-    "having_filter_count": 0,
-    "has_totals": false,
-    "cfl_legs": 0
-  },
-  "warnings": []
+ "sql": "SELECT ...",
+ "dialect": "postgres",
+ "sql_valid": true,
+ "explain": {
+ "planner": "Star Schema",
+ "planner_reason": "All measures come from a single fact table",
+ "base_object": "Orders",
+ "base_object_reason": "Orders has the most joins and contains all requested measures",
+ "joins": [
+ {
+ "from_object": "Orders",
+ "to_object": "Customers",
+ "join_columns": ["CUSTOMER_ID"],
+ "reason": "Required for dimension 'Customer Country'"
+ }
+ ],
+ "where_filter_count": 1,
+ "having_filter_count": 0,
+ "has_totals": false,
+ "cfl_legs": 0
+ },
+ "warnings": []
 }
 ```
 
@@ -362,15 +362,15 @@ Return the planner's understanding of a query without compiling SQL or executing
 
 ```json
 {
-  "model_id": "abcd1234",
-  "query": {
-    "select": {
-      "dimensions": ["Customer Country"],
-      "measures": ["Revenue"]
-    }
-  },
-  "dialect": "postgres",
-  "include_database_explain": false
+ "model_id": "abcd1234",
+ "query": {
+ "select": {
+ "dimensions": ["Customer Country"],
+ "measures": ["Revenue"]
+ }
+ },
+ "dialect": "postgres",
+ "include_database_explain": false
 }
 ```
 
@@ -385,23 +385,23 @@ Return the planner's understanding of a query without compiling SQL or executing
 
 ```json
 {
-  "status": "ok",
-  "planner": "Star Schema",
-  "planner_reason": "All requested objects are reachable from a single base via directed joins",
-  "physical_tables": ["WAREHOUSE.PUBLIC.ORDERS", "WAREHOUSE.PUBLIC.CUSTOMERS"],
-  "join_path": [
-    {
-      "from_object": "Orders",
-      "to_object": "Customers",
-      "cardinality": "many-to-one",
-      "fk": "CUSTOMER_ID = CUSTOMER_ID"
-    }
-  ],
-  "filters_applied": 0,
-  "warnings": [],
-  "would_compile": true,
-  "compiled_sql_length_estimate": 312,
-  "database_explain": null
+ "status": "ok",
+ "planner": "Star Schema",
+ "planner_reason": "All requested objects are reachable from a single base via directed joins",
+ "physical_tables": ["WAREHOUSE.PUBLIC.ORDERS", "WAREHOUSE.PUBLIC.CUSTOMERS"],
+ "join_path": [
+ {
+ "from_object": "Orders",
+ "to_object": "Customers",
+ "cardinality": "many-to-one",
+ "fk": "CUSTOMER_ID = CUSTOMER_ID"
+ }
+ ],
+ "filters_applied": 0,
+ "warnings": [],
+ "would_compile": true,
+ "compiled_sql_length_estimate": 312,
+ "database_explain": null
 }
 ```
 
@@ -411,13 +411,13 @@ Adds a `database_explain` block. The `explain_output` is opaque text in the dial
 
 ```json
 {
-  "...": "...",
-  "database_explain": {
-    "dialect": "postgres",
-    "compiled_sql": "SELECT ...",
-    "explain_output": "Hash Join (cost=128.50..1247.30 rows=1042 width=48) ...",
-    "explain_format": "text"
-  }
+ "...": "...",
+ "database_explain": {
+ "dialect": "postgres",
+ "compiled_sql": "SELECT ...",
+ "explain_output": "Hash Join (cost=128.50..1247.30 rows=1042 width=48) ...",
+ "explain_format": "text"
+ }
 }
 ```
 
@@ -438,15 +438,15 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
 
 ```json
 {
-  "model_id": "abcd1234",
-  "query": {
-    "select": {
-      "dimensions": ["Customer Country"],
-      "measures": ["Revenue"]
-    },
-    "limit": 100
-  },
-  "dialect": "postgres"
+ "model_id": "abcd1234",
+ "query": {
+ "select": {
+ "dimensions": ["Customer Country"],
+ "measures": ["Revenue"]
+ },
+ "limit": 100
+ },
+ "dialect": "postgres"
 }
 ```
 
@@ -454,26 +454,26 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
 
 ```json
 {
-  "sql": "SELECT ...",
-  "dialect": "postgres",
-  "columns": [
-    {"name": "Customer Country", "type": "string"},
-    {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"}
-  ],
-  "rows": [
-    ["US", 15230.50],
-    ["UK", 9870.00]
-  ],
-  "row_count": 2,
-  "execution_time_ms": 42.5,
-  "resolved": {
-    "fact_tables": ["Orders"],
-    "dimensions": ["Customer Country"],
-    "measures": ["Revenue"]
-  },
-  "sql_valid": true,
-  "warnings": [],
-  "explain": { "..." : "..." }
+ "sql": "SELECT ...",
+ "dialect": "postgres",
+ "columns": [
+ {"name": "Customer Country", "type": "string"},
+ {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"}
+ ],
+ "rows": [
+ ["US", 15230.50],
+ ["UK", 9870.00]
+ ],
+ "row_count": 2,
+ "execution_time_ms": 42.5,
+ "resolved": {
+ "fact_tables": ["Orders"],
+ "dimensions": ["Customer Country"],
+ "measures": ["Revenue"]
+ },
+ "sql_valid": true,
+ "warnings": [],
+ "explain": { "..." : "..." }
 }
 ```
 
@@ -490,8 +490,8 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
 
 ```bash
 curl -X POST 'http://localhost:8080/v1/query/execute?format=tsv&locale=de' \
-     -H 'Content-Type: application/json' \
-     -d '{ "select": { "dimensions": ["Customer Country"], "measures": ["Revenue"] } }'
+ -H 'Content-Type: application/json' \
+ -d '{ "select": { "dimensions": ["Customer Country"], "measures": ["Revenue"] } }'
 ```
 
 ```
@@ -524,29 +524,29 @@ Load (or reference) a model and run multiple independent queries against it in a
 
 ```json
 {
-  "session_id": null,
-  "model_yaml": "version: 1.0\ndataObjects: ...",
-  "model_id": null,
-  "queries": [
-    {
-      "id": "revenue_by_country",
-      "query": {
-        "select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]},
-        "limit": 100
-      }
-    },
-    {
-      "id": "revenue_by_product",
-      "query": {"select": {"dimensions": ["Product"], "measures": ["Total Revenue"]}},
-      "execute": false
-    }
-  ],
-  "dialect": "postgres",
-  "execute": true,
-  "max_parallelism": 4,
-  "fail_fast": false,
-  "persist_model": false,
-  "dedup": true
+ "session_id": null,
+ "model_yaml": "version: 1.0\ndataObjects: ...",
+ "model_id": null,
+ "queries": [
+ {
+ "id": "revenue_by_country",
+ "query": {
+ "select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]},
+ "limit": 100
+ }
+ },
+ {
+ "id": "revenue_by_product",
+ "query": {"select": {"dimensions": ["Product"], "measures": ["Total Revenue"]}},
+ "execute": false
+ }
+ ],
+ "dialect": "postgres",
+ "execute": true,
+ "max_parallelism": 4,
+ "fail_fast": false,
+ "persist_model": false,
+ "dedup": true
 }
 ```
 
@@ -570,35 +570,35 @@ Load (or reference) a model and run multiple independent queries against it in a
 
 ```json
 {
-  "session_id": "a1b2c3d4...",
-  "model_id": "abcd1234",
-  "model_persisted": false,
-  "model_load": "fresh",
-  "results": [
-    {
-      "id": "revenue_by_country",
-      "status": "ok",
-      "sql": "SELECT ...",
-      "dialect": "postgres",
-      "sql_valid": true,
-      "executed": true,
-      "columns": [{"name": "Customer Country", "type": "string"}],
-      "rows": [["US", 15230.5]],
-      "row_count": 42,
-      "execution_time_ms": 38.2,
-      "warnings": []
-    },
-    {
-      "id": "revenue_by_product",
-      "status": "ok",
-      "sql": "SELECT ...",
-      "dialect": "postgres",
-      "sql_valid": true,
-      "executed": false,
-      "warnings": []
-    }
-  ],
-  "batch_warnings": []
+ "session_id": "a1b2c3d4...",
+ "model_id": "abcd1234",
+ "model_persisted": false,
+ "model_load": "fresh",
+ "results": [
+ {
+ "id": "revenue_by_country",
+ "status": "ok",
+ "sql": "SELECT ...",
+ "dialect": "postgres",
+ "sql_valid": true,
+ "executed": true,
+ "columns": [{"name": "Customer Country", "type": "string"}],
+ "rows": [["US", 15230.5]],
+ "row_count": 42,
+ "execution_time_ms": 38.2,
+ "warnings": []
+ },
+ {
+ "id": "revenue_by_product",
+ "status": "ok",
+ "sql": "SELECT ...",
+ "dialect": "postgres",
+ "sql_valid": true,
+ "executed": false,
+ "warnings": []
+ }
+ ],
+ "batch_warnings": []
 }
 ```
 
@@ -629,13 +629,13 @@ Stateless endpoints for converting between [OSI (Open Semantic Interchange)](htt
 
 ### `POST /v1/convert/osi-to-obml`
 
-Convert an OSI YAML model to OBML format. OBSL v2.6+ emits and validates against [OSI v0.2.0.dev0](https://github.com/open-semantic-interchange/OSI/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
+Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI v0.2.0.dev0](https://github.com/open-semantic-interchange/OSI/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
 
 **Request:**
 
 ```json
 {
-  "input_yaml": "version: \"0.2.0.dev0\"\nsemantic_model:\n  - name: my_model\n    ..."
+ "input_yaml": "version: \"0.2.0.dev0\"\nsemantic_model:\n - name: my_model\n ..."
 }
 ```
 
@@ -643,28 +643,28 @@ Convert an OSI YAML model to OBML format. OBSL v2.6+ emits and validates against
 
 ```json
 {
-  "output_yaml": "version: 1.0\ndataObjects:\n  ...",
-  "warnings": [
-    "Relationship 'sales_to_date': no type specified, defaulting to many-to-one."
-  ],
-  "validation": {
-    "schema_valid": true,
-    "semantic_valid": true,
-    "schema_errors": [],
-    "semantic_errors": [],
-    "semantic_warnings": []
-  },
-  "input_validation": {
-    "schema_valid": true,
-    "semantic_valid": true,
-    "schema_errors": [],
-    "semantic_errors": [],
-    "semantic_warnings": []
-  }
+ "output_yaml": "version: 1.0\ndataObjects:\n ...",
+ "warnings": [
+ "Relationship 'sales_to_date': no type specified, defaulting to many-to-one."
+ ],
+ "validation": {
+ "schema_valid": true,
+ "semantic_valid": true,
+ "schema_errors": [],
+ "semantic_errors": [],
+ "semantic_warnings": []
+ },
+ "input_validation": {
+ "schema_valid": true,
+ "semantic_valid": true,
+ "schema_errors": [],
+ "semantic_errors": [],
+ "semantic_warnings": []
+ }
 }
 ```
 
-**v2.6+** — the new `input_validation` field carries the result of running the **OSI input** against the vendored OSI v0.2 schema (Draft 2020-12). Advisory by default: the endpoint still returns 200 with the converted output when input fails strict v0.2 validation, because the legacy reader shim still produces correct OBML for v0.1.x documents. Inspect `input_validation.schema_errors` if you need a hard gate on the source format.
+the new `input_validation` field carries the result of running the **OSI input** against the vendored OSI v0.2 schema (Draft 2020-12). Advisory by default: the endpoint still returns 200 with the converted output when input fails strict v0.2 validation, because the legacy reader shim still produces correct OBML for v0.1.x documents. Inspect `input_validation.schema_errors` if you need a hard gate on the source format.
 
 The `validation` field (unchanged from v2.5) reports the OBML **output**.
 
@@ -674,16 +674,16 @@ The `validation` field (unchanged from v2.5) reports the OBML **output**.
 
 ### `POST /v1/convert/obml-to-osi`
 
-Convert an OBML YAML model to OSI format. OBSL v2.6+ emits OSI v0.2.0.dev0 (`version: "0.2.0.dev0"` at the top level, `primary_key` / `unique_keys` first-class, informational `dialects` / `vendors` arrays).
+Convert an OBML YAML model to OSI format. OBSL emits OSI v0.2.0.dev0 (`version: "0.2.0.dev0"` at the top level, `primary_key` / `unique_keys` first-class, informational `dialects` / `vendors` arrays).
 
 **Request:**
 
 ```json
 {
-  "input_yaml": "version: 1.0\ndataObjects:\n  ...",
-  "model_name": "my_model",
-  "model_description": "Sales analytics model",
-  "ai_instructions": ""
+ "input_yaml": "version: 1.0\ndataObjects:\n ...",
+ "model_name": "my_model",
+ "model_description": "Sales analytics model",
+ "ai_instructions": ""
 }
 ```
 
@@ -709,31 +709,31 @@ Full model structure as JSON, including all data objects, dimensions, measures, 
 
 ```json
 {
-  "model_id": "abcd1234",
-  "version": 1.0,
-  "owner": "team-data",
-  "data_objects": [
-    {
-      "name": "Orders",
-      "code": "ORDERS",
-      "database": "WAREHOUSE",
-      "schema": "PUBLIC",
-      "columns": [
-        { "name": "Price", "code": "PRICE", "abstract_type": "float" }
-      ],
-      "join_targets": ["Customers"],
-      "owner": "team-sales"
-    }
-  ],
-  "dimensions": [
-    { "name": "Country", "data_object": "Customers", "column": "Country", "result_type": "string" }
-  ],
-  "measures": [
-    { "name": "Revenue", "aggregation": "sum", "result_type": "float", "columns": [...] }
-  ],
-  "metrics": [
-    { "name": "Revenue per Order", "expression": "...", "component_measures": ["Revenue", "Order Count"] }
-  ]
+ "model_id": "abcd1234",
+ "version": 1.0,
+ "owner": "team-data",
+ "data_objects": [
+ {
+ "name": "Orders",
+ "code": "ORDERS",
+ "database": "WAREHOUSE",
+ "schema": "PUBLIC",
+ "columns": [
+ { "name": "Price", "code": "PRICE", "abstract_type": "float" }
+ ],
+ "join_targets": ["Customers"],
+ "owner": "team-sales"
+ }
+ ],
+ "dimensions": [
+ { "name": "Country", "data_object": "Customers", "column": "Country", "result_type": "string" }
+ ],
+ "measures": [
+ { "name": "Revenue", "aggregation": "sum", "result_type": "float", "columns": [...] }
+ ],
+ "metrics": [
+ { "name": "Revenue per Order", "expression": "...", "component_measures": ["Revenue", "Order Count"] }
+ ]
 }
 ```
 
@@ -751,12 +751,12 @@ Get a single dimension by name.
 
 ```json
 {
-  "name": "Country",
-  "data_object": "Customers",
-  "column": "Country",
-  "result_type": "string",
-  "time_grain": null,
-  "owner": null
+ "name": "Country",
+ "data_object": "Customers",
+ "column": "Country",
+ "result_type": "string",
+ "time_grain": null,
+ "owner": null
 }
 ```
 
@@ -776,15 +776,15 @@ Get a single measure by name.
 
 ```json
 {
-  "name": "Revenue",
-  "aggregation": "sum",
-  "result_type": "float",
-  "columns": [
-    { "data_object": "Orders", "column": "Price" }
-  ],
-  "expression": "{[Orders].[Price]} * {[Orders].[Quantity]}",
-  "total": false,
-  "owner": null
+ "name": "Revenue",
+ "aggregation": "sum",
+ "result_type": "float",
+ "columns": [
+ { "data_object": "Orders", "column": "Price" }
+ ],
+ "expression": "{[Orders].[Price]} * {[Orders].[Quantity]}",
+ "total": false,
+ "owner": null
 }
 ```
 
@@ -810,13 +810,13 @@ Explain the lineage of a dimension, measure, or metric — traces back through t
 
 ```json
 {
-  "name": "Revenue",
-  "type": "measure",
-  "lineage": [
-    { "type": "data_object", "name": "Orders" },
-    { "type": "column", "name": "Price", "detail": "referenced in expression" },
-    { "type": "column", "name": "Quantity", "detail": "referenced in expression" }
-  ]
+ "name": "Revenue",
+ "type": "measure",
+ "lineage": [
+ { "type": "data_object", "name": "Orders" },
+ { "type": "column", "name": "Price", "detail": "referenced in expression" },
+ { "type": "column", "name": "Quantity", "detail": "referenced in expression" }
+ ]
 }
 ```
 
@@ -830,8 +830,8 @@ Search across model artefacts by name or synonym. When the query produces zero e
 
 ```json
 {
-  "query": "Revenue",
-  "types": ["measure", "metric"]
+ "query": "Revenue",
+ "types": ["measure", "metric"]
 }
 ```
 
@@ -841,14 +841,14 @@ The `types` filter is optional. Valid types: `dimension`, `measure`, `metric`, `
 
 ```json
 {
-  "query": "Revenue",
-  "results": [
-    { "name": "Revenue", "type": "measure", "match_field": "name", "score": 1.0 },
-    { "name": "Revenue per Order", "type": "metric", "match_field": "name", "score": 1.0 }
-  ],
-  "exact_matches": [...],
-  "synonym_matches": [],
-  "fuzzy_matches": []
+ "query": "Revenue",
+ "results": [
+ { "name": "Revenue", "type": "measure", "match_field": "name", "score": 1.0 },
+ { "name": "Revenue per Order", "type": "metric", "match_field": "name", "score": 1.0 }
+ ],
+ "exact_matches": [...],
+ "synonym_matches": [],
+ "fuzzy_matches": []
 }
 ```
 
@@ -856,18 +856,18 @@ The `types` filter is optional. Valid types: `dimension`, `measure`, `metric`, `
 
 ```json
 {
-  "query": "Custmr Cuntry",
-  "results": [],
-  "exact_matches": [],
-  "synonym_matches": [],
-  "fuzzy_matches": [
-    {
-      "name": "Customer Country",
-      "kind": "dimension",
-      "score": 0.78,
-      "reason": "trigram overlap"
-    }
-  ]
+ "query": "Custmr Cuntry",
+ "results": [],
+ "exact_matches": [],
+ "synonym_matches": [],
+ "fuzzy_matches": [
+ {
+ "name": "Customer Country",
+ "kind": "dimension",
+ "score": 0.78,
+ "reason": "trigram overlap"
+ }
+ ]
 }
 ```
 
@@ -881,15 +881,15 @@ Return the join graph as nodes and edges.
 
 ```json
 {
-  "nodes": ["Orders", "Customers", "Products"],
-  "edges": [
-    {
-      "from_object": "Orders",
-      "to_object": "Customers",
-      "cardinality": "many-to-one",
-      "secondary": false
-    }
-  ]
+ "nodes": ["Orders", "Customers", "Products"],
+ "edges": [
+ {
+ "from_object": "Orders",
+ "to_object": "Customers",
+ "cardinality": "many-to-one",
+ "secondary": false
+ }
+ ]
 }
 ```
 
@@ -915,14 +915,14 @@ List every example summary in the loaded model.
 
 ```json
 {
-  "examples": [
-    {
-      "name": "revenue_by_country",
-      "description": "Total completed-order revenue, broken down by customer country.",
-      "intent_tags": ["revenue", "geography"]
-    }
-  ],
-  "suggestion": null
+ "examples": [
+ {
+ "name": "revenue_by_country",
+ "description": "Total completed-order revenue, broken down by customer country.",
+ "intent_tags": ["revenue", "geography"]
+ }
+ ],
+ "suggestion": null
 }
 ```
 
@@ -930,8 +930,8 @@ List every example summary in the loaded model.
 
 ```json
 {
-  "examples": [],
-  "suggestion": "no examples for 'foo'; available tags: revenue, orders, geography"
+ "examples": [],
+ "suggestion": "no examples for 'foo'; available tags: revenue, orders, geography"
 }
 ```
 
@@ -943,16 +943,16 @@ Return a single example by name, with the full query payload and a best-effort c
 
 ```json
 {
-  "name": "revenue_by_country",
-  "description": "Total completed-order revenue, broken down by customer country.",
-  "intent_tags": ["revenue", "geography"],
-  "query": {
-    "select": {
-      "dimensions": ["Customer Country"],
-      "measures": ["Total Revenue"]
-    }
-  },
-  "compiled_sql_preview": "SELECT ..."
+ "name": "revenue_by_country",
+ "description": "Total completed-order revenue, broken down by customer country.",
+ "intent_tags": ["revenue", "geography"],
+ "query": {
+ "select": {
+ "dimensions": ["Customer Country"],
+ "measures": ["Total Revenue"]
+ }
+ },
+ "compiled_sql_preview": "SELECT ..."
 }
 ```
 
@@ -975,8 +975,8 @@ Return the OBSL-Core RDF graph as Turtle. The graph is generated at model load t
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 <https://ralforion.com/ns/model/abc123> a obsl:SemanticModel ;
-    obsl:hasDataObject <.../data-object/orders> ;
-    obsl:hasMeasure <.../measure/revenue> .
+ obsl:hasDataObject <.../data-object/orders> ;
+ obsl:hasMeasure <.../measure/revenue> .
 ```
 
 **Error (404):** Session or model not found.
@@ -989,7 +989,7 @@ Execute a read-only SPARQL query against the model's OBSL graph.
 
 ```json
 {
-  "query": "PREFIX obsl: <https://ralforion.com/ns/obsl#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?label WHERE { ?m a obsl:Measure ; rdfs:label ?label . }"
+ "query": "PREFIX obsl: <https://ralforion.com/ns/obsl#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?label WHERE { ?m a obsl:Measure ; rdfs:label ?label . }"
 }
 ```
 
@@ -999,13 +999,13 @@ Only `SELECT` and `ASK` queries are allowed. The `query` field has a maximum len
 
 ```json
 {
-  "type": "select",
-  "variables": ["label"],
-  "results": [
-    {"label": "Revenue"},
-    {"label": "Order Count"}
-  ],
-  "boolean": null
+ "type": "select",
+ "variables": ["label"],
+ "results": [
+ {"label": "Revenue"},
+ {"label": "Order Count"}
+ ],
+ "boolean": null
 }
 ```
 
@@ -1013,10 +1013,10 @@ For `ASK` queries:
 
 ```json
 {
-  "type": "ask",
-  "variables": [],
-  "results": [],
-  "boolean": true
+ "type": "ask",
+ "variables": [],
+ "results": [],
+ "boolean": true
 }
 ```
 
@@ -1038,17 +1038,17 @@ Always responds — when `CACHE_BACKEND=noop` the response shows `backend: "noop
 
 ```json
 {
-  "backend": "file",
-  "entry_count": 1247,
-  "total_size_bytes": 234567890,
-  "max_size_bytes": 5368709120,
-  "hit_count_total": 9821,
-  "miss_count_total": 4203,
-  "hit_rate": 0.700,
-  "oldest_entry": "2026-04-15T12:30:00Z",
-  "next_sweep_at": "2026-04-15T12:45:00Z",
-  "tracked_physical_tables": 8,
-  "heartbeat_invalidations_total": 142
+ "backend": "file",
+ "entry_count": 1247,
+ "total_size_bytes": 234567890,
+ "max_size_bytes": 5368709120,
+ "hit_count_total": 9821,
+ "miss_count_total": 4203,
+ "hit_rate": 0.700,
+ "oldest_entry": "2026-04-15T12:30:00Z",
+ "next_sweep_at": "2026-04-15T12:45:00Z",
+ "tracked_physical_tables": 8,
+ "heartbeat_invalidations_total": 142
 }
 ```
 
@@ -1060,9 +1060,9 @@ Triggers a single TTL + capacity eviction pass on demand — equivalent to one t
 
 ```json
 {
-  "backend": "file",
-  "ttl_evicted": 17,
-  "capacity_evicted": 0
+ "backend": "file",
+ "ttl_evicted": 17,
+ "capacity_evicted": 0
 }
 ```
 
@@ -1074,8 +1074,8 @@ Drops every cache entry regardless of TTL or freshness contract. Useful for manu
 
 ```json
 {
-  "backend": "file",
-  "entries_cleared": 1247
+ "backend": "file",
+ "entries_cleared": 1247
 }
 ```
 
@@ -1089,10 +1089,10 @@ Authentication: `Authorization: Bearer <HEARTBEAT_AUTH_TOKEN>`. When the env var
 
 ```json
 {
-  "database": "WAREHOUSE",
-  "schema": "PUBLIC",
-  "table": "ORDERS",
-  "timestamp": "2026-04-29T14:32:15Z"
+ "database": "WAREHOUSE",
+ "schema": "PUBLIC",
+ "table": "ORDERS",
+ "timestamp": "2026-04-29T14:32:15Z"
 }
 ```
 
@@ -1102,10 +1102,10 @@ Authentication: `Authorization: Bearer <HEARTBEAT_AUTH_TOKEN>`. When the env var
 
 ```json
 {
-  "table_ref": "WAREHOUSE.PUBLIC.ORDERS",
-  "recorded_at": "2026-04-29T14:32:15Z",
-  "invalidated_cache_entries": 47,
-  "affected_data_objects": ["Orders", "OrderReturns", "OrdersPivoted"]
+ "table_ref": "WAREHOUSE.PUBLIC.ORDERS",
+ "recorded_at": "2026-04-29T14:32:15Z",
+ "invalidated_cache_entries": 47,
+ "affected_data_objects": ["Orders", "OrderReturns", "OrdersPivoted"]
 }
 ```
 
@@ -1182,18 +1182,18 @@ Return public configuration for API clients (UI, MCP, etc.).
 
 ```json
 {
-  "version": "2.5.0",
-  "api_version": "v1",
-  "single_model_mode": false,
-  "session_ttl_seconds": 1800,
-  "session_max_age_seconds": 86400,
-  "max_sessions": 500,
-  "max_models_per_session": 10,
-  "query_execute": false,
-  "dialect": {
-    "env": "duckdb",
-    "effective": "duckdb"
-  }
+ "version": "2.5.0",
+ "api_version": "v1",
+ "single_model_mode": false,
+ "session_ttl_seconds": 1800,
+ "session_max_age_seconds": 86400,
+ "max_sessions": 500,
+ "max_models_per_session": 10,
+ "query_execute": false,
+ "dialect": {
+ "env": "duckdb",
+ "effective": "duckdb"
+ }
 }
 ```
 
@@ -1201,35 +1201,35 @@ Return public configuration for API clients (UI, MCP, etc.).
 
 ```json
 {
-  "version": "2.5.0",
-  "api_version": "v1",
-  "single_model_mode": true,
-  "model_yaml": "version: 1.0\nsettings:\n  defaultTimezone: Europe/Berlin\n  ...",
-  "session_ttl_seconds": 1800,
-  "session_max_age_seconds": 86400,
-  "max_sessions": 500,
-  "max_models_per_session": 10,
-  "query_execute": true,
-  "model_settings": {
-    "defaultTimezone": "Europe/Berlin",
-    "defaultDialect": "snowflake",
-    "overrideDatabaseTimezone": false,
-    "defaultNumericDataType": "decimal(38, 4)"
-  },
-  "timezone": {
-    "model": "Europe/Berlin",
-    "host": "Europe/Berlin",
-    "database": null,
-    "effective": "Europe/Berlin",
-    "override_database_timezone": false,
-    "now": "2026-04-29T15:30:00+02:00",
-    "utc": "2026-04-29T13:30:00Z"
-  },
-  "dialect": {
-    "model": "snowflake",
-    "env": "duckdb",
-    "effective": "snowflake"
-  }
+ "version": "2.5.0",
+ "api_version": "v1",
+ "single_model_mode": true,
+ "model_yaml": "version: 1.0\nsettings:\n defaultTimezone: Europe/Berlin\n ...",
+ "session_ttl_seconds": 1800,
+ "session_max_age_seconds": 86400,
+ "max_sessions": 500,
+ "max_models_per_session": 10,
+ "query_execute": true,
+ "model_settings": {
+ "defaultTimezone": "Europe/Berlin",
+ "defaultDialect": "snowflake",
+ "overrideDatabaseTimezone": false,
+ "defaultNumericDataType": "decimal(38, 4)"
+ },
+ "timezone": {
+ "model": "Europe/Berlin",
+ "host": "Europe/Berlin",
+ "database": null,
+ "effective": "Europe/Berlin",
+ "override_database_timezone": false,
+ "now": "2026-04-29T15:30:00+02:00",
+ "utc": "2026-04-29T13:30:00Z"
+ },
+ "dialect": {
+ "model": "snowflake",
+ "env": "duckdb",
+ "effective": "snowflake"
+ }
 }
 ```
 
@@ -1272,36 +1272,36 @@ List all available SQL dialects and their capability flags.
 
 ```json
 {
-  "dialects": [
-    {
-      "name": "bigquery",
-      "capabilities": {
-        "supports_cte": true,
-        "supports_qualify": true,
-        "supports_arrays": true,
-        "supports_window_filters": true,
-        "supports_ilike": false,
-        "supports_time_travel": false,
-        "supports_semi_structured": true
-      }
-    },
-    { "name": "clickhouse", "capabilities": { "..." : true } },
-    { "name": "databricks", "capabilities": { "..." : true } },
-    { "name": "dremio", "capabilities": { "..." : true } },
-    {
-      "name": "duckdb",
-      "capabilities": {
-        "supports_cte": true,
-        "supports_qualify": true,
-        "supports_arrays": true,
-        "supports_window_filters": true,
-        "supports_ilike": true,
-        "supports_time_travel": false,
-        "supports_semi_structured": false
-      }
-    },
-    { "name": "postgres", "capabilities": { "..." : true } },
-    { "name": "snowflake", "capabilities": { "..." : true } }
-  ]
+ "dialects": [
+ {
+ "name": "bigquery",
+ "capabilities": {
+ "supports_cte": true,
+ "supports_qualify": true,
+ "supports_arrays": true,
+ "supports_window_filters": true,
+ "supports_ilike": false,
+ "supports_time_travel": false,
+ "supports_semi_structured": true
+ }
+ },
+ { "name": "clickhouse", "capabilities": { "..." : true } },
+ { "name": "databricks", "capabilities": { "..." : true } },
+ { "name": "dremio", "capabilities": { "..." : true } },
+ {
+ "name": "duckdb",
+ "capabilities": {
+ "supports_cte": true,
+ "supports_qualify": true,
+ "supports_arrays": true,
+ "supports_window_filters": true,
+ "supports_ilike": true,
+ "supports_time_travel": false,
+ "supports_semi_structured": false
+ }
+ },
+ { "name": "postgres", "capabilities": { "..." : true } },
+ { "name": "snowflake", "capabilities": { "..." : true } }
+ ]
 }
 ```

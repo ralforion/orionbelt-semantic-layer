@@ -35,14 +35,56 @@ from orionbelt.compiler.resolution import (
 )
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
-from orionbelt.dialect.base import Dialect
-from orionbelt.models.semantic import DataObject, SemanticModel
+from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
+from orionbelt.models.semantic import (
+    TWO_COLUMN_AGGREGATIONS,
+    DataObject,
+    SemanticModel,
+)
 
-__all__ = ["CFLPlanner", "FanoutError"]
+
+class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
+    """Raised when a measure's aggregation cannot be planned in CFL.
+
+    Two-column statistical aggregates (``corr``, ``covar_*``, ``regr_*``)
+    need paired-row semantics that the current UNION ALL + concat-count
+    CFL strategy cannot express. The single-fact path (star planner)
+    handles them correctly; only multi-fact CFL trips this guard.
+
+    Inherits ``UnsupportedAggregationError`` so existing router catch
+    sites surface the same 422 response shape. The ``dialect`` slot
+    carries the planner identifier (``"cfl"``) rather than a SQL
+    dialect — kept for response compatibility.
+    """
+
+    def __init__(self, measure_name: str, aggregation: str) -> None:
+        self.measure_name = measure_name
+        # Skip parent ``__init__`` (which formats a dialect-flavored
+        # message) and set the same fields directly with our CFL-specific
+        # message so routers and tests still get the structured
+        # ``.dialect`` / ``.aggregation`` attributes.
+        self.dialect = "cfl"
+        self.aggregation = aggregation
+        Exception.__init__(
+            self,
+            f"Measure '{measure_name}' uses aggregation '{aggregation}' which "
+            "requires paired-row semantics and is not supported in CFL "
+            "(multi-fact) queries. Restrict the query to a single fact "
+            "table or restructure the model so this measure resolves via "
+            "the star-schema path.",
+        )
+
+
+__all__ = ["CFLPlanner", "FanoutError", "UnsupportedAggregationForCFLError"]
 
 
 def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
-    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions."""
+    """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
+
+    Recurses through ``BinaryOp`` and ``FunctionCall.args`` so a metric
+    formula like ``{Total Refunds} / NULLIF({Total Sales}, 0)`` correctly
+    inlines both refs in HAVING / outer-SELECT contexts.
+    """
     if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
         return measure_exprs[expr.name]
     if isinstance(expr, BinaryOp):
@@ -50,6 +92,16 @@ def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr
         new_right = _expand_cfl_measure_refs(expr.right, measure_exprs)
         if new_left is not expr.left or new_right is not expr.right:
             return BinaryOp(left=new_left, op=expr.op, right=new_right)
+    if isinstance(expr, FunctionCall):
+        new_args = [_expand_cfl_measure_refs(a, measure_exprs) for a in expr.args]
+        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
+            return FunctionCall(
+                name=expr.name,
+                args=new_args,
+                distinct=expr.distinct,
+                order_by=expr.order_by,
+                separator=expr.separator,
+            )
     return expr
 
 
@@ -92,6 +144,18 @@ class CFLPlanner:
             return StarSchemaPlanner().plan(
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
+
+        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) need
+        # paired-row semantics that the UNION ALL + concat-count multi-fact
+        # path cannot express. Without this guard the planner emits
+        # ``CORR(CAST(f0 AS VARCHAR) || '|' || CAST(f1 AS VARCHAR))`` — one
+        # argument, wrong type. Fail fast with a clear error so the caller
+        # can restructure their model or restrict the query to a single
+        # fact source instead of getting an opaque execution-time error.
+        for measure in resolved.measures:
+            agg = measure.aggregation.lower() if measure.aggregation else ""
+            if agg in TWO_COLUMN_AGGREGATIONS:
+                raise UnsupportedAggregationForCFLError(measure.name, agg)
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(
@@ -321,7 +385,14 @@ class CFLPlanner:
         return self._substitute_outer_refs(metric.expression, resolved, cte_name)
 
     def _substitute_outer_refs(self, expr: Expr, resolved: ResolvedQuery, cte_name: str) -> Expr:
-        """Recursively substitute measure refs with outer aggregations."""
+        """Recursively substitute measure refs with outer aggregations.
+
+        Walks ``BinaryOp`` and ``FunctionCall.args`` so a metric formula
+        with embedded SQL functions (e.g. ``... / NULLIF(other, 0)``)
+        substitutes refs inside the function call instead of leaving the
+        bare label, which would later bind against a non-existent
+        column.
+        """
         if isinstance(expr, ColumnRef) and expr.table is None:
             comp = resolved.metric_components.get(expr.name)
             if comp:
@@ -342,6 +413,16 @@ class CFLPlanner:
             new_right = self._substitute_outer_refs(expr.right, resolved, cte_name)
             if new_left is not expr.left or new_right is not expr.right:
                 return BinaryOp(left=new_left, op=expr.op, right=new_right)
+        if isinstance(expr, FunctionCall):
+            new_args = [self._substitute_outer_refs(a, resolved, cte_name) for a in expr.args]
+            if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
+                return FunctionCall(
+                    name=expr.name,
+                    args=new_args,
+                    distinct=expr.distinct,
+                    order_by=expr.order_by,
+                    separator=expr.separator,
+                )
         return expr
 
     @staticmethod

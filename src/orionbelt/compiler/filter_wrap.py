@@ -76,13 +76,18 @@ def _resolve_include_filters(
     """Resolve filterContext.include items to physical filter expressions."""
     results: list[ResolvedFilter] = []
     errors: list[SemanticError] = []
+    # Route every column reference through ``make_column_expr`` so static
+    # / filterContext include items work on computed (``expression:``)
+    # columns — without this the empty ``code:`` slot leaks into the SQL
+    # and the database errors on the zero-length identifier.
+    from orionbelt.compiler.resolution import make_column_expr
+
     for incl in fc.include:
         dim = model.dimensions.get(incl.field)
         if dim:
             obj = model.data_objects.get(dim.view)
             if obj and dim.column in obj.columns:
-                source = obj.columns[dim.column].code
-                col_expr: Expr = ColumnRef(name=source, table=dim.view)
+                col_expr: Expr = make_column_expr(model, dim.view, dim.column)
                 try:
                     op = FilterOperator(incl.op)
                 except ValueError:
@@ -101,8 +106,7 @@ def _resolve_include_filters(
             obj_name, col_name = parts[0].strip(), parts[1].strip()
             obj = model.data_objects.get(obj_name)
             if obj and col_name in obj.columns:
-                source = obj.columns[col_name].code
-                col_expr = ColumnRef(name=source, table=obj_name)
+                col_expr = make_column_expr(model, obj_name, col_name)
                 try:
                     op = FilterOperator(incl.op)
                 except ValueError:

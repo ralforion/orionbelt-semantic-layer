@@ -371,53 +371,173 @@ def test_count_wrap_on_count_measure_accepted(model: SemanticModel) -> None:
     assert q.select.measures == ["Order Count"]
 
 
-def test_sum_wrap_on_count_measure_rejected(model: SemanticModel) -> None:
-    """Wrap mismatch surfaces the declared aggregation in the error."""
+def test_sum_wrap_on_count_measure_accepted_as_idempotent_shim(
+    model: SemanticModel,
+) -> None:
+    """SUM is idempotent over a per-grain value — accepted as a shim even
+    when the declared aggregation differs.
+
+    Rationale: BI tools that go through Calcite (Dremio, Spark, Flink)
+    cannot mirror each measure's declared aggregation — every grouped
+    query is forced to wrap measures in *some* aggregate. SUM over a
+    singleton returns the singleton, so wrapping a per-grain measure
+    value in SUM(...) is provably a no-op shim. The measure's declared
+    aggregation (COUNT here) still drives the actual SQL emitted.
+    """
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", SUM("Order Count") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Order Count"]
+
+
+def test_min_wrap_on_sum_measure_accepted_as_idempotent_shim(
+    model: SemanticModel,
+) -> None:
+    """MIN over a singleton returns the singleton — accepted as shim."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", MIN("Total Revenue") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Total Revenue"]
+
+
+def test_avg_wrap_on_sum_measure_accepted_as_idempotent_shim(
+    model: SemanticModel,
+) -> None:
+    """AVG over a singleton returns the singleton — accepted as shim.
+
+    Crucially: this does NOT replace SUM with AVG semantics. The
+    measure's declared aggregation (SUM) is still what runs; the AVG
+    wrap is purely a Calcite-grammar appeasement.
+    """
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", AVG("Total Revenue") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Total Revenue"]
+
+
+def test_max_wrap_on_count_distinct_measure_accepted_as_idempotent_shim(
+    model: SemanticModel,
+) -> None:
+    """The motivating case: BI tools through Dremio cannot pass COUNT
+    (DISTINCT ...) cleanly (Dremio rewrites it as a subquery), so users
+    fall back to ``MAX(<count_distinct measure>)`` — MAX over a per-grain
+    count is idempotent."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", MAX("Order Count") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Order Count"]
+
+
+def test_count_wrap_on_sum_measure_rejected_non_idempotent(
+    model: SemanticModel,
+) -> None:
+    """COUNT is NOT idempotent (returns 1, not the input value), so it's
+    only accepted when it matches the measure's declared aggregation."""
     with pytest.raises(SQLTranslationError) as exc:
         translate_sql_to_query(
-            'SELECT "Customer Country", SUM("Order Count") FROM m',
+            'SELECT "Customer Country", COUNT("Total Revenue") FROM m',
             model,
         )
     msgs = [e.message for e in exc.value.errors]
-    assert any("declared as `COUNT`" in m and "SUM" in m for m in msgs)
+    assert any("declared as `SUM`" in m and "COUNT" in m for m in msgs)
 
 
-def test_min_wrap_on_sum_measure_rejected(model: SemanticModel) -> None:
-    with pytest.raises(SQLTranslationError) as exc:
-        translate_sql_to_query(
-            'SELECT "Customer Country", MIN("Total Revenue") FROM m',
-            model,
-        )
-    msgs = [e.message for e in exc.value.errors]
-    assert any("MIN" in m and "Total Revenue" in m for m in msgs)
-
-
-def test_count_distinct_routes_to_count_distinct(model: SemanticModel) -> None:
-    """COUNT(DISTINCT x) is treated as the count_distinct aggregation kind."""
-    # Sample model has no count_distinct measure — verify mismatch error
-    # cites the right declared kind.
+def test_count_distinct_wrap_on_sum_measure_rejected_non_idempotent(
+    model: SemanticModel,
+) -> None:
+    """COUNT(DISTINCT ...) returns cardinality, never the input value."""
     with pytest.raises(SQLTranslationError) as exc:
         translate_sql_to_query(
             'SELECT COUNT(DISTINCT "Total Revenue") FROM m',
             model,
         )
     msgs = [e.message for e in exc.value.errors]
-    # Total Revenue is SUM-declared; COUNT_DISTINCT wrap → mismatch
     assert any("Total Revenue" in m and ("COUNT" in m or "count" in m) for m in msgs)
 
 
-def test_wrap_on_metric_rejected_with_clear_message(model: SemanticModel) -> None:
-    """Aggregate wrappers on metrics always error — metrics have no
-    single declared aggregation."""
+def test_idempotent_wrap_on_metric_accepted(model: SemanticModel) -> None:
+    """Metrics are derived expressions at the grain — idempotent wraps
+    (SUM/MIN/MAX/AVG/MEDIAN) return the metric value unchanged. This
+    unblocks ``SUM(<derived metric>)`` through Calcite-validating BI
+    tools like Dremio."""
+    for wrap in ("SUM", "MIN", "MAX", "AVG", "MEDIAN"):
+        q = translate_sql_to_query(
+            f'SELECT "Customer Country", {wrap}("Revenue per Order") FROM m',
+            model,
+        )
+        assert q.select.measures == ["Revenue per Order"], f"{wrap} wrap broke"
+
+
+def test_count_wrap_on_metric_rejected(model: SemanticModel) -> None:
+    """COUNT family changes cardinality semantics — rejected on metrics.
+
+    The error message must surface the alternatives so the user can
+    recover (bare label, MEASURE(...), or an idempotent wrap).
+    """
     with pytest.raises(SQLTranslationError) as exc:
         translate_sql_to_query(
-            'SELECT SUM("Revenue per Order") FROM m',
+            'SELECT COUNT("Revenue per Order") FROM m',
             model,
         )
     msgs = [e.message for e in exc.value.errors]
     assert any(
-        "Metric" in m and "Revenue per Order" in m and ("MEASURE" in m or "bare" in m) for m in msgs
+        "Metric" in m
+        and "Revenue per Order" in m
+        and ("idempotent" in m or "MEASURE" in m or "bare" in m)
+        for m in msgs
     )
+
+
+def test_count_distinct_wrap_on_metric_rejected(model: SemanticModel) -> None:
+    with pytest.raises(SQLTranslationError) as exc:
+        translate_sql_to_query(
+            'SELECT COUNT(DISTINCT "Revenue per Order") FROM m',
+            model,
+        )
+    msgs = [e.message for e in exc.value.errors]
+    assert any("Metric" in m and "Revenue per Order" in m for m in msgs)
+
+
+# --- AGG() / AGGREGATE() aliases for MEASURE() --------------------------------
+
+
+def test_agg_alias_unwraps_to_label(model: SemanticModel) -> None:
+    """``AGG()`` is recognised as a portable alias for ``MEASURE()``."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", AGG("Total Revenue") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Total Revenue"]
+
+
+def test_aggregate_alias_unwraps_to_label(model: SemanticModel) -> None:
+    """``AGGREGATE()`` is recognised as a portable alias for ``MEASURE()``."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", AGGREGATE("Total Revenue") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Total Revenue"]
+
+
+def test_agg_alias_on_metric(model: SemanticModel) -> None:
+    """All marker aliases work uniformly on metrics."""
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", AGG("Revenue per Order") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Revenue per Order"]
+
+
+def test_aggregate_alias_case_insensitive(model: SemanticModel) -> None:
+    q = translate_sql_to_query(
+        'SELECT "Customer Country", aggregate("Total Revenue") FROM m',
+        model,
+    )
+    assert q.select.measures == ["Total Revenue"]
 
 
 def test_wrap_on_dimension_rejected(model: SemanticModel) -> None:
@@ -626,13 +746,15 @@ def test_subquery_rejected(model: SemanticModel) -> None:
     assert any("Subquer" in e.message for e in exc.value.errors)
 
 
-def test_mismatched_aggregate_over_measure_rejected(model: SemanticModel) -> None:
-    """Wraps must match the measure's declared aggregation (covered in detail
-    by the dedicated wrap-matching tests). This guard pins the high-level
-    expectation."""
+def test_non_idempotent_mismatched_aggregate_over_measure_rejected(
+    model: SemanticModel,
+) -> None:
+    """Non-idempotent wrap (COUNT) that doesn't match the declared
+    aggregation is rejected. Idempotent wraps (SUM/MIN/MAX/AVG/MEDIAN)
+    are now accepted as shims (covered in dedicated wrap tests)."""
     with pytest.raises(SQLTranslationError) as exc:
         translate_sql_to_query(
-            'SELECT "Customer Country", AVG("Total Revenue") FROM m',
+            'SELECT "Customer Country", COUNT("Total Revenue") FROM m',
             model,
         )
     assert any(e.code == "UNSUPPORTED_SQL_FEATURE" for e in exc.value.errors)

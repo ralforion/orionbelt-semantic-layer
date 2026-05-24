@@ -13,10 +13,10 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Standalone (no transformation tool dep.) | ✅ | ❌ requires dbt | ✅ | ✅ | ✅ | ✅ |
 | Format | YAML (`OBML`) | YAML on dbt models | DSL (`.malloy`) | DSL (`.lkml`) | YAML / JS + Twig | Visual designer |
 | Query interface | **[OrionBelt Semantic QL](../guide/semantic-ql.md)** (OBSQL) + **Arrow Flight SQL** + **PostgreSQL wire** + REST + DB-API | GraphQL/JDBC (Cloud) | Malloy language | Looker UI / API | **Cube SQL API** (Postgres-wire) + REST + GraphQL | **MDX + DAX** + JDBC/ODBC + REST |
-| First-class cumulative metric (running / rolling / grain-to-date, `partitionBy` v2.6+) | ✅ | ✅ (no `partitionBy`) | Per-query | Partial | Partial (`rolling_window`) | Via MDX |
+| First-class cumulative metric (running / rolling / grain-to-date, `partitionBy`) | ✅ | ✅ (no `partitionBy`) | Per-query | Partial | Partial (`rolling_window`) | Via MDX |
 | First-class period-over-period metric | ✅ | Via `offset_window` | Per-query | Via table calc | Query-time `time_shift` | Via MDX |
-| First-class window metric (rank / lag / lead / ntile / first_value / last_value, v2.6+) | ✅ declarative | ❌ | Per-query calculations | Table calcs (UI-side) | Via `type: number` + raw SQL | Via MDX calculated members |
-| Statistical / regression aggregates as first-class measure types (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`, v2.6+) | ✅ 9 declarative aggregations (arity-validated, per-dialect gated) | Basic `stddev` only as first-class | Basic `stddev` only as first-class | Via `type: number` + raw SQL | Via `type: number` + raw SQL | Via MDX calculated members |
+| First-class window metric (rank / lag / lead / ntile / first_value / last_value) | ✅ declarative | ❌ | Per-query calculations | Table calcs (UI-side) | Via `type: number` + raw SQL | Via MDX calculated members |
+| Statistical / regression aggregates as first-class measure types (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) | ✅ 9 declarative aggregations (arity-validated, per-dialect gated) | Basic `stddev` only as first-class | Basic `stddev` only as first-class | Via `type: number` + raw SQL | Via `type: number` + raw SQL | Via MDX calculated members |
 | Conversion / funnel metrics | ❌ | ✅ | Patterns | Patterns | Patterns | Patterns |
 | Symmetric aggregates | ❌ (uses CFL) | ❌ | ✅ | ✅ | ✅ | ✅ (OLAP) |
 | Hierarchical subtotals (`WITH ROLLUP` / `WITH CUBE`) | ✅ first-class in **Semantic QL** (trailing modifier + `GROUPING()` flag columns; dialect-portable across all 8 drivers) | ❌ presentation concern | ❌ | UI-only checkbox; no LookML construct | "Rollup" means pre-aggregation tables, not the SQL operator | Via MDX/DAX |

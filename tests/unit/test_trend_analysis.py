@@ -226,6 +226,47 @@ class TestStatisticalAggregationArity:
                 columns=[{"dataObject": "Orders", "column": "Amount"}],
             )
 
+    def test_corr_rejects_expression_form(self) -> None:
+        """Regression: ``corr`` with ``expression:`` (instead of two
+        ``columns:`` entries) was bypassing arity validation and
+        producing invalid SQL like ``CORR((a + b))``. The model loader
+        must reject this combination so users learn the correct shape
+        at load time, not at compile time."""
+        with pytest.raises(ValueError, match=r"corr.*expression"):
+            Measure(
+                label="Bad",
+                aggregation="corr",
+                expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
+            )
+
+    def test_covar_pop_rejects_expression_form(self) -> None:
+        with pytest.raises(ValueError, match=r"covar_pop.*expression"):
+            Measure(
+                label="Bad",
+                aggregation="covar_pop",
+                expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
+            )
+
+    def test_regr_slope_rejects_expression_form(self) -> None:
+        with pytest.raises(ValueError, match=r"regr_slope.*expression"):
+            Measure(
+                label="Bad",
+                aggregation="regr_slope",
+                expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
+            )
+
+    def test_stddev_accepts_expression_form(self) -> None:
+        """Single-column statistical aggregations accept ``expression:``
+        — ``STDDEV(<scalar expr>)`` is valid SQL. The expression-vs-
+        columns restriction only applies to TWO-column aggregates,
+        where collapsing two args into one scalar would break the call."""
+        m = Measure(
+            label="OK",
+            aggregation="stddev",
+            expression="{[Orders].[Amount]} + 100",
+        )
+        assert m.aggregation == "stddev"
+
     def test_stddev_requires_one_column(self) -> None:
         with pytest.raises(ValueError, match="1 column"):
             Measure(
@@ -256,14 +297,30 @@ class TestStatisticalAggregationArity:
         )
         assert m.aggregation == "corr"
 
-    def test_expression_measure_bypasses_arity_check(self) -> None:
-        # Expressions can compose any column reference — no arity rule
+    def test_expression_measure_rejected_for_statistical_aggregations(self) -> None:
+        """Inverse of the previous bypass-the-arity behavior: an
+        ``expression:`` form combined with a statistical aggregation
+        collapses to one scalar argument, which produced invalid SQL
+        like ``CORR((a + b))`` at compile time. The model loader now
+        rejects the combination so the user is steered to the
+        ``columns:`` form that makes argument order explicit.
+        Non-statistical aggregations (``sum``, ``count``, ``avg``…)
+        still accept ``expression:`` since they take a single scalar.
+        """
+        # Non-statistical aggregation + expression: still allowed.
         m = Measure(
             label="OK",
-            aggregation="corr",
+            aggregation="sum",
             expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
         )
-        assert m.aggregation == "corr"
+        assert m.aggregation == "sum"
+        # Statistical aggregation + expression: rejected.
+        with pytest.raises(ValueError, match=r"corr.*expression"):
+            Measure(
+                label="Bad",
+                aggregation="corr",
+                expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
+            )
 
 
 # ── Compilation: partitionBy ───────────────────────────────────────────────
@@ -364,10 +421,55 @@ class TestWindowMetrics:
         result = CompilationPipeline().compile(query, model, "postgres")
         assert "NTILE(4)" in result.sql.upper()
 
+    def test_derived_referencing_only_window_metric_still_wraps(self) -> None:
+        """Regression: ``MoM Delta = {[Revenue]} - {[Revenue Prior Month]}``
+        selected ALONE (without Revenue Prior Month being directly in the
+        SELECT) must still wrap the window. Before the fix, star.py
+        substituted the raw inner aggregate of Revenue Prior Month into
+        MoM Delta's expression before window_wrap ran, so no
+        ``window_base`` CTE was generated and ``LAG(`` never appeared.
+
+        After the fix, the outer SELECT inlines the window call into
+        MoM Delta's expression so the math is correct:
+        ``Revenue - LAG(Revenue, 1) OVER (...) AS "MoM Delta"``.
+        """
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date", "Country"],
+                measures=["MoM Delta"],
+            )
+        )
+        result = CompilationPipeline().compile(query, model, "postgres")
+        sql = result.sql
+        # The window function must actually appear in the compiled SQL.
+        assert "LAG(" in sql.upper(), sql
+        # A ``window_base`` CTE must be generated even when the window
+        # metric is only referenced transitively via a DDM.
+        assert "window_base" in sql, sql
+        # MoM Delta's expression must subtract the LAG-output from the
+        # base Revenue value — both terms appear inside the same
+        # arithmetic, with LAG on the right-hand side.
+        upper = sql.upper()
+        delta_idx = upper.index('"MOM DELTA"')
+        # Walk backward to find the matching parenthesis for the cast
+        # wrapping ``Revenue - LAG(...)``; the easier proxy is that
+        # ``LAG`` and ``"Revenue"`` both appear within the SQL preceding
+        # the ``"MoM Delta"`` alias.
+        head = sql[:delta_idx]
+        assert "LAG(" in head.upper(), sql
+        assert '"Revenue"' in head, sql
+        assert "-" in head, sql
+
     def test_window_metric_compose_with_derived(self) -> None:
-        """A DERIVED metric that references a WINDOW metric should compose
-        — the lag column ends up in window_base; the derived expression
-        consumes it in the outermost SELECT."""
+        """A DERIVED metric that references a WINDOW metric must compute
+        ``MoM Delta = Revenue - LAG(Revenue)`` — not ``Revenue - Revenue``
+        which is what the early-substitution bug produced.
+
+        Reviewer-flagged: the previous version of this test only checked
+        for ``LAG(`` and the alias, missing that MoM Delta's right-hand
+        side was being silently rewritten to a bare ``Revenue`` reference.
+        """
         model = _load_model()
         query = QueryObject(
             select=QuerySelect(
@@ -376,8 +478,86 @@ class TestWindowMetrics:
             )
         )
         result = CompilationPipeline().compile(query, model, "postgres")
-        assert "LAG(" in result.sql.upper()
-        assert '"MoM Delta"' in result.sql or "MoM Delta" in result.sql
+        sql = result.sql
+        upper = sql.upper()
+        assert "LAG(" in upper
+        # Strong shape check: the compiled SQL must contain a literal
+        # subtraction of the form ``"Revenue" - LAG(...)`` somewhere in
+        # the outer SELECT — that's MoM Delta's expression. Before the
+        # fix, MoM Delta was emitted as ``Revenue - Revenue`` (or the
+        # equivalent ``SUM(amount) - SUM(amount)``) with no LAG inside.
+        import re as _re
+
+        assert _re.search(r'"Revenue"\s*-\s*LAG\(', sql), (
+            f"MoM Delta must subtract LAG(Revenue) from Revenue. Got:\n{sql}"
+        )
+
+    def test_order_by_on_window_metric_uses_alias_not_base_expression(self) -> None:
+        """Regression: ``ORDER BY "Revenue Prior Month" DESC`` must order
+        by the window-CTE output column, not by the base measure's inner
+        aggregate.
+
+        Before the fix, ``_resolve_order_by_field`` returned
+        ``meas.expression`` for any measure — for a window metric, that
+        expression is the lag-input (the bare ``Revenue`` aggregate), so
+        ``ORDER BY "Revenue Prior Month" DESC`` silently rewrote to
+        ``ORDER BY "Revenue" DESC``.
+        """
+        from orionbelt.models.query import QueryOrderBy, SortDirection
+
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date", "Country"],
+                measures=["Revenue Prior Month"],
+            ),
+            order_by=[QueryOrderBy(field="Revenue Prior Month", direction=SortDirection.DESC)],
+        )
+        result = CompilationPipeline().compile(query, model, "postgres")
+        sql = result.sql
+        # The outer ORDER BY must reference the windowed alias by name,
+        # not the bare base aggregate.
+        assert 'ORDER BY "Revenue Prior Month" DESC' in sql, sql
+        assert 'ORDER BY "Revenue" DESC' not in sql, sql
+
+    def test_window_base_carries_base_measure_declared_data_type(self) -> None:
+        """Regression: window_base CTE must apply the base measure's
+        declared dataType cast, mirroring cumulative_wrap. Without the
+        cast, ``LAG`` over a ``decimal(18, 2)`` measure operates on the
+        uncast ``SUM(...)`` and a float / int default leaks into the
+        windowed projection.
+        """
+        # Pin Revenue to decimal(18, 2) so the cast is visible in SQL.
+        decimal_yaml = TREND_MODEL_YAML.replace(
+            "  Revenue:\n"
+            "    columns:\n"
+            "      - dataObject: Orders\n"
+            "        column: Amount\n"
+            "    resultType: float\n"
+            "    aggregation: sum\n",
+            "  Revenue:\n"
+            "    columns:\n"
+            "      - dataObject: Orders\n"
+            "        column: Amount\n"
+            '    dataType: "decimal(18, 2)"\n'
+            "    aggregation: sum\n",
+        )
+        model = _load_model(decimal_yaml)
+        # Select only the window metric — the base measure is NOT directly
+        # selected, so window_wrap is responsible for adding the cast-wrapped
+        # Revenue column to the window_base CTE.
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date", "Country"],
+                measures=["Revenue Prior Month"],
+            )
+        )
+        result = CompilationPipeline().compile(query, model, "postgres")
+        sql_upper = result.sql.upper()
+        # Cast appears inside the base CTE alongside the SUM aggregation —
+        # not in the outer LAG call (LAG just selects from the cast result).
+        assert "CAST" in sql_upper, result.sql
+        assert "DECIMAL(18, 2)" in sql_upper or "DECIMAL(18,2)" in sql_upper, result.sql
 
 
 # ── Compilation: statistical aggregates ────────────────────────────────────

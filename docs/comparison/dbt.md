@@ -7,7 +7,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt S
 ## TL;DR
 
 - **dbt SL wins on**: conversion metrics, the `metric_time` virtual dimension, ecosystem maturity, and governance/lineage tied to the dbt transformation pipeline.
-- **OBSL wins on**: being a self-hostable, warehouse-agnostic, transformation-tool-agnostic engine; **richer modeling topologies** (multi-rooted DAG, named alternative join paths) where dbt assumes single-rooted star/snowflake; explicit multi-fact CFL planning; an RDF/SPARQL view of the model; a clean REST surface; a more ergonomic period-over-period metric type; **first-class window metrics** (rank/lag/lead/ntile) and **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*) v2.6+ — neither has any analog in dbt SL.
+- **OBSL wins on**: being a self-hostable, warehouse-agnostic, transformation-tool-agnostic engine; **richer modeling topologies** (multi-rooted DAG, named alternative join paths) where dbt assumes single-rooted star/snowflake; explicit multi-fact CFL planning; an RDF/SPARQL view of the model; a clean REST surface; a more ergonomic period-over-period metric type; **first-class window metrics** (rank/lag/lead/ntile) and **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*) neither has any analog in dbt SL.
 - **Different niches**: dbt SL is "metrics on top of your dbt project, served by dbt Cloud." OBSL is "drop-in semantic compiler you can embed anywhere, modeling-tool independent."
 
 ---
@@ -32,9 +32,9 @@ OBSL `MetricType` enum (`src/orionbelt/models/semantic.py`):
 |---|---|---|
 | `Measure` (sum/avg/count/min/max + `any_value` / `median` / `mode` / `listagg` + 9 statistical aggs, `total: bool` for grand totals) | `simple` metric over a `measure` (no statistical aggs) | OBSL wins on aggregate surface — see §6 |
 | `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression | `ratio`, `derived` | Both first-class |
-| `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition v2.6+**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
+| `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
 | `Metric` `type: period_over_period` with 4 comparison modes | Approximated via `offset_window` and `metric_time` | OBSL has a dedicated metric type — see §4 |
-| `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value, v2.6+) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
+| `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
 | — | `conversion` | **Gap in OBSL** |
 
 OBSL coverage: ~95% of dbt's metric expressivity (missing only `conversion`), plus three OBSL-only surfaces dbt SL has no native answer for: `MetricType.WINDOW` (rank/lag/lead/ntile), `partitionBy` on cumulative metrics, and the 9-function statistical-aggregate surface.
@@ -49,28 +49,28 @@ Three patterns supported, all dbt-equivalent:
 
 ```yaml
 metrics:
-  # 1. Running total (unbounded cumulative sum)
-  - name: revenue_running_total
-    type: cumulative
-    measure: revenue
-    timeDimension: order_date
-    cumulativeType: sum
+ # 1. Running total (unbounded cumulative sum)
+ - name: revenue_running_total
+ type: cumulative
+ measure: revenue
+ timeDimension: order_date
+ cumulativeType: sum
 
-  # 2. Rolling window (e.g. last 7 days)
-  - name: revenue_7d_avg
-    type: cumulative
-    measure: revenue
-    timeDimension: order_date
-    cumulativeType: avg
-    cumulativeWindow: 7
+ # 2. Rolling window (e.g. last 7 days)
+ - name: revenue_7d_avg
+ type: cumulative
+ measure: revenue
+ timeDimension: order_date
+ cumulativeType: avg
+ cumulativeWindow: 7
 
-  # 3. Grain-to-date (e.g. month-to-date, resets each month)
-  - name: revenue_mtd
-    type: cumulative
-    measure: revenue
-    timeDimension: order_date
-    cumulativeType: sum
-    grainToDate: month
+ # 3. Grain-to-date (e.g. month-to-date, resets each month)
+ - name: revenue_mtd
+ type: cumulative
+ measure: revenue
+ timeDimension: order_date
+ cumulativeType: sum
+ grainToDate: month
 ```
 
 Window functions used:
@@ -84,44 +84,44 @@ Window functions used:
 Aggregations: `sum`, `avg`, `min`, `max`, `count` (`CumulativeAggType`).
 Grains for grain-to-date: `year`, `quarter`, `month`, `week` (`GrainToDate`).
 
-**v2.6+ — `partitionBy` extension (OBSL-only):** add a per-dimension partition to any rolling window:
+**`partitionBy` extension (OBSL-only):** add a per-dimension partition to any rolling window:
 
 ```yaml
 - name: revenue_ma12_by_country
-  type: cumulative
-  measure: revenue
-  timeDimension: order_month
-  cumulativeType: avg
-  window: 12
-  partitionBy: [country]    # 12-month MA computed independently per country
+ type: cumulative
+ measure: revenue
+ timeDimension: order_month
+ cumulativeType: avg
+ window: 12
+ partitionBy: [country] # 12-month MA computed independently per country
 ```
 
 dbt SL has no native partition-by surface on cumulative metrics; users would step outside the metric DSL and write window-function SQL by hand.
 
 ---
 
-## 3a. Window metrics (OBSL-only, v2.6+)
+## 3a. Window metrics (OBSL-only)
 
 OBSL ships `MetricType.WINDOW` for the single-row window-function family — `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`. dbt SL has no equivalent; the closest workaround is a derived metric over hand-rolled SQL, which means dropping out of the semantic-model layer entirely.
 
 ```yaml
 metrics:
-  # Rank revenue within each quarter
-  - name: revenue_rank_by_quarter
-    type: window
-    windowFunction: dense_rank
-    measure: revenue
-    orderDirection: desc
-    partitionBy: [quarter]
+ # Rank revenue within each quarter
+ - name: revenue_rank_by_quarter
+ type: window
+ windowFunction: dense_rank
+ measure: revenue
+ orderDirection: desc
+ partitionBy: [quarter]
 
-  # Prior-month revenue side by side with the current row
-  - name: revenue_prior_month
-    type: window
-    windowFunction: lag
-    measure: revenue
-    offset: 1
-    timeDimension: order_date
-    partitionBy: [country]
+ # Prior-month revenue side by side with the current row
+ - name: revenue_prior_month
+ type: window
+ windowFunction: lag
+ measure: revenue
+ offset: 1
+ timeDimension: order_date
+ partitionBy: [country]
 ```
 
 Window metrics compose freely with derived metrics — a `{[Revenue]} - {[Revenue Prior Month]}` MoM delta needs no new SQL. Implementation: `src/orionbelt/compiler/window_wrap.py`, runs after `cumulative_wrap` in the pipeline so window functions can rank cumulative outputs.
@@ -138,14 +138,14 @@ OBSL exposes PoP as a **first-class metric type** with a comparison-mode enum, w
 
 ```yaml
 metrics:
-  - name: revenue_yoy
-    type: period_over_period
-    measure: revenue
-    periodOverPeriod:
-      grain: month            # bucket grain
-      offset: -1              # compare vs. previous period
-      offsetGrain: year       # one year earlier
-      comparison: percentChange   # ratio | difference | previousValue | percentChange
+ - name: revenue_yoy
+ type: period_over_period
+ measure: revenue
+ periodOverPeriod:
+ grain: month # bucket grain
+ offset: -1 # compare vs. previous period
+ offsetGrain: year # one year earlier
+ comparison: percentChange # ratio | difference | previousValue | percentChange
 ```
 
 Comparison modes (`PeriodOverPeriodComparison`):
@@ -192,7 +192,7 @@ OBSL is built on a **directed join graph (DAG)** with explicit support for riche
 
 ---
 
-## 6a. Statistical aggregates (OBSL-only, v2.6+)
+## 6a. Statistical aggregates (OBSL-only)
 
 OBSL `Measure.aggregation` ships 9 statistical functions that dbt SL doesn't expose as a first-class surface — users would either step out to raw SQL or write a custom derived metric that depends on the warehouse's native functions:
 

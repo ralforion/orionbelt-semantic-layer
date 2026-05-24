@@ -1965,24 +1965,32 @@ class OBMLtoOSI:
         return result
 
     def _measure_to_sql(self, measure: dict, data_objects: dict) -> str | None:
-        """Convert an OBML measure definition to a SQL expression string."""
+        """Convert an OBML measure definition to a SQL expression string.
+
+        Multi-column measures (two-column statistical aggregates like
+        ``corr(a, b)``, or count-distinct over a composite key) emit
+        every column as a comma-separated argument list. Single-column
+        aggregates collapse to the same shape with one argument.
+        """
         agg = measure.get("aggregation", "sum").upper()
         distinct = measure.get("distinct", False)
         distinct_kw = "DISTINCT " if distinct else ""
 
         columns = measure.get("columns", [])
         if columns:
-            col_ref = columns[0]
-            do_name = col_ref.get("dataObject", "")
-            col_name = col_ref.get("column", "")
-            do_obj = data_objects.get(do_name, {})
-            col_code = (
-                do_obj.get("columns", {})
-                .get(col_name, {})
-                .get("code", col_name.lower().replace(" ", "_"))
-            )
-            do_code = do_obj.get("code", do_name.lower().replace(" ", "_"))
-            return f"{agg}({distinct_kw}{do_code}.{col_code})"
+            args: list[str] = []
+            for col_ref in columns:
+                do_name = col_ref.get("dataObject", "")
+                col_name = col_ref.get("column", "")
+                do_obj = data_objects.get(do_name, {})
+                col_code = (
+                    do_obj.get("columns", {})
+                    .get(col_name, {})
+                    .get("code", col_name.lower().replace(" ", "_"))
+                )
+                do_code = do_obj.get("code", do_name.lower().replace(" ", "_"))
+                args.append(f"{do_code}.{col_code}")
+            return f"{agg}({distinct_kw}{', '.join(args)})"
 
         obml_expr = measure.get("expression", "")
         if obml_expr:

@@ -1834,7 +1834,7 @@ wheels = [
 
 [[package]]
 name = "ob-bigquery"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-bigquery" }
 dependencies = [
     { name = "google-cloud-bigquery", extra = ["pandas"] },
@@ -1866,7 +1866,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "ob-clickhouse"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-clickhouse" }
 dependencies = [
     { name = "clickhouse-connect" },
@@ -1902,7 +1902,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-databricks"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-databricks" }
 dependencies = [
     { name = "databricks-sql-connector" },
@@ -1936,7 +1936,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-dremio"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-dremio" }
 dependencies = [
     { name = "ob-driver-core" },
@@ -1970,7 +1970,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-driver-core"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-driver-core" }
 dependencies = [
     { name = "httpx" },
@@ -1998,7 +1998,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "ob-duckdb"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-duckdb" }
 dependencies = [
     { name = "duckdb" },
@@ -2030,7 +2030,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-flight-extension"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-flight-extension" }
 dependencies = [
     { name = "ob-driver-core" },
@@ -2098,7 +2098,7 @@ provides-extras = ["duckdb", "snowflake", "postgres", "clickhouse", "dremio", "d
 
 [[package]]
 name = "ob-mysql"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-mysql" }
 dependencies = [
     { name = "mysql-connector-python" },
@@ -2134,7 +2134,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-postgres"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-postgres" }
 dependencies = [
     { name = "adbc-driver-postgresql" },
@@ -2170,7 +2170,7 @@ provides-extras = ["sqlalchemy", "dev"]
 
 [[package]]
 name = "ob-snowflake"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "drivers/ob-snowflake" }
 dependencies = [
     { name = "ob-driver-core" },
@@ -2229,7 +2229,7 @@ wheels = [
 
 [[package]]
 name = "orionbelt-semantic-layer"
-version = "2.6.0"
+version = "2.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
