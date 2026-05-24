@@ -367,6 +367,14 @@ measures:
         column: Refund
     resultType: float
     aggregation: sum
+  Revenue Refund Corr:
+    columns:
+      - dataObject: Orders
+        column: Amount
+      - dataObject: Returns
+        column: Refund
+    resultType: float
+    aggregation: corr
 
 metrics:
   Refund Ratio:
@@ -515,3 +523,51 @@ class TestCFLWithFilters:
         # quote-agnostic shape: SUM( <quote>composite_01<quote>.<quote>...
         assert re.search(r"SUM\(\W?composite_01\W?\.\W?Revenue\W?\)", sql), sql
         assert re.search(r"SUM\(\W?composite_01\W?\.\W?Total Refunds\W?\)", sql), sql
+
+
+class TestCFLUnsupportedAggregations:
+    """Regression: two-column statistical aggregates must be rejected in
+    CFL with a clear domain error, not silently mangled into
+    ``CORR(CAST(f0 AS VARCHAR) || ... )`` by the concat-count path."""
+
+    def test_corr_measure_in_cfl_query_raises_unsupported(self) -> None:
+        from orionbelt.compiler.cfl import UnsupportedAggregationForCFLError
+
+        model = _load_cfl_model()
+        pipeline = CompilationPipeline()
+        # Revenue (Orders) + corr(Orders.Amount, Returns.Refund) forces a
+        # multi-fact plan because the corr's two columns span Orders and
+        # Returns.
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Revenue", "Revenue Refund Corr"],
+            ),
+        )
+        with pytest.raises(UnsupportedAggregationForCFLError) as exc:
+            pipeline.compile(query, model, "postgres")
+        assert exc.value.measure_name == "Revenue Refund Corr"
+        assert exc.value.aggregation == "corr"
+        # Error should explain WHY (paired-row semantics) and HOW to
+        # recover (single fact or model restructure).
+        msg = str(exc.value)
+        assert "paired-row" in msg
+        assert "CFL" in msg or "multi-fact" in msg
+
+    def test_corr_measure_in_single_fact_query_still_compiles(self) -> None:
+        """The rejection is scoped to CFL only — a single-fact query that
+        uses the same corr measure must still compile via the star path."""
+        # Pin to Customer Country only and use a metric that lives entirely
+        # within Orders' join graph — the corr measure crosses into Returns
+        # so we exclude it here.
+        model = _load_cfl_model()
+        pipeline = CompilationPipeline()
+        # Single-fact: Revenue alone (Orders) — never trips CFL.
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Revenue"],
+            ),
+        )
+        result = pipeline.compile(query, model, "postgres")
+        assert "composite_01" not in result.sql

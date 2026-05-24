@@ -1646,6 +1646,16 @@ class QueryResolver:
 
         for meas in ctx.result.measures:
             if meas.name == field_name:
+                # Window / cumulative / period-over-period metrics are
+                # exposed by the outer SELECT as a bare alias after their
+                # wrapper CTE runs — ordering by ``meas.expression`` here
+                # would point ORDER BY at the *base measure's* inner
+                # aggregate (the lag-input, the cumulative-input), not at
+                # the windowed output the user asked for. Same pattern as
+                # coalesce_aliases above: emit a table-less ColumnRef so
+                # both star and CFL outer SELECTs bind it correctly.
+                if meas.is_window or meas.is_cumulative or meas.is_pop:
+                    return ColumnRef(name=meas.name)
                 return meas.expression
 
         # Raw mode: order by the field's "DataObject.Column" alias.

@@ -35,10 +35,47 @@ from orionbelt.compiler.resolution import (
 )
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
-from orionbelt.dialect.base import Dialect
-from orionbelt.models.semantic import DataObject, SemanticModel
+from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
+from orionbelt.models.semantic import (
+    TWO_COLUMN_AGGREGATIONS,
+    DataObject,
+    SemanticModel,
+)
 
-__all__ = ["CFLPlanner", "FanoutError"]
+
+class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
+    """Raised when a measure's aggregation cannot be planned in CFL.
+
+    Two-column statistical aggregates (``corr``, ``covar_*``, ``regr_*``)
+    need paired-row semantics that the current UNION ALL + concat-count
+    CFL strategy cannot express. The single-fact path (star planner)
+    handles them correctly; only multi-fact CFL trips this guard.
+
+    Inherits ``UnsupportedAggregationError`` so existing router catch
+    sites surface the same 422 response shape. The ``dialect`` slot
+    carries the planner identifier (``"cfl"``) rather than a SQL
+    dialect — kept for response compatibility.
+    """
+
+    def __init__(self, measure_name: str, aggregation: str) -> None:
+        self.measure_name = measure_name
+        # Skip parent ``__init__`` (which formats a dialect-flavored
+        # message) and set the same fields directly with our CFL-specific
+        # message so routers and tests still get the structured
+        # ``.dialect`` / ``.aggregation`` attributes.
+        self.dialect = "cfl"
+        self.aggregation = aggregation
+        Exception.__init__(
+            self,
+            f"Measure '{measure_name}' uses aggregation '{aggregation}' which "
+            "requires paired-row semantics and is not supported in CFL "
+            "(multi-fact) queries. Restrict the query to a single fact "
+            "table or restructure the model so this measure resolves via "
+            "the star-schema path.",
+        )
+
+
+__all__ = ["CFLPlanner", "FanoutError", "UnsupportedAggregationForCFLError"]
 
 
 def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
@@ -92,6 +129,18 @@ class CFLPlanner:
             return StarSchemaPlanner().plan(
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
+
+        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) need
+        # paired-row semantics that the UNION ALL + concat-count multi-fact
+        # path cannot express. Without this guard the planner emits
+        # ``CORR(CAST(f0 AS VARCHAR) || '|' || CAST(f1 AS VARCHAR))`` — one
+        # argument, wrong type. Fail fast with a clear error so the caller
+        # can restructure their model or restrict the query to a single
+        # fact source instead of getting an opaque execution-time error.
+        for measure in resolved.measures:
+            agg = measure.aggregation.lower() if measure.aggregation else ""
+            if agg in TWO_COLUMN_AGGREGATIONS:
+                raise UnsupportedAggregationForCFLError(measure.name, agg)
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(

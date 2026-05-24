@@ -487,11 +487,29 @@ class Measure(BaseModel):
         Two-column aggregates (``corr``, ``covar_*``, ``regr_*``) require
         exactly two entries in ``columns``. Single-column statistical
         aggregates (``stddev``, ``stddev_pop``, ``variance``, ``var_pop``)
-        require exactly one. Expression-based measures bypass the check
-        because they can compose any column reference.
+        require exactly one.
+
+        ``expression:`` form is **not allowed** for two-column
+        aggregates — a single expression string collapses to one scalar
+        argument, producing invalid SQL like ``CORR((a + b))`` instead
+        of ``CORR(a, b)``. To express per-argument transformations on
+        two-column aggregates, define the inputs as computed columns on
+        the data object and reference them via ``columns:``.
+
+        Single-column statistical aggregates (``stddev`` etc.) DO accept
+        ``expression:`` — the result ``STDDEV(<scalar expression>)`` is
+        valid SQL.
         """
         agg = self.aggregation.lower()
         if self.expression is not None:
+            if agg in TWO_COLUMN_AGGREGATIONS:
+                raise ValueError(
+                    f"Aggregation '{agg}' requires exactly 2 columns and cannot be "
+                    "combined with 'expression:'. Use the 'columns:' list with two "
+                    "entries (define computed columns on the data object if you need "
+                    "per-argument transformations) so the aggregate's argument order "
+                    "is explicit."
+                )
             return self
         if agg in TWO_COLUMN_AGGREGATIONS and len(self.columns) != 2:
             raise ValueError(

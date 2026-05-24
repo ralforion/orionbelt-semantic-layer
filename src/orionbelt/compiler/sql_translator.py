@@ -65,6 +65,23 @@ _AGG_CLASS_TO_NAME: dict[type[exp.Expression], str] = {
 }
 
 
+# Wrapping aggregates that are idempotent over a single-value group — i.e.
+# ``agg(x)`` returns ``x`` when applied to a singleton. Measures and metrics
+# arrive at the SELECT loop already evaluated at the query's grain (one value
+# per group), so any of these wraps is a provably-safe no-op shim. ``COUNT``
+# and ``COUNT(DISTINCT ...)`` are NOT idempotent (they return cardinality)
+# and remain restricted to the "wrap matches measure's declared aggregation"
+# path.
+_IDEMPOTENT_WRAPS: frozenset[str] = frozenset({"sum", "min", "max", "avg", "median"})
+
+
+# Function names recognised as the explicit measure-marker syntax. ``MEASURE``
+# is the Snowflake ``SEMANTIC_VIEW`` / Databricks metric-view convention;
+# ``AGG`` and ``AGGREGATE`` are accepted as portable aliases for BI tools and
+# users coming from Calcite-style proposals.
+_MEASURE_MARKER_NAMES: frozenset[str] = frozenset({"MEASURE", "AGG", "AGGREGATE"})
+
+
 # Map SQL operators (sqlglot AST kinds) to QueryObject FilterOperator values.
 _OP_MAP: dict[type[exp.Expression], FilterOperator] = {
     exp.EQ: FilterOperator.EQUALS,
@@ -253,26 +270,46 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 continue
             canon = canonical(inner_label)
             # Determine if the inner is a measure or a metric for the
-            # match-or-reject check.
+            # idempotence / matching-aggregation check.
             measure_obj = model.measures.get(canon)
             metric_obj = model.metrics.get(canon)
             if metric_obj is not None:
-                errors.append(
-                    SemanticError(
-                        code="UNSUPPORTED_SQL_FEATURE",
-                        message=(
-                            f"Metric `{canon}` is a derived expression already "
-                            "evaluated at the query's grain — applying "
-                            f"`{agg_name.upper()}(...)` would change its math. Use bare "
-                            f'`"{canon}"` or `MEASURE("{canon}")`.'
-                        ),
-                        context={"metric": canon, "wrap": agg_name},
+                # Metrics have no declared aggregation — they're derived
+                # expressions evaluated at the query's grain. Accept only
+                # idempotent wraps (SUM/MIN/MAX/AVG/MEDIAN over a singleton
+                # returns the singleton value); reject COUNT family which
+                # would change cardinality semantics.
+                if agg_name not in _IDEMPOTENT_WRAPS:
+                    errors.append(
+                        SemanticError(
+                            code="UNSUPPORTED_SQL_FEATURE",
+                            message=(
+                                f"Metric `{canon}` is a derived expression already "
+                                "evaluated at the query's grain — applying "
+                                f"`{agg_name.upper()}(...)` would change its math. Use bare "
+                                f'`"{canon}"`, `MEASURE("{canon}")`, or an idempotent '
+                                "wrap (SUM/MIN/MAX/AVG/MEDIAN)."
+                            ),
+                            context={"metric": canon, "wrap": agg_name},
+                        )
                     )
-                )
+                    continue
+                # Idempotent wrap on metric: strip it, emit the metric bare.
+                select_measures.append(canon)
                 continue
             if measure_obj is not None:
                 declared = str(measure_obj.aggregation).lower()
-                if declared != agg_name:
+                # Two acceptance paths, both yield the measure's declared
+                # aggregation (the wrap is purely syntactic):
+                #   1. Matching wrap   — ``COUNT(<count-declared measure>)``,
+                #      ``SUM(<sum-declared measure>)``, …
+                #   2. Idempotent wrap — any of SUM/MIN/MAX/AVG/MEDIAN over a
+                #      per-grain measure value returns that value. Lets BI
+                #      tools that go through Calcite (Dremio, Spark, Flink)
+                #      satisfy "expression must be aggregated" with a uniform
+                #      SUM(...) wrap without having to mirror each measure's
+                #      declared aggregation.
+                if declared != agg_name and agg_name not in _IDEMPOTENT_WRAPS:
                     errors.append(
                         SemanticError(
                             code="UNSUPPORTED_SQL_FEATURE",
@@ -280,7 +317,8 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                                 f"Measure `{canon}` is declared as `{declared.upper()}` — "
                                 f"applying `{agg_name.upper()}` would change its math. "
                                 f'Use `{declared.upper()}("{canon}")`, bare `"{canon}"`, '
-                                f'or `MEASURE("{canon}")`.'
+                                f'`MEASURE("{canon}")`, or an idempotent wrap '
+                                "(SUM/MIN/MAX/AVG/MEDIAN)."
                             ),
                             context={
                                 "measure": canon,
@@ -712,6 +750,9 @@ def _column_name(node: exp.Expression) -> str | None:
     OBSL's natural-SQL surface ``MEASURE("Total Sales")`` is equivalent to
     bare ``"Total Sales"``: the wrapping is a hint to humans and BI tools
     that "this column is already an aggregate".
+
+    ``AGG(<label>)`` and ``AGGREGATE(<label>)`` are accepted as portable
+    aliases — same semantics as ``MEASURE()``.
     """
     if isinstance(node, exp.Alias):
         return _column_name(node.this)
@@ -728,10 +769,11 @@ def _column_name(node: exp.Expression) -> str | None:
         return _column_name(node.this)
     if (
         isinstance(node, exp.Anonymous)
-        and str(node.name).upper() == "MEASURE"
+        and str(node.name).upper() in _MEASURE_MARKER_NAMES
         and len(node.expressions) == 1
     ):
-        # MEASURE(<label>) — single arg, must be a bare identifier / column.
+        # MEASURE(<label>) / AGG(<label>) / AGGREGATE(<label>) — single arg,
+        # must be a bare identifier / column.
         return _column_name(node.expressions[0])
     return None
 
@@ -805,10 +847,11 @@ def _try_translate_raw_mode(ast: exp.Select, model: SemanticModel) -> list[str] 
         ):
             aggregate_count += 1
             continue
-        # MEASURE() / aggregate wrap / metric reference — all aggregate-mode
+        # MEASURE() / AGG() / AGGREGATE() / aggregate wrap / metric reference
+        # — all aggregate-mode.
         if (
             isinstance(inner, exp.Anonymous)
-            and str(getattr(inner, "name", "")).upper() == "MEASURE"
+            and str(getattr(inner, "name", "")).upper() in _MEASURE_MARKER_NAMES
         ):
             aggregate_count += 1
             continue
