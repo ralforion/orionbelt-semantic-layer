@@ -19,7 +19,7 @@ from orionbelt.compiler.validator import validate_sql
 from orionbelt.compiler.window_wrap import wrap_with_window
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.query import QueryObject
+from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -117,16 +117,47 @@ def _drop_having_only_projection(ast: Select, resolved: ResolvedQuery) -> Select
     return replace(ast, columns=kept_columns)
 
 
-def _compute_physical_tables(resolved: ResolvedQuery, model: SemanticModel) -> list[str]:
+def _collect_subquery_objects(items: list[QueryFilterItem]) -> set[str]:
+    """Recursively gather every ``Subquery.dataObject`` referenced by EXISTS /
+    NONEXISTS filters in a list of where/having items.
+
+    Required by :func:`_compute_physical_tables` so the cache key reflects
+    every table the compiled SQL actually reads — without this, an
+    ``EXISTS OrderItems`` filter looks like a single-fact query for
+    ``Orders``, and child-table updates can't invalidate the cached result.
+    """
+    found: set[str] = set()
+    for item in items:
+        if isinstance(item, QueryFilterGroup):
+            found.update(_collect_subquery_objects(list(item.filters)))
+        elif isinstance(item, QueryFilter) and item.subquery is not None:
+            found.add(item.subquery.data_object)
+            # Sub-filters can themselves carry EXISTS; walk them too.
+            found.update(_collect_subquery_objects(list(item.subquery.filter)))
+    return found
+
+
+def _compute_physical_tables(
+    resolved: ResolvedQuery, query: QueryObject, model: SemanticModel
+) -> list[str]:
     """Deduplicate dataObjects to physical ``DATABASE.SCHEMA.CODE`` triples.
 
     Two dataObjects mapping to the same physical table contribute one entry.
     See ``design/PLAN_freshness_driven_cache.md`` §10 for why this matters
     (one source, multiple semantic facets like ``Sales`` + ``Returns``).
+
+    EXISTS / NONEXISTS target dataObjects are not part of
+    ``resolved.required_objects`` (they live behind a correlated subquery,
+    not in the FROM/JOIN chain), so the original query is walked too —
+    otherwise child-table edits would not invalidate cached results.
     """
+    object_names: set[str] = set(resolved.required_objects)
+    object_names.update(_collect_subquery_objects(list(query.where)))
+    object_names.update(_collect_subquery_objects(list(query.having)))
+
     seen: set[str] = set()
     out: list[str] = []
-    for name in sorted(resolved.required_objects):
+    for name in sorted(object_names):
         obj = model.data_objects.get(name)
         if obj is None:
             continue
@@ -156,18 +187,20 @@ class CompilationPipeline:
         dialect_name: str,
     ) -> CompilationResult:
         """Compile a query to SQL for the specified dialect."""
-        # Phase 1: Resolution
-        resolved = self._resolver.resolve(query, model)
-
-        # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
-        if not resolved.requires_cfl:
-            detect_fanout(resolved, model)
-
-        # Create dialect early so planners can use dialect-aware table formatting
+        # Create dialect first so resolution and planning share one
+        # ``qualify_table`` — the EXISTS filter operator needs it during
+        # resolution to render the correlated subquery's FROM clause.
         dialect = DialectRegistry.get(dialect_name)
         qualify_table = lambda obj: dialect.format_table_ref(  # noqa: E731
             obj.database, obj.schema_name, obj.code
         )
+
+        # Phase 1: Resolution
+        resolved = self._resolver.resolve(query, model, qualify_table=qualify_table)
+
+        # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
+        if not resolved.requires_cfl:
+            detect_fanout(resolved, model)
 
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
@@ -303,7 +336,7 @@ class CompilationPipeline:
         explain = self._build_explain(resolved, model, use_cfl, plan)
 
         # Compute deduplicated physical tables touched by the query
-        physical_tables = _compute_physical_tables(resolved, model)
+        physical_tables = _compute_physical_tables(resolved, query, model)
 
         return CompilationResult(
             sql=sql,

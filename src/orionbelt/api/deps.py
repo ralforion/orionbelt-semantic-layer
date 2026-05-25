@@ -22,7 +22,6 @@ class OneshotBatchConfig:
 _session_manager: SessionManager | None = None
 _disable_session_list: bool = False
 _single_model_mode: bool = False
-_preload_model_yaml: str | None = None
 _flight_info: dict[str, object] | None = None
 _query_execute_enabled: bool = False
 _db_vendor: str = "duckdb"
@@ -51,7 +50,7 @@ def init_session_manager(
     manager: SessionManager,
     *,
     disable_session_list: bool = False,
-    preload_model_yaml: str | None = None,
+    admin_curated: bool = False,
     flight_info: dict[str, object] | None = None,
     query_execute_enabled: bool = False,
     db_vendor: str = "duckdb",
@@ -63,14 +62,13 @@ def init_session_manager(
 ) -> None:
     """Set the global SessionManager (called at app startup)."""
     global _session_manager, _disable_session_list  # noqa: PLW0603
-    global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
+    global _single_model_mode, _flight_info  # noqa: PLW0603
     global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
     global _default_locale, _oneshot_batch_config  # noqa: PLW0603
     global _cache, _cache_config  # noqa: PLW0603
     _session_manager = manager
     _disable_session_list = disable_session_list
-    _single_model_mode = preload_model_yaml is not None
-    _preload_model_yaml = preload_model_yaml
+    _single_model_mode = admin_curated
     _flight_info = flight_info
     _query_execute_enabled = query_execute_enabled
     _db_vendor = db_vendor
@@ -97,13 +95,14 @@ def is_session_list_disabled() -> bool:
 
 
 def is_single_model_mode() -> bool:
-    """Return True when a MODEL_FILE is configured (no model upload/removal)."""
+    """Return True when admin-curated mode is active (MODEL_FILES is set).
+
+    Name is kept for backwards compatibility with the public ``/v1/settings``
+    response field ``single_model_mode`` — the actual semantics today are
+    "any admin-curated preload is active", which gates POST/DELETE on
+    ``/v1/sessions/{id}/models`` (returns 403) and several shortcut routes.
+    """
     return _single_model_mode
-
-
-def get_preload_model_yaml() -> str | None:
-    """Return the OBML YAML to pre-load into new sessions, or None."""
-    return _preload_model_yaml
 
 
 def get_flight_info() -> dict[str, object] | None:
@@ -160,14 +159,13 @@ def get_cache_config() -> CacheRuntimeConfig:
 def reset_session_manager() -> None:
     """Clear the global SessionManager (for tests)."""
     global _session_manager, _disable_session_list  # noqa: PLW0603
-    global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
+    global _single_model_mode, _flight_info  # noqa: PLW0603
     global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
     global _default_locale, _oneshot_batch_config  # noqa: PLW0603
     global _cache, _cache_config  # noqa: PLW0603
     _session_manager = None
     _disable_session_list = False
     _single_model_mode = False
-    _preload_model_yaml = None
     _flight_info = None
     _query_execute_enabled = False
     _db_vendor = "duckdb"

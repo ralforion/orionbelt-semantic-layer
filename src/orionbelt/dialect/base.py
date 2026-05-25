@@ -13,6 +13,7 @@ from orionbelt.ast.nodes import (
     Cast,
     ColumnRef,
     Except,
+    Exists,
     Expr,
     From,
     FunctionCall,
@@ -532,6 +533,10 @@ class Dialect(ABC):
                 return self._compile_cast(inner, type_name)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"
+            case Exists(subquery=subq, negated=False):
+                return f"EXISTS (\n{self.compile_select(subq)}\n)"
+            case Exists(subquery=subq, negated=True):
+                return f"NOT EXISTS (\n{self.compile_select(subq)}\n)"
             case RawSQL(sql=sql):
                 return sql
             case Between(expr=inner, low=low, high=high, negated=negated):

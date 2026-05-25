@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.7.0] - 2026-05-25
+
+### Removed
+
+- **`MODEL_FILE` env var (deprecated since v2.4.0).** Removed in v2.7.0. Replace with `MODEL_FILES=<path>` — a single-entry comma-separated list is the direct equivalent and keeps the same admin-curated semantics (uploads/removals blocked, model preloaded at startup). The preloaded model now lives in its own *named protected session* (addressing name = OBML `name:` field or filename stem) rather than the legacy `__default__` session, so REST clients address it via `/v1/sessions/<model_name>/...`. The `single_model_mode` flag on `/v1/settings` is retained (it now means "admin-curated mode is active"), but the `model_yaml` field is always `null`; use `GET /v1/models` for discovery.
+
+### Added
+
+- **`exists` / `nonexists` filter operators.** First-class primitive for "row in this data object has (or doesn't have) a matching row in a related data object" — a correlated `EXISTS (SELECT 1 FROM …)` subquery that no longer requires modelling the question as a precomputed boolean column or a raw-SQL data-object expression. Drives regulatory data-quality rules, coverage / anti-join reports, and any "parent has at least one child of kind X" check. The new `subquery:` payload names the target data object (the planner walks the model's existing `joins:` to derive the correlation predicates — join columns are not restated), with an optional `pathName:` to pin a secondary join and an optional `filter:` list of predicates restricting which target rows count. Available in query-level `where:` only — `having:` is rejected (the row-level correlation subject is out of scope after `GROUP BY`); measure-level EXISTS is the deferred `MeasureFilter.subquery` follow-up. Portable across all 8 dialects. See [Existence Operators](docs/guide/query-language.md#existence-operators) and `design/PLAN_exists_operator.md`.
+
 ## [2.6.1] - 2026-05-24
 
 ### Fixed

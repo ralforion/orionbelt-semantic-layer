@@ -821,11 +821,11 @@ def _iter_loaded_models(session_manager: SessionManager) -> Iterator[tuple[str, 
     ``target_name`` is the addressing name BI tools use as the Postgres
     ``database`` parameter:
 
-    * multi-model (``MODEL_FILES``): each preload sits in its own
+    * admin-curated (``MODEL_FILES``): each preload sits in its own
       *protected* session whose id IS the OBML name; iterated via
       :meth:`SessionManager.list_protected_session_ids`.
-    * single-model legacy (``MODEL_FILE``): the model lives in the
-      ``__default__`` session, exposed under that name.
+    * MCP stdio: the ``__default__`` session is created on demand and
+      exposed under that name.
     * user-created sessions: iterated via
       :meth:`SessionManager.list_sessions` so models loaded over REST
       still light up the catalog.

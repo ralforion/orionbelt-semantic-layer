@@ -82,9 +82,13 @@ class SessionManager:
     cleanup_interval:
         Seconds between background purge sweeps.
     is_single_model_mode:
-        When True the ``__default__`` session is kept alive and excluded
-        from purge.  When False (no ``MODEL_FILE``), the default session
-        is treated like any other and subject to TTL/max-age expiry.
+        Flag retained for backwards compatibility — historically set when
+        a ``MODEL_FILE`` preloaded the ``__default__`` session. With
+        ``MODEL_FILES`` (admin-curated named sessions), the flag is True
+        and the ``__default__`` session — still created on demand by MCP
+        stdio — is kept alive and excluded from purge. False otherwise,
+        in which case ``__default__`` is treated like any other session
+        and subject to TTL/max-age expiry.
     """
 
     def __init__(

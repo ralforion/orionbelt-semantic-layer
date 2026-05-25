@@ -19,7 +19,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `MAX_MODELS_PER_SESSION`   | `10`        | Max models a single session may hold      |
 | `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute    |
 | `TRUSTED_PROXY_COUNT`      | `0`         | Number of trusted reverse proxies (for X-Forwarded-For) |
-| `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode   |
+| `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |
@@ -34,18 +34,22 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `PGWIRE_QUERY_TIMEOUT_SECONDS` | `60`    | Per-query wall-clock timeout              |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 
-## Single-Model Mode
+## Admin-Curated Mode
 
-When `MODEL_FILE` is set to a path to an OBML YAML file, the server starts in **single-model mode**:
+When `MODEL_FILES` is set to one or more OBML YAML paths, the server starts in **admin-curated mode**:
 
-- The model file is validated at startup (the server refuses to start if it's invalid)
-- Every new session is automatically pre-loaded with the configured model
-- Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{id}`) return **403 Forbidden**
+- Every model file is validated at startup (the server refuses to start if any is invalid)
+- Each model loads into its own *named protected session* — the addressing name comes from the OBML top-level `name:` field, falling back to the filename stem
+- Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{id}`) return **403 Forbidden** while the flag is on
+- BI tools select the model via the Flight `database` header, the pgwire `database=` URL parameter, or by addressing the named REST routes (`POST /v1/sessions/<model_name>/query/semantic-ql`)
 - All other endpoints (sessions, query, validate, diagram, etc.) work normally
 
 ```bash
-# Start in single-model mode
-MODEL_FILE=./examples/sem-layer.obml.yml uv run orionbelt-api
+# One model
+MODEL_FILES=./examples/sem-layer.obml.yml uv run orionbelt-api
+
+# Multiple models, comma-separated
+MODEL_FILES=./models/sales.yaml,./models/finance.yaml uv run orionbelt-api
 ```
 
-This is the recommended mode for production deployments and AI integrations.
+This is the recommended mode for production deployments, BI tool integrations, and AI agents.

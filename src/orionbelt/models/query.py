@@ -59,6 +59,10 @@ class FilterOperator(StrEnum):
     LENGTH_EQ = "length_eq"
     LENGTH_GT = "length_gt"
     LENGTH_LT = "length_lt"
+    # Correlated subquery existence checks. Use ``subquery:`` (not ``value:``)
+    # to carry the target data object, optional pathName, and optional filter.
+    EXISTS = "exists"
+    NONEXISTS = "nonexists"
 
 
 class SortDirection(StrEnum):
@@ -98,12 +102,35 @@ class DimensionRef(BaseModel):
         return cls(name=raw)
 
 
+class Subquery(BaseModel):
+    """Payload for ``exists`` / ``nonexists`` filter operators.
+
+    The filter's ``field`` (subject column) names the *outer* row being
+    tested.  ``Subquery`` describes the inner row to check: a target data
+    object reachable from the subject via the model's join graph, plus
+    optional secondary-join selection and optional predicates restricting
+    which target rows count.
+
+    The join columns themselves are **not** restated here — they are
+    resolved by walking the model's existing ``joins:`` from the subject's
+    data object to ``dataObject`` (same path-resolution machinery the
+    query planner uses).
+    """
+
+    data_object: str = Field(alias="dataObject")
+    path_name: str | None = Field(None, alias="pathName")
+    filter: list[QueryFilter] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
 class QueryFilter(BaseModel):
     """A filter condition in a query."""
 
     field: str
     op: FilterOperator
     value: Any = None
+    subquery: Subquery | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -130,6 +157,31 @@ class QueryFilter(BaseModel):
             return v
         msg = "Filter value must be a scalar, list of scalars, or object"
         raise ValueError(msg)
+
+    @model_validator(mode="after")
+    def _validate_subquery_exclusivity(self) -> QueryFilter:
+        """``exists`` / ``nonexists`` require ``subquery`` (and reject ``value``).
+
+        All other operators reject ``subquery`` — the payload would be silently
+        ignored, which would mask typos.
+        """
+        is_subquery_op = self.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS)
+        if is_subquery_op:
+            if self.subquery is None:
+                raise ValueError(
+                    f"Operator '{self.op}' requires a 'subquery' object with 'dataObject'"
+                )
+            if self.value is not None:
+                raise ValueError(f"Operator '{self.op}' takes 'subquery', not 'value' / 'values'")
+        elif self.subquery is not None:
+            raise ValueError(
+                f"Operator '{self.op}' does not accept 'subquery' — use 'exists' or 'nonexists'"
+            )
+        return self
+
+
+# Resolve forward reference so Subquery.filter (list[QueryFilter]) is fully bound.
+Subquery.model_rebuild()
 
 
 class QueryFilterGroup(BaseModel):

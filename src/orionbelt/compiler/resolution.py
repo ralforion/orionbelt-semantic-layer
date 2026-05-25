@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import (
@@ -21,6 +22,7 @@ from orionbelt.compiler.expr_parser import (
     tokenize_metric_formula,
 )
 from orionbelt.compiler.filters import (
+    build_exists_filter_expr,
     build_filter_expr,
     build_measure_filter_condition,
     collect_measure_filter_objects,
@@ -30,6 +32,7 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
+    FilterOperator,
     Grouping,
     NullsPosition,
     QueryFilter,
@@ -282,6 +285,13 @@ class _ResolutionContext:
     result: ResolvedQuery = field(default_factory=ResolvedQuery)
     joined_objects: set[str] = field(default_factory=set)
     graph: JoinGraph | None = None
+    # Dialect-aware qualifier used by the EXISTS filter operator to render
+    # its correlated subquery's FROM clause. ``None`` falls back to
+    # ``obj.qualified_code`` (unquoted ``database.schema.code``), which is
+    # only safe for engines that tolerate unquoted three-part identifiers
+    # (e.g. DuckDB) — production code paths thread the dialect's
+    # ``format_table_ref``.
+    qualify_table: Callable[[DataObject], str] | None = None
 
 
 def _resolve_effective_grain(grain: GrainOverride, query_dims: list[str]) -> list[str]:
@@ -299,7 +309,12 @@ def _resolve_effective_grain(grain: GrainOverride, query_dims: list[str]) -> lis
 class QueryResolver:
     """Resolves a QueryObject + SemanticModel into a ResolvedQuery."""
 
-    def resolve(self, query: QueryObject, model: SemanticModel) -> ResolvedQuery:
+    def resolve(
+        self,
+        query: QueryObject,
+        model: SemanticModel,
+        qualify_table: Callable[[DataObject], str] | None = None,
+    ) -> ResolvedQuery:
         ctx = _ResolutionContext(
             model=model,
             result=ResolvedQuery(
@@ -310,6 +325,7 @@ class QueryResolver:
                 distinct=query.select.distinct,
                 grouping=query.grouping,
             ),
+            qualify_table=qualify_table,
         )
 
         # Build global column lookup: col_name → (object_name, source_column)
@@ -1572,13 +1588,16 @@ class QueryResolver:
         filter_path = "having" if is_having else "where"
 
         # 1. Try dimension name
+        col_expr: Expr
+        subject_object: str | None = None
         dim = ctx.model.dimensions.get(qf.field)
         if dim:
             obj_name = dim.view
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
             col_name = dim.column
-            col_expr: Expr = make_column_expr(ctx.model, obj_name, col_name)
+            col_expr = make_column_expr(ctx.model, obj_name, col_name)
+            subject_object = obj_name
 
         # 2. HAVING: try measure or metric name
         elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
@@ -1613,6 +1632,7 @@ class QueryResolver:
             if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
                 return None
             col_expr = make_column_expr(ctx.model, obj_name, col_name)
+            subject_object = obj_name
 
         else:
             ctx.errors.append(
@@ -1624,7 +1644,47 @@ class QueryResolver:
             )
             return None
 
-        filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+        # exists/nonexists need model + subject object + qualify_table to
+        # build the correlated subquery. HAVING is rejected entirely in v2.7:
+        # the correlation predicate references row-level columns of the
+        # subject data object, but HAVING is evaluated after GROUP BY — the
+        # raw subject column is no longer in scope, producing invalid SQL on
+        # every dialect. Measure-level EXISTS (the proper HAVING-equivalent)
+        # is deferred to ``MeasureFilter.subquery`` in a future release.
+        if qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            if is_having:
+                ctx.errors.append(
+                    SemanticError(
+                        code="INVALID_FILTER_OPERATOR",
+                        message=(
+                            f"'{qf.op}' is only valid in 'where' — HAVING is "
+                            "evaluated after GROUP BY, where the row-level "
+                            "correlation predicate is out of scope. Move the "
+                            "filter to 'where', or use a precomputed boolean "
+                            "column on the data object."
+                        ),
+                        path=filter_path,
+                    )
+                )
+                return None
+            if subject_object is None:
+                ctx.errors.append(
+                    SemanticError(
+                        code="INVALID_FILTER_OPERATOR",
+                        message=(
+                            f"'{qf.op}' requires a dimension or qualified column "
+                            "as the subject — measure/metric references are not "
+                            "valid subjects for a correlated subquery."
+                        ),
+                        path=filter_path,
+                    )
+                )
+                return None
+            qt = ctx.qualify_table or (lambda obj: obj.qualified_code)
+            filter_expr = build_exists_filter_expr(qf, ctx.model, subject_object, qt, ctx.errors)
+        else:
+            filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
+
         if filter_expr is None:
             return None
         return ResolvedFilter(

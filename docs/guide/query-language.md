@@ -592,6 +592,61 @@ where:
     - **Snowflake**: `CONTAINS(column, value)`
     - **Dremio/Databricks**: `LOWER(column) LIKE '%' || LOWER(value) || '%'`
 
+#### Existence Operators
+
+`exists` / `nonexists` express "this row has (or doesn't have) a matching row in a related data object" as a correlated `EXISTS (SELECT 1 FROM …)` subquery. The first-class primitive for regulatory data-quality rules, coverage and anti-join reports, and any "parent has at least one child of kind X" question.
+
+| Operator | SQL Output | Payload |
+|----------|------------|---------|
+| `exists` | `EXISTS (SELECT 1 FROM target WHERE target.k = subject.k …)` | `subquery` object |
+| `nonexists` | `NOT EXISTS (…)` | `subquery` object |
+
+Both operators take a `subquery:` object (not `value:`) describing the target and any extra predicates restricting which target rows count:
+
+```yaml
+where:
+  - field: Order ID
+    op: exists
+    subquery:
+      dataObject: OrderItems           # target — reachable from the subject's data object
+      filter:                          # optional predicates on the target rows
+        - field: Is Returned
+          op: equals
+          value: true
+```
+
+For "orders with no payment":
+
+```yaml
+where:
+  - field: Order ID
+    op: nonexists
+    subquery:
+      dataObject: Payments
+```
+
+The join columns are **not** restated — the planner walks the model's existing `joins:` from the subject's data object to `subquery.dataObject`. When multiple secondary joins exist between subject and target, pin the path with `pathName:`:
+
+```yaml
+where:
+  - field: Order ID
+    op: exists
+    subquery:
+      dataObject: Returns
+      pathName: viaWarehouse        # matches a declared secondary join's pathName
+```
+
+**Subquery filter rules**
+
+`subquery.filter` accepts the same operator vocabulary as the outer filter, with two exceptions:
+
+* Nested `exists` / `nonexists` are rejected (`NESTED_SUBQUERY_NOT_SUPPORTED`) — keeps the planner simple.
+* `field` is interpreted as a column **on the target data object** (e.g. `Is Returned` lives on `OrderItems`), not a dimension on the model.
+
+**`exists` / `nonexists` are WHERE-only.** Both operators are rejected in `having:` with `INVALID_FILTER_OPERATOR` because the correlation predicate references the subject's row-level column, which is out of scope after `GROUP BY`. Measure-level EXISTS — "groups where some matching child row exists" — is a deferred follow-up (`MeasureFilter.subquery`).
+
+`EXISTS` is portable — all 8 dialects compile the same shape, only identifier quoting differs.
+
 ## Ordering
 
 Sort results by dimension or measure names from the query's SELECT, or by numeric position:
@@ -634,6 +689,11 @@ Invalid queries return error responses:
 | `INVALID_ORDER_BY_POSITION` | 400 | Numeric ORDER BY position out of range |
 | `INVALID_FILTER_OPERATOR` | 400 | Unrecognized filter operator |
 | `INVALID_RELATIVE_FILTER` | 400 | Malformed relative time filter |
+| `UNKNOWN_SUBQUERY_DATA_OBJECT` | 400 | `exists` / `nonexists` references an unknown target data object |
+| `NO_JOIN_PATH_TO_SUBQUERY` | 400 | No join path exists from the filter subject to the subquery target |
+| `UNKNOWN_SUBQUERY_FILTER_COLUMN` | 400 | `subquery.filter` references a column not on the target |
+| `NESTED_SUBQUERY_NOT_SUPPORTED` | 400 | `subquery.filter` cannot contain another `exists` / `nonexists` |
+| `UNKNOWN_PATH_NAME` | 400 | `subquery.pathName` does not match any declared secondary join |
 | `AMBIGUOUS_JOIN` | 422 | Multiple join paths possible |
 | `DIMENSIONS_EXCLUDE_WITH_MEASURES` | 400 | `dimensionsExclude` used with measures |
 | `DIMENSIONS_EXCLUDE_INSUFFICIENT` | 400 | `dimensionsExclude` with fewer than 2 dimensions |

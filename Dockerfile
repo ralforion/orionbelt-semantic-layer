@@ -83,7 +83,7 @@ ENV PORT=8080 \
     DB_VENDOR=duckdb \
     DUCKDB_DATABASE=/app/data/orionbelt_1_commerce.duckdb \
     MODEL_DIR=/app/data \
-    MODEL_FILE=orionbelt_1_commerce.yaml
+    MODEL_FILES=orionbelt_1_commerce.yaml
 
 EXPOSE ${PORT}
 

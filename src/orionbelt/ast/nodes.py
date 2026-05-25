@@ -133,6 +133,19 @@ class SubqueryExpr:
 
 
 @dataclass(frozen=True)
+class Exists:
+    """``[NOT ]EXISTS (<subquery>)`` predicate.
+
+    Used by the ``exists`` / ``nonexists`` filter operators.  Codegen is
+    portable across all 8 dialects; the only dialect-specific surface is
+    identifier quoting inside ``subquery``.
+    """
+
+    subquery: Select
+    negated: bool = False
+
+
+@dataclass(frozen=True)
 class RawSQL:
     """Escape hatch for dialect-specific raw SQL fragments.
 
@@ -212,6 +225,7 @@ Expr = (
     | CaseExpr
     | Cast
     | SubqueryExpr
+    | Exists
     | RawSQL
     | Between
     | RegexMatch

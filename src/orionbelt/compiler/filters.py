@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TypedDict
 
 from orionbelt.ast.nodes import (
     Between,
     BinaryOp,
+    Exists,
     Expr,
+    From,
     FunctionCall,
     InList,
     IsNull,
+    Join,
+    JoinType,
     Literal,
     RegexMatch,
     RelativeDateRange,
+    Select,
     UnaryOp,
 )
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.query import FilterOperator, QueryFilter
+from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
 from orionbelt.models.semantic import (
+    DataObject,
     DataType,
     FilterLogic,
     FilterValue,
@@ -181,6 +188,22 @@ def build_filter_expr(col: Expr, qf: QueryFilter, errors: list[SemanticError]) -
                 direction=relative["direction"],
                 include_current=relative["include_current"],
             )
+        case FilterOperator.EXISTS | FilterOperator.NONEXISTS:
+            # exists/nonexists need model + subject_object + qualify_table to
+            # build the correlated subquery — call build_exists_filter_expr()
+            # directly instead. This branch only fires when a caller routes
+            # an exists filter through build_filter_expr() by mistake.
+            errors.append(
+                SemanticError(
+                    code="INVALID_FILTER_OPERATOR",
+                    message=(
+                        f"'{op}' must be dispatched via build_exists_filter_expr "
+                        "with the model and subject object — not build_filter_expr."
+                    ),
+                    path="filters",
+                )
+            )
+            return None
         case _:
             errors.append(
                 SemanticError(
@@ -478,3 +501,192 @@ def collect_measure_filter_objects(item: MeasureFilterItem, objects: set[str]) -
     elif isinstance(item, MeasureFilterGroup):
         for child in item.filters:
             collect_measure_filter_objects(child, objects)
+
+
+# ---------------------------------------------------------------------------
+# exists / nonexists — correlated subquery filter
+# ---------------------------------------------------------------------------
+
+
+def build_exists_filter_expr(
+    qf: QueryFilter,
+    model: SemanticModel,
+    subject_object: str,
+    qualify_table: Callable[[DataObject], str],
+    errors: list[SemanticError],
+) -> Expr | None:
+    """Compile an ``exists`` / ``nonexists`` filter into an ``Exists`` AST node.
+
+    The join path from ``subject_object`` to ``qf.subquery.dataObject`` is
+    resolved by walking the model's existing ``joins:`` — the same machinery
+    the query planner uses.  Single-hop is the common case; multi-hop paths
+    are supported and emit INNER JOINs inside the subquery.
+
+    Returns ``None`` and appends ``SemanticError``s on validation failure.
+    """
+    # Local import: resolution imports filters at module load.
+    from orionbelt.compiler.graph import JoinGraph
+    from orionbelt.compiler.resolution import make_column_expr
+
+    sub = qf.subquery
+    if sub is None:
+        # Pydantic model_validator normally catches this; defensive guard.
+        errors.append(
+            SemanticError(
+                code="INVALID_FILTER_OPERATOR",
+                message=f"'{qf.op}' requires a 'subquery' object",
+                path="filters",
+            )
+        )
+        return None
+
+    target_obj = model.data_objects.get(sub.data_object)
+    if target_obj is None:
+        errors.append(
+            SemanticError(
+                code="UNKNOWN_SUBQUERY_DATA_OBJECT",
+                message=(f"Subquery references unknown data object '{sub.data_object}'"),
+                path="filters",
+            )
+        )
+        return None
+
+    subject_obj = model.data_objects.get(subject_object)
+    if subject_obj is None:
+        errors.append(
+            SemanticError(
+                code="UNKNOWN_FILTER_DATA_OBJECT",
+                message=(f"Subquery subject references unknown data object '{subject_object}'"),
+                path="filters",
+            )
+        )
+        return None
+
+    # If pathName is given, locate the secondary join. EXISTS is direction-
+    # agnostic, so the join may be declared on either the subject or the
+    # target side. ``UsePathName`` overrides are keyed by the side that
+    # *declares* the join (matching JoinGraph's edge construction).
+    overrides: list[UsePathName] | None = None
+    if sub.path_name is not None:
+        declaring_obj: str | None = None
+        other_obj: str | None = None
+        for j in subject_obj.joins:
+            if j.join_to == sub.data_object and j.secondary and j.path_name == sub.path_name:
+                declaring_obj, other_obj = subject_object, sub.data_object
+                break
+        if declaring_obj is None:
+            for j in target_obj.joins:
+                if j.join_to == subject_object and j.secondary and j.path_name == sub.path_name:
+                    declaring_obj, other_obj = sub.data_object, subject_object
+                    break
+        if declaring_obj is None or other_obj is None:
+            errors.append(
+                SemanticError(
+                    code="UNKNOWN_PATH_NAME",
+                    message=(
+                        f"No secondary join with pathName '{sub.path_name}' "
+                        f"between '{subject_object}' and '{sub.data_object}'"
+                    ),
+                    path="filters",
+                )
+            )
+            return None
+        overrides = [
+            UsePathName(
+                source=declaring_obj,
+                target=other_obj,
+                path_name=sub.path_name,
+            )
+        ]
+
+    graph = JoinGraph(model, use_path_names=overrides)
+
+    # EXISTS correlates without multiplying outer rows, so cardinality
+    # direction is irrelevant — use the undirected walker.
+    path = graph.find_join_path_undirected(subject_object, sub.data_object)
+    if not path:
+        errors.append(
+            SemanticError(
+                code="NO_JOIN_PATH_TO_SUBQUERY",
+                message=(
+                    f"No join path from '{subject_object}' to "
+                    f"'{sub.data_object}' — declare a 'joins:' block."
+                ),
+                path="filters",
+            )
+        )
+        return None
+
+    # First step bridges outer scope → subquery scope (correlation).
+    # Remaining steps live entirely inside the subquery (INNER JOIN chain).
+    first_step = path[0]
+    first_target_obj = model.data_objects.get(first_step.to_object)
+    if first_target_obj is None:
+        return None  # graph would not yield it otherwise
+
+    from_node = From(
+        source=qualify_table(first_target_obj),
+        alias=first_step.to_object,
+    )
+
+    joins: list[Join] = []
+    for step in path[1:]:
+        step_target_obj = model.data_objects.get(step.to_object)
+        if step_target_obj is None:
+            continue
+        joins.append(
+            Join(
+                join_type=JoinType.INNER,
+                source=qualify_table(step_target_obj),
+                alias=step.to_object,
+                on=graph.build_join_condition(step),
+            )
+        )
+
+    where_parts: list[Expr] = [graph.build_join_condition(first_step)]
+
+    nested_seen = False
+    for sub_qf in sub.filter:
+        if sub_qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            if not nested_seen:
+                errors.append(
+                    SemanticError(
+                        code="NESTED_SUBQUERY_NOT_SUPPORTED",
+                        message=(
+                            f"Nested '{sub_qf.op}' inside a subquery filter is "
+                            "not supported in v2.7.0"
+                        ),
+                        path="filters",
+                    )
+                )
+                nested_seen = True
+            continue
+        if sub_qf.field not in target_obj.columns:
+            errors.append(
+                SemanticError(
+                    code="UNKNOWN_SUBQUERY_FILTER_COLUMN",
+                    message=(
+                        f"Subquery filter references unknown column "
+                        f"'{sub_qf.field}' on '{sub.data_object}'"
+                    ),
+                    path="filters",
+                )
+            )
+            continue
+        col_expr = make_column_expr(model, sub.data_object, sub_qf.field)
+        sub_expr = build_filter_expr(col_expr, sub_qf, errors)
+        if sub_expr is not None:
+            where_parts.append(sub_expr)
+
+    where_expr: Expr = where_parts[0]
+    for part in where_parts[1:]:
+        where_expr = BinaryOp(left=where_expr, op="AND", right=part)
+
+    select = Select(
+        columns=[Literal(value=1)],
+        from_=from_node,
+        joins=joins,
+        where=where_expr,
+    )
+
+    return Exists(subquery=select, negated=(qf.op == FilterOperator.NONEXISTS))

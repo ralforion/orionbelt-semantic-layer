@@ -54,15 +54,15 @@ Key settings:
 | `MAX_SESSIONS`             | `500`       | Global concurrent session cap (429 when full) |
 | `MAX_MODELS_PER_SESSION`   | `10`        | Max models a single session may hold        |
 | `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute      |
-| `MODEL_FILE`               | —           | Path to OBML YAML for single-model mode     |
+| `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution         |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution         |
 
 See `.env.template` for the full list including database credentials.
 
-### Single-Model Mode
+### Admin-Curated Mode
 
-Set `MODEL_FILE` to serve a fixed OBML model. Every new session gets the model pre-loaded, and model upload/removal endpoints return 403.
+Set `MODEL_FILES` to pre-load one or more OBML models. Each model lands in its own named protected session (addressing name = OBML `name:` field or filename stem); REST model upload/removal endpoints return 403 while the flag is on. A single path is fine — that's the simplest production layout.
 
 ## Start the Servers
 

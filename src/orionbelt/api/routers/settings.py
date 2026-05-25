@@ -14,7 +14,6 @@ from orionbelt.api.deps import (
     get_db_vendor,
     get_flight_info,
     get_oneshot_batch_config,
-    get_preload_model_yaml,
     get_session_manager,
     is_query_execute_enabled,
     is_single_model_mode,
@@ -128,29 +127,6 @@ def _resolve_target_model(
     return None
 
 
-def _settings_from_preload_yaml(yaml_text: str | None) -> ModelSettings | None:
-    """Parse only the ``settings:`` block from the preloaded YAML.
-
-    Used as a fallback for callers that initialised the SessionManager with
-    ``preload_model_yaml`` but did not eagerly load the model into the
-    default session (test fixtures, embedded clients).
-    """
-    if not yaml_text:
-        return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(yaml_text)
-        if not isinstance(data, dict):
-            return None
-        block = data.get("settings")
-        if not isinstance(block, dict):
-            return None
-        return ModelSettings(**block)
-    except Exception:
-        return None
-
-
 def _resolve_effective_timezone(model_settings: ModelSettings | None, db_vendor: str) -> str:
     """Mirror the runtime timezone resolution at request time.
 
@@ -207,11 +183,6 @@ async def get_settings(
     single_mode = is_single_model_mode()
     model = _resolve_target_model(mgr, session_id=session_id, model_id=model_id)
     settings_block = model.settings if model else None
-
-    # Single-model fallback: parse the preloaded YAML if no model was loaded
-    # into the default session yet (test fixtures, embedded usage).
-    if single_mode and settings_block is None and not session_id and not model_id:
-        settings_block = _settings_from_preload_yaml(get_preload_model_yaml())
 
     expose_model_settings = settings_block is not None or model is not None or single_mode
 
@@ -295,7 +266,7 @@ async def get_settings(
         version=__version__,
         api_version="v1",
         single_model_mode=single_mode,
-        model_yaml=get_preload_model_yaml() if single_mode else None,
+        model_yaml=None,
         session_ttl_seconds=mgr.ttl,
         session_max_age_seconds=mgr.max_age,
         max_sessions=mgr.max_sessions,

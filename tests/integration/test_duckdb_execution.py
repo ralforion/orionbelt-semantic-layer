@@ -961,7 +961,8 @@ class TestAPIExecuteEndpoint:
             reset_session_manager()
 
     async def test_execute_shortcut_endpoint(self, api_duckdb: duckdb.DuckDBPyConnection) -> None:
-        """Top-level /v1/query/execute shortcut with single-model mode."""
+        """Top-level /v1/query/execute shortcut auto-resolves a single
+        loaded model across sessions."""
         settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
         app = create_app(settings=settings)
         mgr = SessionManager(
@@ -972,7 +973,6 @@ class TestAPIExecuteEndpoint:
             mgr,
             query_execute_enabled=True,
             db_vendor="duckdb",
-            preload_model_yaml=SAMPLE_MODEL_YAML,
         )
         try:
             mock_exec = _make_execute_sql(api_duckdb)
@@ -981,8 +981,14 @@ class TestAPIExecuteEndpoint:
             with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as c:
-                    # Create a session so the shortcut can auto-resolve
-                    await c.post("/v1/sessions")
+                    # Load a single model into a session so the shortcut has
+                    # exactly one model to auto-resolve to.
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": SAMPLE_MODEL_YAML},
+                    )
+                    assert load.status_code in (200, 201), load.text
                     response = await c.post(
                         "/v1/query/execute",
                         json={
@@ -993,7 +999,7 @@ class TestAPIExecuteEndpoint:
                         },
                         params={"dialect": "duckdb"},
                     )
-            assert response.status_code == 200
+            assert response.status_code == 200, response.text
             data = response.json()
             assert data["row_count"] == 2
 

@@ -1,6 +1,6 @@
 # AI Integrations
 
-OrionBelt provides ready-to-use tools for popular AI frameworks. All REST API integrations use the [shortcut endpoints](../api/endpoints.md) and work best with OrionBelt running in [single-model mode](../reference/configuration.md#single-model-mode).
+OrionBelt provides ready-to-use tools for popular AI frameworks. All REST API integrations use the [shortcut endpoints](../api/endpoints.md) and work best with OrionBelt running in [admin-curated mode](../reference/configuration.md#admin-curated-mode).
 
 ## Available Integrations
 

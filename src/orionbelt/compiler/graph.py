@@ -258,6 +258,59 @@ class JoinGraph:
 
         return steps
 
+    def find_join_path_undirected(
+        self,
+        from_object: str,
+        to_object: str,
+    ) -> list[JoinStep]:
+        """Find a join path ignoring cardinality direction.
+
+        Unlike :meth:`find_join_path` (which forbids walking many-to-one
+        joins backwards to prevent fanout in the outer query), this walker
+        considers the join graph as undirected.  It's intended for
+        correlated subqueries — EXISTS / NOT EXISTS — where row counts on
+        the outer side are unaffected by how many rows the subquery scans.
+
+        Each emitted :class:`JoinStep` is oriented so ``from_object`` is the
+        step's predecessor on the path and ``to_object`` is its successor;
+        ``from_columns`` / ``to_columns`` are swapped when the underlying
+        join edge is traversed against its declared direction.
+        """
+        if from_object == to_object:
+            return []
+        if from_object not in self._graph or to_object not in self._graph:
+            return []
+        try:
+            path: list[str] = nx.shortest_path(self._graph, from_object, to_object)
+        except nx.NetworkXNoPath:
+            return []
+
+        steps: list[JoinStep] = []
+        for i in range(len(path) - 1):
+            pred, succ = path[i], path[i + 1]
+            edge_data = self._graph.edges[(pred, succ)]
+            source_object = edge_data.get("source_object", pred)
+            if source_object == pred:
+                from_cols = edge_data["columns_from"]
+                to_cols = edge_data["columns_to"]
+                reversed_ = False
+            else:
+                from_cols = edge_data["columns_to"]
+                to_cols = edge_data["columns_from"]
+                reversed_ = True
+            steps.append(
+                JoinStep(
+                    from_object=pred,
+                    to_object=succ,
+                    from_columns=from_cols,
+                    to_columns=to_cols,
+                    join_type=ASTJoinType.LEFT,
+                    cardinality=edge_data["cardinality"],
+                    reversed=reversed_,
+                )
+            )
+        return steps
+
     def build_join_condition(self, step: JoinStep) -> Expr:
         """Build the ON clause expression for a join step.
 

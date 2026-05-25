@@ -102,10 +102,12 @@ class TestSettingsEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["single_model_mode"] is True
-        assert data["model_yaml"] is not None
-        assert "dataObjects" in data["model_yaml"]
+        # ``model_yaml`` is reserved (legacy slot) — clients in admin-curated
+        # mode resolve the loaded model via /v1/models or via the named
+        # session's /models endpoint, not via this field.
+        assert data.get("model_yaml") in (None,)
         assert data["session_ttl_seconds"] == 3600  # from fixture
-        # Single-model mode adds the model_settings + timezone blocks.
+        # Admin-curated mode adds the model_settings + timezone blocks.
         # SAMPLE_MODEL_YAML may not declare a `settings:` block — the
         # block must still appear with default values, and the timezone
         # chain must always have an `effective` value.
@@ -207,11 +209,17 @@ class TestSettingsEndpoint:
     async def test_settings_single_model_with_settings_block(self, tmp_path) -> None:
         """When the OBML model declares `settings:`, all four sub-fields
         plus the timezone/dialect chains are populated and reflect the
-        model's choices."""
-        from orionbelt.api.app import _read_model_file, create_app
+        model's choices.
+
+        Uses admin-curated mode (``MODEL_FILES`` → one named protected
+        session) and queries ``/v1/settings?session_id=<name>`` so the
+        model-specific blocks pin to the loaded model.
+        """
+        from orionbelt.api.app import create_app
 
         yaml_text = (
             "version: 1.0\n"
+            "name: orders\n"
             "settings:\n"
             "  defaultTimezone: Europe/Berlin\n"
             "  defaultDialect: snowflake\n"
@@ -230,25 +238,27 @@ class TestSettingsEndpoint:
             "    resultType: int\n"
             "    aggregation: count\n"
         )
-        model_file = tmp_path / "model.yaml"
-        model_file.write_text(yaml_text)
+        model_path = tmp_path / "model.yaml"
+        model_path.write_text(yaml_text)
 
         settings = Settings(
             session_ttl_seconds=3600,
             session_cleanup_interval=9999,
-            model_file=str(model_file),
+            model_files=str(model_path),
         )
         app = create_app(settings=settings)
-        preload, _ = _read_model_file(str(model_file))
         mgr = SessionManager(
             ttl_seconds=settings.session_ttl_seconds,
             cleanup_interval=settings.session_cleanup_interval,
+            is_single_model_mode=True,
         )
-        init_session_manager(mgr, preload_model_yaml=preload, db_vendor="duckdb")
+        store = mgr.get_or_create_named("orders")
+        store.load_model(yaml_text)
+        init_session_manager(mgr, admin_curated=True, db_vendor="duckdb")
         try:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as c:
-                response = await c.get("/v1/settings")
+                response = await c.get("/v1/settings?session_id=orders")
             assert response.status_code == 200
             data = response.json()
 
@@ -783,30 +793,37 @@ class TestSessionIsolation:
 # ---------------------------------------------------------------------------
 
 
+SINGLE_MODEL_PROTECTED_NAME = "sales"
+
+
 @pytest.fixture
 def single_model_app(tmp_path):
-    """Create an app in single-model mode with SAMPLE_MODEL_YAML on disk."""
-    model_file = tmp_path / "model.yaml"
-    model_file.write_text(SAMPLE_MODEL_YAML)
+    """App in admin-curated mode with one named protected model.
+
+    Mirrors the real ``MODEL_FILES=path`` startup path: the YAML is loaded
+    into a named protected session (``sales``), uploads/removals on it are
+    blocked, and ``single_model_mode`` in ``/v1/settings`` reports True.
+    """
+    yaml_with_name = SAMPLE_MODEL_YAML.replace(
+        "version: 1.0", f"version: 1.0\nname: {SINGLE_MODEL_PROTECTED_NAME}", 1
+    )
+    model_path = tmp_path / "model.yaml"
+    model_path.write_text(yaml_with_name)
     settings = Settings(
         session_ttl_seconds=3600,
         session_cleanup_interval=9999,
-        model_file=str(model_file),
+        model_files=str(model_path),
     )
     app = create_app(settings=settings)
     # Manually init (ASGITransport doesn't trigger lifespan)
-    from orionbelt.api.app import _read_model_file
-
-    preload_yaml, _ = _read_model_file(str(model_file))
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
         cleanup_interval=settings.session_cleanup_interval,
+        is_single_model_mode=True,  # admin-curated
     )
-    # Mirror the real lifespan: in single-model mode, the __default__
-    # session is created at startup and the YAML is loaded into it.
-    default_store = mgr.get_or_create_default()
-    default_store.load_model(preload_yaml)
-    init_session_manager(mgr, preload_model_yaml=preload_yaml)
+    store = mgr.get_or_create_named(SINGLE_MODEL_PROTECTED_NAME)
+    store.load_model(yaml_with_name)
+    init_session_manager(mgr, admin_curated=True)
     yield app
     reset_session_manager()
 
@@ -819,13 +836,18 @@ async def single_model_client(single_model_app):
 
 
 class TestSingleModelMode:
-    async def test_session_created_with_preloaded_model(
+    """Admin-curated mode (single ``MODEL_FILES`` entry) routes BI tools
+    at the named protected session; uploads/removals on it are blocked,
+    user-created sessions remain unrestricted in spirit but still see the
+    admin-curated flag (REST POST/DELETE on models is rejected globally
+    while the flag is on)."""
+
+    async def test_protected_session_lists_the_model(
         self, single_model_client: AsyncClient
     ) -> None:
-        response = await single_model_client.post("/v1/sessions")
-        assert response.status_code == 201
-        data = response.json()
-        assert data["model_count"] == 1
+        r = await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
+        assert r.status_code == 200
+        assert len(r.json()) == 1
 
     async def test_model_upload_blocked(self, single_model_client: AsyncClient) -> None:
         sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
@@ -837,19 +859,23 @@ class TestSingleModelMode:
         assert "model upload is disabled" in response.json()["detail"]
 
     async def test_model_removal_blocked(self, single_model_client: AsyncClient) -> None:
-        sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
-        models = (await single_model_client.get(f"/v1/sessions/{sid}/models")).json()
+        models = (
+            await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
+        ).json()
         mid = models[0]["model_id"]
-        response = await single_model_client.delete(f"/v1/sessions/{sid}/models/{mid}")
+        response = await single_model_client.delete(
+            f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models/{mid}"
+        )
         assert response.status_code == 403
         assert "model removal is disabled" in response.json()["detail"]
 
-    async def test_query_works_with_preloaded_model(self, single_model_client: AsyncClient) -> None:
-        sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
-        models = (await single_model_client.get(f"/v1/sessions/{sid}/models")).json()
+    async def test_query_against_protected_session(self, single_model_client: AsyncClient) -> None:
+        models = (
+            await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
+        ).json()
         mid = models[0]["model_id"]
         response = await single_model_client.post(
-            f"/v1/sessions/{sid}/query/sql",
+            f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/query/sql",
             json={
                 "model_id": mid,
                 "query": {
@@ -864,17 +890,6 @@ class TestSingleModelMode:
         assert response.status_code == 200
         assert "SELECT" in response.json()["sql"]
 
-    async def test_sessions_still_independent(self, single_model_client: AsyncClient) -> None:
-        """Each session gets its own copy of the preloaded model."""
-        sid_a = (await single_model_client.post("/v1/sessions")).json()["session_id"]
-        sid_b = (await single_model_client.post("/v1/sessions")).json()["session_id"]
-        models_a = (await single_model_client.get(f"/v1/sessions/{sid_a}/models")).json()
-        models_b = (await single_model_client.get(f"/v1/sessions/{sid_b}/models")).json()
-        assert len(models_a) == 1
-        assert len(models_b) == 1
-        # Different model IDs (separate ModelStore instances)
-        assert models_a[0]["model_id"] != models_b[0]["model_id"]
-
     async def test_validate_still_works(self, single_model_client: AsyncClient) -> None:
         sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
         response = await single_model_client.post(
@@ -884,10 +899,38 @@ class TestSingleModelMode:
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
-    async def test_delete_session_still_works(self, single_model_client: AsyncClient) -> None:
+    async def test_delete_user_session_still_works(self, single_model_client: AsyncClient) -> None:
         sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
         response = await single_model_client.delete(f"/v1/sessions/{sid}")
         assert response.status_code == 204
+
+    async def test_shortcut_schema_sees_protected_session(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """Regression: shortcut routes must scan protected sessions, not just
+        __default__ + user sessions. With MODEL_FILES the only model lives in
+        a named protected session — ``GET /v1/schema`` previously 404'd."""
+        response = await single_model_client.get("/v1/schema")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body.get("data_objects"), "schema must include at least one data object"
+
+    async def test_shortcut_query_sees_protected_session(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """Companion regression for the compile shortcut against a protected
+        session — uses ``_resolve_store_and_model`` which had the same bug."""
+        response = await single_model_client.post(
+            "/v1/query/sql?dialect=postgres",
+            json={
+                "select": {
+                    "dimensions": ["Customer Country"],
+                    "measures": ["Total Revenue"],
+                },
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "SELECT" in response.json()["sql"]
 
 
 # ---------------------------------------------------------------------------
@@ -1206,14 +1249,15 @@ class TestModelsEndpoint:
         assert data["count"] == 0
         assert data["models"] == []
 
-    async def test_single_legacy_default(self, single_model_client: AsyncClient) -> None:
-        """Legacy MODEL_FILE — one __default__ entry."""
+    async def test_single_named_model(self, single_model_client: AsyncClient) -> None:
+        """Admin-curated mode with one entry — one named entry under
+        the model's resolved name."""
         r = await single_model_client.get("/v1/models")
         assert r.status_code == 200
         data = r.json()
         assert data["count"] == 1
         entry = data["models"][0]
-        assert entry["name"] == "__default__"
+        assert entry["name"] == SINGLE_MODEL_PROTECTED_NAME
         assert entry["dimensions"] > 0 or entry["measures"] > 0
 
 
@@ -1269,6 +1313,42 @@ class TestMultiModelMode:
         names = sorted(m["name"] for m in data["models"])
         assert names == ["returns", "sales"]
         assert data["count"] == 2
+
+
+class TestModelFileRemovalWarning:
+    """v2.7.0 removed the legacy MODEL_FILE env var. pydantic-settings silently
+    ignores unknown env vars, so a deployment that still sets it would boot
+    with no preloaded model — startup must log a deprecation warning."""
+
+    def test_warning_logged_when_model_file_set(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import logging as _logging
+
+        from orionbelt.api.app import _warn_if_legacy_model_file_set
+
+        monkeypatch.setenv("MODEL_FILE", "/tmp/should-be-ignored.yaml")
+        caplog.set_level(_logging.WARNING, logger="orionbelt.api.app")
+        _warn_if_legacy_model_file_set()
+        assert any(
+            "MODEL_FILE" in rec.message and "v2.7.0" in rec.message for rec in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_no_warning_when_model_file_unset(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import logging as _logging
+
+        from orionbelt.api.app import _warn_if_legacy_model_file_set
+
+        monkeypatch.delenv("MODEL_FILE", raising=False)
+        caplog.set_level(_logging.WARNING, logger="orionbelt.api.app")
+        _warn_if_legacy_model_file_set()
+        assert not any("MODEL_FILE" in rec.message for rec in caplog.records)
 
 
 class TestReferenceEndpoints:

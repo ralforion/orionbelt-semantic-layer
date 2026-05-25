@@ -30,13 +30,8 @@ services:
       DB_VENDOR: duckdb
       DUCKDB_DATABASE: /app/data/orionbelt_1_commerce.duckdb
       MODEL_DIR: /app/data
-      # The base image bakes MODEL_FILE (legacy single-model mode), which
-      # loads the model into the __default__ session and the pgwire
-      # catalog ends up exposing the table as ``orionbelt.__default__``.
-      # Override with MODEL_FILES (multi-model mode) so the table is
-      # named after the filename stem (``orionbelt_1_commerce``).
-      MODEL_FILE: ""
-      # Two models loaded:
+      # Override the base image's single-entry MODEL_FILES so the catalog
+      # exposes two tables (``orionbelt_1_commerce`` + ``dremio_info_schema``):
       #   - orionbelt_1_commerce.yaml — Stage 1 (DuckDB backend, baked in)
       #   - dremio_info_schema.yaml   — Stage 2 (Dremio backend, queries
       #     Dremio's INFORMATION_SCHEMA.COLUMNS — always available, no

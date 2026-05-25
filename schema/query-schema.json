@@ -42,8 +42,31 @@
         "notblank",
         "length_eq",
         "length_gt",
-        "length_lt"
+        "length_lt",
+        "exists",
+        "nonexists"
       ]
+    },
+    "querySubquery": {
+      "type": "object",
+      "description": "Payload for the 'exists' / 'nonexists' filter operators. The join columns are not restated here — the planner resolves them by walking the model's declared joins from the subject's data object to 'dataObject'.",
+      "properties": {
+        "dataObject": {
+          "type": "string",
+          "description": "Target data object — must be reachable from the subject via the model's join graph"
+        },
+        "pathName": {
+          "type": "string",
+          "description": "Optional secondary-join selector. Required only when more than one secondary join exists between the subject and the target; must match a declared pathName on a DataObjectJoin."
+        },
+        "filter": {
+          "type": "array",
+          "description": "Optional predicates restricting which target rows count. Same operator vocabulary as the outer filter; nested 'exists' / 'nonexists' are rejected.",
+          "items": { "$ref": "#/definitions/queryFilter" }
+        }
+      },
+      "required": ["dataObject"],
+      "additionalProperties": false
     },
     "sortDirection": {
       "description": "Sort direction",
@@ -55,7 +78,7 @@
     },
     "queryFilter": {
       "type": "object",
-      "description": "A filter condition. WHERE filters reference a dimension name or a qualified column (DataObject.Column); HAVING filters reference a measure name. The data object must be reachable from the query's join graph (auto-joined if needed).",
+      "description": "A filter condition. WHERE filters reference a dimension name or a qualified column (DataObject.Column); HAVING filters reference a measure name. The data object must be reachable from the query's join graph (auto-joined if needed). For 'exists' / 'nonexists' (WHERE only), 'subquery' is required and 'value' is rejected; for every other operator, 'subquery' is rejected.",
       "properties": {
         "field": {
           "type": "string",
@@ -65,11 +88,30 @@
           "$ref": "#/definitions/filterOperator"
         },
         "value": {
-          "description": "Filter value (type depends on operator)"
+          "description": "Filter value (type depends on operator). Omit for 'exists' / 'nonexists' — use 'subquery' instead."
+        },
+        "subquery": {
+          "$ref": "#/definitions/querySubquery",
+          "description": "Required when 'op' is 'exists' or 'nonexists'; rejected for all other operators."
         }
       },
       "required": ["field", "op"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "op": { "enum": ["exists", "nonexists"] } },
+            "required": ["op"]
+          },
+          "then": {
+            "required": ["subquery"],
+            "not": { "required": ["value"] }
+          },
+          "else": {
+            "not": { "required": ["subquery"] }
+          }
+        }
+      ]
     },
     "queryFilterGroup": {
       "type": "object",

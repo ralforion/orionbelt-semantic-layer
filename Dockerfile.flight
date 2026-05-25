@@ -40,14 +40,15 @@ COPY --from=builder --chown=app:app /app/schema schema/
 # Copy OSI converter (needed at runtime for /convert endpoints)
 COPY --from=builder --chown=app:app /app/osi-obml osi-obml/
 
-# Model directory — mount a host directory containing the OBML YAML file:
-#   docker run -v /path/to/models/:/app/models/ -e MODEL_FILE=my-model.obml.yml ...
+# Model directory — mount a host directory containing OBML YAML files:
+#   docker run -v /path/to/models/:/app/models/ -e MODEL_FILES=my-model.obml.yml ...
 RUN mkdir -p /app/models && chown app:app /app/models
 
 USER app
 
 # REST API on 8080, Flight SQL on 8815
-# MODEL_DIR is the fixed mount point; MODEL_FILE (just the filename) is set by the user
+# MODEL_DIR is the fixed mount point; MODEL_FILES is the comma-separated
+# list of YAML filenames inside MODEL_DIR, set by the user.
 ENV PORT=8080 \
     API_SERVER_HOST=0.0.0.0 \
     LOG_LEVEL=INFO \
