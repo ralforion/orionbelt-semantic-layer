@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -681,10 +681,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -740,7 +740,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2149,10 +2149,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -2208,7 +2208,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -2311,9 +2311,9 @@
 <td>Max <code>POST /sessions</code> per IP per minute</td>
 </tr>
 <tr>
-<td><code>MODEL_FILE</code></td>
+<td><code>MODEL_FILES</code></td>
 <td>—</td>
-<td>Path to OBML YAML for single-model mode</td>
+<td>Comma-separated OBML YAML paths for admin-curated mode</td>
 </tr>
 <tr>
 <td><code>FLIGHT_ENABLED</code></td>
@@ -2328,8 +2328,8 @@
 </tbody>
 </table>
 <p>See <code>.env.template</code> for the full list including database credentials.</p>
-<h3 id="single-model-mode">Single-Model Mode<a class="headerlink" href="#single-model-mode" title="Permanent link">&para;</a></h3>
-<p>Set <code>MODEL_FILE</code> to serve a fixed OBML model. Every new session gets the model pre-loaded, and model upload/removal endpoints return 403.</p>
+<h3 id="admin-curated-mode">Admin-Curated Mode<a class="headerlink" href="#admin-curated-mode" title="Permanent link">&para;</a></h3>
+<p>Set <code>MODEL_FILES</code> to pre-load one or more OBML models. Each model lands in its own named protected session (addressing name = OBML <code>name:</code> field or filename stem); REST model upload/removal endpoints return 403 while the flag is on. A single path is fine — that's the simplest production layout.</p>
 <h2 id="start-the-servers">Start the Servers<a class="headerlink" href="#start-the-servers" title="Permanent link">&para;</a></h2>
 <h3 id="rest-api">REST API<a class="headerlink" href="#rest-api" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api

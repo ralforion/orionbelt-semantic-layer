@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -2264,7 +2264,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2623,7 +2623,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -2644,7 +2644,7 @@
 
 <h1 id="db-api-20-drivers-arrow-flight-sql">DB-API 2.0 Drivers &amp; Arrow Flight SQL<a class="headerlink" href="#db-api-20-drivers-arrow-flight-sql" title="Permanent link">&para;</a></h1>
 <p>OrionBelt provides PEP 249 DB-API 2.0 drivers for 8 databases and an Arrow Flight SQL server extension that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.</p>
-<p>All drivers work against the <strong>OrionBelt REST API in single-model mode</strong> (<code>MODEL_FILE</code> set). OBML queries are compiled transparently via <code>POST /v1/query/sql</code> — the user writes OBML, the driver returns SQL results.</p>
+<p>All drivers work against the <strong>OrionBelt REST API in admin-curated mode</strong> (<code>MODEL_FILES=&lt;path&gt;</code>). OBML queries are compiled transparently via <code>POST /v1/query/sql</code> — the user writes OBML, the driver returns SQL results.</p>
 <h2 id="package-overview">Package Overview<a class="headerlink" href="#package-overview" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2954,7 +2954,7 @@
 <div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a># .env
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
 </span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a># --- Core API (unchanged) ---
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>MODEL_FILE=models/sales.obml.yaml
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>MODEL_FILES=models/sales.obml.yaml
 </span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>API_SERVER_PORT=8000
 </span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>LOG_LEVEL=INFO
 </span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
@@ -3058,7 +3058,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>uv<span class="w"> </span>sync
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># Start API + Flight SQL</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="nv">FLIGHT_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">MODEL_FILE</span><span class="o">=</span>models/sales.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="nv">FLIGHT_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">MODEL_FILES</span><span class="o">=</span>models/sales.obml.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span></code></pre></div>
 <p>Or with a <code>.env</code> file:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>uv<span class="w"> </span>sync
@@ -3078,7 +3078,7 @@
 </span></code></pre></div>
 <p>Or with explicit environment variables:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>-p<span class="w"> </span><span class="m">8815</span>:8815<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">MODEL_FILE</span><span class="o">=</span>/models/sales.obml.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">MODEL_FILES</span><span class="o">=</span>/models/sales.obml.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">FLIGHT_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">DB_VENDOR</span><span class="o">=</span>snowflake<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">SNOWFLAKE_ACCOUNT</span><span class="o">=</span>xy12345<span class="w"> </span><span class="se">\</span>
@@ -3115,7 +3115,7 @@
 </span><span id="__span-16-21"><a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;5432:5432&quot;</span>
 </span></code></pre></div>
 <p>With <code>.env</code>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>MODEL_FILE=/models/sales.obml.yaml
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>MODEL_FILES=/models/sales.obml.yaml
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>FLIGHT_ENABLED=true
 </span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>DB_VENDOR=postgres
 </span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>POSTGRES_HOST=postgres

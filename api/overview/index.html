@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -1362,10 +1362,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -1449,7 +1449,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2177,10 +2177,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -2264,7 +2264,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -2351,16 +2351,15 @@
 <li><strong>Close</strong> — <code>DELETE /v1/sessions/{id}</code> when done (or let TTL expire)</li>
 </ol>
 <p>Sessions expire after 30 minutes of inactivity (configurable via <code>SESSION_TTL_SECONDS</code>) or after an absolute maximum lifetime of 24 hours (<code>SESSION_MAX_AGE_SECONDS</code>). The server enforces a global concurrent session cap (<code>MAX_SESSIONS</code>, default 500) and a per-session model cap (<code>MAX_MODELS_PER_SESSION</code>, default 10). Session creation is rate-limited per IP (<code>SESSION_RATE_LIMIT</code>, default 10/min). When limits are exceeded, the API returns <strong>429 Too Many Requests</strong> with a <code>Retry-After</code> header. Expired sessions return <strong>410 Gone</strong> (not 404) so clients can distinguish expiry from unknown IDs.</p>
-<h3 id="single-model-mode">Single-Model Mode<a class="headerlink" href="#single-model-mode" title="Permanent link">&para;</a></h3>
-<p>When the <code>MODEL_FILE</code> environment variable is set, the server runs in <strong>single-model mode</strong>:</p>
+<h3 id="admin-curated-mode">Admin-Curated Mode<a class="headerlink" href="#admin-curated-mode" title="Permanent link">&para;</a></h3>
+<p>When the <code>MODEL_FILES</code> environment variable is set, the server runs in <strong>admin-curated mode</strong> — each preloaded model lives in its own <em>named protected session</em> whose id is the OBML <code>name:</code> field (falling back to the filename stem):</p>
 <ol>
-<li><strong>Create a session</strong> — <code>POST /v1/sessions</code> returns a <code>session_id</code> with the model already loaded (<code>model_count: 1</code>)</li>
-<li><strong>List the model</strong> — <code>GET /v1/sessions/{id}/models</code> to get the pre-loaded <code>model_id</code></li>
-<li><strong>Compile</strong> — <code>POST /v1/sessions/{id}/query/sql</code> to compile OBML to SQL</li>
-<li><strong>Execute</strong> — <code>POST /v1/sessions/{id}/query/execute</code> to compile and execute (requires <code>FLIGHT_ENABLED=true</code>)</li>
-<li><strong>Close</strong> — <code>DELETE /v1/sessions/{id}</code> when done (or let TTL expire)</li>
+<li><strong>Discover</strong> — <code>GET /v1/models</code> lists every preloaded model and its addressing name</li>
+<li><strong>List the model</strong> — <code>GET /v1/sessions/&lt;model_name&gt;/models</code> to get the <code>model_id</code></li>
+<li><strong>Compile</strong> — <code>POST /v1/sessions/&lt;model_name&gt;/query/sql</code> to compile OBML to SQL</li>
+<li><strong>Execute</strong> — <code>POST /v1/sessions/&lt;model_name&gt;/query/execute</code> to compile and execute (requires <code>FLIGHT_ENABLED=true</code>)</li>
 </ol>
-<p>Model upload (<code>POST /v1/sessions/{id}/models</code>) and removal (<code>DELETE /v1/sessions/{id}/models/{mid}</code>) return <strong>403 Forbidden</strong> in this mode. All other endpoints work normally.</p>
+<p>BI tools through Flight SQL or pgwire select the same model via the <code>database</code> header / URL parameter. Model upload (<code>POST /v1/sessions/{id}/models</code>) and removal (<code>DELETE /v1/sessions/{id}/models/{mid}</code>) return <strong>403 Forbidden</strong> while admin-curated mode is on. All other endpoints work normally.</p>
 <h2 id="error-responses">Error Responses<a class="headerlink" href="#error-responses" title="Permanent link">&para;</a></h2>
 <p>All errors follow a consistent format:</p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>

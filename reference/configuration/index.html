@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -1920,10 +1920,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -1935,7 +1935,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2015,10 +2015,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#single-model-mode" class="md-nav__link">
+  <a href="#admin-curated-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-Model Mode
+        Admin-Curated Mode
       
     </span>
   </a>
@@ -2030,7 +2030,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -2127,9 +2127,9 @@
 <td>Number of trusted reverse proxies (for X-Forwarded-For)</td>
 </tr>
 <tr>
-<td><code>MODEL_FILE</code></td>
+<td><code>MODEL_FILES</code></td>
 <td>—</td>
-<td>Path to OBML YAML for single-model mode</td>
+<td>Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML <code>name:</code> field or filename stem). A single path is fine.</td>
 </tr>
 <tr>
 <td><code>API_BASE_URL</code></td>
@@ -2198,18 +2198,22 @@
 </tr>
 </tbody>
 </table>
-<h2 id="single-model-mode">Single-Model Mode<a class="headerlink" href="#single-model-mode" title="Permanent link">&para;</a></h2>
-<p>When <code>MODEL_FILE</code> is set to a path to an OBML YAML file, the server starts in <strong>single-model mode</strong>:</p>
+<h2 id="admin-curated-mode">Admin-Curated Mode<a class="headerlink" href="#admin-curated-mode" title="Permanent link">&para;</a></h2>
+<p>When <code>MODEL_FILES</code> is set to one or more OBML YAML paths, the server starts in <strong>admin-curated mode</strong>:</p>
 <ul>
-<li>The model file is validated at startup (the server refuses to start if it's invalid)</li>
-<li>Every new session is automatically pre-loaded with the configured model</li>
-<li>Model upload (<code>POST /v1/sessions/{id}/models</code>) and removal (<code>DELETE /v1/sessions/{id}/models/{id}</code>) return <strong>403 Forbidden</strong></li>
+<li>Every model file is validated at startup (the server refuses to start if any is invalid)</li>
+<li>Each model loads into its own <em>named protected session</em> — the addressing name comes from the OBML top-level <code>name:</code> field, falling back to the filename stem</li>
+<li>Model upload (<code>POST /v1/sessions/{id}/models</code>) and removal (<code>DELETE /v1/sessions/{id}/models/{id}</code>) return <strong>403 Forbidden</strong> while the flag is on</li>
+<li>BI tools select the model via the Flight <code>database</code> header, the pgwire <code>database=</code> URL parameter, or by addressing the named REST routes (<code>POST /v1/sessions/&lt;model_name&gt;/query/semantic-ql</code>)</li>
 <li>All other endpoints (sessions, query, validate, diagram, etc.) work normally</li>
 </ul>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Start in single-model mode</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">MODEL_FILE</span><span class="o">=</span>./examples/sem-layer.obml.yml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># One model</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">MODEL_FILES</span><span class="o">=</span>./examples/sem-layer.obml.yml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Multiple models, comma-separated</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">MODEL_FILES</span><span class="o">=</span>./models/sales.yaml,./models/finance.yaml<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>orionbelt-api
 </span></code></pre></div>
-<p>This is the recommended mode for production deployments and AI integrations.</p>
+<p>This is the recommended mode for production deployments, BI tool integrations, and AI agents.</p>
 
 
 

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -90,7 +90,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#orionbelt-semantic-layer" class="md-skip">
+        <a href="#orionbelt-semantic-layer-and-sidecar" class="md-skip">
           Skip to content
         </a>
       
@@ -539,6 +539,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#what-is-a-semantic-sidecar" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is a Semantic Sidecar?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-orionbelt-trio" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -620,7 +631,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2054,6 +2065,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#what-is-a-semantic-sidecar" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is a Semantic Sidecar?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-orionbelt-trio" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2135,7 +2157,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -2158,9 +2180,21 @@
   <img src="assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
 </p>
 
-<h1 id="orionbelt-semantic-layer">OrionBelt Semantic Layer<a class="headerlink" href="#orionbelt-semantic-layer" title="Permanent link">&para;</a></h1>
-<p><strong>Compile and execute YAML semantic models as analytical SQL across multiple database dialects.</strong></p>
-<p>OrionBelt Semantic Layer is an <strong>API-first</strong> semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, and Snowflake. Query using business concepts — dimensions, measures, and metrics — instead of raw SQL.</p>
+<h1 id="orionbelt-semantic-layer-and-sidecar">OrionBelt Semantic Layer and Sidecar<a class="headerlink" href="#orionbelt-semantic-layer-and-sidecar" title="Permanent link">&para;</a></h1>
+<p><strong>An open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.</strong></p>
+<p><strong>Inject governed semantics into systems that never had them.</strong></p>
+<p>OrionBelt Semantic Layer (OBSL) is a thin runtime that sits <em>next to</em> existing platforms — AI agents, BI tools, data-quality pipelines, regulatory and KPI reporting — and injects governed business semantics without forcing those systems to absorb a new semantic infrastructure.</p>
+<p>Define dimensions, measures, metrics, business rules, and semantic context in declarative YAML models. OBSL compiles and executes them as optimized, dialect-specific SQL across <strong>BigQuery, ClickHouse, Databricks, Dremio, DuckDB / MotherDuck, MySQL, PostgreSQL, and Snowflake</strong> — surfaced over REST, MCP, Arrow Flight SQL, and the PostgreSQL wire protocol.</p>
+<p>Query using <strong>business concepts</strong> — not raw tables and SQL. The same semantic model powers AI agents, analytics workflows, data-quality checks, regulatory and business KPIs, and reporting use cases. <strong>Analytics as Code — and beyond.</strong> The full loop from declarative YAML through executable SQL, DQ rules, KPIs, and semantic context to query results is programmable, reviewable, and reproducible — no BI tool in the middle.</p>
+<h2 id="what-is-a-semantic-sidecar">What is a Semantic Sidecar?<a class="headerlink" href="#what-is-a-semantic-sidecar" title="Permanent link">&para;</a></h2>
+<p>The <em>sidecar pattern</em> comes from container platforms: a small, focused process runs alongside a main application and adds capability the main process doesn't have, without changing it.</p>
+<p>OBSL applies the same pattern to <strong>semantics</strong>:</p>
+<ul>
+<li>It's a <strong>runtime, not a rewrite.</strong> Existing BI tools, AI agents, governance systems, and DQ pipelines keep talking to their databases — OBSL attaches a governed semantic interface alongside them.</li>
+<li>It's <strong>multi-surface by design.</strong> The same model is reachable over REST (for agents and apps), MCP (for LLM clients), Arrow Flight SQL + PostgreSQL wire (for BI tools), and direct DB-API drivers (for Python). One model, many channels.</li>
+<li>It's <strong>opinionated about correctness, not deployment.</strong> Dialect-aware SQL generation, fan-trap-safe joins, and dimensional metrics are non-negotiable; where to run OBSL — embedded in your app, alongside a warehouse, behind a proxy, in a single container — is your call.</li>
+<li>It's <strong>open by default.</strong> BSL 1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.</li>
+</ul>
 <h2 id="the-orionbelt-trio">The OrionBelt trio<a class="headerlink" href="#the-orionbelt-trio" title="Permanent link">&para;</a></h2>
 <p>OBSL ships three named pillars. You author models in <strong>OBML</strong>, query them in <strong>OBSQL</strong>, and run it all on <strong>OBSL</strong>.</p>
 <table>
@@ -2196,8 +2230,10 @@
 <p>OBSQL flows over <strong>Apache Arrow Flight SQL</strong> (v2.4+) and <strong>PostgreSQL wire</strong> (v2.5+). Same language, two transports — pick whichever your BI tool prefers.</p>
 <h2 id="why-orionbelt">Why OrionBelt?<a class="headerlink" href="#why-orionbelt" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Analytics as Code</strong> — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible</li>
-<li><strong>One model, many dialects</strong> — Define your semantic model once in YAML, compile and execute SQL for any supported warehouse</li>
+<li><strong>One model, many consumers</strong> — Author dimensions / measures / metrics / business rules once in YAML; agentic AI, BI tools, DQ pipelines, regulatory KPIs, and reporting all read from the same governed surface</li>
+<li><strong>Analytics as Code — and beyond</strong> — Version-controlled YAML compiles to dialect-specific SQL, executable DQ rules, KPI definitions, and semantic context. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible</li>
+<li><strong>One model, many dialects</strong> — BigQuery, ClickHouse, Databricks, Dremio, DuckDB / MotherDuck, MySQL, PostgreSQL, and Snowflake — no runtime lock-in to any single warehouse</li>
+<li><strong>One model, many transports</strong> — REST + MCP (for agents), Arrow Flight SQL + PostgreSQL wire (for BI tools), DB-API drivers (for Python). Choose the surface; the semantics are the same</li>
 <li><strong>Cross-schema &amp; cross-database</strong> — Model data objects across multiple schemas and databases; dimensions, measures, and metrics can span schema boundaries in a single query</li>
 <li><strong>Safe by construction</strong> — AST-based SQL generation prevents injection and ensures syntactic correctness</li>
 <li><strong>Precise error reporting</strong> — Validation errors include line and column numbers from your YAML source</li>

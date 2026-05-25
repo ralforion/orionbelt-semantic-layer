@@ -2,154 +2,154 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/drivers/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/api/endpoints/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/api/openapi/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/api/overview/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/atscale/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/cube/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/dbt/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/lookml/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/comparison/malloy/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/examples/multi-dialect/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/examples/multi-fact/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/examples/sales-model/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/examples/tpcds/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/development/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/docker/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/installation/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/quickstart/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/compilation/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/correctness-and-drift-tests/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/dialects/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/freshness-contracts/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/grain-filter-context/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/integrations/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/model-format/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/obsl/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/osi/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/period-over-period/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/postgres-wire-bi-tools/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/query-language/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/result-cache/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/semantic-ql/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/trend-analysis/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/ui/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/reference/architecture/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/reference/configuration/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/reference/python-api/</loc>
-         <lastmod>2026-05-24</lastmod>
+         <lastmod>2026-05-25</lastmod>
     </url>
 </urlset>

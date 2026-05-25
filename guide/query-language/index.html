@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -1325,6 +1325,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#existence-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existence Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1384,7 +1395,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -2981,6 +2992,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#existence-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existence Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3040,7 +3062,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -3791,15 +3813,72 @@
 <li><strong>Dremio/Databricks</strong>: <code>LOWER(column) LIKE '%' || LOWER(value) || '%'</code></li>
 </ul>
 </div>
+<h4 id="existence-operators">Existence Operators<a class="headerlink" href="#existence-operators" title="Permanent link">&para;</a></h4>
+<p><code>exists</code> / <code>nonexists</code> express "this row has (or doesn't have) a matching row in a related data object" as a correlated <code>EXISTS (SELECT 1 FROM …)</code> subquery. The first-class primitive for regulatory data-quality rules, coverage and anti-join reports, and any "parent has at least one child of kind X" question.</p>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>SQL Output</th>
+<th>Payload</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>exists</code></td>
+<td><code>EXISTS (SELECT 1 FROM target WHERE target.k = subject.k …)</code></td>
+<td><code>subquery</code> object</td>
+</tr>
+<tr>
+<td><code>nonexists</code></td>
+<td><code>NOT EXISTS (…)</code></td>
+<td><code>subquery</code> object</td>
+</tr>
+</tbody>
+</table>
+<p>Both operators take a <code>subquery:</code> object (not <code>value:</code>) describing the target and any extra predicates restricting which target rows count:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">where</span><span class="p">:</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order ID</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">op</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">exists</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span><span class="nt">subquery</span><span class="p">:</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">      </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">OrderItems</span><span class="w">           </span><span class="c1"># target — reachable from the subject&#39;s data object</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">      </span><span class="nt">filter</span><span class="p">:</span><span class="w">                          </span><span class="c1"># optional predicates on the target rows</span>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Is Returned</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a><span class="w">          </span><span class="nt">op</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">equals</span>
+</span><span id="__span-23-9"><a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a><span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span></code></pre></div>
+<p>For "orders with no payment":</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">where</span><span class="p">:</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order ID</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="w">    </span><span class="nt">op</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nonexists</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="w">    </span><span class="nt">subquery</span><span class="p">:</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="w">      </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Payments</span>
+</span></code></pre></div>
+<p>The join columns are <strong>not</strong> restated — the planner walks the model's existing <code>joins:</code> from the subject's data object to <code>subquery.dataObject</code>. When multiple secondary joins exist between subject and target, pin the path with <code>pathName:</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="nt">where</span><span class="p">:</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Order ID</span>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="w">    </span><span class="nt">op</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">exists</span>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="w">    </span><span class="nt">subquery</span><span class="p">:</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="w">      </span><span class="nt">dataObject</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Returns</span>
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a><span class="w">      </span><span class="nt">pathName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">viaWarehouse</span><span class="w">        </span><span class="c1"># matches a declared secondary join&#39;s pathName</span>
+</span></code></pre></div>
+<p><strong>Subquery filter rules</strong></p>
+<p><code>subquery.filter</code> accepts the same operator vocabulary as the outer filter, with two exceptions:</p>
+<ul>
+<li>Nested <code>exists</code> / <code>nonexists</code> are rejected (<code>NESTED_SUBQUERY_NOT_SUPPORTED</code>) — keeps the planner simple.</li>
+<li><code>field</code> is interpreted as a column <strong>on the target data object</strong> (e.g. <code>Is Returned</code> lives on <code>OrderItems</code>), not a dimension on the model.</li>
+</ul>
+<p><strong><code>exists</code> / <code>nonexists</code> are WHERE-only.</strong> Both operators are rejected in <code>having:</code> with <code>INVALID_FILTER_OPERATOR</code> because the correlation predicate references the subject's row-level column, which is out of scope after <code>GROUP BY</code>. Measure-level EXISTS — "groups where some matching child row exists" — is a deferred follow-up (<code>MeasureFilter.subquery</code>).</p>
+<p><code>EXISTS</code> is portable — all 8 dialects compile the same shape, only identifier quoting differs.</p>
 <h2 id="ordering">Ordering<a class="headerlink" href="#ordering" title="Permanent link">&para;</a></h2>
 <p>Sort results by dimension or measure names from the query's SELECT, or by numeric position:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">order_by</span><span class="p">:</span>
-</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue</span>
-</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">desc</span>
-</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Customer Country</span>
-</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">asc</span><span class="w">       </span><span class="c1"># default</span>
-</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span><span class="w">           </span><span class="c1"># numeric position (1-based)</span>
-</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">asc</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">order_by</span><span class="p">:</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revenue</span>
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">desc</span>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Customer Country</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">asc</span><span class="w">       </span><span class="c1"># default</span>
+</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">field</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span><span class="w">           </span><span class="c1"># numeric position (1-based)</span>
+</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">    </span><span class="nt">direction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">asc</span>
 </span></code></pre></div>
 <table>
 <thead>
@@ -3828,7 +3907,7 @@
 <p>The <code>field</code> must reference a dimension or measure that appears in the query's <code>select</code>. It cannot reference fields outside the SELECT. Alternatively, use a numeric string to reference the SELECT column by position (1-based).</p>
 <h2 id="limit">Limit<a class="headerlink" href="#limit" title="Permanent link">&para;</a></h2>
 <p>Restrict the number of returned rows:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </span></code></pre></div>
 <h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
 <p>Invalid queries return error responses:</p>
@@ -3875,6 +3954,31 @@
 <td><code>INVALID_RELATIVE_FILTER</code></td>
 <td>400</td>
 <td>Malformed relative time filter</td>
+</tr>
+<tr>
+<td><code>UNKNOWN_SUBQUERY_DATA_OBJECT</code></td>
+<td>400</td>
+<td><code>exists</code> / <code>nonexists</code> references an unknown target data object</td>
+</tr>
+<tr>
+<td><code>NO_JOIN_PATH_TO_SUBQUERY</code></td>
+<td>400</td>
+<td>No join path exists from the filter subject to the subquery target</td>
+</tr>
+<tr>
+<td><code>UNKNOWN_SUBQUERY_FILTER_COLUMN</code></td>
+<td>400</td>
+<td><code>subquery.filter</code> references a column not on the target</td>
+</tr>
+<tr>
+<td><code>NESTED_SUBQUERY_NOT_SUPPORTED</code></td>
+<td>400</td>
+<td><code>subquery.filter</code> cannot contain another <code>exists</code> / <code>nonexists</code></td>
+</tr>
+<tr>
+<td><code>UNKNOWN_PATH_NAME</code></td>
+<td>400</td>
+<td><code>subquery.pathName</code> does not match any declared secondary join</td>
 </tr>
 <tr>
 <td><code>AMBIGUOUS_JOIN</code></td>

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Compile and execute YAML semantic models as analytical SQL across multiple database dialects.">
+        <meta name="description" content="Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance — inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire.">
       
       
       
@@ -2005,7 +2005,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
       
     </li>
@@ -3320,7 +3320,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.6.1
+  OrionBelt v2.7.0
 </div>
                   </div>
                 </div>
@@ -3402,9 +3402,9 @@
 <h3 id="post-v1sessionssession_idmodels"><code>POST /v1/sessions/{session_id}/models</code><a class="headerlink" href="#post-v1sessionssession_idmodels" title="Permanent link">&para;</a></h3>
 <p>Load an OBML semantic model into a session. The model is parsed, validated, and stored.</p>
 <div class="admonition note">
-<p class="admonition-title">Single-model mode</p>
+<p class="admonition-title">Admin-curated mode</p>
 </div>
-<p>Returns <strong>403 Forbidden</strong> when <code>MODEL_FILE</code> is configured. The model is pre-loaded automatically.</p>
+<p>Returns <strong>403 Forbidden</strong> when <code>MODEL_FILES</code> is configured. Address the preloaded model via its named protected session instead (<code>/v1/sessions/&lt;model_name&gt;/...</code>).</p>
 <p><strong>Request:</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w"> </span><span class="nt">&quot;model_yaml&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;version: 1.0\ndataObjects:\n Orders:\n code: ORDERS\n ...&quot;</span><span class="p">,</span>
@@ -3580,9 +3580,9 @@
 <h3 id="delete-v1sessionssession_idmodelsmodel_id"><code>DELETE /v1/sessions/{session_id}/models/{model_id}</code><a class="headerlink" href="#delete-v1sessionssession_idmodelsmodel_id" title="Permanent link">&para;</a></h3>
 <p>Remove a model from a session.</p>
 <div class="admonition note">
-<p class="admonition-title">Single-model mode</p>
+<p class="admonition-title">Admin-curated mode</p>
 </div>
-<p>Returns <strong>403 Forbidden</strong> when <code>MODEL_FILE</code> is configured.</p>
+<p>Returns <strong>403 Forbidden</strong> when <code>MODEL_FILES</code> is configured.</p>
 <p><strong>Response (204):</strong> No content.</p>
 <p><strong>Error (403):</strong> Single-model mode: model removal is disabled.</p>
 <p><strong>Error (404):</strong> Model or session not found.</p>
@@ -4604,12 +4604,12 @@
 </span><span id="__span-46-13"><a id="__codelineno-46-13" name="__codelineno-46-13" href="#__codelineno-46-13"></a><span class="w"> </span><span class="p">}</span>
 </span><span id="__span-46-14"><a id="__codelineno-46-14" name="__codelineno-46-14" href="#__codelineno-46-14"></a><span class="p">}</span>
 </span></code></pre></div>
-<p><strong>Response (200) — single-model mode (<code>MODEL_FILE</code> is configured):</strong></p>
+<p><strong>Response (200) — admin-curated mode (<code>MODEL_FILES</code> is configured):</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="p">{</span>
 </span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2.5.0&quot;</span><span class="p">,</span>
 </span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a><span class="w"> </span><span class="nt">&quot;api_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;v1&quot;</span><span class="p">,</span>
 </span><span id="__span-47-4"><a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a><span class="w"> </span><span class="nt">&quot;single_model_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="w"> </span><span class="nt">&quot;model_yaml&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;version: 1.0\nsettings:\n defaultTimezone: Europe/Berlin\n ...&quot;</span><span class="p">,</span>
+</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="w"> </span><span class="nt">&quot;model_yaml&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
 </span><span id="__span-47-6"><a id="__codelineno-47-6" name="__codelineno-47-6" href="#__codelineno-47-6"></a><span class="w"> </span><span class="nt">&quot;session_ttl_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1800</span><span class="p">,</span>
 </span><span id="__span-47-7"><a id="__codelineno-47-7" name="__codelineno-47-7" href="#__codelineno-47-7"></a><span class="w"> </span><span class="nt">&quot;session_max_age_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">86400</span><span class="p">,</span>
 </span><span id="__span-47-8"><a id="__codelineno-47-8" name="__codelineno-47-8" href="#__codelineno-47-8"></a><span class="w"> </span><span class="nt">&quot;max_sessions&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span>
