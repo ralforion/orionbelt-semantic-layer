@@ -2,9 +2,11 @@
   <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo — a stylized belt of three stars" width="400">
 </p>
 
-<h1 align="center">OrionBelt Semantic Layer</h1>
+<h1 align="center">OrionBelt Semantic Layer and Sidecar</h1>
 
-<p align="center"><strong>Compile and execute YAML semantic models as analytical SQL across multiple database dialects</strong></p>
+<p align="center"><strong>An Open Source Semantic Sidecar for Agentic AI, Analytics, Quality and Governance Systems.</strong></p>
+
+<p align="center"><strong>Inject governed semantics into systems that never had them.</strong></p>
 
 <!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](https://orionbelt.ralforion.com/ui/?__theme=dark)
@@ -30,9 +32,17 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-FFF000.svg?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![MySQL](https://img.shields.io/badge/MySQL-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com)
 
-OrionBelt Semantic Layer is an **API-first** semantic engine and query planner for AI agents that compiles and executes declarative YAML model definitions as optimized SQL for BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, Postgres, and Snowflake. Query using business concepts — dimensions, measures, and metrics — instead of raw SQL.
+OrionBelt Semantic Layer (OBSL) is an open-source **Semantic Sidecar** for AI, analytics, and governed data systems. It injects governed business semantics into existing platforms without requiring architecture changes or dedicated semantic infrastructure.
 
-**Analytics as Code** — Define your analytical semantics in version-controlled YAML, compile to dialect-specific SQL, and execute against live databases, all through a single API. No BI tool in the middle: the full loop from declarative model to query results is programmable, reviewable, and reproducible.
+Define dimensions, measures, metrics, business rules, and semantic context in declarative YAML models. OBSL compiles and executes them as optimized, dialect-specific SQL across BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.
+
+Query using **business concepts** instead of raw schemas and SQL. The same semantic model can power AI agents, analytics workflows, data quality checks, regulatory and business KPIs, and reporting use cases.
+
+**Analytics as Code** — and beyond.
+
+Define analytical and business semantics in version-controlled YAML, compile them into executable SQL, DQ rules, KPIs, and semantic context, and execute them through a unified API.
+
+No BI tool in the middle. The entire path from declarative model to executable semantics and query results is programmable, reviewable, and reproducible.
 
 > **Companion Project:** [OrionBelt Analytics](https://github.com/ralfbecher/orionbelt-analytics) — an ontology-based MCP server that analyzes database schemas and generates RDF/OWL ontologies. Together they let AI assistants navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
 
@@ -216,7 +226,7 @@ services:
     volumes:
       - ./models:/app/models:ro
     environment:
-      MODEL_FILE: /app/models/my-model.obml.yml
+      MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
     image: ralforion/orionbelt-ui:2.6.1
@@ -234,7 +244,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > **Docker notes:**
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
-> - Mount models to `/app/models` (or any path) and set `MODEL_FILE` to pre-load on startup.
+> - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
 > - For production, pin a version tag (`:2.6.1`) rather than `:latest`.
 
 ### Claude Desktop / MCP

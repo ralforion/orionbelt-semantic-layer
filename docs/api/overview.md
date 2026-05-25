@@ -44,17 +44,16 @@ The primary API workflow uses sessions to manage model state:
 
 Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SECONDS`) or after an absolute maximum lifetime of 24 hours (`SESSION_MAX_AGE_SECONDS`). The server enforces a global concurrent session cap (`MAX_SESSIONS`, default 500) and a per-session model cap (`MAX_MODELS_PER_SESSION`, default 10). Session creation is rate-limited per IP (`SESSION_RATE_LIMIT`, default 10/min). When limits are exceeded, the API returns **429 Too Many Requests** with a `Retry-After` header. Expired sessions return **410 Gone** (not 404) so clients can distinguish expiry from unknown IDs.
 
-### Single-Model Mode
+### Admin-Curated Mode
 
-When the `MODEL_FILE` environment variable is set, the server runs in **single-model mode**:
+When the `MODEL_FILES` environment variable is set, the server runs in **admin-curated mode** — each preloaded model lives in its own *named protected session* whose id is the OBML `name:` field (falling back to the filename stem):
 
-1. **Create a session** — `POST /v1/sessions` returns a `session_id` with the model already loaded (`model_count: 1`)
-2. **List the model** — `GET /v1/sessions/{id}/models` to get the pre-loaded `model_id`
-3. **Compile** — `POST /v1/sessions/{id}/query/sql` to compile OBML to SQL
-4. **Execute** — `POST /v1/sessions/{id}/query/execute` to compile and execute (requires `FLIGHT_ENABLED=true`)
-4. **Close** — `DELETE /v1/sessions/{id}` when done (or let TTL expire)
+1. **Discover** — `GET /v1/models` lists every preloaded model and its addressing name
+2. **List the model** — `GET /v1/sessions/<model_name>/models` to get the `model_id`
+3. **Compile** — `POST /v1/sessions/<model_name>/query/sql` to compile OBML to SQL
+4. **Execute** — `POST /v1/sessions/<model_name>/query/execute` to compile and execute (requires `FLIGHT_ENABLED=true`)
 
-Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{mid}`) return **403 Forbidden** in this mode. All other endpoints work normally.
+BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter. Model upload (`POST /v1/sessions/{id}/models`) and removal (`DELETE /v1/sessions/{id}/models/{mid}`) return **403 Forbidden** while admin-curated mode is on. All other endpoints work normally.
 
 ## Error Responses
 

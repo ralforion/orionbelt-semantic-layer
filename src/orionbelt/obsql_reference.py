@@ -179,7 +179,7 @@ clients pick which model to query:
 Resolution order on the server:
 
 1. Explicit selector from header / URL → that model
-2. Legacy ``__default__`` (from ``MODEL_FILE``)
+2. MCP stdio's on-demand ``__default__`` session, if populated
 3. Auto-resolve when exactly one model is loaded — no selector required
 4. Otherwise: rich error listing available model names and how to set
    the selector for each client type

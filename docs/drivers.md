@@ -2,7 +2,7 @@
 
 OrionBelt provides PEP 249 DB-API 2.0 drivers for 8 databases and an Arrow Flight SQL server extension that enables BI tools like DBeaver, Tableau, and Power BI to run OBML queries directly.
 
-All drivers work against the **OrionBelt REST API in single-model mode** (`MODEL_FILE` set). OBML queries are compiled transparently via `POST /v1/query/sql` — the user writes OBML, the driver returns SQL results.
+All drivers work against the **OrionBelt REST API in admin-curated mode** (`MODEL_FILES=<path>`). OBML queries are compiled transparently via `POST /v1/query/sql` — the user writes OBML, the driver returns SQL results.
 
 ## Package Overview
 
@@ -247,7 +247,7 @@ All settings are in `.env` (or environment variables). Pydantic-settings reads t
 # .env
 
 # --- Core API (unchanged) ---
-MODEL_FILE=models/sales.obml.yaml
+MODEL_FILES=models/sales.obml.yaml
 API_SERVER_PORT=8000
 LOG_LEVEL=INFO
 
@@ -297,7 +297,7 @@ POSTGRES_PASSWORD=secret
 uv sync
 
 # Start API + Flight SQL
-FLIGHT_ENABLED=true MODEL_FILE=models/sales.obml.yaml uv run orionbelt-api
+FLIGHT_ENABLED=true MODEL_FILES=models/sales.obml.yaml uv run orionbelt-api
 ```
 
 Or with a `.env` file:
@@ -327,7 +327,7 @@ Or with explicit environment variables:
 
 ```bash
 docker run -p 8080:8080 -p 8815:8815 \
-  -e MODEL_FILE=/models/sales.obml.yaml \
+  -e MODEL_FILES=/models/sales.obml.yaml \
   -e FLIGHT_ENABLED=true \
   -e DB_VENDOR=snowflake \
   -e SNOWFLAKE_ACCOUNT=xy12345 \
@@ -371,7 +371,7 @@ services:
 With `.env`:
 
 ```env
-MODEL_FILE=/models/sales.obml.yaml
+MODEL_FILES=/models/sales.obml.yaml
 FLIGHT_ENABLED=true
 DB_VENDOR=postgres
 POSTGRES_HOST=postgres

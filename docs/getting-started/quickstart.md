@@ -222,26 +222,26 @@ curl -s -X POST "http://127.0.0.1:8000/v1/sessions/$SESSION_ID/query/sql" \
 curl -s -X DELETE "http://127.0.0.1:8000/v1/sessions/$SESSION_ID"
 ```
 
-## Step 6: Single-Model Mode
+## Step 6: Admin-Curated Mode
 
-If you want to serve a fixed model without allowing uploads, start with `MODEL_FILE`:
+To serve fixed models without allowing uploads, start with `MODEL_FILES` (one or more paths):
 
 ```bash
-MODEL_FILE=./model.yaml uv run orionbelt-api
+MODEL_FILES=./model.yaml uv run orionbelt-api
 ```
 
-The model is pre-loaded into every new session:
+Each model loads into its own *named protected session*. The session id is the OBML `name:` field (falling back to the filename stem), so you can address the model directly:
 
 ```bash
-# Create a session (model is already loaded)
-SESSION_ID=$(curl -s -X POST http://127.0.0.1:8000/v1/sessions | jq -r .session_id)
-# → model_count: 1
+# The model name is the session id — use it in REST paths
+MODEL_NAME="sales"          # whatever your OBML name: or filename stem resolves to
 
-# Get the pre-loaded model ID
-MODEL_ID=$(curl -s "http://127.0.0.1:8000/v1/sessions/$SESSION_ID/models" | jq -r '.[0].model_id')
+# List the protected model
+curl -s "http://127.0.0.1:8000/v1/sessions/$MODEL_NAME/models"
+MODEL_ID=$(curl -s "http://127.0.0.1:8000/v1/sessions/$MODEL_NAME/models" | jq -r '.[0].model_id')
 
-# Query directly — no model upload needed
-curl -s -X POST "http://127.0.0.1:8000/v1/sessions/$SESSION_ID/query/sql" \
+# Query directly against the named session — no upload needed
+curl -s -X POST "http://127.0.0.1:8000/v1/sessions/$MODEL_NAME/query/sql" \
   -H "Content-Type: application/json" \
   -d "{
     \"model_id\": \"$MODEL_ID\",
@@ -255,7 +255,7 @@ curl -s -X POST "http://127.0.0.1:8000/v1/sessions/$SESSION_ID/query/sql" \
   }" | jq .sql
 ```
 
-Model upload and removal are blocked (403) in this mode.
+`GET /v1/models` lists every preloaded model + its addressing name. Model upload (`POST /v1/sessions/{id}/models`) and removal are blocked (403) while admin-curated mode is on. BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter.
 
 ## Next Steps
 

@@ -95,8 +95,8 @@ Close a session and release its resources.
 
 Load an OBML semantic model into a session. The model is parsed, validated, and stored.
 
-!!! note "Single-model mode"
- Returns **403 Forbidden** when `MODEL_FILE` is configured. The model is pre-loaded automatically.
+!!! note "Admin-curated mode"
+ Returns **403 Forbidden** when `MODEL_FILES` is configured. Address the preloaded model via its named protected session instead (`/v1/sessions/<model_name>/...`).
 
 **Request:**
 
@@ -232,8 +232,8 @@ Describe a model's contents — data objects (with fields and joins), dimensions
 
 Remove a model from a session.
 
-!!! note "Single-model mode"
- Returns **403 Forbidden** when `MODEL_FILE` is configured.
+!!! note "Admin-curated mode"
+ Returns **403 Forbidden** when `MODEL_FILES` is configured.
 
 **Response (204):** No content.
 
@@ -1197,14 +1197,14 @@ Return public configuration for API clients (UI, MCP, etc.).
 }
 ```
 
-**Response (200) — single-model mode (`MODEL_FILE` is configured):**
+**Response (200) — admin-curated mode (`MODEL_FILES` is configured):**
 
 ```json
 {
  "version": "2.5.0",
  "api_version": "v1",
  "single_model_mode": true,
- "model_yaml": "version: 1.0\nsettings:\n defaultTimezone: Europe/Berlin\n ...",
+ "model_yaml": null,
  "session_ttl_seconds": 1800,
  "session_max_age_seconds": 86400,
  "max_sessions": 500,

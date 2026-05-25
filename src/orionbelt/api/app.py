@@ -151,28 +151,19 @@ def _parse_model_files_env(model_files: str) -> list[str]:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Start/stop the SessionManager alongside the application.
 
-    Three startup-time model-loading modes (v2.4.0+):
+    Two startup-time model-loading modes:
 
-    * ``MODEL_FILES=a.yaml,b.yaml`` — multi-model. Each YAML is loaded
+    * ``MODEL_FILES=a.yaml,b.yaml`` — admin-curated. Each YAML is loaded
       into its own internal session, addressable by the resolved name
-      (OBML ``name:`` → filename stem). Multiple BI tool catalogs.
-    * ``MODEL_FILE=path.yaml`` — legacy single-model alias. Internally
-      treated as ``MODEL_FILES`` with one entry that goes into the
-      ``__default__`` session for backward compatibility. Deprecation
-      warning logged.
+      (OBML ``name:`` → filename stem). BI tools select via the Flight
+      ``database`` catalog or pgwire ``database=`` URL parameter. A
+      single path is fine — it just means one named protected session.
+      REST ``POST /sessions/{id}/models`` returns 403 in this mode.
     * Neither set — dynamic mode. Sessions and models are created at
       runtime via REST. The Flight surface has no preloaded model and
       will return ``NO_MODEL_AVAILABLE`` on connect.
     """
     settings: Settings = app.state.settings
-
-    # Mutual exclusion of MODEL_FILE and MODEL_FILES
-    if settings.model_file and settings.model_files:
-        raise RuntimeError(
-            "MODEL_FILE and MODEL_FILES cannot both be set. "
-            "Use MODEL_FILES for multi-model mode; MODEL_FILE is the "
-            "deprecated single-model alias kept for backward compatibility."
-        )
 
     # Read + validate every YAML before constructing the SessionManager —
     # fail fast at startup rather than emitting half-broken state.
@@ -181,39 +172,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         for path_str in _parse_model_files_env(settings.model_files):
             yaml_str, resolved = _read_model_file(path_str, settings.model_dir)
             preloads.append((yaml_str, resolved))
-    elif settings.model_file:
-        logger.warning(
-            "MODEL_FILE is deprecated as of v2.4.0; use MODEL_FILES=<path> "
-            "(comma-separated for multiple models). MODEL_FILE will be "
-            "removed in v2.6.0."
-        )
-        yaml_str, resolved = _read_model_file(settings.model_file, settings.model_dir)
-        preloads.append((yaml_str, resolved))
 
     # Resolve every model's addressing name and check uniqueness BEFORE
     # we start the SessionManager — surface collisions as one clean error
     # rather than partial state.
     named_preloads: list[tuple[str, str]] = []  # (model_name, yaml_str)
     seen: dict[str, Path] = {}
-    legacy_default: str | None = None  # YAML for the legacy __default__ slot
-    if preloads and settings.model_files:
-        # Multi-model mode: every preload gets its own named session
-        for yaml_str, path in preloads:
-            name = _resolve_model_name(yaml_str, path)
-            if name in seen:
-                raise RuntimeError(
-                    f"Model name '{name}' is used by both "
-                    f"{seen[name]} and {path}. Each MODEL_FILES entry "
-                    "must resolve to a unique addressing name. Override "
-                    "via OBML `name:` field if needed."
-                )
-            seen[name] = path
-            named_preloads.append((name, yaml_str))
-    elif preloads:
-        # Legacy MODEL_FILE single-model — preserve __default__ semantics
-        legacy_default = preloads[0][0]
+    for yaml_str, path in preloads:
+        name = _resolve_model_name(yaml_str, path)
+        if name in seen:
+            raise RuntimeError(
+                f"Model name '{name}' is used by both "
+                f"{seen[name]} and {path}. Each MODEL_FILES entry "
+                "must resolve to a unique addressing name. Override "
+                "via OBML `name:` field if needed."
+            )
+        seen[name] = path
+        named_preloads.append((name, yaml_str))
 
-    is_admin_curated = bool(preloads)  # disables POST /models in either mode
+    is_admin_curated = bool(preloads)  # disables POST /models
 
     mgr = SessionManager(
         ttl_seconds=settings.session_ttl_seconds,
@@ -238,13 +215,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # query/execute is available when explicitly enabled OR when Flight is enabled
     query_execute_enabled = settings.query_execute or settings.flight_enabled
 
-    # Single-model legacy mode: load into __default__ for compatibility
-    if legacy_default is not None:
-        default_store = mgr.get_or_create_default()
-        default_store.load_model(legacy_default)
-        logger.info("Single-model (legacy MODEL_FILE) → __default__ session")
-
-    # Multi-model mode: each named preload goes into its own protected session
+    # Each MODEL_FILES entry goes into its own protected named session.
     for name, yaml_str in named_preloads:
         store = mgr.get_or_create_named(name)
         store.load_model(yaml_str)
@@ -331,10 +302,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
-        # Legacy single-model preload (MODEL_FILE only). Multi-model
-        # (MODEL_FILES) doesn't use this slot — each named model is
-        # created at startup above.
-        preload_model_yaml=legacy_default,
+        admin_curated=is_admin_curated,
         flight_info=flight_info,
         query_execute_enabled=query_execute_enabled,
         db_vendor=settings.db_vendor,
@@ -498,12 +466,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         api_url = f"http://localhost:{settings.effective_port}"
         # Resolve from Settings directly: the UI is mounted in create_app(), which
         # runs before the lifespan hook initialises deps.py globals, so calling
-        # is_query_execute_enabled()/is_single_model_mode()/get_flight_info() here
+        # is_query_execute_enabled()/is_admin_curated_mode()/get_flight_info() here
         # would always read defaults. Mirror the same logic used in lifespan().
         query_execute_enabled = settings.query_execute or settings.flight_enabled
-        # Admin-curated mode: either legacy single-model (MODEL_FILE) or
-        # multi-model (MODEL_FILES). Both lock down POST /models.
-        admin_curated = bool(settings.model_file or settings.model_files)
+        # Admin-curated mode: MODEL_FILES is set, so POST /models is locked down.
+        admin_curated = bool(settings.model_files)
         ui_settings: dict[str, object] = {
             "single_model_mode": admin_curated,
             "query_execute": query_execute_enabled,

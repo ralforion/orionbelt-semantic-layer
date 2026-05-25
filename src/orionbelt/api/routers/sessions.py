@@ -17,7 +17,6 @@ from orionbelt.api.deps import (
     get_cache,
     get_cache_config,
     get_default_locale,
-    get_preload_model_yaml,
     get_query_default_limit,
     get_session_manager,
     is_query_execute_enabled,
@@ -127,14 +126,6 @@ async def create_session(
             detail="Too many active sessions. Please retry later.",
             headers={"Retry-After": "60"},
         ) from None
-
-    # Single-model mode: pre-load the configured model into the new session
-    preload_yaml = get_preload_model_yaml()
-    if preload_yaml is not None:
-        store = mgr.get_store(info.session_id)
-        store.load_model(preload_yaml)
-        # Refresh info to reflect the loaded model count
-        info = mgr.get_session(info.session_id)
 
     return _session_response(info)
 
