@@ -147,6 +147,19 @@ def _parse_model_files_env(model_files: str) -> list[str]:
     return [p.strip() for p in model_files.split(",") if p.strip()]
 
 
+def _warn_if_legacy_model_file_set() -> None:
+    """Log a deprecation warning if the removed ``MODEL_FILE`` env var is still
+    set. ``pydantic-settings`` silently ignores unknown env vars, so a
+    deployment that didn't migrate to ``MODEL_FILES`` would otherwise boot
+    with no preloaded model and the admin lock disabled."""
+    if os.environ.get("MODEL_FILE"):
+        logger.warning(
+            "MODEL_FILE is set but was removed in v2.7.0 and is now ignored. "
+            "Replace with MODEL_FILES=<same-path> (single-entry MODEL_FILES is "
+            "the direct equivalent). See CHANGELOG for the v2.7.0 entry."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Start/stop the SessionManager alongside the application.
@@ -164,6 +177,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
       will return ``NO_MODEL_AVAILABLE`` on connect.
     """
     settings: Settings = app.state.settings
+
+    _warn_if_legacy_model_file_set()
 
     # Read + validate every YAML before constructing the SessionManager —
     # fail fast at startup rather than emitting half-broken state.

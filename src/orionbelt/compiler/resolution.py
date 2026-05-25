@@ -1645,9 +1645,28 @@ class QueryResolver:
             return None
 
         # exists/nonexists need model + subject object + qualify_table to
-        # build the correlated subquery. HAVING reaches measures, which have
-        # no subject data object — reject EXISTS in that context.
+        # build the correlated subquery. HAVING is rejected entirely in v2.7:
+        # the correlation predicate references row-level columns of the
+        # subject data object, but HAVING is evaluated after GROUP BY — the
+        # raw subject column is no longer in scope, producing invalid SQL on
+        # every dialect. Measure-level EXISTS (the proper HAVING-equivalent)
+        # is deferred to ``MeasureFilter.subquery`` in a future release.
         if qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
+            if is_having:
+                ctx.errors.append(
+                    SemanticError(
+                        code="INVALID_FILTER_OPERATOR",
+                        message=(
+                            f"'{qf.op}' is only valid in 'where' — HAVING is "
+                            "evaluated after GROUP BY, where the row-level "
+                            "correlation predicate is out of scope. Move the "
+                            "filter to 'where', or use a precomputed boolean "
+                            "column on the data object."
+                        ),
+                        path=filter_path,
+                    )
+                )
+                return None
             if subject_object is None:
                 ctx.errors.append(
                     SemanticError(

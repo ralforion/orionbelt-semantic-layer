@@ -16,7 +16,7 @@ from typing import Literal, cast
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
-from orionbelt.api.deps import get_db_vendor, get_session_manager, is_single_model_mode
+from orionbelt.api.deps import get_db_vendor, get_session_manager
 from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
@@ -67,39 +67,46 @@ router = APIRouter()
 # -- helpers -----------------------------------------------------------------
 
 
+def _candidate_session_ids(mgr: SessionManager) -> list[str]:
+    """Ordered, deduplicated list of session ids the shortcut routes consult.
+
+    Order: ``__default__`` first (legacy single-model mode), then admin-
+    curated protected sessions (``MODEL_FILES``), then user-created sessions.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def _add(session_id: str) -> None:
+        if session_id in seen:
+            return
+        seen.add(session_id)
+        ordered.append(session_id)
+
+    _add("__default__")
+    for sid in mgr.list_protected_session_ids():
+        _add(sid)
+    for sess in mgr.list_sessions():
+        _add(sess.session_id)
+    return ordered
+
+
 def _resolve_single_model(mgr: SessionManager) -> tuple[str, str, SemanticModel]:
     """Resolve to a unique (session_id, model_id, model).
 
-    In single-model mode every session holds the same preloaded model, so we
-    always return the __default__ session's copy — no ambiguity check needed.
-    Otherwise falls back to scanning all sessions. Raises 409 if ambiguous,
-    404 if nothing loaded.
+    Scans ``__default__``, every admin-curated protected session
+    (``MODEL_FILES``), and every user-created session. Raises 409 if more
+    than one model is found, 404 if none.
     """
     candidates: list[tuple[str, str, SemanticModel]] = []
 
-    # Check __default__ session first (auto-created in single-model mode)
-    try:
-        default_store = mgr.get_store("__default__")
-        for ms in default_store.list_models():
-            model = default_store.get_model(ms.model_id)
-            candidates.append(("__default__", ms.model_id, model))
-    except Exception:
-        pass
-
-    # In single-model mode the same model is pre-loaded into every session;
-    # return the __default__ copy directly to avoid counting duplicates.
-    if candidates and is_single_model_mode():
-        return candidates[0]
-
-    # Also scan user-created sessions
-    for sess in mgr.list_sessions():
+    for sid in _candidate_session_ids(mgr):
         try:
-            store = mgr.get_store(sess.session_id)
+            store = mgr.get_store(sid)
         except Exception:
             continue
         for ms in store.list_models():
             model = store.get_model(ms.model_id)
-            candidates.append((sess.session_id, ms.model_id, model))
+            candidates.append((sid, ms.model_id, model))
 
     if not candidates:
         raise HTTPException(status_code=404, detail="No models loaded in any session")
@@ -118,26 +125,16 @@ def _resolve_store_and_model(
 ) -> tuple[ModelStore, str]:
     """Resolve to a unique (store, model_id) for query compilation.
 
-    In single-model mode returns the __default__ session's store directly.
-    Otherwise checks __default__ then scans user-created sessions.
+    Scans ``__default__``, every admin-curated protected session, and every
+    user-created session. Raises 409 if more than one model is found.
     """
     candidates: list[tuple[ModelStore, str]] = []
 
-    # Check __default__ session first
-    try:
-        default_store = mgr.get_store("__default__")
-        for ms in default_store.list_models():
-            candidates.append((default_store, ms.model_id))
-    except Exception:
-        pass
-
-    # In single-model mode, return immediately — no ambiguity possible.
-    if candidates and is_single_model_mode():
-        return candidates[0]
-
-    # Also scan user-created sessions
-    for sess in mgr.list_sessions():
-        store = mgr.get_store(sess.session_id)
+    for sid in _candidate_session_ids(mgr):
+        try:
+            store = mgr.get_store(sid)
+        except Exception:
+            continue
         for ms in store.list_models():
             candidates.append((store, ms.model_id))
 
@@ -156,17 +153,12 @@ def _session_id_for_store(mgr: SessionManager, store: ModelStore) -> str:
 
     Used by shortcut endpoints so the cache key stays session-scoped (the
     same session_id the caller would have supplied via the session-scoped
-    endpoint). Falls back to ``__default__`` for single-model mode.
+    endpoint). Falls back to ``__default__`` if no match is found.
     """
-    try:
-        if mgr.get_store("__default__") is store:
-            return "__default__"
-    except Exception:
-        pass
-    for sess in mgr.list_sessions():
+    for sid in _candidate_session_ids(mgr):
         try:
-            if mgr.get_store(sess.session_id) is store:
-                return sess.session_id
+            if mgr.get_store(sid) is store:
+                return sid
         except Exception:
             continue
     return "__default__"

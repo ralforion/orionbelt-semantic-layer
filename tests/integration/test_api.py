@@ -845,9 +845,7 @@ class TestSingleModelMode:
     async def test_protected_session_lists_the_model(
         self, single_model_client: AsyncClient
     ) -> None:
-        r = await single_model_client.get(
-            f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models"
-        )
+        r = await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
         assert r.status_code == 200
         assert len(r.json()) == 1
 
@@ -862,9 +860,7 @@ class TestSingleModelMode:
 
     async def test_model_removal_blocked(self, single_model_client: AsyncClient) -> None:
         models = (
-            await single_model_client.get(
-                f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models"
-            )
+            await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
         ).json()
         mid = models[0]["model_id"]
         response = await single_model_client.delete(
@@ -873,13 +869,9 @@ class TestSingleModelMode:
         assert response.status_code == 403
         assert "model removal is disabled" in response.json()["detail"]
 
-    async def test_query_against_protected_session(
-        self, single_model_client: AsyncClient
-    ) -> None:
+    async def test_query_against_protected_session(self, single_model_client: AsyncClient) -> None:
         models = (
-            await single_model_client.get(
-                f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models"
-            )
+            await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
         ).json()
         mid = models[0]["model_id"]
         response = await single_model_client.post(
@@ -907,12 +899,38 @@ class TestSingleModelMode:
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
-    async def test_delete_user_session_still_works(
-        self, single_model_client: AsyncClient
-    ) -> None:
+    async def test_delete_user_session_still_works(self, single_model_client: AsyncClient) -> None:
         sid = (await single_model_client.post("/v1/sessions")).json()["session_id"]
         response = await single_model_client.delete(f"/v1/sessions/{sid}")
         assert response.status_code == 204
+
+    async def test_shortcut_schema_sees_protected_session(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """Regression: shortcut routes must scan protected sessions, not just
+        __default__ + user sessions. With MODEL_FILES the only model lives in
+        a named protected session — ``GET /v1/schema`` previously 404'd."""
+        response = await single_model_client.get("/v1/schema")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body.get("data_objects"), "schema must include at least one data object"
+
+    async def test_shortcut_query_sees_protected_session(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """Companion regression for the compile shortcut against a protected
+        session — uses ``_resolve_store_and_model`` which had the same bug."""
+        response = await single_model_client.post(
+            "/v1/query/sql?dialect=postgres",
+            json={
+                "select": {
+                    "dimensions": ["Customer Country"],
+                    "measures": ["Total Revenue"],
+                },
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "SELECT" in response.json()["sql"]
 
 
 # ---------------------------------------------------------------------------
@@ -1295,6 +1313,42 @@ class TestMultiModelMode:
         names = sorted(m["name"] for m in data["models"])
         assert names == ["returns", "sales"]
         assert data["count"] == 2
+
+
+class TestModelFileRemovalWarning:
+    """v2.7.0 removed the legacy MODEL_FILE env var. pydantic-settings silently
+    ignores unknown env vars, so a deployment that still sets it would boot
+    with no preloaded model — startup must log a deprecation warning."""
+
+    def test_warning_logged_when_model_file_set(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import logging as _logging
+
+        from orionbelt.api.app import _warn_if_legacy_model_file_set
+
+        monkeypatch.setenv("MODEL_FILE", "/tmp/should-be-ignored.yaml")
+        caplog.set_level(_logging.WARNING, logger="orionbelt.api.app")
+        _warn_if_legacy_model_file_set()
+        assert any(
+            "MODEL_FILE" in rec.message and "v2.7.0" in rec.message for rec in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_no_warning_when_model_file_unset(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import logging as _logging
+
+        from orionbelt.api.app import _warn_if_legacy_model_file_set
+
+        monkeypatch.delenv("MODEL_FILE", raising=False)
+        caplog.set_level(_logging.WARNING, logger="orionbelt.api.app")
+        _warn_if_legacy_model_file_set()
+        assert not any("MODEL_FILE" in rec.message for rec in caplog.records)
 
 
 class TestReferenceEndpoints:

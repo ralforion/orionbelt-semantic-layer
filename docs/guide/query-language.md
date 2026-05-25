@@ -643,6 +643,8 @@ where:
 * Nested `exists` / `nonexists` are rejected (`NESTED_SUBQUERY_NOT_SUPPORTED`) — keeps the planner simple.
 * `field` is interpreted as a column **on the target data object** (e.g. `Is Returned` lives on `OrderItems`), not a dimension on the model.
 
+**`exists` / `nonexists` are WHERE-only.** Both operators are rejected in `having:` with `INVALID_FILTER_OPERATOR` because the correlation predicate references the subject's row-level column, which is out of scope after `GROUP BY`. Measure-level EXISTS — "groups where some matching child row exists" — is a deferred follow-up (`MeasureFilter.subquery`).
+
 `EXISTS` is portable — all 8 dialects compile the same shape, only identifier quoting differs.
 
 ## Ordering

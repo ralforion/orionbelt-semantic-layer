@@ -525,6 +525,45 @@ measures:
             "NESTED_SUBQUERY_NOT_SUPPORTED",
         )
 
+    def test_exists_in_having_rejected(self) -> None:
+        """v2.7 restricts EXISTS / NONEXISTS to WHERE only. HAVING is evaluated
+        after GROUP BY, so the correlation predicate's row-level subject
+        column is out of scope — every dialect would reject the resulting SQL.
+        Measure-level EXISTS is a separate, deferred feature
+        (``MeasureFilter.subquery``)."""
+        model = _load_model(BASE_MODEL)
+        self._expect(
+            QueryObject(
+                select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+                having=[
+                    QueryFilter(
+                        field="Order ID",
+                        op=FilterOperator.EXISTS,
+                        subquery=Subquery(data_object="OrderItems"),
+                    )
+                ],
+            ),
+            model,
+            "INVALID_FILTER_OPERATOR",
+        )
+
+    def test_nonexists_in_having_rejected(self) -> None:
+        model = _load_model(BASE_MODEL)
+        self._expect(
+            QueryObject(
+                select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+                having=[
+                    QueryFilter(
+                        field="Order ID",
+                        op=FilterOperator.NONEXISTS,
+                        subquery=Subquery(data_object="OrderItems"),
+                    )
+                ],
+            ),
+            model,
+            "INVALID_FILTER_OPERATOR",
+        )
+
 
 # ---------------------------------------------------------------------------
 # 8-dialect snapshot — EXISTS is portable, every backend emits the operator.
@@ -565,6 +604,57 @@ class TestExistsDialects:
         )
         result = PIPELINE.compile(query, model, dialect_name)
         assert "NOT EXISTS (" in result.sql, f"{dialect_name}: missing NOT EXISTS in compiled SQL"
+
+
+class TestExistsPhysicalTables:
+    """``physical_tables`` must include EXISTS / NONEXISTS subquery targets so
+    the cache key reflects every table the SQL reads — otherwise child-table
+    edits would not invalidate cached results."""
+
+    def test_exists_target_listed_in_physical_tables(self) -> None:
+        model = _load_model(BASE_MODEL)
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"]),
+            where=[
+                QueryFilter(
+                    field="Order ID",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(data_object="OrderItems"),
+                )
+            ],
+        )
+        result = PIPELINE.compile(query, model, "postgres")
+        assert any(ref.endswith(".ORDER_ITEMS") for ref in result.physical_tables), (
+            result.physical_tables
+        )
+
+    def test_nested_subquery_filter_targets_also_tracked(self) -> None:
+        """A ``Subquery.filter`` may itself contain an EXISTS clause; the
+        nested target must also appear in physical_tables."""
+        model = _load_model(BASE_MODEL)
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Total Revenue"]),
+            where=[
+                QueryFilter(
+                    field="Order ID",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(
+                        data_object="OrderItems",
+                        filter=[
+                            QueryFilter(
+                                field="SKU",
+                                op=FilterOperator.EQUALS,
+                                value="sku-a",
+                            )
+                        ],
+                    ),
+                )
+            ],
+        )
+        result = PIPELINE.compile(query, model, "postgres")
+        refs = result.physical_tables
+        assert any(r.endswith(".ORDERS") for r in refs), refs
+        assert any(r.endswith(".ORDER_ITEMS") for r in refs), refs
 
 
 # ---------------------------------------------------------------------------

@@ -78,7 +78,7 @@
     },
     "queryFilter": {
       "type": "object",
-      "description": "A filter condition. WHERE filters reference a dimension name or a qualified column (DataObject.Column); HAVING filters reference a measure name. The data object must be reachable from the query's join graph (auto-joined if needed).",
+      "description": "A filter condition. WHERE filters reference a dimension name or a qualified column (DataObject.Column); HAVING filters reference a measure name. The data object must be reachable from the query's join graph (auto-joined if needed). For 'exists' / 'nonexists' (WHERE only), 'subquery' is required and 'value' is rejected; for every other operator, 'subquery' is rejected.",
       "properties": {
         "field": {
           "type": "string",
@@ -96,7 +96,22 @@
         }
       },
       "required": ["field", "op"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "op": { "enum": ["exists", "nonexists"] } },
+            "required": ["op"]
+          },
+          "then": {
+            "required": ["subquery"],
+            "not": { "required": ["value"] }
+          },
+          "else": {
+            "not": { "required": ["subquery"] }
+          }
+        }
+      ]
     },
     "queryFilterGroup": {
       "type": "object",
