@@ -171,7 +171,7 @@ class CustomExtension(BaseModel):
     vendor: str
     data: str
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class GrainOverride(BaseModel):
@@ -182,7 +182,7 @@ class GrainOverride(BaseModel):
     include: list[str] = Field(default_factory=list)
     keep_only: list[str] = Field(default_factory=list, alias="keepOnly")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @model_validator(mode="after")
     def _validate_grain_override(self) -> GrainOverride:
@@ -198,7 +198,7 @@ class FilterContextFilter(BaseModel):
     op: str
     value: object = None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class FilterContext(BaseModel):
@@ -209,7 +209,7 @@ class FilterContext(BaseModel):
     include: list[FilterContextFilter] = Field(default_factory=list)
     keep_only: list[str] = Field(default_factory=list, alias="keepOnly")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @model_validator(mode="after")
     def _validate_filter_context(self) -> FilterContext:
@@ -226,7 +226,7 @@ class DataColumnRef(BaseModel):
     view: str | None = Field(None, alias="dataObject")
     column: str | None = None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class DataObjectColumn(BaseModel):
@@ -268,7 +268,7 @@ class DataObjectColumn(BaseModel):
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @property
     def is_computed(self) -> bool:
@@ -286,7 +286,7 @@ class DataObjectJoin(BaseModel):
     secondary: bool = False
     path_name: str | None = Field(None, alias="pathName")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class RefreshPolicy(BaseModel):
@@ -321,7 +321,7 @@ class RefreshPolicy(BaseModel):
         description="Max time between heartbeats before the table is stale",
     )
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class DataObject(BaseModel):
@@ -351,7 +351,7 @@ class DataObject(BaseModel):
         """Full qualified table reference: database.schema.code."""
         return f"{self.database}.{self.schema_name}.{self.code}"
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class Dimension(BaseModel):
@@ -369,7 +369,7 @@ class Dimension(BaseModel):
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class FilterValue(BaseModel):
@@ -383,7 +383,7 @@ class FilterValue(BaseModel):
     value_date: str | None = Field(None, alias="valueDate")
     value_boolean: bool | None = Field(None, alias="valueBoolean")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class MeasureFilter(BaseModel):
@@ -393,7 +393,7 @@ class MeasureFilter(BaseModel):
     operator: str
     values: list[FilterValue] = []
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class MeasureFilterGroup(BaseModel):
@@ -407,7 +407,7 @@ class MeasureFilterGroup(BaseModel):
     filters: list[MeasureFilter | MeasureFilterGroup] = []
     negated: bool = False
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 # Resolve forward reference for recursive MeasureFilterGroup
@@ -423,7 +423,7 @@ class WithinGroup(BaseModel):
     column: DataColumnRef
     order: str = "ASC"
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class PeriodOverPeriod(BaseModel):
@@ -439,7 +439,7 @@ class PeriodOverPeriod(BaseModel):
     offset_grain: TimeGrain = Field(alias="offsetGrain")
     comparison: PeriodOverPeriodComparison = PeriodOverPeriodComparison.PERCENT_CHANGE
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class Measure(BaseModel):
@@ -465,7 +465,7 @@ class Measure(BaseModel):
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @field_validator("data_type", mode="before")
     @classmethod
@@ -561,7 +561,7 @@ class Metric(BaseModel):
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @field_validator("data_type", mode="before")
     @classmethod
@@ -649,7 +649,7 @@ class ModelSettings(BaseModel):
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @field_validator("default_numeric_data_type", mode="before")
     @classmethod
@@ -702,7 +702,7 @@ class ModelFilter(BaseModel):
     value: str | int | float | bool | None = None
     values: list[str | int | float | bool] = Field(default_factory=list)
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class ModelExample(BaseModel):
@@ -724,7 +724,7 @@ class ModelExample(BaseModel):
         description="Full QueryObject payload, valid against this model"
     )
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class SemanticModel(BaseModel):
@@ -755,7 +755,7 @@ class SemanticModel(BaseModel):
     owner: str | None = None
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @field_validator("name", mode="before")
     @classmethod

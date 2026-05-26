@@ -294,6 +294,10 @@ OrionBelt preserves these during parsing but does not interpret them.
 6. A dimension may set `via` to force the join path through a specific \
 intermediate data object (role-playing dimensions). The dimension's \
 `dataObject` must be reachable from `via` in the directed join graph.
+7. **Strict parsing (v2.7.2+)**: unknown keys on any OBML object are \
+rejected with error code `UNKNOWN_PROPERTY`. A typo like `filtter:` or \
+`columsFrom:` fails validation instead of being silently dropped — there \
+is no flag to bypass this.
 
 ## Complete Minimal Example
 

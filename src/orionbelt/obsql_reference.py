@@ -162,6 +162,7 @@ Unknown catalog probes return empty result sets — tools adapt.
 | ``MIXED_RAW_AND_AGGREGATE_MODE`` | Raw qualified columns mixed with bare aggregate labels |
 | ``RAW_SQL_REJECTED`` | FROM target is neither the virtual table nor a catalog source |
 | ``WRITE_OPERATION_REJECTED`` | DDL / DML / TCL — OBSL is read-only |
+| ``UNKNOWN_PROPERTY`` | Unknown key on an OBML object (e.g. ``filtter:``) or QueryObject — strict parsing rejects typos implicitly (v2.7.2+) |
 
 ## 6. Multi-model addressing (v2.4.0+)
 
