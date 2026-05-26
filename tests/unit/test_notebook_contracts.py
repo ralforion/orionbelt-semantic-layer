@@ -108,14 +108,6 @@ _QUERY_FILTER_DOC_FILES = (
     pytest.param(
         _ROOT / "integrations" / "chatgpt-custom-gpt" / "openapi-gpt-action.yaml",
         id="openapi-gpt-action.yaml",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "Known stale — review finding #86 / GH issue #86. "
-                "ChatGPT Action OpenAPI on v2.5.0 with old dimension/operator keys. "
-                "Remove this xfail when #86 lands."
-            ),
-        ),
     ),
 )
 
