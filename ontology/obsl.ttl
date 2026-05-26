@@ -76,6 +76,18 @@ obsl:WindowMetric a owl:Class ;
     rdfs:label "Window Metric" ;
     rdfs:comment "A metric that applies a single-row-output SQL window function (RANK, DENSE_RANK, ROW_NUMBER, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE) optionally partitioned and ordered." .
 
+obsl:CustomExtension a owl:Class ;
+    rdfs:label "Custom Extension" ;
+    rdfs:comment "Vendor-keyed opaque metadata attached to any modeling element.  Used to preserve information from external formats (e.g. OSI ai_context) and other vendor-specific data that OBSL itself doesn't interpret." .
+
+obsl:ModelExample a owl:Class ;
+    rdfs:label "Model Example" ;
+    rdfs:comment "A canonical example query authored alongside the semantic model so agents can discover what kinds of questions the model is designed to answer.  Stored on the SemanticModel and surfaced via the examples endpoints." .
+
+obsl:WithinGroup a owl:Class ;
+    rdfs:label "Within Group" ;
+    rdfs:comment "Ordering clause for ordered-set aggregates (LISTAGG).  Names a column and an ASC/DESC direction." .
+
 # =============================================================================
 # 2. OBJECT PROPERTIES --- Model composition
 # =============================================================================
@@ -205,6 +217,18 @@ obsl:physicalName a owl:DatatypeProperty ;
     rdfs:comment "Physical SQL name when it differs from the code value." ;
     rdfs:range xsd:string .
 
+obsl:numClass a owl:DatatypeProperty ;
+    rdfs:label "numeric class" ;
+    rdfs:comment "Optional classification of a numeric column controlling aggregation behavior: categorical, additive, non-additive." ;
+    rdfs:domain obsl:Column ;
+    rdfs:range xsd:string .
+
+obsl:primaryKey a owl:DatatypeProperty ;
+    rdfs:label "primary key" ;
+    rdfs:comment "When true, this column is part of the data object's primary key (composite keys order-preserving)." ;
+    rdfs:domain obsl:Column ;
+    rdfs:range xsd:boolean .
+
 # =============================================================================
 # 6. DATATYPE PROPERTIES --- Types, aggregation & expressions
 # =============================================================================
@@ -259,6 +283,12 @@ obsl:pathName a owl:DatatypeProperty ;
     rdfs:comment "Named join path used when a dimension reaches its data object through a non-default route." ;
     rdfs:range xsd:string .
 
+obsl:via a owl:ObjectProperty ;
+    rdfs:label "via" ;
+    rdfs:comment "Forces a dimension's join path through a specific intermediate data object (role-playing dimensions).  The dimension's data object must be reachable from the via target in the directed join graph." ;
+    rdfs:domain obsl:Dimension ;
+    rdfs:range obsl:DataObject .
+
 obsl:synonym a owl:DatatypeProperty ;
     rdfs:label "synonym" ;
     rdfs:comment "Alternative name for an element, used for natural-language search and LLM disambiguation." ;
@@ -278,6 +308,24 @@ obsl:allowFanOut a owl:DatatypeProperty ;
     rdfs:label "allow fan-out" ;
     rdfs:comment "When true, permits this measure to be queried along fan-out join paths (bypasses fan-trap prevention)." ;
     rdfs:range xsd:boolean .
+
+obsl:delimiter a owl:DatatypeProperty ;
+    rdfs:label "delimiter" ;
+    rdfs:comment "Separator string used by LISTAGG / string_agg aggregations between concatenated values." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range xsd:string .
+
+obsl:hasWithinGroup a owl:ObjectProperty ;
+    rdfs:label "has within group" ;
+    rdfs:comment "Links a LISTAGG-style ordered-set aggregate measure to its within-group ordering clause." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:WithinGroup .
+
+obsl:withinGroupOrder a owl:DatatypeProperty ;
+    rdfs:label "within group order" ;
+    rdfs:comment "Sort direction for the within-group ordering clause: ASC or DESC." ;
+    rdfs:domain obsl:WithinGroup ;
+    rdfs:range xsd:string .
 
 obsl:owner a owl:DatatypeProperty ;
     rdfs:label "owner" ;
@@ -474,6 +522,69 @@ obsl:maxStaleness a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 
 # =============================================================================
+# 8.6 CUSTOM EXTENSIONS --- vendor-keyed opaque metadata
+# =============================================================================
+# Any modeled element may carry zero or more CustomExtension blocks.
+# OBSL itself does not interpret the ``data`` payload — it round-trips it
+# verbatim through OSI / OBSL imports so vendor-specific metadata
+# (governance tags, AI context, lineage hints) survives across formats.
+
+obsl:hasCustomExtension a owl:ObjectProperty ;
+    rdfs:label "has custom extension" ;
+    rdfs:comment "Links any modeled element (SemanticModel, DataObject, Column, Dimension, Measure, Metric) to a vendor-keyed opaque metadata block." ;
+    rdfs:range obsl:CustomExtension .
+
+obsl:vendor a owl:DatatypeProperty ;
+    rdfs:label "vendor" ;
+    rdfs:comment "Vendor identifier for a CustomExtension block (e.g. 'osi', 'obsl', or a third-party namespace)." ;
+    rdfs:domain obsl:CustomExtension ;
+    rdfs:range xsd:string .
+
+obsl:extensionData a owl:DatatypeProperty ;
+    rdfs:label "extension data" ;
+    rdfs:comment "Opaque vendor payload for a CustomExtension (typically a serialized string — JSON or YAML)." ;
+    rdfs:domain obsl:CustomExtension ;
+    rdfs:range xsd:string .
+
+# =============================================================================
+# 8.7 MODEL EXAMPLES --- canonical example queries shipped with the model
+# =============================================================================
+# Examples document the kinds of questions a model is designed to answer
+# so agents can discover usage patterns without reverse-engineering the
+# schema.  Each entry pairs a snake_case name with a one-or-two-sentence
+# description, optional intent tags, and a serialized QueryObject payload.
+
+obsl:hasExample a owl:ObjectProperty ;
+    rdfs:label "has example" ;
+    rdfs:comment "Links a semantic model to one of its canonical example queries." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range obsl:ModelExample .
+
+obsl:exampleName a owl:DatatypeProperty ;
+    rdfs:label "example name" ;
+    rdfs:comment "Snake_case identifier for a ModelExample, unique within its parent model." ;
+    rdfs:domain obsl:ModelExample ;
+    rdfs:range xsd:string .
+
+obsl:exampleDescription a owl:DatatypeProperty ;
+    rdfs:label "example description" ;
+    rdfs:comment "One- or two-sentence human explanation of what the example demonstrates." ;
+    rdfs:domain obsl:ModelExample ;
+    rdfs:range xsd:string .
+
+obsl:exampleQuery a owl:DatatypeProperty ;
+    rdfs:label "example query" ;
+    rdfs:comment "Serialized QueryObject payload (typically JSON) — a valid query against the parent model." ;
+    rdfs:domain obsl:ModelExample ;
+    rdfs:range xsd:string .
+
+obsl:intentTag a owl:DatatypeProperty ;
+    rdfs:label "intent tag" ;
+    rdfs:comment "Free-form tag on a ModelExample used by ?intent= filters at the examples API surface.  An example may carry multiple intent tags." ;
+    rdfs:domain obsl:ModelExample ;
+    rdfs:range xsd:string .
+
+# =============================================================================
 # 9. OWL AXIOMS
 # =============================================================================
 
@@ -489,7 +600,10 @@ obsl:maxStaleness a owl:DatatypeProperty ;
                   obsl:Dimension
                   obsl:Measure
                   obsl:Metric
-                  obsl:RefreshPolicy ) .
+                  obsl:RefreshPolicy
+                  obsl:CustomExtension
+                  obsl:ModelExample
+                  obsl:WithinGroup ) .
 
 # Metric subtypes are disjoint with each other.
 obsl:CumulativeMetric owl:disjointWith obsl:PeriodOverPeriodMetric .
@@ -526,6 +640,18 @@ obsl:grainToDate a owl:FunctionalProperty .
 obsl:offset a owl:FunctionalProperty .
 obsl:offsetGrain a owl:FunctionalProperty .
 obsl:comparison a owl:FunctionalProperty .
+
+obsl:primaryKey a owl:FunctionalProperty .
+obsl:numClass a owl:FunctionalProperty .
+obsl:delimiter a owl:FunctionalProperty .
+obsl:withinGroupOrder a owl:FunctionalProperty .
+
+obsl:vendor a owl:FunctionalProperty .
+obsl:extensionData a owl:FunctionalProperty .
+
+obsl:exampleName a owl:FunctionalProperty .
+obsl:exampleDescription a owl:FunctionalProperty .
+obsl:exampleQuery a owl:FunctionalProperty .
 
 # -----------------------------------------------------------------------------
 # 9.3 Inverse properties

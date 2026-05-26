@@ -398,6 +398,7 @@ class ReferenceResolver:
                     schema_name=raw_obj.get("schema", ""),
                     columns=obj_columns,
                     joins=obj_joins,
+                    description=raw_obj.get("description"),
                     comment=raw_obj.get("comment"),
                     owner=raw_obj.get("owner"),
                     synonyms=raw_obj.get("synonyms", []),
@@ -1014,6 +1015,8 @@ class ReferenceResolver:
 
         model = SemanticModel(
             version=raw.get("version", 1.0),
+            name=raw.get("name"),
+            description=raw.get("description"),
             data_objects=data_objects,
             dimensions=dimensions,
             measures=measures,

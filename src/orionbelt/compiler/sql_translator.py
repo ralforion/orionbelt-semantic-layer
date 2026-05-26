@@ -36,6 +36,7 @@ from orionbelt.models.query import (
     QueryOrderBy,
     QuerySelect,
     SortDirection,
+    Subquery,
 )
 from orionbelt.models.semantic import SemanticModel
 
@@ -360,9 +361,25 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
     # --- WHERE / HAVING routing ---
     where_filters: list[QueryFilter] = []
     having_filters: list[QueryFilter] = []
+    # Default subject column for ``WHERE EXISTS (...)`` — the planner uses
+    # it only to derive the outer data object for join resolution, so any
+    # SELECT dim/measure works. Picking the first deterministic candidate.
+    exists_subject: str | None = None
+    if select_dims:
+        exists_subject = select_dims[0]
+    elif select_measures:
+        exists_subject = select_measures[0]
     if ast.args.get("where") is not None:
         where_expr = ast.args["where"].this
-        _split_predicates(where_expr, classify, canonical, where_filters, having_filters, errors)
+        _split_predicates(
+            where_expr,
+            classify,
+            canonical,
+            where_filters,
+            having_filters,
+            errors,
+            exists_subject=exists_subject,
+        )
 
     if ast.args.get("having") is not None:
         having_expr = ast.args["having"].this
@@ -1170,6 +1187,7 @@ def _split_predicates(
     errors: list[SemanticError],
     *,
     force_having: bool = False,
+    exists_subject: str | None = None,
 ) -> None:
     """Split an AND-chain of predicates and route each to WHERE or HAVING.
 
@@ -1177,13 +1195,19 @@ def _split_predicates(
     ``UNSUPPORTED_SQL_FEATURE`` for now — the semantic-SQL surface keeps
     the predicate shape flat (one column op value per item). Future work
     can lift this restriction by emitting :class:`QueryFilterGroup`.
+
+    ``exists_subject`` is the canonical name of the outer SELECT's first
+    dim / measure — used by ``EXISTS (SELECT 1 FROM target)`` predicates
+    as the subject column for the planner's join walk.
     """
     for atom in _walk_and(expr, errors):
         if force_having and _match_count_tautology(atom) is not None:
             # ``HAVING COUNT(*) > 0`` / ``COUNT(1) > 0`` — Tableau idiom,
             # silently drop. See :func:`_match_count_tautology`.
             continue
-        target = _atom_to_query_filter(atom, classify, canonical, errors)
+        target = _atom_to_query_filter(
+            atom, classify, canonical, errors, exists_subject=exists_subject
+        )
         if target is None:
             continue
         item, is_measure = target
@@ -1221,8 +1245,26 @@ def _atom_to_query_filter(
     classify: Callable[[str], str | None],
     canonical: Callable[[str], str],
     errors: list[SemanticError],
+    *,
+    exists_subject: str | None = None,
 ) -> tuple[QueryFilter, bool] | None:
     """Translate one predicate atom into a (QueryFilter, is_measure) pair."""
+    # EXISTS / NOT EXISTS — correlated subquery filter.
+    # Accepts ``[NOT] EXISTS (SELECT 1 FROM <DataObject> [WHERE <preds>])``.
+    # The outer-row subject column is derived from the SELECT's first
+    # dim / measure (``exists_subject``) — the planner uses it only to
+    # locate the outer data object for join resolution. Inner WHERE
+    # predicates become ``Subquery.filter`` items where ``field`` is a
+    # bare column name on the target data object.
+    if isinstance(atom, exp.Exists) or (
+        isinstance(atom, exp.Not) and isinstance(atom.this, exp.Exists)
+    ):
+        negated = isinstance(atom, exp.Not)
+        exists_node: exp.Exists = atom.this if negated else atom  # type: ignore[assignment]
+        return _translate_exists(
+            exists_node, negated=negated, exists_subject=exists_subject, errors=errors
+        )
+
     # IN / NOT IN
     if isinstance(atom, exp.In):
         name = _column_name(atom.this)
@@ -1373,6 +1415,202 @@ def _atom_to_query_filter(
         SemanticError(
             code="UNSUPPORTED_SQL_FEATURE",
             message=f"Unsupported predicate `{atom.sql()}`.",
+        )
+    )
+    return None
+
+
+def _translate_exists(
+    exists_node: exp.Exists,
+    *,
+    negated: bool,
+    exists_subject: str | None,
+    errors: list[SemanticError],
+) -> tuple[QueryFilter, bool] | None:
+    """Translate ``EXISTS (SELECT 1 FROM <target> [WHERE <preds>])``.
+
+    Inner ``SELECT`` is consumed for two things only:
+
+    * ``FROM <target>`` — names the target data object (single source).
+    * ``WHERE <preds>`` — optional predicates on the *target's* columns;
+      become ``Subquery.filter`` items.
+
+    ``SELECT`` list, ``GROUP BY``, ``ORDER BY``, ``LIMIT``, and joins on
+    the inner query are rejected — the planner derives the correlation
+    predicates from the model's existing joins, so the inner shape is
+    intentionally constrained.
+    """
+    if exists_subject is None:
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=(
+                    "EXISTS / NOT EXISTS requires at least one dimension or measure "
+                    "in SELECT — the planner needs an outer subject column to walk "
+                    "joins from."
+                ),
+            )
+        )
+        return None
+    inner = exists_node.this
+    if not isinstance(inner, exp.Select):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message="EXISTS body must be a SELECT statement.",
+            )
+        )
+        return None
+    # Reject inner-side features the planner won't model.
+    rejected_arg_names = ("group", "order", "limit", "joins", "having")
+    for arg_name in rejected_arg_names:
+        if inner.args.get(arg_name):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=(
+                        f"EXISTS subquery cannot use `{arg_name.upper()}` — only "
+                        "FROM and optional WHERE are accepted."
+                    ),
+                )
+            )
+            return None
+    from_node = inner.args.get("from")
+    if from_node is None or not isinstance(from_node.this, exp.Table):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message=(
+                    "EXISTS subquery must read a single data object via "
+                    "`FROM <DataObject>` (no aliases, no joins, no subqueries)."
+                ),
+            )
+        )
+        return None
+    target_table = from_node.this
+    target_name = target_table.name
+    if not target_name:
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message="EXISTS subquery FROM is missing a data object name.",
+            )
+        )
+        return None
+    # Optional WHERE → Subquery.filter
+    sub_filters: list[QueryFilter] = []
+    inner_where = inner.args.get("where")
+    if inner_where is not None:
+        for sub_atom in _walk_and(inner_where.this, errors):
+            sf = _atom_to_subquery_filter(sub_atom, errors)
+            if sf is not None:
+                sub_filters.append(sf)
+    op = FilterOperator.NONEXISTS if negated else FilterOperator.EXISTS
+    return (
+        QueryFilter(
+            field=exists_subject,
+            op=op,
+            subquery=Subquery(data_object=target_name, filter=sub_filters),
+        ),
+        False,  # never a measure-side filter — EXISTS is row-level
+    )
+
+
+def _atom_to_subquery_filter(
+    atom: exp.Expression, errors: list[SemanticError]
+) -> QueryFilter | None:
+    """Translate a single predicate inside an EXISTS subquery body.
+
+    ``field`` is interpreted as a bare column name on the target data
+    object — no model lookup, no canonical mapping. Supports the same
+    operator surface as outer predicates minus nested EXISTS (rejected
+    by the planner with ``NESTED_SUBQUERY_NOT_SUPPORTED``).
+    """
+    if isinstance(atom, exp.Exists) or (
+        isinstance(atom, exp.Not) and isinstance(atom.this, exp.Exists)
+    ):
+        errors.append(
+            SemanticError(
+                code="UNSUPPORTED_SQL_FEATURE",
+                message="Nested EXISTS inside an EXISTS body is not supported.",
+            )
+        )
+        return None
+    if isinstance(atom, exp.In):
+        name = _column_name(atom.this)
+        if name is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported left-hand side in subquery `{atom.sql()}`.",
+                )
+            )
+            return None
+        values = [_literal_value(e) for e in atom.expressions]
+        if any(v is None for v in values):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"IN list in subquery must contain only literals — got `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=name, op=FilterOperator.IN_LIST, value=values)
+    if isinstance(atom, exp.Is):
+        name = _column_name(atom.this)
+        if name is None or not isinstance(atom.expression, exp.Null):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported IS predicate in subquery `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=name, op=FilterOperator.IS_NULL)
+    if isinstance(atom, exp.Not) and isinstance(atom.this, exp.Is):
+        inner_is = atom.this
+        name = _column_name(inner_is.this)
+        if name is None or not isinstance(inner_is.expression, exp.Null):
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported NOT predicate in subquery `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=name, op=FilterOperator.IS_NOT_NULL)
+    if isinstance(atom, exp.Like | exp.ILike):
+        name = _column_name(atom.this)
+        pattern = _literal_value(atom.expression)
+        if name is None or pattern is None:
+            errors.append(
+                SemanticError(
+                    code="UNSUPPORTED_SQL_FEATURE",
+                    message=f"Unsupported LIKE predicate in subquery `{atom.sql()}`.",
+                )
+            )
+            return None
+        return QueryFilter(field=name, op=FilterOperator.LIKE, value=pattern)
+    for op_type, op_value in _OP_MAP.items():
+        if isinstance(atom, op_type):
+            name = _column_name(atom.this)
+            value = _literal_value(atom.expression)
+            if name is None or value is None:
+                errors.append(
+                    SemanticError(
+                        code="UNSUPPORTED_SQL_FEATURE",
+                        message=(
+                            f"Unsupported predicate in subquery `{atom.sql()}`. "
+                            "Only `column op literal` shapes are accepted."
+                        ),
+                    )
+                )
+                return None
+            return QueryFilter(field=name, op=op_value, value=value)
+    errors.append(
+        SemanticError(
+            code="UNSUPPORTED_SQL_FEATURE",
+            message=f"Unsupported predicate in EXISTS subquery `{atom.sql()}`.",
         )
     )
     return None

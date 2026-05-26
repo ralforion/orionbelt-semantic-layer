@@ -4,7 +4,7 @@
 
 <h1 align="center">OrionBelt Semantic Layer and Sidecar</h1>
 
-<p align="center"><strong>An Open Source Semantic Sidecar for Agentic AI, Analytics, Quality and Governance Systems.</strong></p>
+<p align="center"><strong>An Open Source <a href="https://ralforion.com/semantic-sidecar.html">Semantic Sidecar</a> for <a href="https://ralforion.com/agentic-ai-data-access.html">Agentic AI</a>, Analytics, Quality and Governance Systems.</strong></p>
 
 <p align="center"><strong>Inject governed semantics into systems that never had them.</strong></p>
 
@@ -13,7 +13,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.7.4](https://img.shields.io/badge/version-2.7.4-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 2.7.5](https://img.shields.io/badge/version-2.7.5-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -32,7 +32,7 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-FFF000.svg?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![MySQL](https://img.shields.io/badge/MySQL-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com)
 
-OrionBelt Semantic Layer (OBSL) is an open-source **Semantic Sidecar** for AI, analytics, and governed data systems. It injects governed business semantics into existing platforms without requiring architecture changes or dedicated semantic infrastructure.
+OrionBelt Semantic Layer (OBSL) is an open-source **[Semantic Sidecar](https://ralforion.com/semantic-sidecar.html)** for AI, analytics, and governed data systems. It injects governed business semantics into existing platforms without requiring architecture changes or dedicated semantic infrastructure.
 
 Define dimensions, measures, metrics, business rules, and semantic context in declarative YAML models. OBSL compiles and executes them as optimized, dialect-specific SQL across BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.
 
@@ -45,6 +45,11 @@ Define analytical and business semantics in version-controlled YAML, compile the
 No BI tool in the middle. The entire path from declarative model to executable semantics and query results is programmable, reviewable, and reproducible.
 
 > **Companion Project:** [OrionBelt Analytics](https://github.com/ralfbecher/orionbelt-analytics) — an ontology-based MCP server that analyzes database schemas and generates RDF/OWL ontologies. Together they let AI assistants navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
+
+> **Related reading:**
+> - [What is a Semantic Sidecar?](https://ralforion.com/semantic-sidecar.html) — the pattern OBSL implements
+> - [Agentic AI Data Access](https://ralforion.com/agentic-ai-data-access.html) — governed access for AI agents via MCP
+> - [Governed Text-to-SQL](https://ralforion.com/text-to-sql.html) — fan-trap prevention via ontology, AST & MCP
 
 ## Table of Contents
 
@@ -220,7 +225,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:2.7.4
+    image: ralforion/orionbelt-api:2.7.5
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -229,7 +234,7 @@ services:
       MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:2.7.4
+    image: ralforion/orionbelt-ui:2.7.5
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -245,7 +250,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
-> - For production, pin a version tag (`:2.7.4`) rather than `:latest`.
+> - For production, pin a version tag (`:2.7.5`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 

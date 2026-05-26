@@ -64,10 +64,40 @@ already at the query grain.
 
 * AND-chained ``<column> <op> <literal>`` predicates.
 * Operators: ``=``, ``!=``, ``<``, ``<=``, ``>``, ``>=``, ``IN (...)``,
-  ``IS NULL``, ``IS NOT NULL``, ``LIKE``, ``ILIKE``.
+  ``IS NULL``, ``IS NOT NULL``, ``LIKE``, ``ILIKE``,
+  ``EXISTS (SELECT 1 FROM <DataObject> [WHERE ...])``,
+  ``NOT EXISTS (...)``.
 * References to **measures or metrics** in WHERE auto-route to HAVING.
 * Top-level OR rejects with ``UNSUPPORTED_SQL_FEATURE`` — use ``IN (...)``
   or split into two queries.
+
+#### EXISTS / NOT EXISTS (v2.7.5+)
+
+Correlated existence predicates compile to the QueryObject ``exists`` /
+``nonexists`` filter operators introduced in v2.7.0. The subject column
+the planner walks joins from is taken from the SELECT's first dimension
+(or, if SELECT contains only measures, the first measure). The subquery
+body is constrained:
+
+* ``FROM <DataObject>`` — a single bare data object, no joins, no
+  aliases, no nested subquery.
+* Optional ``WHERE`` predicates with the same operator vocabulary as the
+  outer ``WHERE``, except nested EXISTS is rejected.
+* No ``GROUP BY`` / ``ORDER BY`` / ``LIMIT`` / ``HAVING`` — the planner
+  derives correlation predicates from the model's joins, so the inner
+  shape is intentionally minimal.
+
+```sql
+-- "orders that have at least one shipped item"
+SELECT "Order ID", "Total Revenue"
+FROM   sales_model
+WHERE  EXISTS (SELECT 1 FROM "OrderItems" WHERE "Status" = 'shipped')
+
+-- "orders with no payment record"
+SELECT "Order ID", "Total Revenue"
+FROM   sales_model
+WHERE  NOT EXISTS (SELECT 1 FROM "Payments")
+```
 
 ### GROUP BY
 

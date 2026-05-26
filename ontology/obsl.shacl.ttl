@@ -385,3 +385,87 @@ obsl:PeriodOverPeriodMetricShape a sh:NodeShape ;
         sh:message "Period-over-period metrics must specify exactly one obsl:comparison (ratio, difference, previousValue, percentChange)."
     ] .
 
+# -----------------------------------------------------------------------------
+# CustomExtension --- vendor-keyed opaque metadata
+# -----------------------------------------------------------------------------
+
+obsl:CustomExtensionShape a sh:NodeShape ;
+    sh:targetClass obsl:CustomExtension ;
+    rdfs:label "OBSL Custom Extension Shape" ;
+    rdfs:comment "Validates that every custom extension carries exactly one vendor identifier and one data payload." ;
+    sh:property [
+        sh:path obsl:vendor ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "vendor" ;
+        sh:message "Every CustomExtension must have exactly one obsl:vendor."
+    ] ;
+    sh:property [
+        sh:path obsl:extensionData ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "extension data" ;
+        sh:message "Every CustomExtension must have exactly one obsl:extensionData payload."
+    ] .
+
+# -----------------------------------------------------------------------------
+# ModelExample --- canonical example query shipped with the model
+# -----------------------------------------------------------------------------
+
+obsl:ModelExampleShape a sh:NodeShape ;
+    sh:targetClass obsl:ModelExample ;
+    rdfs:label "OBSL Model Example Shape" ;
+    rdfs:comment "Validates that every example has a snake_case name, description, and serialized query payload." ;
+    sh:property [
+        sh:path obsl:exampleName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "example name" ;
+        sh:message "Every ModelExample must have exactly one obsl:exampleName."
+    ] ;
+    sh:property [
+        sh:path obsl:exampleDescription ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "example description" ;
+        sh:message "Every ModelExample must have exactly one obsl:exampleDescription."
+    ] ;
+    sh:property [
+        sh:path obsl:exampleQuery ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "example query" ;
+        sh:message "Every ModelExample must have exactly one obsl:exampleQuery (serialized QueryObject)."
+    ] .
+
+# -----------------------------------------------------------------------------
+# WithinGroup --- LISTAGG ordering clause
+# -----------------------------------------------------------------------------
+
+obsl:WithinGroupShape a sh:NodeShape ;
+    sh:targetClass obsl:WithinGroup ;
+    rdfs:label "OBSL Within Group Shape" ;
+    rdfs:comment "Validates that every within-group clause references exactly one column and one sort direction." ;
+    sh:property [
+        sh:path obsl:column ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:Column ;
+        sh:name "column" ;
+        sh:message "Every WithinGroup must reference exactly one obsl:Column."
+    ] ;
+    sh:property [
+        sh:path obsl:withinGroupOrder ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "ASC" "DESC" ) ;
+        sh:name "within group order" ;
+        sh:message "WithinGroup order must be exactly one of 'ASC' or 'DESC'."
+    ] .
+

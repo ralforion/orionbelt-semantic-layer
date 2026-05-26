@@ -13,6 +13,7 @@ Skipped automatically when:
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -215,9 +216,14 @@ class TestOBClickHouseDriver:
         rows = _rows_to_dicts(cur)
         cur.close()
 
+        # ClickHouse returns Decimal for decimal-typed metric columns
+        # (preserving precision is the driver contract). Stay in the
+        # Decimal domain end-to-end — ``pytest.approx`` accepts Decimal
+        # operands natively, so no float coercion is needed at the
+        # assertion boundary.
         by_country = {r["Customer Country"]: r["Revenue Share"] for r in rows}
-        assert by_country["US"] == pytest.approx(200.0 / 240.0, rel=1e-3)
-        assert by_country["UK"] == pytest.approx(40.0 / 240.0, rel=1e-3)
+        assert by_country["US"] == pytest.approx(Decimal(200) / Decimal(240), rel=Decimal("1e-3"))
+        assert by_country["UK"] == pytest.approx(Decimal(40) / Decimal(240), rel=Decimal("1e-3"))
 
     def test_plain_sql_passthrough(self, ch_conn) -> None:
         """Plain SQL bypasses OBML compilation."""

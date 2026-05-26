@@ -94,7 +94,9 @@ def start_api(
         "QUERY_EXECUTE": "true",
         "DB_VENDOR": "duckdb",
         "DUCKDB_DATABASE": os.path.join(repo_root, "examples", "tpch.duckdb"),
-        "MODEL_FILE": os.path.join(repo_root, "examples", "tpch.obml.yml"),
+        # ``MODEL_FILE`` was removed in v2.7.0 — use ``MODEL_FILES``
+        # (comma-separated, single-entry list is the direct equivalent).
+        "MODEL_FILES": os.path.join(repo_root, "examples", "tpch.obml.yml"),
         "API_SERVER_PORT": str(port),
     }
 
@@ -125,9 +127,12 @@ def start_api(
             "API did not start in time\n" + open("api.log").read()[-2000:]
         )
 
-    # MODEL_FILE triggers single-model mode: __default__ session is auto-created
-    # with the model pre-loaded — no need to create a session manually.
-    # Shortcut endpoints (/v1/schema, /v1/query/sql, etc.) resolve automatically.
+    # MODEL_FILES triggers admin-curated mode: each YAML loads into its
+    # own named protected session (addressed by filename stem or the OBML
+    # ``name:`` field) — no need to create a session manually. Shortcut
+    # endpoints (``/v1/schema``, ``/v1/query/sql``, ``/v1/query/execute``,
+    # …) consult ``list_protected_session_ids()`` and resolve to the
+    # single loaded model automatically (v2.7.0+).
     schema = api("GET", "/v1/schema")
     dims = len(schema.get("dimensions", []))
     measures = len(schema.get("measures", []))

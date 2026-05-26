@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: OrionBelt Semantic Layer
-  version: 2.5.0
+  version: 2.7.5
   description: >
     Compile YAML semantic models (OBML) as analytical SQL across 8 database dialects.
     This API runs in single-model mode with a pre-loaded semantic model.
@@ -331,8 +331,8 @@ paths:
                       - Revenue
                       - Order Count
                   where:
-                    - dimension: Country
-                      operator: "="
+                    - field: Country
+                      op: "="
                       value: "Germany"
                   order_by:
                     - field: Revenue
@@ -599,12 +599,12 @@ components:
           items:
             type: object
             properties:
-              dimension:
+              field:
                 type: string
                 description: Dimension name to filter on
-              operator:
+              op:
                 type: string
-                enum: ["=", "!=", ">", "<", ">=", "<=", "like", "not like", "in", "not in", "between", "is null", "is not null"]
+                enum: ["=", "!=", ">", "<", ">=", "<=", "like", "not_like", "in", "not_in", "between", "is_null", "is_not_null", "exists", "nonexists"]
               value:
                 description: Filter value (string, number, or array for in/between)
         having:
@@ -613,10 +613,10 @@ components:
           items:
             type: object
             properties:
-              measure:
+              field:
                 type: string
                 description: Measure name to filter on
-              operator:
+              op:
                 type: string
                 enum: ["=", "!=", ">", "<", ">=", "<="]
               value:

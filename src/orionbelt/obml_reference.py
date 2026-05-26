@@ -360,7 +360,7 @@ metrics:
 
 ## Supported SQL Dialects
 
-postgres, snowflake, clickhouse, databricks, dremio
+bigquery, clickhouse, databricks, dremio, duckdb, mysql, postgres, snowflake
 
 ## Workflow
 

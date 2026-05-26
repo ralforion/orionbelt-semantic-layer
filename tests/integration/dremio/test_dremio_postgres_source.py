@@ -30,6 +30,17 @@ from tests.integration.dremio.conftest import (
 
 pytestmark = pytest.mark.dremio
 
+# pgwire endpoint exposed by the docker-compose for the OBSL container.
+# Inside the compose network OBSL is reachable as ``obsl:5432``; from the
+# host (where pytest runs) the compose file publishes the same port on
+# localhost. The Dremio relay path is the original Stage-1 contract;
+# this direct connection is only used by the OBSQL EXISTS round-trip
+# since Dremio's parser can't carry the EXISTS subquery body.
+import os  # noqa: E402
+
+OBSL_PGWIRE_HOST_LOCAL = os.environ.get("OBSL_PGWIRE_HOST_LOCAL", "localhost")
+OBSL_PGWIRE_PORT_LOCAL = int(os.environ.get("OBSL_PGWIRE_PORT_LOCAL", "15432"))
+
 
 def test_source_registers(dremio_session: DremioSession) -> None:
     """The conftest fixture creates the source — landing here proves it succeeded.
@@ -73,3 +84,54 @@ def test_semantic_query_round_trip(run_dremio_sql: RunSql) -> None:
     )
     assert rows, "OBSL returned no rows for the dim+measure query"
     assert len(rows[0]) == 2
+
+
+def test_exists_round_trip_via_pgwire(dremio_session: DremioSession) -> None:
+    """OBSQL ``EXISTS (SELECT 1 FROM <DataObject>)`` end-to-end via OBSL
+    pgwire directly (v2.7.5+).
+
+    Until v2.7.5 the OBSQL translator rejected EXISTS / NOT EXISTS even
+    though the underlying QueryObject layer accepted them. This test
+    pins the full path with a *direct* pgwire connection to OBSL —
+    Dremio's relay can't carry this query because Dremio's own SQL
+    parser doesn't know about the data objects nested inside OBSL's
+    model (it only sees the single virtual ``model`` table), so the
+    EXISTS body's ``FROM "Sales"`` would be rejected before OBSL ever
+    gets to translate it. This is a fundamental limitation of the
+    Postgres-federation path, not an OBSL bug.
+
+    The OBSL test container is reachable on ``localhost:5432`` (the
+    docker-compose exposes the pgwire port). We use psycopg directly.
+    """
+    psycopg = pytest.importorskip("psycopg", reason="psycopg required for pgwire test")
+    with (
+        psycopg.connect(
+            host=OBSL_PGWIRE_HOST_LOCAL,
+            port=OBSL_PGWIRE_PORT_LOCAL,
+            user="obsl",
+            password="trust",
+            dbname=OBSL_MODEL_NAME,
+            sslmode="disable",
+        ) as conn,
+        conn.cursor() as cur,
+    ):
+        cur.execute(
+            'SELECT "Client Name", "Total Sales" '
+            "FROM model "
+            'WHERE EXISTS (SELECT 1 FROM "Sales") '
+            'ORDER BY "Total Sales" DESC '
+            "LIMIT 5"
+        )
+        exists_rows = cur.fetchall()
+        cur.execute(
+            'SELECT "Client Name" '
+            "FROM model "
+            'WHERE NOT EXISTS (SELECT 1 FROM "Client Complaints") '
+            'ORDER BY "Client Name" '
+            "LIMIT 5"
+        )
+        nonexists_rows = cur.fetchall()
+    assert exists_rows, "OBSQL EXISTS returned no rows from DuckDB via pgwire"
+    assert len(exists_rows[0]) == 2
+    assert nonexists_rows, "OBSQL NOT EXISTS returned no rows"
+    assert len(nonexists_rows[0]) == 1
