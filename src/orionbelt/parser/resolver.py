@@ -6,6 +6,8 @@ import re
 from datetime import date, datetime
 from typing import Any
 
+from pydantic import BaseModel
+
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.semantic import (
     CustomExtension,
@@ -34,16 +36,123 @@ from orionbelt.models.semantic import (
 from orionbelt.parser.loader import SourceMap
 
 
-def _parse_extensions(raw: dict[str, Any]) -> list[CustomExtension]:
+def _allowed_keys(*model_classes: type[BaseModel], extra: tuple[str, ...] = ()) -> frozenset[str]:
+    """Return the set of YAML keys accepted at a parse site.
+
+    Includes every field name and alias for the given Pydantic model classes,
+    plus any extra keys (used for legacy / internal markers like
+    ``_extends_sources`` or the ``filter`` (singular) backward-compat key on
+    measures).
+    """
+    keys: set[str] = set(extra)
+    for cls in model_classes:
+        for name, fdef in cls.model_fields.items():
+            keys.add(name)
+            if fdef.alias:
+                keys.add(fdef.alias)
+    return frozenset(keys)
+
+
+def _check_unknown_keys(
+    raw: dict[str, Any] | None,
+    allowed: frozenset[str],
+    path: str,
+    errors: list[SemanticError],
+    source_map: SourceMap | None = None,
+) -> None:
+    """Emit UNKNOWN_PROPERTY for every key in ``raw`` that is not in ``allowed``.
+
+    OBML rejects unknown properties implicitly — typos in YAML keys are a
+    silent governance hazard (a measure with ``filtter:`` would compile clean
+    and return unfiltered data). This is the OBML side of the same contract
+    enforced by ``extra='forbid'`` on the Pydantic models.
+    """
+    if not isinstance(raw, dict):
+        return
+    for key in raw:
+        if not isinstance(key, str) or key in allowed:
+            continue
+        span = source_map.get(path) if source_map else None
+        errors.append(
+            SemanticError(
+                code="UNKNOWN_PROPERTY",
+                message=f"Unknown property '{key}' at {path}",
+                path=path,
+                span=span,
+                suggestions=_suggest_similar(key, sorted(allowed)),
+            )
+        )
+
+
+# Allowlists per parse site, derived from the Pydantic model fields so they
+# stay in sync. Top-level adds the merge / inheritance markers that the merger
+# inserts and the loader-internal underscore-prefixed keys.
+_TOP_LEVEL_KEYS = _allowed_keys(
+    SemanticModel,
+    extra=(
+        "extends",
+        "inherits",
+        "_extends_sources",
+        "_inherits_source",
+        # ``schema`` and ``database`` are legal YAML keys on DataObject but
+        # also surface here when authors place top-level connection metadata
+        # — leave the existing check to flag them as unknown.
+    ),
+)
+_DATA_OBJECT_KEYS = _allowed_keys(DataObject, extra=("schema",))
+_DATA_OBJECT_COLUMN_KEYS = _allowed_keys(DataObjectColumn)
+_DATA_OBJECT_JOIN_KEYS = _allowed_keys(DataObjectJoin)
+_REFRESH_KEYS = _allowed_keys(RefreshPolicy, extra=("maxStaleness",))
+_DIMENSION_KEYS = _allowed_keys(Dimension)
+_MEASURE_KEYS = _allowed_keys(Measure, extra=("filter",))
+_GRAIN_OVERRIDE_KEYS = _allowed_keys(GrainOverride)
+_FILTER_CONTEXT_KEYS = _allowed_keys(FilterContext)
+_FILTER_CONTEXT_FILTER_KEYS = _allowed_keys(FilterContextFilter)
+_MEASURE_FILTER_KEYS = _allowed_keys(MeasureFilter)
+_MEASURE_FILTER_GROUP_KEYS = _allowed_keys(MeasureFilterGroup)
+_FILTER_VALUE_KEYS = _allowed_keys(FilterValue)
+_DATA_COLUMN_REF_KEYS = _allowed_keys(DataColumnRef)
+_MODEL_FILTER_KEYS = _allowed_keys(ModelFilter)
+_MODEL_SETTINGS_KEYS = _allowed_keys(ModelSettings)
+_MODEL_EXAMPLE_KEYS = _allowed_keys(ModelExample)
+_CUSTOM_EXTENSION_KEYS = _allowed_keys(CustomExtension)
+# Period-over-period / Window / Cumulative metric blocks share the Metric
+# field set, but the inner periodOverPeriod block has its own shape.
+_PERIOD_OVER_PERIOD_KEYS = _allowed_keys(PeriodOverPeriod)
+_METRIC_KEYS = _allowed_keys(Metric)
+
+
+def _parse_extensions(
+    raw: dict[str, Any],
+    path: str = "",
+    errors: list[SemanticError] | None = None,
+    source_map: SourceMap | None = None,
+) -> list[CustomExtension]:
     """Extract customExtensions from a raw YAML dict."""
     exts = raw.get("customExtensions", [])
+    if errors is not None:
+        for ei, e in enumerate(exts):
+            if isinstance(e, dict):
+                _check_unknown_keys(
+                    e,
+                    _CUSTOM_EXTENSION_KEYS,
+                    f"{path}.customExtensions[{ei}]" if path else f"customExtensions[{ei}]",
+                    errors,
+                    source_map,
+                )
     return [CustomExtension(vendor=e.get("vendor", ""), data=e.get("data", "")) for e in exts]
 
 
-def _parse_settings(raw: dict[str, Any] | None) -> ModelSettings | None:
+def _parse_settings(
+    raw: dict[str, Any] | None,
+    errors: list[SemanticError] | None = None,
+    source_map: SourceMap | None = None,
+) -> ModelSettings | None:
     """Parse the settings block from raw YAML into ModelSettings."""
     if not raw:
         return None
+    if errors is not None:
+        _check_unknown_keys(raw, _MODEL_SETTINGS_KEYS, "settings", errors, source_map)
     default_type = raw.get("defaultNumericDataType")
     default_tz = raw.get("defaultTimezone")
     override_db_tz = raw.get("overrideDatabaseTimezone", False)
@@ -91,6 +200,8 @@ def _parse_refresh(
         return None
 
     mode = str(raw.get("mode", "")).strip().lower()
+    _check_unknown_keys(raw, _REFRESH_KEYS, f"dataObjects.{data_object_name}.refresh", errors)
+
     if mode not in _VALID_REFRESH_MODES:
         errors.append(
             SemanticError(
@@ -139,12 +250,20 @@ def _parse_refresh(
     )
 
 
-def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
+def _parse_measure_filter_item(
+    raw: dict[str, Any],
+    path: str,
+    errors: list[SemanticError] | None = None,
+    source_map: SourceMap | None = None,
+) -> MeasureFilterItem:
     """Parse a single measure filter or filter group from raw YAML."""
     if "logic" in raw:
         # It's a filter group
+        if errors is not None:
+            _check_unknown_keys(raw, _MEASURE_FILTER_GROUP_KEYS, path, errors, source_map)
         child_filters: list[MeasureFilterItem] = [
-            _parse_measure_filter_item(f) for f in raw.get("filters", [])
+            _parse_measure_filter_item(f, f"{path}.filters[{i}]", errors, source_map)
+            for i, f in enumerate(raw.get("filters", []))
         ]
         return MeasureFilterGroup(
             logic=raw["logic"],
@@ -153,8 +272,14 @@ def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
         )
 
     # It's a leaf filter
+    if errors is not None:
+        _check_unknown_keys(raw, _MEASURE_FILTER_KEYS, path, errors, source_map)
     filter_values: list[FilterValue] = []
-    for vdata in raw.get("values", []):
+    for vi, vdata in enumerate(raw.get("values", [])):
+        if errors is not None:
+            _check_unknown_keys(
+                vdata, _FILTER_VALUE_KEYS, f"{path}.values[{vi}]", errors, source_map
+            )
         filter_values.append(
             FilterValue(
                 data_type=vdata.get("dataType", "string"),
@@ -168,6 +293,10 @@ def _parse_measure_filter_item(raw: dict[str, Any]) -> MeasureFilterItem:
         )
     filter_column = None
     if "column" in raw:
+        if errors is not None:
+            _check_unknown_keys(
+                raw["column"], _DATA_COLUMN_REF_KEYS, f"{path}.column", errors, source_map
+            )
         filter_column = DataColumnRef(
             view=raw["column"].get("dataObject"),
             column=raw["column"].get("column"),
@@ -195,6 +324,10 @@ class ReferenceResolver:
         errors: list[SemanticError] = []
         warnings: list[SemanticError] = []
 
+        # Strict OBML: reject unknown top-level keys (catches typos like
+        # ``dataObjekt:`` that would silently be dropped by ``raw.get(...)``).
+        _check_unknown_keys(raw, _TOP_LEVEL_KEYS, "", errors, source_map)
+
         # Parse data objects
         data_objects: dict[str, DataObject] = {}
         raw_objects = raw.get("dataObjects", {})
@@ -209,8 +342,18 @@ class ReferenceResolver:
             raw_objects = {}
         for name, raw_obj in raw_objects.items():
             try:
+                _check_unknown_keys(
+                    raw_obj, _DATA_OBJECT_KEYS, f"dataObjects.{name}", errors, source_map
+                )
                 obj_columns: dict[str, DataObjectColumn] = {}
                 for fname, fdata in raw_obj.get("columns", {}).items():
+                    _check_unknown_keys(
+                        fdata,
+                        _DATA_OBJECT_COLUMN_KEYS,
+                        f"dataObjects.{name}.columns.{fname}",
+                        errors,
+                        source_map,
+                    )
                     obj_columns[fname] = DataObjectColumn(
                         label=fname,
                         code=fdata.get("code", fname if not fdata.get("expression") else ""),
@@ -229,7 +372,14 @@ class ReferenceResolver:
                     )
 
                 obj_joins: list[DataObjectJoin] = []
-                for jdata in raw_obj.get("joins", []):
+                for ji, jdata in enumerate(raw_obj.get("joins", [])):
+                    _check_unknown_keys(
+                        jdata,
+                        _DATA_OBJECT_JOIN_KEYS,
+                        f"dataObjects.{name}.joins[{ji}]",
+                        errors,
+                        source_map,
+                    )
                     obj_joins.append(
                         DataObjectJoin(
                             join_type=jdata["joinType"],
@@ -279,6 +429,9 @@ class ReferenceResolver:
             raw_dims = {}
         for name, raw_dim in raw_dims.items():
             try:
+                _check_unknown_keys(
+                    raw_dim, _DIMENSION_KEYS, f"dimensions.{name}", errors, source_map
+                )
                 data_object = raw_dim.get("dataObject")
                 column = raw_dim.get("column")
 
@@ -373,8 +526,16 @@ class ReferenceResolver:
             raw_measures = {}
         for name, raw_meas in raw_measures.items():
             try:
+                _check_unknown_keys(raw_meas, _MEASURE_KEYS, f"measures.{name}", errors, source_map)
                 measure_columns: list[DataColumnRef] = []
-                for fdata in raw_meas.get("columns", []):
+                for ci, fdata in enumerate(raw_meas.get("columns", [])):
+                    _check_unknown_keys(
+                        fdata,
+                        _DATA_COLUMN_REF_KEYS,
+                        f"measures.{name}.columns[{ci}]",
+                        errors,
+                        source_map,
+                    )
                     measure_columns.append(
                         DataColumnRef(
                             view=fdata.get("dataObject"),
@@ -393,18 +554,36 @@ class ReferenceResolver:
                 measure_filters: list[MeasureFilterItem] = []
                 raw_filters = raw_meas.get("filters")
                 if raw_filters and isinstance(raw_filters, list):
-                    for rf in raw_filters:
-                        measure_filters.append(_parse_measure_filter_item(rf))
+                    for fi, rf in enumerate(raw_filters):
+                        measure_filters.append(
+                            _parse_measure_filter_item(
+                                rf,
+                                f"measures.{name}.filters[{fi}]",
+                                errors,
+                                source_map,
+                            )
+                        )
                 else:
                     # Backward compat: single `filter:` key → [filter]
                     raw_filter = raw_meas.get("filter")
                     if raw_filter:
-                        measure_filters.append(_parse_measure_filter_item(raw_filter))
+                        measure_filters.append(
+                            _parse_measure_filter_item(
+                                raw_filter, f"measures.{name}.filter", errors, source_map
+                            )
+                        )
 
                 # Parse grain override
                 grain_override: GrainOverride | None = None
                 raw_grain = raw_meas.get("grain")
                 if raw_grain and isinstance(raw_grain, dict):
+                    _check_unknown_keys(
+                        raw_grain,
+                        _GRAIN_OVERRIDE_KEYS,
+                        f"measures.{name}.grain",
+                        errors,
+                        source_map,
+                    )
                     grain_override = GrainOverride(
                         mode=raw_grain.get("mode", "RELATIVE"),
                         exclude=raw_grain.get("exclude", []),
@@ -434,9 +613,23 @@ class ReferenceResolver:
                 filter_ctx: FilterContext | None = None
                 raw_fc = raw_meas.get("filterContext")
                 if raw_fc and isinstance(raw_fc, dict):
+                    _check_unknown_keys(
+                        raw_fc,
+                        _FILTER_CONTEXT_KEYS,
+                        f"measures.{name}.filterContext",
+                        errors,
+                        source_map,
+                    )
                     include_filters: list[FilterContextFilter] = []
-                    for raw_incl in raw_fc.get("include", []):
+                    for inc_i, raw_incl in enumerate(raw_fc.get("include", [])):
                         if isinstance(raw_incl, dict):
+                            _check_unknown_keys(
+                                raw_incl,
+                                _FILTER_CONTEXT_FILTER_KEYS,
+                                f"measures.{name}.filterContext.include[{inc_i}]",
+                                errors,
+                                source_map,
+                            )
                             include_filters.append(
                                 FilterContextFilter(
                                     field=raw_incl.get("field", ""),
@@ -541,6 +734,16 @@ class ReferenceResolver:
             raw_metrics = {}
         for name, raw_metric in raw_metrics.items():
             try:
+                _check_unknown_keys(raw_metric, _METRIC_KEYS, f"metrics.{name}", errors, source_map)
+                raw_pop_block = raw_metric.get("periodOverPeriod")
+                if isinstance(raw_pop_block, dict):
+                    _check_unknown_keys(
+                        raw_pop_block,
+                        _PERIOD_OVER_PERIOD_KEYS,
+                        f"metrics.{name}.periodOverPeriod",
+                        errors,
+                        source_map,
+                    )
                 metric_type = raw_metric.get("type", "derived")
 
                 if metric_type == MetricType.CUMULATIVE:
@@ -754,6 +957,7 @@ class ReferenceResolver:
             raw_filters = []
         for i, rf in enumerate(raw_filters):
             try:
+                _check_unknown_keys(rf, _MODEL_FILTER_KEYS, f"filters[{i}]", errors, source_map)
                 obj_name = rf.get("dataObject", "")
                 col_name = rf.get("column", "")
                 if obj_name and obj_name not in data_objects:
@@ -803,7 +1007,7 @@ class ReferenceResolver:
                     )
                 )
 
-        settings = _parse_settings(raw.get("settings"))
+        settings = _parse_settings(raw.get("settings"), errors, source_map)
 
         # Parse examples block (PLAN_agent_api_improvements §5)
         examples = self._parse_examples(raw.get("examples"), errors)
@@ -819,7 +1023,7 @@ class ReferenceResolver:
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
-            custom_extensions=_parse_extensions(raw),
+            custom_extensions=_parse_extensions(raw, "", errors, source_map),
             settings=settings,
         )
 
@@ -862,6 +1066,7 @@ class ReferenceResolver:
                     )
                 )
                 continue
+            _check_unknown_keys(entry, _MODEL_EXAMPLE_KEYS, f"examples[{i}]", errors)
             name = entry.get("name")
             description = entry.get("description")
             query = entry.get("query")

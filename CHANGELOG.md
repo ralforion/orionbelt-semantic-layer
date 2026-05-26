@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.7.2] - 2026-05-26
+
+### Fixed
+
+- **Validator silently accepted unknown OBML / QueryObject properties — typos slipped through.** A measure with `filtter:` (typo) used to validate clean and compile to SQL with no filter applied — the exact class of bug a semantic layer is supposed to prevent. The Pydantic models defaulted to `extra="ignore"` and the OBML resolver picked fields manually with `raw.get(...)`, so unknown keys were dropped without comment. Reported in [#75](https://github.com/ralfbecher/orionbelt-semantic-layer/issues/75).
+
+### Added
+
+- **`UNKNOWN_PROPERTY` error code (no flag to bypass).** Strict parsing is now the implicit default for every OBML object (`dataObjects`, `columns`, `joins`, `dimensions`, `measures`, `metrics`, `filters`, `filterContext`, `grain`, `settings`, `examples`, etc.) and every QueryObject surface (`QueryObject`, `QueryFilter`, `QueryFilterGroup`, `Subquery`, `QuerySelect`, `QueryOrderBy`, `UsePathName`, …). Unknown keys are rejected with `UNKNOWN_PROPERTY` and a "did you mean?" suggestion list derived from the model's actual fields.
+- **Pydantic `extra="forbid"`** on every model in `models/semantic.py` and `models/query.py` so anyone constructing a model via `Model.model_validate(some_dict)` gets the same strict behaviour as the resolver / API path. The FastAPI `RequestValidationError` handler translates Pydantic `extra_forbidden` entries into the OBSL error shape so REST clients see one consistent `UNKNOWN_PROPERTY` code instead of FastAPI's default "Extra inputs are not permitted" body.
+- New test file `tests/unit/test_strict_property_parsing.py` (21 tests) covering every parse site on both surfaces.
+
 ## [2.7.1] - 2026-05-25
 
 ### Fixed

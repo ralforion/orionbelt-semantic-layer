@@ -93,6 +93,8 @@ class DimensionRef(BaseModel):
     name: str
     grain: TimeGrain | None = None
 
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
     @classmethod
     def parse(cls, raw: str) -> DimensionRef:
         """Parse 'name:grain' notation."""
@@ -121,7 +123,7 @@ class Subquery(BaseModel):
     path_name: str | None = Field(None, alias="pathName")
     filter: list[QueryFilter] = Field(default_factory=list)
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class QueryFilter(BaseModel):
@@ -132,7 +134,7 @@ class QueryFilter(BaseModel):
     value: Any = None
     subquery: Subquery | None = None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @field_validator("value", mode="before")
     @classmethod
@@ -195,7 +197,7 @@ class QueryFilterGroup(BaseModel):
     filters: list[QueryFilter | QueryFilterGroup] = []
     negated: bool = False
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 # Resolve forward reference for recursive QueryFilterGroup
@@ -212,6 +214,8 @@ class QueryOrderBy(BaseModel):
     direction: SortDirection = SortDirection.ASC
     nulls: NullsPosition | None = None
 
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
 
 class CoalesceDimension(BaseModel):
     """Combines multiple role-playing dimensions into a single output column.
@@ -227,7 +231,7 @@ class CoalesceDimension(BaseModel):
     coalesce: list[str]
     alias: str = Field(alias="as")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class QuerySelect(BaseModel):
@@ -248,6 +252,8 @@ class QuerySelect(BaseModel):
     fields: list[str] = []
     distinct: bool = False
 
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
     @property
     def is_raw(self) -> bool:
         """True when this select is in raw mode (fields-based projection)."""
@@ -261,7 +267,7 @@ class UsePathName(BaseModel):
     target: str
     path_name: str = Field(alias="pathName")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class QueryObject(BaseModel):
@@ -285,7 +291,7 @@ class QueryObject(BaseModel):
         ),
     )
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
     @model_validator(mode="after")
     def _validate_grouping(self) -> QueryObject:

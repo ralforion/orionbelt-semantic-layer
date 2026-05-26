@@ -12,6 +12,8 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from orionbelt import __version__
@@ -435,6 +437,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.expose_openapi_schema else None,
     )
     app.state.settings = settings
+
+    # Pydantic ``extra='forbid'`` on QueryObject / OBML models surfaces as a
+    # generic 422 "Extra inputs are not permitted" by default. Translate those
+    # entries into the OBSL ``UNKNOWN_PROPERTY`` error shape so clients can
+    # branch on the code instead of pattern-matching English. Non-extra errors
+    # are passed through unchanged so other validators (e.g. missing fields)
+    # keep their default form.
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_error(request: Request, exc: RequestValidationError) -> Response:
+        unknown_property_errors: list[dict[str, object]] = []
+        for err in exc.errors():
+            if err.get("type") != "extra_forbidden":
+                continue
+            loc = err.get("loc", ())
+            # Drop the leading "body" frame for a cleaner path
+            # (e.g. ``where[0].feild`` instead of ``body.query.where.0.feild``).
+            trimmed = [str(p) for p in loc if p != "body"]
+            key = trimmed[-1] if trimmed else "?"
+            path = ".".join(trimmed[:-1]) if len(trimmed) > 1 else ""
+            unknown_property_errors.append(
+                {
+                    "code": "UNKNOWN_PROPERTY",
+                    "message": f"Unknown property '{key}'" + (f" at {path}" if path else ""),
+                    "path": path or None,
+                }
+            )
+        if unknown_property_errors:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "message": "Request contains unknown properties",
+                    "errors": unknown_property_errors,
+                    "warnings": [],
+                },
+            )
+        # No extra_forbidden in this batch — defer to FastAPI's default
+        # handler, which safely serialises ctx values (e.g. ValueError).
+        return await request_validation_exception_handler(request, exc)
 
     # Global exception handler — prevents stack trace leaks
     @app.exception_handler(Exception)
