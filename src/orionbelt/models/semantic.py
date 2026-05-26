@@ -448,7 +448,7 @@ class Measure(BaseModel):
     label: str
     columns: list[DataColumnRef] = []
     result_type: DataType = Field(DataType.FLOAT, alias="resultType")
-    aggregation: str
+    aggregation: AggregationType
     expression: str | None = None
     distinct: bool = False
     total: bool = False
@@ -466,6 +466,20 @@ class Measure(BaseModel):
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @field_validator("aggregation", mode="before")
+    @classmethod
+    def _normalize_aggregation(cls, v: object) -> object:
+        """Lowercase aggregation names so ``SUM`` / ``Sum`` / ``sum`` all
+        resolve to the same ``AggregationType.SUM``. The enum's canonical
+        spelling is lowercase, but uppercase SQL-style is a common BI/LLM
+        convention that pre-v2.7.5 worked by accident (``aggregation``
+        was a plain ``str``) — keep accepting it now that the field is
+        a validated enum.
+        """
+        if isinstance(v, str):
+            return v.lower()
+        return v
 
     @field_validator("data_type", mode="before")
     @classmethod

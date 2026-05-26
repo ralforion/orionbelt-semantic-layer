@@ -1,0 +1,60 @@
+name: Colab notebook smoke
+
+# Run the published Colab quickstart end-to-end whenever a PR touches the
+# notebook itself or its local-Jupyter sibling. The notebook is served
+# live from main by Colab (https://colab.research.google.com/github/...),
+# so a breaking change ships to the next user who clicks the "Open in
+# Colab" badge unless we catch it on PR. The static contract checks in
+# tests/unit/test_notebook_contracts.py run in the default CI suite for
+# every PR; this workflow adds the heavier execution-level check only
+# when the notebook is actually touched (keeps default CI fast).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "examples/quickstart_colab.ipynb"
+      - "examples/notebook_setup.py"
+      - "examples/tpch.obml.yml"
+      # If the workflow itself changes, also re-run so the change can
+      # be verified in the PR that introduces it.
+      - ".github/workflows/notebook.yml"
+  push:
+    branches: [main]
+    paths:
+      - "examples/quickstart_colab.ipynb"
+      - "examples/notebook_setup.py"
+      - "examples/tpch.obml.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  notebook-exec:
+    name: Execute Colab notebook headlessly
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies + notebook execution stack
+        # The default extras don't include nbclient / ipykernel — the
+        # notebook test imports them lazily via importorskip, so it
+        # silently skips in the regular suite. Install them here so
+        # the notebook marker actually runs instead of skipping.
+        run: |
+          uv sync --all-extras --all-groups
+          uv pip install nbclient nbformat ipykernel
+
+      - name: Execute Colab quickstart end-to-end
+        # Single explicit test under the ``notebook`` marker; fails
+        # loudly if any cell of the published Colab raises.
+        run: uv run pytest -m notebook -v --tb=short

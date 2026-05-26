@@ -203,6 +203,17 @@ class ModelStore:
     def __init__(self, max_models: int = 10) -> None:
         self._lock = threading.Lock()
         self._models: dict[str, SemanticModel] = {}
+        # Parallel storage of each loaded model's *merged* raw YAML dict
+        # so inheritance can re-merge against the exact same content the
+        # parent was built from. Pre-fix (v2.7.5) inheritance round-tripped
+        # through ``_model_to_raw`` which dropped most non-essential
+        # fields (numClass, primaryKey, expression on computed columns,
+        # measure dataType / filters / grain / delimiter / withinGroup,
+        # most metric subtype config, …) — child models would inherit
+        # a stripped parent and silently compile invalid SQL such as
+        # ``SUM("T"."")`` for any parent computed column whose ``code:``
+        # the resolver had derived from its ``expression``.
+        self._raws: dict[str, dict[str, object]] = {}
         self._graphs: dict[str, GraphArtifact] = {}
         # Per-store summary cache so dedup hits can return the original
         # data_objects/dimensions/measures/metrics counts without re-walking
@@ -265,11 +276,17 @@ class ModelStore:
         raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
-    ) -> tuple[SemanticModel, list[ErrorInfo], list[ErrorInfo]]:
+    ) -> tuple[SemanticModel, dict[str, object], list[ErrorInfo], list[ErrorInfo]]:
         """Parse YAML (or accept pre-parsed dict), resolve references, validate.
 
-        Returns ``(model, errors, warnings)``.
+        Returns ``(model, merged_raw, errors, warnings)``.
         Provide either ``yaml_str`` or ``raw_dict``, not both.
+
+        ``merged_raw`` is the fully-merged raw dict the resolver consumed
+        (after extends/inherits processing) — callers store it so future
+        inherits-from-this-model loads can re-merge against the exact
+        content rather than going through a lossy ``_model_to_raw``
+        round-trip.
         """
         errors: list[ErrorInfo] = []
         warnings: list[ErrorInfo] = []
@@ -283,10 +300,10 @@ class ModelStore:
                 raw, source_map = self._loader.load_string(yaml_str)
             except YAMLSafetyError as exc:
                 errors.append(ErrorInfo(code="YAML_SAFETY_ERROR", message=str(exc)))
-                return SemanticModel(), errors, warnings
+                return SemanticModel(), {}, errors, warnings
             except Exception as exc:
                 errors.append(ErrorInfo(code="YAML_PARSE_ERROR", message=str(exc)))
-                return SemanticModel(), errors, warnings
+                return SemanticModel(), {}, errors, warnings
         else:
             errors.append(
                 ErrorInfo(
@@ -294,14 +311,21 @@ class ModelStore:
                     message="Provide either model_yaml or model_json",
                 )
             )
-            return SemanticModel(), errors, warnings
+            return SemanticModel(), {}, errors, warnings
 
         # 1b. Merge extends/inherits if provided
         try:
             inherits_raw: dict[str, object] | None = None
             if inherits_model_id is not None:
-                parent_model = self.get_model(inherits_model_id)
-                inherits_raw = self._model_to_raw(parent_model)
+                # Prefer the parent's stored raw dict — captured at load
+                # time so every field round-trips intact. Fall back to
+                # the lossy ``_model_to_raw`` only when no raw is on
+                # record (legacy / programmatically-constructed models).
+                with self._lock:
+                    inherits_raw = self._raws.get(inherits_model_id)
+                if inherits_raw is None:
+                    parent_model = self.get_model(inherits_model_id)
+                    inherits_raw = self._model_to_raw(parent_model)
 
             if extends_yaml or inherits_raw is not None:
                 raw, merge_warnings = self._merger.merge_from_strings(
@@ -320,7 +344,7 @@ class ModelStore:
                 source_map = None
         except MergeError as exc:
             errors.append(ErrorInfo(code=exc.code, message=exc.message))
-            return SemanticModel(), errors, warnings
+            return SemanticModel(), {}, errors, warnings
         except KeyError:
             errors.append(
                 ErrorInfo(
@@ -328,7 +352,7 @@ class ModelStore:
                     message=f"Parent model '{inherits_model_id}' not found in session",
                 )
             )
-            return SemanticModel(), errors, warnings
+            return SemanticModel(), {}, errors, warnings
 
         # 2. Resolve references
         model, resolution = self._resolver.resolve(raw, source_map)
@@ -391,11 +415,19 @@ class ModelStore:
                 )
             )
 
-        return model, errors, warnings
+        return model, raw, errors, warnings
 
     @staticmethod
     def _model_to_raw(model: SemanticModel) -> dict[str, object]:
-        """Convert a SemanticModel back to a raw dict for inherits merging."""
+        """Convert a SemanticModel back to a raw dict for inherits merging.
+
+        .. deprecated:: v2.7.5
+            Lossy fallback only — drops most non-essential fields. New
+            code stores and reuses the merged raw dict captured at load
+            time (see ``ModelStore._raws``). This method remains for the
+            edge case where a parent model was constructed programmatically
+            without ever passing through ``load_model``.
+        """
         raw: dict[str, object] = {"version": model.version}
         if model.description:
             raw["description"] = model.description
@@ -559,7 +591,7 @@ class ModelStore:
             if len(self._models) >= self._max_models:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
 
-        model, errors, warnings = self._parse_and_validate(
+        model, merged_raw, errors, warnings = self._parse_and_validate(
             yaml_str,
             raw_dict=raw_dict,
             extends_yaml=extends_yaml,
@@ -590,6 +622,7 @@ class ModelStore:
             if len(self._models) >= self._max_models:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
             self._models[model_id] = model
+            self._raws[model_id] = merged_raw
             self._graphs[model_id] = artifact
             self._summaries[model_id] = summary
             if content_hash is not None:
@@ -695,6 +728,7 @@ class ModelStore:
                 del self._models[model_id]
             except KeyError:
                 raise KeyError(f"No model loaded with id '{model_id}'") from None
+            self._raws.pop(model_id, None)
             self._graphs.pop(model_id, None)
             self._summaries.pop(model_id, None)
             stale_hashes = [h for h, mid in self._content_hash_index.items() if mid == model_id]
@@ -732,7 +766,7 @@ class ModelStore:
         inherits_model_id: str | None = None,
     ) -> ValidationSummary:
         """Validate a model without storing it.  Accepts YAML string or raw dict."""
-        _model, errors, warnings = self._parse_and_validate(
+        _model, _raw, errors, warnings = self._parse_and_validate(
             yaml_str,
             raw_dict=raw_dict,
             extends_yaml=extends_yaml,
