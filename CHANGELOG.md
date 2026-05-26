@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.7.4] - 2026-05-26
+
+### Fixed
+
+- **Generated SQL was deeply over-parenthesized — every operator wrapped itself unconditionally.** Reported in [#79](https://github.com/ralfbecher/orionbelt-semantic-layer/issues/79). The dialect emitter in `dialect/base.py` rendered every `BinaryOp` / `IsNull` / `Between` / `InList` / `UnaryOp` with an outer `(...)` wrap regardless of operator precedence or surrounding context. A simple `Year * 100 + Month` computed dimension joined into a multi-key anti-join produced nine layers of nested parens; the WHERE clause `WHERE ("Instrument"."instrmnt_id" IS NULL)` carried a redundant outer wrap. Correct SQL, but unreadable when copied into BI tools, the Gradio UI editor, or `/v1/query/sql` debugging.
+
+### Added
+
+- **Precedence-aware SQL emitter.** `compile_expr` now accepts an internal `_parent_prec` hint and each operator branch wraps its output in `(...)` only when its precedence is strictly less than its parent's required level. Atoms (literals, column refs, function calls, `CAST(...)`, `CASE ... END`) are at the top precedence level and never wrap. The clause root (SELECT projection, ON / WHERE / HAVING, GROUP BY / ORDER BY item, function argument) passes precedence `0` so the outermost expression never picks up a redundant outer wrap.
+- **Non-associative operator handling.** Comparison operators (`=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`) wrap any equal-precedence child on both sides — SQL forbids chained comparisons (`a >= b = c` is a syntax error in every supported dialect). Subtraction / division wrap the right operand at equal precedence so `a - (b - c)` keeps its required parens.
+- 26 new tests in `tests/unit/test_emitter_precedence.py` covering root-clause unwrapping, mixed-precedence wrapping (OR inside AND, addition inside multiplication, etc.), subtraction associativity, comparison-chaining safety, and identical behaviour across all 8 dialects.
+
 ## [2.7.3] - 2026-05-26
 
 ### Fixed

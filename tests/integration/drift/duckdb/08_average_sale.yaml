@@ -1,5 +1,5 @@
 last_verified_by: tests/integration/correctness/test_metric_algebra.py::test_average_sale_equals_total_sales_over_order_count
-sql: 'SELECT CAST((SUM("Sales"."salesamount") / NULLIF(COUNT(DISTINCT "Sales"."salesid"), 0)) AS DECIMAL(18, 2)) AS "Average
+sql: 'SELECT CAST(SUM("Sales"."salesamount") / NULLIF(COUNT(DISTINCT "Sales"."salesid"), 0) AS DECIMAL(18, 2)) AS "Average
   Sale"
 
   FROM "orionbelt_1"."sales" AS "Sales"

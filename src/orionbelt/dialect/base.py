@@ -286,12 +286,82 @@ class Dialect(ABC):
         resolved_type = self._resolve_type_name(type_name)
         return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
 
-    def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
-        """Render an infix binary expression. Dialects override to widen
-        operand precision (e.g. ClickHouse decimal division) or special-case
-        operators that don't translate one-to-one (e.g. MySQL string concat).
+    # SQL operator precedence (higher = binds tighter). Used by the
+    # precedence-aware emitter in ``compile_expr`` to skip wrapping a
+    # child whose precedence is higher than its parent's required level.
+    # Pre-v2.7.4 the emitter wrapped *every* operator unconditionally,
+    # producing deeply-nested unreadable SQL (issue #79).
+    _CLAUSE_ROOT_PREC = 0  # no surrounding context → no wrap
+    _PREC_OR = 1
+    _PREC_AND = 2
+    _PREC_NOT = 3
+    _PREC_CMP = 4  # =, <>, <, <=, >, >=, IS NULL, IN, BETWEEN, LIKE
+    _PREC_ADD = 5  # +, -, ||
+    _PREC_MUL = 6  # *, /, %
+    _PREC_UNARY = 7  # unary -, +
+    _PREC_ATOM = 100  # literals, column refs, function calls, CAST(...), CASE...END
+
+    @staticmethod
+    def _wrap_if_lower(sql: str, self_prec: int, parent_prec: int) -> str:
+        """Wrap ``sql`` in ``(...)`` only when it would bind weaker than
+        its parent — i.e. its precedence is strictly less than the
+        parent's required level. ``parent_prec = 0`` (clause root) is
+        always satisfied so the outermost expression never gets a
+        redundant outer wrap.
         """
-        return f"({self.compile_expr(left)} {op} {self.compile_expr(right)})"
+        if self_prec < parent_prec:
+            return f"({sql})"
+        return sql
+
+    @classmethod
+    def _binary_op_precedence(cls, op: str) -> int:
+        """Return the precedence of a ``BinaryOp.op`` value."""
+        up = op.upper().strip()
+        if up == "OR":
+            return cls._PREC_OR
+        if up == "AND":
+            return cls._PREC_AND
+        if up in ("=", "<>", "!=", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"):
+            return cls._PREC_CMP
+        if up in ("+", "-", "||"):
+            return cls._PREC_ADD
+        if up in ("*", "/", "%"):
+            return cls._PREC_MUL
+        # Unknown operator — wrap defensively (treat as lowest precedence).
+        return cls._CLAUSE_ROOT_PREC
+
+    # Non-associative operators — children at the same precedence must
+    # be wrapped on BOTH sides. SQL forbids chained comparisons
+    # (``a >= b = c`` is a syntax error in every dialect we support),
+    # subtraction and division are left-associative but ``a - (b - c)``
+    # differs from ``a - b - c``, so the right operand is wrapped at
+    # equal precedence — see the left-associative branch below.
+    _NON_ASSOCIATIVE_OPS: frozenset[str] = frozenset(
+        {"=", "<>", "!=", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"}
+    )
+
+    def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
+        """Render an infix binary expression *without* an outer wrap.
+
+        The dispatcher in ``compile_expr`` decides whether to add an outer
+        ``(...)`` wrap based on the parent's precedence. Dialects override
+        to widen operand precision (e.g. ClickHouse decimal division) or
+        special-case operators that don't translate one-to-one (e.g. MySQL
+        string concat).
+        """
+        self_prec = self._binary_op_precedence(op)
+        # Comparison + LIKE forbid chaining — wrap any equal-precedence
+        # child on either side. Other ops are left-associative: left at
+        # self_prec, right at self_prec + 1 so ``a - (b - c)`` keeps its
+        # required parens.
+        op_upper = op.upper().strip()
+        if op_upper in self._NON_ASSOCIATIVE_OPS:
+            left_sql = self.compile_expr(left, _parent_prec=self_prec + 1)
+            right_sql = self.compile_expr(right, _parent_prec=self_prec + 1)
+        else:
+            left_sql = self.compile_expr(left, _parent_prec=self_prec)
+            right_sql = self.compile_expr(right, _parent_prec=self_prec + 1)
+        return f"{left_sql} {op} {right_sql}"
 
     def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
         """Render ``left / right`` for decimal-typed operands, given raw SQL.
@@ -453,8 +523,21 @@ class Dialect(ABC):
         """Compile an EXCEPT of two SELECT statements."""
         return self.compile_select(node.left) + "\nEXCEPT\n" + self.compile_select(node.right)
 
-    def compile_expr(self, expr: Expr) -> str:
-        """Compile an expression node to SQL string."""
+    def compile_expr(self, expr: Expr, _parent_prec: int = 0) -> str:
+        """Compile an expression node to SQL string.
+
+        ``_parent_prec`` is the precedence of the surrounding operator
+        (or ``_CLAUSE_ROOT_PREC = 0`` when called at the root of a SELECT
+        projection, ON / WHERE / HAVING clause, GROUP BY / ORDER BY item,
+        or function argument). Each operator branch wraps its own SQL in
+        ``(...)`` only when its precedence is strictly less than the
+        parent's required level; atoms (literals, column refs, function
+        calls, CAST, CASE) are at ``_PREC_ATOM`` and never wrap.
+
+        Pre-v2.7.4 every ``BinaryOp`` / ``IsNull`` / ``InList`` /
+        ``Between`` / ``UnaryOp`` wrapped itself unconditionally,
+        producing deeply-nested unreadable SQL — issue #79.
+        """
         match expr:
             case Literal(value=None):
                 return "NULL"
@@ -508,17 +591,24 @@ class Dialect(ABC):
                     return f"{fname}(DISTINCT {args_sql})"
                 return f"{fname}({args_sql})"
             case BinaryOp(left=left, op=op, right=right):
-                return self._compile_binary_op(left, op, right)
+                self_prec = self._binary_op_precedence(op)
+                sql = self._compile_binary_op(left, op, right)
+                return self._wrap_if_lower(sql, self_prec, _parent_prec)
             case UnaryOp(op=op, operand=operand):
-                return f"({op} {self.compile_expr(operand)})"
+                self_prec = self._PREC_NOT if op.upper() == "NOT" else self._PREC_UNARY
+                sql = f"{op} {self.compile_expr(operand, _parent_prec=self_prec)}"
+                return self._wrap_if_lower(sql, self_prec, _parent_prec)
             case IsNull(expr=inner, negated=False):
-                return f"({self.compile_expr(inner)} IS NULL)"
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} IS NULL"
+                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case IsNull(expr=inner, negated=True):
-                return f"({self.compile_expr(inner)} IS NOT NULL)"
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} IS NOT NULL"
+                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case InList(expr=inner, values=values, negated=negated):
                 vals = ", ".join(self.compile_expr(v) for v in values)
                 op = "NOT IN" if negated else "IN"
-                return f"({self.compile_expr(inner)} {op} ({vals}))"
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} {op} ({vals})"
+                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case CaseExpr(when_clauses=whens, else_clause=else_):
                 parts = ["CASE"]
                 for when_cond, then_val in whens:
@@ -541,10 +631,11 @@ class Dialect(ABC):
                 return sql
             case Between(expr=inner, low=low, high=high, negated=negated):
                 op = "NOT BETWEEN" if negated else "BETWEEN"
-                return (
-                    f"({self.compile_expr(inner)} {op} "
-                    f"{self.compile_expr(low)} AND {self.compile_expr(high)})"
-                )
+                inner_sql = self.compile_expr(inner, _parent_prec=self._PREC_CMP)
+                low_sql = self.compile_expr(low, _parent_prec=self._PREC_CMP)
+                high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP)
+                sql = f"{inner_sql} {op} {low_sql} AND {high_sql}"
+                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case RegexMatch(column=column, pattern=pattern, negated=negated):
                 return self.compile_regex_match(column, pattern, negated=negated)
             case RelativeDateRange(

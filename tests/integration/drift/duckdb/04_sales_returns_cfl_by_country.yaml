@@ -5,9 +5,9 @@ sql: 'WITH "composite_01" AS (
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
-  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 
-  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
 
   UNION ALL BY NAME
 
@@ -15,11 +15,11 @@ sql: 'WITH "composite_01" AS (
 
   FROM "orionbelt_1"."returns" AS "Returns"
 
-  LEFT JOIN "orionbelt_1"."sales" AS "Sales" ON ("Returns"."returnsalesid" = "Sales"."salesid")
+  LEFT JOIN "orionbelt_1"."sales" AS "Sales" ON "Returns"."returnsalesid" = "Sales"."salesid"
 
-  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 
-  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON ("Clients"."clientcountryid" = "Countries"."countryid")
+  LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
 
   )
 

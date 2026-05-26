@@ -5,7 +5,7 @@ sql: 'WITH "composite_01" AS (
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
-  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Sales"."salesclient" = "Clients"."clientid")
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 
   UNION ALL BY NAME
 
@@ -13,7 +13,7 @@ sql: 'WITH "composite_01" AS (
 
   FROM "orionbelt_1"."clientcomplaints" AS "Client Complaints"
 
-  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON ("Client Complaints"."complclientid" = "Clients"."clientid")
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Client Complaints"."complclientid" = "Clients"."clientid"
 
   )
 
@@ -24,7 +24,7 @@ sql: 'WITH "composite_01" AS (
 
   GROUP BY COALESCE("Sales Client Name", "Complaint Client Name")
 
-  HAVING (CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS BIGINT) > 0)
+  HAVING CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS BIGINT) > 0
 
   '
 rows:

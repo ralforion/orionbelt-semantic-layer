@@ -128,12 +128,18 @@ class ClickHouseDialect(Dialect):
         ``decimal(18, 4)`` precision — we cast both operands to
         ``Decimal(38, 10)`` before dividing. The outer measure CAST
         then narrows back to the declared type.
+
+        Returns the SQL fragment *without* an outer ``(...)`` wrap —
+        the dispatcher in ``compile_expr`` adds one only when the
+        surrounding precedence requires it (v2.7.4 #79).
         """
         if op == "/":
             wide = "Nullable(Decimal(38, 14))"
+            # CAST(...) is itself an atom from a precedence standpoint —
+            # no risk of the children needing a higher parent prec here.
             l_sql = f"CAST({self.compile_expr(left)} AS {wide})"
             r_sql = f"CAST({self.compile_expr(right)} AS {wide})"
-            return f"({l_sql} / {r_sql})"
+            return f"{l_sql} / {r_sql}"
         return super()._compile_binary_op(left, op, right)
 
     def _compile_cast(self, inner: Expr, type_name: str) -> str:
