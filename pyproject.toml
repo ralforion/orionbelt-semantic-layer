@@ -59,7 +59,7 @@ dependencies = [
     "tzdata>=2025.1",
     # DuckDB's Python binding lazily imports pytz when binding tz-aware
     # datetimes (TIMESTAMPTZ columns). Without it the result-cache meta
-    # DB writes/reads raise "Required module 'pytz' failed to import" —
+    # DB writes/reads raise "Required module 'pytz' failed to import".
     # cache.get/set silently swallow it at WARNING level, queries never
     # cache. Pinning ensures it's resolved at install time.
     "pytz>=2024.1",
@@ -144,13 +144,13 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "docker: requires Docker (testcontainers) — run with: pytest -m docker",
-    "adbc: requires a reachable PostgreSQL via ADBC — run with: pytest -m adbc",
-    "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars) — run with: pytest -m snowflake",
-    "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC) — run with: pytest -m bigquery",
-    "databricks: requires a live Databricks workspace (DATABRICKS_* env vars) — run with: pytest -m databricks",
-    "dremio: requires the Dremio + OBSL docker-compose stack — see tests/integration/dremio/README.md",
-    "notebook: heavy end-to-end notebook execution (Colab quickstart) — needs nbclient + ipykernel + duckdb — run with: pytest -m notebook",
+    "docker: requires Docker (testcontainers); run with: pytest -m docker",
+    "adbc: requires a reachable PostgreSQL via ADBC; run with: pytest -m adbc",
+    "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars); run with: pytest -m snowflake",
+    "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC); run with: pytest -m bigquery",
+    "databricks: requires a live Databricks workspace (DATABRICKS_* env vars); run with: pytest -m databricks",
+    "dremio: requires the Dremio + OBSL docker-compose stack; see tests/integration/dremio/README.md",
+    "notebook: heavy end-to-end notebook execution (Colab quickstart); needs nbclient + ipykernel + duckdb; run with: pytest -m notebook",
 ]
 
 [tool.mypy]
