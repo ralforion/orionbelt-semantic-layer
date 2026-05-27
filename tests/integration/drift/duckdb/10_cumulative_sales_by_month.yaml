@@ -6,7 +6,7 @@ sql: 'WITH "cumulative_base" AS (
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
-  GROUP BY date_trunc(''month'', "Sales"."salesdate")
+  GROUP BY ALL
 
   )
 

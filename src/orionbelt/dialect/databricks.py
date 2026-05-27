@@ -48,6 +48,7 @@ class DatabricksDialect(Dialect):
             supports_arrays=True,
             supports_window_filters=False,
             supports_ilike=False,
+            supports_group_by_all=True,
         )
 
     def quote_identifier(self, name: str) -> str:

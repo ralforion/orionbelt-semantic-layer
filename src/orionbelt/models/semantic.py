@@ -43,6 +43,14 @@ class AggregationType(StrEnum):
     COVAR_SAMP = "covar_samp"
     REGR_SLOPE = "regr_slope"
     REGR_INTERCEPT = "regr_intercept"
+    # Vendor delegation (v2.7.7+) — emit ``MEASURE("<label>")`` and let the
+    # engine resolve the aggregation via its metric-view machinery. Only
+    # Databricks Metric Views accept this; every other dialect raises
+    # UNSUPPORTED_AGGREGATION_FOR_DIALECT. ``AGG`` and ``AGGREGATE`` are
+    # accepted as aliases on input via the normalizing validator. Snowflake
+    # Semantic Views use a different construct (``SEMANTIC_VIEW(...)``);
+    # publishing into Snowflake is not in scope here.
+    MEASURE = "measure"
 
 
 # Aggregations that take two columns. Compiled to ``AGG(col_a, col_b)`` —
@@ -476,9 +484,17 @@ class Measure(BaseModel):
         convention that pre-v2.7.5 worked by accident (``aggregation``
         was a plain ``str``) — keep accepting it now that the field is
         a validated enum.
+
+        ``AGG`` and ``AGGREGATE`` are accepted as aliases for ``MEASURE``
+        (v2.7.7+) so OBML reads naturally for users coming from
+        Databricks (``measure``), older Spark docs (``aggregate``), or
+        the shorthand most BI tools default to (``agg``).
         """
         if isinstance(v, str):
-            return v.lower()
+            lowered = v.lower()
+            if lowered in ("agg", "aggregate"):
+                return "measure"
+            return lowered
         return v
 
     @field_validator("data_type", mode="before")
@@ -492,6 +508,42 @@ class Measure(BaseModel):
     def _validate_total_grain_exclusion(self) -> Measure:
         if self.total and self.grain is not None:
             raise ValueError("'total: true' and 'grain' are mutually exclusive")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_measure_delegation(self) -> Measure:
+        """``aggregation: measure`` delegates the aggregation to the
+        engine's metric-view resolver, so the OBML measure declaration
+        must NOT specify ``columns:`` or ``expression:`` — there is no
+        source column for OBSL to read; the engine resolves the measure
+        by name. Reject the combination at model-load time rather than
+        emitting SQL that would silently ignore the column reference.
+        """
+        if self.aggregation == AggregationType.MEASURE:
+            if self.columns:
+                raise ValueError(
+                    "aggregation: measure delegates resolution to the engine "
+                    "(Databricks Metric View); 'columns:' must be omitted. "
+                    "The engine resolves the measure by its OBML label."
+                )
+            if self.expression is not None:
+                raise ValueError(
+                    "aggregation: measure delegates resolution to the engine "
+                    "(Databricks Metric View); 'expression:' must be omitted. "
+                    "The engine resolves the measure by its OBML label."
+                )
+            if self.filters:
+                raise ValueError(
+                    "aggregation: measure delegates resolution to the engine "
+                    "(Databricks Metric View); 'filters:' is not applicable. "
+                    "Define the filter inside the metric view itself."
+                )
+            if self.total:
+                raise ValueError(
+                    "aggregation: measure cannot be combined with 'total: true' "
+                    "(OBSL cannot wrap the engine-resolved aggregation in "
+                    "a window function — define the total at the metric-view level)."
+                )
         return self
 
     @model_validator(mode="after")

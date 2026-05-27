@@ -71,6 +71,12 @@ class DialectCapabilities:
     supports_time_travel: bool = False
     supports_semi_structured: bool = False
     supports_union_all_by_name: bool = False
+    # ``GROUP BY ALL`` (Snowflake 2022+, Databricks/Spark 3.4+, DuckDB 0.7+,
+    # BigQuery, ClickHouse 22.6+) auto-derives the grouping list from the
+    # SELECT clause. Functionally equivalent to the explicit list but much
+    # shorter on queries with computed dimensions, where the explicit form
+    # repeats the full expression. Postgres, MySQL, Dremio do not support it.
+    supports_group_by_all: bool = False
     unsupported_aggregations: list[str] = field(default_factory=list)
 
 
@@ -459,12 +465,22 @@ class Dialect(ABC):
         Dremio, MySQL): ``GROUP BY ROLLUP(a, b)`` / ``GROUP BY CUBE(a, b)``.
         ClickHouse overrides to the trailing-modifier form
         (``GROUP BY a, b WITH ROLLUP``).
+
+        When ``capabilities.supports_group_by_all`` is set and no grouping
+        modifier is requested, emits ``GROUP BY ALL`` — the engine
+        auto-derives the grouping list from the SELECT. Equivalent SQL
+        with a much shorter and more idiomatic form on modern OLAP
+        engines, especially for queries with computed dimensions.
         """
-        groups = ", ".join(self.compile_expr(g) for g in group_by)
         if grouping == "rollup":
+            groups = ", ".join(self.compile_expr(g) for g in group_by)
             return f"GROUP BY ROLLUP({groups})"
         if grouping == "cube":
+            groups = ", ".join(self.compile_expr(g) for g in group_by)
             return f"GROUP BY CUBE({groups})"
+        if self.capabilities.supports_group_by_all:
+            return "GROUP BY ALL"
+        groups = ", ".join(self.compile_expr(g) for g in group_by)
         return f"GROUP BY {groups}"
 
     def compile_from(self, node: From) -> str:

@@ -66,7 +66,12 @@ class TestAggregationEnum:
         assert "MEASURE_PARSE_ERROR" in codes
 
     def test_unknown_aggregation_rejected(self) -> None:
-        for agg in ("totalize", "agg", "compute", ""):
+        # ``agg`` and ``aggregate`` are reserved aliases for ``measure``
+        # (v2.7.7+) so they are NOT in this set — they resolve to a valid
+        # enum but the model validator rejects them for a different
+        # reason (forbidden ``columns:`` for engine-delegated measures);
+        # covered by tests/unit/test_aggregation_measure.py.
+        for agg in ("totalize", "compute", "ssum", ""):
             valid, _ = _resolve(agg)
             assert not valid, f"{agg!r} should NOT validate as an aggregation"
 

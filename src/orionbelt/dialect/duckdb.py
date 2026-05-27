@@ -25,6 +25,9 @@ class DuckDBDialect(Dialect):
             supports_window_filters=True,
             supports_ilike=True,
             supports_union_all_by_name=True,
+            supports_group_by_all=True,
+            # ``aggregation: measure`` is Databricks Metric View specific.
+            unsupported_aggregations=["measure"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:

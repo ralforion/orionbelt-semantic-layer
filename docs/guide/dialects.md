@@ -28,6 +28,8 @@ Each dialect declares capability flags that the compiler uses to choose SQL gene
 | `supports_ilike` | No | Yes | No | No | Yes | No | Yes | Yes |
 | `supports_time_travel` | No | No | No | No | No | No | No | Yes |
 | `supports_semi_structured` | Yes | No | No | No | No | No | No | Yes |
+| `supports_union_all_by_name` | No | No | No | No | Yes | No | No | Yes |
+| `supports_group_by_all` | Yes | Yes | Yes | No | Yes | No | No | Yes |
 
 ## Identifier Quoting
 

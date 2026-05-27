@@ -12,4 +12,4 @@ LEFT JOIN ``.`orionbelt_1`.`countries` AS `Countries` ON `Clients`.`clientcountr
 )
 SELECT `Sales Country Name` AS `Sales Country Name`, ROUND(CAST(SUM(`composite_01`.`Total Sales`) AS NUMERIC), 2) AS `Total Sales`, ROUND(CAST(SUM(`composite_01`.`Total Returns`) AS NUMERIC), 2) AS `Total Returns`
 FROM `composite_01` AS `composite_01`
-GROUP BY `Sales Country Name`
+GROUP BY ALL

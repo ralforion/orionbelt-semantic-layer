@@ -217,3 +217,92 @@ class TestCombinedOverridesRoundtrip:
         assert m["owner"] == "finance"
         assert m["grain"]["keepOnly"] == ["Order Date"]
         assert m["filterContext"]["mode"] == "FIXED"
+
+
+class TestMeasureAggregationRoundtrip:
+    """``aggregation: measure`` delegates resolution to the engine
+    (Databricks Metric View). OSI has no first-class concept for
+    engine-delegated aggregation, so the OBML → OSI direction emits a
+    ``MEASURE("<label>")`` placeholder expression and stashes
+    ``obml_aggregation: measure`` under custom_extensions for the
+    reverse direction. See issue #92.
+    """
+
+    def _delegated_obml(self) -> dict[str, Any]:
+        """Minimal OBML model with a single MEASURE-aggregation measure.
+        Cannot share the _BASE_OBML Revenue (which has an expression);
+        MEASURE forbids columns / expression / filters / total.
+        """
+        return {
+            "version": 1.0,
+            "dataObjects": {
+                "MetricView": {
+                    "code": "sales_metric_view",
+                    "database": "warehouse",
+                    "schema": "silver",
+                    "columns": {
+                        "Region": {"code": "region", "abstractType": "string"},
+                    },
+                },
+            },
+            "dimensions": {
+                "Region": {
+                    "dataObject": "MetricView",
+                    "column": "Region",
+                    "resultType": "string",
+                },
+            },
+            "measures": {
+                "Total Revenue": {
+                    "aggregation": "measure",
+                    "resultType": "float",
+                    "dataType": "decimal(18, 2)",
+                },
+            },
+        }
+
+    @staticmethod
+    def _osi_metrics(osi: dict[str, Any]) -> list[dict[str, Any]]:
+        return osi["semantic_model"][0].get("metrics", [])
+
+    def test_obml_to_osi_emits_measure_placeholder(self):
+        obml = self._delegated_obml()
+        osi = conv.OBMLtoOSI(obml).convert()
+        metrics = {m["name"]: m for m in self._osi_metrics(osi)}
+        assert "Total Revenue" in metrics
+        expr = metrics["Total Revenue"]["expression"]["dialects"][0]["expression"]
+        assert expr == 'MEASURE("Total Revenue")'
+
+    def test_obml_to_osi_records_databricks_vendor(self):
+        obml = self._delegated_obml()
+        osi = conv.OBMLtoOSI(obml).convert()
+        assert "DATABRICKS" in osi.get("vendors", [])
+
+    def test_obml_to_osi_stashes_aggregation_marker(self):
+        obml = self._delegated_obml()
+        osi = conv.OBMLtoOSI(obml).convert()
+        metric = next(m for m in self._osi_metrics(osi) if m["name"] == "Total Revenue")
+        exts = metric.get("custom_extensions", [])
+        assert exts, "expected custom_extensions to carry the obml_aggregation marker"
+        import json as _json
+
+        common = [_json.loads(e["data"]) for e in exts if e.get("vendor_name") == "COMMON"]
+        assert any(e.get("obml_aggregation") == "measure" for e in common), (
+            "obml_aggregation marker missing from COMMON extras"
+        )
+
+    def test_roundtrip_preserves_measure_aggregation(self):
+        obml = self._delegated_obml()
+        result = _roundtrip(obml)
+        m = result["measures"]["Total Revenue"]
+        assert m["aggregation"] == "measure"
+        # Round-tripping must not invent a source column, expression,
+        # or filter — those would all break re-validation of the OBML.
+        assert "columns" not in m or m["columns"] == []
+        assert "expression" not in m
+        assert "filters" not in m
+
+    def test_roundtrip_preserves_data_type(self):
+        obml = self._delegated_obml()
+        result = _roundtrip(obml)
+        assert result["measures"]["Total Revenue"]["dataType"] == "decimal(18, 2)"

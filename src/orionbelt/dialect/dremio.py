@@ -24,7 +24,8 @@ class DremioDialect(Dialect):
             supports_arrays=False,
             supports_window_filters=False,
             supports_ilike=False,
-            unsupported_aggregations=["mode"],
+            # ``measure`` is Databricks Metric View specific.
+            unsupported_aggregations=["mode", "measure"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:

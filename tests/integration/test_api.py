@@ -69,8 +69,17 @@ class TestDialectsEndpoint:
         # MySQL and Dremio declare mode as unsupported
         assert "mode" in by_name["mysql"]["unsupported_aggregations"]
         assert "mode" in by_name["dremio"]["unsupported_aggregations"]
-        # Postgres supports all aggregations
-        assert by_name["postgres"]["unsupported_aggregations"] == []
+        # ``measure`` (Databricks Metric View delegation) is unsupported on
+        # every dialect except Databricks (v2.7.7+, see #92).
+        for name, info in by_name.items():
+            if name == "databricks":
+                assert "measure" not in info["unsupported_aggregations"]
+            else:
+                assert "measure" in info["unsupported_aggregations"], (
+                    f"{name}: 'measure' must be listed as unsupported"
+                )
+        # Postgres has no other unsupported aggregations apart from ``measure``.
+        assert by_name["postgres"]["unsupported_aggregations"] == ["measure"]
 
 
 class TestSettingsEndpoint:

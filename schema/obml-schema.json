@@ -630,7 +630,29 @@
         },
         "aggregation": {
           "type": "string",
-          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept."
+          "enum": [
+            "sum",
+            "count",
+            "count_distinct",
+            "avg",
+            "min",
+            "max",
+            "any_value",
+            "median",
+            "mode",
+            "listagg",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "var_pop",
+            "corr",
+            "covar_pop",
+            "covar_samp",
+            "regr_slope",
+            "regr_intercept",
+            "measure"
+          ],
+          "description": "Aggregation function. Core: sum, count, count_distinct, avg, min, max, any_value, median, mode, listagg. Statistical (v2.6+): stddev, stddev_pop, variance, var_pop (single-column), corr, covar_pop, covar_samp, regr_slope, regr_intercept (two-column). Vendor delegation (v2.7.7+): measure (Databricks Metric Views only; emits MEASURE(\"<label>\") and forbids columns/expression/filters/total). Dialect support varies: MySQL lacks correlation/covariance/regression; BigQuery and ClickHouse lack regr_slope/regr_intercept; only Databricks accepts 'measure'."
         },
         "distinct": {
           "type": "boolean",

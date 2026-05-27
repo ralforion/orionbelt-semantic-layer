@@ -4,7 +4,7 @@ sql: 'SELECT date_trunc(''year'', "Sales"."salesdate") AS "Sales Year", date_tru
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
-  GROUP BY date_trunc(''year'', "Sales"."salesdate"), date_trunc(''month'', "Sales"."salesdate")
+  GROUP BY ALL
 
   '
 rows:

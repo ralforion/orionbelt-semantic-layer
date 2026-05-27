@@ -46,6 +46,13 @@ class SnowflakeDialect(Dialect):
             supports_time_travel=True,
             supports_semi_structured=True,
             supports_union_all_by_name=True,
+            supports_group_by_all=True,
+            # ``aggregation: measure`` requires Databricks Metric Views.
+            # Snowflake Semantic Views use the ``SEMANTIC_VIEW(view DIMENSIONS
+            # ... METRICS ...)`` table function instead; bare ``MEASURE()`` is
+            # only valid inside that table function's projection. Publishing
+            # OBML as a Snowflake Semantic View is a separate feature.
+            unsupported_aggregations=["measure"],
         )
 
     def quote_identifier(self, name: str) -> str:

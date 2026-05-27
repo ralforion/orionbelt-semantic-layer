@@ -56,6 +56,12 @@ jobs:
         # fine, the published versions track stable releases.
         run: |
           uv sync --all-extras --all-groups
+          # uv-managed venvs do not include pip by default. The Colab
+          # notebook's install cell falls back to ``sys.executable -m
+          # pip install`` if any required module is missing — install
+          # pip here so that fallback path runs cleanly on CI instead
+          # of dying with ``No module named pip`` (issue #94).
+          uv pip install pip
           uv pip install nbclient nbformat ipykernel \
                          ob-driver-core ob-duckdb ob-flight-extension \
                          duckdb pyarrow pygments sqlparse

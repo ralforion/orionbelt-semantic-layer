@@ -190,6 +190,49 @@ def test_colab_install_cell_is_idempotent() -> None:
     )
 
 
+def test_colab_required_map_uses_correct_import_names() -> None:
+    """The Colab install cell's ``_REQUIRED`` map keys must be IMPORT
+    names (what ``importlib.util.find_spec`` resolves), not distribution
+    names. ``ob-flight-extension`` ships its module as ``ob_flight``
+    (not ``ob_flight_extension``); getting this wrong made the
+    idempotent check always say "missing" on CI, forcing the pip
+    fallback path that fails inside uv-managed venvs. See #94.
+    """
+    path = _ROOT / "examples" / "quickstart_colab.ipynb"
+    if not path.exists():
+        pytest.skip(f"{path} not present")
+    text = _file_text(path)
+    assert '"ob_flight":' in text, (
+        "_REQUIRED map must use ``ob_flight`` (the actual module name "
+        "shipped by ob-flight-extension), not ``ob_flight_extension`` "
+        "(the distribution name). See #94."
+    )
+    assert '"ob_flight_extension":' not in text, (
+        "_REQUIRED map still maps the distribution name "
+        "``ob_flight_extension`` as an import key — the module name is "
+        "``ob_flight``. See #94."
+    )
+
+
+def test_notebook_workflow_installs_pip_into_uv_venv() -> None:
+    """The notebook workflow must ``uv pip install pip`` after
+    ``uv sync`` so the notebook's ``sys.executable -m pip install``
+    fallback path works inside the uv-managed venv (which omits pip
+    by default). Without this, any cell hitting the install branch
+    dies with ``No module named pip`` and cascades into NameErrors.
+    See #94.
+    """
+    path = _ROOT / ".github" / "workflows" / "notebook.yml"
+    if not path.exists():
+        pytest.skip(f"{path} not present")
+    text = path.read_text(encoding="utf-8")
+    assert "uv pip install pip" in text, (
+        "notebook.yml must install pip into the uv venv "
+        "(``uv pip install pip``) so the notebook's pip fallback works. "
+        "See #94."
+    )
+
+
 def test_notebook_setup_uses_model_files_env() -> None:
     """``start_api`` must set ``MODEL_FILES`` (not the removed
     ``MODEL_FILE``) so the API enters admin-curated mode and shortcut

@@ -8,7 +8,7 @@ sql: 'SELECT "Countries"."countryname" AS "Sales Country Name", CAST(SUM("Sales"
 
   LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid" = "Countries"."countryid"
 
-  GROUP BY "Countries"."countryname"
+  GROUP BY ALL
 
   '
 rows:

@@ -42,6 +42,7 @@ from orionbelt.models.query import (
     UsePathName,
 )
 from orionbelt.models.semantic import (
+    AggregationType,
     CumulativeAggType,
     DataObject,
     DataObjectColumn,
@@ -795,6 +796,15 @@ class QueryResolver:
 
     def _build_measure_expr(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
         """Build the aggregate expression for a measure."""
+        # Engine-delegated aggregation (Databricks Metric View). Emit
+        # ``MEASURE("<label>")`` literally — there's no source column
+        # to read; the engine resolves the aggregation by name. Dialect
+        # support is enforced downstream by ``_check_aggregation_supported``.
+        if measure.aggregation == AggregationType.MEASURE:
+            return FunctionCall(
+                name="MEASURE",
+                args=[ColumnRef(name=measure.label, table=None)],
+            )
         if measure.expression:
             return self._expand_expression(ctx, measure)
 

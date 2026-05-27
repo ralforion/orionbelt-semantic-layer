@@ -12,4 +12,4 @@ LEFT JOIN "orionbelt_1"."countries" AS "Countries" ON "Clients"."clientcountryid
 )
 SELECT "Sales Country Name" AS "Sales Country Name", CAST(round(SUM("composite_01"."Total Sales"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", CAST(round(SUM("composite_01"."Total Returns"), 2) AS Nullable(Decimal(18, 2))) AS "Total Returns"
 FROM "composite_01" AS "composite_01"
-GROUP BY "Sales Country Name"
+GROUP BY ALL

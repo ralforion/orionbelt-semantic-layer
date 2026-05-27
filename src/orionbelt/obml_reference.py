@@ -137,6 +137,15 @@ any_value, median, mode, listagg
 Statistical (v2.6+): stddev, stddev_pop, variance, var_pop,
 corr, covar_pop, covar_samp, regr_slope, regr_intercept
 
+Vendor delegation (v2.7.7+): measure (aliases: agg, aggregate). Emits
+`MEASURE("<measure_label>")` and lets the engine resolve the aggregation
+via its metric-view machinery. Only Databricks Metric Views accept this;
+every other dialect raises `UNSUPPORTED_AGGREGATION_FOR_DIALECT`. A
+measure with `aggregation: measure` must NOT specify `columns:`,
+`expression:`, `filters:`, or `total: true` — the engine owns
+resolution. Snowflake Semantic Views use a separate `SEMANTIC_VIEW(...)`
+construct and are out of scope.
+
 Single-column statistical aggregates (stddev, stddev_pop, variance, var_pop)
 require exactly one column. Two-column aggregates (corr, covar_pop,
 covar_samp, regr_slope, regr_intercept) require exactly two columns:
@@ -159,6 +168,7 @@ Dialect coverage:
 | stddev, stddev_pop, variance, var_pop | yes | yes | yes | yes | yes | yes | yes | yes |
 | corr, covar_pop, covar_samp | yes | yes | yes | yes | yes | yes | no | yes |
 | regr_slope, regr_intercept | yes | yes | no | yes | yes | no | no | yes |
+| measure (Databricks Metric View) | no | no | no | yes | no | no | no | no |
 
 Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at
 compile time — express via a derived metric (e.g.

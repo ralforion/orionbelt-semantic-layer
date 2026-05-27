@@ -622,6 +622,26 @@ class OSItoOBML:
                 metrics[name] = window_metric
                 continue
 
+            # Engine-delegated aggregation (Databricks Metric View). Round-trip
+            # marker comes from the OBML → OSI direction; on input we restore
+            # ``aggregation: measure`` without touching the OSI expression
+            # (which is a literal ``MEASURE("<label>")`` with no source column
+            # to parse).
+            if obml_extras.get("obml_aggregation") == "measure":
+                delegated: dict[str, Any] = {"aggregation": "measure"}
+                if osi_description:
+                    delegated["description"] = osi_description
+                if osi_synonyms:
+                    delegated["synonyms"] = osi_synonyms
+                self._apply_obml_measure_extras(delegated, obml_extras)
+                # ``measure`` aggregation forbids columns / expression /
+                # filters / total at the model level, so strip anything
+                # the extras decoder may have copied across.
+                for forbidden in ("filters", "total", "expression"):
+                    delegated.pop(forbidden, None)
+                measures[name] = delegated
+                continue
+
             expr_text = self._get_ansi_expression(m.get("expression", {}))
             if not expr_text:
                 self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
@@ -1489,6 +1509,36 @@ class OBMLtoOSI:
         ai_synonyms = [name] + [s for s in obml_synonyms if s != name]
         ai_ctx: dict[str, Any] = {"synonyms": ai_synonyms} if ai_synonyms else {}
 
+        # ``aggregation: measure`` delegates resolution to the engine
+        # (Databricks Metric View) — there is no source column to read
+        # and no ANSI_SQL expression to emit. OSI has no first-class
+        # concept for engine-delegated aggregation, so we serialize the
+        # measure as an OSI metric whose expression is the literal
+        # ``MEASURE("<label>")`` call and merge the OBML signal into
+        # the standard extras-blob so the reverse direction restores
+        # ``aggregation: measure`` in a single round-trip.
+        if agg == "MEASURE":
+            expr = f'MEASURE("{name}")'
+            measure_metric: dict[str, Any] = {
+                "name": name,
+                "expression": {
+                    "dialects": [
+                        {
+                            "dialect": "ANSI_SQL",
+                            "expression": expr,
+                        }
+                    ]
+                },
+                "description": measure.get("description", name),
+            }
+            if ai_ctx:
+                measure_metric["ai_context"] = ai_ctx
+            self._record_vendor("DATABRICKS")
+            self._add_obml_measure_extras(
+                measure_metric, {**measure, "_extra_obml_aggregation": "measure"}
+            )
+            return measure_metric
+
         if not columns:
             obml_expr = measure.get("expression", "")
             if obml_expr:
@@ -1575,6 +1625,11 @@ class OBMLtoOSI:
             extras["obml_grain"] = measure["grain"]
         if measure.get("filterContext"):
             extras["obml_filter_context"] = measure["filterContext"]
+        # Internal pass-through marker for callers that need to inject an
+        # extra obml_* key without growing the parameter surface (e.g.
+        # ``aggregation: measure`` round-trips ``obml_aggregation``).
+        if measure.get("_extra_obml_aggregation"):
+            extras["obml_aggregation"] = measure["_extra_obml_aggregation"]
         if extras:
             exts = result.setdefault("custom_extensions", [])
             exts.append(

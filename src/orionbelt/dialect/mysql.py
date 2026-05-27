@@ -147,6 +147,8 @@ class MySQLDialect(Dialect):
                 "covar_samp",
                 "regr_slope",
                 "regr_intercept",
+                # ``measure`` is Databricks Metric View specific.
+                "measure",
             ],
         )
 

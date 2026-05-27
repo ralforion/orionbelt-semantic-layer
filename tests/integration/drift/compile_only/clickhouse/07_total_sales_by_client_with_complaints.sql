@@ -9,5 +9,5 @@ LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Client Complaints"."complclie
 )
 SELECT COALESCE("Sales Client Name", "Complaint Client Name") AS "Client", CAST(round(SUM("composite_01"."Total Sales"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS Nullable(Int64)) AS "Complaint Count"
 FROM "composite_01" AS "composite_01"
-GROUP BY COALESCE("Sales Client Name", "Complaint Client Name")
+GROUP BY ALL
 HAVING CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS Nullable(Int64)) > 0

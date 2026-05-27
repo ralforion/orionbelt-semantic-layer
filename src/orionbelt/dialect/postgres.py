@@ -49,6 +49,8 @@ class PostgresDialect(Dialect):
             supports_arrays=True,
             supports_window_filters=False,
             supports_ilike=True,
+            # ``aggregation: measure`` is Databricks Metric View specific.
+            unsupported_aggregations=["measure"],
         )
 
     def quote_identifier(self, name: str) -> str:

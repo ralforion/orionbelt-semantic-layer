@@ -22,7 +22,7 @@ sql: 'WITH "composite_01" AS (
 
   FROM "composite_01" AS "composite_01"
 
-  GROUP BY COALESCE("Sales Client Name", "Complaint Client Name")
+  GROUP BY ALL
 
   HAVING CAST(COUNT(DISTINCT "composite_01"."Complaint Count") AS BIGINT) > 0
 

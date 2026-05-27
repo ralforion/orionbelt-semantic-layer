@@ -373,6 +373,7 @@ class TestMySQLDialect:
             "covar_samp",
             "regr_slope",
             "regr_intercept",
+            "measure",
         ]
 
     def test_quote_identifier(self, dialect: MySQLDialect) -> None:

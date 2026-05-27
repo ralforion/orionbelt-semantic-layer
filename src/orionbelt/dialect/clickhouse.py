@@ -73,11 +73,13 @@ class ClickHouseDialect(Dialect):
             supports_arrays=True,
             supports_window_filters=False,
             supports_ilike=True,
+            supports_group_by_all=True,
             # ClickHouse offers ``simpleLinearRegression(x, y)`` returning a
             # ``(k, b)`` tuple. Composing transparent ``REGR_SLOPE`` /
             # ``REGR_INTERCEPT`` would mean silently tuple-indexing — better
             # to reject and let the user opt in via a DERIVED metric.
-            unsupported_aggregations=["regr_slope", "regr_intercept"],
+            # ``measure`` is Databricks Metric View specific.
+            unsupported_aggregations=["regr_slope", "regr_intercept", "measure"],
         )
 
     def quote_identifier(self, name: str) -> str:
@@ -91,13 +93,18 @@ class ClickHouseDialect(Dialect):
         return column
 
     def compile_group_by(self, group_by: list[Expr], grouping: str | None) -> str:
-        """ClickHouse uses trailing-modifier form, not ROLLUP()/CUBE() functions."""
-        groups = ", ".join(self.compile_expr(g) for g in group_by)
+        """ClickHouse uses trailing-modifier form for ROLLUP / CUBE, not the
+        ANSI ``GROUP BY ROLLUP(...)`` function form. Plain ``GROUP BY``
+        (no modifier) delegates to the base implementation so the
+        ``GROUP BY ALL`` capability flag applies uniformly.
+        """
         if grouping == "rollup":
+            groups = ", ".join(self.compile_expr(g) for g in group_by)
             return f"GROUP BY {groups} WITH ROLLUP"
         if grouping == "cube":
+            groups = ", ".join(self.compile_expr(g) for g in group_by)
             return f"GROUP BY {groups} WITH CUBE"
-        return f"GROUP BY {groups}"
+        return super().compile_group_by(group_by, grouping)
 
     def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
         """Widen operands for raw-SQL decimal division — same fix as the
