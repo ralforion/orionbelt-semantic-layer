@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.7.8] - 2026-05-27
+
+### Fixed
+
+- **Colab quickstart crashed on PyPI: `start_flight_background() got an unexpected keyword argument 'cache'`** ([#96](https://github.com/ralfbecher/orionbelt-semantic-layer/issues/96)). Contract drift between OBSL and ob-flight-extension: OBSL has called `start_flight_background(cache=..., cache_config=...)` since v2.4.0, but the published PyPI release of ob-flight-extension is stuck at 2.1.0 (the local source in `drivers/ob-flight-extension/` bumped to 2.6.1 with the kwargs but was never republished). CI passed because the notebook workflow built the local 2.6.1 path; Colab failed because `pip install ob-flight-extension` resolves PyPI 2.1.0. The bug had shipped since v2.4.0 but was masked by separate notebook install-cell bugs until v2.7.7 fixed both (#87 / #94) and surfaced the underlying kwarg mismatch. Two-part fix: (1) drop `ob-flight-extension` from the Colab notebook's `_REQUIRED` map - the quickstart only queries via REST, never Flight SQL - so Colab never installs it and `find_spec("ob_flight")` returns False, correctly skipping Flight startup; (2) catch `TypeError` (in addition to `ImportError`) around `start_flight_background` in `src/orionbelt/api/app.py` so any future kwarg drift logs a clear warning naming both versions and continues serving REST + pgwire instead of crashing the whole lifespan. Verified end-to-end by executing the published Colab notebook in a fresh venv that mimics the Colab environment (OBSL local wheel, no ob-flight-extension, PyPI ob-driver-core / ob-duckdb / duckdb / pyarrow): API starts cleanly, all dataframe-returning cells run. 3 new tests: 2 static contract guards in `test_notebook_contracts.py` (no `ob_flight` in `_REQUIRED`, `except TypeError` present in lifespan); 1 runtime regression test in `test_lifespan_flight_signature_drift.py` that monkey-patches the old PyPI signature and asserts the lifespan logs a warning instead of crashing.
+
+### Out of scope
+
+- Publish ob-flight-extension 2.6.1 to PyPI so downstream Flight SQL installs work again. Separate release process; tracked as follow-up.
+
 ## [2.7.7] - 2026-05-27
 
 ### Added

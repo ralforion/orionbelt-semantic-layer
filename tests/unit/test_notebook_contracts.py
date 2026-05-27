@@ -190,27 +190,57 @@ def test_colab_install_cell_is_idempotent() -> None:
     )
 
 
-def test_colab_required_map_uses_correct_import_names() -> None:
-    """The Colab install cell's ``_REQUIRED`` map keys must be IMPORT
-    names (what ``importlib.util.find_spec`` resolves), not distribution
-    names. ``ob-flight-extension`` ships its module as ``ob_flight``
-    (not ``ob_flight_extension``); getting this wrong made the
-    idempotent check always say "missing" on CI, forcing the pip
-    fallback path that fails inside uv-managed venvs. See #94.
+def test_colab_required_map_excludes_ob_flight() -> None:
+    """The Colab install cell's ``_REQUIRED`` map must NOT include
+    ob-flight-extension. The Colab quickstart only queries via the REST
+    API; it never opens a Flight SQL connection. Including it forces
+    every Colab run to ``pip install ob-flight-extension``, which has
+    historically pulled a PyPI version that lags behind OBSL's call
+    site and crashes the API lifespan with a kwarg-mismatch TypeError
+    (issue #96 in v2.7.7 - PyPI 2.1.0 lacks the ``cache=`` kwarg
+    OBSL has passed since v2.4.0). With ob-flight-extension absent the
+    lifespan's ``find_spec("ob_flight")`` check returns False and
+    Flight startup is correctly skipped.
+
+    The earlier import-name fix from #94 (``ob_flight`` not
+    ``ob_flight_extension``) still applies to any other notebook or
+    integration that does need Flight SQL - it's just out of scope for
+    the published Colab quickstart.
     """
     path = _ROOT / "examples" / "quickstart_colab.ipynb"
     if not path.exists():
         pytest.skip(f"{path} not present")
     text = _file_text(path)
-    assert '"ob_flight":' in text, (
-        "_REQUIRED map must use ``ob_flight`` (the actual module name "
-        "shipped by ob-flight-extension), not ``ob_flight_extension`` "
-        "(the distribution name). See #94."
+    assert '"ob_flight":' not in text, (
+        "_REQUIRED map must not pin ob-flight-extension - the Colab "
+        "quickstart doesn't use Flight SQL and the PyPI version has "
+        "lagged OBSL's API. See #96."
     )
     assert '"ob_flight_extension":' not in text, (
-        "_REQUIRED map still maps the distribution name "
-        "``ob_flight_extension`` as an import key — the module name is "
-        "``ob_flight``. See #94."
+        "_REQUIRED map must not pin ob-flight-extension under any spelling. See #96."
+    )
+    assert "ob-flight-extension" not in text or "intentionally NOT" in text, (
+        "Any reference to ob-flight-extension in the notebook must be "
+        "a comment explaining why it is intentionally excluded. See #96."
+    )
+
+
+def test_lifespan_catches_flight_signature_drift() -> None:
+    """The API lifespan must catch ``TypeError`` (not just ``ImportError``)
+    around ``start_flight_background`` so a stale ob-flight-extension
+    version logs a warning and lets the API keep running, instead of
+    crashing the whole startup. See #96.
+    """
+    app_py = _ROOT / "src" / "orionbelt" / "api" / "app.py"
+    if not app_py.exists():
+        pytest.skip(f"{app_py} not present")
+    src = app_py.read_text(encoding="utf-8")
+    # Locate the lifespan's Flight startup try-block.
+    assert "start_flight_background(" in src, "Flight startup call site missing"
+    assert "except TypeError" in src, (
+        "Lifespan must catch TypeError around start_flight_background to "
+        "survive ob-flight-extension signature drift (issue #96). "
+        "Without it, a kwarg mismatch crashes the whole API lifespan."
     )
 
 
