@@ -384,6 +384,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 "FLIGHT_ENABLED=true but ob-flight-extension is not installed. "
                 "Install with: uv sync --extra flight"
             )
+        except TypeError as e:
+            # Signature drift between OBSL and the installed
+            # ob-flight-extension. The published PyPI release has
+            # historically lagged behind the kwargs OBSL passes
+            # (issue #96: PyPI ob-flight-extension 2.1.0 lacks the
+            # ``cache=`` kwarg that OBSL has been passing since v2.4.0).
+            # Catch the kwarg-mismatch TypeError, log both versions so
+            # the user knows what to upgrade, and continue without
+            # Flight SQL rather than crashing the whole API lifespan.
+            try:
+                import ob_flight as _ob_flight
+
+                installed_version = getattr(_ob_flight, "__version__", "unknown")
+            except Exception:
+                installed_version = "unknown"
+            logger.warning(
+                "Flight SQL startup skipped: ob-flight-extension "
+                "(installed: %s) does not accept the kwargs this OBSL "
+                "version passes (%s). REST and pgwire continue to work. "
+                "Upgrade ob-flight-extension to a version that matches "
+                "this OBSL release, or unset FLIGHT_ENABLED to silence "
+                "this warning.",
+                installed_version,
+                e,
+            )
 
     # Start Postgres wire surface if PGWIRE_ENABLED=true. The startup
     # helper builds a SemanticRouter bound to the live SessionManager,
