@@ -89,6 +89,7 @@ docs = [
     "mkdocs-material>=9.7",
     "mkdocs-autorefs>=1.4",
     "mkdocstrings[python]>=1.0",
+    "mkdocs-git-revision-date-localized-plugin>=1.2",
 ]
 ui = [
     "gradio>=5.0,<6.0",
@@ -190,6 +191,7 @@ dev = [
     "mkdocs-material>=9.7",
     "mkdocs-autorefs>=1.4",
     "mkdocstrings[python]>=1.0",
+    "mkdocs-git-revision-date-localized-plugin>=1.2",
     "gradio>=5.0,<6.0",
     "pyarrow>=16.0,<20.0",
     "ob-flight-extension>=0.1",

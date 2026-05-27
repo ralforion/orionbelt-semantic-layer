@@ -77,6 +77,10 @@ theme:
 plugins:
   - search
   - autorefs
+  - git-revision-date-localized:
+      type: iso_date
+      enable_creation_date: true
+      fallback_to_build_date: true
   - mkdocstrings:
       handlers:
         python:
