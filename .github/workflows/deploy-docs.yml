@@ -1,0 +1,62 @@
+name: Deploy docs
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-docs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout orionbelt-semantic-layer
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install docs dependencies
+        run: uv sync --extra docs
+
+      - name: Build MkDocs site
+        run: uv run mkdocs build --strict
+
+      - name: Checkout ralfbecher.github.io
+        uses: actions/checkout@v4
+        with:
+          repository: ralfbecher/ralfbecher.github.io
+          token: ${{ secrets.GH_PAGES_DEPLOY_TOKEN }}
+          path: github-io
+
+      - name: Sync built site into github.io
+        run: |
+          rm -rf github-io/public/orionbelt-semantic-layer
+          mv site github-io/public/orionbelt-semantic-layer
+
+      - name: Commit and push
+        working-directory: github-io
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/orionbelt-semantic-layer
+          if git diff --staged --quiet; then
+            echo "No docs changes to deploy"
+            exit 0
+          fi
+          REF="${{ github.event.release.tag_name || github.sha }}"
+          git commit -m "Deploy OrionBelt docs from ${REF}"
+          git push
