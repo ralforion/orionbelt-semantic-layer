@@ -236,7 +236,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | Interactive ontology-graph playground | ✅ Gradio | ❌ |
 | OSI interoperability | ✅ converter shipped | ✅ founding contributor |
 | MCP server (LLM/agent) | ✅ first-party | Limited |
-| Built-in caching | ✅ freshness-driven file cache (TTL derived from per-`dataObject` `refresh:` contracts; ETL heartbeat invalidation) | ✅ result cache + autonomous aggregates (warehouse-side) |
+| Built-in caching | ✅ file cache based on freshness inheritance (TTL derived from per-`dataObject` `refresh:` contracts; ETL heartbeat invalidation) | ✅ result cache + autonomous aggregates (warehouse-side) |
 | Visual model designer | ❌ | ✅ Design Center (polished) |
 | Open source / self-host without license | ✅ | ❌ |
 

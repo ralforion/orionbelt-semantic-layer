@@ -127,7 +127,7 @@ Both projects have caching, but they're solving adjacent problems with different
 
 **Cube** has a tiered caching architecture aimed at high-throughput dashboard serving: in-memory query cache, optional Redis, and **Cube Store** (its purpose-built rollup store backing pre-aggregations). TTL is configured on each cube/measure as a refresh-key SQL or interval — the model author decides when entries are stale, and Cube's scheduler refreshes pre-aggs in the background. This is built for embedded-analytics workloads serving thousands of requests per second.
 
-**OBSL** has a **freshness-driven result cache** (`CACHE_BACKEND=file`, off by default). The structural difference is where the freshness contract lives:
+**OBSL** has a **result cache based on freshness inheritance** (`CACHE_BACKEND=file`, off by default). The structural difference is where the freshness contract lives:
 
 - **Cube**: TTL is attached to the *abstraction* (cube / pre-agg / measure). Two cubes reading the same physical table each declare their own TTL — and they can drift.
 - **OBSL**: TTL is derived from the `refresh:` contract on each touched physical `dataObject`. The minimum contribution wins. Two `dataObject` entries on the same warehouse table inherit the same contract automatically. One ETL `POST /v1/heartbeat` invalidates every cached query that depends on the refreshed table — across every dataObject and every session, in one call.
@@ -253,7 +253,7 @@ Both projects ship a free OSS core and offer commercial extensions, but the spli
 | Operational footprint | Light: one process, in-memory sessions, optional file-backed result cache (DuckDB metadata + Parquet) on local disk | Heavier: API server + Cube Store + Redis (optional) + scheduler + refresh workers in production |
 | Self-host parity | OSS has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | Many advanced features (Studio, advanced workspaces, AI features) are Cube Cloud-only |
 
-For a small embedded-analytics use case OBSL is operationally simpler. For high-throughput multi-tenant production with heavy caching across replicas, Cube's architecture is purpose-built and Cube Cloud provides the managed experience. OBSL's freshness-driven file cache (v2.2.0) covers single-replica result-caching workloads — agents, dev/staging, modest production — without standing up Redis or a rollup store.
+For a small embedded-analytics use case OBSL is operationally simpler. For high-throughput multi-tenant production with heavy caching across replicas, Cube's architecture is purpose-built and Cube Cloud provides the managed experience. OBSL's file cache based on freshness inheritance (v2.2.0) covers single-replica result-caching workloads — agents, dev/staging, modest production — without standing up Redis or a rollup store.
 
 ---
 
@@ -308,7 +308,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 
 ### They could coexist
 
-A workable hybrid: use Cube as the production query gateway with pre-aggregations and a SQL API for BI tools, and OBSL as a complementary modeling/governance surface (RDF graph, OSI export, richer topology modeling, freshness-driven result cache for agent workloads) that you can keep authoritative and mirror into Cube definitions. Two semantic surfaces is operationally heavier, but it's defensible if you need both Cube's pre-aggs and OBSL's modeling primitives.
+A workable hybrid: use Cube as the production query gateway with pre-aggregations and a SQL API for BI tools, and OBSL as a complementary modeling/governance surface (RDF graph, OSI export, richer topology modeling, result cache based on freshness inheritance for agent workloads) that you can keep authoritative and mirror into Cube definitions. Two semantic surfaces is operationally heavier, but it's defensible if you need both Cube's pre-aggs and OBSL's modeling primitives.
 
 ---
 

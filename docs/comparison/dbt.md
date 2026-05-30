@@ -254,7 +254,7 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 | Feature | OBSL | dbt SL |
 |---|---|---|
 | Sessions / multi-tenant runtime | TTL, max-age, rate limits, 410/429 | Cloud-managed |
-| Caching | Freshness-driven result cache (file backend, off by default): TTL derived from per-`dataObject` `refresh:` contract; ETL `POST /v1/heartbeat` invalidates dependent entries by physical table | dbt Cloud query cache |
+| Caching | Result cache based on freshness inheritance (file backend, off by default): TTL derived from per-`dataObject` `refresh:` contract; ETL `POST /v1/heartbeat` invalidates dependent entries by physical table | dbt Cloud query cache |
 | Versioned governance, lineage to upstream models | No (model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
 | Filter ergonomics | `MeasureFilter`, `FilterContext`, `GrainOverride`, query-level `where`/`having` | Per-metric `filter:`, `metric_time` |
 | Vendor-agnostic | Yes — pure OSS | Practical lock-in: production query APIs require dbt Cloud |

@@ -38,7 +38,7 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Notebook authoring (VS Code / Colab) | ✅ `quickstart.ipynb` runs natively in VS Code or Colab | Via dbt-cli in any notebook | Notebook tutorials | ❌ | ❌ | ❌ |
 | Built-in BI dashboards | ❌ | ❌ | VS Code | ✅ Looker | ❌ | Via MDX in Tableau/Excel |
 | Pre-aggregations / materialization | ❌ | Via dbt models | ❌ | ✅ (PDTs) | ✅ flagship | ✅ autonomous |
-| Result cache | ✅ freshness-driven file cache (TTL from `dataObject.refresh`; ETL heartbeat invalidation) | dbt Cloud query cache | ❌ | Looker query cache (`persist_for`) + aggregate awareness | Tiered (in-memory + optional Redis + Cube Store) with refresh-key TTL | Built-in cache + autonomous aggregates |
+| Result cache | ✅ file cache based on freshness inheritance (TTL from `dataObject.refresh`; ETL heartbeat invalidation) | dbt Cloud query cache | ❌ | Looker query cache (`persist_for`) + aggregate awareness | Tiered (in-memory + optional Redis + Cube Store) with refresh-key TTL | Built-in cache + autonomous aggregates |
 | Row-level security in model | ❌ | Via dbt | ❌ | ✅ | ✅ (`query_rewrite`) | ✅ enterprise |
 | Multi-tenancy primitives | Sessions only | Cloud-managed | ❌ | ❌ | ✅ first-class | ✅ enterprise |
 | OSI interoperability | ✅ converter | ❌ | ❌ | ❌ | ❌ | ✅ founding contributor |

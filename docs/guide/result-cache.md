@@ -1,11 +1,11 @@
-# Freshness-driven result cache
+# Result cache based on freshness inheritance
 
-OrionBelt's result cache is **freshness-driven**: instead of asking callers to pick a TTL, the cache derives one from the refresh contracts of the **physical source tables** a query touched. A heartbeat from the warehouse invalidates every cached query that depends on that table, regardless of how many semantic facets the model split it into.
+OrionBelt's result cache is **based on freshness inheritance**: instead of asking callers to pick a TTL, the cache derives one from the refresh contracts of the **physical source tables** a query touched. A heartbeat from the warehouse invalidates every cached query that depends on that table, regardless of how many semantic facets the model split it into.
 
 This page explains how it works and how to enable it. For the underlying design, see `design/PLAN_freshness_driven_cache.md`.
 
 !!! note "Not 'semantic caching'"
-    The phrase "semantic cache" in AI/LLM contexts means embedding-based similarity matching of natural-language queries — a completely unrelated concept. OBSL uses **freshness-driven cache** or **source-aware result cache**.
+    The phrase "semantic cache" in AI/LLM contexts means embedding-based similarity matching of natural-language queries — a completely unrelated concept. OBSL uses a **cache based on freshness inheritance** or **source-aware result cache**.
 
 ## Why source-level
 
