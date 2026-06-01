@@ -9,6 +9,7 @@ scraping Swagger UI.
 from __future__ import annotations
 
 import json
+from importlib.resources import files as resource_files
 from pathlib import Path
 from typing import Any
 
@@ -107,28 +108,43 @@ async def get_obsql_reference() -> ReferenceResponse:
 # ---------------------------------------------------------------------------
 
 
-# Path to the ``schema/`` directory at the repo root. The schema files
-# ship in the source distribution; locate them relative to this module
-# so the lookup works whether OBSL runs from the repo, an installed
-# wheel, or inside a Docker image.
-#
-# Module path: src/orionbelt/api/routers/reference.py
-# parents[0..4]: routers / api / orionbelt / src / repo_root
-_SCHEMA_DIR = (Path(__file__).resolve().parents[4] / "schema").resolve()
-
-
 _SCHEMA_FILES: dict[str, str] = {
     "obml": "obml-schema.json",
     "query": "query-schema.json",
 }
 
 
-def _load_schema(name: str) -> dict[str, Any]:
-    """Read a JSON Schema file from the ``schema/`` directory.
+def _read_schema_text(filename: str) -> str | None:
+    """Return the contents of a JSON Schema file, or ``None`` if not found.
 
-    Cached at module load would be ideal for production, but the files
-    are tiny (KB-sized) and loaded per request keeps reload semantics
-    clean for tests. Raises HTTPException 404 for unknown names.
+    The schema files are shipped inside the wheel as package data under
+    ``orionbelt/schema/`` (see ``force-include`` in ``pyproject.toml``), so
+    they resolve via :mod:`importlib.resources` for PyPI and Docker installs.
+    Editable / source checkouts have no packaged copy, so fall back to the
+    repo-root ``schema/`` directory.
+
+    Module path: src/orionbelt/api/routers/reference.py
+    parents[0..4]: routers / api / orionbelt / src / repo_root
+    """
+    try:
+        resource = resource_files("orionbelt") / "schema" / filename
+        if resource.is_file():
+            return resource.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError):
+        pass
+
+    src_path = Path(__file__).resolve().parents[4] / "schema" / filename
+    if src_path.is_file():
+        return src_path.read_text(encoding="utf-8")
+    return None
+
+
+def _load_schema(name: str) -> dict[str, Any]:
+    """Read a JSON Schema file by reference name.
+
+    The files are tiny (KB-sized); reading per request keeps reload
+    semantics clean for tests. Raises HTTPException 404 for unknown names
+    and 500 when the file is absent from the deployment.
     """
     filename = _SCHEMA_FILES.get(name)
     if filename is None:
@@ -136,15 +152,14 @@ def _load_schema(name: str) -> dict[str, Any]:
             status_code=404,
             detail=(f"Unknown schema '{name}'. Available: {', '.join(sorted(_SCHEMA_FILES))}"),
         )
-    path = _SCHEMA_DIR / filename
-    if not path.exists():
+    text = _read_schema_text(filename)
+    if text is None:
         raise HTTPException(
             status_code=500,
             detail=f"Schema file '{filename}' is missing from this deployment.",
         )
-    with path.open(encoding="utf-8") as f:
-        loaded: dict[str, Any] = json.load(f)
-        return loaded
+    loaded: dict[str, Any] = json.loads(text)
+    return loaded
 
 
 @router.get("/schemas/{name}")

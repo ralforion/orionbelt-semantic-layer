@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.7.9"
+version = "2.7.10"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -124,6 +124,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orionbelt"]
+
+# Ship the JSON Schema files (repo-root ``schema/``) inside the wheel as
+# package data under ``orionbelt/schema/`` so the reference endpoints can
+# load them via importlib.resources regardless of install layout (editable,
+# PyPI wheel, or Docker non-editable install). The files stay at the repo
+# root as the single source of truth; hatch copies them at build time.
+[tool.hatch.build.targets.wheel.force-include]
+"schema" = "orionbelt/schema"
 
 [tool.ruff]
 target-version = "py312"

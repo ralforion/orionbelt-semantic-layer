@@ -13,7 +13,7 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
 [![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.7.9](https://img.shields.io/badge/version-2.7.9-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![Version 2.7.10](https://img.shields.io/badge/version-2.7.10-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -225,7 +225,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-api:2.7.9
+    image: ralforion/orionbelt-api:2.7.10
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -234,7 +234,7 @@ services:
       MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-ui:2.7.9
+    image: ralforion/orionbelt-ui:2.7.10
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -250,7 +250,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
-> - For production, pin a version tag (`:2.7.9`) rather than `:latest`.
+> - For production, pin a version tag (`:2.7.10`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 

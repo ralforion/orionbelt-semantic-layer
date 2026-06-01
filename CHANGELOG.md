@@ -2,6 +2,12 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.7.10] - 2026-06-01
+
+### Fixed
+
+- **`GET /v1/reference/schemas/obml` and `/v1/reference/schemas/query` returned `HTTP 500: Schema file '...' is missing from this deployment`** on every non-editable install (PyPI wheel and Docker / Cloud Run). The loader resolved the JSON Schema files via `Path(__file__).resolve().parents[4] / "schema"`, which only equals the repo root in a source / editable layout; in an installed wheel that path points into `site-packages` and the files were never shipped there (`packages = ["src/orionbelt"]` excluded the repo-root `schema/` directory). The test suite missed it because it runs editable, where the buggy assumption holds. The schema files are now shipped inside the wheel as package data under `orionbelt/schema/` (via hatch `force-include`) and loaded through `importlib.resources`, with a source-tree fallback for editable checkouts. Added a regression test that exercises the loader directly.
+
 ## [2.7.9] - 2026-05-27
 
 ### Fixed
