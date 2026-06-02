@@ -74,8 +74,20 @@ def generate_mermaid_er(
     # the parent container — the host #er-diagram has overflow:auto for
     # horizontal scroll, so wider-than-viewport diagrams scroll cleanly
     # instead of clipping edge labels.
+    #
+    # Pin an explicit, local-only fontFamily. Mermaid pre-measures each ER
+    # column (and edge label) width with the theme's fontFamily, but the
+    # browser paints the SVG text with whatever font the host page's CSS
+    # cascades in. When the two differ — or when a late-loading web font
+    # replaces the fallback used at measure time — every label is painted
+    # wider than its measured box and clips its last character ("string" →
+    # "strin"). Pinning a system font stack (no async web-font load) makes
+    # measure-time and paint-time use the identical font, eliminating the
+    # clip. The UI CSS forces the same family on the rendered text as a
+    # guard against the host cascade.
     init_cfg = (
         "{'theme': '" + theme + "', "
+        "'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}, "
         "'flowchart': {'useMaxWidth': false}, "
         "'er': {'useMaxWidth': false}}"
     )

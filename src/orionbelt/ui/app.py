@@ -370,6 +370,15 @@ _CSS = """\
    with its own font and clips at the measured width. Inflating the
    rendered font past the measured width was the cause of the per-row
    right-edge clipping. */
+/* Force the same font family Mermaid measures column widths with (pinned
+   in the diagram's %%{init}%% themeVariables.fontFamily) so the host page
+   CSS can't cascade a wider font onto the painted text and re-introduce
+   the per-cell right-edge clipping ("string" → "strin"). */
+#er-diagram svg text,
+#er-diagram svg .er .entityLabel,
+#er-diagram svg .er.relationshipLabel {
+  font-family: Helvetica, Arial, sans-serif !important;
+}
 /* ── Ontology Graph tab ── */
 #ob-ontology-graph-container {
   overflow: auto;

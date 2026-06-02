@@ -91,6 +91,14 @@ class TestGenerateMermaidER:
         result = generate_mermaid_er(model, theme="dark")
         assert "'theme': 'dark'" in result
 
+    def test_pins_fontfamily_to_prevent_label_clip(self) -> None:
+        # Mermaid measures ER column/edge-label widths with the theme
+        # fontFamily; if the painted font differs, every label clips its
+        # last character. Pin a local-only stack so measure == paint.
+        model = _sample_model()
+        result = generate_mermaid_er(model)
+        assert "'fontFamily': 'Helvetica, Arial, sans-serif'" in result
+
     def test_entities_present(self) -> None:
         model = _sample_model()
         result = generate_mermaid_er(model)

@@ -2,6 +2,20 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.8.0] - 2026-06-02
+
+### Added
+
+- **Session-scoped OSI model endpoints.** Two new endpoints bridge the model store with Open Semantic Interchange (OSI), distinct from the existing stateless `/v1/convert/*` transforms:
+  - `POST /v1/sessions/{id}/models/from-osi` accepts OSI YAML (`osi_yaml`), converts it to OBML, and loads the result into the session's model store. Returns the standard model summary plus `conversion_warnings` and the advisory OSI `input_validation`.
+  - `GET /v1/sessions/{id}/models/{mid}/osi` exports a loaded model from the store as OSI YAML, with optional `?model_name=`, `?model_description=`, and `?ai_instructions=` overrides.
+- **`ModelStore.get_raw()`**: public accessor for a model's raw OBML dict, preferring the faithful copy captured at load time and returning a deep copy so callers cannot mutate internal state.
+
+### Fixed
+
+- **OSI converter not packaged for non-editable wheel installs.** The converter (repo-root `osi-obml/`) was only discoverable via repo-root or `/app` paths, so a PyPI wheel or Docker install raised `ModuleNotFoundError` from the `/convert` and new OSI endpoints. The converter module and its OSI schema are now bundled into the wheel as package data under `orionbelt/_osi_obml/` (hatch `force-include`), and the lookup searches that location first. Verified on a clean wheel install.
+- **Mermaid ER diagram clipped every label by one character** (`string` to `strin`, `Supplier` to `Supplie`). Mermaid pre-measures ER column and edge-label widths with the theme `fontFamily`, but the browser painted text with a wider font the host CSS cascaded in. Pinned a local-only font stack (`Helvetica, Arial, sans-serif`) in the diagram's `%%{init}%%` `themeVariables.fontFamily` and forced the same family on the rendered ER text, so measure-time and paint-time use the identical font.
+
 ## [2.7.10] - 2026-06-01
 
 ### Fixed

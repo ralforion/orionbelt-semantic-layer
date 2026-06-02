@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Literal, cast
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from orionbelt.api.deps import (
@@ -24,8 +25,10 @@ from orionbelt.api.deps import (
     is_session_list_disabled,
     is_single_model_mode,
 )
+from orionbelt.api.osi_support import get_converter_module, parse_yaml, run_validation
 from orionbelt.api.schemas import (
     ColumnMetadata,
+    ConvertResponse,
     DatabaseExplain,
     DiagramResponse,
     ExplainCflLegResponse,
@@ -35,6 +38,8 @@ from orionbelt.api.schemas import (
     ModelLoadRequest,
     ModelLoadResponse,
     ModelSummaryResponse,
+    OSIModelLoadRequest,
+    OSIModelLoadResponse,
     QueryCompileResponse,
     QueryExecuteResponse,
     QueryPlanRequest,
@@ -75,7 +80,12 @@ from orionbelt.service.db_executor import (
     resolve_timezone,
 )
 from orionbelt.service.diagram import generate_mermaid_er
-from orionbelt.service.model_store import ModelCapacityError, ModelStore, ModelValidationError
+from orionbelt.service.model_store import (
+    LoadResult,
+    ModelCapacityError,
+    ModelStore,
+    ModelValidationError,
+)
 from orionbelt.service.session_manager import (
     SessionCapacityError,
     SessionExpiredError,
@@ -101,6 +111,48 @@ def _get_store(session_id: str, mgr: SessionManager) -> ModelStore:
         raise HTTPException(status_code=410, detail=f"Session '{session_id}' has expired") from None
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
+
+
+def _load_obml(store: ModelStore, yaml_str: str | None = None, **kwargs: Any) -> LoadResult:
+    """Load OBML into the store, mapping store errors to HTTP responses.
+
+    Shared by the plain OBML upload and the OSI-converted upload so both
+    surface capacity (429) and validation (422) failures identically.
+    """
+    try:
+        return store.load_model(yaml_str, **kwargs)
+    except ModelCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except ModelValidationError as exc:
+        error_lines = "; ".join(
+            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "") for e in exc.errors
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Invalid OBML model: {error_lines}",
+                "errors": [
+                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
+                ],
+                "warnings": [
+                    {"code": w.code, "message": w.message, "path": w.path} for w in exc.warnings
+                ],
+            },
+        ) from None
+
+
+def _model_load_fields(result: LoadResult) -> dict[str, Any]:
+    """Shared kwargs for (OSI)ModelLoadResponse from a store LoadResult."""
+    return {
+        "model_id": result.model_id,
+        "data_objects": result.data_objects,
+        "dimensions": result.dimensions,
+        "measures": result.measures,
+        "metrics": result.metrics,
+        "warnings": [error_info_to_warning(w) for w in result.warnings],
+        "model_load": result.model_load,
+        "health": health_summary_to_response(result.health),
+    }
 
 
 def _session_response(info: SessionInfo) -> SessionResponse:
@@ -211,41 +263,58 @@ async def load_model(
     if not body.model_yaml and not body.model_json:
         raise HTTPException(status_code=422, detail="Provide either model_yaml or model_json")
     store = _get_store(session_id, mgr)
+    result = _load_obml(
+        store,
+        body.model_yaml,
+        raw_dict=cast("dict[str, object] | None", body.model_json),
+        extends_yaml=body.extends,
+        inherits_model_id=body.inherits,
+        dedup=body.dedup,
+    )
+    return ModelLoadResponse(**_model_load_fields(result))
+
+
+@router.post(
+    "/{session_id}/models/from-osi",
+    response_model=OSIModelLoadResponse,
+    status_code=201,
+)
+async def load_model_from_osi(
+    session_id: str,
+    body: OSIModelLoadRequest,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> OSIModelLoadResponse:
+    """Convert an OSI model to OBML and load it into a session's model store.
+
+    Mirrors :func:`load_model` but accepts Open Semantic Interchange (OSI)
+    YAML, runs it through the OSI -> OBML converter, then loads the result.
+    The OSI input is schema-validated (advisory) and both the conversion
+    warnings and that validation are returned alongside the model summary.
+    """
+    if is_single_model_mode():
+        raise HTTPException(status_code=403, detail="Single-model mode: model upload is disabled")
+    store = _get_store(session_id, mgr)
+
+    data = parse_yaml(body.osi_yaml)
+    mod = get_converter_module()
+    input_validation = run_validation(mod.validate_osi, data)
     try:
-        result = store.load_model(
-            body.model_yaml,
-            raw_dict=cast("dict[str, object] | None", body.model_json),
-            extends_yaml=body.extends,
-            inherits_model_id=body.inherits,
-            dedup=body.dedup,
-        )
-    except ModelCapacityError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from None
-    except ModelValidationError as exc:
-        error_lines = "; ".join(
-            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "") for e in exc.errors
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": f"Invalid OBML model: {error_lines}",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-                "warnings": [
-                    {"code": w.code, "message": w.message, "path": w.path} for w in exc.warnings
-                ],
-            },
-        ) from None
-    return ModelLoadResponse(
-        model_id=result.model_id,
-        data_objects=result.data_objects,
-        dimensions=result.dimensions,
-        measures=result.measures,
-        metrics=result.metrics,
-        warnings=[error_info_to_warning(w) for w in result.warnings],
-        model_load=result.model_load,
-        health=health_summary_to_response(result.health),
+        converter = mod.OSItoOBML(data)
+        obml_dict = converter.convert()
+        conversion_warnings = list(converter.warnings)
+    except Exception as exc:
+        logger.exception("OSI → OBML conversion failed")
+        raise HTTPException(status_code=422, detail=f"OSI → OBML conversion failed: {exc}") from exc
+
+    obml_yaml = yaml.dump(
+        obml_dict, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
+    )
+    result = _load_obml(store, obml_yaml, dedup=body.dedup)
+
+    return OSIModelLoadResponse(
+        **_model_load_fields(result),
+        conversion_warnings=conversion_warnings,
+        input_validation=input_validation,
     )
 
 
@@ -302,6 +371,53 @@ async def model_diagram_er(
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
     mermaid = generate_mermaid_er(model, show_columns=show_columns, theme=theme)
     return DiagramResponse(mermaid=mermaid)
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/osi",
+    response_model=ConvertResponse,
+)
+async def export_model_to_osi(
+    session_id: str,
+    model_id: str,
+    model_name: str = "semantic_model",
+    model_description: str = "",
+    ai_instructions: str = "",
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ConvertResponse:
+    """Export a loaded model from the model store as OSI YAML.
+
+    Converts the model's raw OBML (the faithful copy captured at load
+    time, falling back to a lossy reconstruction for programmatically
+    built models) to Open Semantic Interchange (OSI) format. Optional
+    query params override the OSI model name, description, and AI
+    instructions.
+    """
+    store = _get_store(session_id, mgr)
+    try:
+        obml_dict = store.get_raw(model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found") from None
+
+    mod = get_converter_module()
+    try:
+        converter = mod.OBMLtoOSI(
+            obml_dict,
+            model_name=model_name,
+            model_description=model_description,
+            ai_instructions=ai_instructions,
+        )
+        osi_dict = converter.convert()
+        warnings = list(converter.warnings)
+    except Exception as exc:
+        logger.exception("OBML → OSI conversion failed")
+        raise HTTPException(status_code=422, detail=f"OBML → OSI conversion failed: {exc}") from exc
+
+    output_yaml = yaml.dump(
+        osi_dict, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
+    )
+    validation = run_validation(mod.validate_osi, osi_dict)
+    return ConvertResponse(output_yaml=output_yaml, warnings=warnings, validation=validation)
 
 
 @router.delete("/{session_id}/models/{model_id}", status_code=204)

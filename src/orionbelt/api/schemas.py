@@ -814,6 +814,41 @@ class ConvertResponse(BaseModel):
     )
 
 
+class OSIModelLoadRequest(BaseModel):
+    """Request body for POST /sessions/{session_id}/models/from-osi."""
+
+    osi_yaml: str = Field(
+        description="Open Semantic Interchange (OSI) model as a YAML string",
+        max_length=5_000_000,
+    )
+    dedup: bool = Field(
+        default=True,
+        description=(
+            "When True (default), if the converted OBML content is already loaded in "
+            "this session the existing model_id is reused (model_load == 'reused'). "
+            "When False, always loads fresh."
+        ),
+    )
+
+
+class OSIModelLoadResponse(ModelLoadResponse):
+    """Response for POST /sessions/{session_id}/models/from-osi.
+
+    Extends the standard model-load response with the OSI -> OBML
+    conversion warnings and the input-side OSI schema validation so a
+    caller sees both the conversion outcome and the resulting model.
+    """
+
+    conversion_warnings: list[str] = Field(
+        default_factory=list,
+        description="Warnings emitted while converting the OSI input to OBML",
+    )
+    input_validation: ValidationDetail | None = Field(
+        default=None,
+        description="Validation of the OSI input against the vendored OSI schema",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model discovery schemas
 # ---------------------------------------------------------------------------

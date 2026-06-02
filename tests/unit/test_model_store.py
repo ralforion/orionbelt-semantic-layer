@@ -71,6 +71,27 @@ class TestGetAndRemove:
         with pytest.raises(KeyError, match="No model loaded"):
             store.get_model("nonexist")
 
+    def test_get_raw_returns_obml_dict(self, store: ModelStore) -> None:
+        result = store.load_model(SAMPLE_MODEL_YAML)
+        raw = store.get_raw(result.model_id)
+        assert isinstance(raw, dict)
+        assert "dataObjects" in raw
+
+    def test_get_raw_missing_raises(self, store: ModelStore) -> None:
+        with pytest.raises(KeyError, match="No model loaded"):
+            store.get_raw("nonexist")
+
+    def test_get_raw_returns_isolated_copy(self, store: ModelStore) -> None:
+        # Mutating the returned dict must not corrupt the store's internal
+        # raw, so later exports / inherits stay intact.
+        result = store.load_model(SAMPLE_MODEL_YAML)
+        raw = store.get_raw(result.model_id)
+        raw["dataObjects"] = "corrupted"
+        raw["injected"] = True
+        fresh = store.get_raw(result.model_id)
+        assert fresh["dataObjects"] != "corrupted"
+        assert "injected" not in fresh
+
     def test_remove_model(self, store: ModelStore) -> None:
         result = store.load_model(SAMPLE_MODEL_YAML)
         store.remove_model(result.model_id)

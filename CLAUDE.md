@@ -170,6 +170,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | GET | `/v1/sessions/{id}` | Get session info |
 | DELETE | `/v1/sessions/{id}` | Close session |
 | POST | `/v1/sessions/{id}/models` | Load model (field: `model_yaml`) |
+| POST | `/v1/sessions/{id}/models/from-osi` | Convert OSI YAML → OBML and load into the model store (field: `osi_yaml`). Returns the model summary plus `conversion_warnings` and OSI `input_validation` |
 | GET | `/v1/sessions/{id}/models` | List models |
 | GET | `/v1/sessions/{id}/models/{mid}` | Describe model |
 | DELETE | `/v1/sessions/{id}/models/{mid}` | Remove model |
@@ -179,6 +180,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | POST | `/v1/sessions/{id}/query/semantic-ql` | OrionBelt Semantic QL (OBSQL): translate BI-style SQL (SELECT dim, measure FROM `<model>`) → QueryObject → execute. Same response shape as `/query/execute` |
 | POST | `/v1/sessions/{id}/query/semantic-ql/compile` | OrionBelt Semantic QL: translate + compile only, returns compiled SQL + translated QueryObject JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/diagram/er` | Mermaid ER diagram |
+| GET | `/v1/sessions/{id}/models/{mid}/osi` | Export the loaded model as OSI YAML. Optional `?model_name=`, `?model_description=`, `?ai_instructions=` overrides |
 | GET | `/v1/sessions/{id}/models/{mid}/schema` | Full model as JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions` | List dimensions |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions/{name}` | Get dimension |
