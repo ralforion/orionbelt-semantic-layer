@@ -25,8 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_converter_module() -> types.ModuleType:
-    """Lazy-import the OSI <-> OBML converter module from ``osi-obml/``."""
+    """Lazy-import the OSI <-> OBML converter module.
+
+    Searches, in order: the copy bundled into the wheel as package data
+    (``orionbelt/_osi_obml``, see pyproject force-include), the repo-root
+    ``osi-obml/`` used by editable/dev installs, and the legacy
+    ``/app/osi-obml`` Docker layout. The first existing directory wins so
+    a non-editable wheel install can still import the converter.
+    """
+    pkg_root = Path(__file__).resolve().parents[1]
     candidates = [
+        pkg_root / "_osi_obml",
         Path(__file__).resolve().parents[3] / "osi-obml",
         Path("/app/osi-obml"),
     ]

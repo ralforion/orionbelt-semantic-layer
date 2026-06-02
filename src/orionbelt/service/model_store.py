@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import threading
 import time
@@ -659,13 +660,19 @@ class ModelStore:
         through :meth:`load_model` (e.g. programmatically constructed).
 
         Raises ``KeyError`` if no model is loaded with the given id.
+
+        Returns a deep copy so callers (and downstream converters) cannot
+        mutate the store's internal ``_raws`` entry, which would corrupt
+        later exports or ``inherits`` merges.
         """
         with self._lock:
             if model_id not in self._models:
                 raise KeyError(f"No model loaded with id '{model_id}'")
             raw = self._raws.get(model_id)
             model = self._models[model_id]
-        return raw if raw is not None else self._model_to_raw(model)
+        if raw is None:
+            return self._model_to_raw(model)
+        return copy.deepcopy(raw)
 
     def describe(self, model_id: str) -> ModelDescription:
         """Return a structured summary suitable for LLM consumption."""
