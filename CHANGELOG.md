@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **OSI ontology export.** OBML models can now be exported to the OSI **ontology** layer (the conceptual EntityType/relationship layer defined by `ontology.json`), in addition to the existing OSI core-spec export. OSI validates the two layers with separate schemas and keeps them in separate documents, so the ontology is returned as a distinct, individually-valid artefact:
+  - `POST /v1/convert/obml-to-osi` accepts `include_ontology: true`.
+  - `GET /v1/sessions/{id}/models/{mid}/osi` accepts `?include_ontology=true`.
+  - When requested, the response carries `ontology_yaml` plus its own `ontology_validation`; the core-spec `output_yaml` is unchanged (default behaviour is fully backward-compatible).
+  - Mapping: each `dataObject` becomes an `EntityType` concept; each join becomes a relationship whose `multiplicity` derives from the join `joinType` (`many-to-one` to `ManyToOne`, `one-to-one` to `OneToOne`); `concept_mappings` bind concepts to physical columns. Many-to-many joins, named secondary paths, measures/metrics, and column-level value concepts are not represented and surface as conversion `warnings`. See `osi-obml/osi_obml_ontology_mapping_analysis.md`.
+  - The OSI ontology JSON Schema (`osi-obml/osi-ontology-schema.json`) is vendored and bundled into the wheel; its external core-spec `$ref`s resolve against the local vendored core schema so validation never touches the network.
+  - An ontology importer (OSI ontology to OBML) is intentionally deferred while OSI remains at `0.2.0.dev0`; import the OSI core spec instead.
+
 ## [2.8.0] - 2026-06-02
 
 ### Added

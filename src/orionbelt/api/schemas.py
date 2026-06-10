@@ -782,6 +782,14 @@ class OBMLtoOSIRequest(ConvertRequest):
     model_name: str = Field(default="semantic_model", description="Name for the OSI model")
     model_description: str = Field(default="", description="Description for the OSI model")
     ai_instructions: str = Field(default="", description="AI instructions for the OSI model")
+    include_ontology: bool = Field(
+        default=False,
+        description=(
+            "Also emit the OSI ontology document (separate ontology.json-schema "
+            "artefact) in 'ontology_yaml' with its own 'ontology_validation'. The "
+            "core-spec 'output_yaml' is unchanged."
+        ),
+    )
 
 
 class ValidationDetail(BaseModel):
@@ -811,6 +819,18 @@ class ConvertResponse(BaseModel):
             "input against the vendored OSI v0.2 schema). None when no input-side "
             "validation runs."
         ),
+    )
+    ontology_yaml: str | None = Field(
+        default=None,
+        description=(
+            "OSI ontology document (a separate artefact validated against the OSI "
+            "ontology schema), emitted only for OBML→OSI conversions when "
+            "'include_ontology' is requested. None otherwise."
+        ),
+    )
+    ontology_validation: ValidationDetail | None = Field(
+        default=None,
+        description="Validation results for 'ontology_yaml'. None when no ontology is emitted.",
     )
 
 

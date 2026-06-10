@@ -90,8 +90,32 @@ async def obml_to_osi(body: OBMLtoOSIRequest) -> ConvertResponse:
 
     validation = run_validation(mod.validate_osi, result)
 
+    ontology_yaml: str | None = None
+    ontology_validation = None
+    if body.include_ontology:
+        try:
+            onto_conv = mod.OBMLtoOSIOntology(
+                data,
+                model_name=body.model_name,
+                model_description=body.model_description,
+                ai_instructions=body.ai_instructions,
+            )
+            onto = onto_conv.convert()
+            warnings = warnings + list(onto_conv.warnings)
+        except Exception as exc:
+            logger.exception("OBML → OSI ontology conversion failed")
+            raise HTTPException(
+                status_code=422, detail=f"OBML → OSI ontology conversion failed: {exc}"
+            ) from exc
+        ontology_yaml = yaml.dump(
+            onto, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
+        )
+        ontology_validation = run_validation(mod.validate_osi_ontology, onto)
+
     return ConvertResponse(
         output_yaml=output_yaml,
         warnings=warnings,
         validation=validation,
+        ontology_yaml=ontology_yaml,
+        ontology_validation=ontology_validation,
     )

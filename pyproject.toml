@@ -141,6 +141,7 @@ packages = ["src/orionbelt"]
 "schema" = "orionbelt/schema"
 "osi-obml/osi_obml_converter.py" = "orionbelt/_osi_obml/osi_obml_converter.py"
 "osi-obml/osi-schema.json" = "orionbelt/_osi_obml/osi-schema.json"
+"osi-obml/osi-ontology-schema.json" = "orionbelt/_osi_obml/osi-ontology-schema.json"
 
 [tool.ruff]
 target-version = "py312"

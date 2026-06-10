@@ -224,3 +224,54 @@ class TestObmlToOsiBackwardCompat:
         # doesn't currently run input-side schema validation.
         assert "input_validation" in body
         assert body["input_validation"] is None
+        # No ontology unless explicitly requested.
+        assert body["ontology_yaml"] is None
+        assert body["ontology_validation"] is None
+
+
+class TestObmlToOsiOntology:
+    """include_ontology=true adds a separate, individually-valid OSI ontology
+    document alongside the unchanged core-spec export."""
+
+    _OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "ORDERS",
+                "columns": {
+                    "Order ID": {"code": "ORDER_ID", "primaryKey": True},
+                    "Customer Ref": {"code": "CUSTOMER_ID"},
+                },
+                "joins": [
+                    {
+                        "joinType": "many-to-one",
+                        "joinTo": "Customers",
+                        "columnsFrom": ["Customer Ref"],
+                        "columnsTo": ["Customer ID"],
+                    }
+                ],
+            },
+            "Customers": {
+                "code": "CUSTOMERS",
+                "columns": {"Customer ID": {"code": "CUSTOMER_ID", "primaryKey": True}},
+            },
+        },
+    }
+
+    async def test_include_ontology_emits_valid_document(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/v1/convert/obml-to-osi",
+            json={"input_yaml": yaml.safe_dump(self._OBML), "include_ontology": True},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        # Core export still present and valid.
+        assert "semantic_model" in yaml.safe_load(body["output_yaml"])
+        assert body["validation"]["schema_valid"] is True
+        # Ontology is a distinct, valid document (not merged into the core doc).
+        onto = yaml.safe_load(body["ontology_yaml"])
+        assert onto["version"] == "0.2.0.dev0"
+        assert {c["concept"]["name"] for c in onto["ontology"]} == {"Orders", "Customers"}
+        assert "semantic_model" not in onto
+        assert body["ontology_validation"]["schema_valid"] is True
+        assert body["ontology_validation"]["semantic_valid"] is True

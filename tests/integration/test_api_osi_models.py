@@ -152,6 +152,43 @@ class TestExportModelToOsi:
         resp = await client.get(f"/v1/sessions/{sid}/models/nope/osi")
         assert resp.status_code == 404
 
+    async def test_export_without_ontology_omits_fields(self, client: AsyncClient) -> None:
+        sid = await _new_session(client)
+        load = await client.post(
+            f"/v1/sessions/{sid}/models/from-osi",
+            json={"osi_yaml": yaml.safe_dump(_OSI_V02_MINIMAL)},
+        )
+        model_id = load.json()["model_id"]
+        export = await client.get(f"/v1/sessions/{sid}/models/{model_id}/osi")
+        body = export.json()
+        assert body["ontology_yaml"] is None
+        assert body["ontology_validation"] is None
+
+    async def test_export_with_ontology_returns_valid_doc(self, client: AsyncClient) -> None:
+        sid = await _new_session(client)
+        load = await client.post(
+            f"/v1/sessions/{sid}/models/from-osi",
+            json={"osi_yaml": yaml.safe_dump(_OSI_V02_MINIMAL)},
+        )
+        model_id = load.json()["model_id"]
+
+        export = await client.get(
+            f"/v1/sessions/{sid}/models/{model_id}/osi",
+            params={"model_name": "demo", "include_ontology": "true"},
+        )
+        assert export.status_code == 200, export.text
+        body = export.json()
+        # Core export is unchanged and still a valid OSI core-spec doc.
+        assert "semantic_model" in yaml.safe_load(body["output_yaml"])
+        assert body["validation"]["schema_valid"] is True
+        # Ontology is a separate, individually-valid document.
+        onto = yaml.safe_load(body["ontology_yaml"])
+        assert onto["version"] == "0.2.0.dev0"
+        assert "ontology" in onto and "ontology_mappings" in onto
+        assert "semantic_model" not in onto  # not merged into the ontology root
+        assert body["ontology_validation"]["schema_valid"] is True
+        assert body["ontology_validation"]["semantic_valid"] is True
+
     async def test_export_unknown_session_returns_404(self, client: AsyncClient) -> None:
         resp = await client.get("/v1/sessions/does-not-exist/models/m1/osi")
         assert resp.status_code == 404
