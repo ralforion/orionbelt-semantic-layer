@@ -564,6 +564,8 @@ Licensed under the [Business Source License 1.1](LICENSE). The Licensed Work wil
 
 By contributing to this project, you agree to the [Contributor License Agreement](CLA.md).
 
+For commercial licensing inquiries, contact: licensing@ralforion.com
+
 ---
 
 <p align="center">
