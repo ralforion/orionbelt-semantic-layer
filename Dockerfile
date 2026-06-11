@@ -31,6 +31,7 @@ COPY src/ src/
 COPY schema/ schema/
 COPY osi-obml/osi_obml_converter.py osi-obml/
 COPY osi-obml/osi-schema.json osi-obml/
+COPY osi-obml/osi-ontology-schema.json osi-obml/
 RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
 
 # --- Runtime stage: minimal image ---

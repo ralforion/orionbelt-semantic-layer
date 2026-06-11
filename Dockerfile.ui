@@ -20,6 +20,7 @@ COPY schema/ schema/
 # "Forced include not found". Mirrors Dockerfile / Dockerfile.flight.
 COPY osi-obml/osi_obml_converter.py osi-obml/
 COPY osi-obml/osi-schema.json osi-obml/
+COPY osi-obml/osi-ontology-schema.json osi-obml/
 COPY examples/ examples/
 RUN uv sync --no-dev --extra ui --no-editable --frozen
 
