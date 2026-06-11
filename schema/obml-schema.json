@@ -4,7 +4,7 @@
   "title": "OBML",
   "description": "A markup language to define the OrionBelt Semantic Layer",
   "definitions": {
-"customExtension": {
+    "customExtension": {
       "type": "object",
       "description": "Vendor-keyed extension data — opaque to OrionBelt",
       "properties": {
@@ -17,7 +17,10 @@
           "description": "Opaque data payload (typically JSON string)"
         }
       },
-      "required": ["vendor", "data"],
+      "required": [
+        "vendor",
+        "data"
+      ],
       "additionalProperties": false
     },
     "dataObject": {
@@ -69,12 +72,16 @@
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this data object (LLM hints)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
-          "items": { "$ref": "#/definitions/customExtension" }
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
         },
         "refresh": {
           "type": "object",
@@ -82,7 +89,11 @@
           "properties": {
             "mode": {
               "type": "string",
-              "enum": ["interval", "heartbeat", "static"],
+              "enum": [
+                "interval",
+                "heartbeat",
+                "static"
+              ],
               "description": "interval: fixed cadence; heartbeat: irregular + ETL pings; static: never changes"
             },
             "interval": {
@@ -106,16 +117,32 @@
               "description": "camelCase alias for max_staleness"
             }
           },
-          "required": ["mode"],
+          "required": [
+            "mode"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["code", "columns"],
+      "required": [
+        "code",
+        "columns"
+      ],
       "additionalProperties": false
     },
     "dataType": {
       "description": "OrionBelt internal Data Type",
-      "enum": ["string", "json", "int", "float", "date", "time", "time_tz", "timestamp", "timestamp_tz", "boolean"]
+      "enum": [
+        "string",
+        "json",
+        "int",
+        "float",
+        "date",
+        "time",
+        "time_tz",
+        "timestamp",
+        "timestamp_tz",
+        "boolean"
+      ]
     },
     "timeGrain": {
       "description": "Used to truncate a date value to aggregate along a date hierarchy. Must match the TimeGrain enum in models/semantic.py (#85).",
@@ -132,7 +159,11 @@
     },
     "numClass": {
       "description": "Numeric classification hint for LLMs: categorical (IDs/codes — group/filter only), additive (sum-safe — amounts, quantities), non_additive (rates, %, ratios — don't assume SUM)",
-      "enum": ["categorical", "additive", "non-additive"]
+      "enum": [
+        "categorical",
+        "additive",
+        "non-additive"
+      ]
     },
     "column": {
       "type": "object",
@@ -185,24 +216,43 @@
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this column (LLM hints)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
-          "items": { "$ref": "#/definitions/customExtension" }
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
         }
       },
-      "required": ["abstractType"],
+      "required": [
+        "abstractType"
+      ],
       "additionalProperties": false,
       "if": {
         "not": {
-          "properties": { "abstractType": { "enum": ["int", "float"] } },
-          "required": ["abstractType"]
+          "properties": {
+            "abstractType": {
+              "enum": [
+                "int",
+                "float"
+              ]
+            }
+          },
+          "required": [
+            "abstractType"
+          ]
         }
       },
       "then": {
-        "not": { "required": ["numClass"] }
+        "not": {
+          "required": [
+            "numClass"
+          ]
+        }
       }
     },
     "join": {
@@ -210,7 +260,11 @@
       "properties": {
         "joinType": {
           "description": "Join Cardinality",
-          "enum": ["many-to-one", "one-to-one", "many-to-many"]
+          "enum": [
+            "many-to-one",
+            "one-to-one",
+            "many-to-many"
+          ]
         },
         "joinTo": {
           "type": "string",
@@ -240,7 +294,12 @@
           "description": "Unique name for this join path within the (source, target) pair. Required when secondary is true. Used in queries via usePathNames to select this join."
         }
       },
-      "required": ["joinType", "joinTo", "columnsFrom", "columnsTo"],
+      "required": [
+        "joinType",
+        "joinTo",
+        "columnsFrom",
+        "columnsTo"
+      ],
       "additionalProperties": false
     },
     "queryColumn": {
@@ -256,7 +315,10 @@
           "description": "OrionBelt Column Name"
         }
       },
-      "required": ["dataObject", "column"],
+      "required": [
+        "dataObject",
+        "column"
+      ],
       "additionalProperties": false
     },
     "operator": {
@@ -285,12 +347,34 @@
     "staticFilterOperator": {
       "description": "Filter operator for static model filters — supports both OBML and SQL-style naming",
       "enum": [
-        "equals", "notequals", "inlist", "notinlist",
-        "contains", "notcontains", "gt", "gte", "lt", "lte",
-        "set", "notset", "between", "notbetween",
-        "like", "notlike", "starts_with", "ends_with",
-        "=", "!=", ">", ">=", "<", "<=",
-        "in", "not_in", "is_null", "is_not_null"
+        "equals",
+        "notequals",
+        "inlist",
+        "notinlist",
+        "contains",
+        "notcontains",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "set",
+        "notset",
+        "between",
+        "notbetween",
+        "like",
+        "notlike",
+        "starts_with",
+        "ends_with",
+        "=",
+        "!=",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
       ]
     },
     "parameterValue": {
@@ -305,80 +389,25 @@
           "description": "used to include NULL in inlist, notinlist, if set true other value properties are ignored",
           "type": "boolean"
         },
-        "valueString": { "type": "string" },
-        "valueInt": { "type": "integer" },
-        "valueFloat": { "type": "number" },
+        "valueString": {
+          "type": "string"
+        },
+        "valueInt": {
+          "type": "integer"
+        },
+        "valueFloat": {
+          "type": "number"
+        },
         "valueDate": {
           "description": "ISO 8601 date string YYYY-MM-DD (2021-02-18)",
           "type": "string"
         },
-        "valueTime": {
-          "description": "ISO 8601 time string HH:mm:ss.sss (10:44:23.000)",
-          "type": "string"
-        },
-        "valueTimeTZ": {
-          "description": "ISO 8601 time string with Timezone HH:mm:ss.sss±hh:mm (10:44:23.000+01:00)",
-          "type": "string"
-        },
-        "valueTimestamp": {
-          "description": "ISO 8601 timestamp string in UTC YYYY-MM-DDTHH:mm:ss.sss (2021-02-18T10:44:23.000)",
-          "type": "string"
-        },
-        "valueTimestampTZ": {
-          "description": "ISO 8601 timestamp string with Timezone YYYY-MM-DDTHH:mm:ss.sss±hh:mm (2021-02-18T10:44:23.000+01:00)",
-          "type": "string"
-        },
-        "valueMillis": {
-          "description": "can used for timestamp fields, millisec in UTC (e.g. in Snowflake: TO_TIMESTAMP('1604954053'))",
-          "type": "integer"
-        },
-        "valueBoolean": { "type": "boolean" }
+        "valueBoolean": {
+          "type": "boolean"
+        }
       },
-      "required": ["dataType"]
-    },
-    "dynamicDatePart": {
-      "enum": ["year", "month", "quarter", "week", "day", "hour", "minute", "second"]
-    },
-    "dynamicDateCalcType": {
-      "enum": [
-        "boy",
-        "bopy",
-        "bom",
-        "bopm",
-        "boq",
-        "bopq",
-        "bow",
-        "bopw",
-        "eoy",
-        "eom",
-        "eoq",
-        "eow",
-        "today",
-        "yesterday"
-      ]
-    },
-    "dynamicDateCalcRangeType": {
-      "enum": [
-        "eytd",
-        "ytd",
-        "emtd",
-        "mtd",
-        "qtd",
-        "wtd",
-        "pytd",
-        "pmtd",
-        "pqtd",
-        "pwtd",
-        "l12m",
-        "l90d",
-        "l30d",
-        "l7d",
-        "py",
-        "pm",
-        "pq",
-        "pw",
-        "today",
-        "yesterday"
+      "required": [
+        "dataType"
       ]
     },
     "filter": {
@@ -397,57 +426,12 @@
           "items": {
             "$ref": "#/definitions/parameterValue"
           }
-        },
-        "timeGrain": {
-          "$ref": "#/definitions/timeGrain"
-        },
-        "dynamicDate": {
-          "type": "object",
-          "properties": {
-            "part": {
-              "$ref": "#/definitions/dynamicDatePart"
-            },
-            "offset": {
-              "type": "integer"
-            }
-          },
-          "required": ["part", "offset"]
-        },
-        "dynamicDateRange": {
-          "type": "object",
-          "properties": {
-            "part": {
-              "$ref": "#/definitions/dynamicDatePart"
-            },
-            "offsetBegin": {
-              "type": "integer"
-            },
-            "offsetEnd": {
-              "type": "integer"
-            }
-          },
-          "required": ["part", "offsetBegin", "offsetEnd"]
-        },
-        "dynamicDateCalc": {
-          "type": "object",
-          "properties": {
-            "dynamicDateType": {
-              "$ref": "#/definitions/dynamicDateCalcType"
-            }
-          },
-          "required": ["dynamicDateType"]
-        },
-        "dynamicDateCalcRange": {
-          "type": "object",
-          "properties": {
-            "dynamicDateType": {
-              "$ref": "#/definitions/dynamicDateCalcRangeType"
-            }
-          },
-          "required": ["dynamicDateType"]
         }
       },
-      "required": ["column", "operator"]
+      "required": [
+        "column",
+        "operator"
+      ]
     },
     "filterGroup": {
       "type": "object",
@@ -455,7 +439,10 @@
       "properties": {
         "logic": {
           "description": "Boolean combination logic for child filters",
-          "enum": ["and", "or"],
+          "enum": [
+            "and",
+            "or"
+          ],
           "default": "and"
         },
         "filters": {
@@ -463,8 +450,12 @@
           "description": "Child filters (leaf filters or nested filter groups)",
           "items": {
             "oneOf": [
-              { "$ref": "#/definitions/filter" },
-              { "$ref": "#/definitions/filterGroup" }
+              {
+                "$ref": "#/definitions/filter"
+              },
+              {
+                "$ref": "#/definitions/filterGroup"
+              }
             ]
           },
           "minItems": 1
@@ -475,7 +466,9 @@
           "default": false
         }
       },
-      "required": ["filters"],
+      "required": [
+        "filters"
+      ],
       "additionalProperties": false
     },
     "dimension": {
@@ -518,20 +511,30 @@
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this dimension (LLM hints)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
-          "items": { "$ref": "#/definitions/customExtension" }
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
         }
       },
-      "required": ["dataObject", "column"],
+      "required": [
+        "dataObject",
+        "column"
+      ],
       "additionalProperties": false
     },
     "grainMode": {
       "description": "Grain mode: FIXED starts empty, RELATIVE inherits query dimensions",
-      "enum": ["FIXED", "RELATIVE"]
+      "enum": [
+        "FIXED",
+        "RELATIVE"
+      ]
     },
     "grainOverride": {
       "type": "object",
@@ -545,24 +548,33 @@
         "exclude": {
           "type": "array",
           "description": "Dimension names to remove from inherited grain (RELATIVE mode only)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "include": {
           "type": "array",
           "description": "Dimension names to add. With FIXED: these are the grain. With RELATIVE: added to inherited.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "keepOnly": {
           "type": "array",
           "description": "With FIXED: adaptive grain = keepOnly ∩ query_dims. Dimensions from this list present in the query.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
     },
     "filterContextMode": {
       "description": "Filter context mode: FIXED ignores all query filters, RELATIVE inherits them",
-      "enum": ["FIXED", "RELATIVE"]
+      "enum": [
+        "FIXED",
+        "RELATIVE"
+      ]
     },
     "filterContextFilter": {
       "type": "object",
@@ -580,7 +592,10 @@
           "description": "Filter value (scalar, list, or null)"
         }
       },
-      "required": ["field", "op"],
+      "required": [
+        "field",
+        "op"
+      ],
       "additionalProperties": false
     },
     "filterContext": {
@@ -595,17 +610,23 @@
         "exclude": {
           "type": "array",
           "description": "Field names — query filters referencing these fields are removed (RELATIVE mode only)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "include": {
           "type": "array",
           "description": "Static filters to add to this measure's context",
-          "items": { "$ref": "#/definitions/filterContextFilter" }
+          "items": {
+            "$ref": "#/definitions/filterContextFilter"
+          }
         },
         "keepOnly": {
           "type": "array",
           "description": "Only query filters referencing these fields are kept",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -670,11 +691,16 @@
               "$ref": "#/definitions/queryColumn"
             },
             "order": {
-              "enum": ["ASC", "DESC"],
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
               "default": "ASC"
             }
           },
-          "required": ["column"],
+          "required": [
+            "column"
+          ],
           "additionalProperties": false
         },
         "allowFanOut": {
@@ -697,12 +723,6 @@
           "type": "string",
           "description": "template string with {[DataObject].[Column]} placeholders for measure expression"
         },
-        "functions": {
-          "type": "array",
-          "contains": {
-            "type": "string"
-          }
-        },
         "description": {
           "type": "string",
           "description": "Business description of this measure"
@@ -715,8 +735,12 @@
           "description": "Filters applied to this measure (combined with AND by default). Supports leaf filters and filter groups with AND/OR/NOT logic.",
           "items": {
             "oneOf": [
-              { "$ref": "#/definitions/filter" },
-              { "$ref": "#/definitions/filterGroup" }
+              {
+                "$ref": "#/definitions/filter"
+              },
+              {
+                "$ref": "#/definitions/filterGroup"
+              }
             ]
           }
         },
@@ -727,7 +751,9 @@
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this measure (LLM hints)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "dataType": {
           "type": "string",
@@ -737,23 +763,43 @@
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
-          "items": { "$ref": "#/definitions/customExtension" }
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
         }
       },
-      "required": ["aggregation"],
+      "required": [
+        "aggregation"
+      ],
       "additionalProperties": false
     },
     "cumulativeAggType": {
       "description": "Window aggregation function for cumulative metrics",
-      "enum": ["sum", "avg", "min", "max", "count"]
+      "enum": [
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count"
+      ]
     },
     "grainToDate": {
       "description": "Reset boundary for grain-to-date cumulative metrics",
-      "enum": ["year", "quarter", "month", "week"]
+      "enum": [
+        "year",
+        "quarter",
+        "month",
+        "week"
+      ]
     },
     "periodOverPeriodComparison": {
       "description": "Comparison type for period-over-period metrics",
-      "enum": ["ratio", "difference", "previousValue", "percentChange"]
+      "enum": [
+        "ratio",
+        "difference",
+        "previousValue",
+        "percentChange"
+      ]
     },
     "windowFunctionKind": {
       "description": "SQL window-function family for MetricType.WINDOW",
@@ -795,7 +841,11 @@
           "default": "percentChange"
         }
       },
-      "required": ["timeDimension", "grain", "offsetGrain"],
+      "required": [
+        "timeDimension",
+        "grain",
+        "offsetGrain"
+      ],
       "additionalProperties": false
     },
     "metric": {
@@ -807,7 +857,12 @@
         },
         "type": {
           "description": "Metric category: derived (expression-based), cumulative (windowed aggregation over a measure), period_over_period (time comparison), or window (rank/lag/lead/ntile/first_value/last_value).",
-          "enum": ["derived", "cumulative", "period_over_period", "window"],
+          "enum": [
+            "derived",
+            "cumulative",
+            "period_over_period",
+            "window"
+          ],
           "default": "derived"
         },
         "expression": {
@@ -839,7 +894,9 @@
         "partitionBy": {
           "type": "array",
           "description": "Dimensions used as PARTITION BY keys for cumulative or window metrics. Each entry must be a dimension defined in the model and selected in the query. Default: [] (no partition).",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": []
         },
         "periodOverPeriod": {
@@ -862,7 +919,10 @@
         },
         "orderDirection": {
           "type": "string",
-          "enum": ["asc", "desc"],
+          "enum": [
+            "asc",
+            "desc"
+          ],
           "default": "desc",
           "description": "Window ORDER BY direction (default 'desc' for ranking; 'asc' is natural for ROW_NUMBER over time)"
         },
@@ -883,7 +943,9 @@
         "synonyms": {
           "type": "array",
           "description": "Alternative names or terms for this metric (LLM hints)",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "dataType": {
           "type": "string",
@@ -893,38 +955,69 @@
         "customExtensions": {
           "type": "array",
           "description": "Vendor-keyed extension data",
-          "items": { "$ref": "#/definitions/customExtension" }
+          "items": {
+            "$ref": "#/definitions/customExtension"
+          }
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "type": { "const": "cumulative" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "cumulative"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["measure", "timeDimension"],
+            "required": [
+              "measure",
+              "timeDimension"
+            ],
             "not": {
-              "required": ["window", "grainToDate"]
+              "required": [
+                "window",
+                "grainToDate"
+              ]
             }
           }
         },
         {
           "if": {
-            "properties": { "type": { "const": "period_over_period" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "period_over_period"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["expression", "periodOverPeriod"]
+            "required": [
+              "expression",
+              "periodOverPeriod"
+            ]
           }
         },
         {
           "if": {
-            "properties": { "type": { "const": "window" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "window"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["windowFunction"]
+            "required": [
+              "windowFunction"
+            ]
           }
         },
         {
@@ -932,136 +1025,45 @@
             "not": {
               "properties": {
                 "type": {
-                  "enum": ["cumulative", "period_over_period", "window"]
+                  "enum": [
+                    "cumulative",
+                    "period_over_period",
+                    "window"
+                  ]
                 }
               },
-              "required": ["type"]
+              "required": [
+                "type"
+              ]
             }
           },
           "then": {
-            "required": ["expression"]
+            "required": [
+              "expression"
+            ]
           }
         }
       ],
-      "additionalProperties": false
-    },
-    "locale": {
-      "type": "object",
-      "properties": {
-        "timezone": {
-          "type": "string",
-          "default": "Europe/London"
-        },
-        "number": {
-          "type": "object",
-          "properties": {
-            "deciamlSep": {
-              "type": "string",
-              "default": "."
-            },
-            "thousandSep": {
-              "type": "string",
-              "default": ","
-            }
-          }
-        },
-        "calendar": {
-          "type": "object",
-          "properties": {
-            "monthNames": {
-              "type": "array",
-              "contains": {
-                "type": "string"
-              },
-              "default": [
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December"
-              ],
-              "minItems": 12,
-              "maxItems": 12
-            },
-            "monthNamesAbbr": {
-              "type": "array",
-              "contains": {
-                "type": "string"
-              },
-              "default": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-              "minItems": 12,
-              "maxItems": 12
-            },
-            "dayNames": {
-              "type": "array",
-              "contains": {
-                "type": "string"
-              },
-              "default": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-              "minItems": 7,
-              "maxItems": 7
-            },
-            "dayNamesAbbr": {
-              "type": "array",
-              "contains": {
-                "type": "string"
-              },
-              "default": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-              "minItems": 7,
-              "maxItems": 7
-            }
-          }
-        },
-        "formats": {
-          "type": "object",
-          "properties": {
-            "number": {
-              "type": "string",
-              "default": "#,##0.00"
-            },
-            "numberInt": {
-              "type": "string",
-              "default": "#,##0"
-            },
-            "money": {
-              "type": "string",
-              "default": "$#,###.00"
-            },
-            "date": {
-              "type": "string",
-              "default": "yyyy-mm-dd"
-            },
-            "dateTime": {
-              "type": "string",
-              "default": "yyyy-mm-dd hh:mm:ss"
-            },
-            "time": {
-              "type": "string",
-              "default": "hh:mm:ss"
-            }
-          }
-        }
-      },
       "additionalProperties": false
     }
   },
   "type": "object",
   "properties": {
     "version": {
-      "enum": [1.0]
+      "enum": [
+        1.0
+      ]
+    },
+    "name": {
+      "type": "string",
+      "description": "Optional addressing identifier for multi-model mode. After normalization (lowercase; spaces/dots/dashes -> underscores; trimmed) must match ^[a-z][a-z0-9_]{0,62}$. Selected by BI tools via the Flight `database` catalog or pgwire `database=` parameter.",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
     },
     "description": {
       "type": "string",
       "description": "Business description of this semantic model"
     },
-"dataObjects": {
+    "dataObjects": {
       "type": "object",
       "description": "Data Object Names in the OrionBelt Model",
       "patternProperties": {
@@ -1102,9 +1104,6 @@
       },
       "additionalProperties": false
     },
-    "locale": {
-      "$ref": "#/definitions/locale"
-    },
     "owner": {
       "type": "string",
       "description": "Owner or responsible party for this model"
@@ -1129,9 +1128,15 @@
           "value": {
             "description": "Single filter value. Dates and timestamps use ISO 8601 strings (e.g. '2026-01-01', '2026-01-01T14:30:00Z'). Bare YAML dates are auto-coerced to ISO strings at load time.",
             "oneOf": [
-              { "type": "string" },
-              { "type": "number" },
-              { "type": "boolean" }
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
             ]
           },
           "values": {
@@ -1139,14 +1144,24 @@
             "description": "List of filter values (for in/between operators). Dates use ISO 8601 strings.",
             "items": {
               "oneOf": [
-                { "type": "string" },
-                { "type": "number" },
-                { "type": "boolean" }
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
               ]
             }
           }
         },
-        "required": ["dataObject", "column", "operator"],
+        "required": [
+          "dataObject",
+          "column",
+          "operator"
+        ],
         "additionalProperties": false
       }
     },
@@ -1167,26 +1182,36 @@
           "intent_tags": {
             "type": "array",
             "description": "Free-form tags used by the /examples?intent= filter",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "intentTags": {
             "type": "array",
             "description": "camelCase alias for intent_tags",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "query": {
             "type": "object",
             "description": "Full QueryObject payload (the same shape accepted by /query/sql)"
           }
         },
-        "required": ["name", "description", "query"],
+        "required": [
+          "name",
+          "description",
+          "query"
+        ],
         "additionalProperties": false
       }
     },
     "extends": {
       "type": "array",
       "description": "List of OBML files to merge as analytical layers (dimensions, measures, metrics). Extend files must not contain dataObjects.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "inherits": {
       "type": "string",
@@ -1223,6 +1248,11 @@
             "postgres",
             "snowflake"
           ]
+        },
+        "defaultLocale": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+          "description": "Default BCP-47 locale tag (e.g. 'en-US', 'de-DE') for result value formatting. Resolution at request time: explicit ?locale= -> settings.defaultLocale -> DEFAULT_LOCALE env."
         }
       },
       "additionalProperties": false
@@ -1230,34 +1260,59 @@
     "customExtensions": {
       "type": "array",
       "description": "Vendor-keyed extension data at model level",
-      "items": { "$ref": "#/definitions/customExtension" }
+      "items": {
+        "$ref": "#/definitions/customExtension"
+      }
     }
   },
   "additionalProperties": false,
-  "required": ["version"],
+  "required": [
+    "version"
+  ],
   "allOf": [
     {
       "if": {
         "not": {
           "anyOf": [
-            { "required": ["extends"] },
-            { "required": ["inherits"] }
+            {
+              "required": [
+                "extends"
+              ]
+            },
+            {
+              "required": [
+                "inherits"
+              ]
+            }
           ]
         }
       },
       "then": {
-        "required": ["dataObjects"]
+        "required": [
+          "dataObjects"
+        ]
       }
     },
     {
       "not": {
-        "required": ["extends", "inherits"]
+        "required": [
+          "extends",
+          "inherits"
+        ]
       }
     },
     {
-      "if": { "required": ["inherits"] },
+      "if": {
+        "required": [
+          "inherits"
+        ]
+      },
       "then": {
-        "not": { "required": ["dataObjects"] }
+        "not": {
+          "required": [
+            "dataObjects"
+          ]
+        }
       }
     }
   ]

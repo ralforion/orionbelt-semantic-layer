@@ -180,7 +180,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | POST | `/v1/sessions/{id}/query/semantic-ql` | OrionBelt Semantic QL (OBSQL): translate BI-style SQL (SELECT dim, measure FROM `<model>`) → QueryObject → execute. Same response shape as `/query/execute` |
 | POST | `/v1/sessions/{id}/query/semantic-ql/compile` | OrionBelt Semantic QL: translate + compile only, returns compiled SQL + translated QueryObject JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/diagram/er` | Mermaid ER diagram |
-| GET | `/v1/sessions/{id}/models/{mid}/osi` | Export the loaded model as OSI YAML. Optional `?model_name=`, `?model_description=`, `?ai_instructions=` overrides |
+| GET | `/v1/sessions/{id}/models/{mid}/osi` | Export the loaded model as OSI YAML. Optional `?model_name=`, `?model_description=`, `?ai_instructions=` overrides. `?include_ontology=true` also emits the OSI ontology document in `ontology_yaml` (separate artefact, with its own `ontology_validation`) |
 | GET | `/v1/sessions/{id}/models/{mid}/schema` | Full model as JSON |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions` | List dimensions |
 | GET | `/v1/sessions/{id}/models/{mid}/dimensions/{name}` | Get dimension |
@@ -194,7 +194,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | GET | `/v1/sessions/{id}/models/{mid}/graph` | OBSL RDF graph (Turtle) |
 | POST | `/v1/sessions/{id}/models/{mid}/sparql` | SPARQL query (SELECT/ASK) |
 | POST | `/v1/convert/osi-to-obml` | Convert OSI YAML → OBML YAML |
-| POST | `/v1/convert/obml-to-osi` | Convert OBML YAML → OSI YAML |
+| POST | `/v1/convert/obml-to-osi` | Convert OBML YAML → OSI YAML. `include_ontology: true` also emits the OSI ontology document in `ontology_yaml` (separate artefact, with its own `ontology_validation`) |
 | POST | `/v1/oneshot/batch` | Load (or reference) a model and run N independent queries in one round trip |
 | GET | `/v1/cache/stats` | Result cache summary (entries, size, hit rate, oldest entry, next sweep) |
 | POST | `/v1/cache/sweep` | Trigger one TTL + capacity eviction pass on demand |

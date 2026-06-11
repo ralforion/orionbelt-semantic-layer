@@ -483,7 +483,7 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
 |---|---|---|---|
 | `format` | `json` \| `tsv` | `json` | When `tsv`, returns `text/tab-separated-values`; cells with tab/newline/CR/double-quote are RFC 4180-quoted. Implies `format_values=true`. |
 | `format_values` | bool | `false` | When `true`, numeric cells in the JSON response are rendered as locale-aware display strings using each column's `format` pattern (matches the Gradio UI). |
-| `locale` | string | `DEFAULT_LOCALE` env | BCP-47 tag (e.g. `de`, `en-US`). Drives thousand/decimal separators. Falls back to the `DEFAULT_LOCALE` env when omitted. |
+| `locale` | string | model `settings.defaultLocale`, then `DEFAULT_LOCALE` env | BCP-47 tag (e.g. `de`, `en-US`). Drives thousand/decimal separators. When omitted, falls back to the model's `settings.defaultLocale`, then the `DEFAULT_LOCALE` env. |
 | `timezone` | string | model `default_timezone` | IANA TZ name (e.g. `Europe/Berlin`). Overrides the model's default for naive timestamp coercion. |
 
 **Example (TSV with German locale):**

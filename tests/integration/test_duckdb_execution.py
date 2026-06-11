@@ -1111,6 +1111,55 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_execute_format_values_locale_from_model_settings(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Model ``settings.defaultLocale`` drives formatting when no ?locale= and
+        no DEFAULT_LOCALE env are set (precedence: ?locale= -> settings.defaultLocale
+        -> DEFAULT_LOCALE env)."""
+        model_yaml = _add_revenue_format(SAMPLE_MODEL_YAML)
+        model_yaml = 'settings:\n  defaultLocale: "de-DE"\n' + model_yaml
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        # No default_locale configured at startup → env default is en-style.
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            with patch("orionbelt.api.routers.sessions.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    load = await c.post(
+                        f"/v1/sessions/{sid}/models",
+                        json={"model_yaml": model_yaml},
+                    )
+                    mid = load.json()["model_id"]
+                    response = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format_values=true",  # no locale param
+                        json={
+                            "model_id": mid,
+                            "query": {
+                                "select": {
+                                    "dimensions": ["Customer Country"],
+                                    "measures": ["Total Revenue"],
+                                },
+                            },
+                            "dialect": "duckdb",
+                        },
+                    )
+            assert response.status_code == 200
+            data = response.json()
+            idx = [c["name"] for c in data["columns"]].index("Total Revenue")
+            # de-DE from model settings → comma decimal separator
+            for row in data["rows"]:
+                assert "," in row[idx]
+        finally:
+            reset_session_manager()
+
     async def test_execute_format_tsv_returns_tab_separated_body(
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:

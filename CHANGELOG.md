@@ -2,6 +2,27 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.9.0] - 2026-06-11
+
+### Added
+
+- **Model-level default locale (`settings.defaultLocale`).** A model can declare a BCP-47 locale tag (e.g. `de-DE`) that becomes the default for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. Added to `ModelSettings` and the JSON schema (replacing the never-implemented rich `locale` object that had shipped in the schema since the initial commit).
+- **OSI ontology export.** OBML models can now be exported to the OSI **ontology** layer (the conceptual EntityType/relationship layer defined by `ontology.json`), in addition to the existing OSI core-spec export. OSI validates the two layers with separate schemas and keeps them in separate documents, so the ontology is returned as a distinct, individually-valid artefact:
+  - `POST /v1/convert/obml-to-osi` accepts `include_ontology: true`.
+  - `GET /v1/sessions/{id}/models/{mid}/osi` accepts `?include_ontology=true`.
+  - When requested, the response carries `ontology_yaml` plus its own `ontology_validation`; the core-spec `output_yaml` is unchanged (default behaviour is fully backward-compatible).
+  - Mapping: each `dataObject` becomes an `EntityType` concept; each join becomes a relationship whose `multiplicity` derives from the join `joinType` (`many-to-one` to `ManyToOne`, `one-to-one` to `OneToOne`); `concept_mappings` bind concepts to physical columns. Many-to-many joins, named secondary paths, measures/metrics, and column-level value concepts are not represented and surface as conversion `warnings`. See `osi-obml/osi_obml_ontology_mapping_analysis.md`.
+  - The OSI ontology JSON Schema (`osi-obml/osi-ontology-schema.json`) is vendored and bundled into the wheel; its external core-spec `$ref`s resolve against the local vendored core schema so validation never touches the network.
+  - An ontology importer (OSI ontology to OBML) is intentionally deferred while OSI remains at `0.2.0.dev0`; import the OSI core spec instead.
+
+### Fixed
+
+- **OBML JSON schema realigned with the model.** An audit of `schema/obml-schema.json` against `models/semantic.py` (the source of truth) surfaced drift, now resolved:
+  - Top-level **`name`** is now accepted. The schema's root `additionalProperties: false` had been rejecting valid multi-model OBML that sets `name:`, even though the model and resolver fully support it.
+  - Removed the vestigial **`locale`** object definition and **`measure.functions`** property (both present, unimplemented, since the initial commit). `locale` is superseded by `settings.defaultLocale`; the schema's `deciamlSep` typo disappeared with the removed block.
+  - Trimmed the measure-filter definitions (`filter`, `parameterValue`) to the implemented surface — dynamic-date filters and `time`/`timestamp`/`millis` filter value types were schema-only and rejected at load. They remain a possible future feature, not a schema claim.
+  - Added a regression guard (`tests/unit/test_schema_model_alignment.py`) asserting the schema stays aligned with the model.
+
 ## [2.8.0] - 2026-06-02
 
 ### Added

@@ -36,10 +36,31 @@ curl -X POST http://127.0.0.1:8000/v1/convert/obml-to-osi \
 
 Both endpoints are stateless — no session required.
 
+## OSI ontology export
+
+OSI defines two layers, validated by **separate** JSON Schemas and (per OSI's own `validate.py`) kept in **separate documents**:
+
+- the **core-spec** semantic model (datasets, fields, relationships, metrics) — the default `output_yaml`, and
+- the **ontology** layer (EntityType/ValueType concepts, relationships with multiplicity and verbalizations, plus mappings back to the logical model).
+
+Set `include_ontology=true` to additionally emit the ontology document. It is returned as a second, individually-valid artefact in `ontology_yaml`, with its own `ontology_validation`; the core-spec `output_yaml` is unchanged.
+
+```bash
+# Convert OBML -> OSI, also emitting the ontology document
+curl -X POST http://127.0.0.1:8000/v1/convert/obml-to-osi \
+  -H "Content-Type: application/json" \
+  -d '{"input_yaml": "version: 1.0\ndataObjects:\n  ...", "include_ontology": true}' | jq
+
+# Export a loaded model with its ontology
+curl "http://127.0.0.1:8000/v1/sessions/{id}/models/{mid}/osi?include_ontology=true" | jq
+```
+
+The OBML constructs map to the ontology as follows: each `dataObject` becomes an `EntityType` concept, each join becomes a relationship whose `multiplicity` derives from the join `joinType` (`many-to-one` -> `ManyToOne`, `one-to-one` -> `OneToOne`), and `concept_mappings` bind concepts to physical columns. Many-to-many joins, named secondary paths, measures/metrics, and column-level value concepts are not represented in the ontology layer and surface as conversion `warnings`. An ontology **importer** (OSI ontology -> OBML) is intentionally deferred while OSI remains at `0.2.0.dev0`; import the OSI core spec instead.
+
 ## Gradio UI
 
 The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these API endpoints, with validation feedback for both directions.
 
 ## Mapping Reference
 
-See the [OSI - OBML Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/osi-obml/osi_obml_mapping_analysis.md) for a detailed comparison and conversion reference.
+See the [OSI - OBML Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/osi-obml/osi_obml_mapping_analysis.md) for the core-spec mapping, and the [OBML -> OSI Ontology Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/osi-obml/osi_obml_ontology_mapping_analysis.md) for the ontology-layer mapping and its documented gaps.

@@ -16,6 +16,7 @@ owner: team-data # Optional: model-level owner
 settings: # Optional: model-level compilation settings
  defaultNumericDataType: "decimal(18, 4)"
  defaultTimezone: "Europe/Zagreb"
+ defaultLocale: "de-DE" # BCP-47; default locale for result value formatting
 
 dataObjects: # Database tables/views with columns and joins
  ...
@@ -883,6 +884,7 @@ settings:
 | `defaultTimezone` | string | — | IANA timezone (e.g. `Europe/Zagreb`, `America/New_York`, `UTC`) |
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 | `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
+| `defaultLocale` | string | — | BCP-47 locale tag (e.g. `en-US`, `de-DE`). Default locale for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. |
 
 ### Resolution Order
 

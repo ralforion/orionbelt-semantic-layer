@@ -714,6 +714,16 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    default_locale: str | None = Field(
+        None,
+        alias="defaultLocale",
+        description=(
+            "BCP-47 locale tag (e.g. 'en-US', 'de-DE'). Default locale for result "
+            "value formatting (thousand/decimal separators) when a request omits "
+            "?locale=. Resolution order: request ?locale= -> settings.defaultLocale "
+            "-> DEFAULT_LOCALE env."
+        ),
+    )
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -756,6 +766,25 @@ class ModelSettings(BaseModel):
         registered = DialectRegistry.available()
         if v not in registered:
             raise ValueError(f"defaultDialect must be one of: {', '.join(registered)} — got '{v}'")
+        return v
+
+    @field_validator("default_locale", mode="before")
+    @classmethod
+    def _validate_default_locale(cls, v: str | None) -> str | None:
+        """Lenient BCP-47 shape check (language[-Script][-REGION][-variant...]).
+
+        The value drives result value formatting (separator selection); the
+        formatter tolerates unknown tags by falling back to en-style
+        separators, so we only reject obviously malformed strings here.
+        """
+        if v is None:
+            return v
+        import re
+
+        if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", v):
+            raise ValueError(
+                f"defaultLocale must be a BCP-47 tag (e.g. 'en-US', 'de-DE'), got '{v}'"
+            )
         return v
 
 

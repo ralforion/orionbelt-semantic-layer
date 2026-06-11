@@ -383,6 +383,7 @@ async def export_model_to_osi(
     model_name: str = "semantic_model",
     model_description: str = "",
     ai_instructions: str = "",
+    include_ontology: bool = False,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ConvertResponse:
     """Export a loaded model from the model store as OSI YAML.
@@ -391,7 +392,9 @@ async def export_model_to_osi(
     time, falling back to a lossy reconstruction for programmatically
     built models) to Open Semantic Interchange (OSI) format. Optional
     query params override the OSI model name, description, and AI
-    instructions.
+    instructions. Set ``include_ontology=true`` to also emit the OSI
+    ontology document in ``ontology_yaml`` (a separate artefact with its
+    own ``ontology_validation``); the core-spec ``output_yaml`` is unchanged.
     """
     store = _get_store(session_id, mgr)
     try:
@@ -417,7 +420,36 @@ async def export_model_to_osi(
         osi_dict, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
     )
     validation = run_validation(mod.validate_osi, osi_dict)
-    return ConvertResponse(output_yaml=output_yaml, warnings=warnings, validation=validation)
+
+    ontology_yaml: str | None = None
+    ontology_validation = None
+    if include_ontology:
+        try:
+            onto_conv = mod.OBMLtoOSIOntology(
+                obml_dict,
+                model_name=model_name,
+                model_description=model_description,
+                ai_instructions=ai_instructions,
+            )
+            onto_dict = onto_conv.convert()
+            warnings = warnings + list(onto_conv.warnings)
+        except Exception as exc:
+            logger.exception("OBML → OSI ontology conversion failed")
+            raise HTTPException(
+                status_code=422, detail=f"OBML → OSI ontology conversion failed: {exc}"
+            ) from exc
+        ontology_yaml = yaml.dump(
+            onto_dict, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
+        )
+        ontology_validation = run_validation(mod.validate_osi_ontology, onto_dict)
+
+    return ConvertResponse(
+        output_yaml=output_yaml,
+        warnings=warnings,
+        validation=validation,
+        ontology_yaml=ontology_yaml,
+        ontology_validation=ontology_validation,
+    )
 
 
 @router.delete("/{session_id}/models/{model_id}", status_code=204)
@@ -1343,7 +1375,12 @@ async def _run_with_cache(
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
-    effective_locale = locale if locale is not None else get_default_locale()
+    # Locale resolution order: request ?locale= -> model settings.defaultLocale
+    # -> DEFAULT_LOCALE env. Drives result value-formatting separators.
+    model_default_locale = model.settings.default_locale if model.settings else None
+    effective_locale = (
+        locale if locale is not None else (model_default_locale or get_default_locale())
+    )
     response = _build_execute_response(
         compile_result=compile_result,
         exec_result=exec_result,
