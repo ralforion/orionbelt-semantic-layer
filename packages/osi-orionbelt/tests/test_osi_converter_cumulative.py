@@ -157,7 +157,7 @@ class TestOBMLtoOSICumulative:
     @staticmethod
     def _get_cumulative_ext(metric: dict) -> dict:
         for ext in metric.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") == "ORIONBELT":
                 data = json.loads(ext["data"])
                 if data.get("obml_metric_type") == "cumulative":
                     return data

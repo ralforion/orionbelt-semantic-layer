@@ -83,7 +83,7 @@ class TestOBMLtoOSIFilters:
         sem = osi["semantic_model"][0]
         exts = sem.get("custom_extensions", [])
         assert len(exts) >= 1
-        common = next(e for e in exts if e["vendor_name"] == "COMMON")
+        common = next(e for e in exts if e["vendor_name"] == "ORIONBELT")
         data = json.loads(common["data"])
         assert "obml_filters" in data
         assert len(data["obml_filters"]) == 2
@@ -95,7 +95,7 @@ class TestOBMLtoOSIFilters:
         converter = conv.OBMLtoOSI(obml)
         osi = converter.convert()
         sem = osi["semantic_model"][0]
-        common = next(e for e in sem["custom_extensions"] if e["vendor_name"] == "COMMON")
+        common = next(e for e in sem["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
         data = json.loads(common["data"])
         assert "obml_filters" not in data
 

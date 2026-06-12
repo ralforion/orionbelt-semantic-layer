@@ -112,7 +112,7 @@ def _osi_metric(osi: dict, name: str) -> dict:
 
 def _extras(osi_metric: dict) -> dict:
     for ext in osi_metric.get("custom_extensions", []):
-        if ext.get("vendor_name") == "COMMON":
+        if ext.get("vendor_name") == "ORIONBELT":
             return json.loads(ext["data"])
     return {}
 

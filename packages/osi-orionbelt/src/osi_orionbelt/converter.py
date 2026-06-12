@@ -29,7 +29,27 @@ _OSI_VERSION = "0.2.0.dev0"
 
 # Dialect / vendor enum extras new in v0.2.0.dev0
 _OSI_KNOWN_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL")
-_OSI_KNOWN_VENDORS = ("COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA")
+_OSI_KNOWN_VENDORS = (
+    "COMMON",
+    "ORIONBELT",
+    "SNOWFLAKE",
+    "SALESFORCE",
+    "DBT",
+    "DATABRICKS",
+    "GOODDATA",
+)
+
+# Vendor identities for custom_extensions.
+#   ORIONBELT - OrionBelt/OBML-proprietary payloads we author on OBML -> OSI.
+#   OSI       - OSI-native fields OBML can't hold (unique_keys, field label,
+#               ai_context leftovers), stashed into OBML on OSI -> OBML.
+# Read paths also accept the legacy tags we emitted before this scheme so older
+# documents still round-trip; foreign vendors (SNOWFLAKE, DBT, ...) are
+# preserved verbatim, never relabelled.
+_VENDOR_OBML = "ORIONBELT"
+_VENDOR_OSI = "OSI"
+_OBML_VENDOR_READ = ("ORIONBELT", "COMMON")
+_OSI_VENDOR_READ = ("OSI", "OBSL")
 
 # ─── Type mapping ───────────────────────────────────────────────────────────
 
@@ -184,7 +204,7 @@ class OSItoOBML:
 
         # ── Restore model-level properties from custom_extensions ────
         for ext in model.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") in _OBML_VENDOR_READ:
                 try:
                     ext_data = json.loads(ext.get("data", "{}"))
                     if ext_data.get("obml_filters"):
@@ -292,7 +312,7 @@ class OSItoOBML:
 
         # Restore DataObject owner / comment / refresh from custom_extensions
         for ext in ds.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") in _OBML_VENDOR_READ:
                 try:
                     ext_data = json.loads(ext.get("data", "{}"))
                     if ext_data.get("obml_owner"):
@@ -312,7 +332,7 @@ class OSItoOBML:
         if unique_keys:
             do.setdefault("customExtensions", []).append(
                 {
-                    "vendor": "OBSL",
+                    "vendor": _VENDOR_OSI,
                     "data": json.dumps({"obml_unique_keys": [list(g) for g in unique_keys]}),
                 }
             )
@@ -374,7 +394,7 @@ class OSItoOBML:
 
         # Restore OBML-only column properties from custom_extensions
         for ext in field.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") in _OBML_VENDOR_READ:
                 try:
                     ext_data = json.loads(ext.get("data", "{}"))
                     if ext_data.get("obml_sql_type"):
@@ -399,7 +419,7 @@ class OSItoOBML:
         if field.get("label"):
             col.setdefault("customExtensions", []).append(
                 {
-                    "vendor": "OBSL",
+                    "vendor": _VENDOR_OSI,
                     "data": json.dumps({"obml_field_label": field["label"]}),
                 }
             )
@@ -546,7 +566,7 @@ class OSItoOBML:
                     dim_def["synonyms"] = list(ai_ctx["synonyms"])
                 # Restore OBML-only dimension properties from custom_extensions
                 for ext in field.get("custom_extensions", []):
-                    if ext.get("vendor_name") == "COMMON":
+                    if ext.get("vendor_name") in _OBML_VENDOR_READ:
                         try:
                             ext_data = json.loads(ext.get("data", "{}"))
                             if ext_data.get("obml_time_grain"):
@@ -720,7 +740,7 @@ class OSItoOBML:
     def _extract_obml_extras(osi_metric: dict) -> dict:
         """Extract OBML-only properties from OSI metric custom_extensions."""
         for ext in osi_metric.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") in _OBML_VENDOR_READ:
                 try:
                     data = json.loads(ext.get("data", "{}"))
                     # Check for any obml_ prefixed keys
@@ -1073,7 +1093,7 @@ class OBMLtoOSI:
         # Vendor names accumulate as we emit custom_extensions so we can
         # populate the v0.2 top-level ``vendors`` informational array at the
         # end of the conversion.
-        self._used_vendors: set[str] = {"COMMON"}
+        self._used_vendors: set[str] = {_VENDOR_OBML}
 
         data_objects = self.obml.get("dataObjects", {})
         obml_dimensions = self.obml.get("dimensions", {})
@@ -1130,7 +1150,7 @@ class OBMLtoOSI:
             roundtrip_data["obml_owner"] = obml_owner
         sem_model["custom_extensions"] = [
             {
-                "vendor_name": "COMMON",
+                "vendor_name": _VENDOR_OBML,
                 "data": json.dumps(roundtrip_data),
             }
         ]
@@ -1192,7 +1212,7 @@ class OBMLtoOSI:
         # a prior OSI → OBML conversion (or hand-authored OBML).
         unique_keys_extra: list[list[str]] | None = None
         for ext in do_obj.get("customExtensions", []) or []:
-            if ext.get("vendor") != "OBSL":
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
                 continue
             try:
                 data = json.loads(ext.get("data", "{}"))
@@ -1262,7 +1282,7 @@ class OBMLtoOSI:
             ds_exts = dataset.setdefault("custom_extensions", [])
             ds_exts.append(
                 {
-                    "vendor_name": "COMMON",
+                    "vendor_name": _VENDOR_OBML,
                     "data": json.dumps(do_extras),
                 }
             )
@@ -1321,7 +1341,7 @@ class OBMLtoOSI:
         # round-trip path for OSI → OBML → OSI fidelity. OBML has no
         # native column ``label`` today.
         for ext in col_obj.get("customExtensions", []) or []:
-            if ext.get("vendor") != "OBSL":
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
                 continue
             try:
                 ext_label_data = json.loads(ext.get("data", "{}"))
@@ -1329,7 +1349,7 @@ class OBMLtoOSI:
                 continue
             if ext_label_data.get("obml_field_label"):
                 field["label"] = ext_label_data["obml_field_label"]
-                self._record_vendor("OBSL")
+                self._record_vendor(_VENDOR_OSI)
                 break
 
         # Restore ai_context from customExtensions (OSI vendor) if present
@@ -1400,7 +1420,7 @@ class OBMLtoOSI:
                 break
         field["custom_extensions"] = [
             {
-                "vendor_name": "COMMON",
+                "vendor_name": _VENDOR_OBML,
                 "data": json.dumps(ext_data),
             }
         ]
@@ -1634,7 +1654,7 @@ class OBMLtoOSI:
             exts = result.setdefault("custom_extensions", [])
             exts.append(
                 {
-                    "vendor_name": "COMMON",
+                    "vendor_name": _VENDOR_OBML,
                     "data": json.dumps(extras),
                 }
             )
@@ -1721,7 +1741,7 @@ class OBMLtoOSI:
             exts = result.setdefault("custom_extensions", [])
             exts.append(
                 {
-                    "vendor_name": "COMMON",
+                    "vendor_name": _VENDOR_OBML,
                     "data": json.dumps(metric_extras),
                 }
             )
@@ -1810,7 +1830,7 @@ class OBMLtoOSI:
 
         result["custom_extensions"] = [
             {
-                "vendor_name": "COMMON",
+                "vendor_name": _VENDOR_OBML,
                 "data": json.dumps(ext_data),
             }
         ]
@@ -1898,7 +1918,7 @@ class OBMLtoOSI:
 
         result["custom_extensions"] = [
             {
-                "vendor_name": "COMMON",
+                "vendor_name": _VENDOR_OBML,
                 "data": json.dumps(ext_data),
             }
         ]
@@ -2012,7 +2032,7 @@ class OBMLtoOSI:
 
         result["custom_extensions"] = [
             {
-                "vendor_name": "COMMON",
+                "vendor_name": _VENDOR_OBML,
                 "data": json.dumps(ext_data),
             }
         ]

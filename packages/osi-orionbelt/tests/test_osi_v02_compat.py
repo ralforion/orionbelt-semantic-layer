@@ -146,9 +146,11 @@ class TestEmittedVersion:
 
     def test_vendors_array_present(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        # OBSL appears because the model has obml_field_label customExtensions
-        assert "COMMON" in osi["vendors"]
-        assert "OBSL" in osi["vendors"]
+        # ORIONBELT tags our roundtrip metadata; OSI tags the restored native
+        # field label. (The input fixture uses the legacy OBSL tag, exercising
+        # back-compat reads.)
+        assert "ORIONBELT" in osi["vendors"]
+        assert "OSI" in osi["vendors"]
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +233,9 @@ class TestFieldLabel:
         # OSI label round-trips back into OBSL customExtensions
         col = obml["dataObjects"]["Orders"]["columns"]["order_id"]
         exts = col.get("customExtensions", [])
+        # OSI label round-trips back into an OSI-vendor customExtension
         assert any(
-            e.get("vendor") == "OBSL"
+            e.get("vendor") == "OSI"
             and json.loads(e.get("data", "{}")).get("obml_field_label") == "filter"
             for e in exts
         )
