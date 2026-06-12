@@ -176,33 +176,34 @@ Validation runs automatically after each conversion. Use `--no-validate` to skip
 
 ### CLI
 
-Two format-named commands are installed with the `osi-orionbelt` package:
+A single `osi-orionbelt` command with two subcommands is installed with the package:
 
 ```bash
 # OSI → OBML
-osi-to-obml tpcds_osi.yaml -o tpcds_as_obml.yaml
+osi-orionbelt osi-to-obml -i tpcds_osi.yaml -o tpcds_as_obml.yaml
 
 # OBML → OSI
-obml-to-osi tpcds_as_obml.yaml -o tpcds_obml_as_osi.yaml \
-  --name tpcds_retail_model \
+osi-orionbelt obml-to-osi -i tpcds_as_obml.yaml -o tpcds_obml_as_osi.yaml \
+  --model-name tpcds_retail_model \
   --description "TPC-DS retail semantic model"
 
 # OBML → OSI ontology document
-obml-to-osi --ontology tpcds_as_obml.yaml -o tpcds_ontology.yaml
+osi-orionbelt obml-to-osi --ontology -i tpcds_as_obml.yaml -o tpcds_ontology.yaml
 
 # Skip validation
-osi-to-obml input.yaml -o output.yaml --no-validate
+osi-orionbelt osi-to-obml -i input.yaml -o output.yaml --no-validate
 ```
 
 ### CLI Options
 
-| Command / Option | Description |
+| Subcommand / Option | Description |
 |---|---|
 | `osi-to-obml` | Convert OSI → OBML |
 | `obml-to-osi` | Convert OBML → OSI |
 | `--ontology` | (`obml-to-osi`) emit an OSI ontology document instead of core-spec |
-| `-o`, `--output` | Output file (prints to stdout if omitted) |
-| `--name` | Model name for OBML → OSI |
+| `-i`, `--input` | Input file (required) |
+| `-o`, `--output` | Output file (required) |
+| `--model-name` | Model name for OBML → OSI |
 | `--description` | Model description for OBML → OSI |
 | `--ai-instructions` | AI instructions for OBML → OSI |
 | `--database` | Default database for OSI → OBML (default: `ANALYTICS`) |

@@ -1,14 +1,15 @@
-"""Command-line entry points for the OBML <-> OSI converter.
+"""Command-line entry point for the OBML <-> OSI converter.
 
-Two format-named commands, mirroring the OSI converter convention
-(``<vendor>-to-osi`` / ``osi-to-<vendor>``):
+A single ``osi-orionbelt`` command with two format-named subcommands, mirroring
+the OSI converter convention (e.g. ``osi-dbt msi-to-osi``):
 
-    obml-to-osi  [--ontology]  IN  [-o OUT]    OBML  -> OSI core-spec (or ontology)
-    osi-to-obml                IN  [-o OUT]    OSI core-spec -> OBML
+    osi-orionbelt obml-to-osi  -i model.obml.yaml -o model.osi.yaml
+    osi-orionbelt obml-to-osi --ontology -i model.obml.yaml -o model.ontology.yaml
+    osi-orionbelt osi-to-obml  -i model.osi.yaml  -o model.obml.yaml
 
-Both print conversion warnings and a validation summary to stderr, and exit
-non-zero when the produced document fails schema validation (unless
-``--no-validate`` is given).
+Both subcommands print conversion warnings and a validation summary to stderr,
+and exit non-zero when the produced document fails schema validation (unless
+``--no-validate``).
 """
 
 from __future__ import annotations
@@ -30,25 +31,20 @@ from osi_orionbelt.converter import (
 )
 
 
-def _load(input_path: str | None, parser: argparse.ArgumentParser) -> dict[str, Any]:
-    if not input_path:
-        parser.error("Input file is required")
-    with open(input_path) as f:
-        data = yaml.safe_load(f)
+def _load(input_path: str) -> dict[str, Any]:
+    data = yaml.safe_load(Path(input_path).read_text())
     if not isinstance(data, dict):
-        parser.error("Input YAML must be a mapping (dict)")
+        print(f"Error: {input_path} is not a YAML mapping", file=sys.stderr)
+        raise SystemExit(2)
     return data
 
 
-def _emit(result: dict[str, Any], output: str | None) -> None:
+def _emit(result: dict[str, Any], output: str) -> None:
     output_yaml = yaml.dump(
         result, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
     )
-    if output:
-        Path(output).write_text(output_yaml)
-        print(f"Converted to {output}", file=sys.stderr)
-    else:
-        sys.stdout.write(output_yaml)
+    Path(output).write_text(output_yaml)
+    print(f"Written to {output}", file=sys.stderr)
 
 
 def _print_warnings(warnings: list[str]) -> None:
@@ -71,31 +67,19 @@ def _report_validation(label: str, result: dict[str, Any], validate_fn: Any) -> 
     return True
 
 
-def obml_to_osi(argv: list[str] | None = None) -> int:
+def _cmd_obml_to_osi(args: argparse.Namespace) -> int:
     """OBML -> OSI core-spec (or, with --ontology, OSI ontology)."""
-    parser = argparse.ArgumentParser(
-        prog="obml-to-osi", description="Convert an OBML model to OSI."
-    )
-    parser.add_argument("input", nargs="?", help="Input OBML YAML file")
-    parser.add_argument("-o", "--output", help="Output YAML file (default: stdout)")
-    parser.add_argument(
-        "--ontology", action="store_true", help="Emit an OSI ontology document instead of core-spec"
-    )
-    parser.add_argument("--name", default="semantic_model", help="OSI model name")
-    parser.add_argument("--description", default="", help="OSI model description")
-    parser.add_argument("--ai-instructions", default="", help="OSI ai_context instructions")
-    parser.add_argument("--no-validate", action="store_true", help="Skip output validation")
-    args = parser.parse_args(argv)
-
-    data = _load(args.input, parser)
+    data = _load(args.input)
 
     validate_fn: Any
     if args.ontology:
-        converter: Any = OBMLtoOSIOntology(data, args.name, args.description, args.ai_instructions)
+        converter: Any = OBMLtoOSIOntology(
+            data, args.model_name, args.description, args.ai_instructions
+        )
         result = converter.convert()
         validate_fn, label = validate_osi_ontology, "OSI ontology output"
     else:
-        converter = OBMLtoOSI(data, args.name, args.description, args.ai_instructions)
+        converter = OBMLtoOSI(data, args.model_name, args.description, args.ai_instructions)
         result = converter.convert()
         validate_fn, label = validate_osi, "OSI output"
 
@@ -107,19 +91,9 @@ def obml_to_osi(argv: list[str] | None = None) -> int:
     return 1 if _report_validation(label, result, validate_fn) else 0
 
 
-def osi_to_obml(argv: list[str] | None = None) -> int:
+def _cmd_osi_to_obml(args: argparse.Namespace) -> int:
     """OSI core-spec -> OBML."""
-    parser = argparse.ArgumentParser(
-        prog="osi-to-obml", description="Convert an OSI model to OBML."
-    )
-    parser.add_argument("input", nargs="?", help="Input OSI YAML file")
-    parser.add_argument("-o", "--output", help="Output YAML file (default: stdout)")
-    parser.add_argument("--database", default="ANALYTICS", help="Default database for OBML output")
-    parser.add_argument("--schema", default="PUBLIC", help="Default schema for OBML output")
-    parser.add_argument("--no-validate", action="store_true", help="Skip output validation")
-    args = parser.parse_args(argv)
-
-    data = _load(args.input, parser)
+    data = _load(args.input)
 
     converter = OSItoOBML(data, args.database, args.schema)
     result = converter.convert()
@@ -132,5 +106,50 @@ def osi_to_obml(argv: list[str] | None = None) -> int:
     return 1 if _report_validation("OBML output", result, validate_obml) else 0
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="osi-orionbelt",
+        description="Convert between OrionBelt OBML and OSI YAML.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    o2s = subparsers.add_parser("obml-to-osi", help="Convert OBML YAML → OSI YAML")
+    o2s.add_argument("-i", "--input", required=True, metavar="FILE", help="Path to OBML YAML")
+    o2s.add_argument(
+        "-o", "--output", required=True, metavar="FILE", help="Path for output OSI YAML"
+    )
+    o2s.add_argument(
+        "--ontology", action="store_true", help="Emit an OSI ontology document instead of core-spec"
+    )
+    o2s.add_argument(
+        "--model-name", default="semantic_model", metavar="NAME", help="OSI semantic model name"
+    )
+    o2s.add_argument("--description", default="", metavar="TEXT", help="OSI model description")
+    o2s.add_argument(
+        "--ai-instructions", default="", metavar="TEXT", help="OSI ai_context instructions"
+    )
+    o2s.add_argument("--no-validate", action="store_true", help="Skip output validation")
+
+    s2o = subparsers.add_parser("osi-to-obml", help="Convert OSI YAML → OBML YAML")
+    s2o.add_argument("-i", "--input", required=True, metavar="FILE", help="Path to OSI YAML")
+    s2o.add_argument(
+        "-o", "--output", required=True, metavar="FILE", help="Path for output OBML YAML"
+    )
+    s2o.add_argument(
+        "--database", default="ANALYTICS", metavar="NAME", help="Default database for OBML output"
+    )
+    s2o.add_argument(
+        "--schema", default="PUBLIC", metavar="NAME", help="Default schema for OBML output"
+    )
+    s2o.add_argument("--no-validate", action="store_true", help="Skip output validation")
+
+    args = parser.parse_args(argv)
+    if args.command == "obml-to-osi":
+        return _cmd_obml_to_osi(args)
+    if args.command == "osi-to-obml":
+        return _cmd_osi_to_obml(args)
+    return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(obml_to_osi())
+    raise SystemExit(main())

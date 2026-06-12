@@ -31,8 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-obml-to-osi = "osi_orionbelt.cli:obml_to_osi"
-osi-to-obml = "osi_orionbelt.cli:osi_to_obml"
+osi-orionbelt = "osi_orionbelt.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/osi_orionbelt"]

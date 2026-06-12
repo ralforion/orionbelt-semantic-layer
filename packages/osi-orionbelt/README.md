@@ -26,21 +26,23 @@ warning for the deeper semantic pass.
 
 ## CLI
 
-| Command | Direction | In | Out |
+A single `osi-orionbelt` command with two subcommands (mirroring `osi-dbt`):
+
+| Subcommand | Direction | In | Out |
 |---------|-----------|----|----|
 | `obml-to-osi` | OBML -> OSI core-spec | OBML YAML | OSI YAML |
 | `obml-to-osi --ontology` | OBML -> OSI ontology | OBML YAML | OSI ontology YAML |
 | `osi-to-obml` | OSI core-spec -> OBML | OSI YAML | OBML YAML |
 
 ```bash
-obml-to-osi model.obml.yaml -o model.osi.yaml
-obml-to-osi --ontology model.obml.yaml -o model.ontology.yaml
-osi-to-obml model.osi.yaml -o model.obml.yaml
+osi-orionbelt obml-to-osi -i model.obml.yaml -o model.osi.yaml
+osi-orionbelt obml-to-osi --ontology -i model.obml.yaml -o model.ontology.yaml
+osi-orionbelt osi-to-obml -i model.osi.yaml -o model.obml.yaml
 ```
 
-Each command prints conversion warnings and a validation summary to stderr, and
-exits non-zero when the produced document fails schema validation (unless
-`--no-validate`).
+`-i/--input` and `-o/--output` are required. Each subcommand prints conversion
+warnings and a validation summary to stderr, and exits non-zero when the
+produced document fails schema validation (unless `--no-validate`).
 
 ## Python API
 
@@ -49,7 +51,7 @@ import yaml
 from osi_orionbelt import OBMLtoOSI, OSItoOBML, validate_osi
 
 obml = yaml.safe_load(open("model.obml.yaml"))
-osi = OBMLtoOSI(obml, name="sales", description="Sales model").convert()
+osi = OBMLtoOSI(obml, "sales", "Sales model").convert()
 result = validate_osi(osi)
 assert result.valid
 
