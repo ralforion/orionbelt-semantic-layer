@@ -4,9 +4,11 @@
 
 OrionBelt includes a bidirectional converter between OBML and the [OSI specification](https://github.com/open-semantic-interchange/OSI) format. The converter handles structural differences between the two formats — including metric decomposition, relationship restructuring, and lossless `ai_context` preservation via `customExtensions` — with built-in validation for both directions.
 
+The converter ships as a standalone `osi-orionbelt` package. It is an **optional** dependency: install it with `pip install 'orionbelt-semantic-layer[osi]'` (or standalone via `pip install osi-orionbelt`). The published API Docker images bundle it, so the `/convert`, `/models/from-osi`, and `/osi` endpoints work out of the box; on a bare install without the extra, those endpoints return a `503`.
+
 ## Spec version
 
-OBSL v2.6 emits **OSI v0.2.0.dev0** (the latest draft in the upstream `core-spec/` at release time). The vendored schema lives at `osi-obml/osi-schema.json`; refresh it with `scripts/refresh-osi-schema.sh` when upstream advances.
+OBSL v2.6 emits **OSI v0.2.0.dev0** (the latest draft in the upstream `core-spec/` at release time). The vendored schema lives at `packages/osi-orionbelt/src/osi_orionbelt/schemas/osi-schema.json`; refresh it with `scripts/refresh-osi-schema.sh` when upstream advances.
 
 **Breaking change vs. OBSL v2.5** — the previous release emitted OSI v0.1.1. Downstream consumers pinning to v0.1 will reject v2.6 output. The converter still **reads** v0.1.x inputs via the legacy shim `_normalize_legacy_v01()`, which promotes pre-v0.2 `custom_extensions` payloads (`obml_primary_key`, `obml_unique_keys`) into the v0.2 first-class fields before parsing.
 
@@ -63,4 +65,4 @@ The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these
 
 ## Mapping Reference
 
-See the [OSI - OBML Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/osi-obml/osi_obml_mapping_analysis.md) for the core-spec mapping, and the [OBML -> OSI Ontology Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/osi-obml/osi_obml_ontology_mapping_analysis.md) for the ontology-layer mapping and its documented gaps.
+See the [OSI - OBML Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_mapping_analysis.md) for the core-spec mapping, and the [OBML -> OSI Ontology Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_ontology_mapping_analysis.md) for the ontology-layer mapping and its documented gaps.

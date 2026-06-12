@@ -32,6 +32,12 @@ jobs:
       - name: Run tests
         run: uv run pytest --tb=short -q
 
+      # The osi-orionbelt workspace member has its own test suite and pytest
+      # config; the root testpaths do not include it, so run it explicitly.
+      - name: Run osi-orionbelt tests
+        working-directory: packages/osi-orionbelt
+        run: uv run pytest --tb=short -q
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -56,3 +62,17 @@ jobs:
 
       - name: Mypy
         run: uv run mypy src/
+
+      # The osi-orionbelt workspace member has its own ruff/mypy config; run
+      # them from its directory so those (non-strict) settings apply.
+      - name: Ruff check osi-orionbelt
+        working-directory: packages/osi-orionbelt
+        run: uv run ruff check .
+
+      - name: Ruff format check osi-orionbelt
+        working-directory: packages/osi-orionbelt
+        run: uv run ruff format --check .
+
+      - name: Mypy osi-orionbelt
+        working-directory: packages/osi-orionbelt
+        run: uv run mypy src/osi_orionbelt

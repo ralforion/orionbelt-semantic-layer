@@ -26,6 +26,7 @@ members = [
     "ob-postgres",
     "ob-snowflake",
     "orionbelt-semantic-layer",
+    "osi-orionbelt",
 ]
 
 [[package]]
@@ -2268,7 +2269,7 @@ wheels = [
 
 [[package]]
 name = "orionbelt-semantic-layer"
-version = "2.9.0"
+version = "2.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -2321,13 +2322,18 @@ flight = [
     { name = "ob-mysql" },
     { name = "ob-postgres" },
     { name = "ob-snowflake" },
+    { name = "osi-orionbelt" },
     { name = "pyarrow" },
 ]
 flight-duckdb-only = [
     { name = "ob-driver-core" },
     { name = "ob-duckdb" },
     { name = "ob-flight-extension" },
+    { name = "osi-orionbelt" },
     { name = "pyarrow" },
+]
+osi = [
+    { name = "osi-orionbelt" },
 ]
 ui = [
     { name = "gradio" },
@@ -2355,6 +2361,7 @@ dev = [
     { name = "ob-mysql" },
     { name = "ob-postgres" },
     { name = "ob-snowflake" },
+    { name = "osi-orionbelt" },
     { name = "pre-commit" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg2-binary" },
@@ -2365,6 +2372,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "testcontainers" },
+    { name = "types-jsonschema" },
     { name = "types-networkx" },
     { name = "types-pyyaml" },
 ]
@@ -2398,6 +2406,9 @@ requires-dist = [
     { name = "ob-postgres", marker = "extra == 'flight'", editable = "drivers/ob-postgres" },
     { name = "ob-snowflake", marker = "extra == 'flight'", editable = "drivers/ob-snowflake" },
     { name = "opentelemetry-api", specifier = ">=1.39,<2.0" },
+    { name = "osi-orionbelt", marker = "extra == 'flight'", editable = "packages/osi-orionbelt" },
+    { name = "osi-orionbelt", marker = "extra == 'flight-duckdb-only'", editable = "packages/osi-orionbelt" },
+    { name = "osi-orionbelt", marker = "extra == 'osi'", editable = "packages/osi-orionbelt" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
@@ -2420,7 +2431,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40,<1.0" },
 ]
-provides-extras = ["dev", "docs", "ui", "flight", "flight-duckdb-only"]
+provides-extras = ["dev", "docs", "ui", "osi", "flight", "flight-duckdb-only"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2444,6 +2455,7 @@ dev = [
     { name = "ob-mysql", editable = "drivers/ob-mysql" },
     { name = "ob-postgres", editable = "drivers/ob-postgres" },
     { name = "ob-snowflake", editable = "drivers/ob-snowflake" },
+    { name = "osi-orionbelt", editable = "packages/osi-orionbelt" },
     { name = "pre-commit", specifier = ">=4.5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
@@ -2454,6 +2466,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0" },
     { name = "ruff", specifier = ">=0.15" },
     { name = "testcontainers", specifier = ">=4.0" },
+    { name = "types-jsonschema", specifier = ">=4.18" },
     { name = "types-networkx", specifier = ">=3.6.1.20260210" },
     { name = "types-pyyaml", specifier = ">=6.0" },
 ]
@@ -2510,6 +2523,42 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/df/172771902943af54bf661a8d102bdf2e7f932127968080632bda6054b62c/orjson-3.11.7-cp314-cp314-win_amd64.whl", hash = "sha256:845c3e0d8ded9c9271cd79596b9b552448b885b97110f628fb687aee2eed11c1", size = 124985, upload-time = "2026-02-02T15:38:46.388Z" },
     { url = "https://files.pythonhosted.org/packages/6f/1c/f2a8d8a1b17514660a614ce5f7aac74b934e69f5abc2700cc7ced882a009/orjson-3.11.7-cp314-cp314-win_arm64.whl", hash = "sha256:4a2e9c5be347b937a2e0203866f12bba36082e89b402ddb9e927d5822e43088d", size = 126038, upload-time = "2026-02-02T15:38:47.703Z" },
 ]
+
+[[package]]
+name = "osi-orionbelt"
+version = "0.1.0"
+source = { editable = "packages/osi-orionbelt" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "pyyaml" },
+    { name = "referencing" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "types-jsonschema" },
+    { name = "types-pyyaml" },
+]
+obml-validation = [
+    { name = "orionbelt-semantic-layer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.18" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "orionbelt-semantic-layer", marker = "extra == 'obml-validation'", editable = "." },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "referencing", specifier = ">=0.30" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "types-jsonschema", marker = "extra == 'dev'" },
+    { name = "types-pyyaml", marker = "extra == 'dev'" },
+]
+provides-extras = ["obml-validation", "dev"]
 
 [[package]]
 name = "packaging"
@@ -3737,6 +3786,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1f/8a/881cfd399a119db89619dc1b93d36e2fb6720ddb112bceff41203f1abd72/typer_slim-0.23.0.tar.gz", hash = "sha256:be8b60243df27cfee444c6db1b10a85f4f3e54d940574f31a996f78aa35a8254", size = 4773, upload-time = "2026-02-11T15:22:19.106Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/3e/ba3a222c80ee070d9497ece3e1fe77253c142925dd4c90f04278aac0a9eb/typer_slim-0.23.0-py3-none-any.whl", hash = "sha256:1d693daf22d998a7b1edab8413cdcb8af07254154ce3956c1664dc11b01e2f8b", size = 3399, upload-time = "2026-02-11T15:22:17.792Z" },
+]
+
+[[package]]
+name = "types-jsonschema"
+version = "4.26.0.20260518"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "referencing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/46/73b6a5d61a61015c4248030a8cb07e5bdddb4041430fae9e585a68692578/types_jsonschema-4.26.0.20260518.tar.gz", hash = "sha256:e1dd53dc97a64f5eccdd6fa9839666e09bb500a8ebba2db6fdaf1789faea81a6", size = 16638, upload-time = "2026-05-18T06:06:44.106Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/d5/134f8a147dcecda10db7f60cfc6af0578a25a5c53c87b3907a64385e0184/types_jsonschema-4.26.0.20260518-py3-none-any.whl", hash = "sha256:30b30a518c7fe335df85c919fcbcc631b69c03d4a4b5b632fa916bea03065307", size = 16072, upload-time = "2026-05-18T06:06:43.264Z" },
 ]
 
 [[package]]

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "osi-orionbelt"
+version = "0.1.0"
+description = "Bidirectional OBML <-> OSI (Open Semantic Interchange) converter for OrionBelt semantic models"
+license = { text = "Apache-2.0" }
+readme = "README.md"
+authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
+keywords = ["osi", "open-semantic-interchange", "obml", "semantic-layer", "orionbelt", "converter"]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.18",
+    "referencing>=0.30",
+]
+
+[project.optional-dependencies]
+# Deep OBML semantic validation (cycles, duplicate names, invalid refs) via the
+# full OrionBelt engine. Optional: validate_obml degrades to JSON-schema-only
+# checks with a warning when this is not installed.
+obml-validation = ["orionbelt-semantic-layer"]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
+    "types-jsonschema",
+    "types-PyYAML",
+]
+
+[project.scripts]
+osi-orionbelt = "osi_orionbelt.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/osi_orionbelt"]
+
+# All three schemas (the two OSI artefacts plus a vendored snapshot of the
+# canonical OBML schema) live in src/osi_orionbelt/schemas/ as tracked files,
+# so the sdist and wheel are self-contained and build in isolation. The OBML
+# snapshot is kept in sync with the repo-root schema/obml-schema.json by a
+# drift-guard test (tests/unit/test_osi_orionbelt_schema_sync.py).
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/osi_orionbelt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

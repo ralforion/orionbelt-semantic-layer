@@ -14,24 +14,20 @@ Covers the v2.6 spec bump from OSI v0.1.1 → v0.2.0.dev0:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Import the converter module from osi-obml/ directory
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402  # noqa: I001
+import osi_orionbelt.converter as conv
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "osi-obml" / "osi-schema.json"
+_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1] / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
+)
 
 
 @pytest.fixture(scope="module")
@@ -150,9 +146,11 @@ class TestEmittedVersion:
 
     def test_vendors_array_present(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        # OBSL appears because the model has obml_field_label customExtensions
-        assert "COMMON" in osi["vendors"]
-        assert "OBSL" in osi["vendors"]
+        # ORIONBELT tags our roundtrip metadata; OSI tags the restored native
+        # field label. (The input fixture uses the legacy OBSL tag, exercising
+        # back-compat reads.)
+        assert "ORIONBELT" in osi["vendors"]
+        assert "OSI" in osi["vendors"]
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +233,9 @@ class TestFieldLabel:
         # OSI label round-trips back into OBSL customExtensions
         col = obml["dataObjects"]["Orders"]["columns"]["order_id"]
         exts = col.get("customExtensions", [])
+        # OSI label round-trips back into an OSI-vendor customExtension
         assert any(
-            e.get("vendor") == "OBSL"
+            e.get("vendor") == "OSI"
             and json.loads(e.get("data", "{}")).get("obml_field_label") == "filter"
             for e in exts
         )
@@ -320,7 +319,7 @@ class TestSchemaValidation:
     def test_tpcds_fixture_passes_v02_validation(self, schema_validator: Any) -> None:
         """Real-world TPC-DS OBML model must emit v0.2-clean OSI."""
         yaml = pytest.importorskip("yaml")
-        fixture = Path(__file__).resolve().parents[2] / "osi-obml" / "tpcds_as_obml.yaml"
+        fixture = Path(__file__).resolve().parent / "fixtures" / "tpcds_as_obml.yaml"
         with open(fixture) as f:
             obml = yaml.safe_load(f)
         osi = conv.OBMLtoOSI(obml).convert()

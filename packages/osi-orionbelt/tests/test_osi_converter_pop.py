@@ -7,18 +7,11 @@ via custom_extensions preservation.
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Import the converter module from osi-obml/ directory
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402
+import osi_orionbelt.converter as conv
 
 # ---------------------------------------------------------------------------
 # Test OBML model with period-over-period metrics
@@ -220,7 +213,7 @@ class TestOBMLtoOSIPoP:
     @staticmethod
     def _get_pop_ext(metric: dict) -> dict:
         for ext in metric.get("custom_extensions", []):
-            if ext.get("vendor_name") == "COMMON":
+            if ext.get("vendor_name") == "ORIONBELT":
                 data = json.loads(ext["data"])
                 if data.get("obml_metric_type") == "period_over_period":
                     return data

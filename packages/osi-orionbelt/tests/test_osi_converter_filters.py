@@ -7,15 +7,9 @@ roundtrip via custom_extensions preservation.
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
 
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402
+import osi_orionbelt.converter as conv
 
 _OBML_WITH_FILTERS: dict[str, Any] = {
     "version": 1.0,
@@ -89,7 +83,7 @@ class TestOBMLtoOSIFilters:
         sem = osi["semantic_model"][0]
         exts = sem.get("custom_extensions", [])
         assert len(exts) >= 1
-        common = next(e for e in exts if e["vendor_name"] == "COMMON")
+        common = next(e for e in exts if e["vendor_name"] == "ORIONBELT")
         data = json.loads(common["data"])
         assert "obml_filters" in data
         assert len(data["obml_filters"]) == 2
@@ -101,7 +95,7 @@ class TestOBMLtoOSIFilters:
         converter = conv.OBMLtoOSI(obml)
         osi = converter.convert()
         sem = osi["semantic_model"][0]
-        common = next(e for e in sem["custom_extensions"] if e["vendor_name"] == "COMMON")
+        common = next(e for e in sem["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
         data = json.loads(common["data"])
         assert "obml_filters" not in data
 

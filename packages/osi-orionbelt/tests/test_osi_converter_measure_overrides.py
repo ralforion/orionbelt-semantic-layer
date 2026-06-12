@@ -6,15 +6,9 @@ OBML → OSI → OBML roundtrip via custom_extensions preservation.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402
+import osi_orionbelt.converter as conv
 
 _BASE_OBML: dict[str, Any] = {
     "version": 1.0,
@@ -286,7 +280,7 @@ class TestMeasureAggregationRoundtrip:
         assert exts, "expected custom_extensions to carry the obml_aggregation marker"
         import json as _json
 
-        common = [_json.loads(e["data"]) for e in exts if e.get("vendor_name") == "COMMON"]
+        common = [_json.loads(e["data"]) for e in exts if e.get("vendor_name") == "ORIONBELT"]
         assert any(e.get("obml_aggregation") == "measure" for e in common), (
             "obml_aggregation marker missing from COMMON extras"
         )

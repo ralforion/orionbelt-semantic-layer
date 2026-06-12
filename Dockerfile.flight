@@ -7,17 +7,17 @@ WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy workspace package metadata first (cached layer)
+# Copy workspace members first (cached layer). The flight extra depends on the
+# osi-orionbelt workspace member under packages/, so it must be present before
+# the first sync resolves that extra.
 COPY pyproject.toml uv.lock README.md ./
 COPY drivers/ drivers/
+COPY packages/ packages/
 RUN uv sync --no-dev --no-install-project --extra flight --frozen
 
-# Copy source and install everything
+# Copy source and install everything (osi-orionbelt vendors its own schemas).
 COPY src/ src/
 COPY schema/ schema/
-COPY osi-obml/osi_obml_converter.py osi-obml/
-COPY osi-obml/osi-schema.json osi-obml/
-COPY osi-obml/osi-ontology-schema.json osi-obml/
 RUN uv sync --no-dev --no-editable --extra flight --frozen
 
 # --- Runtime stage: minimal image ---
@@ -38,8 +38,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy schema (needed at runtime for validation)
 COPY --from=builder --chown=app:app /app/schema schema/
 
-# Copy OSI converter (needed at runtime for /convert endpoints)
-COPY --from=builder --chown=app:app /app/osi-obml osi-obml/
+# The OSI <-> OBML converter is installed into the venv as the osi-orionbelt
+# package (with its schemas bundled), so no separate copy is needed here.
 
 # Model directory — mount a host directory containing OBML YAML files:
 #   docker run -v /path/to/models/:/app/models/ -e MODEL_FILES=my-model.obml.yml ...

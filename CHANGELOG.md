@@ -2,6 +2,19 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.10.0] - 2026-06-12
+
+### Added
+
+- **`osi-orionbelt` converter package.** The bidirectional OBML <-> OSI converter is now a standalone, pip-installable package (Apache-2.0), developed in-repo as a uv workspace member under `packages/osi-orionbelt` and published to PyPI alongside the `ob-*` drivers. It ships a single `osi-orionbelt` command with `obml-to-osi` / `osi-to-obml` subcommands (with `--ontology`), mirroring the `osi-dbt` converter, and vendors all three schemas (the two OSI artefacts plus a synced snapshot of the OBML schema) so it builds and validates standalone with no `orionbelt` dependency.
+- **OSI conversion is now an optional extra.** `osi-orionbelt` is no longer a hard dependency of `orionbelt-semantic-layer`, so a bare `pip install orionbelt-semantic-layer` stays lean. The `/convert`, `/models/from-osi`, and `/osi` endpoints return a clear **503** when the converter is absent. Install it with `pip install 'orionbelt-semantic-layer[osi]'` (or `pip install osi-orionbelt`); the `flight` and `flight-duckdb-only` deploy extras bundle it, so the shipped API images keep OSI conversion working. The previous `force-include` of the converter into the wheel and the `COPY osi-obml` lines in all three Dockerfiles are removed.
+- **Third-party vendor extension preservation.** OSI `custom_extensions` from vendors the converter does not handle internally (e.g. `SNOWFLAKE`, `DBT`, `SALESFORCE`, `GOODDATA`) now round-trip verbatim at the model, dataObject/dataset, column/field, and measure/metric levels. OSI has no separate dimension entity, so an OBML dimension's foreign extensions surface on its OSI field.
+
+### Changed
+
+- **Converter vendor identity.** OBML -> OSI now tags OrionBelt-proprietary payloads as `ORIONBELT` (was `COMMON`), and OSI -> OBML stashes OSI-native fields OBML cannot hold (unique keys, field labels, leftover `ai_context`) under `OSI` (was the misleading `OBSL`). Read paths still accept the legacy `COMMON`/`OBSL` tags, so previously emitted documents keep round-tripping. The converter self-identifies as `osi-orionbelt` in its roundtrip metadata. `vendor_name` is an open string in OSI, so this is a non-breaking output change.
+- **UI: Export as OSI.** The Model Workbench export button (now `⬇ Export as OSI`) shows clean, directly copyable OSI YAML in the preview box (relabelled to "OSI YAML (exported)", reset to "Generated SQL" on the next compile/validate/import) and downloads the result as `model.osi.yaml`, instead of prepending a status banner into the YAML. The validation status moves to the explain box.
+
 ## [2.9.0] - 2026-06-11
 
 ### Added

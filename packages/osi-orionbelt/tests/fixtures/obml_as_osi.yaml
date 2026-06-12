@@ -784,4 +784,4 @@ semantic_model:
     description: Average Sale
   custom_extensions:
   - vendor_name: COMMON
-    data: '{"source_format": "OBML", "source_version": "1.0", "converter": "osi_obml_converter"}'
+    data: '{"source_format": "OBML", "source_version": "1.0", "converter": "osi-orionbelt"}'

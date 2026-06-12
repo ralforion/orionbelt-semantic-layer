@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.9.0"
+version = "2.10.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "ralf.becher@web.de"}]
@@ -94,6 +94,14 @@ docs = [
 ui = [
     "gradio>=5.0,<6.0",
 ]
+# OBML <-> OSI converter (packages/osi-orionbelt). Optional: a bare install
+# stays lean, and the /convert + /models/from-osi|/osi endpoints return a clear
+# 503 when it is absent. The API-serving deploy extras below bundle it so those
+# endpoints work in the shipped images; the UI image proxies to the API and
+# does not need it.
+osi = [
+    "osi-orionbelt",
+]
 flight = [
     "pyarrow>=16.0,<20.0",
     "ob-flight-extension>=0.1",
@@ -106,6 +114,7 @@ flight = [
     "ob-mysql>=0.1",
     "ob-postgres>=0.1",
     "ob-snowflake>=0.1",
+    "osi-orionbelt",
 ]
 # Minimal subset of `flight` for deployments that only need DuckDB
 # execution (e.g. the public Cloud Run demo with a baked-in DuckDB
@@ -116,6 +125,7 @@ flight-duckdb-only = [
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
     "ob-duckdb>=0.1",
+    "osi-orionbelt",
 ]
 
 [build-system]
@@ -131,17 +141,11 @@ packages = ["src/orionbelt"]
 # PyPI wheel, or Docker non-editable install). The files stay at the repo
 # root as the single source of truth; hatch copies them at build time.
 #
-# Likewise bundle the OSI <-> OBML converter (repo-root ``osi-obml/``) under
-# ``orionbelt/_osi_obml/`` so the /convert and /models/from-osi|/osi
-# endpoints can import it from a non-editable wheel install. Only the
-# converter module and its OSI schema are shipped (not the sample YAMLs).
-# The converter resolves the OBML schema at ``__file__.parent.parent /
-# "schema"`` which lands on the bundled ``orionbelt/schema`` above.
+# The OSI <-> OBML converter now ships as its own package (osi-orionbelt, a uv
+# workspace member under packages/) and is a normal dependency, so it no longer
+# needs to be force-included here.
 [tool.hatch.build.targets.wheel.force-include]
 "schema" = "orionbelt/schema"
-"osi-obml/osi_obml_converter.py" = "orionbelt/_osi_obml/osi_obml_converter.py"
-"osi-obml/osi-schema.json" = "orionbelt/_osi_obml/osi-schema.json"
-"osi-obml/osi-ontology-schema.json" = "orionbelt/_osi_obml/osi-ontology-schema.json"
 
 [tool.ruff]
 target-version = "py312"
@@ -206,6 +210,7 @@ dev = [
     "nbstripout>=0.9.1",
     "types-networkx>=3.6.1.20260210",
     "types-PyYAML>=6.0",
+    "types-jsonschema>=4.18",
     "mkdocs-material>=9.7",
     "mkdocs-autorefs>=1.4",
     "mkdocstrings[python]>=1.0",
@@ -222,6 +227,7 @@ dev = [
     "ob-mysql>=0.1",
     "ob-postgres>=0.1",
     "ob-snowflake>=0.1",
+    "osi-orionbelt",
 ]
 
 [tool.uv.workspace]
@@ -236,6 +242,7 @@ members = [
     "drivers/ob-duckdb",
     "drivers/ob-mysql",
     "drivers/ob-flight-extension",
+    "packages/osi-orionbelt",
 ]
 
 [tool.uv.sources]
@@ -251,3 +258,4 @@ ob-databricks = { workspace = true }
 ob-duckdb = { workspace = true }
 ob-mysql = { workspace = true }
 ob-flight-extension = { workspace = true }
+osi-orionbelt = { workspace = true }

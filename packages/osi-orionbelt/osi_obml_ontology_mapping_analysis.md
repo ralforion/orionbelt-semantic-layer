@@ -1,7 +1,7 @@
 # OBML → OSI Ontology Mapping Analysis
 
 This pins the rules used by `OBMLtoOSIOntology` to derive an **OSI ontology
-document** (validated against `osi-obml/osi-ontology-schema.json`, OSI version
+document** (validated against `src/osi_orionbelt/schemas/osi-ontology-schema.json`, OSI version
 `0.2.0.dev0`) from an OBML semantic model.
 
 The OSI ontology is a **separate document** from the OSI core-spec semantic

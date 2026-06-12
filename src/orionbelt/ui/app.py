@@ -510,6 +510,19 @@ _DOWNLOAD_TTL_JS = """(turtle) => {
     URL.revokeObjectURL(a.href);
 }"""
 
+# JS: download the exported OSI model as a .osi.yaml file
+_DOWNLOAD_OSI_JS = """(osiYaml) => {
+    if (!osiYaml) { alert('No OSI model to export. Load a model first.'); return; }
+    var blob = new Blob([osiYaml], {type: 'text/yaml'});
+    var a = document.createElement('a');
+    a.download = 'model.osi.yaml';
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+}"""
+
 # JS: download the raw Mermaid text as a .md file
 _DOWNLOAD_MD_JS = """(raw) => {
     if (!raw) { alert('No diagram available. Generate the ER diagram first.'); return; }
@@ -914,10 +927,15 @@ def _import_osi(osi_yaml: str, api_base: str) -> tuple[str, str, str]:
     return data.get("output_yaml", ""), status, ""
 
 
-def _export_to_osi(obml_yaml: str, api_base: str) -> tuple[str, str]:
-    """Convert OBML YAML to OSI via the API. Returns ``(status, explain)``."""
+def _export_to_osi(obml_yaml: str, api_base: str) -> tuple[Any, str, str]:
+    """Convert OBML YAML to OSI via the API.
+
+    Returns ``(osi_yaml, status, osi_yaml)`` where the first value is the clean
+    OSI YAML shown in the preview box, the second is the validation status line,
+    and the third is the same YAML handed to the browser-download JS.
+    """
     if not obml_yaml or not obml_yaml.strip():
-        return "Error: No OBML model YAML to export", ""
+        return gr.update(value="", label="Generated SQL"), "Error: No OBML model YAML to export", ""
 
     try:
         resp = httpx.post(
@@ -928,16 +946,20 @@ def _export_to_osi(obml_yaml: str, api_base: str) -> tuple[str, str]:
         )
         if resp.status_code != 200:
             detail = resp.json().get("detail", resp.text)
-            return f"Error: {detail}", ""
+            return gr.update(value="", label="Generated SQL"), f"Error: {detail}", ""
         data = resp.json()
     except Exception as exc:
-        return f"Error: OBML → OSI conversion failed\n{exc}", ""
+        return (
+            gr.update(value="", label="Generated SQL"),
+            f"Error: OBML → OSI conversion failed\n{exc}",
+            "",
+        )
 
     status = _format_convert_status(
         "OBML → OSI Export", data.get("warnings", []), data.get("validation", {})
     )
     output: str = data.get("output_yaml", "")
-    return status + "\nCopy the OSI YAML output below.\n\n" + output, ""
+    return gr.update(value=output, label="OSI YAML (exported)"), status, output
 
 
 def _fetch_obsl_turtle(
@@ -2367,7 +2389,7 @@ def create_blocks(
                         min_width=100,
                         visible=not single_model,
                     )
-                    export_osi_btn = gr.Button("Export to OSI", size="sm", scale=0, min_width=120)
+                    export_osi_btn = gr.Button("⬇ Export as OSI", size="sm", scale=0, min_width=140)
                     download_obsl_btn = gr.Button("\u2193 OBSL", size="sm", scale=0, min_width=80)
 
                 init_dims, init_meas, init_fields = _extract_model_items(example_model)
@@ -2558,6 +2580,14 @@ def create_blocks(
                         elem_id="ob-explain",
                     )
 
+                # Holds the exported OSI YAML for the browser-download JS hook.
+                osi_dl_state = gr.Textbox(visible=False)
+
+                # Reset the preview box label back to "Generated SQL" after any
+                # SQL/validate/import action (export relabels it to "OSI YAML").
+                def _reset_sql_label() -> Any:
+                    return gr.update(label="Generated SQL")
+
                 compile_btn.click(
                     fn=compile_sql,
                     inputs=[
@@ -2569,23 +2599,29 @@ def create_blocks(
                         model_state,
                     ],
                     outputs=[sql_output, explain_output, session_state, model_state],
-                )
+                ).then(fn=_reset_sql_label, outputs=[sql_output])
                 validate_btn.click(
                     fn=validate_model,
                     inputs=[model_input, api_url],
                     outputs=[sql_output, explain_output],
-                )
+                ).then(fn=_reset_sql_label, outputs=[sql_output])
 
                 # Wire OSI bridge + export after sql_output exists
                 osi_bridge.change(
                     fn=_import_osi,
                     inputs=[osi_bridge, api_url],
                     outputs=[model_input, sql_output, explain_output],
-                )
+                ).then(fn=_reset_sql_label, outputs=[sql_output])
+                # Export → clean OSI YAML in the preview box + validation status,
+                # then the browser downloads the YAML as a .osi.yaml file.
                 export_osi_btn.click(
                     fn=_export_to_osi,
                     inputs=[model_input, api_url],
-                    outputs=[sql_output, explain_output],
+                    outputs=[sql_output, explain_output, osi_dl_state],
+                ).then(
+                    fn=None,
+                    inputs=[osi_dl_state],
+                    js=_DOWNLOAD_OSI_JS,
                 )
 
                 # OBSL graph download: fetch Turtle → JS triggers file download

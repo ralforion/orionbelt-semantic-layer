@@ -17,21 +17,19 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 #     Snowflake). Required for integration tests that execute against a
 #     non-DuckDB backend (e.g. the Dremio Stage-2 suite).
 #
-# The vendor driver workspace members live under drivers/, so we copy
-# their pyproject.toml manifests before the sync so uv can resolve the
-# workspace graph. The actual driver source is copied alongside src/
-# below.
+# Copy the workspace members (drivers/ and packages/) before the sync so uv
+# can resolve the workspace graph. The flight* extras pull the osi-orionbelt
+# member under packages/, so it must be present at this first sync.
 ARG OB_EXTRA=flight-duckdb-only
 COPY pyproject.toml uv.lock README.md ./
 COPY drivers/ drivers/
+COPY packages/ packages/
 RUN uv sync --no-dev --no-install-project --frozen --extra ${OB_EXTRA}
 
-# Copy source and install the project itself
+# Copy source and install the project itself (osi-orionbelt vendors its own
+# schemas; schema/ here is for the main package's reference endpoints).
 COPY src/ src/
 COPY schema/ schema/
-COPY osi-obml/osi_obml_converter.py osi-obml/
-COPY osi-obml/osi-schema.json osi-obml/
-COPY osi-obml/osi-ontology-schema.json osi-obml/
 RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
 
 # --- Runtime stage: minimal image ---
@@ -61,8 +59,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy schema (needed at runtime for validation)
 COPY --from=builder --chown=app:app /app/schema schema/
 
-# Copy OSI converter (needed at runtime for /convert endpoints)
-COPY --from=builder --chown=app:app /app/osi-obml osi-obml/
+# The OSI <-> OBML converter is installed into the venv as the osi-orionbelt
+# package (with its schemas bundled), so no separate copy is needed here.
 
 # Bake the public-demo dataset and matching OBML model into the image so
 # the Cloud Run service can answer /v1/query/execute without external
