@@ -26,12 +26,23 @@ logger = logging.getLogger(__name__)
 def get_converter_module() -> types.ModuleType:
     """Import the OSI <-> OBML converter package.
 
-    The converter ships as the ``osi_orionbelt`` package and exposes the same
-    public symbols at the top level (``OSItoOBML``, ``OBMLtoOSI``,
+    The converter ships as the optional ``osi_orionbelt`` package and exposes
+    its public symbols at the top level (``OSItoOBML``, ``OBMLtoOSI``,
     ``OBMLtoOSIOntology``, ``validate_obml``, ``validate_osi``,
-    ``validate_osi_ontology``).
+    ``validate_osi_ontology``). It is not a hard dependency, so when it is not
+    installed the OSI endpoints return a clear 503 rather than a 500.
     """
-    return importlib.import_module("osi_orionbelt")
+    try:
+        return importlib.import_module("osi_orionbelt")
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OSI conversion is unavailable: the 'osi-orionbelt' converter is "
+                "not installed. Install it with: pip install "
+                "'orionbelt-semantic-layer[osi]' (or 'pip install osi-orionbelt')."
+            ),
+        ) from exc
 
 
 def parse_yaml(raw: str) -> dict[str, Any]:

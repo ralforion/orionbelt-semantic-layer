@@ -2361,29 +2361,11 @@ class OBMLtoOSIOntology:
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _SCHEMAS_DIR = _SCRIPT_DIR / "schemas"
 
-
-def _resolve_obml_schema_path() -> Path:
-    """Locate the OBML schema.
-
-    In a built wheel (and the OSI monorepo copy) the canonical
-    ``obml-schema.json`` is bundled into the package ``schemas/`` directory at
-    build time (hatch ``force-include``). In an editable workspace install that
-    bundling does not run, so fall back to the canonical source of truth at the
-    repo-root ``schema/obml-schema.json`` by walking up from this file.
-    """
-    bundled = _SCHEMAS_DIR / "obml-schema.json"
-    if bundled.exists():
-        return bundled
-    for parent in _SCRIPT_DIR.parents:
-        candidate = parent / "schema" / "obml-schema.json"
-        if candidate.exists():
-            return candidate
-    return bundled
-
-
-# Locate schemas relative to this package. The two OSI schemas are vendored
-# beside the converter; the OBML schema is resolved canonically (see above).
-_OBML_SCHEMA_PATH = _resolve_obml_schema_path()
+# All three schemas are tracked files beside the converter, so the package is
+# self-contained (no repo-root dependency, sdist/wheel build in isolation). The
+# OBML schema is a vendored snapshot of the canonical repo-root
+# schema/obml-schema.json, kept in sync by a drift-guard test.
+_OBML_SCHEMA_PATH = _SCHEMAS_DIR / "obml-schema.json"
 _OSI_SCHEMA_PATH = _SCHEMAS_DIR / "osi-schema.json"
 _OSI_ONTOLOGY_SCHEMA_PATH = _SCHEMAS_DIR / "osi-ontology-schema.json"
 

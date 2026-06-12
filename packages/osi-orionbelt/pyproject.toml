@@ -36,12 +36,11 @@ osi-orionbelt = "osi_orionbelt.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/osi_orionbelt"]
 
-# The canonical OBML schema is owned by the orionbelt-semantic-layer repo at
-# schema/obml-schema.json. Bundle it into the package schemas/ at build time so
-# the published wheel (and the OSI monorepo copy) validate OBML input with no
-# orionbelt dependency. The two OSI schemas are already vendored in-tree.
-[tool.hatch.build.targets.wheel.force-include]
-"../../schema/obml-schema.json" = "osi_orionbelt/schemas/obml-schema.json"
+# All three schemas (the two OSI artefacts plus a vendored snapshot of the
+# canonical OBML schema) live in src/osi_orionbelt/schemas/ as tracked files,
+# so the sdist and wheel are self-contained and build in isolation. The OBML
+# snapshot is kept in sync with the repo-root schema/obml-schema.json by a
+# drift-guard test (tests/unit/test_osi_orionbelt_schema_sync.py).
 
 [tool.ruff]
 line-length = 100
