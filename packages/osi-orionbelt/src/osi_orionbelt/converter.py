@@ -1114,7 +1114,7 @@ class OBMLtoOSI:
         roundtrip_data: dict[str, Any] = {
             "source_format": "OBML",
             "source_version": str(self.obml.get("version", "1.0")),
-            "converter": "osi_obml_converter",
+            "converter": "osi-orionbelt",
         }
         # Preserve model-level static filters for roundtrip
         obml_filters = self.obml.get("filters", [])
