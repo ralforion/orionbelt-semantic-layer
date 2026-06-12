@@ -6,7 +6,16 @@ the open standard for portable semantic models (metrics, dimensions,
 relationships).
 
 This package is licensed under **Apache-2.0** and may be used freely. It is the
-OrionBelt converter listed in the OSI converter ecosystem.
+OrionBelt converter in the OSI converter ecosystem. The canonical source is
+developed in the
+[orionbelt-semantic-layer](https://github.com/ralfbecher/orionbelt-semantic-layer)
+repository (under `packages/osi-orionbelt`) and published to PyPI from there;
+file issues and contributions upstream.
+
+## Requirements
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 ## Install
 
@@ -42,7 +51,9 @@ osi-orionbelt osi-to-obml -i model.osi.yaml -o model.obml.yaml
 
 `-i/--input` and `-o/--output` are required. Each subcommand prints conversion
 warnings and a validation summary to stderr, and exits non-zero when the
-produced document fails schema validation (unless `--no-validate`).
+produced document fails schema validation (unless `--no-validate`). Run
+`osi-orionbelt --help` or `osi-orionbelt obml-to-osi --help` for the full
+option list.
 
 ## Python API
 
@@ -87,7 +98,20 @@ OBML, but are not interpreted by other OSI consumers:
 - **Named secondary join paths** - OBML's multiple join paths between the same
   pair of objects are an OBML-specific topology feature.
 - **Measures / metrics and column-level value concepts in the ontology layer** -
-  see `osi_obml_ontology_mapping_analysis.md` for the full mapping analysis.
+  not represented in the OSI ontology export.
 
 OSI v0.1.x inputs are accepted on read via a legacy normalization shim; output
-targets the current OSI version.
+targets OSI **v0.2.0.dev0**.
+
+See [`osi_obml_mapping_analysis.md`](./osi_obml_mapping_analysis.md) for the
+full OBML <-> OSI core-spec mapping and
+[`osi_obml_ontology_mapping_analysis.md`](./osi_obml_ontology_mapping_analysis.md)
+for the ontology-layer mapping and its documented gaps.
+
+## Development
+
+```bash
+uv sync          # install
+uv run pytest    # run the test suite (includes a TPC-DS baseline)
+uv run ruff check && uv run mypy src/osi_orionbelt
+```
