@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.10.0] - 2026-06-12
+
+### Added
+
+- **`osi-orionbelt` converter package.** The bidirectional OBML <-> OSI converter is now a standalone, pip-installable package (Apache-2.0), developed in-repo as a uv workspace member under `packages/osi-orionbelt` and published to PyPI alongside the `ob-*` drivers. It ships two format-named CLIs (`obml-to-osi` / `osi-to-obml`, with `--ontology`) and bundles its schemas (including the canonical OBML schema) so it validates OBML input with no `orionbelt` dependency. The REST API imports it directly and the previous `force-include` of the converter into the wheel (and the matching `COPY` lines in all three Dockerfiles) are removed.
+- **Third-party vendor extension preservation.** OSI `custom_extensions` from vendors the converter does not handle internally (e.g. `SNOWFLAKE`, `DBT`, `SALESFORCE`, `GOODDATA`) now round-trip verbatim at the model, dataObject/dataset, column/field, and measure/metric levels. OSI has no separate dimension entity, so an OBML dimension's foreign extensions surface on its OSI field.
+
+### Changed
+
+- **Converter vendor identity.** OBML -> OSI now tags OrionBelt-proprietary payloads as `ORIONBELT` (was `COMMON`), and OSI -> OBML stashes OSI-native fields OBML cannot hold (unique keys, field labels, leftover `ai_context`) under `OSI` (was the misleading `OBSL`). Read paths still accept the legacy `COMMON`/`OBSL` tags, so previously emitted documents keep round-tripping. The converter self-identifies as `osi-orionbelt` in its roundtrip metadata. `vendor_name` is an open string in OSI, so this is a non-breaking output change.
+- **UI: Export as OSI.** The Model Workbench export button (now `⬇ Export as OSI`) shows clean, directly copyable OSI YAML in the preview box (relabelled to "OSI YAML (exported)", reset to "Generated SQL" on the next compile/validate/import) and downloads the result as `model.osi.yaml`, instead of prepending a status banner into the YAML. The validation status moves to the explain box.
+
 ## [2.9.0] - 2026-06-11
 
 ### Added
