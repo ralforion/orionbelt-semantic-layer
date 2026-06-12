@@ -11,16 +11,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --no-dev --extra ui --no-install-project --frozen
 
-# Copy source and install the project itself
+# Copy source and install the project itself. packages/ carries the
+# osi-orionbelt workspace member (the OBML <-> OSI converter, a normal
+# dependency now); schema/ must precede the build because that member
+# force-includes the canonical obml-schema.json into its wheel.
 COPY src/ src/
 COPY schema/ schema/
-# The OSI converter is force-included into the wheel (see pyproject
-# [tool.hatch.build.targets.wheel.force-include]); the build backend
-# needs these files present in the context or it fails with
-# "Forced include not found". Mirrors Dockerfile / Dockerfile.flight.
-COPY osi-obml/osi_obml_converter.py osi-obml/
-COPY osi-obml/osi-schema.json osi-obml/
-COPY osi-obml/osi-ontology-schema.json osi-obml/
+COPY packages/ packages/
 COPY examples/ examples/
 RUN uv sync --no-dev --extra ui --no-editable --frozen
 

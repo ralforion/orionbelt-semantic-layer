@@ -52,6 +52,10 @@ dependencies = [
     "sqlglot>=26.0,<27.0",
     "jsonschema>=4.23,<5.0",
     "rdflib>=7.0,<8.0",
+    # OBML <-> OSI converter, published standalone but developed in-repo as a
+    # uv workspace member (see packages/osi-orionbelt). The /convert and
+    # /models/from-osi|/osi endpoints import it directly.
+    "osi-orionbelt",
     # IANA timezone database for Python's zoneinfo on systems without
     # /usr/share/zoneinfo (e.g. python:3.12-slim Docker images). Without it,
     # ZoneInfo("Europe/Berlin") raises ZoneInfoNotFoundError and the
@@ -131,17 +135,11 @@ packages = ["src/orionbelt"]
 # PyPI wheel, or Docker non-editable install). The files stay at the repo
 # root as the single source of truth; hatch copies them at build time.
 #
-# Likewise bundle the OSI <-> OBML converter (repo-root ``osi-obml/``) under
-# ``orionbelt/_osi_obml/`` so the /convert and /models/from-osi|/osi
-# endpoints can import it from a non-editable wheel install. Only the
-# converter module and its OSI schema are shipped (not the sample YAMLs).
-# The converter resolves the OBML schema at ``__file__.parent.parent /
-# "schema"`` which lands on the bundled ``orionbelt/schema`` above.
+# The OSI <-> OBML converter now ships as its own package (osi-orionbelt, a uv
+# workspace member under packages/) and is a normal dependency, so it no longer
+# needs to be force-included here.
 [tool.hatch.build.targets.wheel.force-include]
 "schema" = "orionbelt/schema"
-"osi-obml/osi_obml_converter.py" = "orionbelt/_osi_obml/osi_obml_converter.py"
-"osi-obml/osi-schema.json" = "orionbelt/_osi_obml/osi-schema.json"
-"osi-obml/osi-ontology-schema.json" = "orionbelt/_osi_obml/osi-ontology-schema.json"
 
 [tool.ruff]
 target-version = "py312"
@@ -206,6 +204,7 @@ dev = [
     "nbstripout>=0.9.1",
     "types-networkx>=3.6.1.20260210",
     "types-PyYAML>=6.0",
+    "types-jsonschema>=4.18",
     "mkdocs-material>=9.7",
     "mkdocs-autorefs>=1.4",
     "mkdocstrings[python]>=1.0",
@@ -236,6 +235,7 @@ members = [
     "drivers/ob-duckdb",
     "drivers/ob-mysql",
     "drivers/ob-flight-extension",
+    "packages/osi-orionbelt",
 ]
 
 [tool.uv.sources]
@@ -251,3 +251,4 @@ ob-databricks = { workspace = true }
 ob-duckdb = { workspace = true }
 ob-mysql = { workspace = true }
 ob-flight-extension = { workspace = true }
+osi-orionbelt = { workspace = true }

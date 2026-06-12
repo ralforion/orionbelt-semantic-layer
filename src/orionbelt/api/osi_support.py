@@ -1,19 +1,18 @@
 """Shared helpers for the OSI <-> OBML conversion endpoints.
 
 Both the stateless ``/convert`` router and the session-scoped model
-endpoints (load-from-OSI / export-to-OSI) lean on the vendored
-``osi_obml_converter`` module under ``osi-obml/``. The lazy import, YAML
-parsing, and validation-result adaptation live here so the two call sites
-stay in sync rather than duplicating the logic.
+endpoints (load-from-OSI / export-to-OSI) lean on the ``osi_orionbelt``
+converter package (a uv workspace member under ``packages/osi-orionbelt``,
+also published standalone to PyPI). The import, YAML parsing, and
+validation-result adaptation live here so the two call sites stay in sync
+rather than duplicating the logic.
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
-import sys
 import types
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -25,25 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_converter_module() -> types.ModuleType:
-    """Lazy-import the OSI <-> OBML converter module.
+    """Import the OSI <-> OBML converter package.
 
-    Searches, in order: the copy bundled into the wheel as package data
-    (``orionbelt/_osi_obml``, see pyproject force-include), the repo-root
-    ``osi-obml/`` used by editable/dev installs, and the legacy
-    ``/app/osi-obml`` Docker layout. The first existing directory wins so
-    a non-editable wheel install can still import the converter.
+    The converter ships as the ``osi_orionbelt`` package and exposes the same
+    public symbols at the top level (``OSItoOBML``, ``OBMLtoOSI``,
+    ``OBMLtoOSIOntology``, ``validate_obml``, ``validate_osi``,
+    ``validate_osi_ontology``).
     """
-    pkg_root = Path(__file__).resolve().parents[1]
-    candidates = [
-        pkg_root / "_osi_obml",
-        Path(__file__).resolve().parents[3] / "osi-obml",
-        Path("/app/osi-obml"),
-    ]
-    for candidate in candidates:
-        converter_dir = str(candidate)
-        if candidate.is_dir() and converter_dir not in sys.path:
-            sys.path.insert(0, converter_dir)
-    return importlib.import_module("osi_obml_converter")
+    return importlib.import_module("osi_orionbelt")
 
 
 def parse_yaml(raw: str) -> dict[str, Any]:

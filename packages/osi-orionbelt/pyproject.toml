@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "osi-orionbelt"
+version = "0.1.0"
+description = "Bidirectional OBML <-> OSI (Open Semantic Interchange) converter for OrionBelt semantic models"
+license = { text = "Apache-2.0" }
+readme = "README.md"
+authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
+keywords = ["osi", "open-semantic-interchange", "obml", "semantic-layer", "orionbelt", "converter"]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.18",
+    "referencing>=0.30",
+]
+
+[project.optional-dependencies]
+# Deep OBML semantic validation (cycles, duplicate names, invalid refs) via the
+# full OrionBelt engine. Optional: validate_obml degrades to JSON-schema-only
+# checks with a warning when this is not installed.
+obml-validation = ["orionbelt-semantic-layer"]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
+    "types-jsonschema",
+    "types-PyYAML",
+]
+
+[project.scripts]
+obml-to-osi = "osi_orionbelt.cli:obml_to_osi"
+osi-to-obml = "osi_orionbelt.cli:osi_to_obml"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/osi_orionbelt"]
+
+# The canonical OBML schema is owned by the orionbelt-semantic-layer repo at
+# schema/obml-schema.json. Bundle it into the package schemas/ at build time so
+# the published wheel (and the OSI monorepo copy) validate OBML input with no
+# orionbelt dependency. The two OSI schemas are already vendored in-tree.
+[tool.hatch.build.targets.wheel.force-include]
+"../../schema/obml-schema.json" = "osi_orionbelt/schemas/obml-schema.json"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/osi_orionbelt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

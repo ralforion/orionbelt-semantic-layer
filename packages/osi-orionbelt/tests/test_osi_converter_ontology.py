@@ -8,15 +8,9 @@ gaps (many-to-many, composite keys, missing PK) surface as warnings.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402
+import osi_orionbelt.converter as conv
 
 _OBML: dict[str, Any] = {
     "version": 1.0,

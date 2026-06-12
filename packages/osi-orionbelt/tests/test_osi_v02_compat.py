@@ -14,24 +14,20 @@ Covers the v2.6 spec bump from OSI v0.1.1 → v0.2.0.dev0:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Import the converter module from osi-obml/ directory
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402  # noqa: I001
+import osi_orionbelt.converter as conv
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "osi-obml" / "osi-schema.json"
+_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1] / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
+)
 
 
 @pytest.fixture(scope="module")
@@ -320,7 +316,7 @@ class TestSchemaValidation:
     def test_tpcds_fixture_passes_v02_validation(self, schema_validator: Any) -> None:
         """Real-world TPC-DS OBML model must emit v0.2-clean OSI."""
         yaml = pytest.importorskip("yaml")
-        fixture = Path(__file__).resolve().parents[2] / "osi-obml" / "tpcds_as_obml.yaml"
+        fixture = Path(__file__).resolve().parent / "fixtures" / "tpcds_as_obml.yaml"
         with open(fixture) as f:
             obml = yaml.safe_load(f)
         osi = conv.OBMLtoOSI(obml).convert()

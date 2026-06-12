@@ -11,16 +11,9 @@ Validates that:
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
 
-# Import the converter module from osi-obml/ directory
-_CONVERTER_DIR = str(Path(__file__).resolve().parents[2] / "osi-obml")
-if _CONVERTER_DIR not in sys.path:
-    sys.path.insert(0, _CONVERTER_DIR)
-
-import osi_obml_converter as conv  # noqa: E402  # noqa: I001
+import osi_orionbelt.converter as conv
 
 _OBML_V26: dict[str, Any] = {
     "version": 1.0,
