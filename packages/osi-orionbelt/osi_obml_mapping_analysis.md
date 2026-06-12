@@ -176,28 +176,31 @@ Validation runs automatically after each conversion. Use `--no-validate` to skip
 
 ### CLI
 
+Two format-named commands are installed with the `osi-orionbelt` package:
+
 ```bash
 # OSI → OBML
-python osi_obml_converter.py osi2obml tpcds_osi.yaml -o tpcds_as_obml.yaml
+osi-to-obml tpcds_osi.yaml -o tpcds_as_obml.yaml
 
 # OBML → OSI
-python osi_obml_converter.py obml2osi tpcds_as_obml.yaml -o tpcds_obml_as_osi.yaml \
+obml-to-osi tpcds_as_obml.yaml -o tpcds_obml_as_osi.yaml \
   --name tpcds_retail_model \
   --description "TPC-DS retail semantic model"
 
-# Generate mapping analysis
-python osi_obml_converter.py analyze
+# OBML → OSI ontology document
+obml-to-osi --ontology tpcds_as_obml.yaml -o tpcds_ontology.yaml
 
 # Skip validation
-python osi_obml_converter.py osi2obml input.yaml -o output.yaml --no-validate
+osi-to-obml input.yaml -o output.yaml --no-validate
 ```
 
 ### CLI Options
 
-| Option | Description |
+| Command / Option | Description |
 |---|---|
-| `osi2obml` | Convert OSI → OBML |
-| `obml2osi` | Convert OBML → OSI |
+| `osi-to-obml` | Convert OSI → OBML |
+| `obml-to-osi` | Convert OBML → OSI |
+| `--ontology` | (`obml-to-osi`) emit an OSI ontology document instead of core-spec |
 | `-o`, `--output` | Output file (prints to stdout if omitted) |
 | `--name` | Model name for OBML → OSI |
 | `--description` | Model description for OBML → OSI |
@@ -209,7 +212,7 @@ python osi_obml_converter.py osi2obml input.yaml -o output.yaml --no-validate
 ### Python API
 
 ```python
-from osi_obml_converter import OSItoOBML, OBMLtoOSI, validate_obml, validate_osi
+from osi_orionbelt import OSItoOBML, OBMLtoOSI, validate_obml, validate_osi
 
 # OSI → OBML
 converter = OSItoOBML(osi_dict)
@@ -251,10 +254,10 @@ Converting the OBML output back to OSI produces a valid OSI model where:
 
 | File | Description |
 |---|---|
-| `tpcds_osi.yaml` | Official TPC-DS OSI example (from OSI repo) |
-| `tpcds_as_obml.yaml` | Converted OBML output |
-| `osi-schema.json` | OSI JSON Schema (Draft 2020-12, from OSI repo) |
-| `osi_obml_converter.py` | Bidirectional converter with validation |
+| `tests/fixtures/tpcds_osi.yaml` | Official TPC-DS OSI example (from OSI repo) |
+| `tests/fixtures/tpcds_as_obml.yaml` | Converted OBML output |
+| `src/osi_orionbelt/schemas/osi-schema.json` | OSI JSON Schema (Draft 2020-12, from OSI repo) |
+| `src/osi_orionbelt/converter.py` | Bidirectional converter with validation |
 
 ## 7. Future Considerations
 
