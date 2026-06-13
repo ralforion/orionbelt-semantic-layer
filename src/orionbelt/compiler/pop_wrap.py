@@ -62,8 +62,31 @@ def wrap_with_pop(
 
     pop_measures = [m for m in resolved.measures if m.is_pop]
 
-    # v1 constraint: all PoP metrics must share the same time dimension + grain
+    # PoP metrics in one query may use different comparison offsets (e.g. MoM
+    # + YoY), but they share a single date spine, so they must agree on the
+    # time dimension and the base grain (the spine's bucket size). Offsets are
+    # handled per-metric in ``_build_pop_compare_sql``.
     pop_config = pop_measures[0]
+    for other in pop_measures[1:]:
+        if (
+            other.pop_time_dimension != pop_config.pop_time_dimension
+            or other.pop_grain != pop_config.pop_grain
+        ):
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INVALID_METRIC",
+                        message=(
+                            "Period-over-period metrics in one query must share the same "
+                            "time dimension and base grain (offsets may differ). Got "
+                            f"'{pop_config.name}' ({pop_config.pop_time_dimension}/"
+                            f"{pop_config.pop_grain}) vs '{other.name}' "
+                            f"({other.pop_time_dimension}/{other.pop_grain})."
+                        ),
+                        path="metrics",
+                    )
+                ]
+            )
     if pop_config.pop_time_dimension is None:
         raise ResolutionError(
             [
@@ -400,21 +423,65 @@ def _build_pop_compare_sql(
 ) -> str:
     """Build the raw SQL body for the pop_compare CTE.
 
-    Self-joins pop_base via date_spine.spine_date_prev for period comparison.
+    Self-joins ``pop_base`` to compare each period against a prior one. PoP
+    metrics may use *different* comparison offsets (e.g. month-over-month and
+    year-over-year in the same query): the first measure's offset is served by
+    the spine's precomputed ``spine_date_prev`` (so the common single-offset
+    SQL is unchanged), and each additional distinct offset gets its own
+    self-join whose prior date is computed inline with ``date_add_sql``.
     """
-    # Dimension projections from pop_base
+    pop_time_dim = pop_measures[0].pop_time_dimension
+    time_q = dialect.quote_identifier(pop_time_dim or "")
+    non_time_dims = [d for d in resolved.dimensions if d.name != pop_time_dim]
+
+    def _dim_match(alias: str) -> str:
+        parts = [
+            f"pop_base.{dialect.quote_identifier(d.name)} = "
+            f"{alias}.{dialect.quote_identifier(d.name)}"
+            for d in non_time_dims
+        ]
+        return (" AND " + " AND ".join(parts)) if parts else ""
+
+    # Assign one self-join alias per distinct (offset, offset_grain). The
+    # offset matching the spine (the first PoP measure's) reuses ``pop_prev``
+    # via ``spine_date_prev``; others use ``pop_prev_N`` with an inline offset.
+    spine_key = (pop_measures[0].pop_offset, pop_measures[0].pop_offset_grain)
+    alias_by_key: dict[tuple[int | None, object], str] = {}
+    join_clauses: list[str] = []
+    for m in pop_measures:
+        key = (m.pop_offset, m.pop_offset_grain)
+        if key in alias_by_key:
+            continue
+        if key == spine_key and "pop_prev" not in alias_by_key.values():
+            alias = "pop_prev"
+            join_clauses.append(
+                f"  LEFT JOIN date_spine ON pop_base.{time_q} = date_spine.spine_date"
+            )
+            # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
+            # word in Dremio and rejects as an unquoted table alias.
+            join_clauses.append(
+                f"  LEFT JOIN pop_base AS {alias}\n"
+                f"    ON date_spine.spine_date_prev = {alias}.{time_q}{_dim_match(alias)}"
+            )
+        else:
+            alias = f"pop_prev_{len(alias_by_key)}"
+            grain_val = m.pop_offset_grain.value if m.pop_offset_grain else "month"
+            prev_date = dialect.date_add_sql(f"pop_base.{time_q}", grain_val, m.pop_offset or 0)
+            join_clauses.append(
+                f"  LEFT JOIN pop_base AS {alias}\n"
+                f"    ON {alias}.{time_q} = {prev_date}{_dim_match(alias)}"
+            )
+        alias_by_key[key] = alias
+
+    # Projections: dimensions, pass-through measures, then PoP comparisons.
     selects: list[str] = []
     for dim in resolved.dimensions:
         q = dialect.quote_identifier(dim.name)
         selects.append(f"pop_base.{q} AS {q}")
-
-    # Non-PoP measures: pass through
     for m in resolved.measures:
         if not m.is_pop:
             q = dialect.quote_identifier(m.name)
             selects.append(f"pop_base.{q} AS {q}")
-
-    # PoP measures: compute comparison expression
     for m in pop_measures:
         if m.pop_comparison is None:
             raise ResolutionError(
@@ -426,15 +493,12 @@ def _build_pop_compare_sql(
                     )
                 ]
             )
-        # For single-measure PoP: use the base measure name
         base_name = m.pop_base_measure or m.component_measures[0]
         q_base = dialect.quote_identifier(base_name)
         q_metric = dialect.quote_identifier(m.name)
-
-        # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
-        # word in Dremio and rejects as an unquoted table alias.
+        alias = alias_by_key[(m.pop_offset, m.pop_offset_grain)]
         current = f"pop_base.{q_base}"
-        prev = f"pop_prev.{q_base}"
+        prev = f"{alias}.{q_base}"
         nullif_prev = f"NULLIF({prev}, 0)"
 
         if m.pop_comparison == PeriodOverPeriodComparison.RATIO:
@@ -455,34 +519,10 @@ def _build_pop_compare_sql(
                     )
                 ]
             )
-
         selects.append(f"{expr} AS {q_metric}")
 
     select_clause = ",\n       ".join(selects)
-
-    # Build the dimension-matching ON clause for the self-join
-    # Match all non-time dimensions
-    pop_time_dim = pop_measures[0].pop_time_dimension
-    dim_matches: list[str] = []
-    for dim in resolved.dimensions:
-        if dim.name == pop_time_dim:
-            continue
-        q = dialect.quote_identifier(dim.name)
-        dim_matches.append(f"pop_base.{q} = pop_prev.{q}")
-
-    # The time dimension matches via the spine's spine_date_prev
-    time_q = dialect.quote_identifier(pop_time_dim or "")
-    on_parts = [f"date_spine.spine_date_prev = pop_prev.{time_q}"]
-    on_parts.extend(dim_matches)
-    on_clause = " AND ".join(on_parts)
-
-    return (
-        f"SELECT {select_clause}\n"
-        f"  FROM pop_base\n"
-        f"  LEFT JOIN date_spine ON pop_base.{time_q} = date_spine.spine_date\n"
-        f"  LEFT JOIN pop_base AS pop_prev\n"
-        f"    ON {on_clause}"
-    )
+    return f"SELECT {select_clause}\n  FROM pop_base\n" + "\n".join(join_clauses)
 
 
 def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:

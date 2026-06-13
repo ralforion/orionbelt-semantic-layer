@@ -372,6 +372,57 @@ class TestPoPSQLGeneration:
             assert "AS prev" not in sql
             assert " prev." not in sql
 
+    def test_pop_mixed_offsets_get_separate_joins(self) -> None:
+        """MoM + YoY in one query each get their own prior-period self-join.
+
+        Both share the time dimension and base grain (month) but differ in
+        comparison offset (1 month vs 1 year). The first offset is served by the
+        spine's ``spine_date_prev``; the second gets its own ``pop_prev_1``
+        self-join with the prior date computed inline.
+        """
+        model = _load_model()
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM Diff", "Revenue YoY Growth"],
+            ),
+        )
+        sql = pipeline.compile(query, model, "duckdb").sql
+        # A second, distinct prior-period self-join exists for the year offset.
+        assert "pop_prev_1" in sql
+        # The year offset is computed inline (not reusing the month spine_date_prev).
+        assert "INTERVAL '-1 year'" in sql
+
+    def test_pop_mixed_base_grain_rejected(self) -> None:
+        """PoP metrics in one query must share the base grain (single spine)."""
+        # Flip MoM Diff's base grain to quarter; this block (offsetGrain month +
+        # comparison difference) is unique to MoM Diff in the fixture.
+        yaml_txt = POP_MODEL_YAML.replace(
+            "      timeDimension: Order Date\n"
+            "      grain: month\n"
+            "      offset: -1\n"
+            "      offsetGrain: month\n"
+            "      comparison: difference\n",
+            "      timeDimension: Order Date\n"
+            "      grain: quarter\n"
+            "      offset: -1\n"
+            "      offsetGrain: month\n"
+            "      comparison: difference\n",
+        )
+        assert "grain: quarter" in yaml_txt  # guard: the replace actually fired
+        raw, _ = TrackedLoader().load_string(yaml_txt)
+        model, _ = ReferenceResolver().resolve(raw)
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue MoM Diff", "Revenue YoY Growth"],
+            ),
+        )
+        with pytest.raises(ResolutionError, match="same time dimension and base grain"):
+            pipeline.compile(query, model, "duckdb")
+
     def test_pop_percent_change_sql(self) -> None:
         model = _load_model()
         pipeline = CompilationPipeline()

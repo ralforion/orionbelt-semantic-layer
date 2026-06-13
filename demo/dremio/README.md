@@ -136,9 +136,9 @@ ORDER BY "Sales Month" LIMIT 12;
 ```
 
 A window metric: OrionBelt builds a date spine and a self-join under the hood;
-the consumer just asks for `Sales MoM Change`. Present one period-over-period
-metric at a time - each works on its own; mixing metrics of different period
-grains (MoM + YoY) in one query is not supported.
+the consumer just asks for `Sales MoM Change`. You can combine offsets too -
+`Sales MoM Change` and `Sales YoY Growth` in one query each get their own
+prior-period join (they just have to share the time dimension and base grain).
 
 ### 7. Cross-fact derived metrics, through federation
 
@@ -159,10 +159,6 @@ Because OrionBelt runs in single-model mode here, the playground shows the
 **loaded model read-only** and still compiles and executes queries against it,
 alongside the Mermaid ER diagram and the RDF/ontology graph. Good for showing
 the model itself next to the Dremio federation story.
-
-Known limitation: present one period-over-period metric at a time. Each works
-on its own; combining metrics of different period grains (MoM + YoY) in a single
-query is not supported.
 
 See `demo-queries.sql` for the full curated, run-ordered list.
 

@@ -86,14 +86,16 @@ ORDER BY "Total Sales" DESC;
 -- Online 23009275.95 4542.80 | Retail 13269028.46 4524.05 | Wholesale ... 2980.73 | B2B ... 3381.46
 
 
--- A6. Period-over-period - month-over-month change (a window metric).
---     OrionBelt builds a date spine + self-join under the hood; the consumer
---     just asks for the metric. Works through federation as of v2.11.0.
-SELECT "Sales Month", "Total Sales", "Sales MoM Change"
+-- A6. Period-over-period window metrics - month-over-month AND year-over-year
+--     in one query. OrionBelt builds a date spine + a separate prior-period
+--     self-join per offset; the consumer just names the metrics. Works through
+--     federation as of v2.11.0.
+SELECT "Sales Month", "Total Sales", "Sales MoM Change", "Sales YoY Growth"
 FROM obsl.commerce.model
 ORDER BY "Sales Month"
-LIMIT 12;
--- 2021-01  281222.38  (null) | 2021-02  439072.94  157850.56 | 2021-03  302261.62  -136811.32 | ...
+LIMIT 15;
+-- 2021-01 .. (MoM null, YoY null) | 2021-12 1071384.97 403173.31 (YoY null)
+-- | 2022-01 560521.77 -510863.20 0.9932 (first YoY: vs 2021-01)
 
 
 -- A7. Cross-fact derived metrics (Returns / Sales, Sales - Cost).
@@ -114,6 +116,5 @@ LIMIT 5;
 --   read-only and runs the same queries, plus the ER diagram and RDF graph.
 -- - Any Postgres client can hit OrionBelt directly on localhost:15432
 --   (database = commerce), using `FROM model` instead of `obsl.commerce.model`.
--- - Present one period-over-period metric at a time. Each works on its own
---   (Sales MoM Change, Sales YoY Growth, Sales Previous Year); combining metrics
---   of different period grains (e.g. MoM + YoY) in one query is not supported.
+-- - Period-over-period metrics may mix offsets (MoM + YoY) in one query; they
+--   just need to share the time dimension and base grain (the date spine).
