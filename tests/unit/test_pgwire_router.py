@@ -171,7 +171,7 @@ def test_loaded_model_names_excludes_transient_sessions_in_single_model_mode() -
     assert scratch.session_id.lower() not in names
     # The router agrees with the catalog: a scratch-session schema ref is NOT
     # routed to the catalog in curated mode.
-    assert router._references_model_schema(f'SELECT * FROM {scratch.session_id}.measures') is False
+    assert router._references_model_schema(f"SELECT * FROM {scratch.session_id}.measures") is False
 
     # Dynamic mode still surfaces user sessions as catalog schemas.
     dyn = SessionManager(is_single_model_mode=False)

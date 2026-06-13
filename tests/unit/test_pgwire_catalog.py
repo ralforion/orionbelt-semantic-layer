@@ -128,7 +128,7 @@ def test_metrics_metadata_exposes_formula(manager_with_model: SessionManager) ->
     emu = CatalogEmulator()
     emu.refresh(manager_with_model)
     result = emu.execute(
-        "SELECT name, formula FROM \"commerce\".\"_metrics_metadata\" "
+        'SELECT name, formula FROM "commerce"."_metrics_metadata" '
         "WHERE name = 'Revenue per Order'"
     )
     assert result.rows, "expected a row for the derived metric"
