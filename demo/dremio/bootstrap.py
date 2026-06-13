@@ -118,10 +118,20 @@ def _delete_source(client: httpx.Client, token: str, name: str) -> None:
     if ent.status_code != 200:
         return
     sid = ent.json().get("id")
-    if sid:
-        client.delete(
-            f"/api/v3/catalog/{quote(sid, safe='')}", headers=_headers(token), timeout=30.0
-        )
+    if not sid:
+        return
+    client.delete(f"/api/v3/catalog/{quote(sid, safe='')}", headers=_headers(token), timeout=30.0)
+    # Dremio deletes asynchronously; wait until the source is gone so the
+    # subsequent recreate doesn't race into a 409 conflict.
+    for _ in range(20):
+        if (
+            client.get(
+                f"/api/v3/catalog/by-path/{name}", headers=_headers(token), timeout=10.0
+            ).status_code
+            != 200
+        ):
+            return
+        time.sleep(1.0)
 
 
 def _ensure_s3_source(client: httpx.Client, token: str) -> None:
