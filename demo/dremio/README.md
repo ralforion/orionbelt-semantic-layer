@@ -176,20 +176,19 @@ See `demo-queries.sql` for the full curated, run-ordered list.
 OrionBelt reaches Dremio via Flight using the `DREMIO_HOST` / `DREMIO_PORT` /
 `DREMIO_USERNAME` / `DREMIO_PASSWORD` env vars on the `obsl` service.
 
-## Talking points for the call
+## What this demonstrates
 
 - **OrionBelt is a thin governance layer, not another copy of the data.** The
-  data stays in the lakehouse; OrionBelt pushes compute back to Dremio.
+  data stays in the lakehouse; OrionBelt pushes compute back to Dremio over
+  Arrow Flight.
 - **Any Postgres client gets the semantic layer for free** - no special driver.
-  Dremio here is both the consumer (federation) and the executor (Flight).
-- **Consistent metrics across tools.** "Total Sales" is defined once; the join
-  paths, fan-trap handling, and dialect translation are the engine's job.
-- **8 dialects, one model.** The exact same model runs on Snowflake, BigQuery,
+  Here Dremio is both the consumer (federation) and the executor (Flight).
+- **Metrics are defined once and stay consistent across tools.** "Total Sales"
+  lives in the model; join-path selection, fan-trap handling, and dialect
+  translation are the engine's job.
+- **One model, eight dialects.** The same model runs on Snowflake, BigQuery,
   Databricks, Postgres, etc. - here it's Dremio.
-- **Freshness-driven result cache (REST / playground path).** Enabled via
-  `CACHE_BACKEND=file`. Repeated queries through the REST API and the Gradio
-  playground are served from cache; run one twice, then
-  `curl localhost:18080/v1/cache/stats` to show the hit. Note: the cache is
-  currently wired into the REST query endpoints only - the **pgwire / Flight
-  surfaces bypass it**, so queries federated from Dremio do not yet hit the
-  cache (tracked separately).
+- **Freshness-driven result cache.** Enabled via `CACHE_BACKEND=file`. Repeated
+  queries are served from cache over both the REST/playground path and the
+  pgwire surface (run a query twice, then `curl localhost:18080/v1/cache/stats`).
+  Arrow Flight has a separate streaming execution path and is not yet cached.
