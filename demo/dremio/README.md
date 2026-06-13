@@ -140,29 +140,31 @@ the consumer just asks for `Sales MoM Change`. Present one period-over-period
 metric at a time - each works on its own; mixing metrics of different period
 grains (MoM + YoY) in one query is not supported.
 
-## Beyond federation - the OrionBelt playground (http://localhost:17860)
-
-One family still hits a Dremio-federation limit unrelated to OrionBelt: Dremio
-pins a fixed column set per source, which breaks cross-fact ratio metrics that
-project intermediate measures. Show those directly against OrionBelt - in the
-**playground** or any Postgres client on `localhost:15432` (`FROM model`):
+### 7. Cross-fact derived metrics, through federation
 
 ```sql
 SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin"
-FROM model ORDER BY "Total Sales" DESC LIMIT 5;
+FROM obsl.commerce.model
+ORDER BY "Total Sales" DESC LIMIT 5;
 ```
 
-A one-line semantic query that would otherwise be a page of hand-written,
-error-prone SQL.
-
-See `demo-queries.sql` for the full curated, run-ordered list.
+`Return Rate` (Returns / Sales) and `Gross Margin` (Sales - Cost) each combine
+measures from different fact tables. OrionBelt computes the components inside a
+Composite Fact Layer and projects only the requested columns - one governed
+definition, no hand-written multi-fact SQL.
 
 ## The OrionBelt playground (http://localhost:17860)
 
 Because OrionBelt runs in single-model mode here, the playground shows the
-**loaded model read-only** and still lets you **compile and execute** queries
-against it - plus the Mermaid ER diagram and the RDF/ontology graph. Good for
-showing the model itself alongside the Dremio federation story.
+**loaded model read-only** and still compiles and executes queries against it,
+alongside the Mermaid ER diagram and the RDF/ontology graph. Good for showing
+the model itself next to the Dremio federation story.
+
+Known limitation: present one period-over-period metric at a time. Each works
+on its own; combining metrics of different period grains (MoM + YoY) in a single
+query is not supported.
+
+See `demo-queries.sql` for the full curated, run-ordered list.
 
 ## How it's wired
 

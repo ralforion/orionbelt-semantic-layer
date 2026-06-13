@@ -3,13 +3,12 @@
 -- ============================================================================
 -- Run-order tells a story:
 --   raw == governed  ->  filters just work  ->  the fan-trap OBSL prevents
---   ->  governed metrics  ->  (playground) the features federation can't push down.
+--   ->  governed metrics  ->  period-over-period  ->  cross-fact derived metrics.
 --
--- All queries verified live against demo/dremio (run-demo.sh).
--- Section A runs in Dremio's SQL Runner (http://localhost:19047).
--- Section B runs against OrionBelt directly: the Gradio playground
---   (http://localhost:17860) or any Postgres client on localhost:15432
---   (database = commerce). These use `FROM model`, not `obsl.commerce.model`.
+-- All queries verified live against demo/dremio (run-demo.sh), in Dremio's
+-- SQL Runner (http://localhost:19047). The same queries also run against
+-- OrionBelt directly (playground :17860, or any Postgres client on :15432
+-- with database = commerce) using `FROM model` instead of `obsl.commerce.model`.
 -- ============================================================================
 
 
@@ -97,20 +96,24 @@ LIMIT 12;
 -- 2021-01  281222.38  (null) | 2021-02  439072.94  157850.56 | 2021-03  302261.62  -136811.32 | ...
 
 
--- ============================================================================
--- B. AGAINST ORIONBELT DIRECTLY  (playground / pgwire on :15432, db = commerce)
---    A couple of features still hit Dremio-federation limits (Dremio pins a
---    fixed column set per source, which breaks cross-fact ratio metrics).
---    Note: `FROM model`, not `obsl.commerce.model`.
--- ============================================================================
-
--- B1. Cross-fact ratio metrics (Returns / Sales, Sales - Cost).
+-- A7. Cross-fact derived metrics (Returns / Sales, Sales - Cost).
+--     Each combines measures from different fact tables; OrionBelt computes
+--     the components inside a Composite Fact Layer and projects only what was
+--     asked for. Works through federation as of v2.11.0.
 SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin"
-FROM model
+FROM obsl.commerce.model
 ORDER BY "Total Sales" DESC
 LIMIT 5;
--- Electronics 15307596.16 ... 0.0463 ... | ...
+-- Electronics 15307596.16 0.0463 -16050258.53 | Automotive 6588246.00 0.0229 -20403470.50 | ...
 
--- Tip: present one period-over-period metric at a time. Each works on its own
--- (Sales MoM Change, Sales YoY Growth, Sales Previous Year); combining metrics
--- of different period grains (e.g. MoM + YoY) in a single query is not supported.
+
+-- ============================================================================
+-- Notes
+-- ============================================================================
+-- - The OrionBelt playground (http://localhost:17860) shows the loaded model
+--   read-only and runs the same queries, plus the ER diagram and RDF graph.
+-- - Any Postgres client can hit OrionBelt directly on localhost:15432
+--   (database = commerce), using `FROM model` instead of `obsl.commerce.model`.
+-- - Present one period-over-period metric at a time. Each works on its own
+--   (Sales MoM Change, Sales YoY Growth, Sales Previous Year); combining metrics
+--   of different period grains (e.g. MoM + YoY) in one query is not supported.

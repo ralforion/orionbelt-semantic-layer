@@ -11,6 +11,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Fixed
 
+- **Cross-fact metrics no longer leak component-measure columns.** A CFL (multi-fact) query that selected a derived/ratio metric (e.g. `Return Rate`, `Gross Margin`) projected the metric's underlying component measures (e.g. `Total Returns`, `Total Purchases`) as extra result columns the caller never requested. The outer SELECT now projects only the requested dimensions, measures, and metrics (the components are still aggregated internally to feed the metric expression). Direct Postgres clients tolerated the extra columns, but Postgres-federation engines that pin a dataset's column set (Dremio) rejected them with `INVALID_DATASET_METADATA`; cross-fact metrics now work through Dremio federation.
 - **Period-over-period metrics on Dremio.** The PoP wrapper self-joined the base CTE under the alias `prev`, which is a reserved word in Dremio and rejected as an unquoted table alias (`Encountered "- prev"`). The alias is now `pop_prev`, so period-over-period metrics (e.g. `Sales MoM Change`) compile and execute on the Dremio dialect, including through Dremio's pgwire federation.
 
 ### Changed

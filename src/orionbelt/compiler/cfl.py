@@ -753,8 +753,17 @@ class CFLPlanner:
                 )
 
         # SELECT aggregated measures and metrics
-        # First, add all component measures (from UNION ALL legs)
+        # First, aggregate every measure from the UNION ALL legs. This
+        # includes component measures pulled in only to feed a metric
+        # (e.g. Total Returns / Total Purchases behind Return Rate /
+        # Gross Margin). We still compute their aggregate expression and
+        # record it in ``outer_measure_exprs`` so HAVING can reference any
+        # measure, but we only PROJECT the measures the caller actually
+        # requested — otherwise the result carries extra columns the
+        # consumer never asked for, which Postgres-federation clients
+        # (Dremio) reject as an unexpected dataset shape.
         settings = model.settings
+        requested_measure_names = {rm.name for rm in resolved.measures}
         seen_measure_names: set[str] = set()
         outer_measure_exprs: dict[str, Expr] = {}
         for m in all_measures:
@@ -786,7 +795,8 @@ class CFLPlanner:
                 resolved_type = resolve_measure_data_type(model_measure, settings)
                 if resolved_type:
                     agg_expr = dialect.cast_to_obml_type(agg_expr, resolved_type)
-            outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
+            if m.name in requested_measure_names:
+                outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
             outer_measure_exprs[m.name] = agg_expr
 
         # Then, add metric expressions that combine component measures
