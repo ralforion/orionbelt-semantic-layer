@@ -6,10 +6,10 @@ sql: "WITH \"date_range\" AS (\nSELECT date_trunc('month', MIN(\"Sales\".\"sales
   \ (SELECT max_date FROM date_range)::timestamp, INTERVAL '1 month') AS t(d)\n),\n\"pop_base\" AS (\nSELECT date_spine.spine_date\
   \ AS \"Sales Month\",\n       SUM(\"Sales\".\"salesamount\") AS \"Total Sales\"\n  FROM date_spine\n  LEFT JOIN \"orionbelt_1\"\
   .\"sales\" AS \"Sales\"\n    ON date_trunc('month', \"Sales\".\"salesdate\") = date_spine.spine_date\n  GROUP BY 1\n),\n\
-  \"pop_compare\" AS (\nSELECT pop_base.\"Sales Month\" AS \"Sales Month\",\n       pop_base.\"Total Sales\" / NULLIF(prev.\"\
+  \"pop_compare\" AS (\nSELECT pop_base.\"Sales Month\" AS \"Sales Month\",\n       pop_base.\"Total Sales\" / NULLIF(pop_prev.\"\
   Total Sales\", 0) - 1 AS \"Sales YoY Growth\"\n  FROM pop_base\n  LEFT JOIN date_spine ON pop_base.\"Sales Month\" = date_spine.spine_date\n\
-  \  LEFT JOIN pop_base AS prev\n    ON date_spine.spine_date_prev = prev.\"Sales Month\"\n)\nSELECT \"Sales Month\" AS \"\
-  Sales Month\", \"Sales YoY Growth\" AS \"Sales YoY Growth\"\nFROM \"pop_compare\" AS \"pop_compare\"\n"
+  \  LEFT JOIN pop_base AS pop_prev\n    ON date_spine.spine_date_prev = pop_prev.\"Sales Month\"\n)\nSELECT \"Sales Month\"\
+  \ AS \"Sales Month\", \"Sales YoY Growth\" AS \"Sales YoY Growth\"\nFROM \"pop_compare\" AS \"pop_compare\"\n"
 rows:
 - - '2021-01-01'
   - null

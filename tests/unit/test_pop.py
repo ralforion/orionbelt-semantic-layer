@@ -352,6 +352,26 @@ class TestPoPSQLGeneration:
         assert "POP_BASE" in sql
         assert "POP_COMPARE" in sql
 
+    def test_pop_self_join_alias_avoids_reserved_word(self) -> None:
+        """The self-join alias is ``pop_prev``, never the bare ``prev``.
+
+        ``prev`` is a reserved word in Dremio and is rejected as an unquoted
+        table alias, which broke period-over-period on the Dremio dialect.
+        """
+        model = _load_model()
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue YoY Growth"],
+            ),
+        )
+        for dialect in ("dremio", "duckdb", "postgres", "snowflake"):
+            sql = pipeline.compile(query, model, dialect).sql
+            assert "pop_prev" in sql
+            assert "AS prev" not in sql
+            assert " prev." not in sql
+
     def test_pop_percent_change_sql(self) -> None:
         model = _load_model()
         pipeline = CompilationPipeline()

@@ -431,8 +431,10 @@ def _build_pop_compare_sql(
         q_base = dialect.quote_identifier(base_name)
         q_metric = dialect.quote_identifier(m.name)
 
+        # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
+        # word in Dremio and rejects as an unquoted table alias.
         current = f"pop_base.{q_base}"
-        prev = f"prev.{q_base}"
+        prev = f"pop_prev.{q_base}"
         nullif_prev = f"NULLIF({prev}, 0)"
 
         if m.pop_comparison == PeriodOverPeriodComparison.RATIO:
@@ -466,11 +468,11 @@ def _build_pop_compare_sql(
         if dim.name == pop_time_dim:
             continue
         q = dialect.quote_identifier(dim.name)
-        dim_matches.append(f"pop_base.{q} = prev.{q}")
+        dim_matches.append(f"pop_base.{q} = pop_prev.{q}")
 
     # The time dimension matches via the spine's spine_date_prev
     time_q = dialect.quote_identifier(pop_time_dim or "")
-    on_parts = [f"date_spine.spine_date_prev = prev.{time_q}"]
+    on_parts = [f"date_spine.spine_date_prev = pop_prev.{time_q}"]
     on_parts.extend(dim_matches)
     on_clause = " AND ".join(on_parts)
 
@@ -478,7 +480,7 @@ def _build_pop_compare_sql(
         f"SELECT {select_clause}\n"
         f"  FROM pop_base\n"
         f"  LEFT JOIN date_spine ON pop_base.{time_q} = date_spine.spine_date\n"
-        f"  LEFT JOIN pop_base AS prev\n"
+        f"  LEFT JOIN pop_base AS pop_prev\n"
         f"    ON {on_clause}"
     )
 

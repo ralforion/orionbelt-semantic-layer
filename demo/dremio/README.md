@@ -127,20 +127,35 @@ Dremio's Postgres connector rewrites a `WHERE` into a derived-table wrapper
 trivial wrapper and flattens it back into a semantic query, so dimension
 filters (`WHERE`) and measure filters (`HAVING`) both work through federation.
 
+### 6. Period-over-period, through federation
+
+```sql
+SELECT "Sales Month", "Total Sales", "Sales MoM Change"
+FROM obsl.commerce.model
+ORDER BY "Sales Month" LIMIT 12;
+```
+
+A window metric: OrionBelt builds a date spine and a self-join under the hood;
+the consumer just asks for `Sales MoM Change`. Present one period-over-period
+metric at a time - each works on its own; mixing metrics of different period
+grains (MoM + YoY) in one query is not supported.
+
 ## Beyond federation - the OrionBelt playground (http://localhost:17860)
 
-A couple of the richest features still hit Dremio-federation limits unrelated
-to filtering - Dremio pins a fixed column set per source (breaks cross-fact
-ratio metrics) and struggles with window execution over the Flight hop
-(period-over-period). Show these directly against OrionBelt, in the
-**playground** or any Postgres client on `localhost:15432`. Same model, no
-extra setup.
+One family still hits a Dremio-federation limit unrelated to OrionBelt: Dremio
+pins a fixed column set per source, which breaks cross-fact ratio metrics that
+project intermediate measures. Show those directly against OrionBelt - in the
+**playground** or any Postgres client on `localhost:15432` (`FROM model`):
 
-- **Cross-fact ratio metrics**: `Return Rate`, `Gross Margin` by `Product Category`.
-- **Period-over-period**: `Sales MoM Change`, `Sales YoY Growth` by `Sales Month`.
+```sql
+SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin"
+FROM model ORDER BY "Total Sales" DESC LIMIT 5;
+```
 
-These are one-line semantic queries that would each be a page of hand-written,
+A one-line semantic query that would otherwise be a page of hand-written,
 error-prone SQL.
+
+See `demo-queries.sql` for the full curated, run-ordered list.
 
 ## The OrionBelt playground (http://localhost:17860)
 

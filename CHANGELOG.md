@@ -9,6 +9,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 - **Filter pushdown through Postgres-federation BI tools (Dremio).** When a tool like Dremio federates into OrionBelt's pgwire surface, its connector wraps the virtual `model` table in a trivial derived table and lifts the predicate to the outer query (`SELECT ... FROM (SELECT ... FROM model) WHERE ...`). The pgwire translator now detects and flattens that wrapper, so dimension filters (`WHERE`) and measure filters (`HAVING`) execute through federation instead of being rejected as unsupported subqueries. SQL that is not this exact shape is left untouched, so genuinely unsupported subqueries still reject.
 - **Dremio "semantic sidecar" demo (`demo/dremio/`).** A one-command, self-contained stack (MinIO + Dremio OSS + OrionBelt in single-model mode + the Gradio playground) that shows Dremio federating into OrionBelt over pgwire while OrionBelt compiles to the Dremio dialect and pushes execution back into Dremio over Arrow Flight. Includes a built-in raw-Parquet-vs-governed comparison, a runbook, and asset builders (DuckDB seed to Parquet, plus a Dremio-dialect model generated from the canonical commerce model).
 
+### Fixed
+
+- **Period-over-period metrics on Dremio.** The PoP wrapper self-joined the base CTE under the alias `prev`, which is a reserved word in Dremio and rejected as an unquoted table alias (`Encountered "- prev"`). The alias is now `pop_prev`, so period-over-period metrics (e.g. `Sales MoM Change`) compile and execute on the Dremio dialect, including through Dremio's pgwire federation.
+
 ### Changed
 
 - **Cleaner federated catalog in admin-curated mode.** With `MODEL_FILES` set, the pgwire/BI catalog now exposes only the curated models. Transient user/scratch sessions (REST clients, the Gradio playground) are no longer surfaced as one schema per session id under the source, so BI-tool schema browsers stay uncluttered. Dynamic (non-curated) mode still lights up REST-loaded sessions as before.
