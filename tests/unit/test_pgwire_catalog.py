@@ -78,6 +78,45 @@ def test_refresh_drops_stale_models() -> None:
     assert result.rows[0][0] == 0
 
 
+def test_admin_curated_mode_hides_user_sessions() -> None:
+    """In admin-curated mode only curated models surface; scratch sessions don't.
+
+    Transient user sessions (REST clients, the Gradio playground) are seeded
+    with the protected model but must not clutter the BI catalog with one
+    schema per session id.
+    """
+
+    mgr = SessionManager(is_single_model_mode=True)
+    mgr.get_or_create_named("commerce").load_model(SAMPLE_MODEL_YAML)
+    scratch = mgr.create_session()
+    mgr.get_store(scratch.session_id).load_model(SAMPLE_MODEL_YAML)
+
+    emu = CatalogEmulator()
+    emu.refresh(mgr)
+    result = emu.execute(
+        "SELECT nspname FROM pg_catalog.pg_namespace "
+        "WHERE nspname NOT IN ('pg_catalog','information_schema','main','temp','pg_temp')"
+    )
+    schemas = {row[0] for row in result.rows}
+    assert "commerce" in schemas
+    assert scratch.session_id not in schemas
+
+
+def test_dynamic_mode_surfaces_user_sessions() -> None:
+    """Outside admin-curated mode, REST-loaded user sessions still light up."""
+
+    mgr = SessionManager(is_single_model_mode=False)
+    scratch = mgr.create_session()
+    mgr.get_store(scratch.session_id).load_model(SAMPLE_MODEL_YAML)
+
+    emu = CatalogEmulator()
+    emu.refresh(mgr)
+    result = emu.execute(
+        f"SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname='{scratch.session_id}'"
+    )
+    assert result.rows[0][0] == 1
+
+
 def test_psql_dt_style_query_returns_rows(manager_with_model: SessionManager) -> None:
     """\\dt's actual SQL must surface the model table at <model>.model."""
 

@@ -1,0 +1,131 @@
+# OrionBelt <-> Dremio "semantic sidecar" demo (single model, full circle).
+#
+#   Dremio SQL editor
+#      |  (1) pgwire source  ->  OrionBelt API
+#      v
+#   OrionBelt  -- compiles to Dremio dialect -->  (Flight, ob_dremio)
+#      |                                              |
+#      +------------------ results <-----------------+ executes against
+#                                            its own S3/MinIO Parquet datasets
+#
+# Four services:
+#   minio  : S3-compatible object store, serves the commerce Parquet (bucket "commerce")
+#   dremio : dremio/dremio-oss  (UI :9047, Flight :32010)
+#   obsl   : OrionBelt API in SINGLE-model mode (the Dremio-dialect commerce model),
+#            pgwire on :5432, connects back to Dremio via Arrow Flight
+#   ui     : OrionBelt Gradio playground (shows the loaded model + executes queries)
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "19000:9000"   # S3 API
+      - "19001:9001"   # MinIO console
+    volumes:
+      # Managed volume - the newer erasure-coded MinIO backend only serves
+      # objects written through the S3 API, so we load the Parquet via the
+      # mc-init sidecar below rather than bind-mounting files onto the drive.
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # One-shot loader: create the ``commerce`` bucket and upload the Parquet
+  # (built by build_assets.py) via the S3 API, then exit 0.
+  mc-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./parquet:/parquet:ro
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/commerce &&
+      mc mirror --overwrite --remove /parquet/commerce local/commerce &&
+      echo 'Parquet uploaded:' && mc ls --recursive local/commerce | wc -l
+      "
+
+  obsl:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # ob_dremio lives in the full `flight` extra (all 8 vendor drivers).
+        OB_EXTRA: flight
+    image: orionbelt-api:dremio-demo
+    environment:
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+      API_SERVER_HOST: 0.0.0.0
+      PORT: 8080
+      # pgwire surface - the single source Dremio federates into.
+      PGWIRE_ENABLED: "true"
+      PGWIRE_HOST: 0.0.0.0
+      PGWIRE_PORT: "5432"
+      PGWIRE_AUTH_MODE: trust
+      QUERY_EXECUTE: "true"
+      # Single-model mode: one Dremio-dialect model -> read-only UI that still
+      # compiles AND executes. Addressing name resolves to the OBML `name:` ("commerce").
+      DB_VENDOR: dremio
+      MODEL_FILES: /app/model/commerce_dremio.yaml
+      # Flight connection OBSL uses to push compiled Dremio SQL back to Dremio.
+      DREMIO_HOST: dremio
+      DREMIO_PORT: "32010"
+      DREMIO_USERNAME: obsl_admin
+      DREMIO_PASSWORD: obsl_admin_pw_123!
+    volumes:
+      - ./model:/app/model:ro
+    ports:
+      - "18080:8080"
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status == 200 else 1)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  ui:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.ui
+    image: orionbelt-ui:dremio-demo
+    environment:
+      PORT: "7860"
+      API_BASE_URL: http://obsl:8080
+    ports:
+      - "17860:7860"
+    depends_on:
+      obsl:
+        condition: service_healthy
+
+  dremio:
+    image: dremio/dremio-oss:latest
+    ports:
+      - "19047:9047"    # REST + Web UI
+      - "32010:32010"   # Arrow Flight (OBSL connects here)
+    environment:
+      DREMIO_JAVA_SERVER_EXTRA_OPTS: -Xms1g -Xmx2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9047/apiv2/server_status || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      minio:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+
+volumes:
+  minio-data:

@@ -623,10 +623,90 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
     return sql
 
 
+def _flatten_federation_subquery(sql: str) -> str:
+    """Collapse Dremio's federation pushdown wrapper into a flat OBSQL SELECT.
+
+    Dremio's Postgres-source connector wraps the virtual ``model`` table in a
+    trivial derived table and lifts ``WHERE`` / ``ORDER BY`` / ``FETCH`` to the
+    outer query::
+
+        SELECT "Country Name", "Total Sales"
+        FROM (SELECT "model"."Country Name" COLLATE "C", "model"."Total Sales"
+              FROM "commerce"."model") AS "model"
+        WHERE ("Total Sales" > 1000000)
+        ORDER BY "Total Sales" DESC FETCH NEXT 5 ROWS ONLY
+
+    The inner derived table is a pure projection over ``model`` (no WHERE /
+    GROUP / JOIN / aggregate), so it carries no semantics the outer query
+    doesn't already state. We rebuild the outer SELECT directly over the model
+    table, which the OBSQL translator accepts after the regular qualifier /
+    COLLATE / FETCH normalizations run.
+
+    Returns the SQL unchanged when the shape doesn't match, so a genuinely
+    unsupported subquery still reaches the translator's rejection path.
+    """
+
+    try:
+        ast = sqlglot.parse_one(sql)
+    except Exception:
+        return sql
+    if not isinstance(ast, exp.Select) or ast.args.get("joins"):
+        return sql
+    from_ = ast.args.get("from")
+    if from_ is None:
+        return sql
+    src = from_.this
+    if not isinstance(src, exp.Subquery):
+        return sql
+    inner = src.this
+    if not isinstance(inner, exp.Select):
+        return sql
+    # The inner derived table must be a pure projection: no clause that would
+    # change the row set or grain relative to the bare model table.
+    if any(
+        inner.args.get(k)
+        for k in (
+            "where",
+            "group",
+            "having",
+            "distinct",
+            "laterals",
+            "joins",
+            "qualify",
+            "with",
+            "order",
+            "limit",
+            "offset",
+            "window",
+        )
+    ):
+        return sql
+    inner_from = inner.args.get("from")
+    if inner_from is None or not isinstance(inner_from.this, exp.Table):
+        return sql
+    # Only collapse a wrapper over OUR virtual table, never an unrelated one.
+    if inner_from.this.name.lower() != "model":
+        return sql
+    # Inner projections must be plain column refs (optionally COLLATE-annotated);
+    # any function/aggregate means the derived table is doing real work.
+    for proj in inner.expressions:
+        col = proj.this if isinstance(proj, exp.Alias) else proj
+        if isinstance(col, exp.Collate):
+            col = col.this
+        if not isinstance(col, exp.Column):
+            return sql
+
+    flat = ast.copy()
+    flat.set("from", inner_from.copy())
+    return flat.sql(dialect="postgres")
+
+
 def _normalize_for_obsql(sql: str) -> str:
     """Apply pgjdbc-pushdown normalizations before OBSQL translation."""
 
-    return _rewrite_fetch_to_limit(_strip_collate_annotations(_unwrap_model_qualifier(sql)))
+    return _rewrite_fetch_to_limit(
+        _strip_collate_annotations(_unwrap_model_qualifier(_flatten_federation_subquery(sql)))
+    )
 
 
 # When OBSL exposes a model as ``"<model>"."model"`` (v2.5.0 catalog

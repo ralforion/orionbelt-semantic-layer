@@ -131,6 +131,15 @@ class SessionManager:
         """Maximum models a single session may hold."""
         return self._max_models
 
+    @property
+    def is_single_model_mode(self) -> bool:
+        """True when admin-curated (``MODEL_FILES``) mode is active.
+
+        In this mode the BI-facing catalog should expose only the curated
+        (protected) models, not transient user/scratch sessions.
+        """
+        return self._is_single_model_mode
+
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
