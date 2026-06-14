@@ -106,11 +106,12 @@ release with a deprecation warning. Migrate to `AUTH_MODE=api_key` + `API_KEYS`.
 !!! warning "Flight can run unauthenticated"
     The Flight server is opt-in: it starts only when `FLIGHT_ENABLED=true` (it
     does not auto-start just because `ob-flight-extension` is installed). Once
-    enabled it binds `0.0.0.0`, and if neither `AUTH_MODE=api_key` nor
-    `FLIGHT_API_TOKEN` is set it accepts every client (the server logs a loud
-    warning). For any non-local deployment, set `AUTH_MODE=api_key` (Flight then
-    validates against the shared key store) or restrict access to the Flight port
-    at the network layer.
+    enabled it binds `0.0.0.0`, and unless `AUTH_MODE=api_key` (or the legacy
+    `FLIGHT_AUTH_MODE=token` **with** `FLIGHT_API_TOKEN`) is set it accepts every
+    client (the server logs a loud warning). Setting `FLIGHT_API_TOKEN` alone,
+    without `FLIGHT_AUTH_MODE=token`, does **not** enable auth. For any non-local
+    deployment, set `AUTH_MODE=api_key` (Flight then validates against the shared
+    key store) or restrict access to the Flight port at the network layer.
 
 ### Postgres wire (psql, Tableau, Power BI, Metabase, DBeaver)
 

@@ -378,7 +378,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 from ob_flight.auth import build_shared_key_handler
 
                 flight_auth_handler = build_shared_key_handler()
-            elif settings.flight_auth_mode == "token" and settings.flight_api_token:
+            elif settings.flight_auth_mode == "token":
+                # Legacy static-token auth (deprecated). Fail CLOSED if the
+                # operator asked for token auth but did not supply a token -
+                # never silently downgrade to no-auth.
+                if not settings.flight_api_token:
+                    raise ValueError(
+                        "FLIGHT_AUTH_MODE=token requires FLIGHT_API_TOKEN to be set. "
+                        "Set the token, or migrate to AUTH_MODE=api_key + API_KEYS."
+                    )
                 from ob_flight.auth import TokenAuthHandler
 
                 flight_auth_handler = TokenAuthHandler(settings.flight_api_token)
@@ -387,10 +395,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     "AUTH_MODE=api_key + API_KEYS (one key store across REST, Flight, pgwire)."
                 )
             else:
-                # No shared auth and no usable legacy token -> the Flight
-                # listener binds 0.0.0.0 and accepts every client. Note this
-                # also covers FLIGHT_API_TOKEN set WITHOUT FLIGHT_AUTH_MODE=token,
-                # which the handler would otherwise ignore (still no auth).
+                # No shared auth and no token mode -> the Flight listener binds
+                # 0.0.0.0 and accepts every client. This also covers
+                # FLIGHT_API_TOKEN set WITHOUT FLIGHT_AUTH_MODE=token, which the
+                # token handler does not honour (still no auth).
                 from ob_flight.auth import NoopAuthHandler
 
                 flight_auth_handler = NoopAuthHandler()

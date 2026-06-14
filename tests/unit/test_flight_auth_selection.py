@@ -24,6 +24,21 @@ from orionbelt.settings import Settings  # noqa: E402
 STRONG_KEY = "obsl_pat_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 
 
+@pytest.fixture(autouse=True)
+def _cleanup():
+    """Reset global session-manager / auth state after each lifespan run.
+
+    The fail-closed test raises before the lifespan reaches its own cleanup, so
+    reset here to avoid leaking state into other tests.
+    """
+    yield
+    from orionbelt.api.deps import reset_session_manager
+    from orionbelt.auth import reset_auth
+
+    reset_session_manager()
+    reset_auth()
+
+
 async def _run_lifespan_capture(monkeypatch, settings: Settings) -> dict:
     """Drive the lifespan with a stubbed start_flight_background; return kwargs."""
     captured: dict = {}
@@ -70,6 +85,30 @@ async def test_token_mode_uses_token_handler(monkeypatch, caplog) -> None:
     assert isinstance(captured["auth_handler"], ob_auth.TokenAuthHandler)
     # No "unauthenticated" warning when a real handler is configured.
     assert not any("WITHOUT authentication" in r.message for r in caplog.records)
+
+
+async def test_token_mode_without_token_fails_closed(monkeypatch) -> None:
+    # FLIGHT_AUTH_MODE=token but no token -> must fail closed at startup, never
+    # silently downgrade to NoopAuthHandler.
+    captured: dict = {}
+
+    def _recorder(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(ob_startup, "start_flight_background", _recorder)
+    settings = Settings(
+        flight_enabled=True,
+        flight_auth_mode="token",
+        flight_api_token=None,
+        pgwire_enabled=False,
+        api_server_port=0,
+    )
+    app = create_app(settings=settings)
+    with pytest.raises(ValueError, match="FLIGHT_API_TOKEN"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "auth_handler" not in captured  # Flight must not have been started
 
 
 async def test_api_key_mode_uses_shared_handler(monkeypatch, caplog) -> None:
