@@ -580,7 +580,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
-        from orionbelt.ui.app import create_blocks
+        from orionbelt.auth import MODE_API_KEY, resolve_mode
+        from orionbelt.ui.app import create_blocks, set_api_credentials
+
+        # The embedded UI calls the same /v1 routes over localhost, so when
+        # auth is on it must present a valid key too. Resolve from Settings
+        # directly (init_auth runs later in lifespan). Pick the first key.
+        if resolve_mode(settings.auth_mode, settings.auth_enabled) == MODE_API_KEY:
+            first_key = next((k.strip() for k in settings.api_keys.split(",") if k.strip()), None)
+            set_api_credentials(first_key, settings.api_key_header)
 
         api_url = f"http://localhost:{settings.effective_port}"
         # Resolve from Settings directly: the UI is mounted in create_app(), which

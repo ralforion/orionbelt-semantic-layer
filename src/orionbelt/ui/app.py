@@ -25,6 +25,45 @@ _FALLBACK_DIALECTS = [
     "snowflake",
 ]
 _API_HEADERS = {"User-Agent": "OrionBelt-UI/1.0"}
+_DEFAULT_API_KEY_HEADER = "X-API-Key"
+
+
+def set_api_credentials(api_key: str | None, header_name: str = _DEFAULT_API_KEY_HEADER) -> None:
+    """Attach (or clear) the API key the UI forwards on every REST call.
+
+    The UI is a thin client of the REST API; when the API runs with
+    ``AUTH_MODE=api_key`` the UI must present a valid key on each request.
+    Browser users never see it. See design/PLAN_authentication.md §3.4.
+    """
+    header_name = (header_name or _DEFAULT_API_KEY_HEADER).strip() or _DEFAULT_API_KEY_HEADER
+    # Drop any previously-set key header (idempotent across re-configures).
+    for existing in [k for k in _API_HEADERS if k.lower() == header_name.lower()]:
+        del _API_HEADERS[existing]
+    if api_key:
+        _API_HEADERS[header_name] = api_key
+
+
+def _warn_if_auth_required_without_key(api_base: str, api_key: str | None) -> None:
+    """Log a clear startup error when the API needs a key but the UI has none.
+
+    Probes the unauthenticated ``/health`` endpoint (which reports
+    ``auth_mode``) so the operator sees an actionable message instead of the
+    user hitting cryptic 401s in the browser.
+    """
+    if api_key:
+        return
+    try:
+        resp = httpx.get(f"{api_base}/health", timeout=5, headers=_API_HEADERS)
+        auth_mode = resp.json().get("auth_mode", "none")
+    except Exception:
+        return  # API not up yet / unreachable — nothing actionable to say
+    if auth_mode and auth_mode != "none":
+        print(
+            f"ERROR: API at {api_base} requires authentication (auth_mode={auth_mode}) "
+            "but OBSL_API_KEY is not set. The UI will get 401s on every call. "
+            "Set OBSL_API_KEY (and API_KEY_HEADER if customised) on the UI process."
+        )
+
 
 # GitHub SVG icon (Octicon mark-github)
 _GITHUB_SVG = (  # noqa: E501
@@ -3276,6 +3315,12 @@ def create_ui() -> None:
     api_url = os.environ.get("API_BASE_URL") or None
     port = int(os.environ.get("PORT", "7860"))
     root_path = os.environ.get("ROOT_PATH", "")
+
+    # Forward an API key on every REST call when the API enforces auth.
+    api_key = os.environ.get("OBSL_API_KEY") or None
+    api_key_header = os.environ.get("API_KEY_HEADER", _DEFAULT_API_KEY_HEADER)
+    set_api_credentials(api_key, api_key_header)
+    _warn_if_auth_required_without_key(api_url or _DEFAULT_API_URL, api_key)
 
     from pathlib import Path
 

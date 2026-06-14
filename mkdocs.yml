@@ -139,6 +139,7 @@ nav:
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
       - Postgres Wire (BI Tools): guide/postgres-wire-bi-tools.md
+      - Authentication: guide/authentication.md
       - OSI Interoperability: guide/osi.md
   - API:
       - Overview: api/overview.md
