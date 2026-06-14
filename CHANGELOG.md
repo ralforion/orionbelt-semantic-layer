@@ -14,6 +14,7 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 ### Changed
 
 - **`AUTH_ENABLED` is deprecated.** It now acts as an alias for `AUTH_MODE=api_key` and logs a startup warning. Migrate to `AUTH_MODE`.
+- **Pinned `fastapi < 0.137`.** FastAPI 0.137 rejects empty-string route paths (`@router.post("")`) with "Prefix and path cannot be both empty". Capped to 0.136.x until those routes are migrated to explicit paths (which would change public URLs, so it is tracked separately).
 
 ## [2.11.0] - 2026-06-13
 

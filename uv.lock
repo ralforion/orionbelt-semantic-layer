@@ -2381,7 +2381,7 @@ dev = [
 requires-dist = [
     { name = "clickhouse-connect", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "fastapi", specifier = ">=0.128,<1.0" },
+    { name = "fastapi", specifier = ">=0.128,<0.137" },
     { name = "gradio", marker = "extra == 'ui'", specifier = ">=5.0,<6.0" },
     { name = "httpx", specifier = ">=0.28,<1.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },

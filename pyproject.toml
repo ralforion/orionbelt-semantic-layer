@@ -39,7 +39,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastapi>=0.128,<1.0",
+    # Cap below 0.137: it rejects empty-string route paths (@router.post(""))
+    # with "Prefix and path cannot be both empty". Migrating those routes to
+    # explicit paths would change public URLs (trailing slash), so pin until
+    # that migration is done separately. 0.136.x is the last working release.
+    "fastapi>=0.128,<0.137",
     "uvicorn[standard]>=0.40,<1.0",
     "pydantic>=2.12,<3.0",
     "pydantic-settings>=2.12,<3.0",
