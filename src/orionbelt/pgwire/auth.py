@@ -1,25 +1,40 @@
 """Authentication seam for the Postgres wire surface.
 
-Step 1 supports ``trust`` mode only — the server accepts every
-StartupMessage and responds with AuthenticationOk. The function
-signature is shaped so the unified-auth keystore (see
-design/PLAN_unified_auth.md) drops in at Step 6 without touching
-``server.py``:
+pgwire defers to the shared auth subsystem (``orionbelt.auth``) so a single
+``AUTH_MODE`` governs every surface. The global mode (not the legacy
+``PGWIRE_AUTH_MODE`` setting) drives behaviour:
 
-* ``trust``       → returns ``AuthResult(ok=True)`` immediately.
-* ``password``    → server sends AuthenticationCleartextPassword,
-                    reads the PasswordMessage, and calls this with the
-                    raw password. The keystore validator goes here.
-* ``scram-sha-256`` → multi-step SASL exchange — caller drives the
-                      handshake and consults this module to compare
-                      stored verifiers.
+* ``none``    → trust: accept every StartupMessage, no password exchange.
+* ``api_key`` → the server requires a credential. The mechanism is chosen by
+                :func:`select_mechanism`: SCRAM-SHA-256 by default (never sends
+                the key on the wire), or cleartext password when the operator
+                sets ``PGWIRE_AUTH_MODE=password``. Either way the "password"
+                is the OBSL API key and the ``user`` field is ignored for
+                validation (stored only for logging).
+* ``oidc``    → Phase 4 (unreachable — ``init_auth`` refuses to start).
+
+Cleartext sends the API key in plaintext on the wire, so untrusted networks
+must terminate TLS in front of pgwire (reverse proxy / platform LB). SCRAM
+avoids transmitting the raw key and is therefore the default. See
+design/PLAN_authentication.md §3.3.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from orionbelt.auth import (
+    MODE_API_KEY,
+    MODE_NONE,
+    get_api_keys,
+    get_mode,
+    validate_credential,
+)
 from orionbelt.pgwire.protocol import StartupMessage
+
+# Password mechanisms offered when a credential is required.
+MECH_SCRAM = "scram-sha-256"
+MECH_CLEARTEXT = "cleartext"
 
 
 @dataclass(frozen=True)
@@ -30,29 +45,55 @@ class AuthResult:
     error_message: str = ""
 
 
+def auth_required() -> bool:
+    """Return True when the current auth mode needs a credential exchange."""
+    return get_mode() == MODE_API_KEY
+
+
+# Back-compat alias (Phase 2 cleartext-only name).
+password_required = auth_required
+
+
+def select_mechanism(pgwire_auth_mode: str) -> str:
+    """Pick the password mechanism for credential exchange.
+
+    SCRAM-SHA-256 is the secure default. Operators opt into cleartext (for
+    clients that lack SCRAM support) via ``PGWIRE_AUTH_MODE=password`` or
+    ``=cleartext``. Any other value (including the legacy default ``trust``)
+    selects SCRAM.
+    """
+    if (pgwire_auth_mode or "").strip().lower() in {"password", "cleartext"}:
+        return MECH_CLEARTEXT
+    return MECH_SCRAM
+
+
+def scram_candidate_keys() -> tuple[str, ...]:
+    """Return the configured API keys for SCRAM proof verification."""
+    return tuple(get_api_keys())
+
+
 def authenticate(
     *,
-    auth_mode: str,
     startup: StartupMessage,
     password: str | None = None,
 ) -> AuthResult:
-    """Validate a connection attempt.
+    """Validate a connection attempt against the shared auth subsystem.
 
-    Step 1 implements only ``trust``. Future modes share this signature.
+    Callers must send ``AuthenticationCleartextPassword`` and collect the
+    client's ``PasswordMessage`` first whenever :func:`password_required`
+    returns True, then pass the password here.
     """
+    mode = get_mode()
 
-    if auth_mode == "trust":
+    if mode == MODE_NONE:
         return AuthResult(ok=True)
 
-    if auth_mode in {"password", "scram-sha-256"}:
-        # Step 6 wiring. Calling these today is a programmer error rather
-        # than a client error — fail loudly so the misconfig is obvious.
-        raise NotImplementedError(
-            f"pgwire auth_mode={auth_mode!r} lands in Step 6 alongside "
-            "the unified auth keystore (design/PLAN_unified_auth.md)."
-        )
+    if mode == MODE_API_KEY:
+        if not password:
+            return AuthResult(ok=False, error_message="password authentication required")
+        if validate_credential(password):
+            return AuthResult(ok=True)
+        return AuthResult(ok=False, error_message="invalid API key")
 
-    return AuthResult(
-        ok=False,
-        error_message=f"Unknown pgwire auth_mode: {auth_mode!r}",
-    )
+    # oidc — unreachable in Phase 1/2 (init_auth refuses this mode).
+    return AuthResult(ok=False, error_message=f"unsupported auth mode: {mode!r}")

@@ -71,6 +71,7 @@ async def start_pgwire(
         auth_mode=settings.pgwire_auth_mode,
         max_connections=settings.pgwire_max_connections,
         query_timeout_seconds=float(settings.pgwire_query_timeout_seconds),
+        auth_timeout_seconds=float(settings.pgwire_auth_timeout_seconds),
         query_handler=handler,
     )
     bound = await server.start()

@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "2.11.0"
+  project_version: "2.12.0"
   analytics:
     provider: google
     property: G-X19K4GX3EX
@@ -139,6 +139,7 @@ nav:
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
       - Postgres Wire (BI Tools): guide/postgres-wire-bi-tools.md
+      - Authentication: guide/authentication.md
       - OSI Interoperability: guide/osi.md
   - API:
       - Overview: api/overview.md

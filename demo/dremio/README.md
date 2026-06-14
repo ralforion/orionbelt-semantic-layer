@@ -11,12 +11,12 @@ Flight, executing against the very same Parquet datasets you can query raw.
     │  (1) one pgwire source  ──►  OrionBelt API
     ▼
  OrionBelt  ── compiles to Dremio dialect ──┐
-    │                                        │ (Arrow Flight, ob_dremio)
-    └──────────────── results ◄──────────────┘
+    │                                       │ (Arrow Flight, ob_dremio)
+    └──────────────── results ◄─────────────┘
                                      Dremio executes against its own
                                      S3 / MinIO Parquet datasets
-                                              ▲
-                       (you also query that Parquet RAW, to compare)
+                                                  ▲
+                              (you also query that Parquet RAW, to compare)
 ```
 
 Everything runs locally in four containers. No cloud, no credentials.

@@ -279,6 +279,11 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = ""
+    auth_mode: str = Field(
+        default="none",
+        description="Effective auth mode: 'none', 'api_key', or 'oidc'. "
+        "Clients check this to know whether a credential is required.",
+    )
 
 
 class CacheStatsResponse(BaseModel):

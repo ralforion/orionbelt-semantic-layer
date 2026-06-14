@@ -98,7 +98,11 @@ from orionbelt.service.value_formatting import format_row, to_tsv
 
 logger = logging.getLogger("orionbelt.api.sessions")
 
-router = APIRouter()
+# Prefix lives on the constructor (not the include_router call) so the root
+# routes can keep an empty path ("") and still resolve to /v1/sessions with no
+# trailing slash. FastAPI 0.137+ rejects an empty path supplied via an
+# include_router(prefix=...) call. See design/PLAN_authentication.md note.
+router = APIRouter(prefix="/sessions")
 
 
 # -- helpers -----------------------------------------------------------------

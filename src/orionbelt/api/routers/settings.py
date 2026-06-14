@@ -39,7 +39,9 @@ from orionbelt.service.db_executor import (
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
-router = APIRouter()
+# Prefix on the constructor keeps the root route ("") at /v1/settings with no
+# trailing slash (FastAPI 0.137+ rejects empty paths via include_router prefix).
+router = APIRouter(prefix="/settings")
 
 
 def _model_from_default_session(mgr: SessionManager) -> SemanticModel | None:

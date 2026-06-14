@@ -86,10 +86,10 @@ async def test_lifespan_survives_flight_kwarg_mismatch(
     post-fix the lifespan must log a warning naming the kwarg mismatch
     and continue serving the API (issue #96).
     """
-    # Force FLIGHT_ENABLED off so the lifespan path triggers only via
-    # the auto-detection branch driven by our fake find_spec. Also
-    # disable pgwire so we don't try to start anything else.
-    monkeypatch.delenv("FLIGHT_ENABLED", raising=False)
+    # Flight now starts only when FLIGHT_ENABLED=true (no package-presence
+    # auto-start), so enable it explicitly to exercise the startup branch.
+    # Also disable pgwire so we don't try to start anything else.
+    monkeypatch.setenv("FLIGHT_ENABLED", "true")
     monkeypatch.setenv("PGWIRE_ENABLED", "false")
     monkeypatch.setenv("API_SERVER_PORT", "0")
     monkeypatch.setenv("DISABLE_SESSION_LIST", "false")
@@ -112,6 +112,55 @@ async def test_lifespan_survives_flight_kwarg_mismatch(
         "kwarg mismatch instead of crashing. See #96. "
         f"Got warnings: {warnings}"
     )
+
+
+@pytest.mark.asyncio
+async def test_flight_does_not_autostart_without_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flight must NOT start by package presence alone (requires FLIGHT_ENABLED)."""
+    import types
+
+    called = {"start": False}
+
+    fake_pkg = types.ModuleType("ob_flight")
+    fake_startup = types.ModuleType("ob_flight.startup")
+
+    def _recorder(**_kwargs: Any) -> object:
+        called["start"] = True
+        return object()
+
+    fake_startup.start_flight_background = _recorder  # type: ignore[attr-defined]
+    fake_startup.stop_flight_server = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ob_flight", fake_pkg)
+    monkeypatch.setitem(sys.modules, "ob_flight.startup", fake_startup)
+
+    real_find_spec = importlib.util.find_spec
+
+    def _find_spec(name: str, *args: object, **kwargs: object) -> object:
+        if name == "ob_flight":
+            return importlib.machinery.ModuleSpec("ob_flight", loader=None)
+        return real_find_spec(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+
+    import logging
+
+    from orionbelt.api.app import create_app
+    from orionbelt.settings import Settings
+
+    # Explicit Settings so the result is hermetic regardless of any local .env
+    # (constructor kwargs override env / .env). flight_enabled=False is the
+    # behaviour under test: the package is "present" but the flag is off.
+    settings = Settings(flight_enabled=False, pgwire_enabled=False, api_server_port=0)
+    caplog.set_level(logging.INFO, logger="orionbelt.api")
+    app = create_app(settings=settings)
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert called["start"] is False, "Flight must not auto-start without FLIGHT_ENABLED=true"
+    assert any("FLIGHT_ENABLED is not set" in r.message for r in caplog.records)
 
 
 def test_fix_predates_published_pypi_signature() -> None:

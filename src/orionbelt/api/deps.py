@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from orionbelt.auth import init_auth, reset_auth
 from orionbelt.cache.noop import NoopCache
 from orionbelt.cache.protocol import Cache
 from orionbelt.service.session_manager import SessionManager
@@ -61,6 +62,10 @@ def init_session_manager(
     oneshot_batch_config: OneshotBatchConfig | None = None,
     cache: Cache | None = None,
     cache_config: CacheRuntimeConfig | None = None,
+    auth_mode: str = "none",
+    api_keys: str = "",
+    api_key_header: str = "X-API-Key",
+    auth_enabled: bool = False,
 ) -> None:
     """Set the global SessionManager (called at app startup).
 
@@ -92,6 +97,16 @@ def init_session_manager(
         _cache = cache
     if cache_config is not None:
         _cache_config = cache_config
+    # Initialise the shared auth subsystem here (not only in the ASGI
+    # lifespan) so test fixtures that call init_session_manager() directly
+    # get a consistent, validated auth config. Raises AuthConfigError on
+    # bad config — fail loudly at startup.
+    init_auth(
+        auth_mode=auth_mode,
+        api_keys=api_keys,
+        header_name=api_key_header,
+        auth_enabled=auth_enabled,
+    )
 
 
 def get_session_manager() -> SessionManager:
@@ -198,3 +213,4 @@ def reset_session_manager() -> None:
     _oneshot_batch_config = OneshotBatchConfig()
     _cache = NoopCache()
     _cache_config = CacheRuntimeConfig()
+    reset_auth()

@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     api_server_port: int = 8000
     port: int | None = None  # Cloud Run injects PORT; takes precedence over api_server_port
 
+    # Authentication. Single AUTH_MODE selector drives every direct surface
+    # (REST now; Flight + pgwire in Phase 2). Off by default to preserve the
+    # public-demo / local-dev behaviour. See design/PLAN_authentication.md §1.
+    #   "none"    — no auth (default)
+    #   "api_key" — validate API_KEYS against the shared key store
+    #   "oidc"    — Phase 4 (not implemented; rejected loudly at startup)
+    auth_mode: str = "none"
+    api_keys: str = ""  # comma-separated; required when auth_mode=api_key (>=16 chars each)
+    api_key_header: str = "X-API-Key"  # REST header name; Bearer is always accepted as fallback
+    # Legacy alias for auth_mode=api_key. Deprecated; honoured one release with
+    # a startup warning. Only takes effect when AUTH_MODE is left at "none".
+    auth_enabled: bool = False
+
     # Public-doc surfaces. Default True preserves current public-demo behaviour.
     # Set EXPOSE_API_DOCS=false on non-demo deployments to disable Swagger UI,
     # ReDoc, and the OpenAPI schema endpoint. EXPOSE_OPENAPI_SCHEMA can be
@@ -91,16 +104,19 @@ class Settings(BaseSettings):
     # OBSL is a semantic layer, not a JDBC proxy. There are no env flags
     # that allow arbitrary SQL through to the warehouse.
 
-    # Postgres wire surface (see design/PLAN_postgres_wire.md).
-    # Step 1 (Hello world): trust auth only, simple-query protocol.
-    # Auth modes "password" / "scram-sha-256" land in Step 6 alongside the
-    # unified auth subsystem (see design/PLAN_unified_auth.md).
+    # Postgres wire surface. Today: trust auth only, simple-query protocol.
+    # Auth modes "password" / "scram-sha-256" land in Phase 2 alongside the
+    # shared auth subsystem (see design/PLAN_authentication.md §3.3).
     pgwire_enabled: bool = False
     pgwire_host: str = "0.0.0.0"  # noqa: S104 — server bind address
     pgwire_port: int = 5432
     pgwire_auth_mode: str = "trust"  # "trust" (Step 1) | "password" | "scram-sha-256" (Step 6)
     pgwire_max_connections: int = 64
     pgwire_query_timeout_seconds: int = 60
+    # Hard deadline for the pre-auth handshake (startup + password/SCRAM
+    # exchange). Bounds how long an unauthenticated client can hold a
+    # connection slot, preventing slot-exhaustion DoS.
+    pgwire_auth_timeout_seconds: int = 10
 
     # One-shot batch endpoint (POST /v1/oneshot/batch). See PLAN_oneshot_batch.md.
     oneshot_batch_max_queries: int = 50

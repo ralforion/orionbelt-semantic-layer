@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 from orionbelt.api.deps import get_session_manager
 from orionbelt.service.session_manager import SessionManager
 
-router = APIRouter()
+# Prefix on the constructor keeps the root list route ("") at /v1/models with no
+# trailing slash (FastAPI 0.137+ rejects empty paths via include_router prefix).
+router = APIRouter(prefix="/models")
 
 
 class ModelInfo(BaseModel):

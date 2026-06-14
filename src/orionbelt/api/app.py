@@ -11,12 +11,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from orionbelt import __version__
+from orionbelt.api.auth import require_auth
 from orionbelt.api.deps import (
     CacheRuntimeConfig,
     OneshotBatchConfig,
@@ -343,19 +344,75 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         ),
         cache=cache,
         cache_config=cache_config,
+        auth_mode=settings.auth_mode,
+        api_keys=settings.api_keys,
+        api_key_header=settings.api_key_header,
+        auth_enabled=settings.auth_enabled,
     )
 
-    # Start Arrow Flight SQL server if ob-flight-extension is installed
-    # (auto-detected) or FLIGHT_ENABLED=true is set explicitly.
+    # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
+    # extra network surface (binds 0.0.0.0), so it must be opted into
+    # explicitly rather than auto-started merely because ob-flight-extension is
+    # installed (which would silently expose a SQL surface). When the package is
+    # present but the flag is off, log a hint.
     flight_thread = None
-    flight_available = importlib.util.find_spec("ob_flight") is not None
-    if settings.flight_enabled or flight_available:
+    if not settings.flight_enabled and importlib.util.find_spec("ob_flight") is not None:
+        logger.info(
+            "ob-flight-extension is installed but FLIGHT_ENABLED is not set; "
+            "Arrow Flight SQL is disabled. Set FLIGHT_ENABLED=true to enable it."
+        )
+    if settings.flight_enabled:
         try:
             from ob_flight.startup import start_flight_background
+
+            # Decide the Flight auth handler here, from Settings, and always
+            # pass it explicitly so the handler matches what we report and so
+            # ob_flight never re-reads the environment (which could diverge from
+            # Settings / .env). Three cases:
+            #   1. shared api_key mode  -> validate against the shared key store
+            #   2. legacy token mode    -> static FLIGHT_API_TOKEN (deprecated)
+            #   3. otherwise            -> no auth (NoopAuthHandler) + warning
+            from orionbelt.auth import MODE_API_KEY, get_mode
+
+            if get_mode() == MODE_API_KEY:
+                from ob_flight.auth import build_shared_key_handler
+
+                flight_auth_handler = build_shared_key_handler()
+            elif settings.flight_auth_mode == "token":
+                # Legacy static-token auth (deprecated). Fail CLOSED if the
+                # operator asked for token auth but did not supply a token -
+                # never silently downgrade to no-auth.
+                if not settings.flight_api_token:
+                    raise ValueError(
+                        "FLIGHT_AUTH_MODE=token requires FLIGHT_API_TOKEN to be set. "
+                        "Set the token, or migrate to AUTH_MODE=api_key + API_KEYS."
+                    )
+                from ob_flight.auth import TokenAuthHandler
+
+                flight_auth_handler = TokenAuthHandler(settings.flight_api_token)
+                logger.warning(
+                    "FLIGHT_AUTH_MODE=token / FLIGHT_API_TOKEN is deprecated. Migrate to "
+                    "AUTH_MODE=api_key + API_KEYS (one key store across REST, Flight, pgwire)."
+                )
+            else:
+                # No shared auth and no token mode -> the Flight listener binds
+                # 0.0.0.0 and accepts every client. This also covers
+                # FLIGHT_API_TOKEN set WITHOUT FLIGHT_AUTH_MODE=token, which the
+                # token handler does not honour (still no auth).
+                from ob_flight.auth import NoopAuthHandler
+
+                flight_auth_handler = NoopAuthHandler()
+                logger.warning(
+                    "Flight SQL is starting WITHOUT authentication on 0.0.0.0:%d. "
+                    "Anyone who can reach this port can query. Set AUTH_MODE=api_key "
+                    "to require a key, or restrict network access.",
+                    settings.flight_port,
+                )
 
             flight_thread = start_flight_background(
                 session_manager=mgr,
                 port=settings.flight_port,
+                auth_handler=flight_auth_handler,
                 default_dialect=settings.db_vendor,
                 cache=cache,
                 cache_config=cache_config,
@@ -527,26 +584,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(RequestIdMiddleware)
 
-    # Versioned API routes under /v1
-    v1 = APIRouter(prefix="/v1")
-    v1.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
+    # Versioned API routes under /v1. The auth dependency is applied at the
+    # router level so every /v1/* endpoint is protected when AUTH_MODE != none;
+    # root-level endpoints (/health, /robots.txt, /docs, /openapi.json, /ui)
+    # stay exempt by virtue of living outside this router.
+    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
+    # Routers whose prefix lives on their APIRouter() constructor (so their
+    # root routes keep an empty path and resolve with no trailing slash under
+    # FastAPI 0.137+) are included without a prefix here: sessions, dialects,
+    # reference, models, settings. model_api/graph share the /sessions space
+    # but have no empty-path routes, so they keep the include-time prefix.
+    v1.include_router(sessions.router, tags=["sessions"])
     v1.include_router(model_api.router, prefix="/sessions", tags=["model-discovery"])
     v1.include_router(graph.router, prefix="/sessions", tags=["graph"])
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])
-    v1.include_router(dialects.router, prefix="/dialects", tags=["dialects"])
+    v1.include_router(dialects.router, tags=["dialects"])
     v1.include_router(oneshot.router, prefix="/oneshot", tags=["oneshot"])
-    v1.include_router(reference.router, prefix="/reference", tags=["reference"])
-    v1.include_router(models_router.router, prefix="/models", tags=["models"])
-    v1.include_router(settings_router.router, prefix="/settings", tags=["settings"])
+    v1.include_router(reference.router, tags=["reference"])
+    v1.include_router(models_router.router, tags=["models"])
+    v1.include_router(settings_router.router, tags=["settings"])
     v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
-    v1.include_router(heartbeat.router, tags=["cache"])
     app.include_router(v1)
+
+    # Heartbeat is included OUTSIDE the auth-bearing v1 router: it carries its
+    # own auth (Authorization: Bearer <HEARTBEAT_AUTH_TOKEN>, and 404 when the
+    # token is unset). Routing it through global API-key auth would collide,
+    # because that auth also treats `Authorization: Bearer` as an API key, so a
+    # valid heartbeat token would be rejected as an invalid API key before the
+    # handler runs. It keeps the same /v1/heartbeat path.
+    app.include_router(heartbeat.router, prefix="/v1", tags=["cache"])
 
     # Root-level endpoints (no version prefix — used by load balancers, crawlers)
     @app.get("/health", response_model=HealthResponse, tags=["health"])
     async def health() -> HealthResponse:
-        return HealthResponse(status="ok", version=__version__)
+        # auth_mode is exposed here (unauthenticated) so clients can detect
+        # whether a credential is required before hitting any /v1 endpoint.
+        from orionbelt.auth import get_mode
+
+        return HealthResponse(status="ok", version=__version__, auth_mode=get_mode())
 
     @app.get("/robots.txt", include_in_schema=False)
     async def robots_txt() -> Response:
@@ -556,7 +632,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
-        from orionbelt.ui.app import create_blocks
+        from orionbelt.auth import MODE_API_KEY, resolve_mode
+        from orionbelt.ui.app import create_blocks, set_api_credentials
+
+        # The embedded UI is a server-side proxy that holds an API key and can
+        # act on /v1 (create sessions, load models, run queries, clear cache).
+        # /ui is intentionally NOT behind require_auth (browsers can't send the
+        # key on navigation), so injecting the server's key here would turn /ui
+        # into an open, privileged proxy: anyone who can reach /ui acts as the
+        # key holder. We therefore do NOT auto-pull a key from API_KEYS. The
+        # operator must opt in explicitly by setting OBSL_API_KEY, which signals
+        # they accept /ui as a key-holding surface and will network-protect it.
+        if resolve_mode(settings.auth_mode, settings.auth_enabled) == MODE_API_KEY:
+            ui_key = os.environ.get("OBSL_API_KEY") or None
+            if ui_key:
+                set_api_credentials(ui_key, settings.api_key_header)
+                logger.warning(
+                    "Embedded UI is configured with OBSL_API_KEY and acts as an "
+                    "authenticated proxy to /v1. /ui is NOT itself behind API-key "
+                    "auth - restrict network access to it (reverse proxy / firewall)."
+                )
+            else:
+                logger.warning(
+                    "AUTH_MODE=api_key but OBSL_API_KEY is not set: the embedded UI "
+                    "cannot call /v1 and will surface auth errors. Set OBSL_API_KEY to "
+                    "enable it (and protect /ui), or run the UI as a separate service."
+                )
 
         api_url = f"http://localhost:{settings.effective_port}"
         # Resolve from Settings directly: the UI is mounted in create_app(), which

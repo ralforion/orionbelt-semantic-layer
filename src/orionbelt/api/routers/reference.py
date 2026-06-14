@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field
 from orionbelt.obml_reference import OBML_REFERENCE
 from orionbelt.obsql_reference import OBSQL_REFERENCE
 
-router = APIRouter()
+# Prefix on the constructor keeps the root index route ("") at /v1/reference with
+# no trailing slash (FastAPI 0.137+ rejects empty paths via include_router prefix).
+router = APIRouter(prefix="/reference")
 
 
 # ---------------------------------------------------------------------------

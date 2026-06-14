@@ -9,7 +9,9 @@ from fastapi import APIRouter
 from orionbelt.api.schemas import DialectInfo, DialectListResponse
 from orionbelt.dialect.registry import DialectRegistry
 
-router = APIRouter()
+# Prefix on the constructor keeps the root route ("") at /v1/dialects with no
+# trailing slash (FastAPI 0.137+ rejects empty paths via include_router prefix).
+router = APIRouter(prefix="/dialects")
 
 
 @router.get("", response_model=DialectListResponse)
