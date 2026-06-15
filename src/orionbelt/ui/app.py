@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import gradio as gr
@@ -2190,6 +2191,55 @@ def _extract_model_items(
     return dims, meas_met, fields
 
 
+def _composable_sets(model_yaml: str, query_yaml: str) -> dict[str, set[str]] | None:
+    """Resolve ACR composable sets in-process for the current query.
+
+    Returns ``{"direct": {...}, "cfl": {...}}`` of artefact names, or ``None``
+    when the model or query can't be resolved (caller then leaves the pickers
+    un-highlighted rather than erroring). See ``design/PLAN_graph_reasoning.md``.
+    """
+    try:
+        from orionbelt.compiler.composability import resolve_composables_for_query
+        from orionbelt.models.query import QueryObject
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, source_map = TrackedLoader().load_string(model_yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        if not result.valid:
+            return None
+        qraw = yaml.safe_load(query_yaml) or {}
+        if not isinstance(qraw, dict):
+            qraw = {}
+        query = QueryObject.model_validate(qraw)
+        resolved = resolve_composables_for_query(model, query)
+        return {
+            "direct": set(resolved.dimensions) | set(resolved.measures) | set(resolved.metrics),
+            "cfl": set(resolved.cfl_measures) | set(resolved.cfl_metrics),
+        }
+    except Exception:  # noqa: BLE001 — highlighting is best-effort
+        return None
+
+
+def _decorate_choices(
+    items: Sequence[str | tuple[str, str]],
+    sets: dict[str, set[str]] | None,
+) -> list[tuple[str, str]]:
+    """Mark composable artefacts in picker labels (highlight, never hard-filter)."""
+    out: list[tuple[str, str]] = []
+    for item in items:
+        label, value = item if isinstance(item, tuple) else (item, item)
+        if sets is None:
+            out.append((label, value))
+        elif value in sets["direct"]:
+            out.append((f"✓ {label}", value))
+        elif value in sets["cfl"]:
+            out.append((f"✓ {label} (via CFL)", value))
+        else:
+            out.append((label, value))
+    return out
+
+
 def _insert_into_query(query: str, value: str, section: str) -> str:
     """Insert *value* into the correct *section* of query YAML.
 
@@ -2518,8 +2568,11 @@ def create_blocks(
                 )
                 import_osi_btn.click(fn=None, js=_IMPORT_OSI_JS)
 
-                def _update_pickers(model_yaml: str, current_dialect: str) -> tuple[object, ...]:
+                def _update_pickers(
+                    model_yaml: str, current_dialect: str, query_yaml: str
+                ) -> tuple[object, ...]:
                     dims, meas_met, fields = _extract_model_items(model_yaml)
+                    sets = _composable_sets(model_yaml, query_yaml)
                     import gradio as gr
 
                     # Auto-pick the dialect from the model's
@@ -2544,10 +2597,21 @@ def create_blocks(
                         pass
 
                     return (
-                        gr.update(choices=dims, value=None),
-                        gr.update(choices=meas_met, value=None),
+                        gr.update(choices=_decorate_choices(dims, sets), value=None),
+                        gr.update(choices=_decorate_choices(meas_met, sets), value=None),
                         gr.update(choices=fields, value=None),
                         dialect_update,
+                    )
+
+                def _highlight_pickers(model_yaml: str, query_yaml: str) -> tuple[object, object]:
+                    """Re-mark composable artefacts as the query changes (ACR)."""
+                    import gradio as gr
+
+                    dims, meas_met, _ = _extract_model_items(model_yaml)
+                    sets = _composable_sets(model_yaml, query_yaml)
+                    return (
+                        gr.update(choices=_decorate_choices(dims, sets)),
+                        gr.update(choices=_decorate_choices(meas_met, sets)),
                     )
 
                 def _make_inserter(section: str) -> object:  # noqa: E501
@@ -2565,7 +2629,7 @@ def create_blocks(
 
                 model_input.change(
                     fn=_update_pickers,
-                    inputs=[model_input, dialect],
+                    inputs=[model_input, dialect, query_input],
                     outputs=[dim_picker, meas_picker, field_picker, dialect],
                 )
 
@@ -2579,6 +2643,16 @@ def create_blocks(
                         inputs=[picker, query_input],
                         outputs=[query_input, picker],
                     )
+
+                # ACR: re-highlight composable artefacts as the query evolves.
+                # trigger_mode="once" coalesces rapid edits so we don't resolve
+                # the model on every keystroke.
+                query_input.change(
+                    fn=_highlight_pickers,
+                    inputs=[model_input, query_input],
+                    outputs=[dim_picker, meas_picker],
+                    trigger_mode="once",
+                )
 
                 with gr.Row(equal_height=True):
                     compile_btn = gr.Button(

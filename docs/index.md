@@ -53,6 +53,7 @@ OBSQL flows over **Apache Arrow Flight SQL** (v2.4+) and **PostgreSQL wire** (v2
 - **Static model filters** — Bake mandatory WHERE conditions into the model (by status, region, date range, etc.) — applied to every query automatically, with auto-join extension and ISO 8601 date/timestamp support
 - **Automatic join resolution** — Declare relationships between data objects; OrionBelt finds optimal join paths using graph algorithms
 - **Multi-fact support** — Composite Fact Layer (CFL) planning handles queries spanning multiple fact tables with UNION ALL and CTE-based aggregation
+- **Artefacts Composability Resolution (ACR)** — Given the query so far, the `composables` endpoint returns which dimensions, measures, and metrics can still be added and compile (including CFL candidates), powering guided query building for people and AI agents
 - **Machine-readable semantics** — Every loaded model is exported as an OBSL-Core 0.1 RDF graph and queryable via a read-only SPARQL endpoint, so AI agents and knowledge-graph tools can reason over your model
 - **Session management** — TTL-scoped sessions isolate model state per client, enabling iterative development workflows
 

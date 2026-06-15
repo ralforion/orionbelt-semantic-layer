@@ -1439,3 +1439,58 @@ class TestReferenceEndpoints:
         # Error names the available schemas
         detail = r.json().get("detail", "")
         assert "obml" in detail and "query" in detail
+
+
+# ---------------------------------------------------------------------------
+# Composables (Artefacts Composability Resolution)
+# ---------------------------------------------------------------------------
+
+
+class TestComposablesEndpoint:
+    """POST/GET /v1/sessions/{sid}/models/{mid}/composables — ACR."""
+
+    async def _load(self, client: AsyncClient) -> tuple[str, str]:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        return sid, load.json()["model_id"]
+
+    async def test_composables_for_query(self, client: AsyncClient) -> None:
+        sid, mid = await self._load(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/models/{mid}/composables",
+            json={"select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data["anchorObjects"]) == {"Customers", "Orders"}
+        assert "Order Count" in data["measures"]
+        assert data["cflMeasures"] == []
+
+    async def test_composables_empty_query_offers_all(self, client: AsyncClient) -> None:
+        sid, mid = await self._load(client)
+        r = await client.post(
+            f"/v1/sessions/{sid}/models/{mid}/composables",
+            json={"select": {"dimensions": []}},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "Total Revenue" in data["measures"]
+        assert "Customer Country" in data["dimensions"]
+        assert "Revenue per Order" in data["metrics"]
+
+    async def test_composables_get_by_anchor_name(self, client: AsyncClient) -> None:
+        sid, mid = await self._load(client)
+        r = await client.get(
+            f"/v1/sessions/{sid}/models/{mid}/composables", params={"anchor": "Total Revenue"}
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["anchorObjects"] == ["Orders"]
+        assert "Customer Country" in data["dimensions"]
+
+    async def test_composables_unknown_model_404(self, client: AsyncClient) -> None:
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        r = await client.get(f"/v1/sessions/{sid}/models/nope/composables", params={"anchor": "x"})
+        assert r.status_code == 404
