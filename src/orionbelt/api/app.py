@@ -34,6 +34,7 @@ from orionbelt.api.middleware import (
 )
 from orionbelt.api.routers import (
     cache_stats,
+    composables,
     convert,
     dialects,
     graph,
@@ -596,6 +597,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # but have no empty-path routes, so they keep the include-time prefix.
     v1.include_router(sessions.router, tags=["sessions"])
     v1.include_router(model_api.router, prefix="/sessions", tags=["model-discovery"])
+    v1.include_router(composables.router, prefix="/sessions", tags=["model-discovery"])
     v1.include_router(graph.router, prefix="/sessions", tags=["graph"])
     v1.include_router(shortcuts.router, tags=["model-discovery"])
     v1.include_router(convert.router, prefix="/convert", tags=["convert"])

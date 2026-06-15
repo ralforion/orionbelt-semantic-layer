@@ -11,12 +11,13 @@ Returns 409 Conflict if resolution is ambiguous.
 from __future__ import annotations
 
 import re
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from orionbelt.api.deps import get_db_vendor, get_session_manager
+from orionbelt.api.routers.composables import build_composables
 from orionbelt.api.routers.model_api import (
     _build_explain,
     _build_join_graph,
@@ -24,6 +25,7 @@ from orionbelt.api.routers.model_api import (
     _build_search_response,
 )
 from orionbelt.api.schemas import (
+    ComposablesResponse,
     DiagramResponse,
     DimensionDetail,
     ExampleDetail,
@@ -305,6 +307,27 @@ async def shortcut_join_graph(
     """Return the join graph (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
     return _build_join_graph(model)
+
+
+@router.post("/composables", response_model=ComposablesResponse, tags=["model-discovery"])
+async def shortcut_composables_for_query(
+    query: QueryObject,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ComposablesResponse:
+    """Resolve composables for an in-progress query (auto-resolves session/model)."""
+    _, _, model = _resolve_single_model(mgr)
+    return build_composables(model, query=query)
+
+
+@router.get("/composables", response_model=ComposablesResponse, tags=["model-discovery"])
+async def shortcut_composables_for_anchors(
+    anchor: Annotated[list[str], Query()] = [],  # noqa: B006 — FastAPI query list
+    anchor_type: Annotated[str | None, Query(alias="anchorType")] = None,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ComposablesResponse:
+    """Resolve composables for named anchors (auto-resolves session/model)."""
+    _, _, model = _resolve_single_model(mgr)
+    return build_composables(model, anchors=anchor, anchor_type=anchor_type)
 
 
 @router.get("/diagram/er", response_model=DiagramResponse, tags=["model-discovery"])
