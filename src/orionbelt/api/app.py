@@ -628,7 +628,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/robots.txt", include_in_schema=False)
     async def robots_txt() -> Response:
-        return Response("User-agent: *\nAllow: /\n", media_type="text/plain")
+        # This host serves the REST API and the interactive Gradio UI (under
+        # /ui) - there is nothing here meant for search indexing (the docs site
+        # lives on a separate host). Disallow all crawling so compliant bots
+        # (Googlebot/GoogleOther/bingbot) stop probing app/internal paths.
+        return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
     # Mount Gradio UI at /ui when the 'ui' extra is installed
     try:

@@ -3435,7 +3435,7 @@ def create_ui() -> None:
         # favicon ourselves and inject a <link> tag into the head.
         import gradio as gr
         from fastapi import FastAPI
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse, PlainTextResponse
 
         favicon_url = f"{root_path.rstrip('/')}/favicon.png"
         head_html = f'<link rel="icon" type="image/png" href="{favicon_url}">'
@@ -3446,6 +3446,13 @@ def create_ui() -> None:
         @app.get(favicon_url, include_in_schema=False)
         async def _favicon() -> FileResponse:
             return FileResponse(favicon_file, media_type="image/png")
+
+        @app.get("/robots.txt", include_in_schema=False)
+        async def _robots() -> PlainTextResponse:
+            # The UI is an interactive app, not indexable content. When this
+            # service is fronted on its own host (rather than under /ui on the
+            # API host), serve a disallow-all so crawlers skip it.
+            return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
         app = gr.mount_gradio_app(app, demo, path=root_path)
         uvicorn.run(
