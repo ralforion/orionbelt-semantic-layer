@@ -29,6 +29,24 @@ _OSI_VERSION = "0.2.0.dev0"
 
 # Dialect / vendor enum extras new in v0.2.0.dev0
 _OSI_KNOWN_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL")
+# SQL dialects (of the OSI enum) whose aggregation expressions our regex-based
+# metric parser can read, in preference order. ANSI_SQL first; SNOWFLAKE and
+# DATABRICKS are SQL engines OrionBelt also targets, and their simple/expression
+# aggregations (``SUM(t.c)``, ``SUM(t.a * t.b)``) are syntactically identical to
+# ANSI. MDX / TABLEAU / MAQL are non-SQL languages and are never parsed as SQL.
+_SQL_PARSEABLE_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "DATABRICKS")
+
+# Matches a ``dataset.column`` reference inside a SQL expression, where each
+# side is a bare identifier or a quoted identifier (double quotes, backticks, or
+# brackets). The leading lookbehind prevents matching the tail of a longer path
+# (``a.b.c``) or a mid-token boundary; the bare form must start with a letter or
+# underscore so numeric literals (``1.5``) are never treated as references.
+_COLUMN_REF_RE = re.compile(
+    r'(?<![\w."`\]])'
+    r'(?P<ds>[A-Za-z_]\w*|"[^"]+"|`[^`]+`|\[[^\]]+\])'
+    r"\s*\.\s*"
+    r'(?P<col>[A-Za-z_]\w*|"[^"]+"|`[^`]+`|\[[^\]]+\])'
+)
 _OSI_KNOWN_VENDORS = (
     "COMMON",
     "ORIONBELT",
@@ -96,6 +114,10 @@ class OSItoOBML:
         self.default_database = default_database
         self.default_schema = default_schema
         self.warnings: list[str] = []
+        # OSI metrics that have no OBML representation (non-SQL dialect only,
+        # or an expression our parser cannot decompose). Preserved verbatim
+        # rather than dropped — see ``_preserve_unconverted_metric``.
+        self._unconverted_metrics: list[dict] = []
 
     def _normalize_legacy_v01(self) -> None:
         """Promote OSI v0.1.x payloads to the v0.2 shape, in place.
@@ -143,6 +165,12 @@ class OSItoOBML:
             )
 
     def convert(self) -> dict:
+        # Reset per-conversion accumulators so calling convert() twice on the
+        # same instance is idempotent (no duplicated warnings or preserved
+        # metrics). Both are populated as a side effect of conversion below.
+        self.warnings = []
+        self._unconverted_metrics = []
+
         # v0.1.x inputs need the legacy shim to promote pre-v0.2
         # custom_extensions into v0.2 first-class fields before we parse.
         self._normalize_legacy_v01()
@@ -205,6 +233,19 @@ class OSItoOBML:
             obml["measures"] = measures
         if metrics:
             obml["metrics"] = metrics
+
+        # Metrics that have no OBML representation are not dropped: stash the
+        # original OSI metric verbatim under the OSI vendor so the reverse
+        # (OBML -> OSI) direction re-emits them and a full OSI -> OBML -> OSI
+        # roundtrip stays lossless. They are not queryable in OBML; a LOSSY
+        # warning was already recorded per metric.
+        if self._unconverted_metrics:
+            obml.setdefault("customExtensions", []).append(
+                {
+                    "vendor": _VENDOR_OSI,
+                    "data": json.dumps({"obml_unconverted_metrics": self._unconverted_metrics}),
+                }
+            )
 
         # ── Restore model-level properties from custom_extensions ────
         for ext in model.get("custom_extensions", []):
@@ -632,6 +673,19 @@ class OSItoOBML:
         measures: dict[str, Any] = {}
         metrics: dict[str, Any] = {}
 
+        # Case-insensitive dataset/field index for resolving SQL identifiers
+        # back to their canonical OSI names (Snowflake/Databricks expressions
+        # commonly upper-case or quote them).
+        ds_lc = {name.lower(): name for name in ds_map}
+        fields_lc = {
+            name: {
+                f["name"].lower(): f["name"]
+                for f in ds.get("fields", []) or []
+                if isinstance(f, dict) and f.get("name")
+            }
+            for name, ds in ds_map.items()
+        }
+
         for m in osi_metrics:
             name = m["name"]
 
@@ -690,10 +744,29 @@ class OSItoOBML:
                 measures[name] = delegated
                 continue
 
-            expr_text = self._get_ansi_expression(m.get("expression", {}))
+            # Prefer ANSI_SQL, but also read SNOWFLAKE / DATABRICKS expressions
+            # (SQL engines OrionBelt targets) — their aggregations are
+            # syntactically ANSI-compatible. Non-SQL dialects (MDX/TABLEAU/MAQL)
+            # are not parsed as SQL.
+            expr_text, _expr_dialect = self._select_sql_expression(m.get("expression", {}))
             if not expr_text:
-                self.warnings.append(f"Metric '{name}' has no ANSI_SQL expression; skipped.")
+                self._preserve_unconverted_metric(
+                    m, "no SQL-parseable dialect (ANSI_SQL / SNOWFLAKE / DATABRICKS) expression"
+                )
                 continue
+
+            # Resolve `dataset.column` references to canonical OSI names
+            # (case-insensitive, quote-stripped) before parsing. Copying raw
+            # Snowflake/Databricks identifiers verbatim would yield OBML refs to
+            # non-existent dataObjects/columns; when a reference cannot be
+            # mapped the metric is preserved rather than emitted dangling.
+            resolved_expr = self._resolve_column_refs(expr_text, ds_lc, fields_lc)
+            if resolved_expr is None:
+                self._preserve_unconverted_metric(
+                    m, "expression references columns not found in the model"
+                )
+                continue
+            expr_text = resolved_expr
 
             # Try simple: AGG(dataset.column) or AGG(DISTINCT dataset.column)
             parsed = self._parse_simple_agg(expr_text)
@@ -760,7 +833,12 @@ class OSItoOBML:
                     metric_def["owner"] = obml_extras["obml_owner"]
                 metrics[name] = metric_def
             else:
-                self.warnings.append(f"Metric '{name}' has unparseable expression: {expr_text}")
+                # Expression matched none of simple-agg / expr-agg /
+                # complex-decompose. Preserve verbatim instead of dropping so
+                # the metric survives an OSI -> OBML -> OSI roundtrip.
+                self._preserve_unconverted_metric(
+                    m, f"expression not decomposable into OBML measures/metrics: {expr_text!r}"
+                )
 
         # Preserve third-party vendor extensions, carrying them into whichever
         # OBML entity (measure or metric) the OSI metric became.
@@ -934,16 +1012,87 @@ class OSItoOBML:
             return a["expression"] == b["expression"]
         return False
 
-    def _get_ansi_expression(self, expr_obj: dict) -> str:
-        """Extract ANSI_SQL expression text."""
-        if isinstance(expr_obj, dict):
-            dialects = expr_obj.get("dialects", [])
-            for d in dialects:
-                if d.get("dialect") == "ANSI_SQL":
-                    return d.get("expression", "")
-            if dialects:
-                return dialects[0].get("expression", "")
-        return ""
+    def _select_sql_expression(self, expr_obj: dict) -> tuple[str, str]:
+        """Pick a SQL-parseable expression from an OSI ``expression`` object.
+
+        Returns ``(expression, dialect)`` for the most preferred SQL dialect
+        present (ANSI_SQL > SNOWFLAKE > DATABRICKS), or ``("", "")`` when the
+        metric only carries non-SQL dialects (MDX / TABLEAU / MAQL) or no usable
+        expression. Catching SNOWFLAKE / DATABRICKS lets third-party models
+        whose authors omitted ANSI_SQL still convert, since their aggregation
+        syntax is ANSI-compatible.
+        """
+        if not isinstance(expr_obj, dict):
+            return "", ""
+        dialects = expr_obj.get("dialects", [])
+        by_name = {
+            d.get("dialect"): d.get("expression", "")
+            for d in dialects
+            if isinstance(d, dict) and d.get("expression")
+        }
+        for dialect in _SQL_PARSEABLE_DIALECTS:
+            expr = by_name.get(dialect)
+            if expr:
+                return expr, dialect
+        return "", ""
+
+    @staticmethod
+    def _unquote_identifier(ident: str) -> str:
+        """Strip SQL identifier quoting (double quotes, backticks, or brackets)."""
+        ident = ident.strip()
+        if len(ident) >= 2 and (
+            (ident[0] == '"' and ident[-1] == '"')
+            or (ident[0] == "`" and ident[-1] == "`")
+            or (ident[0] == "[" and ident[-1] == "]")
+        ):
+            return ident[1:-1]
+        return ident
+
+    def _resolve_column_refs(
+        self, expr: str, ds_lc: dict[str, str], fields_lc: dict[str, dict[str, str]]
+    ) -> str | None:
+        """Rewrite ``dataset.column`` references to canonical OSI names.
+
+        Identifiers are matched case-insensitively and with SQL quoting
+        stripped, so Snowflake/Databricks forms such as ``SUM(ORDERS.AMOUNT)``
+        or ``SUM("Orders"."amount")`` resolve to the real ``Orders.amount``.
+        Returns the rewritten expression, or ``None`` if any reference cannot be
+        mapped (the caller then preserves the metric verbatim rather than emit a
+        dangling reference that would fail query resolution).
+        """
+        unresolved = False
+
+        def repl(match: re.Match[str]) -> str:
+            nonlocal unresolved
+            ds_real = ds_lc.get(self._unquote_identifier(match.group("ds")).lower())
+            if ds_real is None:
+                unresolved = True
+                return match.group(0)
+            col_real = fields_lc.get(ds_real, {}).get(
+                self._unquote_identifier(match.group("col")).lower()
+            )
+            if col_real is None:
+                unresolved = True
+                return match.group(0)
+            return f"{ds_real}.{col_real}"
+
+        rewritten = _COLUMN_REF_RE.sub(repl, expr)
+        return None if unresolved else rewritten
+
+    def _preserve_unconverted_metric(self, osi_metric: dict, reason: str) -> None:
+        """Preserve an OSI metric that has no OBML representation.
+
+        OBML cannot express the metric, but dropping it silently would break
+        the README's roundtrip promise. Instead the original OSI metric is kept
+        verbatim (re-emitted on OBML -> OSI) and a loud LOSSY warning is raised:
+        the metric is preserved but NOT queryable through OBML.
+        """
+        self._unconverted_metrics.append(osi_metric)
+        self.warnings.append(
+            f"LOSSY: OSI metric '{osi_metric.get('name', '?')}' has no OBML representation "
+            f"({reason}); preserved verbatim for OSI -> OBML -> OSI roundtrip but it is "
+            f"NOT queryable in OBML."
+        )
 
     def _parse_simple_agg(self, expr: str) -> tuple | None:
         """
@@ -1007,10 +1156,16 @@ class OSItoOBML:
         return agg.lower(), inner
 
     def _sql_refs_to_obml(self, sql_expr: str) -> str:
-        """Convert dataset.column references in SQL to OBML {[dataset].[column]} syntax."""
-        import re
+        """Convert dataset.column references in SQL to OBML {[dataset].[column]} syntax.
 
-        return re.sub(r"(\w+)\.(\w+)", r"{[\1].[\2]}", sql_expr)
+        Uses the shared identifier matcher so decimal literals (``1.23``) are not
+        mistaken for references; only identifiers that start with a letter or
+        underscore are rewritten. By this point references are already canonical
+        (resolved upstream), so the bare-identifier branch is what fires.
+        """
+        return _COLUMN_REF_RE.sub(
+            lambda m: "{[" + m.group("ds") + "].[" + m.group("col") + "]}", sql_expr
+        )
 
     def _decompose_complex_metric(self, name: str, expr: str) -> tuple[str, dict]:
         """
@@ -1124,11 +1279,11 @@ class OBMLtoOSI:
         self.warnings: list[str] = []
 
     def convert(self) -> dict:
+        # Reset warnings so a second convert() call on the same instance does
+        # not duplicate them.
+        self.warnings = []
+
         osi: dict[str, Any] = {"version": _OSI_VERSION}
-        # Vendor names accumulate as we emit custom_extensions so we can
-        # populate the v0.2 top-level ``vendors`` informational array at the
-        # end of the conversion.
-        self._used_vendors: set[str] = {_VENDOR_OBML}
 
         data_objects = self.obml.get("dataObjects", {})
         obml_dimensions = self.obml.get("dimensions", {})
@@ -1146,6 +1301,12 @@ class OBMLtoOSI:
 
         # ── Metrics (OBML measures + metrics → OSI metrics) ────────
         osi_metrics = self._convert_measures_and_metrics(obml_measures, obml_metrics, data_objects)
+
+        # Re-emit OSI metrics that OBML could not represent and that the import
+        # path preserved verbatim (vendor OSI, ``obml_unconverted_metrics``).
+        # This closes the OSI -> OBML -> OSI roundtrip for non-SQL or
+        # non-decomposable metrics.
+        self._merge_restored_metrics(osi_metrics)
 
         # ── Build semantic model ────────────────────────────────────
         sem_model: dict[str, Any] = {"name": self.model_name}
@@ -1196,19 +1357,14 @@ class OBMLtoOSI:
 
         osi["semantic_model"] = [sem_model]
 
-        # v0.2 informational enums — only what's actually used in the doc.
-        # ANSI_SQL is always emitted (every OBML measure compiles via it).
-        osi["dialects"] = ["ANSI_SQL"]
-        vendors_emitted = sorted(self._used_vendors)
-        if vendors_emitted:
-            osi["vendors"] = vendors_emitted
-
+        # The published OSI core schema forbids root-level ``dialects`` /
+        # ``vendors`` (root is additionalProperties:false, only ``version`` +
+        # ``semantic_model``). Dialects live per-expression in
+        # ``expression.dialects[]`` and vendors per-entity in
+        # ``custom_extensions[].vendor_name`` — the schema-valid homes — so the
+        # document stays fully conformant without root advertisement arrays.
+        # See OSI PR #148 (and the single-document-dialect direction in #52).
         return osi
-
-    def _record_vendor(self, vendor_name: str) -> None:
-        """Record a vendor seen during emission; populates the top-level
-        ``vendors`` informational array. Safe to call repeatedly."""
-        self._used_vendors.add(vendor_name)
 
     def _emit_foreign_extensions(self, obml_exts: list[dict] | None, osi_exts: list[dict]) -> None:
         """Re-emit third-party OBML customExtensions as OSI custom_extensions.
@@ -1221,7 +1377,6 @@ class OBMLtoOSI:
             vendor = ext.get("vendor")
             if vendor and vendor not in _INTERNAL_VENDORS:
                 osi_exts.append({"vendor_name": vendor, "data": ext.get("data", "")})
-                self._record_vendor(vendor)
 
     def _convert_data_object(
         self, do_name: str, do_obj: dict, obml_dimensions: dict
@@ -1408,7 +1563,6 @@ class OBMLtoOSI:
                 continue
             if ext_label_data.get("obml_field_label"):
                 field["label"] = ext_label_data["obml_field_label"]
-                self._record_vendor(_VENDOR_OSI)
                 break
 
         # Restore ai_context from customExtensions (OSI vendor) if present
@@ -1552,6 +1706,48 @@ class OBMLtoOSI:
             codes.append(col.get("code", display.lower().replace(" ", "_")))
         return codes
 
+    def _restore_unconverted_metrics(self) -> list[dict]:
+        """Recover OSI metrics preserved verbatim during OSI -> OBML import.
+
+        The import path stashes metrics OBML can't represent under an OSI-vendor
+        model-level customExtension (``obml_unconverted_metrics``). Re-emit them
+        unchanged so a full OSI -> OBML -> OSI roundtrip keeps them.
+        """
+        restored: list[dict] = []
+        for ext in self.obml.get("customExtensions", []) or []:
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            preserved = data.get("obml_unconverted_metrics")
+            if isinstance(preserved, list):
+                restored.extend(m for m in preserved if isinstance(m, dict))
+        return restored
+
+    def _merge_restored_metrics(self, osi_metrics: list[dict]) -> None:
+        """Append preserved (unconverted) OSI metrics to the converted ones.
+
+        Name-collision guard: if a queryable OBML measure/metric now owns a name
+        a stale preserved metric also uses, skip the preserved copy (the real
+        metric wins) so the OSI output has no duplicate metric names and passes
+        semantic validation. Each appended metric carries its own dialects
+        (``expression.dialects[]``) and vendors (``custom_extensions``)
+        verbatim, which are the schema-valid homes for that metadata.
+        """
+        existing = {m.get("name") for m in osi_metrics if isinstance(m, dict)}
+        for restored in self._restore_unconverted_metrics():
+            name = restored.get("name")
+            if name in existing:
+                self.warnings.append(
+                    f"Preserved OSI metric '{name}' dropped on export: a converted "
+                    f"OBML metric now uses that name."
+                )
+                continue
+            existing.add(name)
+            osi_metrics.append(restored)
+
     def _convert_measures_and_metrics(
         self, obml_measures: dict, obml_metrics: dict, data_objects: dict
     ) -> list:
@@ -1634,7 +1830,6 @@ class OBMLtoOSI:
             }
             if ai_ctx:
                 measure_metric["ai_context"] = ai_ctx
-            self._record_vendor("DATABRICKS")
             self._add_obml_measure_extras(
                 measure_metric, {**measure, "_extra_obml_aggregation": "measure"}
             )

@@ -42,7 +42,6 @@ class TestOwnVendorTags:
         osi = conv.OBMLtoOSI(obml).convert()
         ce = osi["semantic_model"][0]["custom_extensions"]
         assert all(e["vendor_name"] == "ORIONBELT" for e in ce)
-        assert "ORIONBELT" in osi["vendors"]
 
     def test_osi_to_obml_native_stash_uses_osi_vendor(self) -> None:
         osi = {
@@ -129,8 +128,6 @@ class TestForeignVendorRoundtrip:
         assert "DBT" in model_vendors
         assert "SALESFORCE" in ds_vendors
         assert "GOODDATA" in field_vendors
-        for v in ("DBT", "SALESFORCE", "GOODDATA", "ORIONBELT"):
-            assert v in osi["vendors"]
 
     def test_foreign_metric_roundtrip(self) -> None:
         osi_in = {
@@ -173,7 +170,6 @@ class TestForeignVendorRoundtrip:
         osi_out = conv.OBMLtoOSI(obml, "demo").convert()
         metric = osi_out["semantic_model"][0]["metrics"][0]
         assert any(e["vendor_name"] == "LOOKER" for e in metric["custom_extensions"])
-        assert "LOOKER" in osi_out["vendors"]
 
     def test_foreign_dimension_emitted_to_field(self) -> None:
         # OSI has no separate dimension entity, so an OBML dimension's foreign
@@ -203,7 +199,6 @@ class TestForeignVendorRoundtrip:
             f for f in osi["semantic_model"][0]["datasets"][0]["fields"] if f["name"] == "status"
         )
         assert any(e["vendor_name"] == "TABLEAU" for e in field["custom_extensions"])
-        assert "TABLEAU" in osi["vendors"]
 
 
 class TestLegacyBackCompat:

@@ -267,11 +267,6 @@ class TestMeasureAggregationRoundtrip:
         expr = metrics["Total Revenue"]["expression"]["dialects"][0]["expression"]
         assert expr == 'MEASURE("Total Revenue")'
 
-    def test_obml_to_osi_records_databricks_vendor(self):
-        obml = self._delegated_obml()
-        osi = conv.OBMLtoOSI(obml).convert()
-        assert "DATABRICKS" in osi.get("vendors", [])
-
     def test_obml_to_osi_stashes_aggregation_marker(self):
         obml = self._delegated_obml()
         osi = conv.OBMLtoOSI(obml).convert()
