@@ -1,3 +1,68 @@
+/* ── Self-hosted fonts ───────────────────────────────────────────────────
+   Replaces Material's default Google Fonts (Roboto + Roboto Mono). theme.font
+   is set to false in mkdocs.yml so Material does not load fonts from Google's
+   CDN; these @font-face rules plus the variable overrides below keep the
+   original Roboto look with no third-party requests. Files live in
+   docs/fonts/ (latin subset, woff2). */
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("../fonts/roboto-v51-latin-300.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/roboto-v51-latin-regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/roboto-v51-latin-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/roboto-v51-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/roboto-v51-latin-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/roboto-mono-v31-latin-regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/roboto-mono-v31-latin-700.woff2") format("woff2");
+}
+
+:root {
+  --md-text-font: "Roboto";
+  --md-code-font: "Roboto Mono";
+  --md-text-font-family: "Roboto", -apple-system, BlinkMacSystemFont, Helvetica,
+    Arial, sans-serif;
+  --md-code-font-family: "Roboto Mono", SFMono-Regular, Consolas, Menlo,
+    "Liberation Mono", monospace;
+}
+
 /* Prevent code in table cells from wrapping */
 td code {
   white-space: nowrap;

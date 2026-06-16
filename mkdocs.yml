@@ -45,6 +45,10 @@ extra_css:
 theme:
   name: material
   custom_dir: overrides
+  # Disable Material's Google Fonts loader; Roboto + Roboto Mono are
+  # self-hosted from docs/fonts/ via @font-face in docs/stylesheets/extra.css
+  # (no third-party font CDN requests).
+  font: false
   logo: assets/logo_w.png
   favicon: assets/favicon.png
   palette:
