@@ -2482,6 +2482,13 @@ def create_blocks(
                     download_obsl_btn = gr.Button("\u2193 OBSL", size="sm", scale=0, min_width=80)
 
                 init_dims, init_meas, init_fields = _extract_model_items(example_model)
+                # ACR: decorate the initial pickers against the shipped default
+                # query so composability highlighting is visible on first render,
+                # not only after the query is edited. ``_composable_sets`` returns
+                # None (plain choices) if the query can't resolve against the model.
+                _init_sets = _composable_sets(example_model, _DEFAULT_QUERY)
+                init_dim_choices = _decorate_choices(init_dims, _init_sets)
+                init_meas_choices = _decorate_choices(init_meas, _init_sets)
 
                 with gr.Row(elem_classes=["editor-row"]):
                     model_label = (
@@ -2503,7 +2510,7 @@ def create_blocks(
                     with gr.Column(scale=2, elem_classes=["picker-col"]):
                         with gr.Row(elem_classes=["picker-row"]):
                             dim_picker = gr.Dropdown(
-                                choices=init_dims,
+                                choices=init_dim_choices,
                                 value=None,
                                 label="Dimensions",
                                 scale=1,
@@ -2511,7 +2518,7 @@ def create_blocks(
                                 elem_classes=["picker-dropdown"],
                             )
                             meas_picker = gr.Dropdown(
-                                choices=init_meas,
+                                choices=init_meas_choices,
                                 value=None,
                                 label="Measures / Metrics",
                                 scale=1,
@@ -3362,6 +3369,13 @@ def create_blocks(
             fn=_refresh_query_exec_visibility,
             inputs=[api_url],
             outputs=[execute_btn, results_tab, dialect],
+        ).then(
+            # ACR: decorate the pickers against the restored query on load.
+            # Programmatic value updates above don't fire the .change handlers,
+            # so without this the dropdowns ignore the shipped/restored query.
+            fn=_highlight_pickers,
+            inputs=[model_input, query_input],
+            outputs=[dim_picker, meas_picker],
         ).then(fn=None, js=inject_js)
 
         # Session cleanup: API sessions expire automatically via SESSION_TTL_SECONDS.
