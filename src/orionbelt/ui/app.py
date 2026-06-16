@@ -2611,11 +2611,18 @@ def create_blocks(
                     )
 
                 def _highlight_pickers(model_yaml: str, query_yaml: str) -> tuple[object, object]:
-                    """Re-mark composable artefacts as the query changes (ACR)."""
+                    """Re-mark composable artefacts for the current query (ACR).
+
+                    When the query YAML can't be resolved yet (e.g. mid-edit /
+                    invalid), leave the pickers unchanged instead of clearing the
+                    highlighting — avoids flicker while the user is typing.
+                    """
                     import gradio as gr
 
-                    dims, meas_met, _ = _extract_model_items(model_yaml)
                     sets = _composable_sets(model_yaml, query_yaml)
+                    if sets is None:
+                        return gr.update(), gr.update()
+                    dims, meas_met, _ = _extract_model_items(model_yaml)
                     return (
                         gr.update(choices=_decorate_choices(dims, sets)),
                         gr.update(choices=_decorate_choices(meas_met, sets)),
@@ -2649,16 +2656,23 @@ def create_blocks(
                         fn=_make_inserter(sec),
                         inputs=[picker, query_input],
                         outputs=[query_input, picker],
+                    ).then(
+                        # Re-highlight right after a pick (the insert above
+                        # produces a valid query), so selecting an artefact
+                        # updates composability immediately.
+                        fn=_highlight_pickers,
+                        inputs=[model_input, query_input],
+                        outputs=[dim_picker, meas_picker],
                     )
 
-                # ACR: re-highlight composable artefacts as the query evolves.
-                # trigger_mode="once" coalesces rapid edits so we don't resolve
-                # the model on every keystroke.
-                query_input.change(
+                # ACR: re-highlight when the user finishes editing the query
+                # (on blur), not on every keystroke. Picks re-highlight via the
+                # .then above; this keeps manual edits from resolving the model
+                # on every character while still updating when focus leaves.
+                query_input.blur(
                     fn=_highlight_pickers,
                     inputs=[model_input, query_input],
                     outputs=[dim_picker, meas_picker],
-                    trigger_mode="once",
                 )
 
                 with gr.Row(equal_height=True):
