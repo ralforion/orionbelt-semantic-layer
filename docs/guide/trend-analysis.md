@@ -129,7 +129,7 @@ No new compiler logic — `DERIVED` already composes any metric by name.
 | `lag` / `lead` require `offset >= 1` and `timeDimension:` | `INVALID_LAG_LEAD` |
 | `ntile` requires `buckets >= 2` | `INVALID_NTILE_BUCKETS` |
 
-## 3. Statistical aggregates on Measure
+## 3. Statistical aggregates on Measure { #statistical-aggregates-on-measure }
 
 Nine new values for `Measure.aggregation`: four single-column and five
 two-column. No new metric type.
