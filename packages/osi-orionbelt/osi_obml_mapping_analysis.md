@@ -1,10 +1,10 @@
 # OSI ↔ OBML Mapping Analysis
 
-> Bidirectional conversion between [Open Semantic Interchange (OSI)](https://github.com/open-semantic-interchange/OSI) v0.1.1 and [OrionBelt ML (OBML)](https://github.com/ralfbecher/orionbelt-semantic-layer) v1.0 semantic model formats.
+> Bidirectional conversion between [Open Semantic Interchange (OSI)](https://github.com/open-semantic-interchange/OSI) v0.2.0.dev0 and [OrionBelt ML (OBML)](https://github.com/ralfbecher/orionbelt-semantic-layer) v1.0 semantic model formats. OSI v0.1.x inputs are still accepted on read via a legacy normalization shim; output targets v0.2.0.dev0.
 
 ## 1. Structural Comparison
 
-| Aspect | OSI v0.1.1 | OBML v1.0 |
+| Aspect | OSI v0.2.0.dev0 | OBML v1.0 |
 |---|---|---|
 | **Top-level** | `semantic_model[]` (array of models) | Single model with `dataObjects`, `dimensions`, `measures`, `metrics` sections |
 | **Tables / Entities** | `datasets[]` (flat array) | `dataObjects{}` (named dictionary) |
@@ -126,12 +126,13 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 - Locale settings — not yet preserved
 - `abstractType` (OBML type system) — preserved in field `custom_extensions` (`obml_abstract_type`)
 
-### 2.6 OSI-Specific Features (Not Representable in OBML)
+### 2.6 OSI-Specific Features and How They Map to OBML
 
-- **Multi-dialect expressions** — only `ANSI_SQL` dialect is used during conversion
-- **`primary_key` / `unique_keys`** — not directly represented in OBML
-- **`ai_context`** — preserved losslessly via `customExtensions` (see Section 2.4)
-- **`custom_extensions`** — mapped to OBML `customExtensions`
+- **`primary_key`** — natively represented: OSI's dataset-level `primary_key` array maps to per-column `primaryKey: true` on OBML columns (`DataObjectColumn.primaryKey`), and back to the dataset array on export.
+- **`unique_keys`** — no native OBML equivalent; round-trips via an `OSI`-vendor `customExtension` (`obml_unique_keys`).
+- **Multi-dialect expressions** — on import the converter reads the first available SQL dialect in the order `ANSI_SQL`, `SNOWFLAKE`, `DATABRICKS`; non-SQL dialects (`MDX`, `TABLEAU`, `MAQL`) are not parsed. A metric with no SQL-parseable dialect, or an expression OBML cannot decompose, is preserved verbatim (`obml_unconverted_metrics`) with a `LOSSY:` warning rather than dropped. On export, OBML measures/metrics emit `ANSI_SQL`.
+- **`ai_context`** — preserved losslessly via `customExtensions` (see Section 2.4).
+- **`custom_extensions`** — mapped to OBML `customExtensions`.
 
 ## 3. Conversion Strategies
 

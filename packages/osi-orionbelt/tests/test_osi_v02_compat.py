@@ -39,6 +39,25 @@ def schema_validator() -> Any:
     return jsonschema.Draft202012Validator(schema)
 
 
+def _collect_vendor_names(osi: dict[str, Any]) -> set[str]:
+    """Every ``custom_extensions[].vendor_name`` anywhere in an OSI document."""
+    found: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for ext in node.get("custom_extensions", []) or []:
+                if isinstance(ext, dict) and ext.get("vendor_name"):
+                    found.add(ext["vendor_name"])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(osi)
+    return found
+
+
 _OBML_WITH_PK_AND_LABEL: dict[str, Any] = {
     "version": 1.0,
     "dataObjects": {
@@ -140,17 +159,29 @@ class TestEmittedVersion:
         assert osi["version"] == conv._OSI_VERSION
         assert osi["version"].startswith("0.2")
 
-    def test_dialects_array_present(self) -> None:
+    def test_no_root_dialects_or_vendors(self) -> None:
+        # The published OSI core schema forbids root-level dialects/vendors
+        # (root is additionalProperties:false). See OSI PR #148.
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        assert osi["dialects"] == ["ANSI_SQL"]
+        assert "dialects" not in osi
+        assert "vendors" not in osi
+        assert set(osi.keys()) <= {"version", "semantic_model"}
 
-    def test_vendors_array_present(self) -> None:
+    def test_dialect_tagged_per_expression(self) -> None:
+        # Dialects live on each expression, the schema-valid home.
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        # ORIONBELT tags our roundtrip metadata; OSI tags the restored native
-        # field label. (The input fixture uses the legacy OBSL tag, exercising
-        # back-compat reads.)
-        assert "ORIONBELT" in osi["vendors"]
-        assert "OSI" in osi["vendors"]
+        for metric in osi["semantic_model"][0].get("metrics", []):
+            tags = [d["dialect"] for d in metric["expression"]["dialects"]]
+            assert "ANSI_SQL" in tags
+
+    def test_vendor_tagged_per_entity_not_root(self) -> None:
+        # ORIONBELT tags our roundtrip metadata in per-entity custom_extensions,
+        # not a root array. The OBML field label round-trips as a *native* OSI
+        # field label (no vendor tag needed).
+        osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
+        assert "ORIONBELT" in _collect_vendor_names(osi)
+        fields = osi["semantic_model"][0]["datasets"][0]["fields"]
+        assert any(f.get("label") for f in fields), "expected a native OSI field label"
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +356,15 @@ class TestSchemaValidation:
         osi = conv.OBMLtoOSI(obml).convert()
         errors = list(schema_validator.iter_errors(osi))
         assert errors == [], [e.message for e in errors[:5]]
+
+    def test_schema_rejects_root_dialects_and_vendors(self, schema_validator: Any) -> None:
+        """Guard OSI PR #148: root-level dialects/vendors are non-conformant."""
+        osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
+        osi["dialects"] = ["ANSI_SQL"]
+        osi["vendors"] = ["ORIONBELT"]
+        messages = [e.message for e in schema_validator.iter_errors(osi)]
+        assert any("dialects" in m for m in messages), messages
+        assert any("vendors" in m for m in messages), messages
 
 
 # ---------------------------------------------------------------------------

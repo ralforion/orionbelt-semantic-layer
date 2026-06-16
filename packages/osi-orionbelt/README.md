@@ -99,6 +99,14 @@ OBML, but are not interpreted by other OSI consumers:
   pair of objects are an OBML-specific topology feature.
 - **Measures / metrics and column-level value concepts in the ontology layer** -
   not represented in the OSI ontology export.
+- **OSI metrics with no OBML representation** - a metric whose only expression is
+  in a non-SQL dialect (`MDX`, `TABLEAU`, `MAQL`), or whose SQL expression cannot
+  be decomposed into OBML measures/metrics, is **not** dropped: the original OSI
+  metric is preserved verbatim in a model-level `OSI`-vendor `custom_extension`
+  (`obml_unconverted_metrics`) and re-emitted on OBML to OSI, so the OSI to OBML
+  to OSI roundtrip stays lossless. A `LOSSY:` warning is raised for each such
+  metric because it is **not queryable through OBML**. SQL expressions in the
+  `ANSI_SQL`, `SNOWFLAKE`, and `DATABRICKS` dialects are all read on import.
 
 OSI v0.1.x inputs are accepted on read via a legacy normalization shim; output
 targets OSI **v0.2.0.dev0**.
