@@ -204,7 +204,7 @@ OBSL `Measure.aggregation` ships 9 statistical functions that dbt SL doesn't exp
 | `covar_pop`, `covar_samp` | `COVAR_POP(x, y)`, `COVAR_SAMP(x, y)` | 2 |
 | `regr_slope`, `regr_intercept` | `REGR_SLOPE(y, x)`, `REGR_INTERCEPT(y, x)` | 2 |
 
-OBSL validates column arity at model-load time and gates dialect support at compile time (MySQL rejects correlation/covariance/regression; BigQuery + ClickHouse reject linear regression — all with a hard `UnsupportedAggregationError`, no silent fallback). See [Trend Analysis](../guide/trend-analysis.md#3-statistical-aggregates-on-measure) for the full coverage matrix.
+OBSL validates column arity at model-load time and gates dialect support at compile time (MySQL rejects correlation/covariance/regression; BigQuery + ClickHouse reject linear regression — all with a hard `UnsupportedAggregationError`, no silent fallback). See [Trend Analysis](../guide/trend-analysis.md#statistical-aggregates-on-measure) for the full coverage matrix.
 
 ---
 

@@ -410,7 +410,7 @@ measures:
 
 #### Statistical aggregates
 
-Single-column aggregates take exactly one entry in `columns`; two-column aggregates take exactly two (arity is enforced at model-load time, error code `INVALID_AGGREGATION_INPUTS`). Dialect coverage varies — MySQL has no correlation / covariance / regression; BigQuery and ClickHouse lack the linear-regression family. Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at compile time. See [Trend Analysis](trend-analysis.md#3-statistical-aggregates-on-measure) for the full coverage matrix and a worked example.
+Single-column aggregates take exactly one entry in `columns`; two-column aggregates take exactly two (arity is enforced at model-load time, error code `INVALID_AGGREGATION_INPUTS`). Dialect coverage varies — MySQL has no correlation / covariance / regression; BigQuery and ClickHouse lack the linear-regression family. Unsupported combinations raise `UNSUPPORTED_AGGREGATION_FOR_DIALECT` at compile time. See [Trend Analysis](trend-analysis.md#statistical-aggregates-on-measure) for the full coverage matrix and a worked example.
 
 | Type | SQL | Arity |
 |------|-----|:---:|
