@@ -1077,6 +1077,24 @@ class JoinGraphResponse(BaseModel):
     edges: list[JoinEdge] = Field(default_factory=list)
 
 
+class ComposablesResponse(BaseModel):
+    """Response for the /composables endpoint (Artefacts Composability Resolution).
+
+    ``dimensions`` / ``measures`` / ``metrics`` are directly composable with the
+    anchor (they share a fanout-safe common root). ``cflMeasures`` / ``cflMetrics``
+    are composable only via the Composite Fact Layer (independent fact, UNION ALL).
+    """
+
+    anchor_objects: list[str] = Field(default_factory=list, alias="anchorObjects")
+    dimensions: list[str] = Field(default_factory=list)
+    measures: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    cfl_measures: list[str] = Field(default_factory=list, alias="cflMeasures")
+    cfl_metrics: list[str] = Field(default_factory=list, alias="cflMetrics")
+
+    model_config = {"populate_by_name": True}
+
+
 # ---------------------------------------------------------------------------
 # OBSL graph / SPARQL schemas
 # ---------------------------------------------------------------------------

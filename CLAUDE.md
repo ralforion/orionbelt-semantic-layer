@@ -191,6 +191,8 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | GET | `/v1/sessions/{id}/models/{mid}/explain/{name}` | Lineage explain |
 | POST | `/v1/sessions/{id}/models/{mid}/find` | Search artefacts |
 | GET | `/v1/sessions/{id}/models/{mid}/join-graph` | Join graph adjacency |
+| POST | `/v1/sessions/{id}/models/{mid}/composables` | Artefacts Composability Resolution (ACR): given a query as anchor, returns composable `dimensions`/`measures`/`metrics` + `cflMeasures`/`cflMetrics` |
+| GET | `/v1/sessions/{id}/models/{mid}/composables` | ACR via named anchors (`?anchor=`, repeatable; `?anchorType=`) |
 | GET | `/v1/sessions/{id}/models/{mid}/graph` | OBSL RDF graph (Turtle) |
 | POST | `/v1/sessions/{id}/models/{mid}/sparql` | SPARQL query (SELECT/ASK) |
 | POST | `/v1/convert/osi-to-obml` | Convert OSI YAML → OBML YAML |
@@ -205,7 +207,7 @@ All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
 | GET | `/v1/reference/obsql` | OBSQL reference (semantic query language) — markdown |
 | GET | `/v1/reference/schemas/{name}` | JSON Schema by name (`obml` \| `query`) with `application/schema+json` content-type |
 
-Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`, `/v1/query/semantic-ql`, `/v1/query/semantic-ql/compile`.
+Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/composables`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`, `/v1/query/semantic-ql`, `/v1/query/semantic-ql/compile`.
 
 ## Configuration
 

@@ -2,6 +2,13 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.14.0] - 2026-06-16
+
+### Added
+
+- **Artefacts Composability Resolution (ACR).** A new `composables` endpoint answers, for the query you have built so far, which other artefacts can still be added and yield a valid, fanout-free result. `POST /v1/sessions/{id}/models/{mid}/composables` takes a query as the anchor (its dimensions and measures), and `GET .../composables?anchor=...` accepts one or more named anchors; both return composable `dimensions`, `measures`, and `metrics`, plus `cflMeasures` / `cflMetrics` for artefacts combinable only through the Composite Fact Layer. Top-level shortcuts (`/v1/composables`) auto-resolve a single session/model. ACR reuses the planner's directed join-graph reachability, so anything it reports as composable is guaranteed to compile. See `docs/guide/composability.md`.
+- **Guided query building in the UI.** The Gradio playground now highlights composable dimensions and measures/metrics in the artefact pickers as you edit the query (a check mark, with `(via CFL)` for cross-fact candidates). Highlighting never hides artefacts, so independent (CFL) analyses stay discoverable.
+
 ## [2.12.0] - 2026-06-14
 
 ### Added

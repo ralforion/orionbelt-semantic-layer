@@ -9,7 +9,7 @@ dev_addr: 127.0.0.1:8080
 
 extra:
   obml_version: "1.0"
-  project_version: "2.12.0"
+  project_version: "2.14.0"
   analytics:
     provider: google
     property: G-X19K4GX3EX
@@ -127,6 +127,7 @@ nav:
   - Guide:
       - OBML Model Format: guide/model-format.md
       - Query Language: guide/query-language.md
+      - Composability (ACR): guide/composability.md
       - SQL Dialects: guide/dialects.md
       - Grain & Filter Context: guide/grain-filter-context.md
       - Period-over-Period Metrics: guide/period-over-period.md
