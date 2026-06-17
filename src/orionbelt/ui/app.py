@@ -430,6 +430,11 @@ _CSS = """\
 .ob-cb-met label span::before { content: '● '; color: #9C27B0; }
 .ob-cb-joins label span::before { content: '◆ '; color: #9E9E9E; }
 
+/* ── Results table: scroll wide tables horizontally instead of overflowing
+   (Gradio's .table-wrap defaults to overflow-x:visible, so the extra columns
+   spilled off and got clipped by the container on small screens). ── */
+.result-table .table-wrap { overflow-x: auto !important; }
+
 /* ── Responsive: narrower viewports ── */
 @media (max-width: 900px) {
   .settings-row { flex-wrap: wrap !important; }
