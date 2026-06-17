@@ -684,6 +684,25 @@ def test_flatten_constant_folded_dimension_equality() -> None:
     assert "= 'B2B'" in norm  # the folded equality is recovered as a filter
 
 
+def test_flatten_collapses_cast_projections() -> None:
+    """When the source columns are DECIMAL, Dremio wraps pushed-down columns in
+    ``CAST(... AS DECIMAL(p,s))``. The flattener must look through the casts to
+    the bare columns (the semantic layer re-derives the type)."""
+
+    sql = (
+        'SELECT "Product Category", "Total Sales" '
+        'FROM (SELECT CAST("model"."Product Category" AS VARCHAR) AS "Product Category", '
+        'CAST("model"."Total Sales" AS DECIMAL(38,6)) AS "Total Sales" '
+        'FROM "commerce"."model" ORDER BY "model"."Total Sales" DESC FETCH NEXT 5 ROWS ONLY) '
+        'AS "model"'
+    )
+    norm = _normalize_for_obsql(sql)
+    assert "FROM (" not in norm.upper()
+    assert "CAST(" not in norm.upper()
+    assert '"Total Sales"' in norm
+    assert "LIMIT 5" in norm.upper()
+
+
 def test_flatten_bails_when_inner_and_outer_both_order() -> None:
     """If the outer ALSO orders/limits, merging would change results — bail."""
 

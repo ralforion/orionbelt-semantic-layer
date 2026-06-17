@@ -28,6 +28,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from orionbelt.api.query_cache import (
+    build_type_map,
     execute_query_with_cache,
     execution_result_from_envelope,
 )
@@ -50,6 +51,7 @@ from orionbelt.service.db_executor import (
     ExecutionResult,
     ExecutionUnavailableError,
     execute_sql,
+    parse_decimal_type,
 )
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import SessionManager
@@ -324,6 +326,9 @@ class SemanticRouter:
         # the cell as NULL. Recover the aliases by re-parsing the
         # original SQL and rewriting ``result.columns[i].name``.
         result = _apply_user_aliases(sql, result)
+        # Report governed DECIMAL columns as NUMERIC(precision, scale) rather
+        # than FLOAT8, from the model's declared types (issue #116).
+        _decorate_decimal_columns(result, target.model)
 
         return _encode_result(result, result_formats)
 
@@ -667,26 +672,32 @@ _FLATTEN_HOISTABLE = ("where", "order", "limit")
 _FLATTEN_MAX_DEPTH = 8
 
 
-def _flatten_unwrap_collate(node: exp.Expression) -> exp.Expression:
-    """Strip a single ``COLLATE`` wrapper (Dremio adds ``COLLATE "C"``)."""
+def _flatten_unwrap(node: exp.Expression) -> exp.Expression:
+    """Strip ``COLLATE`` and ``CAST`` wrappers down to the inner expression.
 
-    return node.this if isinstance(node, exp.Collate) else node
+    Dremio wraps pushed-down columns in ``COLLATE "C"`` and, when the source
+    column is typed (e.g. DECIMAL), ``CAST(... AS DECIMAL(38,6))``. Both are
+    type/collation coercions the semantic layer re-derives, so we look through
+    them to the underlying column/literal.
+    """
+
+    while isinstance(node, (exp.Collate, exp.Cast)):
+        node = node.this
+    return node
 
 
 def _flatten_is_passthrough(proj: exp.Expression) -> bool:
-    """``True`` if a projection is a bare column ref (optionally aliased/COLLATE)."""
+    """``True`` if a projection is a bare column ref (optionally aliased / wrapped
+    in COLLATE / CAST)."""
 
     col = proj.this if isinstance(proj, exp.Alias) else proj
-    col = _flatten_unwrap_collate(col)
-    return isinstance(col, exp.Column)
+    return isinstance(_flatten_unwrap(col), exp.Column)
 
 
 def _flatten_literal_value(node: exp.Expression) -> str | None:
     """Return a literal's raw value if ``node`` is a literal (CAST/COLLATE-wrapped ok)."""
 
-    node = _flatten_unwrap_collate(node)
-    if isinstance(node, exp.Cast):
-        node = _flatten_unwrap_collate(node.this)
+    node = _flatten_unwrap(node)
     if isinstance(node, exp.Literal):
         return str(node.this)
     return None
@@ -714,7 +725,7 @@ def _flatten_constant_projection(
     for where in wheres:
         for eq in where.find_all(exp.EQ):
             for col_side, lit_side in ((eq.this, eq.expression), (eq.expression, eq.this)):
-                col = _flatten_unwrap_collate(col_side)
+                col = _flatten_unwrap(col_side)
                 if (
                     isinstance(col, exp.Column)
                     and col.name == name
@@ -808,12 +819,17 @@ def _flatten_federation_subquery(sql: str) -> str:
     if base is None or base.name.lower() != "model":
         return sql
 
-    # Resolve the outermost projections: bare columns pass through; a
-    # constant-folded literal projection maps back to its dimension column.
+    # Resolve the outermost projections: a column (optionally CAST/COLLATE
+    # wrapped) collapses to the bare column under its output alias — the OBSQL
+    # translator only accepts bare artefact references, and the semantic layer
+    # re-derives the real type. A constant-folded literal projection maps back
+    # to its dimension column.
     new_projs: list[exp.Expression] = []
     for proj in outer_projs:
         if _flatten_is_passthrough(proj):
-            new_projs.append(proj.copy())
+            inner = _flatten_unwrap(proj.this if isinstance(proj, exp.Alias) else proj)
+            alias = proj.alias if isinstance(proj, exp.Alias) else None
+            new_projs.append(exp.alias_(inner.copy(), alias) if alias else inner.copy())
             continue
         rewritten = _flatten_constant_projection(proj, wheres)
         if rewritten is None:
@@ -1098,6 +1114,43 @@ def _alias_inner_column_name(node: exp.Expression) -> str | None:
     return None
 
 
+def _numeric_typmod(col: Any) -> int:
+    """Postgres NUMERIC ``atttypmod`` for a decimal column, else -1.
+
+    Packs the declared precision/scale as ``((precision << 16) | scale) + 4``
+    so clients learn the scale from RowDescription (issue #116).
+    """
+
+    scale = getattr(col, "scale", None)
+    precision = getattr(col, "precision", None)
+    if scale is None or precision is None:
+        return -1
+    return ((int(precision) << 16) | int(scale)) + 4
+
+
+def _decorate_decimal_columns(result: ExecutionResult, model: SemanticModel) -> None:
+    """Mark governed DECIMAL columns so pgwire reports NUMERIC, not FLOAT8.
+
+    OBSL knows each governed column's declared type from the model (the
+    compiled SQL also CASTs measures/metrics to that type), so we set
+    ``type_hint='decimal'`` + scale/precision from the OBML dataType. This is
+    the single source of truth, consistent across cache miss and hit, and never
+    stale (re-derived from the live model). Raw-mode columns absent from the
+    model keep their executor-derived hint. See issue #116.
+    """
+
+    type_map = build_type_map(model)
+    for col in result.columns:
+        declared = type_map.get(col.name)
+        if not declared:
+            continue
+        parsed = parse_decimal_type(declared)
+        if parsed is None:
+            continue
+        col.type_hint = "decimal"
+        col.precision, col.scale = parsed
+
+
 def _encode_result(
     result: ExecutionResult,
     result_formats: tuple[int, ...] = (),
@@ -1124,7 +1177,12 @@ def _encode_result(
         for i, col in enumerate(result.columns)
     ]
     columns_for_desc = [
-        (col.name, oid_for_type_hint(col.type_hint), per_col_formats[i])
+        (
+            col.name,
+            oid_for_type_hint(col.type_hint),
+            per_col_formats[i],
+            _numeric_typmod(col),
+        )
         for i, col in enumerate(result.columns)
     ]
     out = protocol.build_row_description(columns_for_desc)
@@ -1145,7 +1203,9 @@ def _encode_result(
     for row_idx, row in enumerate(result.rows):
         encoded: list[str | bytes | None] = []
         for i, (value, col) in enumerate(zip(row, result.columns, strict=True)):
-            encoded.append(encode_value(value, col.type_hint, per_col_formats[i]))
+            encoded.append(
+                encode_value(value, col.type_hint, per_col_formats[i], getattr(col, "scale", None))
+            )
         if debug_enabled:
             _log_data_row(row_idx, row, encoded, result.columns)
         out += protocol.build_data_row(encoded)

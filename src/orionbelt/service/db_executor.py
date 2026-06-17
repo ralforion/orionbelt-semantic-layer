@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import logging
+import re
 import time
 from datetime import UTC, date, datetime
 from datetime import time as dt_time
@@ -40,12 +41,23 @@ class ColumnMeta:
     mode ``select.fields`` projections of physical columns.
     """
 
-    __slots__ = ("name", "type_hint", "default_format")
+    __slots__ = ("name", "type_hint", "default_format", "scale", "precision")
 
-    def __init__(self, name: str, type_hint: str, default_format: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        type_hint: str,
+        default_format: str | None = None,
+        scale: int | None = None,
+        precision: int | None = None,
+    ) -> None:
         self.name = name
         self.type_hint = type_hint
         self.default_format = default_format
+        # Populated for DECIMAL/NUMERIC columns so the pgwire surface can report
+        # NUMERIC(precision, scale) instead of FLOAT8 (see issue #116).
+        self.scale = scale
+        self.precision = precision
 
 
 class ExecutionResult:
@@ -210,6 +222,23 @@ def _default_format_for_duckdb_type(type_obj: Any) -> str | None:
     if s.startswith(_DUCKDB_FLOAT_DECIMAL_PREFIXES):
         return "#,##0.00"
     return None
+
+
+_DECIMAL_TYPE_RE = re.compile(r"\b(?:decimal|numeric)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", re.IGNORECASE)
+
+
+def parse_decimal_type(type_str: str) -> tuple[int, int] | None:
+    """Return ``(precision, scale)`` for a ``DECIMAL(p, s)`` / ``NUMERIC(p, s)``
+    type string, or ``None`` if it isn't a fixed-scale decimal.
+
+    Used by the pgwire surface to report NUMERIC(precision, scale) instead of
+    FLOAT8 for decimal measures/metrics (issue #116).
+    """
+
+    m = _DECIMAL_TYPE_RE.search(type_str or "")
+    if m is None:
+        return None
+    return int(m.group(1)), int(m.group(2))
 
 
 def coarse_hint_from_type_name(name: str) -> str:

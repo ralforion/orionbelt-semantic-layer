@@ -100,3 +100,24 @@ def test_encode_string_falls_back_to_str() -> None:
             return "custom-repr"
 
     assert pgtypes.encode_text_value(_Custom(), "string") == "custom-repr"
+
+
+def test_decimal_hint_reports_numeric_oid() -> None:
+    # Decimals advertise NUMERIC (not FLOAT8) so clients keep the scale and
+    # don't render scientific notation / strip trailing zeros (issue #116).
+    assert pgtypes.oid_for_type_hint("decimal") == pgtypes.OID_NUMERIC
+    # NUMERIC stays text-only — no float8 binary path.
+    assert pgtypes.can_encode_binary("decimal") is False
+
+
+def test_encode_decimal_fixed_scale() -> None:
+    # Pads/rounds to the declared scale, always plain notation.
+    assert pgtypes.encode_value(574585.0, "decimal", 0, 2) == "574585.00"
+    assert pgtypes.encode_value(Decimal("574585"), "decimal", 0, 2) == "574585.00"
+    assert pgtypes.encode_value(-16050258.53, "decimal", 0, 2) == "-16050258.53"
+    # Large magnitude must not come out as ``1.605...E7``.
+    assert "E" not in pgtypes.encode_value(16050258.53, "decimal", 0, 2).upper()
+
+
+def test_encode_decimal_without_scale_keeps_value() -> None:
+    assert pgtypes.encode_value(Decimal("12.340"), "decimal", 0, None) == "12.340"

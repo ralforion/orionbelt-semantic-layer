@@ -34,7 +34,7 @@ from typing import Any
 import duckdb
 
 from orionbelt.models.semantic import DataType, Dimension, Measure, Metric, SemanticModel
-from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+from orionbelt.service.db_executor import ColumnMeta, ExecutionResult, parse_decimal_type
 from orionbelt.service.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -1161,15 +1161,35 @@ def _dim_sql_type(dim: Dimension) -> str:
     return _DATATYPE_TO_DUCKDB.get(dim.result_type, "VARCHAR")
 
 
+def _decimal_duckdb_type(data_type: str | None) -> str | None:
+    """``DECIMAL(p, s)`` for a fixed-scale decimal ``dataType``, else None.
+
+    Lets the catalog type DECIMAL measures/metrics as NUMERIC(p, s) so BI tools
+    (Dremio's dataset metadata, Tableau's pg_attribute probe) report them as
+    NUMERIC instead of DOUBLE — matching the value the compiled SQL CASTs to and
+    the query result's RowDescription (issue #116). DuckDB DECIMAL maps to
+    atttypid 21 -> Postgres OID 1700 via the shadow translation above.
+    """
+
+    if not data_type:
+        return None
+    parsed = parse_decimal_type(data_type)
+    if parsed is None:
+        return None
+    precision, scale = parsed
+    return f"DECIMAL({precision}, {scale})"
+
+
 def _measure_sql_type(measure: Measure) -> str:
-    return _DATATYPE_TO_DUCKDB.get(measure.result_type, "DOUBLE")
+    return _decimal_duckdb_type(measure.data_type) or _DATATYPE_TO_DUCKDB.get(
+        measure.result_type, "DOUBLE"
+    )
 
 
-def _metric_sql_type(_metric: Metric) -> str:
-    # Metrics produce a single derived value — float is the safe
-    # default the OBSL compiler also uses.  Step 7's finer type story
-    # can revisit per-metric output typing.
-    return "DOUBLE"
+def _metric_sql_type(metric: Metric) -> str:
+    # A decimal-typed metric (e.g. Gross Margin: decimal(18,2)) reports NUMERIC;
+    # otherwise float is the safe default the OBSL compiler also uses.
+    return _decimal_duckdb_type(metric.data_type) or "DOUBLE"
 
 
 def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
@@ -1184,7 +1204,12 @@ def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
     if len(description_row) < 2 or description_row[1] is None:
         return "string"
     name = str(description_row[1]).lower()
-    if any(token in name for token in ("int", "decimal", "numeric", "float", "double", "real")):
+    if "decimal" in name or "numeric" in name:
+        # NUMERIC OID so a column-discovery probe (SELECT * ... WHERE 1=0) over
+        # a DECIMAL model column agrees with information_schema.columns and the
+        # query result's RowDescription (issue #116).
+        return "decimal"
+    if any(token in name for token in ("int", "float", "double", "real")):
         return "number"
     if any(token in name for token in ("timestamp", "date", "time")):
         return "datetime"
