@@ -43,7 +43,8 @@ demo/dremio/run-demo.sh
 
 That builds the Parquet + model, starts the stack, waits for Dremio's cold
 start (~30-60 s), and bootstraps Dremio (S3 source, dataset promotion, one
-pgwire source). It finishes by printing a raw-vs-governed comparison.
+pgwire source, and the `governed` Space of curated views). It finishes by
+printing a raw-vs-governed comparison.
 
 Re-runs are fast and idempotent. Skip the image build with
 `NO_BUILD=1 demo/dremio/run-demo.sh`. Tear everything down with
@@ -153,6 +154,38 @@ measures from different fact tables. OrionBelt computes the components inside a
 Composite Fact Layer and projects only the requested columns - one governed
 definition, no hand-written multi-fact SQL.
 
+## Saved as Dremio views
+
+The bootstrap also saves each curated query as a **Dremio view** in a Space
+called `governed`, so you can browse and query them by name instead of pasting
+SQL. A note on *where* they live: Dremio forbids creating a view inside a
+source (`CREATE VIEW obsl.commerce.…` fails with *"Cannot create view in …"*) -
+views are virtual datasets and belong in a **Space** or a user's home. So the
+demo puts them in the `governed` Space, each referencing `obsl.commerce.model`.
+
+When you `SELECT` from a governed view, Dremio wraps the view body in a
+derived table and pushes it down to OrionBelt (including any inner
+`WHERE` / `ORDER BY` / `LIMIT`); OrionBelt flattens that wrapper back into a
+flat semantic query before compiling.
+
+| View (`governed.…`) | Maps to | Shows |
+|---|---|---|
+| `raw_top_countries` | A1 | raw lakehouse SQL over `lake` (no OrionBelt) |
+| `top_countries_by_sales` | A2 | same answer, governed |
+| `clients_in_singapore` | A3a | dimension filter -> `WHERE` |
+| `countries_over_1m` | A3b | measure filter -> `HAVING` |
+| `sales_vs_shipments` | A4 | cross-fact, Composite Fact Layer |
+| `avg_sale_by_channel` | A5 | governed metric |
+| `sales_period_over_period` | A6 | MoM + YoY window metrics |
+| `category_margin` | A7 | cross-fact derived metrics |
+
+(Eight views for seven curated queries: A3 keeps both filter variants - `WHERE`
+on a dimension and `HAVING` on a measure.) Try one:
+
+```sql
+SELECT * FROM governed.category_margin;
+```
+
 ## The OrionBelt playground (http://localhost:17860)
 
 Because OrionBelt runs in single-model mode here, the playground shows the
@@ -171,7 +204,8 @@ See `demo-queries.sql` for the full curated, run-ordered list.
   Parquet into MinIO via the S3 API (the erasure-coded backend won't serve
   files dropped straight onto the drive).
 - `bootstrap.py` - registers the MinIO S3 source, promotes each Parquet folder
-  as a dataset, registers the single pgwire source, and runs the comparison.
+  as a dataset, registers the single pgwire source, creates the `governed` Space
+  with the curated views, and runs the comparison.
 
 OrionBelt reaches Dremio via Flight using the `DREMIO_HOST` / `DREMIO_PORT` /
 `DREMIO_USERNAME` / `DREMIO_PASSWORD` env vars on the `obsl` service.
