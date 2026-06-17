@@ -447,13 +447,20 @@ _CSS = """\
 @media (max-width: 768px) {
   .gradio-container { padding: 4px 8px !important; overflow-x: hidden !important; }
 
-  /* Header: stack brand above links; never clip */
-  .header-row { flex-wrap: wrap !important; }
+  /* Header: give the brand/links block the full row so the theme button drops
+     to its own line and the links wrap cleanly instead of being clipped. */
+  .header-row { flex-wrap: wrap !important; row-gap: 8px !important; }
+  .header-row > *:first-child { flex: 1 1 100% !important; width: 100% !important; }
   .header-bar {
     flex-direction: column !important; align-items: flex-start !important; gap: 6px !important;
   }
+  .header-bar img.logo-dark,
+  .header-bar img.logo-light { height: 26px !important; }
+  .header-bar .header-brand { align-items: center !important; }
+  .header-bar .header-title { white-space: normal !important; }
   .header-bar .header-links {
     margin-left: 0 !important; flex-wrap: wrap !important; white-space: normal !important;
+    gap: 12px !important;
   }
 
   /* Settings: one control per row, full width (no 360px overflow) */
