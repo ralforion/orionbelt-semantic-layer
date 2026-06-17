@@ -438,6 +438,51 @@ _CSS = """\
   .header-bar .header-links { gap: 8px; }
   .header-bar .header-title { font-size: 18px; }
 }
+
+/* ── Responsive: phones — stack columns, drop fixed heights/min-widths ──
+   On phones the side-by-side editor/picker columns collapse and the fixed
+   viewport-relative (dvh) row heights squash the dropdowns to nothing. Stack
+   everything vertically with explicit heights, and let inputs fill the row
+   instead of overflowing (the desktop 360px min-width pushed fields off-screen). */
+@media (max-width: 768px) {
+  .gradio-container { padding: 4px 8px !important; overflow-x: hidden !important; }
+
+  /* Header: stack brand above links; never clip */
+  .header-row { flex-wrap: wrap !important; }
+  .header-bar {
+    flex-direction: column !important; align-items: flex-start !important; gap: 6px !important;
+  }
+  .header-bar .header-links {
+    margin-left: 0 !important; flex-wrap: wrap !important; white-space: normal !important;
+  }
+
+  /* Settings: one control per row, full width (no 360px overflow) */
+  .settings-row { flex-wrap: wrap !important; }
+  .settings-pair { width: 100% !important; flex-wrap: wrap !important; }
+  .settings-pair input,
+  .settings-pair textarea { min-width: 0 !important; width: 100% !important; }
+  .settings-pair .secondary-wrap,
+  .settings-pair .options { min-width: 0 !important; width: 100% !important; }
+  .settings-spacer { display: none !important; }
+
+  /* Main editors + pickers: stack vertically with real heights so CodeMirror
+     and the Dimensions/Measures/Columns dropdowns get usable space. */
+  .editor-row, .output-row {
+    height: auto !important; max-height: none !important; flex-direction: column !important;
+  }
+  .editor-row > *, .output-row > * { width: 100% !important; min-width: 0 !important; }
+  .editor-row > .code-editor { height: 300px !important; min-height: 300px !important; }
+  .output-row .code-editor { height: 240px !important; min-height: 240px !important; }
+  .picker-col { height: auto !important; }
+  .picker-col > .code-editor {
+    height: 240px !important; min-height: 240px !important; flex: 0 0 auto !important;
+  }
+  .picker-row { flex-wrap: wrap !important; }
+  .picker-dropdown { width: 100% !important; min-width: 0 !important; }
+
+  /* Diagram/graph canvases: fit the smaller viewport */
+  #er-diagram { height: 60dvh !important; min-height: 300px !important; }
+}
 """
 
 # Inline SVG search-glass for the .picker-dropdown CSS rule. Defined here
