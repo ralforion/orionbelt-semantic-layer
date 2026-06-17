@@ -288,7 +288,7 @@ class TestDetectFanout:
         """many-to-one traversed in reverse = one-to-many: fanout."""
         model = _make_model(cardinality=Cardinality.MANY_TO_ONE, measure_on_customers=True)
         resolved = _make_resolved(model, reversed_step=True, cardinality=Cardinality.MANY_TO_ONE)
-        with pytest.raises(FanoutError, match="fanout"):
+        with pytest.raises(FanoutError, match="inflated"):
             detect_fanout(resolved, model)
 
     def test_safe_one_to_one(self) -> None:
@@ -301,7 +301,7 @@ class TestDetectFanout:
         """many-to-many always causes fanout."""
         model = _make_model(cardinality=Cardinality.MANY_TO_MANY)
         resolved = _make_resolved(model, reversed_step=False, cardinality=Cardinality.MANY_TO_MANY)
-        with pytest.raises(FanoutError, match="fanout"):
+        with pytest.raises(FanoutError, match="inflated"):
             detect_fanout(resolved, model)
 
     def test_allow_fan_out_suppresses_error(self) -> None:
@@ -328,7 +328,7 @@ class TestDetectFanout:
             measure_names=["Revenue per Order"],
             component_measures=["Total Revenue", "Order Count"],
         )
-        with pytest.raises(FanoutError, match="fanout"):
+        with pytest.raises(FanoutError, match="inflated"):
             detect_fanout(resolved, model)
 
     def test_no_join_steps_no_error(self) -> None:

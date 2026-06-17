@@ -77,13 +77,28 @@ def wrap_with_pop(
                     SemanticError(
                         code="INVALID_METRIC",
                         message=(
-                            "Period-over-period metrics in one query must share the same "
-                            "time dimension and base grain (offsets may differ). Got "
-                            f"'{pop_config.name}' ({pop_config.pop_time_dimension}/"
-                            f"{pop_config.pop_grain}) vs '{other.name}' "
-                            f"({other.pop_time_dimension}/{other.pop_grain})."
+                            "Cannot combine period-over-period metrics computed at "
+                            f"different time grains: '{pop_config.name}' compares over "
+                            f"{pop_config.pop_time_dimension} ({pop_config.pop_grain}), "
+                            f"but '{other.name}' compares over "
+                            f"{other.pop_time_dimension} ({other.pop_grain}). Metrics "
+                            "that compare across time must share one time dimension and "
+                            "grain (only the comparison offset may differ). Keep metrics "
+                            "of one grain per query, or query each separately."
                         ),
                         path="metrics",
+                        hint=(
+                            "Remove one of the conflicting metrics, or run a separate "
+                            "query per time grain."
+                        ),
+                        context={
+                            "metricA": pop_config.name,
+                            "timeDimensionA": pop_config.pop_time_dimension,
+                            "grainA": pop_config.pop_grain,
+                            "metricB": other.name,
+                            "timeDimensionB": other.pop_time_dimension,
+                            "grainB": other.pop_grain,
+                        },
                     )
                 ]
             )

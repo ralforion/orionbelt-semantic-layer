@@ -420,7 +420,7 @@ class TestPoPSQLGeneration:
                 measures=["Revenue MoM Diff", "Revenue YoY Growth"],
             ),
         )
-        with pytest.raises(ResolutionError, match="same time dimension and base grain"):
+        with pytest.raises(ResolutionError, match="different time grains"):
             pipeline.compile(query, model, "duckdb")
 
     def test_pop_percent_change_sql(self) -> None:
