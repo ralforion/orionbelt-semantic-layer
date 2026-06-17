@@ -612,3 +612,41 @@ def test_flatten_then_normalize_is_translatable() -> None:
 )
 def test_flatten_federation_subquery_leaves_non_matching_sql_unchanged(sql: str) -> None:
     assert _flatten_federation_subquery(sql) == sql
+
+
+# When the saved Dremio view (a VDS over the source) itself carries
+# ``ORDER BY ... LIMIT``, Dremio keeps those clauses INSIDE the derived table
+# rather than on the outer query. The flattener must hoist them out so the
+# OBSQL translator (no subqueries) still accepts the result.
+_DREMIO_VIEW_PUSHDOWN = (
+    'SELECT "Country Name", "Total Sales" '
+    'FROM (SELECT "model"."Country Name" COLLATE "C", "model"."Total Sales" '
+    'FROM "commerce"."model" '
+    'ORDER BY "model"."Total Sales" DESC FETCH NEXT 5 ROWS ONLY) AS "model"'
+)
+
+
+def test_flatten_hoists_inner_order_and_limit() -> None:
+    flat = _flatten_federation_subquery(_DREMIO_VIEW_PUSHDOWN)
+    assert "FROM (" not in flat.upper()
+    assert '"commerce"."model"' in flat
+    # The inner ORDER BY / FETCH must survive, hoisted to the outer query.
+    assert "ORDER BY" in flat.upper()
+    assert "FETCH" in flat.upper() or "LIMIT" in flat.upper()
+    assert "NULLS" not in flat.upper()
+    # Fully normalized, it is plain OBSQL the translator accepts.
+    norm = _normalize_for_obsql(_DREMIO_VIEW_PUSHDOWN)
+    assert "FROM (" not in norm.upper()
+    assert "LIMIT 5" in norm.upper()
+
+
+def test_flatten_bails_when_inner_and_outer_both_order() -> None:
+    """If the outer ALSO orders/limits, merging would change results — bail."""
+
+    sql = (
+        'SELECT "Country Name", "Total Sales" '
+        'FROM (SELECT "model"."Country Name", "model"."Total Sales" '
+        'FROM "commerce"."model" ORDER BY "model"."Total Sales" DESC LIMIT 5) AS "model" '
+        'ORDER BY "Country Name" LIMIT 3'
+    )
+    assert _flatten_federation_subquery(sql) == sql

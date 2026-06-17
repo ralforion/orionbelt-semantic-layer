@@ -63,6 +63,57 @@ def test_refresh_is_idempotent(manager_with_model: SessionManager) -> None:
     assert result.rows[0][0] == 1
 
 
+def test_information_schema_schemata_hides_main(manager_with_model: SessionManager) -> None:
+    """``information_schema.schemata`` must not leak DuckDB's ``main`` schema.
+
+    DuckDB auto-creates a ``main`` schema in every attached database. Tools
+    that enumerate schemas through information_schema would otherwise see it
+    beside the model schema. The shadow view filters it out while keeping
+    the per-model schema visible.
+    """
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+
+    result = emu.execute("SELECT schema_name FROM information_schema.schemata")
+    schemas = {row[0] for row in result.rows}
+    assert "commerce" in schemas
+    assert "main" not in schemas
+
+    # Catalog-qualified pushdown form (``<db>.information_schema.schemata``)
+    # must be rewritten too — Tableau / Dremio emit the three-part name.
+    qualified = emu.execute("SELECT schema_name FROM orionbelt.information_schema.schemata")
+    assert "main" not in {row[0] for row in qualified.rows}
+
+
+def test_pg_tables_pg_views_hide_main(manager_with_model: SessionManager) -> None:
+    """``pg_tables`` / ``pg_views`` must not expose the ``main`` schema.
+
+    Dremio's Postgres-source connector derives its schema list from the
+    ``schemaname`` column of pg_tables/pg_views (``SELECT schemaname FROM
+    pg_tables UNION ALL SELECT schemaname FROM pg_views``), NOT from
+    pg_namespace or information_schema.schemata. DuckDB's built-in objects
+    (``duckdb_*`` / ``sqlite_*``) and OBSL's own shadow views all live in
+    ``main``, so without the shadow Dremio shows a spurious ``main`` schema.
+    """
+
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_model)
+
+    # The exact shape Dremio sends (minus its PG_CATALOG/INFO_SCHEMA/SYS filter).
+    result = emu.execute(
+        "SELECT schemaname FROM pg_catalog.pg_tables "
+        "UNION ALL SELECT schemaname FROM pg_catalog.pg_views"
+    )
+    schemas = {row[0] for row in result.rows}
+    assert "commerce" in schemas
+    assert "main" not in schemas
+
+    # Bare (unqualified) forms must be rewritten too.
+    bare = emu.execute("SELECT schemaname FROM pg_tables UNION ALL SELECT schemaname FROM pg_views")
+    assert "main" not in {row[0] for row in bare.rows}
+
+
 def test_refresh_drops_stale_models() -> None:
     """A model removed from the SessionManager disappears from the catalog."""
 

@@ -349,6 +349,34 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             COALESCE(CAST(nspacl AS VARCHAR), '{}') AS nspacl
         FROM pg_catalog.pg_namespace
         WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
+    # Shadow information_schema.schemata. DuckDB auto-creates a ``main``
+    # schema in every attached database (``orionbelt.main``, plus
+    # ``memory.main`` / ``system.main`` / ``temp.main``), so the raw view
+    # shows ``main`` next to each per-model schema. pgjdbc-based clients
+    # enumerate schemas via pg_namespace (shadowed above), but Dremio's
+    # Postgres-source connector reads ``information_schema.schemata``
+    # directly — without this shadow it lists ``main`` beside the model
+    # schema in its dataset browser. Same row filter as the pg_namespace
+    # shadow; ``SELECT *`` preserves the standard column shape.
+    """CREATE OR REPLACE TEMP VIEW _obsl_schemata AS
+        SELECT * FROM information_schema.schemata
+        WHERE schema_name NOT IN ('main', 'temp', 'pg_temp')""",
+    # Shadow pg_tables / pg_views. Dremio's Postgres-source connector
+    # enumerates schemas from the ``schemaname`` column of these two views
+    # (``SELECT schemaname FROM pg_tables UNION ALL SELECT schemaname FROM
+    # pg_views``), NOT from pg_namespace or information_schema.schemata.
+    # DuckDB's built-in objects (``duckdb_*``, ``sqlite_*``) and OBSL's own
+    # shadow views all live in the ``main`` schema, so without this filter
+    # Dremio shows a spurious ``main`` schema beside each model. Dropping
+    # the ``main`` / temp rows leaves only the per-model schemas; the model
+    # tables/views (in ``<model>``) are untouched. ``SELECT *`` preserves
+    # the column shape (schemaname / tablename / tableowner / …).
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_tables AS
+        SELECT * FROM pg_catalog.pg_tables
+        WHERE schemaname NOT IN ('main', 'temp', 'pg_temp')""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_views AS
+        SELECT * FROM pg_catalog.pg_views
+        WHERE schemaname NOT IN ('main', 'temp', 'pg_temp')""",
     # Shadow pg_database. DBeaver / pgAdmin connect-check filters on
     # ``WHERE datallowconn AND NOT datistemplate`` (and reads
     # encoding / datcollate / datctype / datacl in the same probe);
@@ -550,6 +578,39 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?<![.\w])pg_namespace\b", re.IGNORECASE),
         "_obsl_pg_namespace",
+    ),
+    # information_schema.schemata → filtered shadow (see _SHADOW_VIEWS).
+    # Hides DuckDB's per-database ``main`` schema from clients (notably
+    # Dremio) that enumerate schemas through information_schema rather
+    # than pg_namespace. Handles an optional catalog qualifier and quoted
+    # identifiers so a ``<db>.information_schema.schemata`` pushdown is
+    # covered too.
+    (
+        re.compile(
+            r'(?:"?\w+"?\s*\.\s*)?"?information_schema"?\s*\.\s*"?schemata"?\b',
+            re.IGNORECASE,
+        ),
+        "_obsl_schemata",
+    ),
+    # pg_tables / pg_views — Dremio derives the schema list from the
+    # ``schemaname`` column of these two views. The shadows filter out the
+    # ``main`` / temp schemas (DuckDB built-ins + OBSL shadow views) so the
+    # only schemas Dremio surfaces are the per-model ones.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_tables\b", re.IGNORECASE),
+        "_obsl_pg_tables",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_tables\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_tables",
+    ),
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_views\b", re.IGNORECASE),
+        "_obsl_pg_views",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_views\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_views",
     ),
     # pg_class — replace NULL acl-typed columns with non-NULL empty
     # literals so pgjdbc schema-tree refresh doesn't NPE on

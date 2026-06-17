@@ -253,7 +253,7 @@ class SemanticRouter:
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_FEATURE_NOT_SUPPORTED,
-                message=f"fanout detected: {exc.message}",
+                message=exc.message,
             )
         except (UnsupportedAggregationError, UnsupportedGroupingError) as exc:
             return protocol.build_error_response(
@@ -701,13 +701,16 @@ def _flatten_federation_subquery(sql: str) -> str:
     inner = src.this
     if not isinstance(inner, exp.Select):
         return sql
-    # The inner derived table must be a pure projection: only a SELECT list and
-    # a FROM, nothing that changes the row set or grain (WHERE / GROUP / JOIN /
-    # DISTINCT / ORDER / LIMIT / QUALIFY / WINDOW / CTE / …). Allowlist rather
-    # than denylist so a future sqlglot clause can't slip a non-trivial wrapper
-    # through — anything we don't recognise falls back to the translator's
-    # rejection path.
-    if any(v for k, v in inner.args.items() if k not in ("expressions", "from")):
+    # The inner derived table must be a projection over ``model`` plus, at most,
+    # the row-preserving clauses we can safely hoist to the outer query
+    # (WHERE / ORDER BY / LIMIT-FETCH). When the view definition itself carries
+    # ``ORDER BY ... LIMIT`` (e.g. a top-N view), Dremio keeps those clauses
+    # INSIDE the derived table rather than on the outer query. Anything else
+    # (GROUP / JOIN / DISTINCT / QUALIFY / WINDOW / CTE / …) means the derived
+    # table is doing real work — allowlist so an unrecognised clause falls back
+    # to the translator's rejection path.
+    _hoistable = ("where", "order", "limit")
+    if any(v for k, v in inner.args.items() if k not in ("expressions", "from", *_hoistable)):
         return sql
     inner_from = inner.args.get("from")
     if inner_from is None or not isinstance(inner_from.this, exp.Table):
@@ -726,6 +729,17 @@ def _flatten_federation_subquery(sql: str) -> str:
 
     flat = ast.copy()
     flat.set("from", inner_from.copy())
+    # Hoist the inner WHERE / ORDER BY / LIMIT-FETCH onto the outer SELECT, but
+    # only when the outer doesn't already state the same clause: combining two
+    # of the same (e.g. an inner top-N then an outer re-order/re-limit) changes
+    # the result, so we bail to the translator rather than guess.
+    for clause in _hoistable:
+        inner_val = inner.args.get(clause)
+        if not inner_val:
+            continue
+        if flat.args.get(clause):
+            return sql
+        flat.set(clause, inner_val.copy())
     # Render with sqlglot's default generator, NOT dialect="postgres": the
     # postgres generator makes the default null ordering explicit (injects
     # ``NULLS LAST`` into a plain ``ORDER BY ... DESC``), which the OBSQL
