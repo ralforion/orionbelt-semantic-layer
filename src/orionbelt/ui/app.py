@@ -435,6 +435,14 @@ _CSS = """\
    spilled off and got clipped by the container on small screens). ── */
 .result-table .table-wrap { overflow-x: auto !important; }
 
+/* Keep the Copy Data / ↓ TSV actions side by side on one row, even on phones. */
+.result-actions {
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+}
+
 /* ── Responsive: narrower viewports ── */
 @media (max-width: 900px) {
   .settings-row { flex-wrap: wrap !important; }
@@ -2853,21 +2861,22 @@ def create_blocks(
                         lines=1,
                         max_lines=1,
                     )
-                    # Stack the two actions in a compact column so Download sits
-                    # directly under Copy Data (instead of wrapping to its own
-                    # row on narrow screens).
-                    with gr.Column(scale=0, min_width=130):
+                    # Keep both actions side by side on one row (the short
+                    # "↓ TSV" label lets them fit together even on phones).
+                    with gr.Row(elem_classes=["result-actions"]):
                         copy_data_btn = gr.Button(
                             "Copy Data",
                             visible=False,
                             variant="secondary",
                             size="sm",
+                            min_width=100,
                         )
                         tsv_download = gr.DownloadButton(
                             "↓ TSV",
                             visible=False,
                             variant="secondary",
                             size="sm",
+                            min_width=80,
                         )
                 result_table = gr.Dataframe(
                     label="Query Results",
