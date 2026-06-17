@@ -482,6 +482,20 @@ _CSS = """\
 
   /* Diagram/graph canvases: fit the smaller viewport */
   #er-diagram { height: 60dvh !important; min-height: 300px !important; }
+
+  /* Smaller type on phones to fit more on screen */
+  .gradio-container { font-size: 13px !important; }
+  .header-bar .header-title { font-size: 16px !important; }
+  .header-bar .header-version,
+  .header-bar .header-links a { font-size: 12px !important; }
+  .cm-editor { font-size: 12px !important; }
+  /* Results table is the worst offender — shrink cells + padding */
+  .result-table table { font-size: 11px !important; }
+  .result-table th button,
+  .result-table th span,
+  .result-table td { font-size: 11px !important; }
+  .result-table th,
+  .result-table td { padding: 2px 6px !important; }
 }
 """
 
