@@ -663,12 +663,74 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
     return sql
 
 
+_FLATTEN_HOISTABLE = ("where", "order", "limit")
+_FLATTEN_MAX_DEPTH = 8
+
+
+def _flatten_unwrap_collate(node: exp.Expression) -> exp.Expression:
+    """Strip a single ``COLLATE`` wrapper (Dremio adds ``COLLATE "C"``)."""
+
+    return node.this if isinstance(node, exp.Collate) else node
+
+
+def _flatten_is_passthrough(proj: exp.Expression) -> bool:
+    """``True`` if a projection is a bare column ref (optionally aliased/COLLATE)."""
+
+    col = proj.this if isinstance(proj, exp.Alias) else proj
+    col = _flatten_unwrap_collate(col)
+    return isinstance(col, exp.Column)
+
+
+def _flatten_literal_value(node: exp.Expression) -> str | None:
+    """Return a literal's raw value if ``node`` is a literal (CAST/COLLATE-wrapped ok)."""
+
+    node = _flatten_unwrap_collate(node)
+    if isinstance(node, exp.Cast):
+        node = _flatten_unwrap_collate(node.this)
+    if isinstance(node, exp.Literal):
+        return str(node.this)
+    return None
+
+
+def _flatten_constant_projection(
+    proj: exp.Expression, wheres: list[exp.Expression]
+) -> exp.Expression | None:
+    """Map Dremio's constant-folded ``<literal> AS <dim>`` projection to a bare column.
+
+    When a view is filtered with ``WHERE <dim> = <value>``, Dremio proves the
+    projected dimension is constant and rewrites it to ``CAST(<value>) AS <dim>``
+    in the SELECT, pushing the equality into a nested ``WHERE``. We map that back
+    to the bare ``<dim>`` column, but ONLY when a collected WHERE actually
+    constrains ``<dim>`` to the same literal — otherwise we bail (return None) so
+    a genuine constant projection still reaches the translator's rejection path.
+    """
+
+    if not isinstance(proj, exp.Alias):
+        return None
+    name = proj.alias
+    lit = _flatten_literal_value(proj.this)
+    if lit is None or not name:
+        return None
+    for where in wheres:
+        for eq in where.find_all(exp.EQ):
+            for col_side, lit_side in ((eq.this, eq.expression), (eq.expression, eq.this)):
+                col = _flatten_unwrap_collate(col_side)
+                if (
+                    isinstance(col, exp.Column)
+                    and col.name == name
+                    and _flatten_literal_value(lit_side) == lit
+                ):
+                    aliased: exp.Expression = exp.alias_(col.copy(), name)
+                    return aliased
+    return None
+
+
 def _flatten_federation_subquery(sql: str) -> str:
     """Collapse Dremio's federation pushdown wrapper into a flat OBSQL SELECT.
 
-    Dremio's Postgres-source connector wraps the virtual ``model`` table in a
-    trivial derived table and lifts ``WHERE`` / ``ORDER BY`` / ``FETCH`` to the
-    outer query::
+    Dremio's Postgres-source connector wraps the virtual ``model`` table in one
+    or more trivial derived tables and lifts ``WHERE`` / ``ORDER BY`` / ``FETCH``
+    around them::
 
         SELECT "Country Name", "Total Sales"
         FROM (SELECT "model"."Country Name" COLLATE "C", "model"."Total Sales"
@@ -676,11 +738,13 @@ def _flatten_federation_subquery(sql: str) -> str:
         WHERE ("Total Sales" > 1000000)
         ORDER BY "Total Sales" DESC FETCH NEXT 5 ROWS ONLY
 
-    The inner derived table is a pure projection over ``model`` (no WHERE /
-    GROUP / JOIN / aggregate), so it carries no semantics the outer query
-    doesn't already state. We rebuild the outer SELECT directly over the model
-    table, which the OBSQL translator accepts after the regular qualifier /
-    COLLATE / FETCH normalizations run.
+    Filtering a *saved view* nests deeper: the view body becomes an inner derived
+    table, the filter lands in a middle one, and an equality filter on a
+    dimension is constant-folded (``WHERE "Channel" = 'B2B'`` -> a
+    ``CAST('B2B') AS "Channel"`` projection). We walk the whole pass-through
+    chain down to ``model``, gather every WHERE (AND-combined) plus a single
+    ORDER BY / LIMIT, map any constant-folded projection back to its column, and
+    rebuild one flat SELECT over ``model`` that the OBSQL translator accepts.
 
     Returns the SQL unchanged when the shape doesn't match, so a genuinely
     unsupported subquery still reaches the translator's rejection path.
@@ -692,59 +756,87 @@ def _flatten_federation_subquery(sql: str) -> str:
         return sql
     if not isinstance(ast, exp.Select) or ast.args.get("joins"):
         return sql
-    from_ = ast.args.get("from")
-    if from_ is None:
+    # Only the projection list, FROM, and the hoistable clauses may appear; a
+    # GROUP / DISTINCT / HAVING / CTE at any level means real work -> bail.
+    if any(v for k, v in ast.args.items() if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)):
         return sql
-    src = from_.this
-    if not isinstance(src, exp.Subquery):
-        return sql
-    inner = src.this
-    if not isinstance(inner, exp.Select):
-        return sql
-    # The inner derived table must be a projection over ``model`` plus, at most,
-    # the row-preserving clauses we can safely hoist to the outer query
-    # (WHERE / ORDER BY / LIMIT-FETCH). When the view definition itself carries
-    # ``ORDER BY ... LIMIT`` (e.g. a top-N view), Dremio keeps those clauses
-    # INSIDE the derived table rather than on the outer query. Anything else
-    # (GROUP / JOIN / DISTINCT / QUALIFY / WINDOW / CTE / …) means the derived
-    # table is doing real work — allowlist so an unrecognised clause falls back
-    # to the translator's rejection path.
-    _hoistable = ("where", "order", "limit")
-    if any(v for k, v in inner.args.items() if k not in ("expressions", "from", *_hoistable)):
-        return sql
-    inner_from = inner.args.get("from")
-    if inner_from is None or not isinstance(inner_from.this, exp.Table):
-        return sql
-    # Only collapse a wrapper over OUR virtual table, never an unrelated one.
-    if inner_from.this.name.lower() != "model":
-        return sql
-    # Inner projections must be plain column refs (optionally COLLATE-annotated);
-    # any function/aggregate means the derived table is doing real work.
-    for proj in inner.expressions:
-        col = proj.this if isinstance(proj, exp.Alias) else proj
-        if isinstance(col, exp.Collate):
-            col = col.this
-        if not isinstance(col, exp.Column):
-            return sql
 
-    flat = ast.copy()
-    flat.set("from", inner_from.copy())
-    # Hoist the inner WHERE / ORDER BY / LIMIT-FETCH onto the outer SELECT, but
-    # only when the outer doesn't already state the same clause: combining two
-    # of the same (e.g. an inner top-N then an outer re-order/re-limit) changes
-    # the result, so we bail to the translator rather than guess.
-    for clause in _hoistable:
-        inner_val = inner.args.get(clause)
-        if not inner_val:
-            continue
-        if flat.args.get(clause):
+    outer_projs = ast.expressions
+    wheres: list[exp.Expression] = []
+    order = ast.args.get("order")
+    limit = ast.args.get("limit")
+    if ast.args.get("where"):
+        wheres.append(ast.args["where"].this)
+
+    # Walk down the chain of single-source derived tables to the model table,
+    # accumulating WHERE (combinable) and a single ORDER BY / LIMIT.
+    node: exp.Select = ast
+    base: exp.Table | None = None
+    for _ in range(_FLATTEN_MAX_DEPTH):
+        from_ = node.args.get("from")
+        if from_ is None:
             return sql
-        flat.set(clause, inner_val.copy())
+        src = from_.this
+        if isinstance(src, exp.Table):
+            base = src
+            break
+        if not isinstance(src, exp.Subquery):
+            return sql
+        inner = src.this
+        if not isinstance(inner, exp.Select) or inner.args.get("joins"):
+            return sql
+        if any(
+            v
+            for k, v in inner.args.items()
+            if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)
+        ):
+            return sql
+        # Intermediate layers must be pure pass-through projections.
+        if not all(_flatten_is_passthrough(p) for p in inner.expressions):
+            return sql
+        if inner.args.get("where"):
+            wheres.append(inner.args["where"].this)
+        if inner.args.get("order"):
+            if order is not None:
+                return sql
+            order = inner.args["order"]
+        if inner.args.get("limit"):
+            if limit is not None:
+                return sql
+            limit = inner.args["limit"]
+        node = inner
+    if base is None or base.name.lower() != "model":
+        return sql
+
+    # Resolve the outermost projections: bare columns pass through; a
+    # constant-folded literal projection maps back to its dimension column.
+    new_projs: list[exp.Expression] = []
+    for proj in outer_projs:
+        if _flatten_is_passthrough(proj):
+            new_projs.append(proj.copy())
+            continue
+        rewritten = _flatten_constant_projection(proj, wheres)
+        if rewritten is None:
+            return sql
+        new_projs.append(rewritten)
+
+    flat = exp.Select()
+    flat.set("expressions", new_projs)
+    flat.set("from", exp.From(this=base.copy()))
+    if wheres:
+        cond = wheres[0].copy()
+        for extra in wheres[1:]:
+            cond = exp.and_(cond, extra.copy())
+        flat.set("where", exp.Where(this=cond))
     # Render with sqlglot's default generator, NOT dialect="postgres": the
     # postgres generator makes the default null ordering explicit (injects
     # ``NULLS LAST`` into a plain ``ORDER BY ... DESC``), which the OBSQL
     # translator would then capture and bake into the compiled SQL — changing
     # top-N results for nullable measures versus what the client actually sent.
+    if order is not None:
+        flat.set("order", order.copy())
+    if limit is not None:
+        flat.set("limit", limit.copy())
     return flat.sql()
 
 
