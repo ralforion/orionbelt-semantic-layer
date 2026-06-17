@@ -2079,7 +2079,11 @@ def execute_query(
 
         import tempfile
 
-        _, tsv_path = tempfile.mkstemp(suffix=".tsv", prefix="query_results_")
+        # Write into a temp dir with a fixed basename so the browser downloads
+        # it as "query_results.tsv" (DownloadButton uses the file's basename;
+        # mkstemp's random suffix produced names like "query_results_p_jyptv2").
+        tsv_dir = tempfile.mkdtemp(prefix="obsl_tsv_")
+        tsv_path = f"{tsv_dir}/query_results.tsv"
         export_df.drop(columns=["#"], errors="ignore").to_csv(tsv_path, sep="\t", index=False)
 
         num_indices = [str(i + 1) for i, c in enumerate(all_cols) if c in num_cols]
