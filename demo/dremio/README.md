@@ -25,10 +25,27 @@ Everything runs locally in four containers. No cloud, no credentials.
 
 | Service | Port | Role |
 |---|---|---|
-| `dremio` | http://localhost:19047 | Dremio OSS - the SQL engine and UI |
-| `obsl` | http://localhost:18080 | OrionBelt API (single model), pgwire on `:15432` |
+| `dremio` | http://localhost:19047 | Dremio OSS - the SQL engine and Web UI |
+| `obsl` | http://localhost:18080 | OrionBelt API (single model) |
 | `ui` | http://localhost:17860 | OrionBelt playground (model, ER diagram, queries) |
-| `minio` | http://localhost:19001 | S3 object store holding the commerce Parquet |
+| `minio` | http://localhost:19001 | MinIO console (S3 object store holding the Parquet) |
+
+### Ports / connection endpoints
+
+| Port | Service | Protocol | Connect with |
+|---|---|---|---|
+| `15432` | obsl | **Postgres wire (pgwire)** | psql / DBeaver / Tableau / Power BI as a **PostgreSQL** source. Host `localhost`, db `commerce`, user `obsl`, any password (trust auth). This is the governed semantic surface. |
+| `18080` | obsl | HTTP (REST) | `curl http://localhost:18080/v1/...` |
+| `17860` | ui | HTTP | OrionBelt playground in a browser |
+| `19047` | dremio | HTTP (REST + Web UI) | Dremio SQL Runner; login `obsl_admin` / `obsl_admin_pw_123!` |
+| `32010` | dremio | **Arrow Flight SQL** | Flight SQL JDBC/ODBC driver at `grpc://localhost:32010`. OBSL also connects here to push compute back into Dremio. |
+| `19000` | minio | S3 API | S3 clients |
+
+Notes:
+- Dremio's legacy ODBC/JDBC port (`31010`) is **not exposed** and Dremio OSS does
+  not serve it - use Arrow Flight SQL on `32010` instead.
+- To test the OrionBelt semantic layer from a BI tool, connect to the **pgwire**
+  surface on `15432` (PostgreSQL driver) - no special driver needed.
 
 The data is the bundled `orionbelt_1_commerce` dataset (15 tables) exported
 from DuckDB to Parquet and served from MinIO. The OrionBelt model is the same
