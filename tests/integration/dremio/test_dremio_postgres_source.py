@@ -8,13 +8,13 @@ Asserts that:
    ``information_schema.tables`` round-trip works.
 3. A semantic query pushed through the source returns non-empty rows.
 
-The model exposed by OBSL is the baked-in ``orionbelt_1_commerce`` demo
-(see ``examples/orionbelt_1_commerce.yaml``). The pgwire ``database``
-parameter resolves to the OBML model name (filename stem fallback), and
-OBSL surfaces a single virtual table per model under the ``orionbelt``
-schema. So the fully-qualified Dremio path is::
+The model exposed by OBSL is the ``commerce`` demo model (overridable via
+``OBSL_MODEL_NAME``; see ``conftest.py``). The pgwire ``database``
+parameter resolves to the OBML model name, OBSL surfaces one schema per
+loaded model (named after the model), and each schema holds a single
+virtual table called ``model``. So the fully-qualified Dremio path is::
 
-    obsl_pg."orionbelt"."orionbelt_1_commerce"
+    obsl_pg."commerce".model
 """
 
 from __future__ import annotations

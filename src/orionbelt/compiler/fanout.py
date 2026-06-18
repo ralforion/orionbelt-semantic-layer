@@ -190,11 +190,13 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
                         continue
 
                     errors.append(
-                        f"Measure '{measure_name}' has fanout: "
-                        f"join from '{step.from_object}' to '{step.to_object}' "
-                        f"({step.cardinality.value}"
-                        f"{', reversed' if step.reversed else ''}"
-                        f") causes row multiplication"
+                        f"Measure '{measure_name}' would be inflated by the selected "
+                        f"dimensions: reaching them requires a one-to-many join (from "
+                        f"'{step.from_object}' to '{step.to_object}') that duplicates "
+                        "its rows, so its totals would be overcounted. "
+                        f"Remove '{measure_name}' or the dimensions that force that "
+                        "join, or set allowFanOut: true on the measure if the "
+                        "duplication is intended."
                     )
 
     if errors:

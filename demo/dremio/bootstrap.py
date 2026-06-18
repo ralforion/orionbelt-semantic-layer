@@ -9,10 +9,10 @@ Steps:
   1. Bootstrap Dremio's first admin user (no-op on re-run).
   2. Register MinIO as an S3 source named ``lake`` (S3 compatibility mode).
   3. Promote every ``lake.commerce.<table>`` Parquet folder as a dataset.
-  4. Register ONE Postgres source ``obsl`` -> the OrionBelt pgwire surface.
+  4. Register ONE Postgres source ``orionbelt`` -> the OrionBelt pgwire surface.
   5. Run the same business question two ways and print them side by side:
        * RAW    : hand-written GROUP BY over the Parquet datasets
-       * GOVERNED: SELECT dim, measure FROM obsl.commerce.model  (federated
+       * GOVERNED: SELECT dim, measure FROM orionbelt.commerce.model  (federated
                    into OrionBelt, which compiles Dremio SQL and pushes it
                    back into Dremio via Arrow Flight)
 """
@@ -56,11 +56,16 @@ TABLES = [
     "suppliers",
 ]
 
-# Postgres source -> OrionBelt pgwire. ``databaseName`` is the OBML model
-# name ("commerce"); the model surfaces as the single virtual table ``model``.
-PG_SOURCE = "obsl"
-PG_DATABASE = "commerce"
-PG_HOST = "obsl"
+# Postgres source -> OrionBelt pgwire. ``databaseName`` is the OrionBelt brand
+# catalog ("orionbelt", what pg_database advertises); each model is a SCHEMA
+# inside it (here ``commerce``), exposing the single virtual table ``model``.
+# So the Dremio path is ``orionbelt.commerce.model`` (source.schema.table).
+PG_SOURCE = "orionbelt"  # Dremio source name (display label)
+PG_DATABASE = "orionbelt"  # the source's databaseName = OBSL brand catalog
+# The model surfaces as a SCHEMA (named after the OBML model) inside that
+# catalog, so the Dremio query path is ``orionbelt.commerce.model``.
+MODEL_SCHEMA = "commerce"
+PG_HOST = "obsl"  # docker service / network alias of the OrionBelt container
 PG_PORT = "5432"
 
 
@@ -283,10 +288,97 @@ LIMIT 5
 
 GOVERNED_SQL = f"""
 SELECT "Country Name", "Total Sales"
-FROM {PG_SOURCE}.{PG_DATABASE}.model
+FROM {PG_SOURCE}.{MODEL_SCHEMA}.model
 ORDER BY "Total Sales" DESC
 LIMIT 5
 """.strip()
+
+
+# Dremio Space that holds the demo views. Views (virtual datasets) cannot live
+# inside a source (Dremio forbids ``CREATE VIEW <source>.…``); they belong in a
+# Space or a user's home. Each view wraps one of the curated queries from
+# demo-queries.sql so the demo shows "save a query as a reusable view": A1 is
+# raw lakehouse SQL over the ``lake`` source; A2-A7 are governed queries over
+# OrionBelt. When a governed view is queried, Dremio wraps its body in a
+# derived table and pushes it to OrionBelt, which flattens it back to flat OBSQL.
+VIEW_SPACE = "governed"
+_M = f"{PG_SOURCE}.{MODEL_SCHEMA}.model"
+_LAKE = f"{LAKE_SOURCE}.{BUCKET}"
+DEMO_VIEWS: tuple[tuple[str, str], ...] = (
+    (
+        "a1_raw_top_countries",  # A1 - raw lakehouse SQL (no OrionBelt)
+        f"SELECT co.countryname AS country, "
+        f"CAST(SUM(s.salesamount) AS DECIMAL(18,2)) AS total_sales "
+        f"FROM {_LAKE}.sales s "
+        f"JOIN {_LAKE}.clients c ON s.salesclient = c.clientid "
+        f"JOIN {_LAKE}.countries co ON c.clientcountryid = co.countryid "
+        f"GROUP BY co.countryname ORDER BY total_sales DESC LIMIT 5",
+    ),
+    (
+        "a2_top_countries_by_sales",  # A2 - same answer, governed
+        f'SELECT "Country Name", "Total Sales" FROM {_M} ORDER BY "Total Sales" DESC LIMIT 5',
+    ),
+    (
+        "a3a_clients_in_singapore",  # A3a - dimension filter -> WHERE
+        f'SELECT "Client Name", "Total Sales" FROM {_M} '
+        'WHERE "Country Name" = \'Singapore\' ORDER BY "Total Sales" DESC LIMIT 5',
+    ),
+    (
+        "a3b_countries_over_1m",  # A3b - measure filter -> HAVING
+        f'SELECT "Country Name", "Total Sales" FROM {_M} '
+        'WHERE "Total Sales" > 1000000 ORDER BY "Total Sales" DESC LIMIT 5',
+    ),
+    (
+        "a4_sales_vs_shipments",  # A4 - cross-fact, Composite Fact Layer
+        f'SELECT "Year Month", "Total Sales", "Total Shipments" FROM {_M} '
+        'ORDER BY "Year Month" LIMIT 12',
+    ),
+    (
+        "a5_avg_sale_by_channel",  # A5 - governed metric
+        f'SELECT "Channel Name", "Total Sales", "Average Sale" FROM {_M} '
+        'ORDER BY "Total Sales" DESC',
+    ),
+    (
+        "a6_sales_period_over_period",  # A6 - MoM + YoY window metrics
+        f'SELECT "Sales Month", "Total Sales", "Sales MoM Change", "Sales YoY Growth" '
+        f'FROM {_M} ORDER BY "Sales Month" LIMIT 15',
+    ),
+    (
+        "a7_category_margin",  # A7 - cross-fact derived metrics
+        f'SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin" '
+        f'FROM {_M} ORDER BY "Total Sales" DESC LIMIT 5',
+    ),
+)
+
+
+def _ensure_space(client: httpx.Client, token: str, name: str) -> None:
+    """Create a Dremio Space (idempotent) to hold the demo views."""
+
+    existing = client.get(f"/api/v3/catalog/by-path/{name}", headers=_headers(token), timeout=10.0)
+    if existing.status_code == 200:
+        print(f"  Space '{name}' already exists")
+        return
+    resp = client.post(
+        "/api/v3/catalog",
+        json={"entityType": "space", "name": name},
+        headers=_headers(token),
+        timeout=30.0,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Space '{name}' creation failed: {resp.status_code} {resp.text!r}")
+    print(f"  Space '{name}' created")
+
+
+def _ensure_views(client: httpx.Client, token: str) -> None:
+    """Create the demo views in the Space (idempotent via CREATE OR REPLACE)."""
+
+    for name, body in DEMO_VIEWS:
+        ddl = f'CREATE OR REPLACE VIEW "{VIEW_SPACE}"."{name}" AS {body}'
+        try:
+            _run_sql(client, token, ddl)
+            print(f"  view '{VIEW_SPACE}.{name}' created")
+        except Exception as exc:  # noqa: BLE001 - report and continue with the rest
+            print(f"  view '{VIEW_SPACE}.{name}' FAILED: {exc}")
 
 
 def _print_compare(raw: list[list[object]], gov: list[list[object]]) -> None:
@@ -315,6 +407,10 @@ def main() -> int:
 
         print("Registering pgwire source -> OrionBelt ...")
         _ensure_pg_source(client, token)
+
+        print(f"Creating demo views in Space '{VIEW_SPACE}' ...")
+        _ensure_space(client, token, VIEW_SPACE)
+        _ensure_views(client, token)
 
         print("\nRunning RAW Parquet query in Dremio ...")
         raw = _run_sql(client, token, RAW_SQL)

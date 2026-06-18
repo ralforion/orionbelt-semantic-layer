@@ -14,11 +14,12 @@ identically across drivers and text representation is canonical.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import struct
 from datetime import date, datetime
 from datetime import time as dt_time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Final
 
 # OIDs from PostgreSQL's pg_type catalog. We pick the widest variant per
@@ -40,6 +41,8 @@ def oid_for_type_hint(type_hint: str) -> int:
 
     if type_hint == "number":
         return OID_FLOAT8
+    if type_hint == "decimal":
+        return OID_NUMERIC
     if type_hint == "datetime":
         return OID_TIMESTAMP
     if type_hint == "binary":
@@ -86,6 +89,7 @@ def encode_value(
     value: object,
     type_hint: str,
     format_code: int = 0,
+    scale: int | None = None,
 ) -> str | bytes | None:
     """Encode ``value`` for one DataRow slot.
 
@@ -94,6 +98,11 @@ def encode_value(
 
     * ``format_code=0`` → decimal-string text (e.g. ``"1329.87"``);
     * ``format_code=1`` → 8 bytes big-endian IEEE 754 FLOAT8.
+
+    For ``"decimal"`` columns (NUMERIC OID, issue #116) the value is always
+    serialised as fixed-scale text (e.g. ``"574585.00"``, never ``574585.0``
+    or scientific notation) so clients render the declared scale. ``scale`` is
+    the column's declared scale; when omitted the value's own precision is kept.
 
     Other type hints currently always serialise as text — binary
     representations for timestamps, bytea, etc. can land alongside
@@ -106,6 +115,9 @@ def encode_value(
 
     if type_hint == "number" and format_code == 1:
         return _encode_float8_binary(value)
+
+    if type_hint == "decimal":
+        return _encode_decimal_text(value, scale)
 
     if isinstance(value, bool):
         return "t" if value else "f"
@@ -160,3 +172,24 @@ def _encode_float8_binary(value: object) -> bytes:
         return struct.pack("!d", float(str(value)))
     except (TypeError, ValueError):
         return struct.pack("!d", math.nan)
+
+
+def _encode_decimal_text(value: object, scale: int | None) -> str:
+    """Fixed-scale plain-decimal text for a NUMERIC column (issue #116).
+
+    Always emits plain decimal notation (never scientific) and pads/rounds to
+    the declared ``scale`` so ``574585`` renders as ``574585.00`` and a large
+    value renders as ``16050258.53`` rather than ``1.605E7``.
+    """
+
+    if isinstance(value, bool):
+        value = 1 if value else 0
+    try:
+        dec = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+    if scale is not None and scale >= 0:
+        # value wider than the declared scale — emit as-is
+        with contextlib.suppress(InvalidOperation):
+            dec = dec.quantize(Decimal(1).scaleb(-scale))
+    return format(dec, "f")

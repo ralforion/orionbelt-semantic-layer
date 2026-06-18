@@ -44,4 +44,5 @@ done
 echo "Running pytest -m dremio..."
 DREMIO_REST_URL="http://localhost:19047" \
 OBSL_PGWIRE_HOST="obsl" \
+OBSL_MODEL_NAME="orionbelt_1_commerce" \
     uv run pytest -m dremio tests/integration/dremio/ "$@"

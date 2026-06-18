@@ -64,7 +64,7 @@ Try in Dremio's SQL Runner:
 
   -- GOVERNED semantic query (federated into OrionBelt, pushed back via Flight):
   SELECT "Country Name", "Total Sales"
-  FROM obsl.commerce.model
+  FROM orionbelt.commerce.model
   ORDER BY "Total Sales" DESC LIMIT 5;
 
 Tear down: DOWN=1 demo/dremio/run-demo.sh

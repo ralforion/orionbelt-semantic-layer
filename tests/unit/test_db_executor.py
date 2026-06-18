@@ -330,3 +330,14 @@ def test_coarse_hint_from_type_name() -> None:
     assert coarse_hint_from_type_name("bytea") == "binary"
     assert coarse_hint_from_type_name("varchar") == "string"
     assert coarse_hint_from_type_name("") == "string"
+
+
+def test_parse_decimal_type() -> None:
+    from orionbelt.service.db_executor import parse_decimal_type
+
+    assert parse_decimal_type("decimal(18, 2)") == (18, 2)
+    assert parse_decimal_type("DECIMAL(38,6)") == (38, 6)
+    assert parse_decimal_type("numeric(10,4)") == (10, 4)
+    assert parse_decimal_type("number") is None
+    assert parse_decimal_type("string") is None
+    assert parse_decimal_type("") is None

@@ -67,11 +67,11 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
         self.aggregation = aggregation
         Exception.__init__(
             self,
-            f"Measure '{measure_name}' uses aggregation '{aggregation}' which "
-            "requires paired-row semantics and is not supported in CFL "
-            "(multi-fact) queries. Restrict the query to a single fact "
-            "table or restructure the model so this measure resolves via "
-            "the star-schema path.",
+            f"Measure '{measure_name}' uses a two-column statistical aggregate "
+            f"({aggregation.upper()}) that needs paired rows from one fact table, "
+            "but this query combines measures from more than one fact, so the rows "
+            f"can't be paired. Query '{measure_name}' on its own, or only alongside "
+            "measures and dimensions from its own fact table.",
         )
 
 

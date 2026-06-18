@@ -548,11 +548,11 @@ class TestCFLUnsupportedAggregations:
             pipeline.compile(query, model, "postgres")
         assert exc.value.measure_name == "Revenue Refund Corr"
         assert exc.value.aggregation == "corr"
-        # Error should explain WHY (paired-row semantics) and HOW to
-        # recover (single fact or model restructure).
+        # Error should explain WHY (paired rows from one fact) and HOW to
+        # recover (query alone or only with same-fact artefacts).
         msg = str(exc.value)
-        assert "paired-row" in msg
-        assert "CFL" in msg or "multi-fact" in msg
+        assert "paired rows" in msg
+        assert "more than one fact" in msg
 
     def test_corr_measure_in_single_fact_query_still_compiles(self) -> None:
         """The rejection is scoped to CFL only — a single-fact query that

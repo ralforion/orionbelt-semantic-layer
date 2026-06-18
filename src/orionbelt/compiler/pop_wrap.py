@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
+    BinaryOp,
     ColumnRef,
     Expr,
     From,
@@ -77,13 +78,28 @@ def wrap_with_pop(
                     SemanticError(
                         code="INVALID_METRIC",
                         message=(
-                            "Period-over-period metrics in one query must share the same "
-                            "time dimension and base grain (offsets may differ). Got "
-                            f"'{pop_config.name}' ({pop_config.pop_time_dimension}/"
-                            f"{pop_config.pop_grain}) vs '{other.name}' "
-                            f"({other.pop_time_dimension}/{other.pop_grain})."
+                            "Cannot combine period-over-period metrics computed at "
+                            f"different time grains: '{pop_config.name}' compares over "
+                            f"{pop_config.pop_time_dimension} ({pop_config.pop_grain}), "
+                            f"but '{other.name}' compares over "
+                            f"{other.pop_time_dimension} ({other.pop_grain}). Metrics "
+                            "that compare across time must share one time dimension and "
+                            "grain (only the comparison offset may differ). Keep metrics "
+                            "of one grain per query, or query each separately."
                         ),
                         path="metrics",
+                        hint=(
+                            "Remove one of the conflicting metrics, or run a separate "
+                            "query per time grain."
+                        ),
+                        context={
+                            "metricA": pop_config.name,
+                            "timeDimensionA": pop_config.pop_time_dimension,
+                            "grainA": pop_config.pop_grain,
+                            "metricB": other.name,
+                            "timeDimensionB": other.pop_time_dimension,
+                            "grainB": other.pop_grain,
+                        },
                     )
                 ]
             )
@@ -171,6 +187,20 @@ def wrap_with_pop(
     # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
     outer_order_by = _build_outer_order_by(resolved)
 
+    # Apply HAVING filters here. In a PoP query the measures and PoP metrics are
+    # materialised columns in ``pop_compare``, so a HAVING predicate on them
+    # becomes a plain WHERE over that CTE (the metric is already computed, so the
+    # filter references it by alias). The star planner applies these at GROUP BY
+    # level, which the PoP rewrite bypasses entirely — without this they were
+    # silently dropped, returning unfiltered rows.
+    outer_where: Expr | None = None
+    for hf in resolved.having_filters:
+        outer_where = (
+            hf.expression
+            if outer_where is None
+            else BinaryOp(left=outer_where, op="AND", right=hf.expression)
+        )
+
     # Collect all CTEs (planner CTEs + our 4 new ones)
     all_ctes = list(ast.ctes) + [date_range_cte, date_spine_cte, pop_base_cte, pop_compare_cte]
 
@@ -178,7 +208,7 @@ def wrap_with_pop(
         columns=outer_columns,
         from_=From(source="pop_compare", alias="pop_compare"),
         joins=[],
-        where=None,
+        where=outer_where,
         group_by=[],
         having=None,
         order_by=outer_order_by,

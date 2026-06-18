@@ -400,14 +400,17 @@ def build_ready_for_query(status: bytes = TX_IDLE) -> bytes:
 
 
 def build_row_description(
-    columns: list[tuple[str, int]] | list[tuple[str, int, int]],
+    columns: list[tuple[str, int]] | list[tuple[str, int, int]] | list[tuple[str, int, int, int]],
 ) -> bytes:
     """RowDescription frame.
 
-    ``columns`` is a list of ``(name, type_oid)`` or
-    ``(name, type_oid, format_code)`` tuples. ``format_code`` defaults
-    to 0 (text). Set to 1 to advertise a binary-format column — the
-    matching :func:`build_data_row` value must then be ``bytes``.
+    ``columns`` is a list of ``(name, type_oid)``,
+    ``(name, type_oid, format_code)``, or
+    ``(name, type_oid, format_code, type_modifier)`` tuples. ``format_code``
+    defaults to 0 (text); set to 1 to advertise a binary-format column (the
+    matching :func:`build_data_row` value must then be ``bytes``).
+    ``type_modifier`` defaults to -1; for NUMERIC it carries the packed
+    ``((precision << 16) | scale) + 4`` so clients know the declared scale.
     """
 
     payload = struct.pack("!H", len(columns))
@@ -415,9 +418,10 @@ def build_row_description(
         name = col[0]
         oid = col[1]
         format_code = col[2] if len(col) > 2 else 0
+        type_modifier = col[3] if len(col) > 3 else -1
         payload += name.encode("utf-8") + b"\x00"
         # table_oid, column_attr, type_oid, type_size, type_modifier, format_code
-        payload += struct.pack("!IhIhih", 0, 0, oid, -1, -1, format_code)
+        payload += struct.pack("!IhIhih", 0, 0, oid, -1, type_modifier, format_code)
     return _frame(b"T", payload)
 
 

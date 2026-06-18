@@ -60,7 +60,7 @@ The fixtures honour the following env vars for CI or non-default ports:
 | `DREMIO_REST_URL` | `http://localhost:19047` |
 | `OBSL_PGWIRE_HOST` | `obsl` (the docker network alias) |
 | `OBSL_PGWIRE_PORT` | `5432` |
-| `OBSL_MODEL_NAME` | `orionbelt_1_commerce` (filename stem of the demo OBML) |
+| `OBSL_MODEL_NAME` | `commerce` (the model name served by the `demo/dremio/` stack; `run.sh` overrides it to `orionbelt_1_commerce` for the dedicated test stack) |
 
 ## What this suite does NOT cover
 

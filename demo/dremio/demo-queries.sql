@@ -8,7 +8,7 @@
 -- All queries verified live against demo/dremio (run-demo.sh), in Dremio's
 -- SQL Runner (http://localhost:19047). The same queries also run against
 -- OrionBelt directly (playground :17860, or any Postgres client on :15432
--- with database = commerce) using `FROM model` instead of `obsl.commerce.model`.
+-- with database `orionbelt`) using `FROM model` instead of `orionbelt.commerce.model`.
 -- ============================================================================
 
 
@@ -33,7 +33,7 @@ LIMIT 5;
 --     OrionBelt resolves the joins, applies the measure, compiles Dremio SQL,
 --     and pushes it back into Dremio via Arrow Flight. Identical numbers.
 SELECT "Country Name", "Total Sales"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC
 LIMIT 5;
 -- Singapore 9284889.34 | Mexico 5142120.39 | Sweden 3077505.53 | France 2942833.39 | Japan 2106985.67
@@ -43,7 +43,7 @@ LIMIT 5;
 --     Dremio wraps WHERE in a derived table; OrionBelt flattens it back.
 --     A3a - dimension filter -> WHERE:
 SELECT "Client Name", "Total Sales"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 WHERE "Country Name" = 'Singapore'
 ORDER BY "Total Sales" DESC
 LIMIT 5;
@@ -51,7 +51,7 @@ LIMIT 5;
 
 --     A3b - measure filter -> HAVING:
 SELECT "Country Name", "Total Sales"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 WHERE "Total Sales" > 1000000
 ORDER BY "Total Sales" DESC
 LIMIT 5;
@@ -62,7 +62,7 @@ LIMIT 5;
 --     OrionBelt detects independent facts and compiles a Composite Fact Layer
 --     (UNION ALL with NULL padding) - correct per-grain totals.
 SELECT "Year Month", "Total Sales", "Total Shipments"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Year Month"
 LIMIT 12;
 -- 2021-01  281222.38  266530.16 | 2021-02  439072.94  401102.95 | ...
@@ -81,7 +81,7 @@ LIMIT 4;
 -- A5. A governed metric, defined once in the model.
 --     "Average Sale" = Total Sales / Sales Order Count - not in the query.
 SELECT "Channel Name", "Total Sales", "Average Sale"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC;
 -- Online 23009275.95 4542.80 | Retail 13269028.46 4524.05 | Wholesale ... 2980.73 | B2B ... 3381.46
 
@@ -91,7 +91,7 @@ ORDER BY "Total Sales" DESC;
 --     self-join per offset; the consumer just names the metrics. Works through
 --     federation as of v2.11.0.
 SELECT "Sales Month", "Total Sales", "Sales MoM Change", "Sales YoY Growth"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Sales Month"
 LIMIT 15;
 -- 2021-01 .. (MoM null, YoY null) | 2021-12 1071384.97 403173.31 (YoY null)
@@ -103,7 +103,7 @@ LIMIT 15;
 --     the components inside a Composite Fact Layer and projects only what was
 --     asked for. Works through federation as of v2.11.0.
 SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC
 LIMIT 5;
 -- Electronics 15307596.16 0.0463 -16050258.53 | Automotive 6588246.00 0.0229 -20403470.50 | ...
@@ -115,6 +115,6 @@ LIMIT 5;
 -- - The OrionBelt playground (http://localhost:17860) shows the loaded model
 --   read-only and runs the same queries, plus the ER diagram and RDF graph.
 -- - Any Postgres client can hit OrionBelt directly on localhost:15432
---   (database = commerce), using `FROM model` instead of `obsl.commerce.model`.
+--   (database `orionbelt`), using `FROM model` instead of `orionbelt.commerce.model`.
 -- - Period-over-period metrics may mix offsets (MoM + YoY) in one query; they
 --   just need to share the time dimension and base grain (the date spine).

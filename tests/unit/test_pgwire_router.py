@@ -612,3 +612,128 @@ def test_flatten_then_normalize_is_translatable() -> None:
 )
 def test_flatten_federation_subquery_leaves_non_matching_sql_unchanged(sql: str) -> None:
     assert _flatten_federation_subquery(sql) == sql
+
+
+# When the saved Dremio view (a VDS over the source) itself carries
+# ``ORDER BY ... LIMIT``, Dremio keeps those clauses INSIDE the derived table
+# rather than on the outer query. The flattener must hoist them out so the
+# OBSQL translator (no subqueries) still accepts the result.
+_DREMIO_VIEW_PUSHDOWN = (
+    'SELECT "Country Name", "Total Sales" '
+    'FROM (SELECT "model"."Country Name" COLLATE "C", "model"."Total Sales" '
+    'FROM "commerce"."model" '
+    'ORDER BY "model"."Total Sales" DESC FETCH NEXT 5 ROWS ONLY) AS "model"'
+)
+
+
+def test_flatten_hoists_inner_order_and_limit() -> None:
+    flat = _flatten_federation_subquery(_DREMIO_VIEW_PUSHDOWN)
+    assert "FROM (" not in flat.upper()
+    assert '"commerce"."model"' in flat
+    # The inner ORDER BY / FETCH must survive, hoisted to the outer query.
+    assert "ORDER BY" in flat.upper()
+    assert "FETCH" in flat.upper() or "LIMIT" in flat.upper()
+    assert "NULLS" not in flat.upper()
+    # Fully normalized, it is plain OBSQL the translator accepts.
+    norm = _normalize_for_obsql(_DREMIO_VIEW_PUSHDOWN)
+    assert "FROM (" not in norm.upper()
+    assert "LIMIT 5" in norm.upper()
+
+
+# Filtering a saved view from outside nests deeper: Dremio wraps the view body
+# in an inner derived table, puts the filter in a middle one, and (for an
+# equality on a dimension) constant-folds the projected dimension into a literal.
+_DREMIO_VIEW_MEASURE_FILTER = (
+    'SELECT "Channel Name", "Total Sales", "Average Sale" '
+    'FROM (SELECT "Channel Name" AS "Channel Name", "Total Sales" AS "Total Sales", '
+    '"Average Sale" AS "Average Sale" '
+    'FROM (SELECT "model"."Channel Name" COLLATE "C", "model"."Total Sales", '
+    '"model"."Average Sale" FROM "commerce"."model") AS "model" '
+    'WHERE ("Total Sales" > 1000000)) AS "model" '
+    'ORDER BY "model"."Total Sales"'
+)
+_DREMIO_VIEW_DIM_EQUALITY = (
+    'SELECT CAST(\'B2B\' COLLATE "C" AS VARCHAR(65536)) AS "Channel Name", '
+    '"Total Sales", "Average Sale" '
+    'FROM (SELECT "Channel Name" AS "Channel Name", "Total Sales" AS "Total Sales", '
+    '"Average Sale" AS "Average Sale" '
+    'FROM (SELECT "model"."Channel Name" COLLATE "C", "model"."Total Sales", '
+    '"model"."Average Sale" FROM "commerce"."model") AS "model" '
+    'WHERE ("Channel Name" = \'B2B\' COLLATE "C")) AS "model" '
+    'ORDER BY "model"."Total Sales"'
+)
+
+
+def test_flatten_double_nested_measure_filter() -> None:
+    """A measure/metric filter on a view nests twice with bare projections."""
+
+    norm = _normalize_for_obsql(_DREMIO_VIEW_MEASURE_FILTER)
+    assert "FROM (" not in norm.upper()
+    assert "TOTAL SALES" in norm.upper() and "> 1000000" in norm
+    assert "ORDER BY" in norm.upper()
+
+
+def test_flatten_constant_folded_dimension_equality() -> None:
+    """A ``WHERE dim = value`` on a view is constant-folded by Dremio; the
+    literal projection must map back to the bare dimension + the equality."""
+
+    norm = _normalize_for_obsql(_DREMIO_VIEW_DIM_EQUALITY)
+    assert "FROM (" not in norm.upper()
+    assert "CAST(" not in norm.upper()  # the literal projection is gone
+    assert '"Channel Name"' in norm
+    assert "= 'B2B'" in norm  # the folded equality is recovered as a filter
+
+
+def test_flatten_collapses_cast_projections() -> None:
+    """When the source columns are DECIMAL, Dremio wraps pushed-down columns in
+    ``CAST(... AS DECIMAL(p,s))``. The flattener must look through the casts to
+    the bare columns (the semantic layer re-derives the type)."""
+
+    sql = (
+        'SELECT "Product Category", "Total Sales" '
+        'FROM (SELECT CAST("model"."Product Category" AS VARCHAR) AS "Product Category", '
+        'CAST("model"."Total Sales" AS DECIMAL(38,6)) AS "Total Sales" '
+        'FROM "commerce"."model" ORDER BY "model"."Total Sales" DESC FETCH NEXT 5 ROWS ONLY) '
+        'AS "model"'
+    )
+    norm = _normalize_for_obsql(sql)
+    assert "FROM (" not in norm.upper()
+    assert "CAST(" not in norm.upper()
+    assert '"Total Sales"' in norm
+    assert "LIMIT 5" in norm.upper()
+
+
+def test_flatten_bails_outer_filter_over_inner_limit() -> None:
+    """An outer WHERE/ORDER over an inner LIMIT (e.g. filtering a top-N view's
+    output) must NOT be hoisted below the limit — that would change results.
+    The flattener bails so the translator rejects the genuine subquery."""
+
+    # Outer WHERE over a top-5 view body.
+    where_over_limit = (
+        'SELECT "Country Name", "Total Sales" '
+        'FROM (SELECT "model"."Country Name", "model"."Total Sales" '
+        'FROM "commerce"."model" ORDER BY "model"."Total Sales" DESC FETCH NEXT 5 ROWS ONLY) '
+        'AS "model" WHERE ("Country Name" = \'Singapore\')'
+    )
+    assert _flatten_federation_subquery(where_over_limit) == where_over_limit
+
+    # Outer ORDER over a top-5 view body.
+    order_over_limit = (
+        'SELECT "Country Name", "Total Sales" '
+        'FROM (SELECT "model"."Country Name", "model"."Total Sales" '
+        'FROM "commerce"."model" FETCH NEXT 5 ROWS ONLY) AS "model" '
+        'ORDER BY "Country Name"'
+    )
+    assert _flatten_federation_subquery(order_over_limit) == order_over_limit
+
+
+def test_flatten_bails_when_inner_and_outer_both_order() -> None:
+    """If the outer ALSO orders/limits, merging would change results — bail."""
+
+    sql = (
+        'SELECT "Country Name", "Total Sales" '
+        'FROM (SELECT "model"."Country Name", "model"."Total Sales" '
+        'FROM "commerce"."model" ORDER BY "model"."Total Sales" DESC LIMIT 5) AS "model" '
+        'ORDER BY "Country Name" LIMIT 3'
+    )
+    assert _flatten_federation_subquery(sql) == sql

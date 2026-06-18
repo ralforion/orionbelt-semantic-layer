@@ -34,7 +34,7 @@ from typing import Any
 import duckdb
 
 from orionbelt.models.semantic import DataType, Dimension, Measure, Metric, SemanticModel
-from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+from orionbelt.service.db_executor import ColumnMeta, ExecutionResult, parse_decimal_type
 from orionbelt.service.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -349,6 +349,34 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             COALESCE(CAST(nspacl AS VARCHAR), '{}') AS nspacl
         FROM pg_catalog.pg_namespace
         WHERE nspname NOT IN ('main', 'temp', 'pg_temp')""",
+    # Shadow information_schema.schemata. DuckDB auto-creates a ``main``
+    # schema in every attached database (``orionbelt.main``, plus
+    # ``memory.main`` / ``system.main`` / ``temp.main``), so the raw view
+    # shows ``main`` next to each per-model schema. pgjdbc-based clients
+    # enumerate schemas via pg_namespace (shadowed above), but Dremio's
+    # Postgres-source connector reads ``information_schema.schemata``
+    # directly — without this shadow it lists ``main`` beside the model
+    # schema in its dataset browser. Same row filter as the pg_namespace
+    # shadow; ``SELECT *`` preserves the standard column shape.
+    """CREATE OR REPLACE TEMP VIEW _obsl_schemata AS
+        SELECT * FROM information_schema.schemata
+        WHERE schema_name NOT IN ('main', 'temp', 'pg_temp')""",
+    # Shadow pg_tables / pg_views. Dremio's Postgres-source connector
+    # enumerates schemas from the ``schemaname`` column of these two views
+    # (``SELECT schemaname FROM pg_tables UNION ALL SELECT schemaname FROM
+    # pg_views``), NOT from pg_namespace or information_schema.schemata.
+    # DuckDB's built-in objects (``duckdb_*``, ``sqlite_*``) and OBSL's own
+    # shadow views all live in the ``main`` schema, so without this filter
+    # Dremio shows a spurious ``main`` schema beside each model. Dropping
+    # the ``main`` / temp rows leaves only the per-model schemas; the model
+    # tables/views (in ``<model>``) are untouched. ``SELECT *`` preserves
+    # the column shape (schemaname / tablename / tableowner / …).
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_tables AS
+        SELECT * FROM pg_catalog.pg_tables
+        WHERE schemaname NOT IN ('main', 'temp', 'pg_temp')""",
+    """CREATE OR REPLACE TEMP VIEW _obsl_pg_views AS
+        SELECT * FROM pg_catalog.pg_views
+        WHERE schemaname NOT IN ('main', 'temp', 'pg_temp')""",
     # Shadow pg_database. DBeaver / pgAdmin connect-check filters on
     # ``WHERE datallowconn AND NOT datistemplate`` (and reads
     # encoding / datcollate / datctype / datacl in the same probe);
@@ -550,6 +578,39 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?<![.\w])pg_namespace\b", re.IGNORECASE),
         "_obsl_pg_namespace",
+    ),
+    # information_schema.schemata → filtered shadow (see _SHADOW_VIEWS).
+    # Hides DuckDB's per-database ``main`` schema from clients (notably
+    # Dremio) that enumerate schemas through information_schema rather
+    # than pg_namespace. Handles an optional catalog qualifier and quoted
+    # identifiers so a ``<db>.information_schema.schemata`` pushdown is
+    # covered too.
+    (
+        re.compile(
+            r'(?:"?\w+"?\s*\.\s*)?"?information_schema"?\s*\.\s*"?schemata"?\b',
+            re.IGNORECASE,
+        ),
+        "_obsl_schemata",
+    ),
+    # pg_tables / pg_views — Dremio derives the schema list from the
+    # ``schemaname`` column of these two views. The shadows filter out the
+    # ``main`` / temp schemas (DuckDB built-ins + OBSL shadow views) so the
+    # only schemas Dremio surfaces are the per-model ones.
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_tables\b", re.IGNORECASE),
+        "_obsl_pg_tables",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_tables\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_tables",
+    ),
+    (
+        re.compile(r"\bpg_catalog\s*\.\s*pg_views\b", re.IGNORECASE),
+        "_obsl_pg_views",
+    ),
+    (
+        re.compile(r"(?<![.\w])pg_views\b(?!\s*\()", re.IGNORECASE),
+        "_obsl_pg_views",
     ),
     # pg_class — replace NULL acl-typed columns with non-NULL empty
     # literals so pgjdbc schema-tree refresh doesn't NPE on
@@ -922,12 +983,18 @@ def _build_table_ddl(schema: str, model: SemanticModel) -> str | None:
 
 
 def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
+    # Mirror build_type_map: a numeric measure/metric with no explicit dataType
+    # falls back to settings.defaultNumericDataType, so the catalog's column type
+    # agrees with the RowDescription / compiler (issue #116).
+    default_num = None
+    if model.settings is not None and model.settings.default_numeric_data_type:
+        default_num = model.settings.default_numeric_data_type
     for label, dim in model.dimensions.items():
         yield label, _dim_sql_type(dim)
     for label, measure in model.measures.items():
-        yield label, _measure_sql_type(measure)
+        yield label, _measure_sql_type(measure, default_num)
     for label, metric in model.metrics.items():
-        yield label, _metric_sql_type(metric)
+        yield label, _metric_sql_type(metric, default_num)
 
 
 def _build_metadata_views(schema: str, model: SemanticModel) -> Iterator[str]:
@@ -1100,15 +1167,35 @@ def _dim_sql_type(dim: Dimension) -> str:
     return _DATATYPE_TO_DUCKDB.get(dim.result_type, "VARCHAR")
 
 
-def _measure_sql_type(measure: Measure) -> str:
-    return _DATATYPE_TO_DUCKDB.get(measure.result_type, "DOUBLE")
+def _decimal_duckdb_type(data_type: str | None) -> str | None:
+    """``DECIMAL(p, s)`` for a fixed-scale decimal ``dataType``, else None.
+
+    Lets the catalog type DECIMAL measures/metrics as NUMERIC(p, s) so BI tools
+    (Dremio's dataset metadata, Tableau's pg_attribute probe) report them as
+    NUMERIC instead of DOUBLE — matching the value the compiled SQL CASTs to and
+    the query result's RowDescription (issue #116). DuckDB DECIMAL maps to
+    atttypid 21 -> Postgres OID 1700 via the shadow translation above.
+    """
+
+    if not data_type:
+        return None
+    parsed = parse_decimal_type(data_type)
+    if parsed is None:
+        return None
+    precision, scale = parsed
+    return f"DECIMAL({precision}, {scale})"
 
 
-def _metric_sql_type(_metric: Metric) -> str:
-    # Metrics produce a single derived value — float is the safe
-    # default the OBSL compiler also uses.  Step 7's finer type story
-    # can revisit per-metric output typing.
-    return "DOUBLE"
+def _measure_sql_type(measure: Measure, default_num: str | None = None) -> str:
+    return _decimal_duckdb_type(measure.data_type or default_num) or _DATATYPE_TO_DUCKDB.get(
+        measure.result_type, "DOUBLE"
+    )
+
+
+def _metric_sql_type(metric: Metric, default_num: str | None = None) -> str:
+    # A decimal-typed metric (e.g. Gross Margin: decimal(18,2)) reports NUMERIC;
+    # otherwise float is the safe default the OBSL compiler also uses.
+    return _decimal_duckdb_type(metric.data_type or default_num) or "DOUBLE"
 
 
 def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
@@ -1123,7 +1210,12 @@ def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
     if len(description_row) < 2 or description_row[1] is None:
         return "string"
     name = str(description_row[1]).lower()
-    if any(token in name for token in ("int", "decimal", "numeric", "float", "double", "real")):
+    if "decimal" in name or "numeric" in name:
+        # NUMERIC OID so a column-discovery probe (SELECT * ... WHERE 1=0) over
+        # a DECIMAL model column agrees with information_schema.columns and the
+        # query result's RowDescription (issue #116).
+        return "decimal"
+    if any(token in name for token in ("int", "float", "double", "real")):
         return "number"
     if any(token in name for token in ("timestamp", "date", "time")):
         return "datetime"

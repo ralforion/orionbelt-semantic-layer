@@ -25,10 +25,27 @@ Everything runs locally in four containers. No cloud, no credentials.
 
 | Service | Port | Role |
 |---|---|---|
-| `dremio` | http://localhost:19047 | Dremio OSS - the SQL engine and UI |
-| `obsl` | http://localhost:18080 | OrionBelt API (single model), pgwire on `:15432` |
+| `dremio` | http://localhost:19047 | Dremio OSS - the SQL engine and Web UI |
+| `obsl` | http://localhost:18080 | OrionBelt API (single model) |
 | `ui` | http://localhost:17860 | OrionBelt playground (model, ER diagram, queries) |
-| `minio` | http://localhost:19001 | S3 object store holding the commerce Parquet |
+| `minio` | http://localhost:19001 | MinIO console (S3 object store holding the Parquet) |
+
+### Ports / connection endpoints
+
+| Port | Service | Protocol | Connect with |
+|---|---|---|---|
+| `15432` | obsl | **Postgres wire (pgwire)** | psql / DBeaver / Tableau / Power BI as a **PostgreSQL** source. Host `localhost`, database **`orionbelt`** (the brand catalog), schema `commerce` (the model), user `obsl`, any password (trust auth). This is the governed semantic surface. |
+| `18080` | obsl | HTTP (REST) | `curl http://localhost:18080/v1/...` |
+| `17860` | ui | HTTP | OrionBelt playground in a browser |
+| `19047` | dremio | HTTP (REST + Web UI) | Dremio SQL Runner; login `obsl_admin` / `obsl_admin_pw_123!` |
+| `32010` | dremio | **Arrow Flight SQL** | Flight SQL JDBC/ODBC driver at `grpc://localhost:32010`. OBSL also connects here to push compute back into Dremio. |
+| `19000` | minio | S3 API | S3 clients |
+
+Notes:
+- Dremio's legacy ODBC/JDBC port (`31010`) is **not exposed** and Dremio OSS does
+  not serve it - use Arrow Flight SQL on `32010` instead.
+- To test the OrionBelt semantic layer from a BI tool, connect to the **pgwire**
+  surface on `15432` (PostgreSQL driver) - no special driver needed.
 
 The data is the bundled `orionbelt_1_commerce` dataset (15 tables) exported
 from DuckDB to Parquet and served from MinIO. The OrionBelt model is the same
@@ -43,7 +60,8 @@ demo/dremio/run-demo.sh
 
 That builds the Parquet + model, starts the stack, waits for Dremio's cold
 start (~30-60 s), and bootstraps Dremio (S3 source, dataset promotion, one
-pgwire source). It finishes by printing a raw-vs-governed comparison.
+pgwire source, and the `governed` Space of curated views). It finishes by
+printing a raw-vs-governed comparison.
 
 Re-runs are fast and idempotent. Skip the image build with
 `NO_BUILD=1 demo/dremio/run-demo.sh`. Tear everything down with
@@ -73,7 +91,7 @@ LIMIT 5;
 
 ```sql
 SELECT "Country Name", "Total Sales"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC
 LIMIT 5;
 ```
@@ -90,7 +108,7 @@ Ask for two measures from two different fact tables at once:
 
 ```sql
 SELECT "Year Month", "Total Sales", "Total Shipments"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Year Month"
 LIMIT 12;
 ```
@@ -105,7 +123,7 @@ SQL in the OrionBelt playground (`Compile SQL`) to make the point.
 
 ```sql
 SELECT "Channel Name", "Total Sales", "Average Sale"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC;
 ```
 
@@ -117,7 +135,7 @@ through Dremio's federation.
 
 ```sql
 SELECT "Client Name", "Total Sales"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 WHERE "Country Name" = 'Singapore'
 ORDER BY "Total Sales" DESC LIMIT 5;
 ```
@@ -131,7 +149,7 @@ filters (`WHERE`) and measure filters (`HAVING`) both work through federation.
 
 ```sql
 SELECT "Sales Month", "Total Sales", "Sales MoM Change"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Sales Month" LIMIT 12;
 ```
 
@@ -144,7 +162,7 @@ prior-period join (they just have to share the time dimension and base grain).
 
 ```sql
 SELECT "Product Category", "Total Sales", "Return Rate", "Gross Margin"
-FROM obsl.commerce.model
+FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC LIMIT 5;
 ```
 
@@ -152,6 +170,38 @@ ORDER BY "Total Sales" DESC LIMIT 5;
 measures from different fact tables. OrionBelt computes the components inside a
 Composite Fact Layer and projects only the requested columns - one governed
 definition, no hand-written multi-fact SQL.
+
+## Saved as Dremio views
+
+The bootstrap also saves each curated query as a **Dremio view** in a Space
+called `governed`, so you can browse and query them by name instead of pasting
+SQL. A note on *where* they live: Dremio forbids creating a view inside a
+source (`CREATE VIEW orionbelt.commerce.…` fails with *"Cannot create view in …"*) -
+views are virtual datasets and belong in a **Space** or a user's home. So the
+demo puts them in the `governed` Space, each referencing `orionbelt.commerce.model`.
+
+When you `SELECT` from a governed view, Dremio wraps the view body in a
+derived table and pushes it down to OrionBelt (including any inner
+`WHERE` / `ORDER BY` / `LIMIT`); OrionBelt flattens that wrapper back into a
+flat semantic query before compiling.
+
+| View (`governed.…`) | Maps to | Shows |
+|---|---|---|
+| `a1_raw_top_countries` | A1 | raw lakehouse SQL over `lake` (no OrionBelt) |
+| `a2_top_countries_by_sales` | A2 | same answer, governed |
+| `a3a_clients_in_singapore` | A3a | dimension filter -> `WHERE` |
+| `a3b_countries_over_1m` | A3b | measure filter -> `HAVING` |
+| `a4_sales_vs_shipments` | A4 | cross-fact, Composite Fact Layer |
+| `a5_avg_sale_by_channel` | A5 | governed metric |
+| `a6_sales_period_over_period` | A6 | MoM + YoY window metrics |
+| `a7_category_margin` | A7 | cross-fact derived metrics |
+
+(Eight views for seven curated queries: A3 keeps both filter variants - `WHERE`
+on a dimension and `HAVING` on a measure.) Try one:
+
+```sql
+SELECT * FROM governed.a7_category_margin;
+```
 
 ## The OrionBelt playground (http://localhost:17860)
 
@@ -171,7 +221,8 @@ See `demo-queries.sql` for the full curated, run-ordered list.
   Parquet into MinIO via the S3 API (the erasure-coded backend won't serve
   files dropped straight onto the drive).
 - `bootstrap.py` - registers the MinIO S3 source, promotes each Parquet folder
-  as a dataset, registers the single pgwire source, and runs the comparison.
+  as a dataset, registers the single pgwire source, creates the `governed` Space
+  with the curated views, and runs the comparison.
 
 OrionBelt reaches Dremio via Flight using the `DREMIO_HOST` / `DREMIO_PORT` /
 `DREMIO_USERNAME` / `DREMIO_PASSWORD` env vars on the `obsl` service.

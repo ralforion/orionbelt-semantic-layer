@@ -9,10 +9,11 @@ Backing data is Dremio's built-in ``INFORMATION_SCHEMA.COLUMNS`` — it's
 always present (Dremio's own system catalogs) so no dataset promotion
 or sample-data setup is needed.
 
-Two OBSL models live in the test stack at once:
+Two OBSL models live in the dedicated test stack at once:
 
-* ``orionbelt_1_commerce`` — Stage 1, DuckDB backend
-* ``dremio_info_schema``  — Stage 2, Dremio backend
+* the Stage-1 commerce model (``OBSL_MODEL_NAME``, default ``commerce``) —
+  DuckDB backend
+* ``dremio_info_schema`` — Stage 2, Dremio backend
   (``settings.defaultDialect: dremio``)
 
 Both are exposed through the same OBSL pgwire port, and the per-model
@@ -21,10 +22,13 @@ dialect picker in the router routes each one to the right executor.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
 from tests.integration.dremio.conftest import (
+    OBSL_MODEL_NAME,
     OBSL_STAGE2_MODEL_NAME,
     DremioSession,
     RunSql,
@@ -33,6 +37,43 @@ from tests.integration.dremio.conftest import (
 pytestmark = pytest.mark.dremio
 
 STAGE2_SOURCE_NAME = "obsl_pg_dremio"
+
+# Direct pgwire endpoint (host side). Matches the constants in
+# ``test_dremio_postgres_source.py``; the dedicated test stack publishes
+# the container's :5432 on localhost:15432.
+OBSL_PGWIRE_HOST_LOCAL = os.environ.get("OBSL_PGWIRE_HOST_LOCAL", "localhost")
+OBSL_PGWIRE_PORT_LOCAL = int(os.environ.get("OBSL_PGWIRE_PORT_LOCAL", "15432"))
+
+
+def _stage2_model_served() -> bool:
+    """Return True if the OBSL stack actually serves the Stage-2 model.
+
+    The dedicated test stack loads both the commerce model and
+    ``dremio_info_schema``; the lighter ``demo/dremio/`` stack only loads
+    the commerce model. Probing the pgwire catalog lets the Stage-2 tests
+    skip cleanly against a single-model stack instead of failing.
+    """
+
+    psycopg = pytest.importorskip("psycopg", reason="psycopg required for pgwire probe")
+    try:
+        with (
+            psycopg.connect(
+                host=OBSL_PGWIRE_HOST_LOCAL,
+                port=OBSL_PGWIRE_PORT_LOCAL,
+                user="obsl",
+                password="trust",
+                dbname=OBSL_MODEL_NAME,
+                sslmode="disable",
+            ) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (OBSL_STAGE2_MODEL_NAME,),
+            )
+            return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001 — any connection/probe failure → skip, don't fail
+        return False
 
 
 @pytest.fixture(scope="session")
@@ -43,6 +84,13 @@ def stage2_source(dremio_session: DremioSession) -> str:
     Postgres source carries the ``databaseName`` (= OBSL pgwire database
     parameter = model name) in its config; we need one source per model.
     """
+
+    if not _stage2_model_served():
+        pytest.skip(
+            f"Stage-2 model '{OBSL_STAGE2_MODEL_NAME}' is not served by this OBSL "
+            "stack (single-model demo stack?); Stage-2 full-circle tests need the "
+            "dedicated test stack from tests/integration/dremio/docker-compose.yml."
+        )
 
     with httpx.Client(base_url=dremio_session.base_url) as client:
         existing = client.get(

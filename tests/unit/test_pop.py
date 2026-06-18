@@ -420,7 +420,7 @@ class TestPoPSQLGeneration:
                 measures=["Revenue MoM Diff", "Revenue YoY Growth"],
             ),
         )
-        with pytest.raises(ResolutionError, match="same time dimension and base grain"):
+        with pytest.raises(ResolutionError, match="different time grains"):
             pipeline.compile(query, model, "duckdb")
 
     def test_pop_percent_change_sql(self) -> None:
@@ -437,6 +437,31 @@ class TestPoPSQLGeneration:
         # percentChange = current / NULLIF(prev, 0) - 1
         assert "NULLIF" in sql
         assert "- 1" in sql
+
+    def test_pop_having_filter_is_applied(self) -> None:
+        """A HAVING filter on a PoP metric must reach the compiled SQL.
+
+        Regression: the PoP wrapper rebuilt the outer SELECT from scratch and
+        dropped ``resolved.having_filters``, so a filter on a PoP metric was
+        silently ignored (every row came back). The metric is a materialised
+        column in ``pop_compare``, so the filter becomes a WHERE over that CTE.
+        """
+
+        model = _load_model()
+        pipeline = CompilationPipeline()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue YoY Growth"],
+            ),
+            having=[QueryFilter(field="Revenue YoY Growth", op=FilterOperator.GT, value=0)],
+        )
+        result = pipeline.compile(query, model, "duckdb")
+        # The filter must land in the final SELECT over pop_compare as a WHERE.
+        tail = result.sql.split("pop_compare")[-1]
+        assert "Revenue YoY Growth" in tail
+        assert "> 0" in tail
+        assert "WHERE" in tail.upper()
 
     def test_pop_difference_sql(self) -> None:
         model = _load_model()

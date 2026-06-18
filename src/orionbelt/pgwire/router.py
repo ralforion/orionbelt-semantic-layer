@@ -28,6 +28,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from orionbelt.api.query_cache import (
+    build_type_map,
     execute_query_with_cache,
     execution_result_from_envelope,
 )
@@ -50,6 +51,7 @@ from orionbelt.service.db_executor import (
     ExecutionResult,
     ExecutionUnavailableError,
     execute_sql,
+    parse_decimal_type,
 )
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import SessionManager
@@ -253,7 +255,7 @@ class SemanticRouter:
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_FEATURE_NOT_SUPPORTED,
-                message=f"fanout detected: {exc.message}",
+                message=exc.message,
             )
         except (UnsupportedAggregationError, UnsupportedGroupingError) as exc:
             return protocol.build_error_response(
@@ -323,6 +325,12 @@ class SemanticRouter:
         # up its alias in the ResultSet, doesn't find it, and renders
         # the cell as NULL. Recover the aliases by re-parsing the
         # original SQL and rewriting ``result.columns[i].name``.
+        #
+        # Report governed DECIMAL columns as NUMERIC(precision, scale) rather
+        # than FLOAT8 (issue #116) BEFORE aliasing — the model lookup keys on
+        # the artefact label (``Total Sales``), which a user alias
+        # (``sum:Total Sales:ok``) would otherwise hide.
+        _decorate_decimal_columns(result, target.model)
         result = _apply_user_aliases(sql, result)
 
         return _encode_result(result, result_formats)
@@ -663,12 +671,80 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
     return sql
 
 
+_FLATTEN_HOISTABLE = ("where", "order", "limit")
+_FLATTEN_MAX_DEPTH = 8
+
+
+def _flatten_unwrap(node: exp.Expression) -> exp.Expression:
+    """Strip ``COLLATE`` and ``CAST`` wrappers down to the inner expression.
+
+    Dremio wraps pushed-down columns in ``COLLATE "C"`` and, when the source
+    column is typed (e.g. DECIMAL), ``CAST(... AS DECIMAL(38,6))``. Both are
+    type/collation coercions the semantic layer re-derives, so we look through
+    them to the underlying column/literal.
+    """
+
+    while isinstance(node, (exp.Collate, exp.Cast)):
+        node = node.this
+    return node
+
+
+def _flatten_is_passthrough(proj: exp.Expression) -> bool:
+    """``True`` if a projection is a bare column ref (optionally aliased / wrapped
+    in COLLATE / CAST)."""
+
+    col = proj.this if isinstance(proj, exp.Alias) else proj
+    return isinstance(_flatten_unwrap(col), exp.Column)
+
+
+def _flatten_literal_value(node: exp.Expression) -> str | None:
+    """Return a literal's raw value if ``node`` is a literal (CAST/COLLATE-wrapped ok)."""
+
+    node = _flatten_unwrap(node)
+    if isinstance(node, exp.Literal):
+        return str(node.this)
+    return None
+
+
+def _flatten_constant_projection(
+    proj: exp.Expression, wheres: list[exp.Expression]
+) -> exp.Expression | None:
+    """Map Dremio's constant-folded ``<literal> AS <dim>`` projection to a bare column.
+
+    When a view is filtered with ``WHERE <dim> = <value>``, Dremio proves the
+    projected dimension is constant and rewrites it to ``CAST(<value>) AS <dim>``
+    in the SELECT, pushing the equality into a nested ``WHERE``. We map that back
+    to the bare ``<dim>`` column, but ONLY when a collected WHERE actually
+    constrains ``<dim>`` to the same literal — otherwise we bail (return None) so
+    a genuine constant projection still reaches the translator's rejection path.
+    """
+
+    if not isinstance(proj, exp.Alias):
+        return None
+    name = proj.alias
+    lit = _flatten_literal_value(proj.this)
+    if lit is None or not name:
+        return None
+    for where in wheres:
+        for eq in where.find_all(exp.EQ):
+            for col_side, lit_side in ((eq.this, eq.expression), (eq.expression, eq.this)):
+                col = _flatten_unwrap(col_side)
+                if (
+                    isinstance(col, exp.Column)
+                    and col.name == name
+                    and _flatten_literal_value(lit_side) == lit
+                ):
+                    aliased: exp.Expression = exp.alias_(col.copy(), name)
+                    return aliased
+    return None
+
+
 def _flatten_federation_subquery(sql: str) -> str:
     """Collapse Dremio's federation pushdown wrapper into a flat OBSQL SELECT.
 
-    Dremio's Postgres-source connector wraps the virtual ``model`` table in a
-    trivial derived table and lifts ``WHERE`` / ``ORDER BY`` / ``FETCH`` to the
-    outer query::
+    Dremio's Postgres-source connector wraps the virtual ``model`` table in one
+    or more trivial derived tables and lifts ``WHERE`` / ``ORDER BY`` / ``FETCH``
+    around them::
 
         SELECT "Country Name", "Total Sales"
         FROM (SELECT "model"."Country Name" COLLATE "C", "model"."Total Sales"
@@ -676,11 +752,13 @@ def _flatten_federation_subquery(sql: str) -> str:
         WHERE ("Total Sales" > 1000000)
         ORDER BY "Total Sales" DESC FETCH NEXT 5 ROWS ONLY
 
-    The inner derived table is a pure projection over ``model`` (no WHERE /
-    GROUP / JOIN / aggregate), so it carries no semantics the outer query
-    doesn't already state. We rebuild the outer SELECT directly over the model
-    table, which the OBSQL translator accepts after the regular qualifier /
-    COLLATE / FETCH normalizations run.
+    Filtering a *saved view* nests deeper: the view body becomes an inner derived
+    table, the filter lands in a middle one, and an equality filter on a
+    dimension is constant-folded (``WHERE "Channel" = 'B2B'`` -> a
+    ``CAST('B2B') AS "Channel"`` projection). We walk the whole pass-through
+    chain down to ``model``, gather every WHERE (AND-combined) plus a single
+    ORDER BY / LIMIT, map any constant-folded projection back to its column, and
+    rebuild one flat SELECT over ``model`` that the OBSQL translator accepts.
 
     Returns the SQL unchanged when the shape doesn't match, so a genuinely
     unsupported subquery still reaches the translator's rejection path.
@@ -692,45 +770,113 @@ def _flatten_federation_subquery(sql: str) -> str:
         return sql
     if not isinstance(ast, exp.Select) or ast.args.get("joins"):
         return sql
-    from_ = ast.args.get("from")
-    if from_ is None:
+    # Only the projection list, FROM, and the hoistable clauses may appear; a
+    # GROUP / DISTINCT / HAVING / CTE at any level means real work -> bail.
+    if any(v for k, v in ast.args.items() if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)):
         return sql
-    src = from_.this
-    if not isinstance(src, exp.Subquery):
+
+    outer_projs = ast.expressions
+    wheres: list[exp.Expression] = []
+    where_depths: list[int] = []
+    order = ast.args.get("order")
+    order_depth = 0 if order is not None else None
+    limit = ast.args.get("limit")
+    limit_depth = 0 if limit is not None else None
+    if ast.args.get("where"):
+        wheres.append(ast.args["where"].this)
+        where_depths.append(0)
+
+    # Walk down the chain of single-source derived tables to the model table,
+    # accumulating WHERE (combinable) and a single ORDER BY / LIMIT. ``depth``
+    # increases inward (0 = outermost) so the LIMIT barrier below can tell which
+    # clauses sit outside an inner row cap.
+    node: exp.Select = ast
+    base: exp.Table | None = None
+    for depth in range(1, _FLATTEN_MAX_DEPTH + 1):
+        from_ = node.args.get("from")
+        if from_ is None:
+            return sql
+        src = from_.this
+        if isinstance(src, exp.Table):
+            base = src
+            break
+        if not isinstance(src, exp.Subquery):
+            return sql
+        inner = src.this
+        if not isinstance(inner, exp.Select) or inner.args.get("joins"):
+            return sql
+        if any(
+            v
+            for k, v in inner.args.items()
+            if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)
+        ):
+            return sql
+        # Intermediate layers must be pure pass-through projections.
+        if not all(_flatten_is_passthrough(p) for p in inner.expressions):
+            return sql
+        if inner.args.get("where"):
+            wheres.append(inner.args["where"].this)
+            where_depths.append(depth)
+        if inner.args.get("order"):
+            if order is not None:
+                return sql
+            order = inner.args["order"]
+            order_depth = depth
+        if inner.args.get("limit"):
+            if limit is not None:
+                return sql
+            limit = inner.args["limit"]
+            limit_depth = depth
+        node = inner
+    if base is None or base.name.lower() != "model":
         return sql
-    inner = src.this
-    if not isinstance(inner, exp.Select):
-        return sql
-    # The inner derived table must be a pure projection: only a SELECT list and
-    # a FROM, nothing that changes the row set or grain (WHERE / GROUP / JOIN /
-    # DISTINCT / ORDER / LIMIT / QUALIFY / WINDOW / CTE / …). Allowlist rather
-    # than denylist so a future sqlglot clause can't slip a non-trivial wrapper
-    # through — anything we don't recognise falls back to the translator's
-    # rejection path.
-    if any(v for k, v in inner.args.items() if k not in ("expressions", "from")):
-        return sql
-    inner_from = inner.args.get("from")
-    if inner_from is None or not isinstance(inner_from.this, exp.Table):
-        return sql
-    # Only collapse a wrapper over OUR virtual table, never an unrelated one.
-    if inner_from.this.name.lower() != "model":
-        return sql
-    # Inner projections must be plain column refs (optionally COLLATE-annotated);
-    # any function/aggregate means the derived table is doing real work.
-    for proj in inner.expressions:
-        col = proj.this if isinstance(proj, exp.Alias) else proj
-        if isinstance(col, exp.Collate):
-            col = col.this
-        if not isinstance(col, exp.Column):
+
+    # LIMIT barrier: an inner LIMIT/FETCH caps rows before any OUTER (shallower)
+    # WHERE/ORDER would apply. Collapsing to one flat SELECT (WHERE -> ORDER ->
+    # LIMIT) would filter / re-order BEFORE that cap, changing results — e.g.
+    # ``SELECT * FROM <top-5 view> WHERE region = 'X'`` must filter the 5 rows,
+    # not take the top 5 of the filtered set. Bail (the translator then rejects
+    # the genuine subquery) rather than return wrong rows.
+    if limit_depth is not None:
+        if any(d < limit_depth for d in where_depths):
+            return sql
+        if order_depth is not None and order_depth < limit_depth:
             return sql
 
-    flat = ast.copy()
-    flat.set("from", inner_from.copy())
+    # Resolve the outermost projections: a column (optionally CAST/COLLATE
+    # wrapped) collapses to the bare column under its output alias — the OBSQL
+    # translator only accepts bare artefact references, and the semantic layer
+    # re-derives the real type. A constant-folded literal projection maps back
+    # to its dimension column.
+    new_projs: list[exp.Expression] = []
+    for proj in outer_projs:
+        if _flatten_is_passthrough(proj):
+            inner = _flatten_unwrap(proj.this if isinstance(proj, exp.Alias) else proj)
+            alias = proj.alias if isinstance(proj, exp.Alias) else None
+            new_projs.append(exp.alias_(inner.copy(), alias) if alias else inner.copy())
+            continue
+        rewritten = _flatten_constant_projection(proj, wheres)
+        if rewritten is None:
+            return sql
+        new_projs.append(rewritten)
+
+    flat = exp.Select()
+    flat.set("expressions", new_projs)
+    flat.set("from", exp.From(this=base.copy()))
+    if wheres:
+        cond = wheres[0].copy()
+        for extra in wheres[1:]:
+            cond = exp.and_(cond, extra.copy())
+        flat.set("where", exp.Where(this=cond))
     # Render with sqlglot's default generator, NOT dialect="postgres": the
     # postgres generator makes the default null ordering explicit (injects
     # ``NULLS LAST`` into a plain ``ORDER BY ... DESC``), which the OBSQL
     # translator would then capture and bake into the compiled SQL — changing
     # top-N results for nullable measures versus what the client actually sent.
+    if order is not None:
+        flat.set("order", order.copy())
+    if limit is not None:
+        flat.set("limit", limit.copy())
     return flat.sql()
 
 
@@ -992,6 +1138,43 @@ def _alias_inner_column_name(node: exp.Expression) -> str | None:
     return None
 
 
+def _numeric_typmod(col: Any) -> int:
+    """Postgres NUMERIC ``atttypmod`` for a decimal column, else -1.
+
+    Packs the declared precision/scale as ``((precision << 16) | scale) + 4``
+    so clients learn the scale from RowDescription (issue #116).
+    """
+
+    scale = getattr(col, "scale", None)
+    precision = getattr(col, "precision", None)
+    if scale is None or precision is None:
+        return -1
+    return ((int(precision) << 16) | int(scale)) + 4
+
+
+def _decorate_decimal_columns(result: ExecutionResult, model: SemanticModel) -> None:
+    """Mark governed DECIMAL columns so pgwire reports NUMERIC, not FLOAT8.
+
+    OBSL knows each governed column's declared type from the model (the
+    compiled SQL also CASTs measures/metrics to that type), so we set
+    ``type_hint='decimal'`` + scale/precision from the OBML dataType. This is
+    the single source of truth, consistent across cache miss and hit, and never
+    stale (re-derived from the live model). Raw-mode columns absent from the
+    model keep their executor-derived hint. See issue #116.
+    """
+
+    type_map = build_type_map(model)
+    for col in result.columns:
+        declared = type_map.get(col.name)
+        if not declared:
+            continue
+        parsed = parse_decimal_type(declared)
+        if parsed is None:
+            continue
+        col.type_hint = "decimal"
+        col.precision, col.scale = parsed
+
+
 def _encode_result(
     result: ExecutionResult,
     result_formats: tuple[int, ...] = (),
@@ -1018,7 +1201,12 @@ def _encode_result(
         for i, col in enumerate(result.columns)
     ]
     columns_for_desc = [
-        (col.name, oid_for_type_hint(col.type_hint), per_col_formats[i])
+        (
+            col.name,
+            oid_for_type_hint(col.type_hint),
+            per_col_formats[i],
+            _numeric_typmod(col),
+        )
         for i, col in enumerate(result.columns)
     ]
     out = protocol.build_row_description(columns_for_desc)
@@ -1039,7 +1227,9 @@ def _encode_result(
     for row_idx, row in enumerate(result.rows):
         encoded: list[str | bytes | None] = []
         for i, (value, col) in enumerate(zip(row, result.columns, strict=True)):
-            encoded.append(encode_value(value, col.type_hint, per_col_formats[i]))
+            encoded.append(
+                encode_value(value, col.type_hint, per_col_formats[i], getattr(col, "scale", None))
+            )
         if debug_enabled:
             _log_data_row(row_idx, row, encoded, result.columns)
         out += protocol.build_data_row(encoded)
