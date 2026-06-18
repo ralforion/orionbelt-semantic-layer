@@ -56,10 +56,15 @@ TABLES = [
     "suppliers",
 ]
 
-# Postgres source -> OrionBelt pgwire. ``databaseName`` is the OBML model
-# name ("commerce"); the model surfaces as the single virtual table ``model``.
+# Postgres source -> OrionBelt pgwire. ``databaseName`` is the OrionBelt brand
+# catalog ("orionbelt", what pg_database advertises); each model is a SCHEMA
+# inside it (here ``commerce``), exposing the single virtual table ``model``.
+# So the Dremio path is ``obsl.commerce.model`` (source.schema.table).
 PG_SOURCE = "obsl"
-PG_DATABASE = "commerce"
+PG_DATABASE = "orionbelt"  # the source's databaseName = OBSL brand catalog
+# The model surfaces as a SCHEMA (named after the OBML model) inside that
+# catalog, so the Dremio query path is ``obsl.commerce.model``.
+MODEL_SCHEMA = "commerce"
 PG_HOST = "obsl"
 PG_PORT = "5432"
 
@@ -283,7 +288,7 @@ LIMIT 5
 
 GOVERNED_SQL = f"""
 SELECT "Country Name", "Total Sales"
-FROM {PG_SOURCE}.{PG_DATABASE}.model
+FROM {PG_SOURCE}.{MODEL_SCHEMA}.model
 ORDER BY "Total Sales" DESC
 LIMIT 5
 """.strip()
@@ -297,7 +302,7 @@ LIMIT 5
 # OrionBelt. When a governed view is queried, Dremio wraps its body in a
 # derived table and pushes it to OrionBelt, which flattens it back to flat OBSQL.
 VIEW_SPACE = "governed"
-_M = f"{PG_SOURCE}.{PG_DATABASE}.model"
+_M = f"{PG_SOURCE}.{MODEL_SCHEMA}.model"
 _LAKE = f"{LAKE_SOURCE}.{BUCKET}"
 DEMO_VIEWS: tuple[tuple[str, str], ...] = (
     (

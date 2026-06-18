@@ -34,7 +34,7 @@ Everything runs locally in four containers. No cloud, no credentials.
 
 | Port | Service | Protocol | Connect with |
 |---|---|---|---|
-| `15432` | obsl | **Postgres wire (pgwire)** | psql / DBeaver / Tableau / Power BI as a **PostgreSQL** source. Host `localhost`, db `commerce`, user `obsl`, any password (trust auth). This is the governed semantic surface. |
+| `15432` | obsl | **Postgres wire (pgwire)** | psql / DBeaver / Tableau / Power BI as a **PostgreSQL** source. Host `localhost`, database **`orionbelt`** (the brand catalog), schema `commerce` (the model), user `obsl`, any password (trust auth). This is the governed semantic surface. |
 | `18080` | obsl | HTTP (REST) | `curl http://localhost:18080/v1/...` |
 | `17860` | ui | HTTP | OrionBelt playground in a browser |
 | `19047` | dremio | HTTP (REST + Web UI) | Dremio SQL Runner; login `obsl_admin` / `obsl_admin_pw_123!` |

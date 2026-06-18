@@ -8,7 +8,7 @@
 -- All queries verified live against demo/dremio (run-demo.sh), in Dremio's
 -- SQL Runner (http://localhost:19047). The same queries also run against
 -- OrionBelt directly (playground :17860, or any Postgres client on :15432
--- with database = commerce) using `FROM model` instead of `obsl.commerce.model`.
+-- with database `orionbelt`) using `FROM model` instead of `obsl.commerce.model`.
 -- ============================================================================
 
 
@@ -115,6 +115,6 @@ LIMIT 5;
 -- - The OrionBelt playground (http://localhost:17860) shows the loaded model
 --   read-only and runs the same queries, plus the ER diagram and RDF graph.
 -- - Any Postgres client can hit OrionBelt directly on localhost:15432
---   (database = commerce), using `FROM model` instead of `obsl.commerce.model`.
+--   (database `orionbelt`), using `FROM model` instead of `obsl.commerce.model`.
 -- - Period-over-period metrics may mix offsets (MoM + YoY) in one query; they
 --   just need to share the time dimension and base grain (the date spine).
