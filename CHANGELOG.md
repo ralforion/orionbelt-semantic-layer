@@ -2,6 +2,24 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.15.0] - 2026-06-18
+
+### Added
+
+- **Governed views in the Dremio demo.** The demo bootstrap now creates a `governed` Dremio Space with one view per curated query (A1 raw lakehouse plus A2-A7 governed), so they can be browsed and queried by name. Demonstrates saving a governed query as a reusable view.
+
+### Fixed
+
+- **DECIMAL columns report as NUMERIC over the Postgres wire protocol (#116).** Decimal measures/metrics were coarsened to FLOAT8, so values lost scale on display (`574585.00` showed as `574585.0`, large values as `1.6E7`). They are now reported as `NUMERIC(precision, scale)` (from the model's declared `dataType`) across the query RowDescription, the catalog metadata, and the encoded values, so BI tools render the declared scale.
+- **DuckDB's internal `main` schema is hidden from BI-tool schema browsers.** Dremio's Postgres source enumerates schemas from `pg_tables` / `pg_views`; those are now shadowed (alongside `pg_namespace` / `information_schema.schemata`) so only the per-model schemas appear.
+- **Dremio federation view/filter pushdown now compiles.** The pgwire flattener handles Dremio's nested derived-table pushdown (constant-folded dimension equality, `CAST(... AS DECIMAL)` projections) so saved views and filtered queries work; it bails when an outer filter/order would cross an inner `LIMIT` rather than return wrong rows.
+- **HAVING filters on period-over-period metrics are applied.** They were silently dropped by the PoP wrapper, returning unfiltered rows.
+
+### Changed
+
+- **Clearer errors for incompatible-artefact combinations.** Period-over-period grain mismatch, fanout, and cross-fact two-column-aggregate errors are rewritten in plain language with remediation.
+- **Demo uses the `orionbelt` brand catalog as the pgwire database.** The model is a schema (`commerce`) inside it; the Dremio source is renamed from `obsl` to `orionbelt` (path `orionbelt.commerce.model`).
+
 ## [2.14.0] - 2026-06-16
 
 ### Added
