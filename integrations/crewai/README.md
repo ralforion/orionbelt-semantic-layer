@@ -82,7 +82,7 @@ CrewAI tools use synchronous functions (not async). The `OrionBeltTools` class u
 
 ## MCP Alternative
 
-CrewAI has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp):
+CrewAI has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp):
 
 ```python
 from crewai import Agent

@@ -86,7 +86,7 @@ report_agent = Agent(
 
 ## MCP Alternative
 
-If you prefer MCP over direct REST API calls, the OpenAI Agents SDK has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp):
+If you prefer MCP over direct REST API calls, the OpenAI Agents SDK has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp):
 
 ```python
 from agents.mcp import MCPServerStdio

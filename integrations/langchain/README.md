@@ -109,7 +109,7 @@ asyncio.run(main())
 
 ## MCP Alternative
 
-If you prefer MCP over direct REST API calls, use `langchain-mcp-adapters` with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp):
+If you prefer MCP over direct REST API calls, use `langchain-mcp-adapters` with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp):
 
 ```bash
 pip install langchain-mcp-adapters

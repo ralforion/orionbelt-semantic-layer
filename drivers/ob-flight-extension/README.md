@@ -2,7 +2,7 @@
 
 Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)
 
-Part of the [OrionBelt Semantic Layer](https://github.com/ralfbecher/orionbelt-semantic-layer) project.
+Part of the [OrionBelt Semantic Layer](https://github.com/ralforion/orionbelt-semantic-layer) project.
 
 ## Installation
 

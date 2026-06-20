@@ -126,7 +126,7 @@ engine.deploy(agent)
 
 ## MCP Alternative
 
-Google ADK uses FastMCP internally and has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp):
+Google ADK uses FastMCP internally and has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp):
 
 ```python
 from google.adk.tools.mcp_tool import MCPToolset

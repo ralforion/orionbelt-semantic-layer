@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**OrionBelt Semantic Layer** is a SaaS semantic layer engine that compiles and executes YAML semantic models (OBML format) as analytical SQL across 8 database dialects: BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres, Snowflake. It exposes all capabilities through a REST API (FastAPI). An MCP server is available as a separate thin client in [orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp).
+**OrionBelt Semantic Layer** is a SaaS semantic layer engine that compiles and executes YAML semantic models (OBML format) as analytical SQL across 8 database dialects: BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres, Snowflake. It exposes all capabilities through a REST API (FastAPI). An MCP server is available as a separate thin client in [orionbelt-semantic-layer-mcp](https://github.com/ralforion/orionbelt-semantic-layer-mcp).
 
 ## Commands
 
@@ -115,7 +115,7 @@ Two distinct validators exist — don't confuse them:
 `TrackedLoader` uses ruamel.yaml for line-faithful source positions. `ReferenceResolver` converts raw dict → `SemanticModel` + `ValidationResult`.
 
 ### MCP Server (separate repo)
-The MCP server lives in [orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) — a thin HTTP client that delegates to the REST API. It is not part of this repository.
+The MCP server lives in [orionbelt-semantic-layer-mcp](https://github.com/ralforion/orionbelt-semantic-layer-mcp) — a thin HTTP client that delegates to the REST API. It is not part of this repository.
 
 ## Pydantic v2 Alias Convention
 

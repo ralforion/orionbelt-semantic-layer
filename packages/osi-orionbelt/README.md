@@ -8,7 +8,7 @@ relationships).
 This package is licensed under **Apache-2.0** and may be used freely. It is the
 OrionBelt converter in the OSI converter ecosystem. The canonical source is
 developed in the
-[orionbelt-semantic-layer](https://github.com/ralfbecher/orionbelt-semantic-layer)
+[orionbelt-semantic-layer](https://github.com/ralforion/orionbelt-semantic-layer)
 repository (under `packages/osi-orionbelt`) and published to PyPI from there;
 file issues and contributions upstream.
 

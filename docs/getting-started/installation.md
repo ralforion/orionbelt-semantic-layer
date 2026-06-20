@@ -12,7 +12,7 @@ description: Install OrionBelt Semantic Layer with uv or pip. Covers Python 3.12
 ## Clone the Repository
 
 ```bash
-git clone https://github.com/ralfbecher/orionbelt-semantic-layer.git
+git clone https://github.com/ralforion/orionbelt-semantic-layer.git
 cd orionbelt-semantic-layer
 ```
 

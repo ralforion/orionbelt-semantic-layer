@@ -7,7 +7,7 @@ description: "Five-minute Quick Start for OrionBelt Semantic Layer: install, loa
 This walkthrough takes you from a YAML semantic model to compiled and executed SQL in under 5 minutes.
 
 !!! tip "Try it in Google Colab"
-    [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries, execute against DuckDB, and see results. Requires Python 3.12 runtime.
+    [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries, execute against DuckDB, and see results. Requires Python 3.12 runtime.
 
 ## Step 1: Define a Semantic Model
 

@@ -1,7 +1,7 @@
 site_name: OrionBelt Semantic Layer
 site_description: "Open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance: inject governed business semantics into systems that never had them. YAML models compile to SQL across 8 dialects, surfaced via REST, MCP, Arrow Flight SQL, and PostgreSQL wire."
 site_url: https://ralforion.com/orionbelt-semantic-layer/
-repo_url: https://github.com/ralfbecher/orionbelt-semantic-layer
+repo_url: https://github.com/ralforion/orionbelt-semantic-layer
 repo_name: orionbelt-semantic-layer
 copyright: Copyright &copy; 2025 RALFORION d.o.o., BSL 1.1
 
@@ -26,7 +26,7 @@ extra:
           data: 0
           note: >-
             Thanks for your feedback! Help us improve by
-            <a href="https://github.com/ralfbecher/orionbelt-semantic-layer/issues/new?labels=docs&template=docs-feedback.md" target="_blank" rel="noopener">opening a docs issue</a>.
+            <a href="https://github.com/ralforion/orionbelt-semantic-layer/issues/new?labels=docs&template=docs-feedback.md" target="_blank" rel="noopener">opening a docs issue</a>.
   consent:
     title: Cookie consent
     description: >-

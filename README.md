@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo — a stylized belt of three stars" width="400">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo — a stylized belt of three stars" width="400">
 </p>
 
 <h1 align="center">OrionBelt Semantic Layer and Sidecar</h1>
@@ -10,14 +10,14 @@
 
 <!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](https://orionbelt.ralforion.com/ui/?__theme=dark)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
 
-[![GitHub stars](https://img.shields.io/github/stars/ralfbecher/orionbelt-semantic-layer?style=social)](https://github.com/ralfbecher/orionbelt-semantic-layer)
-[![Version 2.15.0](https://img.shields.io/badge/version-2.15.0-purple.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/releases)
+[![GitHub stars](https://img.shields.io/github/stars/ralforion/orionbelt-semantic-layer?style=social)](https://github.com/ralforion/orionbelt-semantic-layer)
+[![Version 2.15.0](https://img.shields.io/badge/version-2.15.0-purple.svg)](https://github.com/ralforion/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
 [![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE)
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?logo=pydantic&logoColor=white)](https://docs.pydantic.dev)
@@ -44,7 +44,7 @@ Define analytical and business semantics in version-controlled YAML, compile the
 
 No BI tool in the middle. The entire path from declarative model to executable semantics and query results is programmable, reviewable, and reproducible.
 
-> **Companion Project:** [OrionBelt Analytics](https://github.com/ralfbecher/orionbelt-analytics) — an ontology-based MCP server that analyzes database schemas and generates RDF/OWL ontologies. Together they let AI assistants navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
+> **Companion Project:** [OrionBelt Analytics](https://github.com/ralforion/orionbelt-analytics) — an ontology-based MCP server that analyzes database schemas and generates RDF/OWL ontologies. Together they let AI assistants navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
 
 > **Related reading:**
 > - [What is a Semantic Sidecar?](https://ralforion.com/semantic-sidecar.html) — the pattern OBSL implements
@@ -98,7 +98,7 @@ API explorer: [Swagger UI](https://orionbelt.ralforion.com/docs) | [ReDoc](https
 
 ### Option B: Google Colab (no install)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralfbecher/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries across dialects, execute against DuckDB, and see results. Requires Python 3.12 runtime.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) — Interactive notebook with TPC-H data: explore the model, compile queries across dialects, execute against DuckDB, and see results. Requires Python 3.12 runtime.
 
 ### Option C: Install from PyPI
 
@@ -248,7 +248,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 
 > **Docker notes:**
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
-> - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for containerized deployments.
+> - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
 > - For production, pin a version tag (`:2.15.0`) rather than `:latest`.
 
@@ -256,7 +256,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 
 The MCP server is a separate thin client that delegates to the REST API:
 
-**[orionbelt-semantic-layer-mcp](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp)**
+**[orionbelt-semantic-layer-mcp](https://github.com/ralforion/orionbelt-semantic-layer-mcp)**
 
 Add to your Claude Desktop `claude_desktop_config.json`:
 
@@ -271,7 +271,7 @@ Add to your Claude Desktop `claude_desktop_config.json`:
 }
 ```
 
-Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for full setup options.
+Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for full setup options.
 
 ---
 
@@ -312,7 +312,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 ### Integration Surface
 
 - **REST API** — FastAPI endpoints for model management, validation, compilation, and execution
-- **MCP Server** — [separate thin client](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for Claude, Copilot, Cursor, Windsurf
+- **MCP Server** — [separate thin client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for Claude, Copilot, Cursor, Windsurf
 - **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
@@ -347,7 +347,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 ### Define a Semantic Model (OBML)
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/schema/obml-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/schema/obml-schema.json
 version: "1.0"
 dataObjects:
   Customers:
@@ -428,7 +428,7 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 ## Gradio UI
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="OrionBelt Gradio UI showing side-by-side OBML model editor and compiled SQL output" width="900">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ui-sqlcompiler-dark.png" alt="OrionBelt Gradio UI showing side-by-side OBML model editor and compiled SQL output" width="900">
 </p>
 
 - **SQL Compiler** — side-by-side OBML model and query editors with syntax highlighting, 8 dialect selector, one-click compilation with formatted SQL output and query explain
@@ -440,7 +440,7 @@ Change `dialect` to `bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, 
 - **Dark/Light Mode** — toggle via header button, state persisted across sessions
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/ui-ontology-graph-dark.png" alt="OrionBelt Ontology Graph tab showing the semantic model as an interactive network of data objects, dimensions, measures, metrics, and join relationships" width="900">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ui-ontology-graph-dark.png" alt="OrionBelt Ontology Graph tab showing the semantic model as an interactive network of data objects, dimensions, measures, metrics, and join relationships" width="900">
 </p>
 
 **Embedded mode** — the UI is mounted at `/ui` on the API server:
@@ -521,12 +521,12 @@ Contact [RALFORION d.o.o.](https://ralforion.com) for details.
 
 ## Companion Project
 
-### [OrionBelt Analytics](https://github.com/ralfbecher/orionbelt-analytics)
+### [OrionBelt Analytics](https://github.com/ralforion/orionbelt-analytics)
 
 An ontology-based MCP server that analyzes relational database schemas and generates RDF/OWL ontologies. Together with OrionBelt Semantic Layer, it enables AI assistants to navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/architecture.png" alt="Architecture diagram showing OrionBelt Analytics generating ontologies from database schemas, feeding into OrionBelt Semantic Layer for SQL compilation" width="800">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/architecture.png" alt="Architecture diagram showing OrionBelt Analytics generating ontologies from database schemas, feeding into OrionBelt Semantic Layer for SQL compilation" width="800">
 </p>
 
 ---
@@ -536,7 +536,7 @@ An ontology-based MCP server that analyzes relational database schemas and gener
 Contributing to OrionBelt or running from source:
 
 ```bash
-git clone https://github.com/ralfbecher/orionbelt-semantic-layer.git
+git clone https://github.com/ralforion/orionbelt-semantic-layer.git
 cd orionbelt-semantic-layer
 uv sync                           # install all deps (dev, docs, ui, flight, drivers)
 uv run orionbelt-api              # start API on :8000
@@ -569,6 +569,6 @@ For commercial licensing inquiries, contact: licensing@ralforion.com
 
 <p align="center">
   <a href="https://ralforion.com">
-    <img src="https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200">
+    <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200">
   </a>
 </p>

@@ -106,4 +106,4 @@ Replace the "OpenAI Chat Model" node with an "Anthropic Chat Model" node and sel
 
 ## MCP Alternative
 
-n8n has a native MCP Client Tool node. Use it with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp) for automatic tool discovery without manual HTTP configuration.
+n8n has a native MCP Client Tool node. Use it with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for automatic tool discovery without manual HTTP configuration.

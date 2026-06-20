@@ -2506,11 +2506,11 @@ def create_blocks(
                 f'<span class="header-links">'
                 f'<span class="header-version">'
                 f"v{__version__}</span>"
-                f'<a href="https://github.com/ralfbecher'
+                f'<a href="https://github.com/ralforion'
                 f'/orionbelt-semantic-layer"'
                 f' target="_blank">'
                 f"{_GITHUB_SVG} GitHub</a>"
-                f'<a href="https://github.com/ralfbecher'
+                f'<a href="https://github.com/ralforion'
                 f'/orionbelt-semantic-layer/issues"'
                 f' target="_blank">Report Issue</a>'
                 f'<a href="https://ralforion.com'

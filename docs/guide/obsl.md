@@ -174,6 +174,6 @@ The graph is removed when the model is unloaded (`DELETE /v1/sessions/{id}/model
 
 ## Specification
 
-The full OBSL-Core 0.1 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/ontology/spec.md).
+The full OBSL-Core 0.1 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/ontology/spec.md).
 
-The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`ontology/`](https://github.com/ralfbecher/orionbelt-semantic-layer/tree/main/ontology) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).
+The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`ontology/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/ontology) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).

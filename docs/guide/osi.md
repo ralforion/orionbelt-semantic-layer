@@ -65,4 +65,4 @@ The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these
 
 ## Mapping Reference
 
-See the [OSI - OBML Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_mapping_analysis.md) for the core-spec mapping, and the [OBML -> OSI Ontology Mapping Analysis](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_ontology_mapping_analysis.md) for the ontology-layer mapping and its documented gaps.
+See the [OSI - OBML Mapping Analysis](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_mapping_analysis.md) for the core-spec mapping, and the [OBML -> OSI Ontology Mapping Analysis](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/packages/osi-orionbelt/osi_obml_ontology_mapping_analysis.md) for the ontology-layer mapping and its documented gaps.

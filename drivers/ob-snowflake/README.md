@@ -2,7 +2,7 @@
 
 OrionBelt Semantic Layer driver for Snowflake (DB-API 2.0)
 
-Part of the [OrionBelt Semantic Layer](https://github.com/ralfbecher/orionbelt-semantic-layer) project.
+Part of the [OrionBelt Semantic Layer](https://github.com/ralforion/orionbelt-semantic-layer) project.
 
 ## Installation
 

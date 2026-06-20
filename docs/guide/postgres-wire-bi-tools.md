@@ -7,7 +7,7 @@ Most BI tools ship a built-in Postgres connector that "just works".
 
 This page is a step-by-step manual checklist for the four tools
 covered by Step 5 of the
-[Postgres wire plan](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md):
+[Postgres wire plan](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md):
 DBeaver, Tableau Desktop, Power BI Desktop, and Metabase.
 
 ## The Semantic Loop — Dremio + OrionBelt
@@ -245,7 +245,7 @@ Dremio, three options:
 ## Known limitations
 
 These constraints are documented in
-[design/PLAN_postgres_wire.md §10](https://github.com/ralfbecher/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md):
+[design/PLAN_postgres_wire.md §10](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/design/PLAN_postgres_wire.md):
 
 | Limitation | Reason | Workaround |
 |---|---|---|
@@ -266,6 +266,6 @@ WARNING ... PGWIRE_CATALOG_PROBE_UNHANDLED dialect=duckdb error=...
 
 If a BI tool fails to connect, scrape that line out of the server log
 and open an issue against
-[orionbelt-semantic-layer](https://github.com/ralfbecher/orionbelt-semantic-layer/issues)
+[orionbelt-semantic-layer](https://github.com/ralforion/orionbelt-semantic-layer/issues)
 with the captured SQL. We extend the catalog rewriter (see
 `src/orionbelt/pgwire/catalog.py`) per-tool until it lights up.

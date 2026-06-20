@@ -6,7 +6,7 @@ Postgres wire protocol as if it were an ordinary database; OrionBelt compiles
 the request into Dremio SQL and pushes it **back into Dremio** over Arrow
 Flight, executing against the very same Parquet datasets you can query raw.
 
-![OrionBelt + Dremio full circle](https://raw.githubusercontent.com/ralfbecher/orionbelt-semantic-layer/main/docs/assets/dremio-orionbelt-full-circle.png)
+![OrionBelt + Dremio full circle](https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/dremio-orionbelt-full-circle.png)
 
 ```
  Dremio SQL editor

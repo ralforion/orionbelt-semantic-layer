@@ -124,7 +124,7 @@ export default function Chat() {
 
 ## MCP Alternative
 
-Vercel AI SDK v6 has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralfbecher/orionbelt-semantic-layer-mcp):
+Vercel AI SDK v6 has native MCP support. Use it with the [OrionBelt MCP Server](https://github.com/ralforion/orionbelt-semantic-layer-mcp):
 
 ```typescript
 import { experimental_createMCPClient as createMCPClient } from "ai";
