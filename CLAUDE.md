@@ -9,38 +9,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install
 uv sync                           # all deps (dev, docs, ui, flight, drivers)
 
-# Run servers
 uv run orionbelt-api              # REST API on :8000
 uv run orionbelt-ui               # Gradio UI
 
-# Tests
 uv run pytest                     # all tests
-uv run pytest tests/unit/test_compiler.py  # single file
 uv run pytest tests/unit/test_compiler.py::TestClass::test_method  # single test
 uv run pytest -k "test_revenue"   # by name pattern
 
-# Quality
 uv run ruff check src/            # lint
 uv run ruff format src/ tests/    # format
 uv run mypy src/                  # type check
 
-# Docs
 uv sync --extra docs && uv run mkdocs serve  # docs on :8080
 
-# Docker (two separate images: API and UI)
-docker build -t orionbelt-api .                             # API-only image
-docker build -f Dockerfile.ui -t orionbelt-ui .             # UI image (Gradio)
-docker run -p 8080:8080 orionbelt-api                       # run API
-docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8080 orionbelt-ui  # run UI
+# Docker: two separate images (API + UI)
+docker build -t orionbelt-api .                  # API-only image
+docker build -f Dockerfile.ui -t orionbelt-ui .  # UI image (Gradio)
 
-# Cloud Run deployment (deploys both services)
-./scripts/deploy-gcloud.sh
-
-# Tests
-./tests/docker/test_docker.sh                    # 15 local Docker tests
+./scripts/deploy-gcloud.sh                        # Cloud Run deploy (both services)
+./tests/docker/test_docker.sh                     # 15 local Docker tests
 ./tests/cloudrun/test_cloudrun.sh <CLOUD_RUN_URL> # 30 live API tests
 ```
 
@@ -114,9 +103,6 @@ Two distinct validators exist — don't confuse them:
 
 `TrackedLoader` uses ruamel.yaml for line-faithful source positions. `ReferenceResolver` converts raw dict → `SemanticModel` + `ValidationResult`.
 
-### MCP Server (separate repo)
-The MCP server lives in [orionbelt-semantic-layer-mcp](https://github.com/ralforion/orionbelt-semantic-layer-mcp) — a thin HTTP client that delegates to the REST API. It is not part of this repository.
-
 ## Pydantic v2 Alias Convention
 
 All models use `Field(alias="camelCase")` with `populate_by_name=True`. YAML/JSON uses camelCase aliases; Python code uses snake_case field names. Mypy only sees the Python names.
@@ -130,13 +116,13 @@ When constructing models in Python, always use the Python field names (e.g., `da
 OBML defines all types, enums, error codes, operators, and semantics for the project. **When OBML changes, all dependents must be updated together:**
 
 1. **Python models** — `models/semantic.py`, `models/query.py`, `models/errors.py`
-2. **MCP server** — `mcp/server.py` (tool descriptions, prompts, `OBML_REFERENCE` resource)
+2. **MCP server** — separate repo (tool descriptions, prompts, `OBML_REFERENCE` resource)
 3. **REST API** — `api/` (endpoint docs, OpenAPI descriptions)
 4. **MkDocs** — `docs/` (guide pages, examples, reference)
 5. **JSON Schema** — `schema/obml-schema.json`, `schema/query-schema.json`
 6. **Tests & fixtures** — `tests/`, `tests/fixtures/`
 
-Never change any dependent without checking consistency with OBML and all other dependents.
+Every new OBML field must also propagate to the OSI converter (`packages/osi-orionbelt`, custom_extensions roundtrip) and the ontology (`ontology/obsl.ttl` class + properties, `obsl.shacl.ttl` shapes). Never change any dependent without checking consistency with OBML and all other dependents.
 
 Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metrics`, `filters`.
 
@@ -146,93 +132,34 @@ Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metric
 - **Secondary joins**: `secondary: true` + `pathName` on `DataObjectJoin` — unique per (source, target) pair
 - **Queries** use `select: {dimensions: [...], measures: [...]}` structure with optional `where`, `having`, `order_by`, `limit`, `usePathNames`
 
-## Test Structure
+## REST API
 
-- `tests/conftest.py` — shared fixtures: `sales_model` (resolved SemanticModel), `SAMPLE_MODEL_YAML` (inline 2-table model)
-- `tests/unit/` — 14 files covering AST, compiler, dialects, fanout, graph, MCP, parser, validator, etc.
-- `tests/integration/` — `test_api.py` (FastAPI via httpx ASGI), `test_compilation_e2e.py`
-- `tests/fixtures/sales_model/model.yaml` — full multi-table model used by fixtures
-- `tests/docker/test_docker.sh` — 15 endpoint tests against local Docker container
-- `tests/cloudrun/test_cloudrun.sh` — 30 endpoint tests against live Cloud Run deployment
-- pytest config: `asyncio_mode = "auto"`, `testpaths = ["tests"]`
+FastAPI app in `api/`; routers under `api/routes/`. All routes are prefixed `/v1/` except `/health` and `/robots.txt`. The **authoritative, always-current** endpoint list is the running OpenAPI — browse `/docs` (Swagger) or `/openapi.json`. Notable surfaces:
 
-## REST API Endpoints
+- Session CRUD + per-session model management (`/v1/sessions/...`); load model field is `model_yaml`
+- `query/sql` (compile + explain), `query/execute` (`?format=tsv`, `?format_values=true`, `?locale=`, `?timezone=`)
+- `query/semantic-ql` + `.../compile` — OBSQL, BI-style `SELECT dim, measure FROM <model>`
+- OSI convert (`/v1/convert/osi-to-obml`, `/v1/convert/obml-to-osi`; stateless), and per-model `osi` export / `from-osi` load
+- ACR `composables` (Artefacts Composability Resolution), RDF `graph` (Turtle) + `sparql`, `diagram/er` (Mermaid), `explain/{name}`, `find`, `join-graph`
+- Result `cache/stats|sweep|clear`, `oneshot/batch`, `/v1/models` (admin multi-model mode), `/v1/reference/...`
 
-All API routes are prefixed with `/v1/` except `/health` and `/robots.txt`.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check (returns version) |
-| GET | `/v1/settings` | Public config (single-model mode, TTL) |
-| GET | `/v1/dialects` | List 8 dialects with capabilities |
-| POST | `/v1/sessions` | Create session |
-| GET | `/v1/sessions` | List sessions |
-| GET | `/v1/sessions/{id}` | Get session info |
-| DELETE | `/v1/sessions/{id}` | Close session |
-| POST | `/v1/sessions/{id}/models` | Load model (field: `model_yaml`) |
-| POST | `/v1/sessions/{id}/models/from-osi` | Convert OSI YAML → OBML and load into the model store (field: `osi_yaml`). Returns the model summary plus `conversion_warnings` and OSI `input_validation` |
-| GET | `/v1/sessions/{id}/models` | List models |
-| GET | `/v1/sessions/{id}/models/{mid}` | Describe model |
-| DELETE | `/v1/sessions/{id}/models/{mid}` | Remove model |
-| POST | `/v1/sessions/{id}/validate` | Validate YAML |
-| POST | `/v1/sessions/{id}/query/sql` | Compile query (includes explain) |
-| POST | `/v1/sessions/{id}/query/execute` | Compile and execute query. Supports `?format=tsv`, `?format_values=true`, `?locale=`, `?timezone=` |
-| POST | `/v1/sessions/{id}/query/semantic-ql` | OrionBelt Semantic QL (OBSQL): translate BI-style SQL (SELECT dim, measure FROM `<model>`) → QueryObject → execute. Same response shape as `/query/execute` |
-| POST | `/v1/sessions/{id}/query/semantic-ql/compile` | OrionBelt Semantic QL: translate + compile only, returns compiled SQL + translated QueryObject JSON |
-| GET | `/v1/sessions/{id}/models/{mid}/diagram/er` | Mermaid ER diagram |
-| GET | `/v1/sessions/{id}/models/{mid}/osi` | Export the loaded model as OSI YAML. Optional `?model_name=`, `?model_description=`, `?ai_instructions=` overrides. `?include_ontology=true` also emits the OSI ontology document in `ontology_yaml` (separate artefact, with its own `ontology_validation`) |
-| GET | `/v1/sessions/{id}/models/{mid}/schema` | Full model as JSON |
-| GET | `/v1/sessions/{id}/models/{mid}/dimensions` | List dimensions |
-| GET | `/v1/sessions/{id}/models/{mid}/dimensions/{name}` | Get dimension |
-| GET | `/v1/sessions/{id}/models/{mid}/measures` | List measures |
-| GET | `/v1/sessions/{id}/models/{mid}/measures/{name}` | Get measure |
-| GET | `/v1/sessions/{id}/models/{mid}/metrics` | List metrics |
-| GET | `/v1/sessions/{id}/models/{mid}/metrics/{name}` | Get metric |
-| GET | `/v1/sessions/{id}/models/{mid}/explain/{name}` | Lineage explain |
-| POST | `/v1/sessions/{id}/models/{mid}/find` | Search artefacts |
-| GET | `/v1/sessions/{id}/models/{mid}/join-graph` | Join graph adjacency |
-| POST | `/v1/sessions/{id}/models/{mid}/composables` | Artefacts Composability Resolution (ACR): given a query as anchor, returns composable `dimensions`/`measures`/`metrics` + `cflMeasures`/`cflMetrics` |
-| GET | `/v1/sessions/{id}/models/{mid}/composables` | ACR via named anchors (`?anchor=`, repeatable; `?anchorType=`) |
-| GET | `/v1/sessions/{id}/models/{mid}/graph` | OBSL RDF graph (Turtle) |
-| POST | `/v1/sessions/{id}/models/{mid}/sparql` | SPARQL query (SELECT/ASK) |
-| POST | `/v1/convert/osi-to-obml` | Convert OSI YAML → OBML YAML |
-| POST | `/v1/convert/obml-to-osi` | Convert OBML YAML → OSI YAML. `include_ontology: true` also emits the OSI ontology document in `ontology_yaml` (separate artefact, with its own `ontology_validation`) |
-| POST | `/v1/oneshot/batch` | Load (or reference) a model and run N independent queries in one round trip |
-| GET | `/v1/cache/stats` | Result cache summary (entries, size, hit rate, oldest entry, next sweep) |
-| POST | `/v1/cache/sweep` | Trigger one TTL + capacity eviction pass on demand |
-| POST | `/v1/cache/clear` | Drop every cache entry (counters preserved) |
-| GET | `/v1/models` | List admin-pre-loaded models (multi-model mode). Each entry includes name, description, dim/measure/metric counts. Use the `name` as the Flight `database` header or pgwire `database=` URL parameter. |
-| GET | `/v1/reference` | List all reference documents (OBML, OBSQL, JSON schemas) |
-| GET | `/v1/reference/obml` | OBML reference (modeling language) — markdown |
-| GET | `/v1/reference/obsql` | OBSQL reference (semantic query language) — markdown |
-| GET | `/v1/reference/schemas/{name}` | JSON Schema by name (`obml` \| `query`) with `application/schema+json` content-type |
-
-Top-level shortcuts (auto-resolve when single session/model): `/v1/schema`, `/v1/dimensions`, `/v1/measures`, `/v1/metrics`, `/v1/explain/{name}`, `/v1/find`, `/v1/join-graph`, `/v1/composables`, `/v1/graph`, `/v1/sparql`, `/v1/query/sql`, `/v1/query/execute`, `/v1/query/semantic-ql`, `/v1/query/semantic-ql/compile`.
+Top-level shortcuts (`/v1/query/execute`, `/v1/schema`, `/v1/dimensions`, ...) auto-resolve when a single session/model exists.
 
 ## Configuration
 
-Environment variables or `.env` file (via pydantic-settings):
+Env vars / `.env` via pydantic-settings (the `Settings` model is the source of truth). Most are self-explanatory; the load-bearing / non-obvious ones:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | — | Cloud Run override (takes precedence) |
-| `API_SERVER_HOST` | `localhost` | REST API bind host |
-| `API_SERVER_PORT` | `8000` | REST API port |
-| `DISABLE_SESSION_LIST` | `false` | Disable `GET /sessions` endpoint (security) |
-| `EXPOSE_API_DOCS` | `true` | Serve Swagger UI at `/docs` and ReDoc at `/redoc` (hide on non-demo deploys) |
-| `EXPOSE_OPENAPI_SCHEMA` | `true` | Serve OpenAPI schema at `/openapi.json` (independent of `EXPOSE_API_DOCS`) |
-| `AUTH_MODE` | `none` | Auth for all `/v1` endpoints: `none`, `api_key`, or `oidc` (oidc = Phase 4, not yet implemented). See `design/PLAN_authentication.md`. |
-| `API_KEYS` | — | Comma-separated API keys (≥32 chars, high-entropy). Required when `AUTH_MODE=api_key`. |
-| `API_KEY_HEADER` | `X-API-Key` | REST header for the key (`Authorization: Bearer` always accepted as fallback). |
-| `AUTH_ENABLED` | `false` | Deprecated alias for `AUTH_MODE=api_key` (honoured one release with a startup warning). |
-| `DEFAULT_LOCALE` | — | BCP-47 locale used by `/v1/query/execute?format_values=true` when no `locale` query param is supplied |
-| `SESSION_TTL_SECONDS` | `1800` | Session timeout |
-| `SESSION_CLEANUP_INTERVAL` | `60` | Cleanup sweep interval |
-| `MODEL_FILES` | — | Comma-separated OBML YAML paths for admin-curated mode. Each model loads into its own *named protected session*, addressable by the OBML `name:` field (fallback: filename stem; normalized to a valid identifier `[a-z][a-z0-9_]{0,62}`). BI tools select via Flight `database` catalog or pgwire `database=` URL parameter. A single path is fine. (The legacy `MODEL_FILE` env var was removed in v2.7.0.) |
-| `LOG_LEVEL` | `INFO` | Logging level |
-| `LOG_FORMAT` | `console` | `console` (pretty), `json` (structured), `cloudrun` (JSON, no access logs) |
-| `API_BASE_URL` | — | API URL for standalone UI |
-| `ROOT_PATH` | — | ASGI root path for UI behind load balancer |
+- `MODEL_FILES` — comma-separated OBML YAML paths for admin-curated mode. Each loads into its own *named protected session*, addressable by the OBML `name:` (fallback: filename stem, normalized to `[a-z][a-z0-9_]{0,62}`). BI tools select via Flight `database` catalog or pgwire `database=`. (Legacy `MODEL_FILE` removed in v2.7.0.)
+- `AUTH_MODE` — `none` | `api_key` | `oidc` (oidc not yet implemented). `API_KEYS` required for `api_key`; key sent via `API_KEY_HEADER` (default `X-API-Key`; `Authorization: Bearer` also accepted). `AUTH_ENABLED` is a deprecated alias.
+- `LOG_FORMAT` — `console` | `json` | `cloudrun` (cloudrun = JSON, no access logs).
+- `EXPOSE_API_DOCS` / `EXPOSE_OPENAPI_SCHEMA` — toggle `/docs`+`/redoc` and `/openapi.json` (hide on non-demo deploys).
+- `PORT` (Cloud Run override), `SESSION_TTL_SECONDS` (1800), `DEFAULT_LOCALE`, `API_BASE_URL` / `ROOT_PATH` (standalone UI behind a load balancer).
+
+## Test Structure
+
+- `tests/conftest.py` — shared fixtures: `sales_model` (resolved SemanticModel), `SAMPLE_MODEL_YAML` (inline 2-table model); `tests/fixtures/sales_model/model.yaml` is the full multi-table model.
+- `tests/unit/` (per-subsystem), `tests/integration/` (`test_api.py` via httpx ASGI, `test_compilation_e2e.py`). pytest config: `asyncio_mode = "auto"`, `testpaths = ["tests"]`.
+- Shell suites: `tests/docker/test_docker.sh` (local container), `tests/cloudrun/test_cloudrun.sh <URL>` (live deployment).
 
 ## Tooling Notes
 
