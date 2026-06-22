@@ -1,4 +1,11 @@
-"""Session-scoped endpoints for model management, validation, and query."""
+"""Session-scoped endpoints for model management, validation, and query.
+
+The heavy helper and core-logic functions live in ``orionbelt.api.services``;
+this module keeps the thin FastAPI handlers (dependency resolution + domain →
+HTTP exception translation) and re-exports the moved helpers under their
+historical names so existing cross-module importers (``oneshot``,
+``shortcuts``, ``model_api``) keep resolving unchanged.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import asdict
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -15,7 +22,6 @@ from orionbelt.api.deps import (
     CacheRuntimeConfig,
     get_cache,
     get_cache_config,
-    get_default_locale,
     get_preload_model_yaml,
     get_query_default_limit,
     get_session_manager,
@@ -27,20 +33,13 @@ from orionbelt.api.osi_support import get_converter_module, parse_yaml, run_vali
 from orionbelt.api.query_cache import (
     build_explain_response,
     build_format_map,
-    build_result_columns,
     build_type_map,
-    execute_query_with_cache,
 )
 from orionbelt.api.schema_guards import validate_model_body, validate_query_body
 from orionbelt.api.schemas import (
-    ColumnMetadata,
     ConvertResponse,
     DatabaseExplain,
     DiagramResponse,
-    ExplainCflLegResponse,
-    ExplainJoinResponse,
-    ExplainPlanResponse,
-    JoinPathStep,
     ModelLoadRequest,
     ModelLoadResponse,
     ModelSummaryResponse,
@@ -50,7 +49,6 @@ from orionbelt.api.schemas import (
     QueryExecuteResponse,
     QueryPlanRequest,
     QueryPlanResponse,
-    ResolvedInfoResponse,
     SemanticQLCompileResponse,
     SemanticQLRequest,
     SessionCreateRequest,
@@ -62,109 +60,79 @@ from orionbelt.api.schemas import (
     ValidateRequest,
     ValidateResponse,
 )
+from orionbelt.api.services.model_loading import _load_obml, _model_load_fields
+from orionbelt.api.services.query_compilation import (
+    _join_path_steps,
+    _obsql_translation_errors,
+    _resolve_dialect,
+    build_compile_response,
+    build_semantic_ql_compile_response,
+    compile_query_for_plan,
+    compile_query_or_raise,
+)
+from orionbelt.api.services.query_execution import (
+    _apply_no_cache_metadata,
+    _apply_ttl_metadata,
+    _build_cached_response,
+    _build_execute_response,
+    _physical_tables_for,
+    _run_with_cache,
+)
+from orionbelt.api.services.session_lifecycle import _get_store, _session_response
 from orionbelt.api.warnings_adapter import (
     error_info_to_detail,
-    error_info_to_warning,
-    health_summary_to_response,
     semantic_error_to_warning,
 )
 from orionbelt.cache.protocol import Cache
-from orionbelt.compiler.fanout import FanoutError
-from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
-from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
-from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     explain_sql,
-    resolve_timezone,
 )
 from orionbelt.service.diagram import generate_mermaid_er
-from orionbelt.service.model_store import (
-    LoadResult,
-    ModelCapacityError,
-    ModelStore,
-    ModelValidationError,
-)
 from orionbelt.service.session_manager import (
     SessionCapacityError,
     SessionExpiredError,
-    SessionInfo,
     SessionManager,
     SessionNotFoundError,
 )
-from orionbelt.service.value_formatting import format_row, to_tsv
 
 logger = logging.getLogger("orionbelt.api.sessions")
+
+# Re-exports: these moved into orionbelt.api.services but external modules
+# (oneshot, shortcuts, model_api, value_formatting) still import them FROM this
+# module by their historical names. Keep them in this namespace.
+_build_type_map = build_type_map
+_build_format_map = build_format_map
+_build_explain_response = build_explain_response
+
+__all__ = [
+    "router",
+    # re-exported helpers (imported by other modules from this namespace)
+    "_resolve_dialect",
+    "_run_with_cache",
+    "_build_execute_response",
+    "_build_explain_response",
+    "_build_type_map",
+    "_build_format_map",
+    "_load_obml",
+    "_model_load_fields",
+    "_session_response",
+    "_get_store",
+    "_obsql_translation_errors",
+    "_join_path_steps",
+    "_physical_tables_for",
+    "_apply_ttl_metadata",
+    "_apply_no_cache_metadata",
+    "_build_cached_response",
+]
 
 # Prefix lives on the constructor (not the include_router call) so the root
 # routes can keep an empty path ("") and still resolve to /v1/sessions with no
 # trailing slash. FastAPI 0.137+ rejects an empty path supplied via an
 # include_router(prefix=...) call. See design/PLAN_authentication.md note.
 router = APIRouter(prefix="/sessions")
-
-
-# -- helpers -----------------------------------------------------------------
-
-
-def _get_store(session_id: str, mgr: SessionManager) -> ModelStore:
-    """Resolve session_id to ModelStore, raise 410/404 as appropriate."""
-    try:
-        return mgr.get_store(session_id)
-    except SessionExpiredError:
-        raise HTTPException(status_code=410, detail=f"Session '{session_id}' has expired") from None
-    except SessionNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
-
-
-def _load_obml(store: ModelStore, yaml_str: str | None = None, **kwargs: Any) -> LoadResult:
-    """Load OBML into the store, mapping store errors to HTTP responses.
-
-    Shared by the plain OBML upload and the OSI-converted upload so both
-    surface capacity (429) and validation (422) failures identically.
-    """
-    try:
-        return store.load_model(yaml_str, **kwargs)
-    except ModelCapacityError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from None
-    except ModelValidationError as exc:
-        error_lines = "; ".join(
-            f"[{e.code}] {e.message}" + (f" (at {e.path})" if e.path else "") for e in exc.errors
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": f"Invalid OBML model: {error_lines}",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-                "warnings": [
-                    {"code": w.code, "message": w.message, "path": w.path} for w in exc.warnings
-                ],
-            },
-        ) from None
-
-
-def _model_load_fields(result: LoadResult) -> dict[str, Any]:
-    """Shared kwargs for (OSI)ModelLoadResponse from a store LoadResult."""
-    return {
-        "model_id": result.model_id,
-        "data_objects": result.data_objects,
-        "dimensions": result.dimensions,
-        "measures": result.measures,
-        "metrics": result.metrics,
-        "warnings": [error_info_to_warning(w) for w in result.warnings],
-        "model_load": result.model_load,
-        "health": health_summary_to_response(result.health),
-    }
-
-
-def _session_response(info: SessionInfo) -> SessionResponse:
-    """Convert a SessionInfo dataclass to a Pydantic response."""
-    d = asdict(info)
-    return SessionResponse(**d)
 
 
 # -- session CRUD ------------------------------------------------------------
@@ -524,211 +492,11 @@ async def compile_query(
         raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
     logger.info("QueryObject request:\n%s", body.query.model_dump_json(by_alias=True, indent=2))
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model_for_dialect)
-    try:
-        result = store.compile_query(body.model_id, body.query, dialect)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
+    result = compile_query_or_raise(
+        store=store, model_id=body.model_id, query=body.query, dialect=dialect
+    )
     logger.info("Compiled SQL:\n%s", result.sql)
-    explain_resp = None
-    if result.explain:
-        explain_resp = ExplainPlanResponse(
-            planner=result.explain.planner,
-            planner_reason=result.explain.planner_reason,
-            base_object=result.explain.base_object,
-            base_object_reason=result.explain.base_object_reason,
-            joins=[
-                ExplainJoinResponse(
-                    from_object=j.from_object,
-                    to_object=j.to_object,
-                    join_columns=j.join_columns,
-                    reason=j.reason,
-                )
-                for j in result.explain.joins
-            ],
-            where_filter_count=result.explain.where_filter_count,
-            having_filter_count=result.explain.having_filter_count,
-            has_totals=result.explain.has_totals,
-            cfl_legs=[
-                ExplainCflLegResponse(
-                    measure_source=leg.measure_source,
-                    common_root=leg.common_root,
-                    reason=leg.reason,
-                    measures=leg.measures,
-                    joins=leg.joins,
-                )
-                for leg in result.explain.cfl_legs
-            ],
-        )
-    return QueryCompileResponse(
-        sql=format_sql(result.sql, result.dialect),
-        dialect=result.dialect,
-        resolved=ResolvedInfoResponse(
-            fact_tables=result.resolved.fact_tables,
-            dimensions=result.resolved.dimensions,
-            measures=result.resolved.measures,
-        ),
-        warnings=[semantic_error_to_warning(w) for w in result.warnings],
-        sql_valid=result.sql_valid,
-        explain=explain_resp,
-        physical_tables=list(result.physical_tables),
-    )
-
-
-# Column type/format helpers live in orionbelt.api.query_cache (shared with the
-# pgwire/Flight cache path). Re-exported here under their historical private
-# names for existing importers (value_formatting, oneshot).
-_build_type_map = build_type_map
-_build_format_map = build_format_map
-_build_explain_response = build_explain_response
-
-
-def _resolve_dialect(
-    *, request_dialect: str | None, model: Any, fallback: str | None = None
-) -> str:
-    """Resolve the dialect for a query.
-
-    Order: explicit request dialect → model.settings.default_dialect →
-    ``fallback`` (typically ``DB_VENDOR``) → ``"postgres"``.
-    """
-    if request_dialect:
-        return request_dialect
-    settings = getattr(model, "settings", None)
-    model_default = getattr(settings, "default_dialect", None) if settings else None
-    if model_default:
-        return str(model_default)
-    if fallback:
-        return fallback
-    return "postgres"
-
-
-def _build_execute_response(
-    *,
-    compile_result: Any,
-    exec_result: Any,
-    model: Any,
-    response_format: Literal["json", "tsv"],
-    format_values: bool,
-    locale: str,
-) -> QueryExecuteResponse | Response:
-    """Build the JSON QueryExecuteResponse, or a TSV Response.
-
-    ``format_values`` is forced True for TSV; numeric cells are rendered with
-    each column's display ``format`` pattern using locale-aware separators.
-    """
-    model_type_map = _build_type_map(model)
-    fmt_map = _build_format_map(model)
-    # Auto-default for columns without an explicit model-side format — the
-    # executor proposes a pattern based on the column's Arrow / driver type
-    # (None for ints/strings/dates so they stay as bare ``str(val)``;
-    # ``"#,##0.00"`` for floats and decimals). Raw-mode ``select.fields``
-    # projections benefit most: physical columns no longer need a measure
-    # to inherit a sensible locale-aware render.
-    for c in exec_result.columns:
-        if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
-            fmt_map[c.name] = c.default_format
-    column_names = [c.name for c in exec_result.columns]
-    # Canonical column shape (also what the result cache persists) — built via
-    # the shared helper so REST, the cache payload, and pgwire all agree. Reuse
-    # the maps already built above instead of rebuilding them.
-    columns_meta = build_result_columns(
-        model, exec_result, type_map=model_type_map, fmt_map=fmt_map
-    )
-    # Merge the executor's type_hint as a fallback for columns that aren't
-    # exposed via the dimension/measure/metric layer — notably raw-mode
-    # ``select.fields`` projections, which reference physical columns the
-    # model-level type_map doesn't list. Without this merge, a numeric raw
-    # column ("decimal(18, 2)" from the driver) wouldn't be classified as
-    # numeric in format_row.
-    type_map: dict[str, str] = {
-        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_result.columns
-    }
-
-    if response_format == "tsv":
-        formatted = [
-            format_row(
-                row,
-                column_names=column_names,
-                fmt_map=fmt_map,
-                type_map=type_map,
-                locale=locale,
-            )
-            for row in exec_result.rows
-        ]
-        body = to_tsv(column_names, formatted)
-        return Response(content=body, media_type="text/tab-separated-values")
-
-    if format_values:
-        rows: list[list[Any]] = [
-            cast(
-                list[Any],
-                format_row(
-                    row,
-                    column_names=column_names,
-                    fmt_map=fmt_map,
-                    type_map=type_map,
-                    locale=locale,
-                ),
-            )
-            for row in exec_result.rows
-        ]
-    else:
-        rows = exec_result.rows
-
-    return QueryExecuteResponse(
-        sql=format_sql(compile_result.sql, compile_result.dialect),
-        dialect=compile_result.dialect,
-        columns=columns_meta,
-        rows=rows,
-        row_count=exec_result.row_count,
-        execution_time_ms=exec_result.execution_time_ms,
-        timezone=exec_result.timezone,
-        resolved=ResolvedInfoResponse(
-            fact_tables=compile_result.resolved.fact_tables,
-            dimensions=compile_result.resolved.dimensions,
-            measures=compile_result.resolved.measures,
-        ),
-        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
-        sql_valid=compile_result.sql_valid,
-        explain=_build_explain_response(compile_result),
-        physical_tables=list(compile_result.physical_tables),
-    )
+    return build_compile_response(result)
 
 
 @router.post(
@@ -757,54 +525,11 @@ async def plan_query(
         raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
 
-    try:
-        result = store.compile_query(body.model_id, body.query, dialect)
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        return QueryPlanResponse(
-            status="error",
-            warnings=[semantic_error_to_warning(e) for e in exc.errors],
-            would_compile=False,
-        )
-    except FanoutError as exc:
-        return QueryPlanResponse(
-            status="error",
-            warnings=[
-                StructuredWarning(
-                    code="FANOUT_ERROR",
-                    severity="error",
-                    message=exc.message,
-                )
-            ],
-            would_compile=False,
-        )
-    except UnsupportedAggregationError as exc:
-        return QueryPlanResponse(
-            status="error",
-            warnings=[
-                StructuredWarning(
-                    code="UNSUPPORTED_AGGREGATION",
-                    severity="error",
-                    message=str(exc),
-                    context={"dialect": exc.dialect, "aggregation": exc.aggregation},
-                )
-            ],
-            would_compile=False,
-        )
-    except UnsupportedGroupingError as exc:
-        return QueryPlanResponse(
-            status="error",
-            warnings=[
-                StructuredWarning(
-                    code="UNSUPPORTED_GROUPING",
-                    severity="error",
-                    message=str(exc),
-                    context={"dialect": exc.dialect, "grouping": exc.grouping},
-                )
-            ],
-            would_compile=False,
-        )
+    result, error_response = compile_query_for_plan(
+        store=store, model_id=body.model_id, query=body.query, dialect=dialect
+    )
+    if error_response is not None:
+        return error_response
 
     physical_tables = _physical_tables_for(model, result)
     join_path = _join_path_steps(result)
@@ -847,45 +572,6 @@ async def plan_query(
             ]
 
     return response
-
-
-def _physical_tables_for(model: Any, result: Any) -> list[str]:
-    """Compute qualified physical tables touched by a compilation."""
-    names = list(dict.fromkeys(result.resolved.fact_tables))
-    if result.explain:
-        for j in result.explain.joins:
-            for nm in (j.from_object, j.to_object):
-                if nm not in names:
-                    names.append(nm)
-        for leg in result.explain.cfl_legs:
-            if leg.measure_source and leg.measure_source not in names:
-                names.append(leg.measure_source)
-    out: list[str] = []
-    for nm in names:
-        obj = model.data_objects.get(nm)
-        if obj is None:
-            out.append(nm)
-            continue
-        parts = [p for p in (obj.database, obj.schema_name, obj.code) if p]
-        out.append(".".join(parts) if parts else nm)
-    return out
-
-
-def _join_path_steps(result: Any) -> list[JoinPathStep]:
-    """Convert ExplainPlan joins → API JoinPathStep list."""
-    if not result.explain:
-        return []
-    steps: list[JoinPathStep] = []
-    for j in result.explain.joins:
-        steps.append(
-            JoinPathStep(
-                from_object=j.from_object,
-                to_object=j.to_object,
-                cardinality=j.cardinality or "many-to-one",
-                fk=", ".join(j.join_columns) if j.join_columns else None,
-            )
-        )
-    return steps
 
 
 @router.post(
@@ -944,47 +630,9 @@ async def execute_query(
     logger.info("QueryObject request:\n%s", query.model_dump_json(by_alias=True, indent=2))
 
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
-    try:
-        result = store.compile_query(body.model_id, query, dialect)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Model '{body.model_id}' not found") from None
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
+    result = compile_query_or_raise(
+        store=store, model_id=body.model_id, query=query, dialect=dialect
+    )
 
     logger.info("Compiled SQL:\n%s", result.sql)
 
@@ -1005,19 +653,6 @@ async def execute_query(
 
 
 # -- OrionBelt Semantic QL (OBSQL) ------------------------------------------
-
-
-def _obsql_translation_errors(exc: SQLTranslationError) -> HTTPException:
-    """Map a SQLTranslationError to an HTTP 400 with structured error list."""
-    return HTTPException(
-        status_code=400,
-        detail={
-            "error": "OrionBelt Semantic QL translation failed",
-            "errors": [
-                {"code": e.code, "message": e.message, "context": e.context} for e in exc.errors
-            ],
-        },
-    )
 
 
 @router.post(
@@ -1052,62 +687,13 @@ async def compile_semantic_ql(
         raise _obsql_translation_errors(exc) from None
 
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
-    try:
-        result = store.compile_query(body.model_id, query, dialect)
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
+    result = compile_query_or_raise(
+        store=store, model_id=body.model_id, query=query, dialect=dialect
+    )
 
     logger.info("Compiled SQL:\n%s", result.sql)
 
-    return SemanticQLCompileResponse(
-        sql=format_sql(result.sql, result.dialect),
-        dialect=result.dialect,
-        query=query.model_dump(by_alias=True, mode="json"),
-        resolved=ResolvedInfoResponse(
-            fact_tables=result.resolved.fact_tables,
-            dimensions=result.resolved.dimensions,
-            measures=result.resolved.measures,
-        ),
-        warnings=[semantic_error_to_warning(w) for w in result.warnings],
-        sql_valid=result.sql_valid,
-        explain=_build_explain_response(result),
-        physical_tables=list(result.physical_tables),
-    )
+    return build_semantic_ql_compile_response(result, query)
 
 
 @router.post(
@@ -1161,45 +747,9 @@ async def execute_semantic_ql(
         query = query.model_copy(update={"limit": get_query_default_limit()})
 
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
-    try:
-        result = store.compile_query(body.model_id, query, dialect)
-    except UnsupportedDialectError:
-        raise HTTPException(status_code=400, detail=f"Unsupported dialect: '{dialect}'") from None
-    except ResolutionError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Query resolution failed",
-                "errors": [
-                    {"code": e.code, "message": e.message, "path": e.path} for e in exc.errors
-                ],
-            },
-        ) from None
-    except FanoutError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Query fanout detected", "message": exc.message},
-        ) from None
-    except UnsupportedAggregationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported aggregation",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "aggregation": exc.aggregation,
-            },
-        ) from None
-    except UnsupportedGroupingError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported grouping",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "grouping": exc.grouping,
-            },
-        ) from None
+    result = compile_query_or_raise(
+        store=store, model_id=body.model_id, query=query, dialect=dialect
+    )
 
     logger.info("Compiled SQL:\n%s", result.sql)
 
@@ -1217,183 +767,3 @@ async def execute_semantic_ql(
         locale=locale,
         timezone_override=timezone,
     )
-
-
-# -- cache helpers ----------------------------------------------------------
-
-
-async def _run_with_cache(
-    *,
-    store: ModelStore,
-    model: Any,
-    compile_result: Any,
-    session_id: str,
-    model_id: str,
-    dialect: str,
-    cache: Cache,
-    cache_config: CacheRuntimeConfig,
-    response_format: Literal["json", "tsv"],
-    format_values: bool,
-    locale: str | None,
-    timezone_override: str | None,
-) -> QueryExecuteResponse | Response:
-    """Cache-aware execute pipeline shared by session and shortcut endpoints.
-
-    Looks up the cache before executing, stores on miss, and surfaces the
-    ``cached`` / ``ttl_*`` metadata. Only the canonical JSON shape is
-    cached (TSV + value-formatted JSON skip caching to avoid locale-keyed
-    proliferation).
-    """
-    model_default_tz: str | None = None
-    override_db_tz = False
-    if model.settings:
-        model_default_tz = model.settings.default_timezone
-        override_db_tz = model.settings.override_database_timezone
-    tz = resolve_timezone(default_timezone=timezone_override or model_default_tz)
-
-    # TSV and value-formatted JSON skip caching (locale-keyed proliferation);
-    # only the canonical JSON shape is cached. Skip the whole cache machinery
-    # (key + freshness TTL + get) when the backend is a no-op, so the default
-    # deployment doesn't pay a per-query model scan for a cache that never hits.
-    cacheable = (
-        response_format == "json"
-        and not format_values
-        and getattr(cache, "backend_name", "noop") != "noop"
-    )
-
-    try:
-        cached = await execute_query_with_cache(
-            store=store,
-            model=model,
-            compile_result=compile_result,
-            session_id=session_id,
-            model_id=model_id,
-            dialect=dialect,
-            cache=cache,
-            cache_config=cache_config,
-            tz=tz,
-            override_db_tz=override_db_tz,
-            cacheable=cacheable,
-        )
-    except ExecutionUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-    except ExecutionError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-
-    if cached.cached:
-        # A cache hit always carries a key and a fetch time.
-        assert cached.cache_key is not None
-        assert cached.fetch_elapsed_ms is not None
-        return _build_cached_response(
-            envelope=cached.envelope,
-            cache_key=cached.cache_key,
-            ttl_outcome=cached.ttl_outcome,
-            fetch_elapsed_ms=cached.fetch_elapsed_ms,
-        )
-
-    # Locale resolution order: request ?locale= -> model settings.defaultLocale
-    # -> DEFAULT_LOCALE env. Drives result value-formatting separators.
-    model_default_locale = model.settings.default_locale if model.settings else None
-    effective_locale = (
-        locale if locale is not None else (model_default_locale or get_default_locale())
-    )
-    response = _build_execute_response(
-        compile_result=compile_result,
-        exec_result=cached.exec_result,
-        model=model,
-        response_format=response_format,
-        format_values=format_values,
-        locale=effective_locale,
-    )
-    ttl_outcome = cached.ttl_outcome
-    if (
-        cacheable
-        and ttl_outcome is not None
-        and ttl_outcome.ttl is not None
-        and isinstance(response, QueryExecuteResponse)
-    ):
-        _apply_ttl_metadata(response, ttl_outcome)
-    elif cacheable and ttl_outcome is not None and isinstance(response, QueryExecuteResponse):
-        _apply_no_cache_metadata(response, ttl_outcome)
-    return response
-
-
-def _apply_ttl_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
-    """Surface TTL fields on a fresh (non-cached) response."""
-    ttl = ttl_outcome.ttl
-    if ttl is None:
-        return
-    response.ttl_seconds = ttl.seconds
-    response.ttl_source = ttl.source
-    response.ttl_limiting_table = ttl.limiting_table
-
-
-def _apply_no_cache_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
-    """Document why a response was not cached."""
-    reason = ttl_outcome.no_cache_reason
-    if reason is None:
-        return
-    response.ttl_source = (
-        "no_cache" if reason.value == "unknown_freshness" else f"no_cache:{reason.value}"
-    )
-    response.ttl_limiting_table = ttl_outcome.no_cache_table
-
-
-def _build_cached_response(
-    *,
-    envelope: Any,
-    cache_key: str,
-    ttl_outcome: Any,
-    fetch_elapsed_ms: float,
-) -> QueryExecuteResponse:
-    """Reconstruct a :class:`QueryExecuteResponse` from a cached Parquet entry.
-
-    ``fetch_elapsed_ms`` is the wall-clock time spent reading + decoding the
-    cache entry. It replaces the original DB execution time on the wire so
-    callers see a realistic "this came from cache" duration; the original is
-    preserved on disk in the Parquet sidecar for forensic inspection.
-    """
-    from orionbelt.api.schemas import StructuredWarning
-
-    columns = [
-        ColumnMetadata(
-            name=c.get("name", ""),
-            type=c.get("type", "string"),
-            format=c.get("format"),
-        )
-        for c in envelope.columns
-    ]
-    explain_resp: ExplainPlanResponse | None = None
-    if envelope.explain:
-        try:
-            explain_resp = ExplainPlanResponse(**envelope.explain)
-        except Exception:
-            explain_resp = None
-    warnings_resp: list[StructuredWarning] = []
-    for w in envelope.warnings or []:
-        try:
-            warnings_resp.append(StructuredWarning(**w))
-        except Exception:
-            continue
-    cached_at_iso = envelope.cached_at_iso if hasattr(envelope, "cached_at_iso") else None
-    response = QueryExecuteResponse(
-        sql=envelope.sql,
-        dialect=envelope.dialect,
-        columns=columns,
-        rows=envelope.rows,
-        row_count=envelope.row_count,
-        execution_time_ms=fetch_elapsed_ms,
-        timezone=envelope.timezone,
-        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
-        warnings=warnings_resp,
-        sql_valid=envelope.sql_valid,
-        explain=explain_resp,
-        physical_tables=list(envelope.physical_tables),
-        cached=True,
-        cached_at=cached_at_iso,
-    )
-    if ttl_outcome.ttl is not None:
-        response.ttl_seconds = ttl_outcome.ttl.seconds
-        response.ttl_source = ttl_outcome.ttl.source
-        response.ttl_limiting_table = ttl_outcome.ttl.limiting_table
-    return response
