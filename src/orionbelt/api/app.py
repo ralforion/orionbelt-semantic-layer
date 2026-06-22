@@ -330,7 +330,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if len(named_preloads) == 1:
         preload_model_yaml = named_preloads[0][1]
 
-    init_session_manager(
+    app.state.runtime = init_session_manager(
         mgr,
         disable_session_list=settings.disable_session_list,
         admin_curated=is_admin_curated,

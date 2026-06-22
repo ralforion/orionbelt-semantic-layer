@@ -1,8 +1,24 @@
-"""Dependency injection for FastAPI — SessionManager singleton."""
+"""Dependency injection for FastAPI.
+
+Runtime state is consolidated into a single :class:`AppRuntime` object
+rather than a scatter of module globals. ``create_app`` builds one and
+attaches it to ``app.state.runtime`` (so each app instance owns its own
+runtime object), while a module-level ``_runtime`` remains as the
+compatibility source the no-argument provider functions read from — direct
+callers across the routers keep working unchanged during the migration.
+
+The provider functions (``get_session_manager`` etc.) keep their existing
+signatures so call sites are untouched; they now read fields off the single
+runtime object. Migrating the providers to read ``request.app.state.runtime``
+(for full per-request isolation) and removing ``reset_session_manager`` is a
+later cleanup step.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from fastapi import Request
 
 from orionbelt.auth import init_auth, reset_auth
 from orionbelt.cache.noop import NoopCache
@@ -20,19 +36,6 @@ class OneshotBatchConfig:
     batch_timeout_ms: int = 120000
 
 
-_session_manager: SessionManager | None = None
-_disable_session_list: bool = False
-_single_model_mode: bool = False
-_preload_model_yaml: str | None = None
-_flight_info: dict[str, object] | None = None
-_query_execute_enabled: bool = False
-_db_vendor: str = "duckdb"
-_query_default_limit: int = 1000
-_default_locale: str = ""
-_oneshot_batch_config: OneshotBatchConfig = OneshotBatchConfig()
-_cache: Cache = NoopCache()
-
-
 @dataclass(frozen=True)
 class CacheRuntimeConfig:
     """Cache-related settings made available to request handlers."""
@@ -45,7 +48,43 @@ class CacheRuntimeConfig:
     heartbeat_auth_token: str | None = None
 
 
-_cache_config: CacheRuntimeConfig = CacheRuntimeConfig()
+@dataclass
+class AppRuntime:
+    """Explicit runtime state for one API app instance.
+
+    Replaces the former collection of ``deps`` module globals. Mutable so
+    late-binding updates (e.g. Flight auto-detection at startup) can refresh
+    individual fields via :func:`update_flight_state`.
+    """
+
+    session_manager: SessionManager | None = None
+    disable_session_list: bool = False
+    admin_curated: bool = False
+    preload_model_yaml: str | None = None
+    flight_info: dict[str, object] | None = None
+    query_execute_enabled: bool = False
+    db_vendor: str = "duckdb"
+    query_default_limit: int = 1000
+    default_locale: str = ""
+    oneshot_batch_config: OneshotBatchConfig = field(default_factory=OneshotBatchConfig)
+    cache: Cache = field(default_factory=NoopCache)
+    cache_config: CacheRuntimeConfig = field(default_factory=CacheRuntimeConfig)
+
+
+# Module-level compatibility runtime. Starts at defaults so providers called
+# before/without initialisation return the same values the old globals did.
+_runtime: AppRuntime = AppRuntime()
+
+
+def current_runtime() -> AppRuntime:
+    """Return the current process-level runtime (compat accessor)."""
+    return _runtime
+
+
+def get_runtime(request: Request) -> AppRuntime:
+    """Return the runtime owned by the request's app (``app.state.runtime``)."""
+    runtime = getattr(request.app.state, "runtime", None)
+    return runtime if isinstance(runtime, AppRuntime) else _runtime
 
 
 def init_session_manager(
@@ -66,70 +105,67 @@ def init_session_manager(
     api_keys: str = "",
     api_key_header: str = "X-API-Key",
     auth_enabled: bool = False,
-) -> None:
-    """Set the global SessionManager (called at app startup).
+) -> AppRuntime:
+    """Build the process runtime and initialise the auth subsystem.
+
+    Returns the constructed :class:`AppRuntime` so ``create_app`` can attach
+    it to ``app.state.runtime``.
 
     ``preload_model_yaml`` is the original YAML of the single protected
-    MODEL_FILES model — passed in only when admin-curated mode loaded
-    exactly one file. The string is surfaced via ``/v1/settings.model_yaml``
-    so UI clients can render the read-only model editor, and re-used by
-    ``POST /v1/sessions`` to seed each new user session with the protected
-    model (since session-scoped model upload is blocked with 403 in
-    admin-curated mode).
+    MODEL_FILES model — passed in only when admin-curated mode loaded exactly
+    one file. It is surfaced via ``/v1/settings.model_yaml`` so UI clients can
+    render the read-only model editor, and re-used by ``POST /v1/sessions`` to
+    seed each new user session with the protected model.
     """
-    global _session_manager, _disable_session_list  # noqa: PLW0603
-    global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
-    global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
-    global _default_locale, _oneshot_batch_config  # noqa: PLW0603
-    global _cache, _cache_config  # noqa: PLW0603
-    _session_manager = manager
-    _disable_session_list = disable_session_list
-    _single_model_mode = admin_curated
-    _preload_model_yaml = preload_model_yaml
-    _flight_info = flight_info
-    _query_execute_enabled = query_execute_enabled
-    _db_vendor = db_vendor
-    _query_default_limit = query_default_limit
-    _default_locale = default_locale
-    if oneshot_batch_config is not None:
-        _oneshot_batch_config = oneshot_batch_config
-    if cache is not None:
-        _cache = cache
-    if cache_config is not None:
-        _cache_config = cache_config
+    global _runtime  # noqa: PLW0603 — single process-level runtime handle
+    _runtime = AppRuntime(
+        session_manager=manager,
+        disable_session_list=disable_session_list,
+        admin_curated=admin_curated,
+        preload_model_yaml=preload_model_yaml,
+        flight_info=flight_info,
+        query_execute_enabled=query_execute_enabled,
+        db_vendor=db_vendor,
+        query_default_limit=query_default_limit,
+        default_locale=default_locale,
+        oneshot_batch_config=oneshot_batch_config or OneshotBatchConfig(),
+        cache=cache if cache is not None else NoopCache(),
+        cache_config=cache_config or CacheRuntimeConfig(),
+    )
     # Initialise the shared auth subsystem here (not only in the ASGI
-    # lifespan) so test fixtures that call init_session_manager() directly
-    # get a consistent, validated auth config. Raises AuthConfigError on
-    # bad config — fail loudly at startup.
+    # lifespan) so test fixtures that call init_session_manager() directly get
+    # a consistent, validated auth config. Raises AuthConfigError on bad
+    # config — fail loudly at startup.
     init_auth(
         auth_mode=auth_mode,
         api_keys=api_keys,
         header_name=api_key_header,
         auth_enabled=auth_enabled,
     )
+    return _runtime
 
 
 def get_session_manager() -> SessionManager:
     """FastAPI ``Depends`` provider for SessionManager."""
-    if _session_manager is None:
+    if _runtime.session_manager is None:
         raise RuntimeError("SessionManager not initialised — call init_session_manager() first")
-    return _session_manager
+    return _runtime.session_manager
 
 
 def is_session_list_disabled() -> bool:
     """Return True when the GET /sessions endpoint is suppressed."""
-    return _disable_session_list
+    return _runtime.disable_session_list
 
 
 def get_preload_model_yaml() -> str | None:
     """Return the YAML of the single MODEL_FILES protected model, if any.
 
     Populated at startup only when MODEL_FILES has exactly one entry — the
-    single-model-mode UX expects exactly one model to render in the
-    read-only editor. Multi-model deployments return ``None``; clients use
+    single-model-mode UX expects exactly one model to render in the read-only
+    editor. Multi-model deployments return ``None``; clients use
     ``GET /v1/models`` for discovery instead.
     """
-    return _preload_model_yaml
+    return _runtime.preload_model_yaml
 
 
 def is_single_model_mode() -> bool:
@@ -140,12 +176,12 @@ def is_single_model_mode() -> bool:
     "any admin-curated preload is active", which gates POST/DELETE on
     ``/v1/sessions/{id}/models`` (returns 403) and several shortcut routes.
     """
-    return _single_model_mode
+    return _runtime.admin_curated
 
 
 def get_flight_info() -> dict[str, object] | None:
     """Return Flight SQL settings dict, or None if Flight is not enabled."""
-    return _flight_info
+    return _runtime.flight_info
 
 
 def update_flight_state(
@@ -154,63 +190,47 @@ def update_flight_state(
     query_execute_enabled: bool,
 ) -> None:
     """Refresh cached Flight state after auto-detection at startup."""
-    global _flight_info, _query_execute_enabled  # noqa: PLW0603
-    _flight_info = flight_info
-    _query_execute_enabled = query_execute_enabled
+    _runtime.flight_info = flight_info
+    _runtime.query_execute_enabled = query_execute_enabled
 
 
 def is_query_execute_enabled() -> bool:
     """Return True when POST /query/execute is available."""
-    return _query_execute_enabled
+    return _runtime.query_execute_enabled
 
 
 def get_db_vendor() -> str:
     """Return the configured default database vendor."""
-    return _db_vendor
+    return _runtime.db_vendor
 
 
 def get_query_default_limit() -> int:
     """Return the default row limit for query execution."""
-    return _query_default_limit
+    return _runtime.query_default_limit
 
 
 def get_default_locale() -> str:
     """Return the configured default locale for value formatting."""
-    return _default_locale
+    return _runtime.default_locale
 
 
 def get_oneshot_batch_config() -> OneshotBatchConfig:
     """Return the configured one-shot batch limits."""
-    return _oneshot_batch_config
+    return _runtime.oneshot_batch_config
 
 
 def get_cache() -> Cache:
     """FastAPI ``Depends`` provider for the result cache."""
-    return _cache
+    return _runtime.cache
 
 
 def get_cache_config() -> CacheRuntimeConfig:
     """Return the cache runtime config (TTL bounds, heartbeat token, etc.)."""
-    return _cache_config
+    return _runtime.cache_config
 
 
 def reset_session_manager() -> None:
-    """Clear the global SessionManager (for tests)."""
-    global _session_manager, _disable_session_list  # noqa: PLW0603
-    global _single_model_mode, _preload_model_yaml, _flight_info  # noqa: PLW0603
-    global _query_execute_enabled, _db_vendor, _query_default_limit  # noqa: PLW0603
-    global _default_locale, _oneshot_batch_config  # noqa: PLW0603
-    global _cache, _cache_config  # noqa: PLW0603
-    _session_manager = None
-    _disable_session_list = False
-    _single_model_mode = False
-    _preload_model_yaml = None
-    _flight_info = None
-    _query_execute_enabled = False
-    _db_vendor = "duckdb"
-    _query_default_limit = 1000
-    _default_locale = ""
-    _oneshot_batch_config = OneshotBatchConfig()
-    _cache = NoopCache()
-    _cache_config = CacheRuntimeConfig()
+    """Reset the process runtime to defaults (compatibility helper for tests)."""
+    global _runtime  # noqa: PLW0603 — single process-level runtime handle
+    _runtime = AppRuntime()
     reset_auth()
