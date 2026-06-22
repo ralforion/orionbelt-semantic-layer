@@ -201,9 +201,10 @@ def _iter_import_time_imports(body: list[ast.stmt]) -> list[ast.Import | ast.Imp
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue  # deferred — not an import-time edge
         elif isinstance(node, ast.If):
-            if _is_type_checking_guard(node):
-                continue
-            found.extend(_iter_import_time_imports(node.body))
+            # ``if TYPE_CHECKING:`` body is type-only and never runs, but its
+            # ``else:`` (the runtime branch) still executes at import time.
+            if not _is_type_checking_guard(node):
+                found.extend(_iter_import_time_imports(node.body))
             found.extend(_iter_import_time_imports(node.orelse))
         elif isinstance(node, ast.ClassDef):
             found.extend(_iter_import_time_imports(node.body))
@@ -227,15 +228,25 @@ def _collect_import_edges(tree: ast.Module, current: str, known: set[str]) -> se
     return edges
 
 
+_BROAD_NAMES = frozenset({"Exception", "BaseException"})
+
+
+def _names_exception(node: ast.expr) -> bool:
+    """True if a caught-type expression refers to ``Exception``/``BaseException``."""
+    if isinstance(node, ast.Name):
+        return node.id in _BROAD_NAMES
+    if isinstance(node, ast.Attribute):
+        return node.attr in _BROAD_NAMES
+    if isinstance(node, ast.Tuple):
+        # ``except (ValueError, Exception):`` is still broad.
+        return any(_names_exception(elt) for elt in node.elts)
+    return False
+
+
 def _is_broad_except(handler: ast.ExceptHandler) -> bool:
     if handler.type is None:
         return True  # bare ``except:``
-    name = handler.type
-    if isinstance(name, ast.Name):
-        return name.id in {"Exception", "BaseException"}
-    if isinstance(name, ast.Attribute):
-        return name.attr in {"Exception", "BaseException"}
-    return False
+    return _names_exception(handler.type)
 
 
 def _is_raw_sql_call(node: ast.Call) -> bool:
@@ -262,7 +273,9 @@ def build_inventory(*, top_n: int = 15) -> Inventory:
         module = _module_name(path)
         rel = str(path.relative_to(REPO_ROOT))
         text = path.read_text(encoding="utf-8")
-        module_sizes.append(ModuleSize(module=module, path=rel, lines=text.count("\n") + 1))
+        # ``splitlines()`` matches ``wc -l`` for the usual newline-terminated
+        # file (no phantom trailing line from a final ``\n``).
+        module_sizes.append(ModuleSize(module=module, path=rel, lines=len(text.splitlines())))
 
         tree = _safe_parse(path)
         if tree is None:

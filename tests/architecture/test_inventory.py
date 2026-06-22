@@ -14,15 +14,68 @@ Turning specific measurements into hard gates is deferred to later phases
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from tests.architecture.conftest import INVENTORY_REPORT_KEY
 from tests.architecture.inventory import (
     SRC_ROOT,
     Inventory,
+    _collect_import_edges,
+    _is_broad_except,
     build_inventory,
     format_report,
 )
+
+
+def _only_handler(src: str) -> ast.ExceptHandler:
+    tree = ast.parse(src)
+    handlers = [n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
+    assert len(handlers) == 1
+    return handlers[0]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "try:\n    x()\nexcept Exception:\n    pass",
+        "try:\n    x()\nexcept BaseException:\n    pass",
+        "try:\n    x()\nexcept:\n    pass",
+        "try:\n    x()\nexcept (ValueError, Exception):\n    pass",  # tuple form
+        "try:\n    x()\nexcept (KeyError, BaseException) as e:\n    pass",
+    ],
+)
+def test_broad_except_detected(src: str) -> None:
+    assert _is_broad_except(_only_handler(src)) is True
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "try:\n    x()\nexcept ValueError:\n    pass",
+        "try:\n    x()\nexcept (KeyError, ValueError):\n    pass",
+    ],
+)
+def test_narrow_except_not_flagged(src: str) -> None:
+    assert _is_broad_except(_only_handler(src)) is False
+
+
+def test_type_checking_else_branch_is_import_time() -> None:
+    """The runtime ``else:`` of an ``if TYPE_CHECKING`` block must be walked."""
+    src = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from orionbelt.models.semantic import SemanticModel\n"
+        "else:\n"
+        "    from orionbelt.compiler import resolution\n"
+    )
+    tree = ast.parse(src)
+    known = {"orionbelt.models.semantic", "orionbelt.compiler.resolution"}
+    edges = _collect_import_edges(tree, "orionbelt.example", known)
+    # The TYPE_CHECKING-only import is excluded; the else-branch import is kept.
+    assert "orionbelt.compiler.resolution" in edges
+    assert "orionbelt.models.semantic" not in edges
 
 
 @pytest.fixture(scope="session")
@@ -44,6 +97,14 @@ def test_inventory_is_computable(inventory: Inventory) -> None:
     # Modules are reported largest-first.
     sizes = [m.lines for m in inventory.module_sizes]
     assert sizes == sorted(sizes, reverse=True)
+
+
+def test_line_counts_match_wc(inventory: Inventory) -> None:
+    """Reported line counts match ``wc -l`` (newline count) for each module."""
+    repo_root = SRC_ROOT.parents[1]
+    for m in inventory.module_sizes:
+        text = (repo_root / m.path).read_text(encoding="utf-8")
+        assert m.lines == text.count("\n"), m.path
 
 
 def test_report_renders(inventory: Inventory) -> None:
