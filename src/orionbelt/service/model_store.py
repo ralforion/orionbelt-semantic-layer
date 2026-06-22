@@ -22,6 +22,7 @@ from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
 from orionbelt.parser.loader import TrackedLoader, YAMLSafetyError
 from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.parser.schema_validation import validate_obml_document
 from orionbelt.parser.validator import SemanticValidator
 
 # ---------------------------------------------------------------------------
@@ -789,18 +790,40 @@ class ModelStore:
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
     ) -> ValidationSummary:
-        """Validate a model without storing it.  Accepts YAML string or raw dict."""
-        _model, _raw, errors, warnings = self._parse_and_validate(
+        """Validate a model without storing it.  Accepts YAML string or raw dict.
+
+        Reports JSON Schema violations alongside semantic errors so that the
+        ``/validate`` endpoints match what the schema-guarded load/query
+        endpoints enforce — a model that fails the schema is reported invalid
+        here rather than being silently coerced.
+        """
+        _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
             raw_dict=raw_dict,
             extends_yaml=extends_yaml,
             inherits_model_id=inherits_model_id,
         )
+        # Schema-validate the already-safely-parsed dict (``_parse_and_validate``
+        # loads via the safety-checked TrackedLoader). Skip when the YAML never
+        # parsed safely — the fatal parse/safety error is already reported and
+        # there is no document to validate.
+        fatal = {"YAML_SAFETY_ERROR", "YAML_PARSE_ERROR"}
+        if not any(e.code in fatal for e in errors):
+            errors = self._schema_errors(raw) + errors
         return ValidationSummary(
             valid=len(errors) == 0,
             errors=errors,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _schema_errors(raw: dict[str, object]) -> list[ErrorInfo]:
+        """JSON Schema errors for a parsed model document, as ``ErrorInfo``."""
+        public = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        return [
+            ErrorInfo(code=e.code, message=e.message, path=e.path, severity=e.severity)
+            for e in validate_obml_document(public)
+        ]
 
     # -- OBSL graph ---------------------------------------------------------
 

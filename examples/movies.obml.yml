@@ -12,7 +12,7 @@
 #   - "Director" + "Producer"
 #       + "Movies Cnt"             → fanout via both junctions, resolved by GROUP BY
 
-version: "1.0"
+version: 1.0
 
 dataObjects:
   # ── Fact table ─────────────────────────────────────────────────────

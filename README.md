@@ -114,7 +114,7 @@ from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.models.query import QueryObject, QuerySelect
 
 model_yaml = """
-version: "1.0"
+version: 1.0
 dataObjects:
   Orders:
     code: ORDERS
@@ -348,7 +348,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/schema/obml-schema.json
-version: "1.0"
+version: 1.0
 dataObjects:
   Customers:
     code: CUSTOMERS

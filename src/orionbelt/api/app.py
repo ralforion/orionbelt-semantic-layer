@@ -235,6 +235,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     query_execute_enabled = settings.query_execute or settings.flight_enabled
 
     # Each MODEL_FILES entry goes into its own protected named session.
+    # JSON Schema validation already happened in ``_read_and_validate_model_file``
+    # (via ``store.validate``, which is schema-aware), so an invalid file has
+    # already failed startup by this point.
     for name, yaml_str in named_preloads:
         store = mgr.get_or_create_named(name)
         store.load_model(yaml_str)

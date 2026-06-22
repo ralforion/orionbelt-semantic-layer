@@ -432,7 +432,7 @@ class TestSessionModelFlow:
             },
             "measures": {
                 "Total Revenue": {
-                    "aggregation": "SUM",
+                    "aggregation": "sum",
                     "resultType": "float",
                     "columns": [{"dataObject": "Orders", "column": "Amount"}],
                 }
@@ -466,7 +466,7 @@ class TestSessionModelFlow:
                 },
                 "measures": {
                     "Revenue": {
-                        "aggregation": "SUM",
+                        "aggregation": "sum",
                         "resultType": "float",
                         "columns": [{"dataObject": "Orders", "column": "Amount"}],
                     }

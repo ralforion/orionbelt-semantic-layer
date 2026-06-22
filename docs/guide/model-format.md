@@ -759,7 +759,7 @@ measures:
 Override the built-in default for all numeric measures/metrics in the model:
 
 ```yaml
-version: "1.0"
+version: 1.0
 settings:
  defaultNumericDataType: "decimal(18, 4)"
 
@@ -874,7 +874,7 @@ OrionBelt supports timezone-aware serialization of temporal query results. When 
 ### Configuration
 
 ```yaml
-version: "1.0"
+version: 1.0
 settings:
  defaultTimezone: "Europe/Zagreb"
 ```
@@ -928,7 +928,7 @@ Zero microseconds are elided for cleaner output. UTC offsets (`+00:00`) use the 
 ### Example
 
 ```yaml
-version: "1.0"
+version: 1.0
 settings:
  defaultNumericDataType: "decimal(18, 2)"
  defaultTimezone: "Europe/Zagreb"

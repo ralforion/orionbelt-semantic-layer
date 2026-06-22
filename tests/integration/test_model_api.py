@@ -150,7 +150,7 @@ class TestMeasures:
            the model held it the response never carried it.
         """
         annotated = """\
-version: "1.0"
+version: 1.0
 dataObjects:
   Orders:
     code: orders
@@ -361,7 +361,7 @@ _MODEL_WITH_EXAMPLES = (
 examples:
   - name: revenue_by_country
     description: Total completed-order revenue by customer country.
-    intent_tags: [revenue, geography]
+    intentTags: [revenue, geography]
     query:
       select:
         dimensions: [Customer Country]
@@ -369,7 +369,7 @@ examples:
 
   - name: order_count_by_country
     description: Number of orders per customer country.
-    intent_tags: [orders, geography]
+    intentTags: [orders, geography]
     query:
       select:
         dimensions: [Customer Country]

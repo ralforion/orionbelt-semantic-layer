@@ -88,6 +88,8 @@ OBML defines all types, enums, error codes, operators, and semantics for the pro
 
 Every new OBML field must also propagate to the OSI converter (`packages/osi-orionbelt`, custom_extensions roundtrip) and the ontology (`ontology/obsl.ttl` class + properties, `obsl.shacl.ttl` shapes). Never change any dependent without checking consistency with OBML and all other dependents.
 
+The field surface is captured in the hand-maintained manifest `schema/obml-contract.yml`; `tests/unit/test_obml_contract.py` fails if a Pydantic field is added/removed without updating it, and checks the manifest against the JSON schema and ontology. See `docs/getting-started/development.md` ("Changing the OBML model").
+
 Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metrics`, `filters`.
 
 - **Column names are unique within each data object** — dimensions, measures, and metrics must be unique across the whole model

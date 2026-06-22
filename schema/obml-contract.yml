@@ -1,0 +1,1069 @@
+# OBML contract manifest — single source of truth for the OBML field surface.
+#
+# AUTO-CHECKED, HAND-MAINTAINED. Adding/removing an OBML field on the Pydantic
+# models in src/orionbelt/models/semantic.py without updating this file fails
+# tests/unit/test_obml_contract.py. See docs/getting-started/development.md.
+#
+# Per field:
+#   alias            - camelCase YAML/JSON alias (Pydantic Field alias)
+#   type             - short Python type summary (informational)
+#   json_schema      - true if the alias appears in schema/obml-schema.json
+#   ontology_property- obsl.ttl property local-name, or null if not directly mapped
+#   osi_roundtrip    - advisory; whether the OSI converter round-trips the field
+
+enums:
+  AggregationType:
+    python: orionbelt.models.semantic.AggregationType
+    values: ['sum', 'count', 'count_distinct', 'avg', 'min', 'max', 'any_value', 'median', 'mode', 'listagg', 'stddev', 'stddev_pop', 'variance', 'var_pop', 'corr', 'covar_pop', 'covar_samp', 'regr_slope', 'regr_intercept', 'measure']
+  Cardinality:
+    python: orionbelt.models.semantic.Cardinality
+    values: ['many-to-one', 'one-to-one', 'many-to-many']
+  CumulativeAggType:
+    python: orionbelt.models.semantic.CumulativeAggType
+    values: ['sum', 'avg', 'min', 'max', 'count']
+  DataType:
+    python: orionbelt.models.semantic.DataType
+    values: ['string', 'json', 'int', 'float', 'date', 'time', 'time_tz', 'timestamp', 'timestamp_tz', 'boolean']
+  FilterContextMode:
+    python: orionbelt.models.semantic.FilterContextMode
+    values: ['RELATIVE', 'FIXED']
+  FilterLogic:
+    python: orionbelt.models.semantic.FilterLogic
+    values: ['and', 'or']
+  GrainMode:
+    python: orionbelt.models.semantic.GrainMode
+    values: ['RELATIVE', 'FIXED']
+  GrainToDate:
+    python: orionbelt.models.semantic.GrainToDate
+    values: ['year', 'quarter', 'month', 'week']
+  JoinType:
+    python: orionbelt.models.semantic.JoinType
+    values: ['left', 'inner', 'right', 'full']
+  MetricType:
+    python: orionbelt.models.semantic.MetricType
+    values: ['derived', 'cumulative', 'period_over_period', 'window']
+  NumClass:
+    python: orionbelt.models.semantic.NumClass
+    values: ['categorical', 'additive', 'non-additive']
+  PeriodOverPeriodComparison:
+    python: orionbelt.models.semantic.PeriodOverPeriodComparison
+    values: ['ratio', 'difference', 'previousValue', 'percentChange']
+  TimeGrain:
+    python: orionbelt.models.semantic.TimeGrain
+    values: ['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second']
+  WindowFunctionKind:
+    python: orionbelt.models.semantic.WindowFunctionKind
+    values: ['rank', 'dense_rank', 'row_number', 'ntile', 'lag', 'lead', 'first_value', 'last_value']
+
+classes:
+  CustomExtension:
+    python: orionbelt.models.semantic.CustomExtension
+    json_schema_def: customExtension
+    ontology_class: CustomExtension
+    fields:
+      vendor:
+        alias: vendor
+        type: "str"
+        json_schema: true
+        ontology_property: vendor
+        osi_roundtrip: true
+      data:
+        alias: data
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  DataColumnRef:
+    python: orionbelt.models.semantic.DataColumnRef
+    json_schema_def: queryColumn
+    ontology_class: null
+    fields:
+      view:
+        alias: dataObject
+        type: "str | None"
+        json_schema: true
+        ontology_property: dataObject
+        osi_roundtrip: true
+      column:
+        alias: column
+        type: "str | None"
+        json_schema: true
+        ontology_property: column
+        osi_roundtrip: true
+  DataObject:
+    python: orionbelt.models.semantic.DataObject
+    json_schema_def: dataObject
+    ontology_class: DataObject
+    fields:
+      label:
+        alias: label
+        type: "str"
+        json_schema: false
+        ontology_property: null
+        osi_roundtrip: false
+      code:
+        alias: code
+        type: "str"
+        json_schema: true
+        ontology_property: code
+        osi_roundtrip: true
+      database:
+        alias: database
+        type: "str"
+        json_schema: true
+        ontology_property: database
+        osi_roundtrip: true
+      schema_name:
+        alias: schema
+        type: "str"
+        json_schema: true
+        ontology_property: schema
+        osi_roundtrip: true
+      columns:
+        alias: columns
+        type: "dict[str, DataObjectColumn]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      joins:
+        alias: joins
+        type: "list[DataObjectJoin]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      comment:
+        alias: comment
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      refresh:
+        alias: refresh
+        type: "RefreshPolicy | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  DataObjectColumn:
+    python: orionbelt.models.semantic.DataObjectColumn
+    json_schema_def: column
+    ontology_class: Column
+    fields:
+      label:
+        alias: label
+        type: "str"
+        json_schema: false
+        ontology_property: null
+        osi_roundtrip: false
+      code:
+        alias: code
+        type: "str"
+        json_schema: true
+        ontology_property: code
+        osi_roundtrip: true
+      abstract_type:
+        alias: abstractType
+        type: "DataType"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      sql_type:
+        alias: sqlType
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      sql_precision:
+        alias: sqlPrecision
+        type: "int | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      sql_scale:
+        alias: sqlScale
+        type: "int | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      num_class:
+        alias: numClass
+        type: "NumClass | None"
+        json_schema: true
+        ontology_property: numClass
+        osi_roundtrip: true
+      primary_key:
+        alias: primaryKey
+        type: "bool"
+        json_schema: true
+        ontology_property: primaryKey
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      comment:
+        alias: comment
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      expression:
+        alias: expression
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  DataObjectJoin:
+    python: orionbelt.models.semantic.DataObjectJoin
+    json_schema_def: join
+    ontology_class: Join
+    fields:
+      join_type:
+        alias: joinType
+        type: "Cardinality"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      join_to:
+        alias: joinTo
+        type: "str"
+        json_schema: true
+        ontology_property: joinTo
+        osi_roundtrip: true
+      columns_from:
+        alias: columnsFrom
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      columns_to:
+        alias: columnsTo
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      secondary:
+        alias: secondary
+        type: "bool"
+        json_schema: true
+        ontology_property: secondary
+        osi_roundtrip: true
+      path_name:
+        alias: pathName
+        type: "str | None"
+        json_schema: true
+        ontology_property: pathName
+        osi_roundtrip: true
+  Dimension:
+    python: orionbelt.models.semantic.Dimension
+    json_schema_def: dimension
+    ontology_class: Dimension
+    fields:
+      label:
+        alias: label
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      view:
+        alias: dataObject
+        type: "str"
+        json_schema: true
+        ontology_property: dataObject
+        osi_roundtrip: true
+      column:
+        alias: column
+        type: "str"
+        json_schema: true
+        ontology_property: column
+        osi_roundtrip: true
+      result_type:
+        alias: resultType
+        type: "DataType"
+        json_schema: true
+        ontology_property: resultType
+        osi_roundtrip: true
+      time_grain:
+        alias: timeGrain
+        type: "TimeGrain | None"
+        json_schema: true
+        ontology_property: timeGrain
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      format:
+        alias: format
+        type: "str | None"
+        json_schema: true
+        ontology_property: format
+        osi_roundtrip: true
+      via:
+        alias: via
+        type: "str | None"
+        json_schema: true
+        ontology_property: via
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  FilterContext:
+    python: orionbelt.models.semantic.FilterContext
+    json_schema_def: filterContext
+    ontology_class: null
+    fields:
+      mode:
+        alias: mode
+        type: "FilterContextMode"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      exclude:
+        alias: exclude
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      include:
+        alias: include
+        type: "list[FilterContextFilter]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      keep_only:
+        alias: keepOnly
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  FilterContextFilter:
+    python: orionbelt.models.semantic.FilterContextFilter
+    json_schema_def: filterContextFilter
+    ontology_class: null
+    fields:
+      field:
+        alias: field
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      op:
+        alias: op
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value:
+        alias: value
+        type: "object"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  FilterValue:
+    python: orionbelt.models.semantic.FilterValue
+    json_schema_def: parameterValue
+    ontology_class: null
+    fields:
+      data_type:
+        alias: dataType
+        type: "DataType"
+        json_schema: true
+        ontology_property: dataType
+        osi_roundtrip: true
+      is_null:
+        alias: isNull
+        type: "bool | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value_string:
+        alias: valueString
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value_int:
+        alias: valueInt
+        type: "int | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value_float:
+        alias: valueFloat
+        type: "float | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value_date:
+        alias: valueDate
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value_boolean:
+        alias: valueBoolean
+        type: "bool | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  GrainOverride:
+    python: orionbelt.models.semantic.GrainOverride
+    json_schema_def: grainOverride
+    ontology_class: null
+    fields:
+      mode:
+        alias: mode
+        type: "GrainMode"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      exclude:
+        alias: exclude
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      include:
+        alias: include
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      keep_only:
+        alias: keepOnly
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  Measure:
+    python: orionbelt.models.semantic.Measure
+    json_schema_def: measure
+    ontology_class: Measure
+    fields:
+      label:
+        alias: label
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      columns:
+        alias: columns
+        type: "list[DataColumnRef]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      result_type:
+        alias: resultType
+        type: "DataType"
+        json_schema: true
+        ontology_property: resultType
+        osi_roundtrip: true
+      aggregation:
+        alias: aggregation
+        type: "AggregationType"
+        json_schema: true
+        ontology_property: aggregation
+        osi_roundtrip: true
+      expression:
+        alias: expression
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      distinct:
+        alias: distinct
+        type: "bool"
+        json_schema: true
+        ontology_property: distinct
+        osi_roundtrip: true
+      total:
+        alias: total
+        type: "bool"
+        json_schema: true
+        ontology_property: total
+        osi_roundtrip: true
+      grain:
+        alias: grain
+        type: "GrainOverride | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      filter_context:
+        alias: filterContext
+        type: "FilterContext | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      filters:
+        alias: filters
+        type: "list[MeasureFilter | MeasureFilterGroup]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      data_type:
+        alias: dataType
+        type: "str | None"
+        json_schema: true
+        ontology_property: dataType
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      format:
+        alias: format
+        type: "str | None"
+        json_schema: true
+        ontology_property: format
+        osi_roundtrip: true
+      allow_fan_out:
+        alias: allowFanOut
+        type: "bool"
+        json_schema: true
+        ontology_property: allowFanOut
+        osi_roundtrip: true
+      delimiter:
+        alias: delimiter
+        type: "str | None"
+        json_schema: true
+        ontology_property: delimiter
+        osi_roundtrip: true
+      within_group:
+        alias: withinGroup
+        type: "WithinGroup | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  MeasureFilter:
+    python: orionbelt.models.semantic.MeasureFilter
+    json_schema_def: filter
+    ontology_class: null
+    fields:
+      column:
+        alias: column
+        type: "DataColumnRef | None"
+        json_schema: true
+        ontology_property: column
+        osi_roundtrip: true
+      operator:
+        alias: operator
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      values:
+        alias: values
+        type: "list[FilterValue]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  MeasureFilterGroup:
+    python: orionbelt.models.semantic.MeasureFilterGroup
+    json_schema_def: filterGroup
+    ontology_class: null
+    fields:
+      logic:
+        alias: logic
+        type: "FilterLogic"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      filters:
+        alias: filters
+        type: "list[MeasureFilter | MeasureFilterGroup]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      negated:
+        alias: negated
+        type: "bool"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  Metric:
+    python: orionbelt.models.semantic.Metric
+    json_schema_def: metric
+    ontology_class: Metric
+    fields:
+      label:
+        alias: label
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      type:
+        alias: type
+        type: "MetricType"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      expression:
+        alias: expression
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      measure:
+        alias: measure
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      time_dimension:
+        alias: timeDimension
+        type: "str | None"
+        json_schema: true
+        ontology_property: timeDimension
+        osi_roundtrip: true
+      cumulative_type:
+        alias: cumulativeType
+        type: "CumulativeAggType"
+        json_schema: true
+        ontology_property: cumulativeType
+        osi_roundtrip: true
+      window:
+        alias: window
+        type: "int | None"
+        json_schema: true
+        ontology_property: window
+        osi_roundtrip: true
+      grain_to_date:
+        alias: grainToDate
+        type: "GrainToDate | None"
+        json_schema: true
+        ontology_property: grainToDate
+        osi_roundtrip: true
+      partition_by:
+        alias: partitionBy
+        type: "list[str]"
+        json_schema: true
+        ontology_property: partitionBy
+        osi_roundtrip: true
+      period_over_period:
+        alias: periodOverPeriod
+        type: "PeriodOverPeriod | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      window_function:
+        alias: windowFunction
+        type: "WindowFunctionKind | None"
+        json_schema: true
+        ontology_property: windowFunction
+        osi_roundtrip: true
+      offset:
+        alias: offset
+        type: "int | None"
+        json_schema: true
+        ontology_property: offset
+        osi_roundtrip: true
+      buckets:
+        alias: buckets
+        type: "int | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      order_direction:
+        alias: orderDirection
+        type: "str"
+        json_schema: true
+        ontology_property: orderDirection
+        osi_roundtrip: true
+      default_value:
+        alias: defaultValue
+        type: "str | int | float | bool | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      data_type:
+        alias: dataType
+        type: "str | None"
+        json_schema: true
+        ontology_property: dataType
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      format:
+        alias: format
+        type: "str | None"
+        json_schema: true
+        ontology_property: format
+        osi_roundtrip: true
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      synonyms:
+        alias: synonyms
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  ModelExample:
+    python: orionbelt.models.semantic.ModelExample
+    json_schema_pointer: properties/examples/items
+    ontology_class: ModelExample
+    fields:
+      name:
+        alias: name
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      intent_tags:
+        alias: intentTags
+        type: "list[str]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      query:
+        alias: query
+        type: "dict[str, object]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  ModelFilter:
+    python: orionbelt.models.semantic.ModelFilter
+    json_schema_pointer: properties/filters/items
+    ontology_class: null
+    fields:
+      data_object:
+        alias: dataObject
+        type: "str"
+        json_schema: true
+        ontology_property: dataObject
+        osi_roundtrip: true
+      column:
+        alias: column
+        type: "str"
+        json_schema: true
+        ontology_property: column
+        osi_roundtrip: true
+      operator:
+        alias: operator
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      value:
+        alias: value
+        type: "str | int | float | bool | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      values:
+        alias: values
+        type: "list[str | int | float | bool]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  ModelSettings:
+    python: orionbelt.models.semantic.ModelSettings
+    json_schema_pointer: properties/settings
+    ontology_class: null
+    fields:
+      default_numeric_data_type:
+        alias: defaultNumericDataType
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      default_timezone:
+        alias: defaultTimezone
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      override_database_timezone:
+        alias: overrideDatabaseTimezone
+        type: "bool"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      default_dialect:
+        alias: defaultDialect
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      default_locale:
+        alias: defaultLocale
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  PeriodOverPeriod:
+    python: orionbelt.models.semantic.PeriodOverPeriod
+    json_schema_def: periodOverPeriod
+    ontology_class: null
+    fields:
+      time_dimension:
+        alias: timeDimension
+        type: "str"
+        json_schema: true
+        ontology_property: timeDimension
+        osi_roundtrip: true
+      grain:
+        alias: grain
+        type: "TimeGrain"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      offset:
+        alias: offset
+        type: "int"
+        json_schema: true
+        ontology_property: offset
+        osi_roundtrip: true
+      offset_grain:
+        alias: offsetGrain
+        type: "TimeGrain"
+        json_schema: true
+        ontology_property: offsetGrain
+        osi_roundtrip: true
+      comparison:
+        alias: comparison
+        type: "PeriodOverPeriodComparison"
+        json_schema: true
+        ontology_property: comparison
+        osi_roundtrip: true
+  RefreshPolicy:
+    python: orionbelt.models.semantic.RefreshPolicy
+    json_schema_pointer: definitions/dataObject/properties/refresh
+    ontology_class: RefreshPolicy
+    fields:
+      mode:
+        alias: mode
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      interval:
+        alias: interval
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      anchor:
+        alias: anchor
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      timezone:
+        alias: timezone
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      max_staleness:
+        alias: maxStaleness
+        type: "str | None"
+        json_schema: true
+        ontology_property: maxStaleness
+        osi_roundtrip: true
+  SemanticModel:
+    python: orionbelt.models.semantic.SemanticModel
+    json_schema_root: true
+    ontology_class: SemanticModel
+    fields:
+      version:
+        alias: version
+        type: "float"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      name:
+        alias: name
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      description:
+        alias: description
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      settings:
+        alias: settings
+        type: "ModelSettings | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      data_objects:
+        alias: dataObjects
+        type: "dict[str, DataObject]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      dimensions:
+        alias: dimensions
+        type: "dict[str, Dimension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      measures:
+        alias: measures
+        type: "dict[str, Measure]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      metrics:
+        alias: metrics
+        type: "dict[str, Metric]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      filters:
+        alias: filters
+        type: "list[ModelFilter]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      examples:
+        alias: examples
+        type: "list[ModelExample]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+      extends_sources:
+        alias: extends_sources
+        type: "list[str]"
+        json_schema: false
+        ontology_property: null
+        osi_roundtrip: false
+      inherits_source:
+        alias: inherits_source
+        type: "str | None"
+        json_schema: false
+        ontology_property: null
+        osi_roundtrip: false
+      owner:
+        alias: owner
+        type: "str | None"
+        json_schema: true
+        ontology_property: owner
+        osi_roundtrip: true
+      custom_extensions:
+        alias: customExtensions
+        type: "list[CustomExtension]"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
+  WithinGroup:
+    python: orionbelt.models.semantic.WithinGroup
+    json_schema_pointer: definitions/measure/properties/withinGroup
+    ontology_class: WithinGroup
+    fields:
+      column:
+        alias: column
+        type: "DataColumnRef"
+        json_schema: true
+        ontology_property: column
+        osi_roundtrip: true
+      order:
+        alias: order
+        type: "str"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true

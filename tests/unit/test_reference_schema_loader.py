@@ -13,18 +13,19 @@ import json
 import pytest
 
 from orionbelt.api.routers import reference
+from orionbelt.parser.schema_validation import read_schema_text
 
 
 @pytest.mark.parametrize("filename", ["obml-schema.json", "query-schema.json"])
 def test_read_schema_text_resolves_each_file(filename: str) -> None:
-    text = reference._read_schema_text(filename)
+    text = read_schema_text(filename)
     assert text is not None, f"{filename} should resolve in any install layout"
     parsed = json.loads(text)
     assert parsed.get("$schema") or parsed.get("type")
 
 
 def test_read_schema_text_unknown_file_returns_none() -> None:
-    assert reference._read_schema_text("does-not-exist.json") is None
+    assert read_schema_text("does-not-exist.json") is None
 
 
 @pytest.mark.parametrize("name", ["obml", "query"])
