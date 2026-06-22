@@ -106,6 +106,44 @@ async def test_query_unknown_key_rejected(client: AsyncClient) -> None:
     assert resp.json()["detail"]["errors"][0]["code"] == "SCHEMA_VALIDATION"
 
 
+async def test_shortcut_query_unknown_key_rejected(client: AsyncClient) -> None:
+    sid = await _new_session(client)
+    await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": _VALID_MODEL})
+    # Bare QueryObject body (top-level shortcut, auto-resolves the model).
+    resp = await client.post(
+        "/v1/query/sql",
+        json={"select": {"measures": ["Revenue"]}, "bogus": 1},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["errors"][0]["code"] == "SCHEMA_VALIDATION"
+
+
+async def test_oneshot_batch_query_validated(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/oneshot/batch",
+        json={
+            "model_yaml": _VALID_MODEL,
+            "queries": [{"query": {"select": {"measures": ["Revenue"]}, "bogus": 1}}],
+        },
+    )
+    assert resp.status_code == 422
+    errors = resp.json()["detail"]["errors"]
+    assert errors[0]["code"] == "SCHEMA_VALIDATION"
+    assert errors[0]["path"].startswith("queries[0].query")
+
+
+async def test_oneshot_batch_model_yaml_validated(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/oneshot/batch",
+        json={
+            "model_yaml": _VALID_MODEL.replace("abstractType:", "abstract_type:"),
+            "queries": [{"query": {"select": {"measures": ["Revenue"]}}}],
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["errors"][0]["code"] == "SCHEMA_VALIDATION"
+
+
 async def test_model_files_preload_validates_at_startup(tmp_path) -> None:
     """A MODEL_FILES entry that violates the schema fails app startup.
 

@@ -71,11 +71,15 @@ property (`ontology_property`), and OSI round-trip behaviour (`osi_roundtrip`).
 
 ### Schema validation at the API boundary
 
-The REST API validates raw model and query payloads against the published JSON
-Schemas *before* processing them: the session model-load endpoints validate
-`model_yaml` against `obml-schema.json`, and the query endpoints validate the
-query payload against `query-schema.json` (see `api/schema_guards.py`). A
-contract violation returns HTTP 422. This makes the JSON Schema a load-bearing
+The API validates raw model and query payloads against the published JSON
+Schemas *before* processing them (see `api/schema_guards.py`). Coverage spans
+every OBML/QueryObject ingestion point: session and shortcut model-load and
+query endpoints, the oneshot batch (its inline `model_yaml` and each query),
+and the `MODEL_FILES` startup preload. Model documents validate against
+`obml-schema.json`, query payloads against `query-schema.json`. A contract
+violation returns HTTP 422 (or fails startup for `MODEL_FILES`). SQL-input
+surfaces (OBSQL / pgwire / Flight) are out of scope: they receive SQL, not
+OBML/QueryObject JSON, and build a trusted `QueryObject` internally. This makes the JSON Schema a load-bearing
 gate that every real request exercises - so the published contract stays
 provably correct and external consumers can rely on the same rules the engine
 enforces. The schemas are camelCase-only; snake_case keys that Pydantic would

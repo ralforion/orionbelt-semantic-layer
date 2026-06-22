@@ -27,6 +27,7 @@ from orionbelt.api.routers.sessions import (
     _build_explain_response,
     _resolve_dialect,
 )
+from orionbelt.api.schema_guards import validate_oneshot_body
 from orionbelt.api.schemas import (
     OneshotBatchQueryError,
     OneshotBatchQueryItem,
@@ -428,7 +429,11 @@ async def _run_query(
         )
 
 
-@router.post("/batch", response_model=OneshotBatchResponse)
+@router.post(
+    "/batch",
+    response_model=OneshotBatchResponse,
+    dependencies=[Depends(validate_oneshot_body)],
+)
 async def oneshot_batch(
     body: OneshotBatchRequest,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008

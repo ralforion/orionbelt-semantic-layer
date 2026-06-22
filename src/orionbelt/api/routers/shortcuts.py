@@ -24,6 +24,7 @@ from orionbelt.api.routers.model_api import (
     _build_schema,
     _build_search_response,
 )
+from orionbelt.api.schema_guards import validate_query_body
 from orionbelt.api.schemas import (
     ComposablesResponse,
     DiagramResponse,
@@ -309,7 +310,12 @@ async def shortcut_join_graph(
     return _build_join_graph(model)
 
 
-@router.post("/composables", response_model=ComposablesResponse, tags=["model-discovery"])
+@router.post(
+    "/composables",
+    response_model=ComposablesResponse,
+    tags=["model-discovery"],
+    dependencies=[Depends(validate_query_body)],
+)
 async def shortcut_composables_for_query(
     query: QueryObject,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
@@ -408,7 +414,12 @@ class ShortcutQueryRequest(QueryObject):
     pass
 
 
-@router.post("/query/sql", response_model=QueryCompileResponse, tags=["query"])
+@router.post(
+    "/query/sql",
+    response_model=QueryCompileResponse,
+    tags=["query"],
+    dependencies=[Depends(validate_query_body)],
+)
 async def shortcut_compile_query(
     body: ShortcutQueryRequest,
     dialect: str | None = None,
@@ -514,7 +525,12 @@ class ShortcutQueryExecuteRequest(QueryObject):
     pass
 
 
-@router.post("/query/execute", response_model=QueryExecuteResponse, tags=["query"])
+@router.post(
+    "/query/execute",
+    response_model=QueryExecuteResponse,
+    tags=["query"],
+    dependencies=[Depends(validate_query_body)],
+)
 async def shortcut_execute_query(
     body: ShortcutQueryExecuteRequest,
     dialect: str | None = None,
@@ -690,7 +706,12 @@ async def shortcut_execute_semantic_ql(
     )
 
 
-@router.post("/query/plan", response_model=QueryPlanResponse, tags=["query"])
+@router.post(
+    "/query/plan",
+    response_model=QueryPlanResponse,
+    tags=["query"],
+    dependencies=[Depends(validate_query_body)],
+)
 async def shortcut_plan_query(
     body: QueryPlanRequest,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008

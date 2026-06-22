@@ -71,3 +71,32 @@ async def validate_model_body(request: Request) -> None:
         errors = validate_obml_yaml(text)
         if errors:
             _raise_422(errors)
+
+
+def _prefix_path(error: SemanticError, prefix: str) -> SemanticError:
+    path = prefix if error.path in (None, "(root)") else f"{prefix}.{error.path}"
+    return error.model_copy(update={"path": path})
+
+
+async def validate_oneshot_body(request: Request) -> None:
+    """Validate a oneshot-batch body: its ``model_yaml`` and every query.
+
+    The batch carries an optional inline ``model_yaml`` and a ``queries``
+    list of ``{"query": {...}}`` items; each is validated against its schema
+    with the offending location reported in ``path``.
+    """
+    raw = await _json_body(request)
+    if not isinstance(raw, dict):
+        return
+    errors: list[SemanticError] = []
+    text = raw.get("model_yaml")
+    if isinstance(text, str) and text.strip():
+        errors.extend(validate_obml_yaml(text))
+    queries = raw.get("queries")
+    if isinstance(queries, list):
+        for index, item in enumerate(queries):
+            if isinstance(item, dict) and isinstance(item.get("query"), dict):
+                for error in validate_query_document(item["query"]):
+                    errors.append(_prefix_path(error, f"queries[{index}].query"))
+    if errors:
+        _raise_422(errors)
