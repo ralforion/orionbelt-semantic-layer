@@ -10,6 +10,7 @@ of module globals.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
 from orionbelt.api.app import create_app
 from orionbelt.api.deps import AppRuntime, reset_session_manager
@@ -55,5 +56,30 @@ async def test_two_apps_have_distinct_runtimes() -> None:
             assert r1 is not r2
             assert r1.db_vendor == "postgres"
             assert r2.db_vendor == "mysql"
+    finally:
+        reset_session_manager()
+
+
+async def test_requests_read_their_own_app_runtime() -> None:
+    """Regression: with two live apps, each request reads its OWN app's config.
+
+    Before the per-request runtime binding, the second app's lifespan
+    overwrote the shared module global and app1's /v1/settings reported
+    app2's db_vendor.
+    """
+    app1 = _app("postgres")
+    app2 = _app("mysql")
+    try:
+        async with (
+            app1.router.lifespan_context(app1),
+            app2.router.lifespan_context(app2),
+            AsyncClient(transport=ASGITransport(app=app1), base_url="http://t1") as c1,
+            AsyncClient(transport=ASGITransport(app=app2), base_url="http://t2") as c2,
+        ):
+            # /v1/settings.dialect.env reflects the app's db_vendor.
+            s1 = (await c1.get("/v1/settings")).json()
+            s2 = (await c2.get("/v1/settings")).json()
+            assert s1["dialect"]["env"] == "postgres", s1
+            assert s2["dialect"]["env"] == "mysql", s2
     finally:
         reset_session_manager()

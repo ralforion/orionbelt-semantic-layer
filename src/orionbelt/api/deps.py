@@ -1,21 +1,23 @@
 """Dependency injection for FastAPI.
 
 Runtime state is consolidated into a single :class:`AppRuntime` object
-rather than a scatter of module globals. ``create_app`` builds one and
-attaches it to ``app.state.runtime`` (so each app instance owns its own
-runtime object), while a module-level ``_runtime`` remains as the
-compatibility source the no-argument provider functions read from — direct
-callers across the routers keep working unchanged during the migration.
+rather than a scatter of module globals. ``create_app`` builds one per app
+and attaches it to ``app.state.runtime``; a middleware binds that runtime
+into a :class:`~contextvars.ContextVar` for the duration of each request.
 
 The provider functions (``get_session_manager`` etc.) keep their existing
-signatures so call sites are untouched; they now read fields off the single
-runtime object. Migrating the providers to read ``request.app.state.runtime``
-(for full per-request isolation) and removing ``reset_session_manager`` is a
-later cleanup step.
+signatures so call sites are untouched, and read fields off the *active*
+runtime: the request-bound one when serving a request, otherwise the
+process-level ``_runtime`` (used at startup / MODEL_FILES preload / direct
+tests). This gives real per-request isolation — two live app instances in
+one process each serve their own config — without threading ``request``
+through dozens of call sites. ``reset_session_manager`` remains a test
+compatibility helper that resets the process runtime.
 """
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 
 from fastapi import Request
@@ -71,13 +73,39 @@ class AppRuntime:
     cache_config: CacheRuntimeConfig = field(default_factory=CacheRuntimeConfig)
 
 
-# Module-level compatibility runtime. Starts at defaults so providers called
-# before/without initialisation return the same values the old globals did.
+# Module-level compatibility runtime. Used outside a request (startup,
+# MODEL_FILES preload, direct tests) and as the fallback when no per-request
+# runtime is bound. Starts at defaults so providers called before/without
+# initialisation return the same values the old globals did.
 _runtime: AppRuntime = AppRuntime()
+
+# Per-request runtime, bound by ``bind_request_runtime`` from the app's
+# ``state.runtime`` at the start of each request (see the middleware in
+# ``app.py``). This is what makes providers request-scoped: with two live app
+# instances in one process, each request reads its own app's runtime instead
+# of a shared module global. ContextVars are isolated per async task.
+_request_runtime: ContextVar[AppRuntime | None] = ContextVar(
+    "orionbelt_request_runtime", default=None
+)
+
+
+def _active_runtime() -> AppRuntime:
+    """Runtime the providers should read: the request's, else the process one."""
+    return _request_runtime.get() or _runtime
+
+
+def bind_request_runtime(runtime: AppRuntime) -> Token[AppRuntime | None]:
+    """Bind ``runtime`` for the current request scope; returns a reset token."""
+    return _request_runtime.set(runtime)
+
+
+def reset_request_runtime(token: Token[AppRuntime | None]) -> None:
+    """Undo a :func:`bind_request_runtime` binding."""
+    _request_runtime.reset(token)
 
 
 def current_runtime() -> AppRuntime:
-    """Return the current process-level runtime (compat accessor)."""
+    """Return the process-level runtime (compat accessor; ignores request scope)."""
     return _runtime
 
 
@@ -147,14 +175,15 @@ def init_session_manager(
 
 def get_session_manager() -> SessionManager:
     """FastAPI ``Depends`` provider for SessionManager."""
-    if _runtime.session_manager is None:
+    manager = _active_runtime().session_manager
+    if manager is None:
         raise RuntimeError("SessionManager not initialised — call init_session_manager() first")
-    return _runtime.session_manager
+    return manager
 
 
 def is_session_list_disabled() -> bool:
     """Return True when the GET /sessions endpoint is suppressed."""
-    return _runtime.disable_session_list
+    return _active_runtime().disable_session_list
 
 
 def get_preload_model_yaml() -> str | None:
@@ -165,7 +194,7 @@ def get_preload_model_yaml() -> str | None:
     editor. Multi-model deployments return ``None``; clients use
     ``GET /v1/models`` for discovery instead.
     """
-    return _runtime.preload_model_yaml
+    return _active_runtime().preload_model_yaml
 
 
 def is_single_model_mode() -> bool:
@@ -176,12 +205,12 @@ def is_single_model_mode() -> bool:
     "any admin-curated preload is active", which gates POST/DELETE on
     ``/v1/sessions/{id}/models`` (returns 403) and several shortcut routes.
     """
-    return _runtime.admin_curated
+    return _active_runtime().admin_curated
 
 
 def get_flight_info() -> dict[str, object] | None:
     """Return Flight SQL settings dict, or None if Flight is not enabled."""
-    return _runtime.flight_info
+    return _active_runtime().flight_info
 
 
 def update_flight_state(
@@ -196,37 +225,37 @@ def update_flight_state(
 
 def is_query_execute_enabled() -> bool:
     """Return True when POST /query/execute is available."""
-    return _runtime.query_execute_enabled
+    return _active_runtime().query_execute_enabled
 
 
 def get_db_vendor() -> str:
     """Return the configured default database vendor."""
-    return _runtime.db_vendor
+    return _active_runtime().db_vendor
 
 
 def get_query_default_limit() -> int:
     """Return the default row limit for query execution."""
-    return _runtime.query_default_limit
+    return _active_runtime().query_default_limit
 
 
 def get_default_locale() -> str:
     """Return the configured default locale for value formatting."""
-    return _runtime.default_locale
+    return _active_runtime().default_locale
 
 
 def get_oneshot_batch_config() -> OneshotBatchConfig:
     """Return the configured one-shot batch limits."""
-    return _runtime.oneshot_batch_config
+    return _active_runtime().oneshot_batch_config
 
 
 def get_cache() -> Cache:
     """FastAPI ``Depends`` provider for the result cache."""
-    return _runtime.cache
+    return _active_runtime().cache
 
 
 def get_cache_config() -> CacheRuntimeConfig:
     """Return the cache runtime config (TTL bounds, heartbeat token, etc.)."""
-    return _runtime.cache_config
+    return _active_runtime().cache_config
 
 
 def reset_session_manager() -> None:

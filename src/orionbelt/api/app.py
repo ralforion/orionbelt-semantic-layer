@@ -9,6 +9,7 @@ import shutil
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -19,9 +20,12 @@ from fastapi.responses import JSONResponse, Response
 from orionbelt import __version__
 from orionbelt.api.auth import require_auth
 from orionbelt.api.deps import (
+    AppRuntime,
     CacheRuntimeConfig,
     OneshotBatchConfig,
+    bind_request_runtime,
     init_session_manager,
+    reset_request_runtime,
     reset_session_manager,
 )
 from orionbelt.api.logging_config import configure_logging
@@ -587,6 +591,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         trusted_proxy_count=settings.trusted_proxy_count,
     )
     app.add_middleware(RequestIdMiddleware)
+
+    @app.middleware("http")
+    async def _bind_runtime(request: Request, call_next: Any) -> Any:
+        """Bind this app's runtime for the request so deps providers read it.
+
+        Makes the no-argument providers request-scoped: with multiple app
+        instances in one process, each request reads its own app's runtime
+        instead of the shared process-level fallback.
+        """
+        runtime = getattr(request.app.state, "runtime", None)
+        if not isinstance(runtime, AppRuntime):
+            return await call_next(request)
+        token = bind_request_runtime(runtime)
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_runtime(token)
 
     # Versioned API routes under /v1. The auth dependency is applied at the
     # router level so every /v1/* endpoint is protected when AUTH_MODE != none;
