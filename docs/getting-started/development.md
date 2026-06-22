@@ -69,6 +69,20 @@ field surface in one place: every enum and class, and per field its camelCase
 `alias`, whether it appears in the JSON schema (`json_schema`), its ontology
 property (`ontology_property`), and OSI round-trip behaviour (`osi_roundtrip`).
 
+### Schema validation at the API boundary
+
+The REST API validates raw model and query payloads against the published JSON
+Schemas *before* processing them: the session model-load endpoints validate
+`model_yaml` against `obml-schema.json`, and the query endpoints validate the
+query payload against `query-schema.json` (see `api/schema_guards.py`). A
+contract violation returns HTTP 422. This makes the JSON Schema a load-bearing
+gate that every real request exercises - so the published contract stays
+provably correct and external consumers can rely on the same rules the engine
+enforces. The schemas are camelCase-only; snake_case keys that Pydantic would
+otherwise coerce are rejected at the boundary.
+
+### Keeping the manifest honest
+
 `tests/unit/test_obml_contract.py` keeps the manifest in sync with the live
 Pydantic models, the JSON schema, and the ontology. **Adding or removing a
 field on the Pydantic models without updating the manifest fails this test** -

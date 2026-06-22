@@ -108,13 +108,9 @@
               "type": "string",
               "description": "IANA TZ name; only used when anchor is set. Default UTC"
             },
-            "max_staleness": {
-              "type": "string",
-              "description": "Required for mode=heartbeat. Max time between heartbeats before stale"
-            },
             "maxStaleness": {
               "type": "string",
-              "description": "camelCase alias for max_staleness"
+              "description": "Required for mode=heartbeat. Max time between heartbeats before stale"
             }
           },
           "required": [
@@ -1179,16 +1175,9 @@
             "type": "string",
             "description": "One- or two-sentence explanation of what this example shows"
           },
-          "intent_tags": {
-            "type": "array",
-            "description": "Free-form tags used by the /examples?intent= filter",
-            "items": {
-              "type": "string"
-            }
-          },
           "intentTags": {
             "type": "array",
-            "description": "camelCase alias for intent_tags",
+            "description": "Free-form tags used by the /examples?intent= filter",
             "items": {
               "type": "string"
             }

@@ -9,8 +9,6 @@ scraping Swagger UI.
 from __future__ import annotations
 
 import json
-from importlib.resources import files as resource_files
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -19,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from orionbelt.obml_reference import OBML_REFERENCE
 from orionbelt.obsql_reference import OBSQL_REFERENCE
+from orionbelt.parser.schema_validation import read_schema_text
 
 # Prefix on the constructor keeps the root index route ("") at /v1/reference with
 # no trailing slash (FastAPI 0.137+ rejects empty paths via include_router prefix).
@@ -116,31 +115,6 @@ _SCHEMA_FILES: dict[str, str] = {
 }
 
 
-def _read_schema_text(filename: str) -> str | None:
-    """Return the contents of a JSON Schema file, or ``None`` if not found.
-
-    The schema files are shipped inside the wheel as package data under
-    ``orionbelt/schema/`` (see ``force-include`` in ``pyproject.toml``), so
-    they resolve via :mod:`importlib.resources` for PyPI and Docker installs.
-    Editable / source checkouts have no packaged copy, so fall back to the
-    repo-root ``schema/`` directory.
-
-    Module path: src/orionbelt/api/routers/reference.py
-    parents[0..4]: routers / api / orionbelt / src / repo_root
-    """
-    try:
-        resource = resource_files("orionbelt") / "schema" / filename
-        if resource.is_file():
-            return resource.read_text(encoding="utf-8")
-    except (FileNotFoundError, ModuleNotFoundError):
-        pass
-
-    src_path = Path(__file__).resolve().parents[4] / "schema" / filename
-    if src_path.is_file():
-        return src_path.read_text(encoding="utf-8")
-    return None
-
-
 def _load_schema(name: str) -> dict[str, Any]:
     """Read a JSON Schema file by reference name.
 
@@ -154,7 +128,7 @@ def _load_schema(name: str) -> dict[str, Any]:
             status_code=404,
             detail=(f"Unknown schema '{name}'. Available: {', '.join(sorted(_SCHEMA_FILES))}"),
         )
-    text = _read_schema_text(filename)
+    text = read_schema_text(filename)
     if text is None:
         raise HTTPException(
             status_code=500,

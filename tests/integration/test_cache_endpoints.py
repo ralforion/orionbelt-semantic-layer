@@ -209,7 +209,7 @@ _MODEL_WITH_EXAMPLES = (
 examples:
   - name: revenue_by_country
     description: Total completed-order revenue by customer country.
-    intent_tags: [revenue, geography]
+    intentTags: [revenue, geography]
     query:
       select:
         dimensions: [Customer Country]

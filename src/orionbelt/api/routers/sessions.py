@@ -31,6 +31,7 @@ from orionbelt.api.query_cache import (
     build_type_map,
     execute_query_with_cache,
 )
+from orionbelt.api.schema_guards import validate_model_body, validate_query_body
 from orionbelt.api.schemas import (
     ColumnMetadata,
     ConvertResponse,
@@ -169,7 +170,12 @@ def _session_response(info: SessionInfo) -> SessionResponse:
 # -- session CRUD ------------------------------------------------------------
 
 
-@router.post("", response_model=SessionResponse, status_code=201)
+@router.post(
+    "",
+    response_model=SessionResponse,
+    status_code=201,
+    dependencies=[Depends(validate_model_body)],
+)
 async def create_session(
     body: SessionCreateRequest | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
@@ -256,6 +262,7 @@ async def close_session(
     "/{session_id}/models",
     response_model=ModelLoadResponse,
     status_code=201,
+    dependencies=[Depends(validate_model_body)],
 )
 async def load_model(
     session_id: str,
@@ -499,7 +506,11 @@ async def validate_model(
     )
 
 
-@router.post("/{session_id}/query/sql", response_model=QueryCompileResponse)
+@router.post(
+    "/{session_id}/query/sql",
+    response_model=QueryCompileResponse,
+    dependencies=[Depends(validate_query_body)],
+)
 async def compile_query(
     session_id: str,
     body: SessionQueryRequest,
@@ -720,7 +731,11 @@ def _build_execute_response(
     )
 
 
-@router.post("/{session_id}/query/plan", response_model=QueryPlanResponse)
+@router.post(
+    "/{session_id}/query/plan",
+    response_model=QueryPlanResponse,
+    dependencies=[Depends(validate_query_body)],
+)
 async def plan_query(
     session_id: str,
     body: QueryPlanRequest,
@@ -873,7 +888,11 @@ def _join_path_steps(result: Any) -> list[JoinPathStep]:
     return steps
 
 
-@router.post("/{session_id}/query/execute", response_model=QueryExecuteResponse)
+@router.post(
+    "/{session_id}/query/execute",
+    response_model=QueryExecuteResponse,
+    dependencies=[Depends(validate_query_body)],
+)
 async def execute_query(
     session_id: str,
     body: SessionQueryExecuteRequest,

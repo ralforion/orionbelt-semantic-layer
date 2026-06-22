@@ -43,13 +43,10 @@ ONTOLOGY_PATH = REPO_ROOT / "ontology" / "obsl.ttl"
 MANIFEST_FIELD_EXCLUSIONS: dict[str, set[str]] = {}
 
 # JSON-schema properties that intentionally have no matching manifest field
-# alias, because the schema accepts a second spelling for one field. These
-# are compatibility aliases, not new fields, so they are exempt from the
-# reverse (schema -> manifest) coverage check.
+# alias. The schema is camelCase-only; the only remaining exceptions are the
+# two top-level merge keys, which the parser consumes (they map to the
+# private extends_sources / inherits_source model fields).
 SCHEMA_ONLY_PROPERTIES: dict[str, set[str]] = {
-    "ModelExample": {"intent_tags"},  # snake_case alias of intentTags
-    "RefreshPolicy": {"max_staleness"},  # snake_case alias of maxStaleness
-    # SemanticModel.extends_sources / inherits_source load from these keys.
     "SemanticModel": {"extends", "inherits"},
 }
 
