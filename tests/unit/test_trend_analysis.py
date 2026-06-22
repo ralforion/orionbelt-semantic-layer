@@ -17,7 +17,7 @@ from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.base import UnsupportedAggregationError
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import Grouping, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     Measure,
     Metric,
@@ -25,6 +25,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     WindowFunctionKind,
 )
+from orionbelt.models.warnings import WarningCode
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
@@ -460,6 +461,30 @@ class TestWindowMetrics:
         assert "LAG(" in head.upper(), sql
         assert '"Revenue"' in head, sql
         assert "-" in head, sql
+
+    def test_derived_window_with_rollup_emits_grouping_advisory(self) -> None:
+        """Regression: a derived metric that only *transitively* references a
+        window metric still runs the window pass, which drops the GROUPING()
+        flag columns from the final projection. The ROLLUP/CUBE advisory must
+        fire in this case too — even though ``has_window`` is False — because
+        the warning condition uses the same predicate as the window pass.
+        """
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date", "Country"],
+                measures=["MoM Delta"],
+            ),
+            grouping=Grouping.ROLLUP,
+        )
+        result = CompilationPipeline().compile(query, model, "postgres")
+        advisories = [
+            w
+            for w in result.warnings
+            if w.code == WarningCode.INCOMPATIBLE_COMBINATION
+            and "GROUPING() flag columns" in w.message
+        ]
+        assert advisories, [(w.code, w.message) for w in result.warnings]
 
     def test_window_metric_compose_with_derived(self) -> None:
         """A DERIVED metric that references a WINDOW metric must compute

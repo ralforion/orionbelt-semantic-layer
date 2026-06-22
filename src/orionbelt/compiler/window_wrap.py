@@ -187,6 +187,19 @@ def _ddm_window_components(
     return out
 
 
+def window_pass_applies(resolved: ResolvedQuery) -> bool:
+    """True when :func:`wrap_with_window` will transform the AST.
+
+    The wrap runs when a window metric is selected directly *or* when a
+    derived metric in the SELECT transitively references one (a DDM). This
+    is the single source of truth for the window pass's ``applies``
+    predicate — the wrapper's own guard delegates to it.
+    """
+    if any(m.is_window for m in resolved.measures):
+        return True
+    return any(_ddm_window_components(m, resolved.metric_components) for m in resolved.measures)
+
+
 def _substitute_for_outer(
     expr: Expr,
     metric_components: dict[str, ResolvedMeasure],
@@ -251,7 +264,7 @@ def wrap_with_window(
         if comps:
             ddm_window_refs[m.name] = comps
 
-    if not direct_window_measures and not ddm_window_refs:
+    if not window_pass_applies(resolved):
         return ast
 
     # Every window metric the wrap needs to expose — direct + transitive.

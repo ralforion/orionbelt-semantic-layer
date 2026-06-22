@@ -49,16 +49,30 @@ YAML Model          Query Object
 
 The pipeline is orchestrated by `CompilationPipeline` in `compiler/pipeline.py`. See the [Compilation Pipeline guide](../guide/compilation.md) for details.
 
-### Compiler passes (planned)
+### Compiler passes
 
-Feature wrappers (filter context, period-over-period, totals, cumulative, window,
-and `having` projection cleanup) currently compose through ordered logic inside
-`CompilationPipeline`. The [architecture improvement plan](#architecture-guardrails)
-introduces an explicit *compiler pass* model so that pass ordering is declared once
-and incompatible feature combinations are reported from a single compatibility
-function, without changing the public `CompilationPipeline.compile()` behaviour or
-the generated SQL. This section will be expanded with the pass contract once that
-work lands.
+After planning, aggregate-mode queries run through a fixed sequence of AST
+transformations (the "passes"), defined in `compiler/passes.py`:
+
+| Order | Pass | Applies when |
+| --- | --- | --- |
+| 1 | `filter_context` | a measure declares a filter-context override |
+| 2 | `period_over_period` | a selected metric is period-over-period |
+| 3 | `totals` | a measure uses `total` / grain override |
+| 4 | `cumulative` | a selected metric is cumulative |
+| 5 | `window` | a selected metric is a window metric (rank/lag/lead/...) |
+| 6 | `having_projection_cleanup` | HAVING auto-included a measure not in `select` |
+
+Each pass is a frozen `CompilerPass` (a `name`, an `applies` predicate, a
+`run(ast, ctx)` callable, and `incompatible_with` metadata). The order is
+load-bearing and declared once in `build_default_passes()`; `CompileContext`
+carries the shared resolution/model/dialect inputs. Cross-feature
+compatibility rules live in a single `evaluate_compatibility()` function that
+returns structured warnings plus the set of passes to suppress (for example,
+`totals` is suppressed and a warning recorded when combined with
+period-over-period or cumulative metrics, because totals rewrites the AST those
+wrappers depend on). The public `CompilationPipeline.compile()` behaviour, the
+generated SQL, and the explain flags are unchanged by this structure.
 
 ## Architecture guardrails
 

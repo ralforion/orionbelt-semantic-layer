@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
-from orionbelt.ast.nodes import AliasedExpr, Select
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
-from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
 from orionbelt.compiler.fanout import detect_fanout
-from orionbelt.compiler.filter_wrap import wrap_with_filter_context
-from orionbelt.compiler.pop_wrap import wrap_with_pop
+from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
-from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.validator import validate_sql
-from orionbelt.compiler.window_wrap import wrap_with_window
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
@@ -89,32 +84,6 @@ class CompilationResult:
     """Deduplicated list of ``DATABASE.SCHEMA.CODE`` triples reached by the
     query. Drives freshness-cache TTL composition and heartbeat
     invalidation. See ``design/PLAN_freshness_driven_cache.md`` §8."""
-
-
-def _drop_having_only_projection(ast: Select, resolved: ResolvedQuery) -> Select:
-    """Strip auto-included HAVING-only measures from the outermost SELECT.
-
-    The resolver auto-includes any measure referenced by HAVING but not
-    listed in ``select.measures`` (so the SQL stays valid — see
-    Finding 2 in the compiler-findings plan). The planner / aggregation
-    wrappers then project that measure in their outer SELECT, which
-    leaks it into the user's output as an extra column.
-
-    HAVING itself emits the aggregate inline (not via the alias), so
-    dropping the having-only column from the outermost SELECT keeps
-    the HAVING reference valid. Inner CTEs / leg projections are
-    untouched: those still need the column for aggregation.
-    """
-    if not resolved.having_only_measures:
-        return ast
-    kept_columns = [
-        col
-        for col in ast.columns
-        if not (isinstance(col, AliasedExpr) and col.alias in resolved.having_only_measures)
-    ]
-    if len(kept_columns) == len(ast.columns):
-        return ast
-    return replace(ast, columns=kept_columns)
 
 
 def _collect_subquery_objects(items: list[QueryFilterItem]) -> set[str]:
@@ -225,95 +194,21 @@ class CompilationPipeline:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
-        # Phase 2.3 – 2.6: Aggregate-mode wrappers (filter context, PoP,
-        # totals, cumulative). Raw mode has no measures, so these are no-ops
-        # and skipped entirely for clarity.
+        # Phase 2.3 – 2.6: Aggregate-mode passes (filter context, PoP,
+        # totals, cumulative, window) plus HAVING projection cleanup. Raw
+        # mode has no measures, so the passes are no-ops and skipped
+        # entirely for clarity. Pass ordering and the feature-compatibility
+        # rules live in ``compiler/passes.py``.
         if resolved.is_raw:
             wrapped_ast = plan.ast
         else:
-            # ROLLUP/CUBE wraps the base CTE inside total/PoP/cumulative
-            # wrappers, but the outer wrapper SELECTs by dim/measure name —
-            # the GROUPING() flag columns won't survive. Warn so callers
-            # know subtotal rows have NULL in rolled-up dims with no flag
-            # to disambiguate them from real-NULL detail rows.
-            if resolved.grouping is not None and (
-                resolved.has_totals
-                or resolved.has_pop
-                or resolved.has_cumulative
-                or resolved.has_window
-            ):
-                resolved.warnings.append(
-                    warning(
-                        code=WarningCode.INCOMPATIBLE_COMBINATION,
-                        message=(
-                            "ROLLUP/CUBE combined with total / period-over-period / "
-                            "cumulative measures — GROUPING() flag columns may not "
-                            "appear in the final projection. Subtotal rows are still "
-                            "produced, but callers cannot distinguish them from "
-                            "detail rows whose rolled-up dim is legitimately NULL."
-                        ),
-                        hint=(
-                            "Avoid combining `grouping: rollup|cube` with "
-                            "`total: true`, period-over-period metrics, or cumulative "
-                            "metrics in the same query."
-                        ),
-                        context={
-                            "grouping": resolved.grouping.value,
-                            "has_totals": resolved.has_totals,
-                            "has_pop": resolved.has_pop,
-                            "has_cumulative": resolved.has_cumulative,
-                        },
-                    )
-                )
-            # Wrap with filter context CTEs if needed
-            wrapped_ast = wrap_with_filter_context(
-                plan.ast, resolved, model, dialect, qualify_table
+            ctx = CompileContext(
+                resolved=resolved,
+                model=model,
+                dialect=dialect,
+                qualify_table=qualify_table,
             )
-
-            # Wrap with PoP CTEs if needed
-            wrapped_ast = wrap_with_pop(wrapped_ast, resolved, model, dialect, qualify_table)
-
-            # Wrap with totals CTE if needed
-            # Skip totals wrap when PoP or cumulative is active — the combination
-            # produces invalid SQL because totals rewrites the AST structure that
-            # PoP/cumulative wrappers depend on.
-            if resolved.has_totals and (resolved.has_pop or resolved.has_cumulative):
-                resolved.warnings.append(
-                    warning(
-                        code=WarningCode.INCOMPATIBLE_COMBINATION,
-                        message=(
-                            "total=True measures are ignored when combined with "
-                            "period-over-period or cumulative metrics in the same query"
-                        ),
-                        hint=(
-                            "Drop total=True from the affected measures, or remove the "
-                            "PoP/cumulative metric from this query."
-                        ),
-                        context={
-                            "has_totals": True,
-                            "has_pop": resolved.has_pop,
-                            "has_cumulative": resolved.has_cumulative,
-                        },
-                    )
-                )
-            else:
-                wrapped_ast = wrap_with_totals(wrapped_ast, resolved)
-
-            # Wrap with cumulative CTE if needed.
-            # Pass model + dialect so the wrapper can apply the declared
-            # dataType cast inside cumulative_base and on the outer
-            # window — otherwise cumulative output is silently DOUBLE
-            # regardless of the metric's declared type.
-            wrapped_ast = wrap_with_cumulative(wrapped_ast, resolved, model=model, dialect=dialect)
-
-            # Wrap with window CTE (rank / lag / lead / ntile / first/last value).
-            # Runs after cumulative so window metrics can compose over cumulative
-            # outputs (e.g. ranking a moving average).
-            wrapped_ast = wrap_with_window(wrapped_ast, resolved, model=model, dialect=dialect)
-
-            # Drop HAVING-only auto-included measures from the final SELECT
-            # so the user only sees the columns they asked for.
-            wrapped_ast = _drop_having_only_projection(wrapped_ast, resolved)
+            wrapped_ast = apply_aggregate_passes(plan.ast, ctx)
 
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)
