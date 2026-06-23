@@ -2,6 +2,19 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.16.0] - 2026-06-23
+
+### Added
+
+- **OBML contract manifest (`schema/obml-contract.yml`).** A single, drift-checked inventory of the OBML field surface: every enum, class, and field with its camelCase alias, JSON-schema exposure, ontology property, and OSI round-trip status. CI fails if the Pydantic models, the JSON schema, or the ontology drift from it, enforcing the "OBML is the single source of truth" rule mechanically.
+- **JSON Schema validation at the API ingestion boundary.** Model-load and query endpoints (session, shortcut, and oneshot) plus the `MODEL_FILES` startup preload now validate payloads against the published JSON Schema and return a `422` on a violation, so the schemas are the load-bearing contract rather than just published artifacts.
+- **Architecture quality gates in CI.** Import dependency-direction enforcement, broad-except containment, RawSQL containment, compiler metamorphic invariants, and coverage floors (compiler/parser/api and the OSI converter package).
+
+### Changed
+
+- **OBML payloads are held to the camelCase contract.** The JSON schema is now camelCase-only (the duplicate snake_case `max_staleness` and `intent_tags` spellings were removed). Payloads that previously relied on lenient coercion (snake_case keys, a string `version`, or uppercase enum values) are now rejected at the API; send canonical camelCase. The vendored schema in the OSI converter was refreshed to match.
+- **Internal hardening, no SQL or endpoint behavior change.** The compiler wrapper stage is now an explicit pass pipeline; `sessions.py` delegates to an `api/services/` layer; the app owns its runtime explicitly with per-request isolation; and five large modules (`compiler/resolution`, `compiler/cfl`, `ui/app`, the OSI converter, and the Flight server) were split into focused submodules. All compiler drift snapshots are byte-identical.
+
 ## [2.15.0] - 2026-06-18
 
 ### Added
