@@ -128,13 +128,24 @@ def _internal(name: str) -> bool:
     return name == PACKAGE or name.startswith(PACKAGE + ".")
 
 
-def _import_targets(node: ast.Import | ast.ImportFrom, current: str, known: set[str]) -> list[str]:
+def _import_targets(
+    node: ast.Import | ast.ImportFrom,
+    current: str,
+    known: set[str],
+    *,
+    is_package: bool = False,
+) -> list[str]:
     """Internal modules a single import statement depends on, resolved.
 
     A ``from pkg import sub`` where ``pkg.sub`` is a known module is treated
     as a dependency on the **submodule** (``pkg.sub``), not on ``pkg``'s
     ``__init__``. Resolving it to the package would manufacture spurious
     cycles for the standard "package re-exports its submodules" pattern.
+
+    ``is_package`` is True when ``current`` is a package ``__init__`` (whose
+    dotted name *is* the package). Relative imports anchor differently there:
+    ``from . import x`` resolves within the package itself, whereas for a
+    regular module it resolves within the parent package.
     """
     resolved: list[str] = []
 
@@ -152,11 +163,14 @@ def _import_targets(node: ast.Import | ast.ImportFrom, current: str, known: set[
 
     # ast.ImportFrom
     if node.level:
-        # Relative import: resolve against the current module's package.
-        base_parts = current.split(".")
-        # Drop ``level`` trailing components: ``from . import x`` (level 1)
-        # targets a sibling of the current module.
-        base_parts = base_parts[: len(base_parts) - node.level]
+        # Anchor package: a package __init__'s own dotted name; otherwise the
+        # current module's parent package.
+        anchor = current if is_package else current.rpartition(".")[0]
+        anchor_parts = anchor.split(".") if anchor else []
+        # ``from . import x`` (level 1) targets the anchor package itself, so
+        # drop (level - 1) trailing components from the anchor.
+        keep = len(anchor_parts) - (node.level - 1)
+        base_parts = anchor_parts[:keep] if keep > 0 else []
         prefix = ".".join(base_parts)
         module = f"{prefix}.{node.module}" if node.module else prefix
     else:
@@ -219,13 +233,19 @@ def _iter_import_time_imports(body: list[ast.stmt]) -> list[ast.Import | ast.Imp
     return found
 
 
-def _collect_import_edges(tree: ast.Module, current: str, known: set[str]) -> set[str]:
+def _collect_import_edges(
+    tree: ast.Module, current: str, known: set[str], *, is_package: bool = False
+) -> set[str]:
     edges: set[str] = set()
     for node in _iter_import_time_imports(tree.body):
-        for resolved in _import_targets(node, current, known):
+        for resolved in _import_targets(node, current, known, is_package=is_package):
             if resolved != current:
                 edges.add(resolved)
     return edges
+
+
+def _is_package_init(path: Path) -> bool:
+    return path.name == "__init__.py"
 
 
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
@@ -274,7 +294,7 @@ def import_edges() -> set[tuple[str, str]]:
         tree = _safe_parse(path)
         if tree is None:
             continue
-        for target in _collect_import_edges(tree, module, known):
+        for target in _collect_import_edges(tree, module, known, is_package=_is_package_init(path)):
             edges.add((module, target))
     return edges
 
@@ -302,7 +322,7 @@ def build_inventory(*, top_n: int = 15) -> Inventory:
         if tree is None:
             continue
 
-        for target in _collect_import_edges(tree, module, known):
+        for target in _collect_import_edges(tree, module, known, is_package=_is_package_init(path)):
             graph.add_edge(module, target)
 
         for node in ast.walk(tree):
