@@ -8,23 +8,15 @@ from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
-    Between,
-    BinaryOp,
     Cast,
     ColumnRef,
-    Except,
     Expr,
     FunctionCall,
-    InList,
-    IsNull,
-    Join,
-    JoinType,
     Literal,
-    RelativeDateRange,
     Select,
-    UnaryOp,
     UnionAll,
 )
+from orionbelt.compiler import cfl_exclude, cfl_projection
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
@@ -81,28 +73,9 @@ __all__ = ["CFLPlanner", "FanoutError", "UnsupportedAggregationForCFLError"]
 def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
     """Replace bare ColumnRef aliases in HAVING with their full aggregate expressions.
 
-    Recurses through ``BinaryOp`` and ``FunctionCall.args`` so a metric
-    formula like ``{Total Refunds} / NULLIF({Total Sales}, 0)`` correctly
-    inlines both refs in HAVING / outer-SELECT contexts.
+    Thin delegator to :func:`cfl_projection.expand_cfl_measure_refs`.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in measure_exprs:
-        return measure_exprs[expr.name]
-    if isinstance(expr, BinaryOp):
-        new_left = _expand_cfl_measure_refs(expr.left, measure_exprs)
-        new_right = _expand_cfl_measure_refs(expr.right, measure_exprs)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [_expand_cfl_measure_refs(a, measure_exprs) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
+    return cfl_projection.expand_cfl_measure_refs(expr, measure_exprs)
 
 
 class CFLPlanner:
@@ -186,107 +159,21 @@ class CFLPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
     ) -> tuple[dict[str, list[ResolvedMeasure]], list[ResolvedMeasure]]:
-        """Group measures by their primary source object.
-
-        Returns ``(groups, cross_fact)`` where *cross_fact* contains
-        multi-field measures whose fields span multiple objects.
-        For metrics, expand their component measures into the grouping
-        instead of the metric itself.  Cross-fact measures ensure every
-        involved object has a leg, but are not assigned to any single
-        group — their individual fields are distributed per-leg by
-        ``_plan_union_all``.
-        """
-        groups: dict[str, list[ResolvedMeasure]] = {}
-        cross_fact: list[ResolvedMeasure] = []
-        seen: set[str] = set()
-
-        for measure in resolved.measures:
-            if measure.component_measures:
-                # Metric: add each component measure to its source object
-                for comp_name in measure.component_measures:
-                    if comp_name in seen:
-                        continue
-                    seen.add(comp_name)
-                    comp = resolved.metric_components.get(comp_name)
-                    if comp is None:
-                        continue
-                    model_measure = model.measures.get(comp_name)
-                    if model_measure and model_measure.columns:
-                        obj_name = model_measure.columns[0].view or resolved.base_object
-                    else:
-                        obj_name = resolved.base_object
-                    groups.setdefault(obj_name, []).append(comp)
-            else:
-                if measure.name in seen:
-                    continue
-                seen.add(measure.name)
-                model_measure = model.measures.get(measure.name)
-                if not model_measure:
-                    groups.setdefault(resolved.base_object, []).append(measure)
-                    continue
-
-                # Collect source objects: from explicit columns or expression AST
-                field_objects: set[str]
-                if model_measure.columns:
-                    field_objects = {f.view for f in model_measure.columns if f.view}
-                else:
-                    # Expression-based measure: extract table refs from the AST
-                    field_objects = set()
-                    self._collect_table_refs(measure.expression, field_objects)
-                if len(field_objects) > 1:
-                    # Cross-fact multi-field measure: ensure each
-                    # involved object has a leg, but don't assign
-                    # the measure to any single group.
-                    cross_fact.append(measure)
-                    for obj in field_objects:
-                        groups.setdefault(obj, [])
-                elif field_objects:
-                    obj_name = next(iter(field_objects))
-                    groups.setdefault(obj_name, []).append(measure)
-                else:
-                    groups.setdefault(resolved.base_object, []).append(measure)
-
-        return groups, cross_fact
+        """Group measures by their primary source object."""
+        return cfl_projection.group_measures_by_object(self, resolved, model)
 
     @staticmethod
     def _group_dimensions_into_legs(
         resolved: ResolvedQuery,
         model: SemanticModel,
     ) -> dict[str, list[ResolvedMeasure]]:
-        """Group dimensions into CFL legs for dimension-only queries.
-
-        For each dimension, find the fact/bridge table that can reach it
-        via directed join paths, and use that as the leg's key object.
-        Returns empty measure lists per leg (dimension-only, no aggregates).
-        """
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
-        legs: dict[str, list[ResolvedMeasure]] = {}
-        assigned: set[str] = set()
-
-        # Build a lookup: for each dimension object, which fact tables can reach it?
-        dim_objects = {d.object_name for d in resolved.dimensions}
-        fact_candidates: list[tuple[str, set[str]]] = []
-        for obj_name, obj in model.data_objects.items():
-            if not obj.joins:
-                continue
-            reachable_dims = dim_objects & (graph.descendants(obj_name) | {obj_name})
-            if reachable_dims:
-                fact_candidates.append((obj_name, reachable_dims))
-
-        # Greedy: pick fact table covering most unassigned dimensions first
-        fact_candidates.sort(key=lambda x: (-len(x[1]), x[0]))
-        for fact_obj, reachable in fact_candidates:
-            covers = reachable - assigned
-            if covers:
-                legs[fact_obj] = []
-                assigned.update(covers)
-
-        return legs
+        """Group dimensions into CFL legs for dimension-only queries."""
+        return cfl_projection.group_dimensions_into_legs(resolved, model)
 
     @staticmethod
     def _is_multi_field(measure: ResolvedMeasure) -> bool:
         """Check if a measure has multiple field args (e.g. COUNT(a, b))."""
-        return isinstance(measure.expression, FunctionCall) and len(measure.expression.args) > 1
+        return cfl_projection.is_multi_field(measure)
 
     @staticmethod
     def _resolve_null_type_for_field(
@@ -295,75 +182,18 @@ class CFLPlanner:
         model: SemanticModel,
         dialect: Dialect | None = None,
     ) -> str | None:
-        """Resolve the SQL type for NULL padding in CFL UNION ALL legs.
-
-        Two regimes apply:
-
-        * **Numeric aggregates** (SUM / AVG / MIN / MAX / MEDIAN / etc.) —
-          the inner column projection is the *aggregate's input column*, and
-          OBSL casts the outer aggregate to the measure's declared
-          ``dataType`` (e.g. ``decimal(18, 2)``). Padding with that same
-          declared type keeps every CFL leg's column compatible with the
-          outer ``SUM``/``AVG`` and avoids ClickHouse's ``Decimal`` +
-          ``Float64`` Variant trap (where padding with the column's
-          declared OBML ``abstractType: float`` mismatches storage as
-          ``Decimal`` and produces ``ILLEGAL_TYPE_OF_ARGUMENT``).
-
-        * **Count-style aggregates** (COUNT / COUNT_DISTINCT) — the inner
-          column projection is the *raw column itself* (e.g. ``complid``,
-          a text ID). The outer ``COUNT(DISTINCT ...)`` happily counts any
-          type, but each CFL leg's column must agree on a type for
-          ``UNION ALL``. Padding with the declared aggregate output type
-          (BIGINT) trips strict-typed engines (Postgres / MySQL / strict
-          ClickHouse) when the source column is text. Pad with the
-          source column's abstract type instead.
-
-        For multi-field measures (e.g. ``COUNT(a, b)``), per-column
-        abstract types are used regardless of aggregation kind.
-        """
-        model_measure = model.measures.get(measure.name)
-        if not model_measure:
-            return None
-        agg = (model_measure.aggregation or "").lower()
-        is_count_style = agg in ("count", "count_distinct")
-        # Multi-field measures: per-column abstract_type for each slot.
-        if len(model_measure.columns) > 1:
-            if field_idx < len(model_measure.columns):
-                ref = model_measure.columns[field_idx]
-                obj = model.data_objects.get(ref.view) if ref.view else None
-                if obj and ref.column in obj.columns:
-                    return obj.columns[ref.column].abstract_type.value
-            return model_measure.result_type.value
-        # Single-/zero-column COUNT-style: pad with the source column's
-        # native type so UNION ALL legs agree (raw column, not aggregate).
-        if is_count_style and len(model_measure.columns) == 1:
-            ref = model_measure.columns[0]
-            obj = model.data_objects.get(ref.view) if ref.view else None
-            if obj and ref.column in obj.columns:
-                return obj.columns[ref.column].abstract_type.value
-        # Numeric aggregates: align padding with the outer CAST target.
-        if dialect is not None and len(model_measure.columns) <= 1:
-            resolved = resolve_measure_data_type(model_measure, model.settings)
-            if resolved is not None:
-                return dialect.render_obml_type(resolved)
-        # Fallback to measure result_type.
-        return model_measure.result_type.value
+        """Resolve the SQL type for NULL padding in CFL UNION ALL legs."""
+        return cfl_projection.resolve_null_type_for_field(measure, field_idx, model, dialect)
 
     @staticmethod
     def _multi_field_cte_alias(measure_name: str, idx: int) -> str:
         """CTE column name for the *idx*-th field of a multi-field measure."""
-        return f"{measure_name}__f{idx}"
+        return cfl_projection.multi_field_cte_alias(measure_name, idx)
 
     @staticmethod
     def _unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
-        """Extract the inner expression from an aggregated measure.
-
-        For FunctionCall(SUM, [inner]) → returns inner.
-        Falls back to the full expression if not a FunctionCall.
-        """
-        if isinstance(measure.expression, FunctionCall) and measure.expression.args:
-            return measure.expression.args[0]
-        return measure.expression
+        """Extract the inner expression from an aggregated measure."""
+        return cfl_projection.unwrap_aggregation(measure)
 
     def _build_outer_metric_expr(
         self,
@@ -371,98 +201,22 @@ class CFLPlanner:
         resolved: ResolvedQuery,
         cte_name: str,
     ) -> Expr:
-        """Build the outer query expression for a metric.
-
-        Walks the metric's AST tree and replaces each ColumnRef(measure_name)
-        with ``AGG("cte_name"."measure_name")`` using the component measure's
-        aggregation. The CTE qualification matters: when the outer SELECT
-        also aliases its column ``measure_name`` to ``AGG(...)``, ClickHouse
-        resolves a bare ``"measure_name"`` to the sibling alias (the
-        aggregate itself) and rejects the resulting nested aggregate as
-        ``ILLEGAL_AGGREGATION``. Qualifying with the CTE name forces the
-        inner ref to resolve to the raw CTE column.
-        """
-        return self._substitute_outer_refs(metric.expression, resolved, cte_name)
+        """Build the outer query expression for a metric."""
+        return cfl_projection.build_outer_metric_expr(self, metric, resolved, cte_name)
 
     def _substitute_outer_refs(self, expr: Expr, resolved: ResolvedQuery, cte_name: str) -> Expr:
-        """Recursively substitute measure refs with outer aggregations.
-
-        Walks ``BinaryOp`` and ``FunctionCall.args`` so a metric formula
-        with embedded SQL functions (e.g. ``... / NULLIF(other, 0)``)
-        substitutes refs inside the function call instead of leaving the
-        bare label, which would later bind against a non-existent
-        column.
-        """
-        if isinstance(expr, ColumnRef) and expr.table is None:
-            comp = resolved.metric_components.get(expr.name)
-            if comp:
-                agg = comp.aggregation.upper()
-                distinct = False
-                if agg == "COUNT_DISTINCT":
-                    agg = "COUNT"
-                    distinct = True
-                if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
-                    distinct = True
-                return FunctionCall(
-                    name=agg,
-                    args=[ColumnRef(name=comp.name, table=cte_name)],
-                    distinct=distinct,
-                )
-        if isinstance(expr, BinaryOp):
-            new_left = self._substitute_outer_refs(expr.left, resolved, cte_name)
-            new_right = self._substitute_outer_refs(expr.right, resolved, cte_name)
-            if new_left is not expr.left or new_right is not expr.right:
-                return BinaryOp(left=new_left, op=expr.op, right=new_right)
-        if isinstance(expr, FunctionCall):
-            new_args = [self._substitute_outer_refs(a, resolved, cte_name) for a in expr.args]
-            if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-                return FunctionCall(
-                    name=expr.name,
-                    args=new_args,
-                    distinct=expr.distinct,
-                    order_by=expr.order_by,
-                    separator=expr.separator,
-                )
-        return expr
+        """Recursively substitute measure refs with outer aggregations."""
+        return cfl_projection.substitute_outer_refs(self, expr, resolved, cte_name)
 
     @staticmethod
     def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
         """Recursively collect table names from ColumnRef nodes."""
-        if isinstance(expr, ColumnRef) and expr.table:
-            tables.add(expr.table)
-        elif isinstance(expr, BinaryOp):
-            CFLPlanner._collect_table_refs(expr.left, tables)
-            CFLPlanner._collect_table_refs(expr.right, tables)
-        elif isinstance(expr, UnaryOp):
-            CFLPlanner._collect_table_refs(expr.operand, tables)
-        elif isinstance(expr, (InList, IsNull, Between)):
-            CFLPlanner._collect_table_refs(expr.expr, tables)
-        elif isinstance(expr, RelativeDateRange):
-            CFLPlanner._collect_table_refs(expr.column, tables)
-        elif isinstance(expr, FunctionCall):
-            for arg in expr.args:
-                CFLPlanner._collect_table_refs(arg, tables)
+        cfl_projection.collect_table_refs(expr, tables)
 
     @staticmethod
     def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
-        """Remap ORDER BY expressions to use CTE aliases for the outer query.
-
-        In CFL, the outer query selects from the composite CTE — original
-        table-qualified refs are out of scope.  Remap dimension and measure
-        expressions to their CTE alias names. Matches by structural equality
-        with each dimension's column expression so computed columns (where
-        the source AST is an inlined expression, not a bare ColumnRef) also
-        remap correctly.
-        """
-        for dim in resolved.dimensions:
-            if expr == make_column_expr(model, dim.object_name, dim.column_name):
-                return ColumnRef(name=dim.name)
-        # Measure: match by identity (same expression object)
-        for meas in resolved.measures:
-            if expr is meas.expression:
-                return ColumnRef(name=meas.name)
-        # Numeric position — pass through
-        return expr
+        """Remap ORDER BY expressions to use CTE aliases for the outer query."""
+        return cfl_projection.remap_cfl_order_by(expr, resolved, model)
 
     def _build_outer_concat_count(
         self,
@@ -472,34 +226,10 @@ class CFLPlanner:
         distinct: bool,
         cte_name: str,
     ) -> Expr:
-        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query.
-
-        Each field reference is qualified with *cte_name* so it resolves to
-        the raw CTE column rather than any sibling SELECT alias (see
-        ``_substitute_outer_refs`` for the alias-shadowing rationale).
-        """
-        parts: list[Expr] = [
-            Cast(
-                expr=ColumnRef(
-                    name=self._multi_field_cte_alias(measure_name, i),
-                    table=cte_name,
-                ),
-                type_name="VARCHAR",
-            )
-            for i in range(n_fields)
-        ]
-        concat: Expr = parts[0]
-        for part in parts[1:]:
-            concat = BinaryOp(
-                left=concat,
-                op="||",
-                right=BinaryOp(
-                    left=Literal.string("|"),
-                    op="||",
-                    right=part,
-                ),
-            )
-        return FunctionCall(name=agg, args=[concat], distinct=distinct)
+        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query."""
+        return cfl_projection.build_outer_concat_count(
+            self, measure_name, n_fields, agg, distinct, cte_name
+        )
 
     def _plan_union_all(
         self,
@@ -891,91 +621,8 @@ class CFLPlanner:
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
     ) -> QueryPlan:
-        """Plan a dimensionsExclude query using EXCEPT pattern.
-
-        Generates:
-          WITH dim_group_00 AS (SELECT DISTINCT dims FROM ...),
-               dim_group_01 AS (...),
-               non_combinations AS (
-                 SELECT ... FROM dim_group_00 CROSS JOIN dim_group_01
-                 EXCEPT
-                 SELECT ... FROM fact_joins
-               )
-          SELECT ... FROM non_combinations ORDER BY ... LIMIT ...
-        """
-        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
-
-        def qualify(obj: DataObject) -> str:
-            return qualify_table(obj) if qualify_table else obj.qualified_code
-
-        # Partition dimensions into independent groups
-        dim_groups = self._partition_dimensions(resolved, graph)
-
-        ctes: list[CTE] = []
-
-        # CTE per dimension group: SELECT DISTINCT via GROUP BY
-        group_cte_names: list[str] = []
-        for i, group_dims in enumerate(dim_groups):
-            cte_name = f"dim_group_{i:02d}"
-            group_cte_names.append(cte_name)
-            cte_query = self._build_group_distinct_select(
-                group_dims,
-                model,
-                graph,
-                qualify,
-                via_constraints=resolved.via_constraints or None,
-            )
-            ctes.append(CTE(name=cte_name, query=cte_query))
-
-        # Build "all_pairs": CROSS JOIN of all dim_group CTEs
-        all_pairs_builder = QueryBuilder()
-        for dim in resolved.dimensions:
-            all_pairs_builder.select(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
-        all_pairs_builder.from_(group_cte_names[0], alias=group_cte_names[0])
-        for cte_name in group_cte_names[1:]:
-            all_pairs_builder._joins.append(
-                Join(join_type=JoinType.CROSS, source=cte_name, alias=cte_name)
-            )
-        all_pairs_select = all_pairs_builder.build()
-
-        # Build "existing_pairs": actual combinations via fact-table joins
-        existing_pairs_select = self._build_existing_pairs_select(resolved, model, graph, qualify)
-
-        # EXCEPT CTE: all_pairs EXCEPT existing_pairs
-        except_cte = CTE(
-            name="non_combinations",
-            query=Except(left=all_pairs_select, right=existing_pairs_select),
-        )
-        ctes.append(except_cte)
-
-        # Outer query: SELECT from non_combinations with ORDER BY / LIMIT
-        outer_builder = QueryBuilder()
-        for dim in resolved.dimensions:
-            outer_builder.select(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
-        outer_builder.from_("non_combinations", alias="non_combinations")
-
-        for expr, desc, nulls in resolved.order_by_exprs:
-            outer_builder.order_by(
-                self._remap_cfl_order_by(expr, resolved, model),
-                desc=desc,
-                nulls_last=_nulls_last(nulls),
-            )
-        if resolved.limit is not None:
-            outer_builder.limit(resolved.limit)
-        if resolved.offset is not None:
-            outer_builder.offset(resolved.offset)
-
-        outer = outer_builder.build()
-        final = Select(
-            columns=outer.columns,
-            from_=outer.from_,
-            joins=outer.joins,
-            order_by=outer.order_by,
-            limit=outer.limit,
-            offset=outer.offset,
-            ctes=ctes,
-        )
-        return QueryPlan(ast=final)
+        """Plan a dimensionsExclude query using EXCEPT pattern."""
+        return cfl_exclude.plan_dimensions_exclude(self, resolved, model, qualify_table)
 
     @staticmethod
     def _partition_dimensions(
@@ -983,39 +630,7 @@ class CFLPlanner:
         graph: JoinGraph,
     ) -> list[list[ResolvedDimension]]:
         """Partition dimensions into groups on independent branches."""
-        obj_to_dims: dict[str, list[ResolvedDimension]] = {}
-        for dim in resolved.dimensions:
-            obj_to_dims.setdefault(dim.object_name, []).append(dim)
-
-        # Cluster: two objects are in the same group if one is a descendant
-        # of the other (i.e., connected via directed join paths).
-        objects = sorted(obj_to_dims.keys())
-        groups: list[set[str]] = []
-        assigned: set[str] = set()
-
-        for obj in objects:
-            if obj in assigned:
-                continue
-            group = {obj}
-            reachable = graph.descendants(obj) | {obj}
-            for other in objects:
-                if (
-                    other != obj
-                    and other not in assigned
-                    and (other in reachable or obj in (graph.descendants(other) | {other}))
-                ):
-                    group.add(other)
-            groups.append(group)
-            assigned.update(group)
-
-        # Convert to lists of ResolvedDimension
-        result: list[list[ResolvedDimension]] = []
-        for group_objs in groups:
-            group_dims: list[ResolvedDimension] = []
-            for obj in sorted(group_objs):
-                group_dims.extend(obj_to_dims[obj])
-            result.append(group_dims)
-        return result
+        return cfl_exclude.partition_dimensions(resolved, graph)
 
     @staticmethod
     def _build_group_distinct_select(
@@ -1026,54 +641,9 @@ class CFLPlanner:
         via_constraints: dict[str, str] | None = None,
     ) -> Select:
         """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
-        required_objects = {d.object_name for d in dims}
-
-        # Find the common root that can reach all objects in this group
-        if len(required_objects) > 1:
-            root = graph.find_common_root(required_objects)
-        else:
-            root = next(iter(required_objects))
-
-        # If root is a pure dimension table with no joins, check if a fact
-        # table can reach it (needed for bridge-table traversal).
-        root_obj = model.data_objects.get(root)
-        if root_obj and not root_obj.joins and root not in required_objects:
-            root = next(iter(sorted(required_objects)))
-            root_obj = model.data_objects.get(root)
-
-        builder = QueryBuilder()
-        for dim in dims:
-            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-            builder.select(AliasedExpr(expr=col, alias=dim.name))
-            builder.group_by(col)
-
-        if root_obj:
-            builder.from_(qualify(root_obj), alias=root)
-
-        # Join to reach all dimension objects from root
-        all_needed = required_objects | {root}
-        if len(all_needed) > 1:
-            steps = graph.find_join_path(
-                {root},
-                all_needed,
-                via_constraints=via_constraints,
-            )
-            joined_aliases: set[str] = {root}
-            for step in steps:
-                if step.to_object in joined_aliases:
-                    continue
-                target_obj = model.data_objects.get(step.to_object)
-                if target_obj:
-                    on_expr = graph.build_join_condition(step)
-                    builder.join(
-                        table=qualify(target_obj),
-                        on=on_expr,
-                        join_type=step.join_type,
-                        alias=step.to_object,
-                    )
-                    joined_aliases.add(step.to_object)
-
-        return builder.build()
+        return cfl_exclude.build_group_distinct_select(
+            dims, model, graph, qualify, via_constraints=via_constraints
+        )
 
     def _build_existing_pairs_select(
         self,
@@ -1082,65 +652,5 @@ class CFLPlanner:
         graph: JoinGraph,
         qualify: Callable[[DataObject], str],
     ) -> Select:
-        """Build SELECT for existing dimension combinations via fact-table joins.
-
-        Uses a fact/bridge table as the base and joins through hub tables
-        to reach all dimension objects on both branches.
-        """
-        all_dim_objects = {d.object_name for d in resolved.dimensions}
-
-        # Find fact tables that connect the dimension groups
-        leg_objects = self._group_dimensions_into_legs(resolved, model)
-        fact_tables = set(leg_objects.keys())
-
-        # Use a fact table as the base (pick the one with most joins)
-        best_fact = max(
-            sorted(fact_tables),
-            key=lambda f: len(model.data_objects[f].joins) if f in model.data_objects else 0,
-        )
-        best_fact_obj = model.data_objects.get(best_fact)
-
-        builder = QueryBuilder()
-        for dim in resolved.dimensions:
-            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-            builder.select(AliasedExpr(expr=col, alias=dim.name))
-            builder.group_by(col)
-
-        if best_fact_obj:
-            builder.from_(qualify(best_fact_obj), alias=best_fact)
-
-        # Required: all dimension objects + all fact tables
-        all_needed = all_dim_objects | fact_tables | {best_fact}
-        joined: set[str] = {best_fact}
-        steps = graph.find_join_path(
-            {best_fact},
-            all_needed,
-            via_constraints=resolved.via_constraints or None,
-        )
-        for step in steps:
-            # Determine the actual new table to join.
-            # For reversed edges, to_object may already be joined and the
-            # actual new table is from_object.
-            if step.to_object not in joined:
-                new_table = step.to_object
-            elif step.from_object not in joined:
-                new_table = step.from_object
-            else:
-                continue  # Both already joined
-
-            target_obj = model.data_objects.get(new_table)
-            if target_obj:
-                on_expr = graph.build_join_condition(step)
-                builder.join(
-                    table=qualify(target_obj),
-                    on=on_expr,
-                    join_type=step.join_type,
-                    alias=new_table,
-                )
-                joined.add(new_table)
-
-        # Apply WHERE filters to existing pairs
-        for wf in resolved.where_filters:
-            builder.where(wf.expression)
-
-        return builder.build()
+        """Build SELECT for existing dimension combinations via fact-table joins."""
+        return cfl_exclude.build_existing_pairs_select(self, resolved, model, graph, qualify)
