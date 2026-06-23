@@ -258,6 +258,27 @@ def _is_raw_sql_call(node: ast.Call) -> bool:
     return False
 
 
+def import_edges() -> set[tuple[str, str]]:
+    """Internal import-time module dependency edges, ``(source, target)``.
+
+    Same edge model the cycle detector uses: only imports that execute at
+    import time (no deferred function-local or ``TYPE_CHECKING`` imports),
+    resolved to known internal modules. Used by the dependency-direction
+    architecture test.
+    """
+    files = _iter_source_files()
+    known = {_module_name(p) for p in files}
+    edges: set[tuple[str, str]] = set()
+    for path in files:
+        module = _module_name(path)
+        tree = _safe_parse(path)
+        if tree is None:
+            continue
+        for target in _collect_import_edges(tree, module, known):
+            edges.add((module, target))
+    return edges
+
+
 def build_inventory(*, top_n: int = 15) -> Inventory:
     """Compute the architecture inventory from the source tree."""
     files = _iter_source_files()
