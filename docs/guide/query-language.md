@@ -24,7 +24,7 @@ having:
   - field: Revenue
     op: gt
     value: 10000
-order_by:
+orderBy:
   - field: Revenue
     direction: desc
     nulls: last        # optional — "first" | "last"; omit for dialect default
@@ -112,7 +112,7 @@ Each leg still projects only its own role-playing dimension (others NULL); the o
 - At least 2 members; all must be existing model dimensions
 - All members must share the same `resultType`
 - The `as` alias must not collide with any model dimension or measure name
-- `order_by` may reference the alias directly (`field: Employee`) — ordering happens in the outer wrapper where the alias is in scope
+- `orderBy` may reference the alias directly (`field: Employee`) — ordering happens in the outer wrapper where the alias is in scope
 - `where` filters belong on the underlying dimension names (filtering is applied per leg, before the COALESCE collapses the values)
 
 **Error codes:** `COALESCE_MISSING_ALIAS`, `DUPLICATE_COALESCE_ALIAS`, `COALESCE_ALIAS_COLLISION`, `COALESCE_TOO_FEW_MEMBERS`, `COALESCE_TYPE_MISMATCH`.
@@ -144,7 +144,7 @@ where:
   - field: Orders.Amount
     op: gt
     value: 100
-order_by:
+orderBy:
   - field: Orders.Amount
     direction: desc
 limit: 100
@@ -656,7 +656,7 @@ where:
 Sort results by dimension or measure names from the query's SELECT, or by numeric position:
 
 ```yaml
-order_by:
+orderBy:
   - field: Revenue
     direction: desc
   - field: Customer Country
@@ -710,6 +710,6 @@ Invalid queries return error responses:
 | `select.measures` | `SELECT` aggregate expressions |
 | `where` | `WHERE` clause |
 | `having` | `HAVING` clause |
-| `order_by` | `ORDER BY` clause |
+| `orderBy` | `ORDER BY` clause |
 | `limit` | `LIMIT` clause |
 | `dimensionsExclude` | Anti-join via `CROSS JOIN` + `EXCEPT` (dimension-only) |

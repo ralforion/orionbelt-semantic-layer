@@ -120,7 +120,7 @@ where:
   - field: Country Name
     op: in
     value: [Germany, France, Italy]
-order_by:
+orderBy:
   - field: Total Sales
     direction: desc
 limit: 100

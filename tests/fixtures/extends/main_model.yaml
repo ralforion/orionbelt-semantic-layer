@@ -30,5 +30,4 @@ dimensions:
 
 metrics:
   Revenue per Order:
-    resultType: float
     expression: "{[Revenue]} / {[Order Count]}"

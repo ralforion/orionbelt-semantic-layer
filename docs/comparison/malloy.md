@@ -19,7 +19,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** 
 | Format | Declarative YAML (`OBML`) | A purpose-built **language** (`.malloy` files) — both modeling *and* querying |
 | Source of truth | YAML model file | `.malloy` source files: <pre><code>source: foo is<br> duckdb.table('...')<br> extend { ... }</code></pre> |
 | Top-level objects | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `source` with extensions: `dimension:`, `measure:`, `view:`, `join_one:`, `join_many:` |
-| Queries | JSON `QueryObject` (`select`, `where`, `having`, `order_by`, ...) | Malloy query syntax: <pre><code>run: source -> {<br> group_by: ...<br> aggregate: ...<br> nest: ...<br>}</code></pre> |
+| Queries | JSON `QueryObject` (`select`, `where`, `having`, `orderBy`, ...) | Malloy query syntax: <pre><code>run: source -> {<br> group_by: ...<br> aggregate: ...<br> nest: ...<br>}</code></pre> |
 | Embedding | Drop-in compiler, no client language needed | Requires a Malloy-aware client/parser |
 
 **Key cultural difference**: Malloy is a *language*; OBSL is a *contract*. Malloy gives expressiveness in a `.malloy` file. OBSL gives a stable JSON over HTTP that any tool, agent, or LLM can call without learning a DSL.

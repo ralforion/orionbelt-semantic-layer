@@ -742,7 +742,7 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
             pos = len(lines)
             for i, ln in enumerate(lines):
                 s = ln.strip()
-                if s.startswith("order_by:") or s.startswith("limit:"):
+                if s.startswith("orderBy:") or s.startswith("limit:"):
                     pos = i
                     break
             lines.insert(pos, "where:")

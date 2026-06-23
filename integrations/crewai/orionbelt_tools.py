@@ -107,7 +107,7 @@ class OrionBeltTools:
                 query_json: Full query as JSON string. Format:
                     {"select": {"dimensions": [...], "measures": [...]},
                      "where": [{"dimension": "Country", "operator": "=", "value": "Germany"}],
-                     "order_by": [{"field": "Revenue", "direction": "desc"}],
+                     "orderBy": [{"field": "Revenue", "direction": "desc"}],
                      "limit": 100}
                 dialect: Target SQL dialect.
             """

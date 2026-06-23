@@ -96,7 +96,7 @@ Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metric
 - **Measure expressions** reference columns by data object + column: `{[DataObject].[Column]}`
 - **Metric expressions** reference measures by name: `{[Measure Name]}`
 - **Secondary joins**: `secondary: true` + `pathName` on `DataObjectJoin` — unique per (source, target) pair
-- **Queries** use `select: {dimensions: [...], measures: [...]}` structure with optional `where`, `having`, `order_by`, `limit`, `usePathNames`
+- **Queries** use `select: {dimensions: [...], measures: [...]}` structure with optional `where`, `having`, `orderBy`, `limit`, `usePathNames`
 
 ## REST API
 

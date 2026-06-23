@@ -333,7 +333,7 @@ def resolve_order_by_field(
                 message=(
                     f"ORDER BY position {pos} is out of range (SELECT has {select_count} columns)"
                 ),
-                path="order_by",
+                path="orderBy",
             )
         )
         return None
@@ -344,7 +344,7 @@ def resolve_order_by_field(
             message=(
                 f"ORDER BY field '{field_name}' is not a dimension or measure in the query's SELECT"
             ),
-            path="order_by",
+            path="orderBy",
         )
     )
     return None

@@ -99,7 +99,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
             query_json: Full query as JSON string. Format:
                 {"select": {"dimensions": [...], "measures": [...]},
                  "where": [{"dimension": "Country", "operator": "=", "value": "Germany"}],
-                 "order_by": [{"field": "Revenue", "direction": "desc"}],
+                 "orderBy": [{"field": "Revenue", "direction": "desc"}],
                  "limit": 100}
             dialect: Target SQL dialect.
         """

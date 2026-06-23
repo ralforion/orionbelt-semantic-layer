@@ -263,7 +263,7 @@
         ]
       }
     },
-    "order_by": {
+    "orderBy": {
       "type": "array",
       "description": "Ordering specification",
       "items": {

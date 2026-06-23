@@ -54,7 +54,7 @@
         "url": "={{ $env.ORIONBELT_API_URL }}/v1/query/sql?dialect=postgres",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"select\": {\n    \"dimensions\": [\"Country\"],\n    \"measures\": [\"Revenue\"]\n  },\n  \"order_by\": [\n    {\"field\": \"Revenue\", \"direction\": \"desc\"}\n  ],\n  \"limit\": 10\n}",
+        "jsonBody": "{\n  \"select\": {\n    \"dimensions\": [\"Country\"],\n    \"measures\": [\"Revenue\"]\n  },\n  \"orderBy\": [\n    {\"field\": \"Revenue\", \"direction\": \"desc\"}\n  ],\n  \"limit\": 10\n}",
         "options": {}
       },
       "id": "compile-query",

@@ -308,7 +308,7 @@ Compile a semantic query against a model loaded in the session.
  "value": ["SMB", "MidMarket"]
  }
  ],
- "order_by": [
+ "orderBy": [
  { "field": "Revenue", "direction": "desc" }
  ],
  "limit": 1000

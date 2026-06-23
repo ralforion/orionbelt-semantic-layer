@@ -51,7 +51,7 @@ Manual Trigger
     "dimensions": ["Country"],
     "measures": ["Revenue"]
   },
-  "order_by": [{"field": "Revenue", "direction": "desc"}],
+  "orderBy": [{"field": "Revenue", "direction": "desc"}],
   "limit": 10
 }
 ```

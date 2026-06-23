@@ -135,7 +135,7 @@ export function getOrionBeltTools(apiBaseUrl: string = "http://localhost:8000") 
         queryJson: z
           .string()
           .describe(
-            'Full query as JSON string: {"select": {"dimensions": [...], "measures": [...]}, "where": [...], "order_by": [...], "limit": 100}'
+            'Full query as JSON string: {"select": {"dimensions": [...], "measures": [...]}, "where": [...], "orderBy": [...], "limit": 100}'
           ),
         dialect: z
           .enum([

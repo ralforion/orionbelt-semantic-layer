@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: OrionBelt Semantic Layer
-  version: 2.15.0
+  version: 2.16.0
   description: >
     Compile YAML semantic models (OBML) as analytical SQL across 8 database dialects.
     This API runs in single-model mode with a pre-loaded semantic model.
@@ -334,7 +334,7 @@ paths:
                     - field: Country
                       op: "="
                       value: "Germany"
-                  order_by:
+                  orderBy:
                     - field: Revenue
                       direction: desc
                   limit: 50
@@ -621,7 +621,7 @@ components:
                 enum: ["=", "!=", ">", "<", ">=", "<="]
               value:
                 description: Filter value (number)
-        order_by:
+        orderBy:
           type: array
           description: ORDER BY clauses
           items:

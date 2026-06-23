@@ -237,7 +237,7 @@ FILTER_QUERY='{
         "measures": ["Total Sales"]
     },
     "where": [{"field": "Product Category", "op": "equals", "value": "Electronics"}],
-    "order_by": [{"field": "Total Sales", "direction": "desc"}],
+    "orderBy": [{"field": "Total Sales", "direction": "desc"}],
     "limit": 10
 }'
 compile_query "Filtered query with ORDER BY + LIMIT" "postgres" "$FILTER_QUERY" "WHERE"
@@ -266,7 +266,7 @@ PURCHASE_QUERY='{
         "dimensions": ["Supplier Name"],
         "measures": ["Total Purchases", "Total Purchase Qty"]
     },
-    "order_by": [{"field": "Total Purchases", "direction": "desc"}]
+    "orderBy": [{"field": "Total Purchases", "direction": "desc"}]
 }'
 compile_query "Purchases fact table query" "dremio" "$PURCHASE_QUERY" "purchases"
 

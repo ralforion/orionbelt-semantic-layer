@@ -276,7 +276,7 @@ class QueryObject(BaseModel):
     select: QuerySelect
     where: list[QueryFilterItem] = []
     having: list[QueryFilterItem] = []
-    order_by: list[QueryOrderBy] = Field([], alias="order_by")
+    order_by: list[QueryOrderBy] = Field([], alias="orderBy")
     limit: int | None = None
     offset: int | None = None
     use_path_names: list[UsePathName] = Field([], alias="usePathNames")

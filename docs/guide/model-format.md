@@ -1177,7 +1177,7 @@ examples:
  - field: "Order Date"
  op: ">="
  value: "2026-01-01"
- order_by:
+ orderBy:
  - { field: "Total Revenue", direction: "desc" }
  limit: 100
 
