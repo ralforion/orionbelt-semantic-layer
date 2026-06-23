@@ -7,23 +7,23 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import (
-    BinaryOp,
     CaseExpr,
     ColumnRef,
     Expr,
     FunctionCall,
     Literal,
     OrderByItem,
-    UnaryOp,
+)
+from orionbelt.compiler import (
+    filter_resolution,
+    metric_resolution,
+    raw_resolution,
 )
 from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_measure_expression,
-    tokenize_metric_formula,
 )
 from orionbelt.compiler.filters import (
-    build_exists_filter_expr,
-    build_filter_expr,
     build_measure_filter_condition,
     collect_measure_filter_objects,
 )
@@ -32,7 +32,6 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
-    FilterOperator,
     Grouping,
     NullsPosition,
     QueryFilter,
@@ -558,54 +557,7 @@ class QueryResolver:
 
         Errors are accumulated in the resolution context (raised at the end).
         """
-        if "." not in ref:
-            ctx.errors.append(
-                SemanticError(
-                    code="RAW_FIELD_INVALID_REF",
-                    message=(
-                        f"Raw-mode field '{ref}' must be a qualified 'DataObject.Column' reference"
-                    ),
-                    path="select.fields",
-                )
-            )
-            return
-
-        obj_name, col_name = ref.split(".", 1)
-        obj_name = obj_name.strip()
-        col_name = col_name.strip()
-        obj = ctx.model.data_objects.get(obj_name)
-        if obj is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="RAW_FIELD_UNKNOWN_OBJECT",
-                    message=f"Raw-mode field '{ref}' references unknown data object '{obj_name}'",
-                    path="select.fields",
-                )
-            )
-            return
-        column = obj.columns.get(col_name)
-        if column is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="RAW_FIELD_UNKNOWN_COLUMN",
-                    message=(
-                        f"Raw-mode field '{ref}' references unknown column "
-                        f"'{col_name}' on data object '{obj_name}'"
-                    ),
-                    path="select.fields",
-                )
-            )
-            return
-
-        ctx.result.fields.append(
-            ResolvedField(
-                object_name=obj_name,
-                column_name=col_name,
-                source_column=column.code,
-                alias=ref,
-            )
-        )
-        ctx.result.required_objects.add(obj_name)
+        raw_resolution.resolve_raw_field(self, ctx, ref)
 
     # -- dimensions ----------------------------------------------------------
 
@@ -903,13 +855,7 @@ class QueryResolver:
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a metric to its combined expression."""
-        if metric.type == MetricType.CUMULATIVE:
-            return self._resolve_cumulative_metric(ctx, name, metric)
-        if metric.type == MetricType.PERIOD_OVER_PERIOD:
-            return self._resolve_pop_metric(ctx, name, metric)
-        if metric.type == MetricType.WINDOW:
-            return self._resolve_window_metric(ctx, name, metric)
-        return self._resolve_derived_metric(ctx, name, metric)
+        return metric_resolution.resolve_metric(self, ctx, name, metric)
 
     def _validate_partition_dimensions(
         self,
@@ -918,425 +864,33 @@ class QueryResolver:
         partition_by: list[str],
         path_template: str,
     ) -> bool:
-        """Validate every partitionBy entry references a model dimension
-        present in the query's SELECT. Returns False (and accumulates errors)
-        on any failure. Reachability to the measure source is enforced
-        transitively by ``required_objects`` reachability later in resolution.
-        """
-        if not partition_by:
-            return True
-        dim_names = {d.name for d in ctx.result.dimensions}
-        for dim_name in partition_by:
-            if dim_name not in ctx.model.dimensions:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_PARTITION_DIMENSION",
-                        message=(
-                            f"Metric '{metric_name}' references unknown partition "
-                            f"dimension '{dim_name}'"
-                        ),
-                        path=path_template.format(metric_name),
-                    )
-                )
-                return False
-            if dim_name not in dim_names:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_PARTITION_DIMENSION",
-                        message=(
-                            f"Metric '{metric_name}' requires partitionBy dimension "
-                            f"'{dim_name}' to be in the query's selected dimensions"
-                        ),
-                        path=path_template.format(metric_name),
-                    )
-                )
-                return False
-        return True
+        return metric_resolution.validate_partition_dimensions(
+            self, ctx, metric_name, partition_by, path_template
+        )
 
     def _resolve_window_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a window metric (rank/lag/lead/ntile/first_value/last_value)."""
-        if metric.window_function is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC",
-                    message=f"Window metric '{name}' missing required 'windowFunction'",
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-
-        wf = metric.window_function
-        base_measure_name = metric.measure
-        base_aggregation = ""
-
-        # Validate referenced measure (if any) exists
-        if base_measure_name is not None:
-            base_measure = ctx.model.measures.get(base_measure_name)
-            if base_measure is None:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_MEASURE",
-                        message=(
-                            f"Window metric '{name}' references unknown "
-                            f"measure '{base_measure_name}'"
-                        ),
-                        path=f"metrics.{name}.measure",
-                    )
-                )
-                return None
-            base_aggregation = base_measure.aggregation
-            if base_measure_name not in ctx.result.metric_components:
-                comp = self._resolve_measure(ctx, base_measure_name)
-                if comp:
-                    ctx.result.metric_components[base_measure_name] = comp
-
-        # timeDimension is required for LAG/LEAD, optional otherwise (RANK uses measure value)
-        if metric.time_dimension is not None:
-            dim = ctx.model.dimensions.get(metric.time_dimension)
-            if dim is None:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_DIMENSION",
-                        message=(
-                            f"Window metric '{name}' references unknown "
-                            f"timeDimension '{metric.time_dimension}'"
-                        ),
-                        path=f"metrics.{name}.timeDimension",
-                    )
-                )
-                return None
-            dim_names = {d.name for d in ctx.result.dimensions}
-            if metric.time_dimension not in dim_names:
-                ctx.errors.append(
-                    SemanticError(
-                        code="WINDOW_TIME_DIMENSION_NOT_IN_SELECT",
-                        message=(
-                            f"Window metric '{name}' requires timeDimension "
-                            f"'{metric.time_dimension}' to be in the query's selected dimensions"
-                        ),
-                        path=f"metrics.{name}.timeDimension",
-                    )
-                )
-                return None
-        elif wf in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD}:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_LAG_LEAD",
-                    message=(
-                        f"Window metric '{name}' with function '{wf.value}' "
-                        f"requires 'timeDimension'"
-                    ),
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-
-        if wf == WindowFunctionKind.NTILE and (metric.buckets is None or metric.buckets < 2):
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_NTILE_BUCKETS",
-                    message=(
-                        f"Window metric '{name}' with function 'ntile' requires 'buckets' >= 2"
-                    ),
-                    path=f"metrics.{name}.buckets",
-                )
-            )
-            return None
-
-        if wf in {WindowFunctionKind.LAG, WindowFunctionKind.LEAD} and (
-            metric.offset is None or metric.offset < 1
-        ):
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_LAG_LEAD",
-                    message=(
-                        f"Window metric '{name}' with function '{wf.value}' "
-                        f"requires positive 'offset'"
-                    ),
-                    path=f"metrics.{name}.offset",
-                )
-            )
-            return None
-
-        if not self._validate_partition_dimensions(
-            ctx, name, metric.partition_by, "metrics.{}.partitionBy"
-        ):
-            return None
-
-        return ResolvedMeasure(
-            name=name,
-            aggregation=base_aggregation,
-            expression=ColumnRef(name=base_measure_name or name),
-            is_expression=True,
-            component_measures=[base_measure_name] if base_measure_name else [],
-            is_window=True,
-            window_function=wf,
-            window_base_measure=base_measure_name,
-            window_time_dimension=metric.time_dimension,
-            window_partition_by=list(metric.partition_by),
-            window_offset=metric.offset,
-            window_buckets=metric.buckets,
-            window_order_direction=metric.order_direction.lower(),
-            window_default_value=metric.default_value,
-        )
+        return metric_resolution.resolve_window_metric(self, ctx, name, metric)
 
     def _resolve_derived_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a derived metric to its combined expression."""
-        formula = metric.expression
-
-        # Extract and resolve each component measure
-        component_names = re.findall(r"\{\[([^\]]+)\]\}", formula or "")
-        for comp_name in component_names:
-            if comp_name not in ctx.result.metric_components:
-                comp = self._resolve_measure(ctx, comp_name)
-                if comp:
-                    ctx.result.metric_components[comp_name] = comp
-
-        # Parse the formula into an AST tree
-        try:
-            tokens = tokenize_metric_formula(formula or "")
-            parsed_expr = parse_expression(tokens)
-        except Exception as exc:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC_EXPRESSION",
-                    message=f"Metric '{name}' has invalid expression: {exc}",
-                    path=f"metrics.{name}.expression",
-                )
-            )
-            return None
-
-        return ResolvedMeasure(
-            name=name,
-            aggregation="",
-            expression=parsed_expr,
-            component_measures=component_names,
-            is_expression=True,
-        )
+        return metric_resolution.resolve_derived_metric(self, ctx, name, metric)
 
     def _resolve_cumulative_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a cumulative metric referencing an existing measure."""
-        if metric.measure is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC",
-                    message=f"Cumulative metric '{name}' missing required 'measure' field",
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-        if metric.time_dimension is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC",
-                    message=f"Cumulative metric '{name}' missing required 'timeDimension' field",
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-
-        # Validate referenced measure exists
-        base_measure = ctx.model.measures.get(metric.measure)
-        if base_measure is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_MEASURE",
-                    message=(
-                        f"Cumulative metric '{name}' references unknown measure '{metric.measure}'"
-                    ),
-                    path=f"metrics.{name}.measure",
-                )
-            )
-            return None
-
-        # Validate timeDimension is a known dimension
-        dim = ctx.model.dimensions.get(metric.time_dimension)
-        if dim is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_DIMENSION",
-                    message=(
-                        f"Cumulative metric '{name}' references unknown "
-                        f"timeDimension '{metric.time_dimension}'"
-                    ),
-                    path=f"metrics.{name}.timeDimension",
-                )
-            )
-            return None
-
-        # Validate timeDimension is in the query's selected dimensions
-        dim_names = {d.name for d in ctx.result.dimensions}
-        if metric.time_dimension not in dim_names:
-            ctx.errors.append(
-                SemanticError(
-                    code="CUMULATIVE_TIME_DIMENSION_NOT_IN_SELECT",
-                    message=(
-                        f"Cumulative metric '{name}' requires timeDimension "
-                        f"'{metric.time_dimension}' to be in the query's selected dimensions"
-                    ),
-                    path=f"metrics.{name}.timeDimension",
-                )
-            )
-            return None
-
-        # Validate partitionBy dimensions
-        if not self._validate_partition_dimensions(
-            ctx, name, metric.partition_by, "metrics.{}.partitionBy"
-        ):
-            return None
-
-        # Resolve the base measure as a component (reuse existing resolution)
-        if metric.measure not in ctx.result.metric_components:
-            comp = self._resolve_measure(ctx, metric.measure)
-            if comp:
-                ctx.result.metric_components[metric.measure] = comp
-
-        # The cumulative metric's expression is a placeholder ColumnRef to the base measure
-        # The actual window function is built during the cumulative_wrap phase
-        return ResolvedMeasure(
-            name=name,
-            aggregation=base_measure.aggregation,
-            expression=ColumnRef(name=metric.measure),
-            is_expression=True,
-            component_measures=[metric.measure],
-            is_cumulative=True,
-            cumulative_measure=metric.measure,
-            cumulative_time_dimension=metric.time_dimension,
-            cumulative_type=metric.cumulative_type,
-            cumulative_window=metric.window,
-            cumulative_grain_to_date=metric.grain_to_date,
-            cumulative_partition_by=list(metric.partition_by),
-        )
+        return metric_resolution.resolve_cumulative_metric(self, ctx, name, metric)
 
     def _resolve_pop_metric(
         self, ctx: _ResolutionContext, name: str, metric: Metric
     ) -> ResolvedMeasure | None:
         """Resolve a period-over-period metric."""
-        if metric.period_over_period is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC",
-                    message=f"PoP metric '{name}' missing required 'periodOverPeriod' field",
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-        if metric.expression is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC",
-                    message=f"PoP metric '{name}' missing required 'expression' field",
-                    path=f"metrics.{name}",
-                )
-            )
-            return None
-
-        pop = metric.period_over_period
-
-        # Validate timeDimension is a known dimension
-        dim = ctx.model.dimensions.get(pop.time_dimension)
-        if dim is None:
-            ctx.errors.append(
-                SemanticError(
-                    code="POP_UNKNOWN_TIME_DIMENSION",
-                    message=(
-                        f"Period-over-period metric '{name}' references unknown "
-                        f"time dimension '{pop.time_dimension}'"
-                    ),
-                    path=f"metrics.{name}.periodOverPeriod.timeDimension",
-                )
-            )
-            return None
-
-        # Validate timeDimension is in the query's selected dimensions
-        dim_names = {d.name for d in ctx.result.dimensions}
-        if pop.time_dimension not in dim_names:
-            ctx.errors.append(
-                SemanticError(
-                    code="POP_TIME_DIMENSION_NOT_IN_SELECT",
-                    message=(
-                        f"Period-over-period metric '{name}' requires time dimension "
-                        f"'{pop.time_dimension}' to be in the query's selected dimensions"
-                    ),
-                    path=f"metrics.{name}.periodOverPeriod.timeDimension",
-                )
-            )
-            return None
-
-        # Validate offset is non-zero
-        if pop.offset == 0:
-            ctx.errors.append(
-                SemanticError(
-                    code="POP_INVALID_OFFSET",
-                    message=(
-                        f"Period-over-period metric '{name}' has offset=0 "
-                        f"(must be non-zero, e.g. -1 for previous period)"
-                    ),
-                    path=f"metrics.{name}.periodOverPeriod.offset",
-                )
-            )
-            return None
-
-        # Resolve the expression (same as derived — parse {[Measure Name]} refs)
-        component_names = re.findall(r"\{\[([^\]]+)\]\}", metric.expression)
-
-        # PoP comparison logic only supports single-measure expressions
-        if len(component_names) > 1:
-            ctx.errors.append(
-                SemanticError(
-                    code="POP_MULTI_MEASURE_NOT_SUPPORTED",
-                    message=(
-                        f"Period-over-period metric '{name}' references multiple measures "
-                        f"({', '.join(component_names)}). PoP comparison currently supports "
-                        f"only single-measure expressions."
-                    ),
-                    path=f"metrics.{name}.expression",
-                )
-            )
-            return None
-
-        for comp_name in component_names:
-            if comp_name not in ctx.result.metric_components:
-                comp = self._resolve_measure(ctx, comp_name)
-                if comp:
-                    ctx.result.metric_components[comp_name] = comp
-
-        try:
-            tokens = tokenize_metric_formula(metric.expression)
-            parsed_expr = parse_expression(tokens)
-        except Exception as exc:
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_METRIC_EXPRESSION",
-                    message=f"Metric '{name}' has invalid expression: {exc}",
-                    path=f"metrics.{name}.expression",
-                )
-            )
-            return None
-
-        # Use the first component measure as the base (for single-measure PoP)
-        pop_base = component_names[0] if component_names else None
-
-        return ResolvedMeasure(
-            name=name,
-            aggregation="",
-            expression=parsed_expr,
-            component_measures=component_names,
-            is_expression=True,
-            is_pop=True,
-            pop_base_measure=pop_base,
-            pop_time_dimension=pop.time_dimension,
-            pop_grain=pop.grain,
-            pop_offset=pop.offset,
-            pop_offset_grain=pop.offset_grain,
-            pop_comparison=pop.comparison,
-        )
+        return metric_resolution.resolve_pop_metric(self, ctx, name, metric)
 
     def _collect_having_measure_refs(self, query: QueryObject, model: SemanticModel) -> list[str]:
         """Collect measure/metric names referenced in any HAVING filter.
@@ -1488,31 +1042,7 @@ class QueryResolver:
         Silently skips filters on data objects that are unreachable from the
         query's join graph — they are simply irrelevant to the current query.
         """
-        obj = ctx.model.data_objects.get(mf.data_object)
-        if obj is None:
-            return None
-
-        col = obj.columns.get(mf.column)
-        if col is None:
-            return None
-
-        if not self._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
-            return None
-
-        # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
-        # computed column inlines the expression — without this a filter
-        # on a boolean ``expression:`` column emitted ``(1 = FALSE)``
-        # because the empty ``code:`` was collapsed by the CAST.
-        col_expr: Expr = make_column_expr(ctx.model, mf.data_object, mf.column)
-        qf = QueryFilter(field=mf.column, op=mf.operator, value=mf.value or mf.values or None)
-        filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
-        if filter_expr is None:
-            return None
-        return ResolvedFilter(
-            expression=filter_expr,
-            is_aggregate=False,
-            referenced_fields=frozenset({mf.column}),
-        )
+        return filter_resolution.resolve_static_filter(self, ctx, mf)
 
     # -- filters -------------------------------------------------------------
 
@@ -1528,59 +1058,21 @@ class QueryResolver:
         Silently skips filters on unreachable data objects — they are
         irrelevant to the current query.
         """
-        if obj_name in ctx.joined_objects:
-            return True
-        if ctx.graph is None:
-            return False
-        reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
-        if not reachable:
-            return False
-        new_steps = ctx.graph.find_join_path(ctx.joined_objects, {obj_name})
-        for step in new_steps:
-            if step.to_object not in ctx.joined_objects:
-                ctx.result.join_steps.append(step)
-                ctx.joined_objects.add(step.to_object)
-                ctx.result.required_objects.add(step.to_object)
-        return True
+        return filter_resolution.resolve_filter_object(
+            self, ctx, obj_name, filter_path, _field_label
+        )
 
     def _resolve_filter_item(
         self, ctx: _ResolutionContext, item: QueryFilterItem, *, is_having: bool
     ) -> ResolvedFilter | None:
         """Resolve a filter item (leaf or group) to a physical expression."""
-        if isinstance(item, QueryFilter):
-            return self._resolve_filter(ctx, item, is_having=is_having)
-        return self._resolve_filter_group(ctx, item, is_having=is_having)
+        return filter_resolution.resolve_filter_item(self, ctx, item, is_having=is_having)
 
     def _resolve_filter_group(
         self, ctx: _ResolutionContext, group: QueryFilterGroup, *, is_having: bool
     ) -> ResolvedFilter | None:
         """Resolve a filter group recursively, combining with AND/OR."""
-        child_exprs: list[Expr] = []
-        all_fields: set[str] = set()
-        for child in group.filters:
-            resolved = self._resolve_filter_item(ctx, child, is_having=is_having)
-            if resolved:
-                child_exprs.append(resolved.expression)
-                all_fields.update(resolved.referenced_fields)
-
-        if not child_exprs:
-            return None
-
-        # Combine children with the group's logic
-        op = "AND" if group.logic == "and" else "OR"
-        combined: Expr = child_exprs[0]
-        for expr in child_exprs[1:]:
-            combined = BinaryOp(left=combined, op=op, right=expr)
-
-        # Optionally negate
-        if group.negated:
-            combined = UnaryOp(op="NOT", operand=combined)
-
-        return ResolvedFilter(
-            expression=combined,
-            is_aggregate=is_having,
-            referenced_fields=frozenset(all_fields),
-        )
+        return filter_resolution.resolve_filter_group(self, ctx, group, is_having=is_having)
 
     def _resolve_filter(
         self, ctx: _ResolutionContext, qf: QueryFilter, *, is_having: bool
@@ -1595,113 +1087,7 @@ class QueryResolver:
         If the referenced data object is reachable but not yet joined, the
         join path is auto-extended.
         """
-        filter_path = "having" if is_having else "where"
-
-        # 1. Try dimension name
-        col_expr: Expr
-        subject_object: str | None = None
-        dim = ctx.model.dimensions.get(qf.field)
-        if dim:
-            obj_name = dim.view
-            if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
-                return None
-            col_name = dim.column
-            col_expr = make_column_expr(ctx.model, obj_name, col_name)
-            subject_object = obj_name
-
-        # 2. HAVING: try measure or metric name
-        elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
-            col_expr = ColumnRef(name=qf.field)
-
-        # 3. Try qualified column: "DataObject.Column"
-        elif "." in qf.field:
-            parts = qf.field.split(".", 1)
-            obj_name, col_name = parts[0].strip(), parts[1].strip()
-            obj = ctx.model.data_objects.get(obj_name)
-            if obj is None:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_FILTER_FIELD",
-                        message=(f"Unknown data object '{obj_name}' in filter field '{qf.field}'"),
-                        path=filter_path,
-                    )
-                )
-                return None
-            if col_name not in obj.columns:
-                ctx.errors.append(
-                    SemanticError(
-                        code="UNKNOWN_FILTER_FIELD",
-                        message=(
-                            f"Unknown column '{col_name}' in data object "
-                            f"'{obj_name}' for filter field '{qf.field}'"
-                        ),
-                        path=filter_path,
-                    )
-                )
-                return None
-            if not self._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
-                return None
-            col_expr = make_column_expr(ctx.model, obj_name, col_name)
-            subject_object = obj_name
-
-        else:
-            ctx.errors.append(
-                SemanticError(
-                    code="UNKNOWN_FILTER_FIELD",
-                    message=f"Unknown filter field '{qf.field}'",
-                    path=filter_path,
-                )
-            )
-            return None
-
-        # exists/nonexists need model + subject object + qualify_table to
-        # build the correlated subquery. HAVING is rejected entirely in v2.7:
-        # the correlation predicate references row-level columns of the
-        # subject data object, but HAVING is evaluated after GROUP BY — the
-        # raw subject column is no longer in scope, producing invalid SQL on
-        # every dialect. Measure-level EXISTS (the proper HAVING-equivalent)
-        # is deferred to ``MeasureFilter.subquery`` in a future release.
-        if qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
-            if is_having:
-                ctx.errors.append(
-                    SemanticError(
-                        code="INVALID_FILTER_OPERATOR",
-                        message=(
-                            f"'{qf.op}' is only valid in 'where' — HAVING is "
-                            "evaluated after GROUP BY, where the row-level "
-                            "correlation predicate is out of scope. Move the "
-                            "filter to 'where', or use a precomputed boolean "
-                            "column on the data object."
-                        ),
-                        path=filter_path,
-                    )
-                )
-                return None
-            if subject_object is None:
-                ctx.errors.append(
-                    SemanticError(
-                        code="INVALID_FILTER_OPERATOR",
-                        message=(
-                            f"'{qf.op}' requires a dimension or qualified column "
-                            "as the subject — measure/metric references are not "
-                            "valid subjects for a correlated subquery."
-                        ),
-                        path=filter_path,
-                    )
-                )
-                return None
-            qt = ctx.qualify_table or (lambda obj: obj.qualified_code)
-            filter_expr = build_exists_filter_expr(qf, ctx.model, subject_object, qt, ctx.errors)
-        else:
-            filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
-
-        if filter_expr is None:
-            return None
-        return ResolvedFilter(
-            expression=filter_expr,
-            is_aggregate=is_having,
-            referenced_fields=frozenset({qf.field}),
-        )
+        return filter_resolution.resolve_filter(self, ctx, qf, is_having=is_having)
 
     # -- order by ------------------------------------------------------------
 
@@ -1709,64 +1095,7 @@ class QueryResolver:
         self, ctx: _ResolutionContext, field_name: str, select_count: int
     ) -> Expr | None:
         """Resolve an order-by field to its expression."""
-        # Coalesce alias: outer SELECT exposes it as a bare alias column,
-        # so a table-less ColumnRef is the right form for both star and CFL.
-        if field_name in ctx.result.coalesce_aliases:
-            return ColumnRef(name=field_name)
-
-        for dim in ctx.result.dimensions:
-            if dim.name == field_name:
-                # Use make_column_expr so computed columns (which have empty
-                # ``code``) inline their expression instead of producing an
-                # empty column ref like ``"Orders"."" ``.
-                return make_column_expr(ctx.model, dim.object_name, dim.column_name)
-
-        for meas in ctx.result.measures:
-            if meas.name == field_name:
-                # Window / cumulative / period-over-period metrics are
-                # exposed by the outer SELECT as a bare alias after their
-                # wrapper CTE runs — ordering by ``meas.expression`` here
-                # would point ORDER BY at the *base measure's* inner
-                # aggregate (the lag-input, the cumulative-input), not at
-                # the windowed output the user asked for. Same pattern as
-                # coalesce_aliases above: emit a table-less ColumnRef so
-                # both star and CFL outer SELECTs bind it correctly.
-                if meas.is_window or meas.is_cumulative or meas.is_pop:
-                    return ColumnRef(name=meas.name)
-                return meas.expression
-
-        # Raw mode: order by the field's "DataObject.Column" alias.
-        for f in ctx.result.fields:
-            if f.alias == field_name:
-                return make_column_expr(ctx.model, f.object_name, f.column_name)
-
-        if field_name.isdigit():
-            pos = int(field_name)
-            if 1 <= pos <= select_count:
-                return Literal.number(pos)
-            ctx.errors.append(
-                SemanticError(
-                    code="INVALID_ORDER_BY_POSITION",
-                    message=(
-                        f"ORDER BY position {pos} is out of range "
-                        f"(SELECT has {select_count} columns)"
-                    ),
-                    path="order_by",
-                )
-            )
-            return None
-
-        ctx.errors.append(
-            SemanticError(
-                code="UNKNOWN_ORDER_BY_FIELD",
-                message=(
-                    f"ORDER BY field '{field_name}' is not a dimension "
-                    f"or measure in the query's SELECT"
-                ),
-                path="order_by",
-            )
-        )
-        return None
+        return filter_resolution.resolve_order_by_field(self, ctx, field_name, select_count)
 
 
 class ResolutionError(Exception):
