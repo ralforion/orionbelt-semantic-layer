@@ -15,9 +15,12 @@
 [![GitHub stars](https://img.shields.io/github/stars/ralforion/orionbelt-semantic-layer?style=social)](https://github.com/ralforion/orionbelt-semantic-layer)
 [![Version 2.16.0](https://img.shields.io/badge/version-2.16.0-purple.svg)](https://github.com/ralforion/orionbelt-semantic-layer/releases)
 [![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
-[![Docker Hub](https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&label=Docker%20Hub)](https://hub.docker.com/repositories/ralforion)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE)
+
+[![Docker Hub](https://img.shields.io/docker/v/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&label=Docker%20Hub&color=2496ED&sort=semver)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api/tags)
+[![Docker pulls](https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api)
+[![Image size](https://img.shields.io/docker/image-size/ralforion/orionbelt-semantic-layer-api/latest?logo=docker&logoColor=white&color=2496ED&label=image%20size)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api)
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?logo=pydantic&logoColor=white)](https://docs.pydantic.dev)
