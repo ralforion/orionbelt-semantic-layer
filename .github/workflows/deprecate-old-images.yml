@@ -1,0 +1,54 @@
+name: Deprecate Old Images
+
+# One-shot, manual-only. Pushes a "renamed" deprecation notice to the Docker Hub
+# overview of the old image repos (orionbelt-{api,ui,flight}) after the rename to
+# orionbelt-semantic-layer-{api,ui,flight}. The old images are left intact so
+# existing pulls keep working; only their descriptions change. Safe to delete
+# this workflow once it has been run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - old: orionbelt-api
+            new: orionbelt-semantic-layer-api
+          - old: orionbelt-ui
+            new: orionbelt-semantic-layer-ui
+          - old: orionbelt-flight
+            new: orionbelt-semantic-layer-flight
+    steps:
+      - name: Write deprecation notice
+        run: |
+          cat > NOTICE.md <<EOF
+          # DEPRECATED - this image was renamed
+
+          This repository has been renamed to
+          [\`${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.new }}\`](https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.new }}).
+
+          Please update your pulls:
+
+          \`\`\`bash
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.new }}
+          \`\`\`
+
+          The tags here are frozen at v2.16.0 and will not receive further updates.
+          See https://github.com/ralforion/orionbelt-semantic-layer for details.
+          EOF
+
+      - name: Sync deprecation notice to Docker Hub
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.old }}
+          short-description: "DEPRECATED - renamed to ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.new }}"
+          readme-filepath: ./NOTICE.md
