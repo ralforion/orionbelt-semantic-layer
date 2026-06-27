@@ -46,6 +46,28 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
   model's virtual table: `SELECT <dim/measure labels> FROM <model> [WHERE ...]
   [ORDER BY ...] [LIMIT n]`
 
+## Options reference
+
+`obsl <command> --help` is always authoritative. Every option:
+
+| Command | Options |
+| --- | --- |
+| _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) |
+| `validate` | `-f/--format` · `-s/--server` · `--api-key` |
+| `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` |
+| `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` |
+| `describe` | `-f/--format` |
+| `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) |
+| `graph` | _(none)_ |
+| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--ontology` (obml-to-osi only) · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` |
+| `dialects` | `-f/--format` · `-s/--server` · `--api-key` |
+
+Global: `-V/--version`, `--install-completion`, `--show-completion`.
+
+`--limit` applies to `-q` queries and **local** `--sql` (when the query has no
+limit). It cannot apply to **remote** `--sql` (the server's OBSQL endpoint takes
+no limit) — put `LIMIT n` in the SQL there; the CLI warns if you pass both.
+
 ## Validate
 
 Validation returns a non-zero exit code when the model is invalid, so it drops
@@ -98,17 +120,21 @@ deployed engine:
 
 ```bash
 obsl execute model.yaml -q query.json -f csv > results.csv          # local
+obsl execute model.yaml -q query.json --limit 50                    # cap rows when the query has none
 obsl execute -q query.json --server https://your-host --api-key "$OBSL_API_KEY"  # remote
 ```
 
-A default row limit (1000) is applied when the query has none.
+`--limit` (default 1000) applies when the query carries no limit of its own. It
+covers `-q` queries and local `--sql`; for remote `--sql`, put `LIMIT n` in the
+SQL (the CLI warns if you pass `--limit` there).
 
 ## Describe, diagram, graph
 
 ```bash
-obsl describe model.yaml            # tables of data objects, dimensions, measures, metrics
-obsl diagram model.yaml > er.mmd    # Mermaid ER diagram
-obsl graph model.yaml > model.ttl   # OBSL-Core RDF (Turtle)
+obsl describe model.yaml                       # tables of data objects, dimensions, measures, metrics
+obsl diagram model.yaml > er.mmd               # Mermaid ER diagram
+obsl diagram model.yaml --no-columns --theme dark   # compact entities, dark theme
+obsl graph model.yaml > model.ttl              # OBSL-Core RDF (Turtle)
 ```
 
 ## Convert (OSI ↔ OBML)
