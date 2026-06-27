@@ -1,10 +1,14 @@
 """HTTP client for the ``obsl --server`` remote path.
 
-Targets a deployed OrionBelt REST API. Stateless model+query work goes
-through ``POST /v1/oneshot/batch`` (which accepts a model and runs queries in
-one round trip); validation and conversion use their dedicated stateless
-endpoints. The local file is always the source of truth — it is uploaded with
-each call, so no session has to be created on the server.
+Targets a deployed OrionBelt REST API.
+
+``compile`` / ``execute`` run against the server's **curated** model via the
+top-level ``/v1/query/sql``, ``/v1/query/execute`` and
+``/v1/query/semantic-ql[/compile]`` shortcuts — the deployed model is
+auto-resolved and **no model is uploaded**, so governed single-model
+deployments (where ad-hoc model upload is disabled) are respected. ``validate``
+and ``convert`` post the model / file you pass to their dedicated stateless
+endpoints.
 """
 
 from __future__ import annotations

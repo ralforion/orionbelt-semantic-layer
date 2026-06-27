@@ -190,7 +190,7 @@ obsl compile model.yaml --sql 'SELECT "Region", "Sales" FROM model'  # ... or fr
 obsl describe model.yaml                                   # overview of data objects + artefacts
 obsl diagram model.yaml                                    # Mermaid ER diagram
 obsl convert obml-to-osi model.yaml                        # OBML -> OSI (and osi-to-obml)
-obsl execute model.yaml -q query.json --server http://host # run against a deployed engine
+obsl execute -q query.json --server http://host           # run against a deployed model (omit MODEL)
 ```
 
 See the [CLI guide](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) for all commands.
