@@ -74,7 +74,12 @@ class RemoteClient:
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model_yaml": model_yaml,
-            "queries": [{"id": "q0", "query": query.model_dump(by_alias=True, mode="json")}],
+            "queries": [
+                {
+                    "id": "q0",
+                    "query": query.model_dump(by_alias=True, mode="json", exclude_none=True),
+                }
+            ],
             "execute": execute,
         }
         if dialect:
