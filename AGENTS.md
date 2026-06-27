@@ -13,6 +13,7 @@ uv sync                           # all deps (dev, docs, ui, flight, drivers)
 
 uv run orionbelt-api              # REST API on :8000
 uv run orionbelt-ui               # Gradio UI
+uv run obsl --help                # CLI: validate/compile/execute/convert/describe/diagram/graph (local-first)
 
 uv run pytest                     # all tests
 uv run pytest tests/unit/test_compiler.py::TestClass::test_method  # single test

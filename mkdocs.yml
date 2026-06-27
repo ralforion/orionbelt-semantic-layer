@@ -141,6 +141,7 @@ nav:
       - OBSL Graph & SPARQL: guide/obsl.md
       - Freshness Contracts: guide/freshness-contracts.md
       - Result Cache: guide/result-cache.md
+      - Command-Line Interface: guide/cli.md
       - Gradio UI: guide/ui.md
       - AI Integrations: guide/integrations.md
       - Postgres Wire (BI Tools): guide/postgres-wire-bi-tools.md

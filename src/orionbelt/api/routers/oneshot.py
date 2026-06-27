@@ -449,7 +449,7 @@ async def oneshot_batch(
     if body.model_yaml and is_single_model_mode():
         raise HTTPException(
             status_code=403,
-            detail="Single-model mode: model upload is disabled (use model_id)",
+            detail="Single-model mode: model upload is disabled",
         )
 
     if len(body.queries) > cfg.max_queries:
