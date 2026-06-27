@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import httpx
 
+from orionbelt import __version__
 from orionbelt.cli._local import CliError
 from orionbelt.models.query import QueryObject
 
@@ -25,7 +26,10 @@ class RemoteClient:
 
     def __init__(self, server: str, api_key: str | None = None) -> None:
         self.base = server.rstrip("/")
-        self._headers: dict[str, str] = {}
+        # Identify as obsl rather than the default "python-httpx/..." — some
+        # WAFs (e.g. Cloud Armor in front of the demo deployment) deny the
+        # generic httpx agent.
+        self._headers: dict[str, str] = {"User-Agent": f"obsl/{__version__}"}
         if api_key:
             # The API accepts the key via X-API-Key (default) or Bearer; send
             # both so a server configured with a custom header name still works
