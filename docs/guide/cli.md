@@ -29,8 +29,8 @@ obsl --version
 | Command | What it does | Runs |
 | --- | --- | --- |
 | `obsl validate MODEL` | Validate a model; exits `1` on error | local or `--server` |
-| `obsl compile MODEL -q QUERY` | Compile a query to SQL | local or `--server` |
-| `obsl execute MODEL -q QUERY` | Compile and run a query | local or `--server` |
+| `obsl compile [MODEL] -q QUERY` | Compile a query to SQL | local or `--server` |
+| `obsl execute [MODEL] -q QUERY` | Compile and run a query | local or `--server` |
 | `obsl describe MODEL` | Structured overview of artefacts | local |
 | `obsl diagram MODEL` | Mermaid ER diagram | local |
 | `obsl graph MODEL` | OBSL-Core RDF graph (Turtle) | local |
@@ -89,8 +89,8 @@ locally requires database drivers and credentials to be configured (see
 deployed engine:
 
 ```bash
-obsl execute model.yaml -q query.json --server https://your-host --api-key "$OBSL_API_KEY"
-obsl execute model.yaml -q query.json -f csv > results.csv
+obsl execute model.yaml -q query.json -f csv > results.csv          # local
+obsl execute -q query.json --server https://your-host --api-key "$OBSL_API_KEY"  # remote
 ```
 
 A default row limit (1000) is applied when the query has none.
@@ -130,12 +130,16 @@ go to **stderr** — so `obsl ... -f json | jq` and redirects work cleanly.
 | `--server URL` | `OBSL_SERVER` | Target a deployed OrionBelt REST API |
 | `--api-key KEY` | `OBSL_API_KEY` | API key for that server |
 
-In remote mode the local model file is uploaded with each call (via the
-stateless `oneshot` / `validate` / `convert` endpoints), so no server-side
-session has to be created.
+`compile` and `execute` in remote mode run the query against the **server's
+curated model** (via the `/v1/query/sql` and `/v1/query/execute` shortcuts that
+auto-resolve the deployed model) — no model is uploaded, so `MODEL` is omitted
+and governed single-model deployments (where ad-hoc model upload is disabled)
+are respected. `validate` and `convert` operate on the model you pass.
 
 ```bash
 export OBSL_SERVER=https://your-host
 export OBSL_API_KEY=sk-...
-obsl compile model.yaml -q query.json
+obsl compile -q query.json               # compiles against the deployed model
+obsl execute -q query.json               # runs against the deployed warehouse
+obsl validate model.yaml                  # validates the model you pass
 ```

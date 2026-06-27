@@ -69,36 +69,27 @@ class RemoteClient:
     def validate(self, model_yaml: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._post("/validate", {"model_yaml": model_yaml}))
 
-    def _batch_one(
-        self, model_yaml: str, query: QueryObject, dialect: str | None, *, execute: bool
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "model_yaml": model_yaml,
-            "queries": [
-                {
-                    "id": "q0",
-                    "query": query.model_dump(by_alias=True, mode="json", exclude_none=True),
-                }
-            ],
-            "execute": execute,
-        }
-        if dialect:
-            body["dialect"] = dialect
-        data = self._post("/oneshot/batch", body)
-        results = data.get("results") or []
-        if not results:
-            raise CliError("Server returned no results for the query")
-        item = results[0]
-        if item.get("status") == "error":
-            err = item.get("error") or {}
-            raise CliError(f"{err.get('code', 'ERROR')}: {err.get('message', 'query failed')}")
-        return cast("dict[str, Any]", item)
+    def _query_body(self, query: QueryObject) -> dict[str, Any]:
+        return query.model_dump(by_alias=True, mode="json", exclude_none=True)
 
-    def compile(self, model_yaml: str, query: QueryObject, dialect: str | None) -> dict[str, Any]:
-        return self._batch_one(model_yaml, query, dialect, execute=False)
+    def compile(self, query: QueryObject, dialect: str | None) -> dict[str, Any]:
+        """Compile a query against the server's curated model (no upload).
 
-    def execute(self, model_yaml: str, query: QueryObject, dialect: str | None) -> dict[str, Any]:
-        return self._batch_one(model_yaml, query, dialect, execute=True)
+        Uses the top-level ``/query/sql`` shortcut, which auto-resolves the
+        single deployed model — so this respects governed, single-model
+        deployments where ad-hoc model upload is disabled.
+        """
+        params = {"dialect": dialect} if dialect else None
+        return cast(
+            "dict[str, Any]", self._post("/query/sql", self._query_body(query), params=params)
+        )
+
+    def execute(self, query: QueryObject, dialect: str | None) -> dict[str, Any]:
+        """Execute a query against the server's curated model (no upload)."""
+        params = {"dialect": dialect} if dialect else None
+        return cast(
+            "dict[str, Any]", self._post("/query/execute", self._query_body(query), params=params)
+        )
 
     def convert_osi_to_obml(self, input_yaml: str) -> dict[str, Any]:
         return cast(

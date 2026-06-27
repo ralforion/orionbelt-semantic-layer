@@ -187,18 +187,43 @@ def test_validate_from_stdin():
 # -- remote path (mocked) ---------------------------------------------------
 
 
-def test_compile_remote(monkeypatch, model_file, query_file):
+def test_compile_remote_curated(monkeypatch, query_file):
+    """Remote compile queries the server's curated model — no MODEL needed."""
     from orionbelt.cli import _remote
 
-    def fake_compile(self, model_yaml, query, dialect):
+    def fake_compile(self, query, dialect):
         return {"sql": "SELECT 1", "dialect": dialect or "postgres", "sql_valid": True}
 
     monkeypatch.setattr(_remote.RemoteClient, "compile", fake_compile)
     result = runner.invoke(
-        app, ["compile", model_file, "-q", query_file, "-s", "http://example", "-d", "mysql"]
+        app, ["compile", "-q", query_file, "-s", "http://example", "-d", "mysql"]
     )
     assert result.exit_code == 0
     assert "SELECT 1" in result.stdout
+
+
+def test_execute_remote_curated(monkeypatch, query_file):
+    from orionbelt.cli import _remote
+
+    def fake_execute(self, query, dialect):
+        return {
+            "columns": [{"name": "Customer Country"}, {"name": "Revenue"}],
+            "rows": [["US", 100]],
+            "row_count": 1,
+            "execution_time_ms": 1.0,
+            "dialect": dialect or "postgres",
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "execute", fake_execute)
+    result = runner.invoke(app, ["execute", "-q", query_file, "-s", "http://example", "-f", "csv"])
+    assert result.exit_code == 0
+    assert "US" in result.stdout
+
+
+def test_compile_local_requires_model(query_file):
+    """Without --server, MODEL is required."""
+    result = runner.invoke(app, ["compile", "-q", query_file])
+    assert result.exit_code != 0
 
 
 def test_validate_remote(monkeypatch, model_file):

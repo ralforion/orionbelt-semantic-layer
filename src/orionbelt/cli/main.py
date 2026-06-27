@@ -34,6 +34,16 @@ app = typer.Typer(
 ModelArg = Annotated[
     str, typer.Argument(metavar="MODEL", help="Path to an OBML model YAML file (or '-' for stdin).")
 ]
+# compile / execute can run against a deployed model with --server, where the
+# local file is not needed — so MODEL is optional there.
+ModelArgOpt = Annotated[
+    str | None,
+    typer.Argument(
+        metavar="[MODEL]",
+        help="Path to an OBML model YAML file. Required locally; omit with --server "
+        "to query the server's curated model.",
+    ),
+]
 QueryOpt = Annotated[
     str,
     typer.Option("--query", "-q", help="Path to a query document (JSON or YAML; '-' for stdin)."),
@@ -170,8 +180,8 @@ def _fmt_issue(issue: dict[str, Any]) -> str:
 
 @app.command()
 def compile(  # noqa: A001 — "compile" is the natural verb for this command
-    model: ModelArg,
     query: QueryOpt,
+    model: ModelArgOpt = None,
     dialect: DialectOpt = None,
     explain: Annotated[
         bool, typer.Option("--explain", help="Also print the planner decisions.")
@@ -183,8 +193,11 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
 ) -> None:
-    """Compile a query against a model to SQL."""
-    model_yaml = _io.read_text(model)
+    """Compile a query to SQL.
+
+    Locally, MODEL is required. With --server the query runs against the
+    server's curated model, so MODEL may be omitted.
+    """
     q = _io.load_query(query)
 
     from orionbelt.cli._local import CliError
@@ -193,8 +206,10 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
     if server:
         from orionbelt.cli._remote import RemoteClient
 
+        if model:
+            _render.note("--server set: querying the server's curated model; MODEL ignored")
         try:
-            item = RemoteClient(server, api_key).compile(model_yaml, q, dialect)
+            item = RemoteClient(server, api_key).compile(q, dialect)
         except CliError as exc:
             raise _fail(str(exc)) from None
         payload = {
@@ -209,6 +224,9 @@ def compile(  # noqa: A001 — "compile" is the natural verb for this command
         from orionbelt.cli import _local
         from orionbelt.service.model_store import ModelValidationError
 
+        if not model:
+            raise _fail("MODEL is required for local compile (or pass --server to query a model).")
+        model_yaml = _io.read_text(model)
         try:
             result = _local.compile_query(model_yaml, q, dialect, pretty=pretty)
         except ModelValidationError as exc:
@@ -247,8 +265,8 @@ def _print_explain(plan: dict[str, Any]) -> None:
 
 @app.command()
 def execute(
-    model: ModelArg,
     query: QueryOpt,
+    model: ModelArgOpt = None,
     dialect: DialectOpt = None,
     limit: Annotated[
         int, typer.Option("--limit", help="Default row limit when the query has none.")
@@ -257,19 +275,24 @@ def execute(
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
 ) -> None:
-    """Compile and execute a query against the configured warehouse."""
-    model_yaml = _io.read_text(model)
+    """Compile and execute a query against the configured warehouse.
+
+    Locally, MODEL is required and a database must be configured. With
+    --server the query runs against the server's curated model and warehouse.
+    """
     q = _io.load_query(query)
+    if q.limit is None:
+        q = q.model_copy(update={"limit": limit})
 
     from orionbelt.cli._local import CliError
 
     if server:
         from orionbelt.cli._remote import RemoteClient
 
-        if q.limit is None:
-            q = q.model_copy(update={"limit": limit})
+        if model:
+            _render.note("--server set: querying the server's curated model; MODEL ignored")
         try:
-            item = RemoteClient(server, api_key).execute(model_yaml, q, dialect)
+            item = RemoteClient(server, api_key).execute(q, dialect)
         except CliError as exc:
             raise _fail(str(exc)) from None
         columns = [c.get("name", "") for c in (item.get("columns") or [])]
@@ -285,6 +308,9 @@ def execute(
         from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError
         from orionbelt.service.model_store import ModelValidationError
 
+        if not model:
+            raise _fail("MODEL is required for local execute (or pass --server to run remotely).")
+        model_yaml = _io.read_text(model)
         try:
             compiled, executed = _local.execute_query(model_yaml, q, dialect, limit=limit)
         except ModelValidationError as exc:
