@@ -181,6 +181,19 @@ FLIGHT_ENABLED=true uv run orionbelt-api   # API + Arrow Flight SQL on :8815 (DB
 PGWIRE_ENABLED=true uv run orionbelt-api   # API + PostgreSQL wire on :5432 (Tableau, DBeaver, Superset, psql, Dremio source)
 ```
 
+**Use the `obsl` CLI** (no server needed - compiles in-process):
+
+```bash
+obsl validate model.yaml                                  # lint a model (exit 1 on error, CI-friendly)
+obsl compile model.yaml -q query.json -d snowflake        # print the generated SQL
+obsl describe model.yaml                                   # overview of data objects + artefacts
+obsl diagram model.yaml                                    # Mermaid ER diagram
+obsl convert obml-to-osi model.yaml                        # OBML -> OSI (and osi-to-obml)
+obsl execute model.yaml -q query.json --server http://host # run against a deployed engine
+```
+
+See the [CLI guide](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) for all commands.
+
 **Smoke-test the Flight SQL surface** without a BI tool:
 
 ```bash

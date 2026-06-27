@@ -63,11 +63,16 @@ dependencies = [
     # cache.get/set silently swallow it at WARNING level, queries never
     # cache. Pinning ensures it's resolved at install time.
     "pytz>=2024.1",
+    # Typer powers the ``obsl`` CLI (pulls in click + rich). Small footprint
+    # next to the existing fastapi / rdflib / sqlglot dependencies, and the
+    # CLI is a core entry point alongside orionbelt-api / orionbelt-ui.
+    "typer>=0.12,<1.0",
 ]
 
 [project.scripts]
 orionbelt-api = "orionbelt.api.app:main"
 orionbelt-ui = "orionbelt.ui.app:main"
+obsl = "orionbelt.cli.main:app"
 
 [project.optional-dependencies]
 dev = [

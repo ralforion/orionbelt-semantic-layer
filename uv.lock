@@ -2285,6 +2285,7 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "sqlglot" },
     { name = "structlog" },
+    { name = "typer" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2428,6 +2429,7 @@ requires-dist = [
     { name = "sqlglot", specifier = ">=26.0,<27.0" },
     { name = "structlog", specifier = ">=25.1,<26.0" },
     { name = "testcontainers", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "typer", specifier = ">=0.12,<1.0" },
     { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40,<1.0" },
 ]

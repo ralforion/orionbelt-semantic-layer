@@ -43,6 +43,7 @@ BOUNDARY_PREFIXES: tuple[str, ...] = (
     "orionbelt.api",
     "orionbelt.auth",
     "orionbelt.cache",
+    "orionbelt.cli",
     "orionbelt.pgwire",
     "orionbelt.parser",
     "orionbelt.service",
