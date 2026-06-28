@@ -2,7 +2,7 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
-## [Unreleased]
+## [2.17.1] - 2026-06-28
 
 ### Changed
 
