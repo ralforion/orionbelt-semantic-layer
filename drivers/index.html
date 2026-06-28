@@ -1090,6 +1090,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command-Line Interface
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/ui/" class="md-nav__link">
         
   
@@ -2314,7 +2342,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.16.0
+  OrionBelt v2.17.0
 </div>
       
     </li>
@@ -2673,7 +2701,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.16.0
+  OrionBelt v2.17.0
 </div>
                   </div>
                 </div>
@@ -3118,13 +3146,13 @@
 <h3 id="docker">Docker<a class="headerlink" href="#docker" title="Permanent link">&para;</a></h3>
 <p>Use <code>Dockerfile.flight</code> for on-premise deployments with Flight SQL enabled:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Build</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>Dockerfile.flight<span class="w"> </span>-t<span class="w"> </span>orionbelt-flight<span class="w"> </span>.
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>Dockerfile.flight<span class="w"> </span>-t<span class="w"> </span>orionbelt-semantic-layer-flight<span class="w"> </span>.
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
 </span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="c1"># Run with .env file</span>
 </span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>-p<span class="w"> </span><span class="m">8815</span>:8815<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>--env-file<span class="w"> </span>.env<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span>-v<span class="w"> </span>./models:/models:ro<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">  </span>orionbelt-flight
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">  </span>orionbelt-semantic-layer-flight
 </span></code></pre></div>
 <p>Or with explicit environment variables:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>-p<span class="w"> </span><span class="m">8815</span>:8815<span class="w"> </span><span class="se">\</span>
@@ -3138,7 +3166,7 @@
 </span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">SNOWFLAKE_SCHEMA</span><span class="o">=</span>PUBLIC<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">SNOWFLAKE_WAREHOUSE</span><span class="o">=</span>COMPUTE_WH<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>-v<span class="w"> </span>./models:/models:ro<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span>orionbelt-flight
+</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span>orionbelt-semantic-layer-flight
 </span></code></pre></div>
 <p>The container makes <strong>outbound</strong> connections to the database — no extra port mapping needed for that. Works with cloud databases (Snowflake, Databricks, etc.) out of the box.</p>
 <h3 id="docker-compose">Docker Compose<a class="headerlink" href="#docker-compose" title="Permanent link">&para;</a></h3>
@@ -3292,7 +3320,7 @@ answered from the model and never touch the warehouse.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="May 25, 2026 10:36:06 UTC">2026-05-25</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="June 25, 2026 21:35:04 UTC">2026-06-25</span>
   </span>
 
     

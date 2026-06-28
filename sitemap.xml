@@ -2,11 +2,11 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/drivers/</loc>
-         <lastmod>2026-05-25</lastmod>
+         <lastmod>2026-06-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/api/endpoints/</loc>
@@ -66,7 +66,7 @@
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/docker/</loc>
-         <lastmod>2026-04-14</lastmod>
+         <lastmod>2026-06-25</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/getting-started/installation/</loc>
@@ -79,6 +79,10 @@
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/authentication/</loc>
          <lastmod>2026-06-14</lastmod>
+    </url>
+    <url>
+         <loc>https://ralforion.com/orionbelt-semantic-layer/guide/cli/</loc>
+         <lastmod>2026-06-27</lastmod>
     </url>
     <url>
          <loc>https://ralforion.com/orionbelt-semantic-layer/guide/compilation/</loc>

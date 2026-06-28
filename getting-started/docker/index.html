@@ -723,7 +723,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.16.0
+  OrionBelt v2.17.0
 </div>
       
     </li>
@@ -1170,6 +1170,34 @@
     
   
     Result Cache
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command-Line Interface
   
 
     
@@ -2124,7 +2152,7 @@
 </nav>
 <div class="obml-version-badge">
   OBML v1.0<br>
-  OrionBelt v2.16.0
+  OrionBelt v2.17.0
 </div>
                   </div>
                 </div>
@@ -2147,31 +2175,31 @@
 <h2 id="docker-hub">Docker Hub<a class="headerlink" href="#docker-hub" title="Permanent link">&para;</a></h2>
 <p>Pre-built multi-platform images (linux/amd64, linux/arm64) are available on <a href="https://hub.docker.com/repositories/ralforion">Docker Hub</a>:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># API-only (REST API on :8080)</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-api
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>ralforion/orionbelt-api
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-semantic-layer-api
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>ralforion/orionbelt-semantic-layer-api
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># API + Arrow Flight SQL (REST on :8080, Flight on :8815)</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-flight
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>-p<span class="w"> </span><span class="m">8815</span>:8815<span class="w"> </span>--env-file<span class="w"> </span>.env<span class="w"> </span>ralforion/orionbelt-flight
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-semantic-layer-flight
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>-p<span class="w"> </span><span class="m">8815</span>:8815<span class="w"> </span>--env-file<span class="w"> </span>.env<span class="w"> </span>ralforion/orionbelt-semantic-layer-flight
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="c1"># UI (Gradio on :7860, connects to API)</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-ui
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>docker<span class="w"> </span>pull<span class="w"> </span>ralforion/orionbelt-semantic-layer-ui
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">7860</span>:7860<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">API_BASE_URL</span><span class="o">=</span>http://host.docker.internal:8080<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span>ralforion/orionbelt-ui
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span>ralforion/orionbelt-semantic-layer-ui
 </span></code></pre></div>
 <p>See <a href="../../drivers/">Drivers &amp; Flight SQL</a> for Flight SQL configuration and BI tool setup (DBeaver, Tableau, Power BI).</p>
 <h2 id="build-from-source">Build from Source<a class="headerlink" href="#build-from-source" title="Permanent link">&para;</a></h2>
 <p>Two separate images — API-only (fast) and UI (with Gradio):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># API image (no Gradio, fast cold starts)</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>orionbelt-api<span class="w"> </span>.
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>orionbelt-api
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>orionbelt-semantic-layer-api<span class="w"> </span>.
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>orionbelt-semantic-layer-api
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># UI image (Gradio, connects to API)</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>Dockerfile.ui<span class="w"> </span>-t<span class="w"> </span>orionbelt-ui<span class="w"> </span>.
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>Dockerfile.ui<span class="w"> </span>-t<span class="w"> </span>orionbelt-semantic-layer-ui<span class="w"> </span>.
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">7860</span>:7860<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">API_BASE_URL</span><span class="o">=</span>http://host.docker.internal:8080<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span>orionbelt-ui
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span>orionbelt-semantic-layer-ui
 </span></code></pre></div>
 <p>The API is available at <code>http://localhost:8080</code>. The UI is at <code>http://localhost:7860</code>. Sessions are ephemeral (in-memory, lost on container restart).</p>
 <h2 id="integration-tests">Integration Tests<a class="headerlink" href="#integration-tests" title="Permanent link">&para;</a></h2>
@@ -2213,7 +2241,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="April 14, 2026 20:02:32 UTC">2026-04-14</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="June 25, 2026 21:35:04 UTC">2026-06-25</span>
   </span>
 
     
