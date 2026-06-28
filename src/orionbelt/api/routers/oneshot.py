@@ -38,7 +38,12 @@ from orionbelt.api.schemas import (
     StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
-from orionbelt.cache import build_cache_key, compute_effective_ttl, is_nondeterministic_sql
+from orionbelt.cache import (
+    build_cache_key,
+    build_datasource_key,
+    compute_effective_ttl,
+    is_nondeterministic_sql,
+)
 from orionbelt.cache.parquet_codec import decode as cache_decode
 from orionbelt.cache.parquet_codec import encode as cache_encode
 from orionbelt.cache.protocol import Cache
@@ -280,7 +285,7 @@ async def _run_query(
             )
         else:
             cache_key = build_cache_key(
-                session_id=session_id,
+                datasource=build_datasource_key(dialect),
                 model_id=model_id,
                 dialect=dialect,
                 sql=compile_result.sql,
@@ -394,7 +399,7 @@ async def _run_query(
                 key=cache_key,
                 envelope=envelope,
                 ttl_seconds=ttl_outcome.ttl.seconds,
-                session_id=session_id,
+                datasource=build_datasource_key(dialect),
                 model_id=model_id,
                 dialect=dialect,
                 query=item.query,
@@ -636,7 +641,7 @@ async def _try_oneshot_cache_set(
     key: str,
     envelope: Any,
     ttl_seconds: int,
-    session_id: str,
+    datasource: str,
     model_id: str,
     dialect: str,
     query: Any,
@@ -666,7 +671,7 @@ async def _try_oneshot_cache_set(
             payload,
             ttl_seconds=ttl_seconds,
             physical_tables=physical_tables,
-            session_id=session_id,
+            datasource=datasource,
             model_id=model_id,
             query_hash=key[:16],
             dialect=dialect,

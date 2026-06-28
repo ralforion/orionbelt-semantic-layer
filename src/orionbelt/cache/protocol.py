@@ -55,7 +55,7 @@ class Cache(Protocol):
         *,
         ttl_seconds: int,
         physical_tables: list[str],
-        session_id: str,
+        datasource: str,
         model_id: str,
         query_hash: str,
         dialect: str,
@@ -66,8 +66,13 @@ class Cache(Protocol):
     async def delete(self, key: str) -> None:
         """Drop a single entry by key."""
 
-    async def delete_session(self, session_id: str) -> int:
-        """Drop every entry that belongs to a session. Returns the count."""
+    async def delete_datasource(self, datasource: str) -> int:
+        """Drop every entry for a data source. Returns the count.
+
+        Used to evict a tenant / connection's cache when its credentials or
+        connection target change. With global per-dialect connections the
+        datasource is the dialect.
+        """
 
     async def invalidate_table(self, table_ref: str) -> int:
         """Drop every entry whose dependency set includes the physical table.

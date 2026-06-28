@@ -4,7 +4,7 @@ See ``design/PLAN_freshness_driven_cache.md`` §7, §12, §13. Layout:
 
     {CACHE_DIR}/
       meta.duckdb                       — control plane (entries, deps, heartbeats)
-      results/{prefix}/{sid}/{key}.parquet  — payloads
+      results/{prefix}/{ds}/{key}.parquet  — payloads ({ds} = datasource)
 
 The metadata DB is opened once and protected by a lock; DuckDB is not
 async-safe. Filesystem writes happen via temp+rename for atomicity.
@@ -31,7 +31,7 @@ _SCHEMA_DDL = [
     """
     CREATE TABLE IF NOT EXISTS cache_entries (
         cache_key      VARCHAR PRIMARY KEY,
-        session_id     VARCHAR NOT NULL,
+        datasource     VARCHAR NOT NULL,
         model_id       VARCHAR NOT NULL,
         query_hash     VARCHAR NOT NULL,
         dialect        VARCHAR NOT NULL,
@@ -64,7 +64,7 @@ _SCHEMA_DDL = [
         value BIGINT  NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_session    ON cache_entries(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_datasource ON cache_entries(datasource)",
     "CREATE INDEX IF NOT EXISTS idx_expires    ON cache_entries(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_last_hit   ON cache_entries(last_hit_at)",
     "CREATE INDEX IF NOT EXISTS idx_table_ref  ON cache_entry_tables(table_ref)",
@@ -98,6 +98,7 @@ class FileCache(Cache):
 
         os.makedirs(self._results_dir, exist_ok=True)
         self._meta = duckdb.connect(self._meta_path)
+        self._migrate_schema()
         for ddl in _SCHEMA_DDL:
             self._meta.execute(ddl)
         self._meta.execute(
@@ -106,6 +107,33 @@ class FileCache(Cache):
         )
 
     # -- internals ----------------------------------------------------------
+
+    def _migrate_schema(self) -> None:
+        """Bring a pre-existing meta DB up to the current schema.
+
+        v3 (2026-06): the cache scope changed from per-session to
+        per-datasource (see ``orionbelt.cache.key``). Rename the legacy
+        ``session_id`` column on caches created before the change so the new
+        DDL and queries find it. Stored rows survive, but their keys are
+        recomputed under the bumped ``KEY_VERSION`` and simply miss + age out.
+        """
+        try:
+            cols = {
+                row[0]
+                for row in self._meta.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'cache_entries'"
+                ).fetchall()
+            }
+        except Exception:
+            return
+        if "session_id" in cols and "datasource" not in cols:
+            with contextlib.suppress(Exception):
+                self._meta.execute(
+                    "ALTER TABLE cache_entries RENAME COLUMN session_id TO datasource"
+                )
+            with contextlib.suppress(Exception):
+                self._meta.execute("DROP INDEX IF EXISTS idx_session")
 
     def _exec(
         self, sql: str, params: list[object] | tuple[object, ...] | None = None
@@ -119,9 +147,10 @@ class FileCache(Cache):
         except Exception:
             logger.debug("cache counter bump failed", exc_info=True)
 
-    def _file_path(self, session_id: str, key: str) -> str:
-        prefix = (session_id or "_")[:2]
-        directory = os.path.join(self._results_dir, prefix, session_id or "_")
+    def _file_path(self, datasource: str, key: str) -> str:
+        safe = (datasource or "_").replace(os.sep, "_")
+        prefix = safe[:2]
+        directory = os.path.join(self._results_dir, prefix, safe)
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, f"{key}.parquet")
 
@@ -191,7 +220,7 @@ class FileCache(Cache):
         *,
         ttl_seconds: int,
         physical_tables: list[str],
-        session_id: str,
+        datasource: str,
         model_id: str,
         query_hash: str,
         dialect: str,
@@ -202,7 +231,7 @@ class FileCache(Cache):
         if len(payload) > self._max_value_bytes:
             return
 
-        file_path = self._file_path(session_id, key)
+        file_path = self._file_path(datasource, key)
         tmp_path = file_path + ".tmp"
         try:
             with open(tmp_path, "wb") as f:
@@ -225,14 +254,14 @@ class FileCache(Cache):
                 self._meta.execute(
                     """
                     INSERT OR REPLACE INTO cache_entries
-                        (cache_key, session_id, model_id, query_hash, dialect,
+                        (cache_key, datasource, model_id, query_hash, dialect,
                          file_path, row_count, size_bytes, created_at, expires_at,
                          last_hit_at, hit_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
                     """,
                     [
                         key,
-                        session_id,
+                        datasource,
                         model_id,
                         query_hash,
                         dialect,
@@ -286,13 +315,13 @@ class FileCache(Cache):
             self._unlink(file_path)
         return len(rows)
 
-    async def delete_session(self, session_id: str) -> int:
+    async def delete_datasource(self, datasource: str) -> int:
         try:
             with self._lock:
                 self._meta.execute("BEGIN")
                 rows = self._meta.execute(
-                    "DELETE FROM cache_entries WHERE session_id = ? RETURNING cache_key, file_path",
-                    [session_id],
+                    "DELETE FROM cache_entries WHERE datasource = ? RETURNING cache_key, file_path",
+                    [datasource],
                 ).fetchall()
                 keys = [r[0] for r in rows]
                 if keys:
@@ -303,7 +332,7 @@ class FileCache(Cache):
                     )
                 self._meta.execute("COMMIT")
         except Exception as exc:
-            logger.warning("cache.delete_session error: %s", exc)
+            logger.warning("cache.delete_datasource error: %s", exc)
             with contextlib.suppress(Exception):
                 self._meta.execute("ROLLBACK")
             return 0

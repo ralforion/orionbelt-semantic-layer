@@ -10,7 +10,6 @@ historical names so existing cross-module importers (``oneshot``,
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from dataclasses import asdict
 from typing import Literal, cast
@@ -212,15 +211,18 @@ async def close_session(
     session_id: str,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> None:
-    """Close a session and release its resources."""
-    from orionbelt.api.deps import get_cache
+    """Close a session and release its resources.
 
+    The result cache is intentionally NOT purged here: as of the per-datasource
+    cache scope (see ``orionbelt.cache.key``) entries are shared across sessions
+    that resolve to the same data source, so they outlive any single session.
+    Cache lifetime is governed by TTL / freshness, capacity eviction and table
+    invalidation -- not session lifetime.
+    """
     try:
         mgr.close_session(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found") from None
-    with contextlib.suppress(Exception):
-        await get_cache().delete_session(session_id)
 
 
 # -- model management -------------------------------------------------------

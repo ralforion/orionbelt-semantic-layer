@@ -279,11 +279,10 @@ class SemanticRouter:
                     store=target.store,
                     model=target.model,
                     compile_result=compile_result,
-                    # Key on the stable model_id, not the connection's
-                    # ``database`` alias, so every pgwire connection to the same
-                    # model shares cache entries regardless of which alias
-                    # (model name vs brand database) it connected with.
-                    session_id=target.model_id,
+                    # The cache is scoped to the datasource (dialect today), so
+                    # every pgwire connection to the same model+dialect shares
+                    # entries regardless of which alias (model name vs brand
+                    # database) it connected with -- and shares with REST too.
                     model_id=target.model_id,
                     dialect=dialect,
                     cache=self._cache,

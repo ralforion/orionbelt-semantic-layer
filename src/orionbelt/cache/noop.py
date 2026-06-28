@@ -24,7 +24,7 @@ class NoopCache(Cache):
         *,
         ttl_seconds: int,
         physical_tables: list[str],
-        session_id: str,
+        datasource: str,
         model_id: str,
         query_hash: str,
         dialect: str,
@@ -35,7 +35,7 @@ class NoopCache(Cache):
     async def delete(self, key: str) -> None:
         return None
 
-    async def delete_session(self, session_id: str) -> int:
+    async def delete_datasource(self, datasource: str) -> int:
         return 0
 
     async def invalidate_table(self, table_ref: str) -> int:

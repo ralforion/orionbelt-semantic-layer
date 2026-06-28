@@ -35,7 +35,7 @@ class TestFileCacheBasics:
             payload,
             ttl_seconds=300,
             physical_tables=["WH.PUB.ORDERS"],
-            session_id="sess1",
+            datasource="sess1",
             model_id="m1",
             query_hash="h",
             dialect="postgres",
@@ -53,7 +53,7 @@ class TestFileCacheBasics:
             b"x",
             ttl_seconds=0,
             physical_tables=["t"],
-            session_id="s",
+            datasource="s",
             model_id="m",
             query_hash="h",
             dialect="d",
@@ -75,7 +75,7 @@ class TestFileCacheBasics:
                 b"x" * 100,
                 ttl_seconds=300,
                 physical_tables=["t"],
-                session_id="s",
+                datasource="s",
                 model_id="m",
                 query_hash="h",
                 dialect="d",
@@ -99,7 +99,7 @@ class TestInvalidateTable:
                 b"x",
                 ttl_seconds=600,
                 physical_tables=tables,
-                session_id="s",
+                datasource="s",
                 model_id="m",
                 query_hash="h",
                 dialect="d",
@@ -117,21 +117,21 @@ class TestInvalidateTable:
         assert n == 0
 
 
-class TestSessionDelete:
-    async def test_delete_session_drops_only_owned_entries(self, cache: FileCache) -> None:
-        for sid, k in [("s1", "a"), ("s1", "b"), ("s2", "c")]:
+class TestDatasourceDelete:
+    async def test_delete_datasource_drops_only_owned_entries(self, cache: FileCache) -> None:
+        for ds, k in [("postgres", "a"), ("postgres", "b"), ("snowflake", "c")]:
             await cache.set(
                 k,
                 b"x",
                 ttl_seconds=600,
                 physical_tables=["t"],
-                session_id=sid,
+                datasource=ds,
                 model_id="m",
                 query_hash="h",
                 dialect="d",
                 row_count=1,
             )
-        n = await cache.delete_session("s1")
+        n = await cache.delete_datasource("postgres")
         assert n == 2
         assert await cache.get("a") is None
         assert await cache.get("c") is not None
@@ -168,7 +168,7 @@ class TestSweep:
                 b"x",
                 ttl_seconds=1,
                 physical_tables=["t"],
-                session_id="s",
+                datasource="s",
                 model_id="m",
                 query_hash="h",
                 dialect="d",

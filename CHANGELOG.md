@@ -2,6 +2,12 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Result cache is now scoped to the data source, not the session.** The cache key was keyed on `session_id`, so two sessions running identical SQL against the same database connection never shared a cached result. Connections are global per dialect, so the result depends only on the data source, not the session. The key now uses a `datasource` identity (the dialect today; gains the tenant/principal when per-tenant connections land) and `KEY_VERSION` is bumped to 3, so REST and pgwire/Flight now share cache entries across sessions. Pre-existing on-disk cache entries are invalidated by the version bump and age out; the file backend migrates the legacy `session_id` column to `datasource` in place. Session close no longer purges the cache (entries are shared and governed by TTL/freshness, capacity eviction, and table invalidation). The `Cache.delete_session` backend method becomes `delete_datasource`. See `design/PLAN_multi_tenant_connections.md`.
+
 ## [2.17.0] - 2026-06-28
 
 ### Added

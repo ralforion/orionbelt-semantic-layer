@@ -2,13 +2,22 @@
 
 See ``design/PLAN_freshness_driven_cache.md`` §14. Keys are server-internal —
 callers do not see them. The construction is deterministic so the same query
-under the same session/model/dialect always hashes to the same key.
+under the same datasource/model/dialect always hashes to the same key.
 
 v2 (2026-05): keys are computed from the **compiled SQL string**, not the
 QueryObject. Single key shape covers every input path that converges on
 compiled SQL (OBSQL, QueryObject, OBML YAML) and the hash trivially
 matches what the warehouse executes. The compiler is deterministic, so
 identical inputs still produce identical keys.
+
+v3 (2026-06): keys are scoped to the **data source**, not the session. The
+result of a compiled SQL string depends only on which physical connection it
+runs against, not on which session issued it. Connections are global per
+dialect today (``ob_flight.db_router`` resolves credentials from the
+environment by dialect), so every session sharing a dialect shares cache
+entries. When per-tenant / SSO connections land the datasource key gains the
+principal so tenants stay isolated -- see
+``design/PLAN_multi_tenant_connections.md``.
 """
 
 from __future__ import annotations
@@ -18,7 +27,25 @@ import json
 import re
 from typing import Any
 
-KEY_VERSION = 2
+KEY_VERSION = 3
+
+# Separator for composite datasource keys; an ASCII unit separator that cannot
+# appear in a dialect name or a sanitized principal id.
+_DS_SEP = "\x1f"
+
+
+def build_datasource_key(dialect: str, principal: str | None = None) -> str:
+    """Identity of the physical data source a query executes against.
+
+    The result cache is shared across everything that resolves to the same
+    data source. Today connections are global per dialect, so the identity is
+    just the dialect. When per-tenant / SSO connections land (see
+    ``design/PLAN_multi_tenant_connections.md``) ``principal`` carries the
+    tenant / connection identity, so two principals on the same dialect get
+    distinct keys and never read each other's cached rows.
+    """
+    return dialect if principal is None else f"{dialect}{_DS_SEP}{principal}"
+
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -58,13 +85,17 @@ def _normalize_sql(sql: str) -> str:
 
 def build_cache_key(
     *,
-    session_id: str,
+    datasource: str,
     model_id: str,
     dialect: str,
     sql: str | None = None,
     query: Any = None,
 ) -> str:
     """Compute the deterministic 32-char cache key for a query.
+
+    Scope is the ``datasource`` (see :func:`build_datasource_key`), not the
+    session: any session resolving to the same data source, model, dialect and
+    compiled SQL shares the entry.
 
     Pass ``sql`` (compiled SQL string) — that's the canonical input as
     of v2. The legacy ``query`` kwarg is accepted for back-compat with
@@ -81,7 +112,7 @@ def build_cache_key(
     canonical = json.dumps(
         {
             "v": KEY_VERSION,
-            "session_id": session_id,
+            "datasource": datasource,
             "model_id": model_id,
             "dialect": dialect,
             "sql": body,

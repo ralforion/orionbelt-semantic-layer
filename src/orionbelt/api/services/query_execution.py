@@ -201,7 +201,6 @@ async def _run_with_cache(
             store=store,
             model=model,
             compile_result=compile_result,
-            session_id=session_id,
             model_id=model_id,
             dialect=dialect,
             cache=cache,

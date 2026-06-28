@@ -29,7 +29,12 @@ from orionbelt.api.schemas import (
     StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
-from orionbelt.cache import build_cache_key, compute_effective_ttl, is_nondeterministic_sql
+from orionbelt.cache import (
+    build_cache_key,
+    build_datasource_key,
+    compute_effective_ttl,
+    is_nondeterministic_sql,
+)
 from orionbelt.cache.parquet_codec import decode as cache_decode
 from orionbelt.cache.protocol import Cache
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
@@ -243,7 +248,7 @@ async def try_cache_set(
     physical_tables: list[str],
     row_count: int,
     ttl_seconds: int,
-    session_id: str,
+    datasource: str,
     model_id: str,
 ) -> None:
     """Encode and store a result payload. Failures are logged and ignored."""
@@ -273,7 +278,7 @@ async def try_cache_set(
             payload,
             ttl_seconds=ttl_seconds,
             physical_tables=list(physical_tables),
-            session_id=session_id,
+            datasource=datasource,
             model_id=model_id,
             query_hash=cache_key_mod.query_hash(sql=sql),
             dialect=dialect,
@@ -306,11 +311,11 @@ async def execute_query_with_cache(
     store: Any,
     model: Any,
     compile_result: Any,
-    session_id: str,
     model_id: str,
     dialect: str,
     cache: Cache,
     cache_config: Any,
+    datasource: str | None = None,
     tz: Any = None,
     override_db_tz: bool = False,
     cacheable: bool = True,
@@ -321,20 +326,23 @@ async def execute_query_with_cache(
     non-deterministic. The actual DB execution runs off the event loop via
     ``asyncio.to_thread``. Shared by the REST, pgwire, and Flight surfaces so
     they hit one cache.
+
+    The cache is scoped to the ``datasource`` (defaults to the dialect, since
+    connections are global per dialect today). Any session resolving to the
+    same data source, model, dialect and compiled SQL shares entries.
     """
+    ds = datasource or build_datasource_key(dialect)
     cache_key: str | None = None
     ttl_outcome: TtlResult | None = None
 
     if cacheable:
         nondet, name = is_nondeterministic_sql(compile_result.sql)
         if nondet:
-            logger.info(
-                "cache skipped for %s/%s: non-deterministic SQL (%s)", session_id, model_id, name
-            )
+            logger.info("cache skipped for %s/%s: non-deterministic SQL (%s)", ds, model_id, name)
             ttl_outcome = TtlResult(ttl=None, no_cache_reason=NoCacheReason.NON_DETERMINISTIC_SQL)
         else:
             cache_key = build_cache_key(
-                session_id=session_id,
+                datasource=ds,
                 model_id=model_id,
                 dialect=dialect,
                 sql=compile_result.sql,
@@ -400,7 +408,7 @@ async def execute_query_with_cache(
             physical_tables=compile_result.physical_tables,
             row_count=exec_result.row_count,
             ttl_seconds=ttl_outcome.ttl.seconds,
-            session_id=session_id,
+            datasource=ds,
             model_id=model_id,
         )
 
