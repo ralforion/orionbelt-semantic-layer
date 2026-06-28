@@ -4,8 +4,8 @@
 # Usage: ./scripts/release.sh [--yes|-y] [--post-merge] [--from N] [--only N[,M,...]] [VERSION]
 #
 # Publishes everything that lives in the public repo: it merges the release PR,
-# cuts the GitHub release (whose tag triggers the Docker Hub publish workflow),
-# publishes to PyPI, and deploys the docs. The Cloud Run deploy is intentionally
+# cuts the GitHub release (whose tag triggers both the Docker Hub and the PyPI
+# publish workflows), and deploys the docs. The Cloud Run deploy is intentionally
 # NOT here — that is an infra concern; the private infra release wrapper runs
 # this script and then deploys to Cloud Run.
 #
@@ -32,13 +32,14 @@
 #
 # Steps (each with confirmation prompt):
 #   1. Create & merge PR (fix/ or feature/ branch → main) [skipped under --post-merge]
-#   2. Create GitHub release with changelog (tag triggers the Docker Hub workflow)
-#   3. Publish to PyPI
+#   2. Create GitHub release with changelog (tag triggers the publish workflows)
+#   3. Publish to PyPI (informational — the tag from Step 2 triggers the workflow)
 #   4. Deploy MkDocs to gh-pages
 #
-# Docker images are built and pushed by .github/workflows/docker-publish.yml,
-# which is triggered by the vX.Y.Z tag created in Step 2 — there is no local
-# Docker build here.
+# Docker images and PyPI packages are built and pushed by
+# .github/workflows/docker-publish.yml and .github/workflows/pypi-publish.yml,
+# both triggered by the vX.Y.Z tag created in Step 2 — there is no local Docker
+# build or PyPI publish here.
 #
 # Prerequisites:
 #   - gh CLI authenticated
@@ -425,82 +426,19 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Publish to PyPI
 # ---------------------------------------------------------------------------
+# PyPI publishing is handled by .github/workflows/pypi-publish.yml, which is
+# triggered by the vX.Y.Z tag created in Step 2 (GitHub release) - the same
+# model as the Docker Hub publish workflow. It builds osi-orionbelt first
+# (skip-existing, since it has an independent version) and then the main
+# package, using PyPI Trusted Publishing (OIDC) - no token is stored or used
+# here. There is no local build/publish in this script.
 if ! should_run 3; then
     step "3/4  Publish to PyPI  [skipped — not selected]"
 else
 step "3/4  Publish to PyPI"
-
-if confirm "Build and publish to PyPI?"; then
-    # The main package depends on osi-orionbelt, so that converter package MUST
-    # be published first — otherwise installing orionbelt-semantic-layer from
-    # PyPI (CI, Colab, the smoke test below) cannot resolve the dependency.
-    # osi-orionbelt has an independent version and PyPI rejects re-uploading an
-    # existing version, so this is guarded behind its own confirm: publish it
-    # only when its version changed; skip if it is already on PyPI.
-    OSI_PKG_DIR="$REPO_ROOT/packages/osi-orionbelt"
-    if [[ -f "$OSI_PKG_DIR/pyproject.toml" ]]; then
-        OSI_PKG_VERSION="$(grep -m1 '^version' "$OSI_PKG_DIR/pyproject.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
-        # Idempotent guard: PyPI rejects re-uploading an existing version, so
-        # only publish when this version is not already there. Without this an
-        # auto-accepted (--yes) run aborts on "File already exists" whenever
-        # osi-orionbelt is unchanged (the common case — it has its own version).
-        if curl -fsS "https://pypi.org/pypi/osi-orionbelt/${OSI_PKG_VERSION}/json" >/dev/null 2>&1; then
-            ok "osi-orionbelt ${OSI_PKG_VERSION} already on PyPI — skipping publish"
-        elif confirm "Publish osi-orionbelt ${OSI_PKG_VERSION} to PyPI first?"; then
-            rm -rf dist-osi/
-            uv build --package osi-orionbelt -o dist-osi/
-            uv publish dist-osi/*
-            ok "Published osi-orionbelt ${OSI_PKG_VERSION} to PyPI"
-
-            echo "Smoke-testing pip install osi-orionbelt from PyPI..."
-            OSI_SMOKE_OK=0
-            for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-                if uv run --no-project --with "osi-orionbelt==${OSI_PKG_VERSION}" -- \
-                        python -c "import osi_orionbelt; assert osi_orionbelt.__version__ == '${OSI_PKG_VERSION}', osi_orionbelt.__version__" \
-                        >/dev/null 2>&1; then
-                    OSI_SMOKE_OK=1
-                    break
-                fi
-                echo "  attempt $i/12: not yet available, retrying in 10s..."
-                sleep 10
-            done
-            if [[ "$OSI_SMOKE_OK" == "1" ]]; then
-                ok "Smoke test passed: pip install osi-orionbelt==${OSI_PKG_VERSION} resolves and imports cleanly"
-            else
-                warn "Smoke test failed after 2 minutes — verify manually at https://pypi.org/project/osi-orionbelt/${OSI_PKG_VERSION}/"
-            fi
-        fi
-    fi
-
-    # Then the main package (now that osi-orionbelt resolves on PyPI).
-    rm -rf dist/
-    uv build
-    uv publish
-    ok "Published to PyPI"
-
-    # Smoke-test that PyPI actually serves the new version. PyPI's CDN
-    # propagation is usually a few seconds but can take up to ~60s on a
-    # cold cache, so retry for up to 2 minutes before giving up. Uses
-    # ``uv run --no-project`` so the test ignores the local source tree
-    # and only resolves what's on PyPI.
-    echo "Smoke-testing pip install from PyPI..."
-    SMOKE_OK=0
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        if uv run --no-project --with "orionbelt-semantic-layer==${VERSION}" -- \
-                python -c "import orionbelt; assert orionbelt.__version__ == '${VERSION}', orionbelt.__version__" \
-                >/dev/null 2>&1; then
-            SMOKE_OK=1
-            break
-        fi
-        echo "  attempt $i/12: not yet available, retrying in 10s..."
-        sleep 10
-    done
-    if [[ "$SMOKE_OK" == "1" ]]; then
-        ok "Smoke test passed: pip install orionbelt-semantic-layer==${VERSION} resolves and imports cleanly"
-    else
-        warn "Smoke test failed after 2 minutes — verify manually at https://pypi.org/project/orionbelt-semantic-layer/${VERSION}/"
-    fi
-fi
+ok "PyPI publish is triggered by the v${VERSION} tag via .github/workflows/pypi-publish.yml"
+echo "  Watch: https://github.com/ralforion/orionbelt-semantic-layer/actions/workflows/pypi-publish.yml"
+echo "  (Requires Trusted Publishers configured on PyPI for both projects.)"
 fi
 
 # ---------------------------------------------------------------------------

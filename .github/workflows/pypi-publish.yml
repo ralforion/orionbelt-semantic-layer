@@ -1,0 +1,81 @@
+name: Publish to PyPI
+
+# Publishes both packages to PyPI on every version tag (v*.*.*), using PyPI
+# Trusted Publishing (OIDC) - no API token is stored. workflow_dispatch is also
+# enabled so an existing tag can be backfilled (run the workflow against that
+# tag's ref).
+#
+# osi-orionbelt is published first because orionbelt-semantic-layer depends on
+# it; installing the main package from PyPI cannot resolve the dependency until
+# the converter is there. osi-orionbelt has an independent version, so
+# skip-existing lets an unchanged version pass without failing the run.
+#
+# PREREQUISITE: a Trusted Publisher must be configured on PyPI for BOTH projects
+# (orionbelt-semantic-layer and osi-orionbelt). For each project add a publisher
+# with: owner `ralforion`, repository `orionbelt-semantic-layer`, workflow
+# `pypi-publish.yml`, environment `pypi`.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+jobs:
+  publish-osi:
+    name: Publish osi-orionbelt
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/osi-orionbelt/
+    permissions:
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build osi-orionbelt
+        run: uv build --package osi-orionbelt -o dist/
+
+      - name: Check artifacts
+        run: uvx twine check dist/*
+
+      - name: Publish osi-orionbelt to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # osi-orionbelt has its own version cadence; an unchanged version is
+          # already on PyPI, so skip it instead of failing the release.
+          skip-existing: true
+
+  publish-main:
+    name: Publish orionbelt-semantic-layer
+    needs: publish-osi # the main package depends on osi-orionbelt
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/orionbelt-semantic-layer/
+    permissions:
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build orionbelt-semantic-layer
+        run: uv build -o dist/
+
+      - name: Check artifacts
+        run: uvx twine check dist/*
+
+      - name: Publish orionbelt-semantic-layer to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotency backstop for re-runs against an already-published tag.
+          skip-existing: true
