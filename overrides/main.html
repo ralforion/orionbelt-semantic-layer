@@ -5,3 +5,9 @@
     Part of <strong>ralforion.com</strong> &nbsp;·&nbsp; back to home →
   </a>
 {% endblock %}
+
+{% block extrahead %}
+  {{ super() }}
+  <!-- Custom Google Analytics fixes for feedback tracking -->
+  <script src="{{ 'javascripts/gtag-fix.js' | url }}"></script>
+{% endblock %}
