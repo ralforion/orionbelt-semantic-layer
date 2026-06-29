@@ -38,7 +38,7 @@ trap "rm -rf $TEMP_DEPLOY" EXIT
 
 # Clone the gh-pages branch
 git clone --depth 1 --branch gh-pages \
-  "https://github.com/ralfbecher/ralfbecher.github.io.git" \
+  "https://github.com/ralforion/ralforion.github.io.git" \
   "$TEMP_DEPLOY" 2>/dev/null || {
     echo "Creating new gh-pages branch..."
     mkdir -p "$TEMP_DEPLOY"
@@ -66,7 +66,7 @@ git commit -m "Update OrionBelt docs ($(date +%Y-%m-%d))" || echo "No changes to
 
 # Push to gh-pages (requires authentication)
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  git push "https://x-access-token:${GITHUB_TOKEN}@github.com/ralfbecher/ralfbecher.github.io.git" gh-pages --force
+  git push "https://x-access-token:${GITHUB_TOKEN}@github.com/ralforion/ralforion.github.io.git" gh-pages --force
 else
   echo "Warning: GITHUB_TOKEN not set, cannot push. Run with:"
   echo "  GITHUB_TOKEN=your_token ./scripts/deploy-docs.sh"
