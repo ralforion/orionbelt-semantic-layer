@@ -29,14 +29,49 @@ if [ -f "$CSS_FILE" ]; then
     perl -i -pe "s|stylesheets/extra\\.css(\\?v=[a-f0-9]+)?|stylesheets/extra.css?v=$CSS_HASH|g" {} +
 fi
 
-# Deploy site/ to gh-pages branch using ghp-import (bundled with mkdocs)
-echo "Deploying to gh-pages branch..."
-uv run --project "$REPO_ROOT" ghp-import \
-  --no-jekyll \
-  --push \
-  --force \
-  --message "Update docs ($(date +%Y-%m-%d))" \
-  "$REPO_ROOT/site"
+# Deploy site/ to gh-pages branch preserving existing content
+echo "Deploying to gh-pages branch (subdirectory only)..."
 
+# Create temp directory for deployment
+TEMP_DEPLOY=$(mktemp -d)
+trap "rm -rf $TEMP_DEPLOY" EXIT
+
+# Clone the gh-pages branch
+git clone --depth 1 --branch gh-pages \
+  "https://github.com/ralfbecher/ralfbecher.github.io.git" \
+  "$TEMP_DEPLOY" 2>/dev/null || {
+    echo "Creating new gh-pages branch..."
+    mkdir -p "$TEMP_DEPLOY"
+    cd "$TEMP_DEPLOY"
+    git init
+    git checkout -b gh-pages
+    cd -
+  }
+
+# Remove old docs subdirectory, preserve everything else
+rm -rf "$TEMP_DEPLOY/orionbelt-semantic-layer"
+
+# Copy new docs to subdirectory
+cp -r "$REPO_ROOT/site" "$TEMP_DEPLOY/orionbelt-semantic-layer"
+
+# Ensure CNAME file exists for custom domain
+echo "ralforion.com" > "$TEMP_DEPLOY/CNAME"
+
+# Commit and push changes
+cd "$TEMP_DEPLOY"
+git add -A
+git config user.name "github-actions"
+git config user.email "github-actions@github.com"
+git commit -m "Update OrionBelt docs ($(date +%Y-%m-%d))" || echo "No changes to commit"
+
+# Push to gh-pages (requires authentication)
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  git push "https://x-access-token:${GITHUB_TOKEN}@github.com/ralfbecher/ralfbecher.github.io.git" gh-pages --force
+else
+  echo "Warning: GITHUB_TOKEN not set, cannot push. Run with:"
+  echo "  GITHUB_TOKEN=your_token ./scripts/deploy-docs.sh"
+fi
+
+cd "$REPO_ROOT"
 rm -rf "$REPO_ROOT/site"
-echo "Done — docs deployed to gh-pages (site/ cleaned up)."
+echo "Done — docs deployed to gh-pages subdirectory (site/ cleaned up)."
