@@ -15,7 +15,7 @@ from dataclasses import asdict
 from typing import Literal, cast
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from orionbelt.api.deps import (
     CacheRuntimeConfig,
@@ -76,6 +76,7 @@ from orionbelt.api.services.query_execution import (
     _build_execute_response,
     _physical_tables_for,
     _run_with_cache,
+    negotiate_execute_format,
 )
 from orionbelt.api.services.session_lifecycle import _get_store, _session_response
 from orionbelt.api.warnings_adapter import (
@@ -584,7 +585,8 @@ async def plan_query(
 async def execute_query(
     session_id: str,
     body: SessionQueryExecuteRequest,
-    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    request: Request,
+    format: Literal["json", "tsv", "arrow"] = "json",  # noqa: A002 — public query parameter
     format_values: bool = False,
     locale: str | None = None,
     timezone: str | None = None,
@@ -599,9 +601,12 @@ async def execute_query(
 
     Query parameters
     ----------------
-    * ``format`` — ``json`` (default) or ``tsv``. ``tsv`` returns a tab-
-      separated body; cells with tab/newline/CR/double-quote are RFC 4180
-      quoted. ``tsv`` implies ``format_values=true``.
+    * ``format`` — ``json`` (default), ``tsv``, or ``arrow``. ``tsv`` returns a
+      tab-separated body; cells with tab/newline/CR/double-quote are RFC 4180
+      quoted. ``tsv`` implies ``format_values=true``. ``arrow`` returns an
+      Arrow IPC stream (``application/vnd.apache.arrow.stream``) of typed,
+      locale-neutral values, gzip'd when the client's ``Accept-Encoding``
+      allows. The Arrow stream is also selectable via the ``Accept`` header.
     * ``format_values`` — when true, numeric cells in the JSON response are
       rendered as locale-aware display strings using each column's
       ``format`` pattern (matches the Gradio UI). Default false.
@@ -638,6 +643,7 @@ async def execute_query(
 
     logger.info("Compiled SQL:\n%s", result.sql)
 
+    effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
         store=store,
         model=model,
@@ -647,10 +653,11 @@ async def execute_query(
         dialect=dialect,
         cache=cache,
         cache_config=cache_config,
-        response_format=format,
+        response_format=effective_format,
         format_values=format_values,
         locale=locale,
         timezone_override=timezone,
+        accept_encoding=request.headers.get("accept-encoding"),
     )
 
 
@@ -706,7 +713,8 @@ async def compile_semantic_ql(
 async def execute_semantic_ql(
     session_id: str,
     body: SemanticQLRequest,
-    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    request: Request,
+    format: Literal["json", "tsv", "arrow"] = "json",  # noqa: A002 — public query parameter
     format_values: bool = False,
     locale: str | None = None,
     timezone: str | None = None,
@@ -718,7 +726,8 @@ async def execute_semantic_ql(
 
     Same response shape as ``POST /query/execute`` (rows + schema +
     compiled SQL + explain + cache metadata). Supports ``?format=tsv``,
-    ``?format_values=true``, ``?locale=``, ``?timezone=``.
+    ``?format=arrow`` (or the Arrow ``Accept`` header), ``?format_values=true``,
+    ``?locale=``, ``?timezone=``.
 
     Requires ``QUERY_EXECUTE=true``. See ``design/PLAN_flight_natural_sql.md``.
     """
@@ -755,6 +764,7 @@ async def execute_semantic_ql(
 
     logger.info("Compiled SQL:\n%s", result.sql)
 
+    effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
         store=store,
         model=model,
@@ -764,8 +774,9 @@ async def execute_semantic_ql(
         dialect=dialect,
         cache=cache,
         cache_config=cache_config,
-        response_format=format,
+        response_format=effective_format,
         format_values=format_values,
         locale=locale,
         timezone_override=timezone,
+        accept_encoding=request.headers.get("accept-encoding"),
     )

@@ -1,13 +1,17 @@
-"""File-backed cache: DuckDB metadata + Parquet result files.
+"""File-backed cache: DuckDB metadata + Arrow IPC result files.
 
-See ``design/PLAN_freshness_driven_cache.md`` §7, §12, §13. Layout:
+See ``design/PLAN_freshness_driven_cache.md`` §7, §12, §13 and
+``design/PLAN_arrow_cache.md`` §3. Layout:
 
     {CACHE_DIR}/
       meta.duckdb                       — control plane (entries, deps, heartbeats)
-      results/{prefix}/{ds}/{key}.parquet  — payloads ({ds} = datasource)
+      results/{prefix}/{ds}/{key}.arrow  — payloads ({ds} = datasource)
 
-The metadata DB is opened once and protected by a lock; DuckDB is not
-async-safe. Filesystem writes happen via temp+rename for atomicity.
+Payloads are gzip'd Arrow IPC streams (``orionbelt.cache.result_codec``); the
+backend treats them as opaque bytes. The ``.arrow`` extension marks them as
+OBSL-internal — do not read them as Parquet. The metadata DB is opened once and
+protected by a lock; DuckDB is not async-safe. Filesystem writes happen via
+temp+rename for atomicity.
 """
 
 from __future__ import annotations
@@ -152,7 +156,7 @@ class FileCache(Cache):
         prefix = safe[:2]
         directory = os.path.join(self._results_dir, prefix, safe)
         os.makedirs(directory, exist_ok=True)
-        return os.path.join(directory, f"{key}.parquet")
+        return os.path.join(directory, f"{key}.arrow")
 
     def _unlink(self, path: str) -> None:
         try:

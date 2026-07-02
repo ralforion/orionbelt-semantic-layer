@@ -117,6 +117,47 @@ class TestSessionExecuteCache:
         assert body["cached_at"] is not None
         assert body["row_count"] == 2
 
+    async def test_json_miss_populates_entry_that_arrow_hits(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """JSON and Arrow share one cache entry — the key is query-only.
+
+        A canonical JSON execution writes the typed rows; a subsequent Arrow
+        request for the same query reads that same entry and serves it as an
+        Arrow IPC stream (PLAN_arrow_cache.md §3).
+        """
+        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        client, cache = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+
+        # JSON miss populates exactly one entry.
+        first = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
+        assert first.status_code == 200, first.text
+        assert first.json()["cached"] is False
+        assert (await cache.stats()).entry_count == 1
+
+        # Arrow request for the same query hits that entry — no new entry.
+        arrow = await client.post(
+            f"/v1/sessions/{sid}/query/execute?format=arrow",
+            json=body,
+            headers={"Accept-Encoding": "gzip"},
+        )
+        assert arrow.status_code == 200
+        assert arrow.headers["content-type"].startswith("application/vnd.apache.arrow.stream")
+        assert (await cache.stats()).entry_count == 1
+        assert (await cache.stats()).hit_count_total >= 1
+
+        table = pa.ipc.open_stream(pa.BufferReader(arrow.content)).read_all()
+        assert table.column_names == ["Customer Country", "Total Revenue"]
+        assert table.to_pylist() == [
+            {"Customer Country": "US", "Total Revenue": 100.0},
+            {"Customer Country": "UK", "Total Revenue": 200.0},
+        ]
+
 
 class TestShortcutExecuteCache:
     async def test_shortcut_execute_caches_then_hits(

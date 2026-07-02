@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Response
@@ -41,6 +42,64 @@ _build_type_map = build_type_map
 _build_format_map = build_format_map
 _build_explain_response = build_explain_response
 
+# Response formats the execute endpoints can emit. ``arrow`` is an uncompressed
+# Arrow IPC stream (see design/PLAN_arrow_cache.md), gzip'd at the HTTP layer.
+ExecuteFormat = Literal["json", "tsv", "arrow"]
+
+ARROW_STREAM_MEDIA_TYPE = "application/vnd.apache.arrow.stream"
+
+
+def negotiate_execute_format(format_param: ExecuteFormat, accept: str | None) -> ExecuteFormat:
+    """Resolve the effective response format from ``?format=`` + the Accept header.
+
+    An explicit ``?format=`` (``tsv``/``arrow``) always wins. Otherwise, a
+    client asking for the Arrow media type via ``Accept`` gets the Arrow stream;
+    everything else stays JSON.
+    """
+    if format_param in ("tsv", "arrow"):
+        return format_param
+    if accept and ARROW_STREAM_MEDIA_TYPE in accept.lower():
+        return "arrow"
+    return "json"
+
+
+def _negotiate_content_encoding(accept_encoding: str | None) -> str:
+    """Pick a blob codec for the Arrow body from the client's Accept-Encoding.
+
+    gzip is the universal default (every HTTP client and browser auto-decodes
+    it). A client that advertises no codec we store gets identity (the raw,
+    uncompressed IPC stream).
+    """
+    tokens = {t.strip().split(";")[0].lower() for t in (accept_encoding or "").split(",")}
+    if "gzip" in tokens or "*" in tokens:
+        return "gzip"
+    return "identity"
+
+
+def _build_arrow_response(
+    *,
+    column_names: list[str],
+    rows: list[list[Any]],
+    accept_encoding: str | None,
+) -> Response:
+    """Serialize a result as an Arrow IPC stream, gzip'd via ``Content-Encoding``.
+
+    The Arrow buffers stay uncompressed (universally readable by pyarrow,
+    arrow-js, DuckDB); compression is applied at the HTTP layer and advertised
+    via ``Content-Encoding`` so the client's HTTP stack transparently decodes it
+    before handing uncompressed IPC to its Arrow reader (PLAN_arrow_cache.md §2).
+    """
+    from orionbelt.cache.result_codec import build_result_table, to_ipc_stream
+
+    raw = to_ipc_stream(build_result_table(column_names, rows))
+    headers: dict[str, str] = {}
+    if _negotiate_content_encoding(accept_encoding) == "gzip":
+        body = gzip.compress(raw, 6)
+        headers["Content-Encoding"] = "gzip"
+    else:
+        body = raw
+    return Response(content=body, media_type=ARROW_STREAM_MEDIA_TYPE, headers=headers)
+
 
 def _physical_tables_for(model: Any, result: Any) -> list[str]:
     """Compute qualified physical tables touched by a compilation."""
@@ -69,14 +128,17 @@ def _build_execute_response(
     compile_result: Any,
     exec_result: Any,
     model: Any,
-    response_format: Literal["json", "tsv"],
+    response_format: ExecuteFormat,
     format_values: bool,
     locale: str,
+    accept_encoding: str | None = None,
 ) -> QueryExecuteResponse | Response:
-    """Build the JSON QueryExecuteResponse, or a TSV Response.
+    """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
 
     ``format_values`` is forced True for TSV; numeric cells are rendered with
     each column's display ``format`` pattern using locale-aware separators.
+    ``arrow`` emits an uncompressed Arrow IPC stream (gzip'd per
+    ``accept_encoding``) carrying the typed, locale-neutral values verbatim.
     """
     model_type_map = _build_type_map(model)
     fmt_map = _build_format_map(model)
@@ -90,6 +152,17 @@ def _build_execute_response(
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
     column_names = [c.name for c in exec_result.columns]
+
+    # Arrow passes the typed, locale-neutral values through untouched (no
+    # locale/format rendering — that's a JSON/TSV presentation concern), so it
+    # short-circuits before the display-format machinery below.
+    if response_format == "arrow":
+        return _build_arrow_response(
+            column_names=column_names,
+            rows=exec_result.rows,
+            accept_encoding=accept_encoding,
+        )
+
     # Canonical column shape (also what the result cache persists) — built via
     # the shared helper so REST, the cache payload, and pgwire all agree. Reuse
     # the maps already built above instead of rebuilding them.
@@ -167,17 +240,19 @@ async def _run_with_cache(
     dialect: str,
     cache: Cache,
     cache_config: CacheRuntimeConfig,
-    response_format: Literal["json", "tsv"],
+    response_format: ExecuteFormat,
     format_values: bool,
     locale: str | None,
     timezone_override: str | None,
+    accept_encoding: str | None = None,
 ) -> QueryExecuteResponse | Response:
     """Cache-aware execute pipeline shared by session and shortcut endpoints.
 
     Looks up the cache before executing, stores on miss, and surfaces the
-    ``cached`` / ``ttl_*`` metadata. Only the canonical JSON shape is
-    cached (TSV + value-formatted JSON skip caching to avoid locale-keyed
-    proliferation).
+    ``cached`` / ``ttl_*`` metadata. The canonical JSON shape and the Arrow
+    stream are cached and *share* entries (the key is query-only, both carry
+    typed values); TSV + value-formatted JSON skip caching to avoid locale-keyed
+    proliferation.
     """
     model_default_tz: str | None = None
     override_db_tz = False
@@ -186,14 +261,13 @@ async def _run_with_cache(
         override_db_tz = model.settings.override_database_timezone
     tz = resolve_timezone(default_timezone=timezone_override or model_default_tz)
 
-    # TSV and value-formatted JSON skip caching (locale-keyed proliferation);
-    # only the canonical JSON shape is cached. Skip the whole cache machinery
+    # Both the canonical JSON shape and the Arrow stream cache the same typed,
+    # locale-neutral rows, so they share entries. TSV and value-formatted JSON
+    # skip caching (locale-keyed proliferation). Skip the whole cache machinery
     # (key + freshness TTL + get) when the backend is a no-op, so the default
     # deployment doesn't pay a per-query model scan for a cache that never hits.
-    cacheable = (
-        response_format == "json"
-        and not format_values
-        and getattr(cache, "backend_name", "noop") != "noop"
+    cacheable = getattr(cache, "backend_name", "noop") != "noop" and (
+        response_format == "arrow" or (response_format == "json" and not format_values)
     )
 
     try:
@@ -218,6 +292,15 @@ async def _run_with_cache(
         # A cache hit always carries a key and a fetch time.
         assert cached.cache_key is not None
         assert cached.fetch_elapsed_ms is not None
+        if response_format == "arrow":
+            # Serve the cached typed rows as an Arrow stream — the envelope was
+            # written by the JSON path, but the rows are format-agnostic.
+            assert cached.envelope is not None
+            return _build_arrow_response(
+                column_names=[str(c.get("name", "")) for c in cached.envelope.columns],
+                rows=cached.envelope.rows,
+                accept_encoding=accept_encoding,
+            )
         return _build_cached_response(
             envelope=cached.envelope,
             cache_key=cached.cache_key,
@@ -238,6 +321,7 @@ async def _run_with_cache(
         response_format=response_format,
         format_values=format_values,
         locale=effective_locale,
+        accept_encoding=accept_encoding,
     )
     ttl_outcome = cached.ttl_outcome
     if (

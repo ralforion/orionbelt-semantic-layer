@@ -44,9 +44,9 @@ from orionbelt.cache import (
     compute_effective_ttl,
     is_nondeterministic_sql,
 )
-from orionbelt.cache.parquet_codec import decode as cache_decode
-from orionbelt.cache.parquet_codec import encode as cache_encode
 from orionbelt.cache.protocol import Cache
+from orionbelt.cache.result_codec import decode as cache_decode
+from orionbelt.cache.result_codec import encode as cache_encode
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError

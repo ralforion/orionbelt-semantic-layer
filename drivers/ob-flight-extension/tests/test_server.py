@@ -486,13 +486,14 @@ class TestVirtualTables:
 
 
 class TestFlightCacheEnvelope:
-    """Regression: Flight cache writes must use the shared parquet_codec
-    envelope so REST readers can decode ``sql``/``dialect``/``columns``
-    instead of falling back to empty defaults.
+    """Regression: Flight cache writes must use the shared ``result_codec``
+    envelope so REST/pgwire readers can decode ``sql``/``dialect``/``columns``
+    instead of falling back to empty defaults — one entry per compiled query
+    across all surfaces.
     """
 
     def test_flight_cache_payload_is_decodable_by_rest(self) -> None:
-        from orionbelt.cache import parquet_codec
+        from orionbelt.cache import result_codec
 
         server = _make_server()
         captured: dict = {}
@@ -512,26 +513,36 @@ class TestFlightCacheEnvelope:
                 "key": "k1",
                 "ttl": 60,
                 "physical_tables": ["main.t"],
-                "session_id": "s",
+                "datasource": "postgres",
                 "model_id": "m",
                 "sql": "SELECT id, name FROM t",
                 "dialect": "postgres",
             },
         )
 
-        env = parquet_codec.decode(captured["payload"])
+        # REST/pgwire decode the full envelope; Flight decodes the bare table.
+        env = result_codec.decode(captured["payload"])
         assert env.sql == "SELECT id, name FROM t"
         assert env.dialect == "postgres"
         assert env.physical_tables == ["main.t"]
         assert [c["name"] for c in env.columns] == ["id", "name"]
         assert env.rows == [[1, "alice"], [2, "bob"]]
+        # The datasource scoping reaches the backend (shared key across surfaces).
+        assert captured["kwargs"]["datasource"] == "postgres"
+
+        table_back = result_codec.decode_table(captured["payload"])
+        assert table_back.column_names == ["id", "name"]
+        assert table_back.to_pylist() == [
+            {"id": 1, "name": "alice"},
+            {"id": 2, "name": "bob"},
+        ]
 
     def test_flight_cache_column_type_key_matches_rest_decoder(self) -> None:
         """Regression: Flight encoded column metadata under ``data_type`` but
         REST's decoder reads ``type``. A REST hit on a Flight-written entry
         decoded every column as ``string``, dropping numeric/datetime types.
         """
-        from orionbelt.cache import parquet_codec
+        from orionbelt.cache import result_codec
 
         server = _make_server()
         captured: dict = {}
@@ -558,14 +569,14 @@ class TestFlightCacheEnvelope:
                 "key": "k2",
                 "ttl": 60,
                 "physical_tables": [],
-                "session_id": "s",
+                "datasource": "postgres",
                 "model_id": "m",
                 "sql": "SELECT id, amount, ts, name FROM t",
                 "dialect": "postgres",
             },
         )
 
-        env = parquet_codec.decode(captured["payload"])
+        env = result_codec.decode(captured["payload"])
         by_name = {c["name"]: c for c in env.columns}
         # REST schema uses ``type`` (the Pydantic field name), not ``data_type``.
         # Vocabulary: string / number / datetime / binary.

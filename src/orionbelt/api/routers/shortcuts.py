@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from orionbelt.api.deps import get_db_vendor, get_session_manager
@@ -533,8 +533,9 @@ class ShortcutQueryExecuteRequest(QueryObject):
 )
 async def shortcut_execute_query(
     body: ShortcutQueryExecuteRequest,
+    request: Request,
     dialect: str | None = None,
-    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    format: Literal["json", "tsv", "arrow"] = "json",  # noqa: A002 — public query parameter
     format_values: bool = False,
     locale: str | None = None,
     timezone: str | None = None,
@@ -548,9 +549,10 @@ async def shortcut_execute_query(
 
     Query parameters
     ----------------
-    * ``format`` — ``json`` (default) or ``tsv``. ``tsv`` returns a tab-
-      separated body; cells with tab/newline/CR/double-quote are RFC 4180
-      quoted. ``tsv`` implies ``format_values=true``.
+    * ``format`` — ``json`` (default), ``tsv``, or ``arrow``. ``tsv`` returns a
+      tab-separated body; cells with tab/newline/CR/double-quote are RFC 4180
+      quoted. ``tsv`` implies ``format_values=true``. ``arrow`` returns an
+      Arrow IPC stream (also selectable via the ``Accept`` header).
     * ``format_values`` — when true, numeric cells in the JSON response are
       rendered as locale-aware display strings using each column's
       ``format`` pattern (matches the Gradio UI). Default false.
@@ -629,10 +631,12 @@ async def shortcut_execute_query(
     # remains scoped per session (matching the session-scoped endpoint).
     from orionbelt.api.deps import get_cache, get_cache_config
     from orionbelt.api.routers.sessions import _run_with_cache
+    from orionbelt.api.services.query_execution import negotiate_execute_format
 
     session_id = _session_id_for_store(mgr, store)
     cache = get_cache()
     cache_config = get_cache_config()
+    effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
         store=store,
         model=model,
@@ -642,10 +646,11 @@ async def shortcut_execute_query(
         dialect=dialect,
         cache=cache,
         cache_config=cache_config,
-        response_format=format,
+        response_format=effective_format,
         format_values=format_values,
         locale=locale,
         timezone_override=timezone,
+        accept_encoding=request.headers.get("accept-encoding"),
     )
 
 
@@ -680,7 +685,8 @@ async def shortcut_compile_semantic_ql(
 )
 async def shortcut_execute_semantic_ql(
     body: ShortcutSemanticQLRequest,
-    format: Literal["json", "tsv"] = "json",  # noqa: A002 — public query parameter
+    request: Request,
+    format: Literal["json", "tsv", "arrow"] = "json",  # noqa: A002 — public query parameter
     format_values: bool = False,
     locale: str | None = None,
     timezone: str | None = None,
@@ -696,6 +702,7 @@ async def shortcut_execute_semantic_ql(
     return await execute_semantic_ql(
         session_id,
         body,
+        request,
         format,
         format_values,
         locale,
