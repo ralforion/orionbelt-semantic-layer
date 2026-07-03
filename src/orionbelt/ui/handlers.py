@@ -209,6 +209,10 @@ def compile_sql(
 # execute). Loop-safe: rewriting ``query_input`` fires no execute (it has only a
 # ``.blur`` handler); the entry points (cell select, chip click) are user-only.
 _FILTER_EQ_OP = "equals"
+_FILTER_NULL_OP = "notset"  # OBML "IS NULL" — used when clicking a null dimension cell
+# Ops the click-to-filter UI owns: equality on a value, or IS NULL on a null cell.
+# Clear/toggle only touch these, leaving query-defined filters (other ops) intact.
+_CLICK_FILTER_OPS = frozenset({_FILTER_EQ_OP, _FILTER_NULL_OP})
 
 
 def _query_node(root: object) -> dict[str, Any] | None:
@@ -221,12 +225,16 @@ def _query_node(root: object) -> dict[str, Any] | None:
 
 
 def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
-    """Click a dimension cell -> inject an equality ``where`` into the query YAML.
+    """Click a cell -> inject an equality filter into the query YAML.
 
-    Returns the rewritten YAML so the Query editor reflects the filter (single
-    source of truth; it recompiles to SQL on the follow-on execute). Clicks on
-    measures/metrics or the ``#`` index column return the query unchanged. V1: a
-    single click-filter — a new dimension value replaces the previous one.
+    A **dimension** cell adds to ``where``; a **measure/metric** cell adds to
+    ``having`` (it references the aggregate by alias). A **null** dimension cell
+    adds an ``IS NULL`` filter (``op: notset``); a null measure/metric cell is
+    inert (filtering a null aggregate is meaningless). Additive across columns,
+    click the same value to toggle it off, and query-defined filters (ops other
+    than ``equals``/``notset``) are preserved. Returns the rewritten YAML so the
+    editor reflects it and it recompiles to SQL on the follow-on execute. The
+    ``#`` column is inert.
 
     Takes the base ``gr.EventData`` (not ``gr.SelectData``) on purpose: Gradio's
     ``SelectData.__init__`` does ``data["value"]`` and raises ``KeyError`` on the
@@ -244,8 +252,12 @@ def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
     idx = data.get("index")
     value = data.get("value")
     col_i = idx[1] if isinstance(idx, (list, tuple)) and len(idx) == 2 else None
+    # A real cell click carries the ``value`` key (even for a null cell, where it
+    # is ``None``); Gradio's value-less "arm"/deselect/lasso events omit the key
+    # entirely. Gate on presence so a genuine null-cell click acts on the first
+    # click without reviving the old 2nd-click bug.
     if (
-        value is None
+        "value" not in data
         or col_i is None
         or not isinstance(table, pd.DataFrame)
         or not (0 <= col_i < len(table.columns))
@@ -263,35 +275,56 @@ def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
     node = _query_node(root)
     if node is None:
         return query_yaml
-    dims = list((node.get("select") or {}).get("dimensions") or [])
-    if col_name not in dims:
-        return query_yaml  # only dimensions are filterable in V1
+    select = node.get("select") or {}
+    dims = list(select.get("dimensions") or [])
+    aggs = list(select.get("measures") or []) + list(select.get("metrics") or [])
+    # A dimension filters via WHERE; a measure/metric filters via HAVING (it
+    # references the aggregate by alias). Anything else (#, raw fields) is inert.
+    if col_name in dims:
+        clause = "where"
+    elif col_name in aggs:
+        clause = "having"
+    else:
+        return query_yaml
 
-    if isinstance(value, str):
-        value = html_mod.unescape(value).strip()
-
-    where = node.get("where") or []
-    already = any(
-        isinstance(w, dict)
-        and w.get("op") == _FILTER_EQ_OP
-        and w.get("field") == col_name
-        and str(w.get("value")) == str(value)
-        for w in where
-    )
-    # Additive across columns: drop only *this column's* equality filter, keeping
-    # filters on other columns. Then toggle — clicking the already-active value
-    # clears it; a new value on this column replaces it (one value per column).
+    entries = node.get(clause) or []
+    if value is None:
+        # Null cell. Filtering a null aggregate (HAVING) is meaningless, so only
+        # dimensions (WHERE) get an IS NULL filter; measures/metrics are inert.
+        if clause != "where":
+            return query_yaml
+        entry: dict[str, object] = {"field": col_name, "op": _FILTER_NULL_OP}
+        already = any(
+            isinstance(w, dict) and w.get("op") == _FILTER_NULL_OP and w.get("field") == col_name
+            for w in entries
+        )
+    else:
+        if isinstance(value, str):
+            value = html_mod.unescape(value).strip()
+        entry = {"field": col_name, "op": _FILTER_EQ_OP, "value": value}
+        already = any(
+            isinstance(w, dict)
+            and w.get("op") == _FILTER_EQ_OP
+            and w.get("field") == col_name
+            and str(w.get("value")) == str(value)
+            for w in entries
+        )
+    # Additive across columns: drop only *this column's* click-filter (equals or
+    # IS NULL), keeping every other filter (incl. query-defined ones with other
+    # ops). Then toggle — the already-active filter clears it; a new one replaces.
     kept = [
         w
-        for w in where
-        if not (isinstance(w, dict) and w.get("op") == _FILTER_EQ_OP and w.get("field") == col_name)
+        for w in entries
+        if not (
+            isinstance(w, dict) and w.get("op") in _CLICK_FILTER_OPS and w.get("field") == col_name
+        )
     ]
     if not already:
-        kept.append({"field": col_name, "op": _FILTER_EQ_OP, "value": value})
+        kept.append(entry)
     if kept:
-        node["where"] = kept
-    elif "where" in node:
-        del node["where"]
+        node[clause] = kept
+    elif clause in node:
+        del node[clause]
 
     buf = StringIO()
     yaml_rt.dump(root, buf)
@@ -299,7 +332,11 @@ def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
 
 
 def remove_cell_filter(query_yaml: str) -> str:
-    """Drop the active equality ``where`` filter from the query YAML (chip ``[x]``)."""
+    """Drop all click-added equality filters from ``where`` AND ``having`` (Clear).
+
+    Only ``op: equals`` entries (the click-added ones) are removed; query-defined
+    filters with other ops stay enforced.
+    """
     from io import StringIO
 
     from ruamel.yaml import YAML
@@ -310,17 +347,20 @@ def remove_cell_filter(query_yaml: str) -> str:
     except Exception:
         return query_yaml
     node = _query_node(root)
-    if node is None or "where" not in node:
+    if node is None:
         return query_yaml
-    kept = [
-        w
-        for w in (node.get("where") or [])
-        if not (isinstance(w, dict) and w.get("op") == _FILTER_EQ_OP)
-    ]
-    if kept:
-        node["where"] = kept
-    else:
-        del node["where"]
+    for clause in ("where", "having"):
+        if clause not in node:
+            continue
+        kept = [
+            w
+            for w in (node.get(clause) or [])
+            if not (isinstance(w, dict) and w.get("op") in _CLICK_FILTER_OPS)
+        ]
+        if kept:
+            node[clause] = kept
+        else:
+            del node[clause]
     buf = StringIO()
     yaml_rt.dump(root, buf)
     return buf.getvalue()
@@ -342,9 +382,14 @@ def filter_chip_update(query_yaml: str) -> object:
         node = None
     active: list[str] = []
     if isinstance(node, dict):
-        for w in node.get("where") or []:
-            if isinstance(w, dict) and w.get("op") == _FILTER_EQ_OP:
-                active.append(f"{w.get('field')} = {w.get('value')}")
+        for clause in ("where", "having"):
+            for w in node.get(clause) or []:
+                if not isinstance(w, dict):
+                    continue
+                if w.get("op") == _FILTER_EQ_OP:
+                    active.append(f"{w.get('field')} = {w.get('value')}")
+                elif w.get("op") == _FILTER_NULL_OP:
+                    active.append(f"{w.get('field')} IS NULL")
     if active:
         return gr.update(value="✕  Clear filters  ·  " + "   ·   ".join(active), visible=True)
     return gr.update(visible=False)
