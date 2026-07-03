@@ -67,7 +67,7 @@ Every `query/execute` JSON response gains:
 | `ttl_limiting_table` | The physical table whose contract drove the TTL. |
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 
-On cache hits, `execution_time_ms` reports the wall-clock time spent reading + decoding the cached entry — *not* the original database run time. The original DB timing is preserved on disk in the Parquet sidecar; combine `cached: true` with `execution_time_ms` to distinguish "fresh from warehouse" vs "served from cache" durations.
+On cache hits, `execution_time_ms` reports the wall-clock time spent reading + decoding the cached entry — *not* the original database run time. The original DB timing is preserved on disk alongside the cached payload; combine `cached: true` with `execution_time_ms` to distinguish "fresh from warehouse" vs "served from cache" durations.
 
 ## UI controls
 
@@ -147,7 +147,7 @@ Drops every cache entry regardless of TTL or freshness contract — useful from 
 The file backend uses two layers:
 
 - **DuckDB** (`{CACHE_DIR}/meta.duckdb`) for the control plane: cache entries, dependency tracking, heartbeats, sweep queries.
-- **Parquet files** (`{CACHE_DIR}/results/…`) for the actual result payloads. Self-describing, type-precise, inspectable with the DuckDB CLI.
+- **Arrow IPC files** (`{CACHE_DIR}/results/…`), gzip-compressed, for the actual result payloads. Self-describing and type-precise; the same Arrow encoding is served directly when a query is executed with `format=arrow`, so a cache hit needs no re-encoding. A single entry is shared across REST, pgwire, and Flight (keyed on the data source).
 
 Capacity eviction is LRU (`last_hit_at NULLS FIRST, created_at ASC`); TTL eviction is lazy on read plus a periodic sweep every `CACHE_SWEEP_INTERVAL_SECONDS` (default 1 day). Lazy TTL on read keeps user-facing freshness correct, so the sweeper only matters for reclaiming disk from entries that expire without being read again.
 
