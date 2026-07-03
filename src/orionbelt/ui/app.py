@@ -1197,9 +1197,7 @@ def create_blocks(
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
                     with gr.Row(elem_classes=["settings-pair"]):
-                        gr.HTML(
-                            '<span class="settings-label">Jump to</span>', padding=False
-                        )
+                        gr.HTML('<span class="settings-label">Jump to</span>', padding=False)
                         jump_dropdown = gr.Dropdown(
                             choices=[],
                             value=None,
