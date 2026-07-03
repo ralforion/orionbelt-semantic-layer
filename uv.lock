@@ -2269,7 +2269,7 @@ wheels = [
 
 [[package]]
 name = "orionbelt-semantic-layer"
-version = "2.18.0"
+version = "2.18.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -2338,6 +2338,7 @@ osi = [
 ]
 ui = [
     { name = "gradio" },
+    { name = "pyarrow" },
 ]
 
 [package.dev-dependencies]
@@ -2415,6 +2416,7 @@ requires-dist = [
     { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
     { name = "pyarrow", marker = "extra == 'flight'", specifier = ">=16.0,<20.0" },
     { name = "pyarrow", marker = "extra == 'flight-duckdb-only'", specifier = ">=16.0,<20.0" },
+    { name = "pyarrow", marker = "extra == 'ui'", specifier = ">=16.0,<20.0" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.12,<3.0" },
     { name = "pymysql", extras = ["rsa"], marker = "extra == 'dev'", specifier = ">=1.0" },

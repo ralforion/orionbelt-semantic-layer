@@ -2,6 +2,12 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.18.1] - 2026-07-03
+
+### Fixed
+
+- **Playground UI failed with `No module named 'pyarrow'`.** The UI fetches query results over the Arrow IPC transport (`format=arrow`) and decodes them client-side, but `pyarrow` was declared only in the `flight` extras, so the `[ui]` install and the UI Docker image lacked it. `pyarrow` is now a dependency of the `ui` extra.
+
 ## [2.18.0] - 2026-07-03
 
 ### Added
