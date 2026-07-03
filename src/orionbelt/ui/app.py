@@ -46,8 +46,14 @@ from orionbelt.ui.handlers import (
     _insert_into_query,
     _load_example_model,
     _resolve_execution_dialect,
+    clear_filters_and_execute,
     compile_sql,
     execute_query,
+    filter_and_execute,
+    filter_chip_update,
+    model_jump_targets,
+    sort_and_execute,
+    sort_state_str,
     validate_model,
 )
 from orionbelt.ui.rendering import (
@@ -442,6 +448,29 @@ _CSS = """\
    (Gradio's .table-wrap defaults to overflow-x:visible, so the extra columns
    spilled off and got clipped by the container on small screens). ── */
 .result-table .table-wrap { overflow-x: auto !important; }
+/* Disable Gradio's native client-side column sort + its "3-dot" cell menu.
+   It's a browser-only reorder (Gradio: "sorting in the browser will not affect
+   the values") and it's *sticky* — it re-applies to every new result, silently
+   overriding the server-side ORDER BY. Sorting is done via the query instead. */
+.result-table thead th,
+.result-table .header-button { pointer-events: none !important; cursor: default !important; }
+.result-table .cell-menu,
+.result-table .cell-menu-button,
+.result-table .menu-button,
+.result-table .sort-arrow { display: none !important; }
+/* Custom per-header sort controls — re-enable pointer events over the disabled th. */
+.result-table .ob-sort { pointer-events: auto; margin-left: 10px; white-space: nowrap;
+  font-size: 18px; opacity: 0.6; letter-spacing: 3px; vertical-align: middle; }
+.result-table .ob-sort-btn { pointer-events: auto; cursor: pointer; padding: 0 3px;
+  user-select: none; }
+.result-table .ob-sort-btn:hover { opacity: 1; color: #ff7a1a; }
+.result-table .ob-sort-btn.ob-active { opacity: 1; color: #ff7a1a; }
+/* Clear-filters button: full-width row, one line, text left-aligned. NOTE: Gradio
+   puts elem_classes on the <button> itself, so target .filter-chip directly (a
+   ".filter-chip button" selector matches nothing). */
+.filter-chip { width: 100% !important; white-space: nowrap !important;
+  justify-content: flex-start !important; text-align: left !important;
+  font-size: 14px !important; }
 
 /* Keep the Copy Data / ↓ TSV actions side by side on one row, even on phones. */
 .result-actions {
@@ -541,21 +570,77 @@ _SEARCH_GLASS_SVG = (
 )
 _CSS = _CSS.replace("__SEARCH_GLASS_SVG__", _SEARCH_GLASS_SVG)
 
+_JUMP_TO_JS = """
+(line_str) => {
+    var line = parseInt(line_str, 10);
+    if (!line) return;
+    var scroller = document.querySelector('#ob-model .cm-scroller');
+    if (!scroller) return;
+    var lineEl = scroller.querySelector('.cm-line');
+    var lh = lineEl ? lineEl.getBoundingClientRect().height : 19;
+    // Land the target line at the very top of the editor.
+    scroller.scrollTo({ top: Math.max(0, (line - 1) * lh), behavior: 'smooth' });
+}
+"""
+
 _ALIGN_HEADERS_JS = """
 (indices_str) => {
     var old = document.getElementById('ob-hdr-align');
     if (old) old.remove();
-    if (!indices_str) return;
-    var nums = indices_str.split(',').map(Number);
-    var css = '';
-    for (var j = 0; j < nums.length; j++) {
-        var n = nums[j];
-        css += '.result-table th:nth-child('+n+') button>span{text-align:right!important}';
+    if (indices_str) {
+        var nums = indices_str.split(',').map(Number);
+        var css = '';
+        for (var j = 0; j < nums.length; j++) {
+            css += '.result-table th:nth-child(' + nums[j] +
+                   ') button>span{text-align:right!important}';
+        }
+        var tag = document.createElement('style');
+        tag.id = 'ob-hdr-align';
+        tag.textContent = css;
+        document.head.appendChild(tag);
     }
-    var tag = document.createElement('style');
-    tag.id = 'ob-hdr-align';
-    tag.textContent = css;
-    document.head.appendChild(tag);
+    // Inject per-column sort controls (up / down / clear) into each header. They
+    // write a hidden signal textbox that triggers a server-side re-query. Value-
+    // less selects the injection may cause are now harmless (handlers use EventData).
+    var tries = 0;
+    var iv = setInterval(function () {
+        var root = document.querySelector('.result-table');
+        var ths = root ? root.querySelectorAll('th') : [];
+        if (!ths.length) { if (++tries > 25) clearInterval(iv); return; }
+        clearInterval(iv);
+        // Active orderBy ("field|dir" per line) -> colour the matching ▲/▼ orange.
+        var sortState = (document.querySelector('#ob-sort-state textarea') || {}).value || '';
+        var sortMap = {};
+        sortState.split('\\n').forEach(function (s) {
+            var kv = s.split('|');
+            if (kv[0]) sortMap[kv[0]] = kv[1];
+        });
+        ths.forEach(function (th) {
+            var existing = th.querySelector('.ob-sort');
+            if (existing) existing.remove();           // re-inject to refresh active colour
+            var btn = th.querySelector('button');
+            var label = ((btn || th).textContent || '').trim();
+            if (!label || label === '#') return;       // skip the index + empty columns
+            var wrap = document.createElement('span');
+            wrap.className = 'ob-sort';
+            [['\\u25B2', 'asc'], ['\\u25BC', 'desc'], ['\\u2715', 'clear']].forEach(function (p) {
+                var b = document.createElement('span');
+                b.textContent = p[0];
+                b.className = 'ob-sort-btn' + (sortMap[label] === p[1] ? ' ob-active' : '');
+                b.title = (p[1] === 'clear' ? 'Clear sort on ' : 'Sort ' + p[1] + ' by ') + label;
+                b.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    var signal = document.querySelector('#ob-sort-signal textarea');
+                    if (!signal) return;
+                    signal.value = label + '|' + p[1] + '|' + Date.now();
+                    signal.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                wrap.appendChild(b);
+            });
+            (btn || th).appendChild(wrap);             // inline, next to the label
+        });
+    }, 150);
 }
 """
 
@@ -1112,6 +1197,19 @@ def create_blocks(
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
                     with gr.Row(elem_classes=["settings-pair"]):
+                        gr.HTML('<span class="settings-label">Jump to</span>', padding=False)
+                        jump_dropdown = gr.Dropdown(
+                            choices=[],
+                            value=None,
+                            label="Jump to",
+                            show_label=False,
+                            container=False,
+                            scale=0,
+                            min_width=230,
+                            filterable=True,
+                            elem_classes=["jump-select"],
+                        )
+                    with gr.Row(elem_classes=["settings-pair"]):
                         gr.HTML(
                             '<span class="settings-label">SQL Dialect</span>',
                             padding=False,
@@ -1318,6 +1416,13 @@ def create_blocks(
                     outputs=[dim_picker, meas_picker, field_picker, dialect],
                 )
 
+                # "Jump to" navigator for the (large) model YAML: refill targets when
+                # the model changes, and scroll the editor to the picked key on select.
+                model_input.change(
+                    fn=model_jump_targets, inputs=[model_input], outputs=[jump_dropdown]
+                )
+                jump_dropdown.input(fn=None, inputs=[jump_dropdown], js=_JUMP_TO_JS)
+
                 for picker, sec in (
                     (dim_picker, "dimensions"),
                     (meas_picker, "measures"),
@@ -1442,30 +1547,60 @@ def create_blocks(
                 )
 
             with gr.Tab("Query Results", id=1, visible=query_exec_enabled) as results_tab:
-                with gr.Row():
+                # Execution info + actions on one row: a short info box, then the
+                # buttons inline to its right (all scale=0 so they pack left).
+                with gr.Row(elem_classes=["result-actions"]):
                     result_info = gr.Textbox(
                         label="Execution Info",
                         interactive=False,
                         lines=1,
                         max_lines=1,
+                        scale=0,
+                        min_width=440,
                     )
-                    # Keep both actions side by side on one row (the short
-                    # "↓ TSV" label lets them fit together even on phones).
-                    with gr.Row(elem_classes=["result-actions"]):
-                        copy_data_btn = gr.Button(
-                            "Copy Data",
-                            visible=False,
-                            variant="secondary",
-                            size="sm",
-                            min_width=100,
-                        )
-                        tsv_download = gr.DownloadButton(
-                            "↓ TSV",
-                            visible=False,
-                            variant="secondary",
-                            size="sm",
-                            min_width=80,
-                        )
+                    copy_data_btn = gr.Button(
+                        "Copy Data",
+                        visible=False,
+                        variant="secondary",
+                        size="sm",
+                        scale=0,
+                        min_width=110,
+                    )
+                    tsv_download = gr.DownloadButton(
+                        "↓ TSV",
+                        visible=False,
+                        variant="secondary",
+                        size="sm",
+                        scale=0,
+                        min_width=90,
+                    )
+                # "Clear filters" button — full-width row so the filter list never
+                # wraps onto multiple lines.
+                with gr.Row():
+                    filter_chip = gr.Button(
+                        visible=False,
+                        size="sm",
+                        variant="secondary",
+                        elem_classes=["filter-chip"],
+                    )
+                # Hidden bridge: per-header sort icons (injected via JS) write
+                # "column|action|nonce" here to trigger a server-side re-sort.
+                sort_signal = gr.Textbox(
+                    value="",
+                    elem_id="ob-sort-signal",
+                    elem_classes=["ob-bridge"],
+                    container=False,
+                    show_label=False,
+                )
+                # Holds the active orderBy ("field|dir" per line) so the header JS
+                # can colour the active ▲/▼ per column.
+                sort_state = gr.Textbox(
+                    value="",
+                    elem_id="ob-sort-state",
+                    elem_classes=["ob-bridge"],
+                    container=False,
+                    show_label=False,
+                )
                 result_table = gr.Dataframe(
                     label="Query Results",
                     interactive=False,
@@ -1557,9 +1692,106 @@ def create_blocks(
                 inputs=[result_info],
                 outputs=[tabs, tsv_download, copy_data_btn, meta_acc, result_table],
             ).then(
+                fn=filter_chip_update,
+                inputs=[query_input],
+                outputs=[filter_chip],
+            ).then(
+                fn=sort_state_str,
+                inputs=[query_input],
+                outputs=[sort_state],
+            ).then(
+                # Header JS runs LAST so it can read the freshly-set sort_state.
                 fn=None,
                 inputs=[num_cols_box],
                 js=_ALIGN_HEADERS_JS,
+            )
+
+            # -- Interactive results: click-to-filter -----------------------------
+            # The rewrite + execute happen in ONE handler (filter_and_execute /
+            # clear_filters_and_execute), so the execute runs the just-rewritten
+            # query directly — avoiding Gradio's output→input lag that made a
+            # filter take effect only on the *next* click. ``query_input`` is the
+            # first output (updates the editor). ``_wire_post`` only re-shows the
+            # actions, re-aligns headers, and syncs the Clear-filters button.
+            # ``filter_chip`` is the LAST output: the handler computes it from the
+            # just-rewritten query (in-hand), so the Clear-filters button doesn't
+            # suffer the output→input lag a chained read would.
+            _filter_outputs = [
+                query_input,
+                sql_output,
+                explain_output,
+                session_state,
+                model_state,
+                result_table,
+                export_table,
+                result_info,
+                tsv_download,
+                num_cols_box,
+                meta_code,
+                filter_chip,
+                sort_state,
+            ]
+
+            def _wire_post(trigger: Any) -> Any:
+                return trigger.then(
+                    fn=lambda info: (
+                        gr.update(visible=bool(info)),
+                        gr.update(visible=bool(info)),
+                        gr.update(visible=bool(info)),
+                    ),
+                    inputs=[result_info],
+                    outputs=[tsv_download, copy_data_btn, result_table],
+                ).then(fn=None, inputs=[num_cols_box], js=_ALIGN_HEADERS_JS)
+
+            # Click a dimension value -> add/toggle its filter and re-run in one shot.
+            _wire_post(
+                result_table.select(
+                    fn=filter_and_execute,
+                    inputs=[
+                        query_input,
+                        result_table,
+                        model_input,
+                        dialect,
+                        api_url,
+                        session_state,
+                        model_state,
+                    ],
+                    outputs=_filter_outputs,
+                )
+            )
+
+            # "Clear filters" -> drop click-added filters and re-run.
+            _wire_post(
+                filter_chip.click(
+                    fn=clear_filters_and_execute,
+                    inputs=[
+                        query_input,
+                        model_input,
+                        dialect,
+                        api_url,
+                        session_state,
+                        model_state,
+                    ],
+                    outputs=_filter_outputs,
+                )
+            )
+
+            # Per-header sort icons -> rewrite orderBy + execute in one shot
+            # (same output shape as the filter handlers, incl. the chip).
+            _wire_post(
+                sort_signal.input(
+                    fn=sort_and_execute,
+                    inputs=[
+                        sort_signal,
+                        query_input,
+                        model_input,
+                        dialect,
+                        api_url,
+                        session_state,
+                        model_state,
+                    ],
+                    outputs=_filter_outputs,
+                )
             )
 
             tsv_download.click(fn=lambda: gr.Info("TSV file downloaded"))
@@ -2083,6 +2315,11 @@ def create_blocks(
             fn=_highlight_pickers,
             inputs=[model_input, query_input],
             outputs=[dim_picker, meas_picker],
+        ).then(
+            # Populate the model "Jump to" navigator from the restored model.
+            fn=model_jump_targets,
+            inputs=[model_input],
+            outputs=[jump_dropdown],
         ).then(fn=None, js=inject_js)
 
         # Session cleanup: API sessions expire automatically via SESSION_TTL_SECONDS.

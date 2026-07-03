@@ -273,17 +273,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Pay every lazy-import tax at startup so the first user-visible
         # cache hit doesn't include ~100ms of cold imports + first-call
         # codec setup. Top-level ``pyarrow`` alone is ~60MB of native
-        # code; ``pyarrow.parquet`` is the columnar reader/writer that
-        # ``parquet_codec`` actually uses. DuckDB lazy-imports ``pytz``
+        # code; ``pyarrow.ipc`` is the Arrow stream reader/writer that
+        # ``result_codec`` actually uses. DuckDB lazy-imports ``pytz``
         # on the first TIMESTAMPTZ bind. We exercise all three with a
         # full encode → decode round-trip on a one-row payload.
         try:
             import pyarrow  # noqa: F401
-            import pyarrow.parquet  # noqa: F401
+            import pyarrow.ipc  # noqa: F401
 
-            from orionbelt.cache import parquet_codec
+            from orionbelt.cache import result_codec
 
-            warm_payload = parquet_codec.encode(
+            warm_payload = result_codec.encode(
                 columns=[{"name": "warm", "data_type": "string"}],
                 rows=[["warm"]],
                 sql="SELECT 1",
@@ -296,7 +296,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 resolved={},
                 physical_tables=[],
             )
-            parquet_codec.decode(warm_payload)
+            result_codec.decode(warm_payload)
             await cache.stats()  # exercises DuckDB meta read + pytz bind
         except Exception:
             logger.exception("Cache warm-up failed (non-fatal)")

@@ -204,6 +204,375 @@ def compile_sql(
         return f"Error: {exc}", "", session_state, model_state
 
 
+# Interactive results: clicking a dimension value injects an equality filter into
+# the query YAML (reflected in the editor, recompiled to SQL on the follow-on
+# execute). Loop-safe: rewriting ``query_input`` fires no execute (it has only a
+# ``.blur`` handler); the entry points (cell select, chip click) are user-only.
+_FILTER_EQ_OP = "equals"
+_FILTER_NULL_OP = "notset"  # OBML "IS NULL" — used when clicking a null dimension cell
+# Ops the click-to-filter UI owns: equality on a value, or IS NULL on a null cell.
+# Clear/toggle only touch these, leaving query-defined filters (other ops) intact.
+_CLICK_FILTER_OPS = frozenset({_FILTER_EQ_OP, _FILTER_NULL_OP})
+
+
+def _query_node(root: object) -> dict[str, Any] | None:
+    """Return the QueryObject mapping from a parsed editor doc (unwrapping a
+    top-level ``query:`` wrapper), or ``None`` if it isn't a mapping."""
+    if not isinstance(root, dict):
+        return None
+    node = root["query"] if ("query" in root and "select" not in root) else root
+    return node if isinstance(node, dict) else None
+
+
+def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
+    """Click a cell -> inject an equality filter into the query YAML.
+
+    A **dimension** cell adds to ``where``; a **measure/metric** cell adds to
+    ``having`` (it references the aggregate by alias). A **null** dimension cell
+    adds an ``IS NULL`` filter (``op: notset``); a null measure/metric cell is
+    inert (filtering a null aggregate is meaningless). Additive across columns,
+    click the same value to toggle it off, and query-defined filters (ops other
+    than ``equals``/``notset``) are preserved. Returns the rewritten YAML so the
+    editor reflects it and it recompiles to SQL on the follow-on execute. The
+    ``#`` column is inert.
+
+    Takes the base ``gr.EventData`` (not ``gr.SelectData``) on purpose: Gradio's
+    ``SelectData.__init__`` does ``data["value"]`` and raises ``KeyError`` on the
+    value-less select events the Dataframe emits (first-click "arm" / deselect /
+    re-render), which crashed the whole click and made filtering need a 2nd click.
+    We read the raw payload defensively and ignore events without a value.
+    """
+    import html as html_mod
+    from io import StringIO
+
+    import pandas as pd
+    from ruamel.yaml import YAML
+
+    data = getattr(evt, "_data", None) or {}
+    idx = data.get("index")
+    value = data.get("value")
+    col_i = idx[1] if isinstance(idx, (list, tuple)) and len(idx) == 2 else None
+    # A real cell click carries the ``value`` key (even for a null cell, where it
+    # is ``None``); Gradio's value-less "arm"/deselect/lasso events omit the key
+    # entirely. Gate on presence so a genuine null-cell click acts on the first
+    # click without reviving the old 2nd-click bug.
+    if (
+        "value" not in data
+        or col_i is None
+        or not isinstance(table, pd.DataFrame)
+        or not (0 <= col_i < len(table.columns))
+    ):
+        return query_yaml
+    col_name = str(table.columns[col_i])
+    if col_name == "#":
+        return query_yaml
+
+    yaml_rt = YAML()
+    try:
+        root = yaml_rt.load(query_yaml)
+    except Exception:
+        return query_yaml
+    node = _query_node(root)
+    if node is None:
+        return query_yaml
+    select = node.get("select") or {}
+    dims = list(select.get("dimensions") or [])
+    aggs = list(select.get("measures") or []) + list(select.get("metrics") or [])
+    # A dimension filters via WHERE; a measure/metric filters via HAVING (it
+    # references the aggregate by alias). Anything else (#, raw fields) is inert.
+    if col_name in dims:
+        clause = "where"
+    elif col_name in aggs:
+        clause = "having"
+    else:
+        return query_yaml
+
+    entries = node.get(clause) or []
+    if value is None:
+        # Null cell. Filtering a null aggregate (HAVING) is meaningless, so only
+        # dimensions (WHERE) get an IS NULL filter; measures/metrics are inert.
+        if clause != "where":
+            return query_yaml
+        entry: dict[str, object] = {"field": col_name, "op": _FILTER_NULL_OP}
+        already = any(
+            isinstance(w, dict) and w.get("op") == _FILTER_NULL_OP and w.get("field") == col_name
+            for w in entries
+        )
+    else:
+        if isinstance(value, str):
+            value = html_mod.unescape(value).strip()
+        entry = {"field": col_name, "op": _FILTER_EQ_OP, "value": value}
+        already = any(
+            isinstance(w, dict)
+            and w.get("op") == _FILTER_EQ_OP
+            and w.get("field") == col_name
+            and str(w.get("value")) == str(value)
+            for w in entries
+        )
+    # Additive across columns: drop only *this column's* click-filter (equals or
+    # IS NULL), keeping every other filter (incl. query-defined ones with other
+    # ops). Then toggle — the already-active filter clears it; a new one replaces.
+    kept = [
+        w
+        for w in entries
+        if not (
+            isinstance(w, dict) and w.get("op") in _CLICK_FILTER_OPS and w.get("field") == col_name
+        )
+    ]
+    if not already:
+        kept.append(entry)
+    if kept:
+        node[clause] = kept
+    elif clause in node:
+        del node[clause]
+
+    buf = StringIO()
+    yaml_rt.dump(root, buf)
+    return buf.getvalue()
+
+
+def remove_cell_filter(query_yaml: str) -> str:
+    """Drop all click-added equality filters from ``where`` AND ``having`` (Clear).
+
+    Only ``op: equals`` entries (the click-added ones) are removed; query-defined
+    filters with other ops stay enforced.
+    """
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+
+    yaml_rt = YAML()
+    try:
+        root = yaml_rt.load(query_yaml)
+    except Exception:
+        return query_yaml
+    node = _query_node(root)
+    if node is None:
+        return query_yaml
+    for clause in ("where", "having"):
+        if clause not in node:
+            continue
+        kept = [
+            w
+            for w in (node.get(clause) or [])
+            if not (isinstance(w, dict) and w.get("op") in _CLICK_FILTER_OPS)
+        ]
+        if kept:
+            node[clause] = kept
+        else:
+            del node[clause]
+    buf = StringIO()
+    yaml_rt.dump(root, buf)
+    return buf.getvalue()
+
+
+def filter_chip_update(query_yaml: str) -> object:
+    """Show a "Clear filters" button listing the active click-filters.
+
+    Lists every click-added equality filter (``op: equals``); the button clears
+    all of them at once via :func:`remove_cell_filter`, leaving the query's own
+    filters (e.g. an ``in`` list) untouched. Removing a single filter is done by
+    clicking that value again (toggle).
+    """
+    from ruamel.yaml import YAML
+
+    try:
+        node = _query_node(YAML().load(query_yaml))
+    except Exception:
+        node = None
+    active: list[str] = []
+    if isinstance(node, dict):
+        for clause in ("where", "having"):
+            for w in node.get(clause) or []:
+                if not isinstance(w, dict):
+                    continue
+                if w.get("op") == _FILTER_EQ_OP:
+                    active.append(f"{w.get('field')} = {w.get('value')}")
+                elif w.get("op") == _FILTER_NULL_OP:
+                    active.append(f"{w.get('field')} IS NULL")
+    if active:
+        return gr.update(value="✕  Clear filters  ·  " + "   ·   ".join(active), visible=True)
+    return gr.update(visible=False)
+
+
+_ExecTuple = tuple[
+    str,
+    str,
+    dict[str, str] | None,
+    dict[str, str] | None,
+    object,
+    object,
+    str,
+    str | None,
+    str,
+    str,
+]
+
+
+def filter_and_execute(
+    evt: gr.EventData,
+    query_yaml: str,
+    table: object,
+    model_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    request: gr.Request | None = None,
+) -> tuple[str, *_ExecTuple, object, str]:
+    """Apply the clicked filter to the query AND execute — in one call.
+
+    Doing the rewrite + execute together means the execute runs the *just
+    rewritten* query directly. If instead ``query_input`` were an output of the
+    rewrite and a chained input of the execute, Gradio would feed the execute the
+    pre-update value — the bug where a click only took effect on the *next* click.
+    The Clear-filters chip and sort-state are computed here too (from the new
+    query, in-hand) so they don't suffer the same lag. Returns: new query YAML,
+    the 10 execute outputs, the filter-chip update, then the sort-state string.
+    """
+    new_query = apply_cell_filter(evt, query_yaml, table)
+    result = execute_query(
+        model_yaml, new_query, dialect, api_url, session_state, model_state, request
+    )
+    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+
+
+def clear_filters_and_execute(
+    query_yaml: str,
+    model_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    request: gr.Request | None = None,
+) -> tuple[str, *_ExecTuple, object, str]:
+    """Drop all click-added filters AND execute in one call (see :func:`filter_and_execute`)."""
+    new_query = remove_cell_filter(query_yaml)
+    result = execute_query(
+        model_yaml, new_query, dialect, api_url, session_state, model_state, request
+    )
+    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+
+
+def _apply_sort_signal(query_yaml: str, signal: str | None) -> str:
+    """Rewrite the query's ``orderBy`` from a per-header sort click.
+
+    ``signal`` is ``"<column>|<action>|<nonce>"`` where action is
+    ``asc`` / ``desc`` / ``clear``. Additive: ▲/▼ add-or-replace that column's
+    entry (keeping other columns' ordering); ✕ removes just that column. When no
+    ordering remains, ``orderBy`` is dropped entirely (order not enforced).
+    """
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+
+    parts = (signal or "").split("|")
+    if len(parts) < 2:
+        return query_yaml
+    col, action = parts[0], parts[1]
+    if not col:
+        return query_yaml
+
+    yaml_rt = YAML()
+    try:
+        root = yaml_rt.load(query_yaml)
+    except Exception:
+        return query_yaml
+    node = _query_node(root)
+    if node is None:
+        return query_yaml
+
+    # Drop this column's existing entry, then (for asc/desc) re-add it at the end.
+    order = [
+        o
+        for o in (node.get("orderBy") or [])
+        if not (isinstance(o, dict) and o.get("field") == col)
+    ]
+    if action in ("asc", "desc"):
+        order.append({"field": col, "direction": action})
+    if order:
+        node["orderBy"] = order
+    elif "orderBy" in node:
+        del node["orderBy"]
+    buf = StringIO()
+    yaml_rt.dump(root, buf)
+    return buf.getvalue()
+
+
+def sort_state_str(query_yaml: str) -> str:
+    """Compact ``field|direction`` newline-list of the active ``orderBy``.
+
+    Fed to the header JS so it can colour the active ▲/▼ per column (and gray the
+    rest). Newline-separated so a value can't collide with the delimiter.
+    """
+    from ruamel.yaml import YAML
+
+    try:
+        node = _query_node(YAML().load(query_yaml))
+    except Exception:
+        node = None
+    parts: list[str] = []
+    if isinstance(node, dict):
+        for o in node.get("orderBy") or []:
+            if isinstance(o, dict) and o.get("field"):
+                parts.append(f"{o.get('field')}|{o.get('direction', 'desc')}")
+    return "\n".join(parts)
+
+
+def sort_and_execute(
+    signal: str,
+    query_yaml: str,
+    model_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    request: gr.Request | None = None,
+) -> tuple[str, *_ExecTuple, object, str]:
+    """Apply a per-header sort click to ``orderBy`` AND execute in one call.
+
+    One handler (rewrite + execute) so the execute runs the just-rewritten query
+    directly — the same fix that made click-to-filter apply on the first click.
+    Returns the shared shape (query, execute outputs, filter-chip, sort-state).
+    """
+    new_query = _apply_sort_signal(query_yaml, signal)
+    result = execute_query(
+        model_yaml, new_query, dialect, api_url, session_state, model_state, request
+    )
+    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+
+
+def model_jump_targets(model_yaml: str) -> object:
+    """Build the model-editor "Jump to" choices as ``(label, line#)`` pairs.
+
+    Two-level labels: each top-level section (``settings`` / ``dataObjects`` /
+    ``dimensions`` / ``measures`` / ``metrics`` / ``filters``) plus its named
+    children as ``"section / name"``. The value is the 1-based line number so the
+    editor JS can scroll there via ``.cm-scroller`` scrollTop.
+    """
+    import re
+
+    top = ("version", "settings", "dataObjects", "dimensions", "measures", "metrics", "filters")
+    named = {"dataObjects", "dimensions", "measures", "metrics", "filters"}
+    choices: list[tuple[str, str]] = []
+    section: str | None = None
+    for i, line in enumerate((model_yaml or "").split("\n"), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z_]\w*):", line)
+        if m:
+            key = m.group(1)
+            if key in top:
+                choices.append((key, str(i)))
+                section = key if key in named else None
+            continue
+        if section:
+            m2 = re.match(r"^  (\S[^:]*):", line)  # exactly-2-space indented name
+            if m2:
+                choices.append((f"{section} / {m2.group(1).strip()}", str(i)))
+    return gr.update(choices=choices, value=None)
+
+
 def _resolve_execution_dialect(api_url: str, current: str) -> str:
     """Snap the SQL Dialect dropdown to the API's effective execution dialect.
 
@@ -223,6 +592,27 @@ def _resolve_execution_dialect(api_url: str, current: str) -> str:
     except Exception:  # noqa: BLE001 — best-effort UX hint, never block exec
         pass
     return current
+
+
+def _decode_arrow_execute_response(resp: Any) -> Any:
+    """Decode a ``format=arrow`` execute response into the same dict shape the
+    JSON path yields, so downstream rendering is identical.
+
+    The self-contained Arrow stream carries the columnar rows plus the full
+    envelope (sql, columns, explain, …) in its schema metadata, so both come out
+    of one stream. httpx has already gunzip'd the body via ``Content-Encoding``.
+    """
+    import pyarrow as pa
+
+    from orionbelt.cache.result_codec import read_envelope
+
+    table = pa.ipc.open_stream(resp.content).read_all()
+    data: dict[str, Any] = read_envelope(table)
+    names = table.column_names
+    data["rows"] = [[row.get(n) for n in names] for row in table.to_pylist()]
+    if not data.get("columns"):
+        data["columns"] = [{"name": n} for n in names]
+    return data
 
 
 def execute_query(
@@ -292,9 +682,17 @@ def execute_query(
         if "query" in query_dict and "select" not in query_dict:
             query_dict = query_dict["query"]
 
+        # The UI always uses the self-contained Arrow IPC transport (dogfoods the
+        # format=arrow endpoint). The decoded dict is identical to the JSON shape,
+        # so all rendering below is unchanged.
+        exec_params = {"format": "arrow"}
+        exec_headers = {"Accept-Encoding": "gzip"}
+
         resp = client.post(
             f"/v1/sessions/{session_id}/query/execute",
             json={"model_id": model_id, "query": query_dict, "dialect": dialect},
+            params=exec_params,
+            headers=exec_headers,
             timeout=120,
         )
         if resp.status_code == 404:
@@ -304,6 +702,8 @@ def execute_query(
             resp = client.post(
                 f"/v1/sessions/{session_id}/query/execute",
                 json={"model_id": model_id, "query": query_dict, "dialect": dialect},
+                params=exec_params,
+                headers=exec_headers,
                 timeout=120,
             )
         if resp.status_code == 503:
@@ -335,7 +735,7 @@ def execute_query(
                 "",
             )
         resp.raise_for_status()
-        data = resp.json()
+        data = _decode_arrow_execute_response(resp)
 
         sql: str = data["sql"]
         formatted = _format_sql(sql)

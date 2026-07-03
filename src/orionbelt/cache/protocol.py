@@ -12,8 +12,8 @@ class CachedResult:
     """A cache hit envelope.
 
     ``payload`` is the raw bytes the backend wrote on ``set`` (typically a
-    Parquet file produced by ``orionbelt.cache.parquet_codec``). The caller
-    decodes it. ``cached_at`` is when the entry was first written;
+    gzip'd Arrow IPC blob produced by ``orionbelt.cache.result_codec``). The
+    caller decodes it. ``cached_at`` is when the entry was first written;
     ``ttl_remaining_seconds`` is the time left before expiry on ``get``.
     """
 

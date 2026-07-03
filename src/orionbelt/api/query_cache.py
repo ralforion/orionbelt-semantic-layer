@@ -35,8 +35,8 @@ from orionbelt.cache import (
     compute_effective_ttl,
     is_nondeterministic_sql,
 )
-from orionbelt.cache.parquet_codec import decode as cache_decode
 from orionbelt.cache.protocol import Cache
+from orionbelt.cache.result_codec import decode as cache_decode
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
@@ -253,10 +253,10 @@ async def try_cache_set(
 ) -> None:
     """Encode and store a result payload. Failures are logged and ignored."""
     from orionbelt.cache import key as cache_key_mod
-    from orionbelt.cache import parquet_codec
+    from orionbelt.cache import result_codec
 
     try:
-        payload = parquet_codec.encode(
+        payload = result_codec.encode(
             columns=[c.model_dump() for c in columns],
             rows=rows,
             sql=sql,

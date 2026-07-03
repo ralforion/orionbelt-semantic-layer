@@ -2,6 +2,17 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.18.0] - 2026-07-03
+
+### Added
+
+- **Arrow IPC result format for query execution.** `POST /v1/query/execute` (and the per-session variant) now negotiates `format=arrow` (or `Accept: application/vnd.apache.arrow.stream`), returning a self-describing Arrow IPC stream with the result envelope (row count, execution time, cache status, timezone, column types/formats) carried in the schema metadata. JSON and TSV formats are unchanged. Responses honor `Accept-Encoding: gzip`.
+- **Interactive Query Results in the playground UI.** Click a dimension value to add a `WHERE` filter, or a measure/metric value to add a `HAVING` filter; click a null cell in a dimension column to add an `IS NULL` filter. Filters are additive across columns, toggle off on re-click, and are cleared (per surface) with the Clear filters button while query-defined filters stay enforced. Per-column header controls run server-side `ORDER BY` (ascending/descending/clear) with the active direction highlighted. A "Jump to" navigator scrolls the model editor to any section or artefact. All interactions rewrite the query YAML (the single source of truth) and re-execute over Arrow transport.
+
+### Changed
+
+- **Result cache now stores Arrow IPC + gzip instead of Parquet**, and is harmonized across surfaces: REST, pgwire, and Flight share a single cache entry keyed on the data source, so identical queries reuse results regardless of the surface that produced them.
+
 ## [2.17.1] - 2026-06-28
 
 ### Changed

@@ -483,12 +483,15 @@ def build_cache_meta(
     except Exception:
         return None
 
-    from orionbelt.cache import build_cache_key, compute_effective_ttl
+    from orionbelt.cache import build_cache_key, build_datasource_key, compute_effective_ttl
 
     # v2 keys hash on the compiled SQL string — the canonical, dialect-
-    # rendered form actually sent to the warehouse.
+    # rendered form actually sent to the warehouse. v3 scopes the key to the
+    # datasource (the dialect today), NOT the session, so Flight, REST, and
+    # pgwire share one entry per compiled query. See orionbelt.cache.key.
+    datasource = build_datasource_key(dialect)
     cache_key = build_cache_key(
-        session_id=selector,
+        datasource=datasource,
         model_id=model_id,
         dialect=dialect,
         sql=compiled_sql,
@@ -521,7 +524,7 @@ def build_cache_meta(
     return {
         "key": cache_key,
         "ttl": int(ttl_outcome.ttl.seconds),
-        "session_id": selector,
+        "datasource": datasource,
         "model_id": model_id,
         "physical_tables": physical_tables,
         "dialect": dialect,
@@ -667,12 +670,11 @@ def execute_sql(
 def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     """Look up a Flight cache entry. Returns the decoded ``pa.Table`` or None.
 
-    The cache stores parquet-encoded payloads using the same
-    ``parquet_codec`` envelope REST uses, so a Flight reader can
-    consume a REST writer's entry and vice versa. We use plain
-    ``pq.read_table`` because Flight only needs the columnar data;
-    the envelope metadata (sql, dialect, explain, …) is harmless
-    to read and re-serve.
+    The cache stores gzip'd Arrow IPC payloads via the shared
+    ``orionbelt.cache.result_codec`` envelope, so a Flight reader consumes a
+    REST/pgwire writer's entry and vice versa (one entry per compiled query).
+    Flight only needs the columnar data; the envelope metadata (sql, dialect,
+    explain, …) rides in the schema and is harmless to carry along.
     """
     import asyncio
 
@@ -688,28 +690,26 @@ def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     if result is None or not getattr(result, "payload", None):
         return None
     try:
-        import io
+        from orionbelt.cache import result_codec
 
-        import pyarrow.parquet as pq
-
-        return pq.read_table(io.BytesIO(result.payload))
+        return result_codec.decode_table(result.payload)
     except Exception:
         logger.debug("cache decode failed for key=%s", key, exc_info=True)
         return None
 
 
 def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[str, Any]) -> None:
-    """Serialize a ``pa.Table`` to the shared parquet_codec envelope and
+    """Serialize a ``pa.Table`` to the shared ``result_codec`` envelope and
     store under ``cache_meta``.
 
-    REST and Flight share the cache namespace — both must encode the
-    same envelope so the other side can decode ``sql``, ``dialect``,
-    ``columns``, etc. without falling back to defaults. Errors are
+    REST, pgwire, and Flight share the cache namespace — all encode the
+    same gzip'd Arrow IPC envelope so the other surfaces can decode ``sql``,
+    ``dialect``, ``columns``, etc. without falling back to defaults. Errors are
     swallowed; cache writes must never break query execution.
     """
     import asyncio
 
-    from orionbelt.cache import parquet_codec
+    from orionbelt.cache import result_codec
 
     rows = table.to_pylist()
     list_of_lists: list[list[Any]] = [
@@ -724,7 +724,7 @@ def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[st
     ]
 
     try:
-        payload = parquet_codec.encode(
+        payload = result_codec.encode(
             columns=columns_meta,
             rows=list_of_lists,
             sql=cache_meta.get("sql", ""),
@@ -752,7 +752,7 @@ def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[st
                     payload,
                     ttl_seconds=cache_meta["ttl"],
                     physical_tables=cache_meta["physical_tables"],
-                    session_id=cache_meta["session_id"],
+                    datasource=cache_meta["datasource"],
                     model_id=cache_meta["model_id"],
                     query_hash=_query_hash(sql=cache_meta["sql"]),
                     dialect=cache_meta["dialect"],

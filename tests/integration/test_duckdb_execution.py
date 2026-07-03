@@ -1208,6 +1208,85 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_execute_format_arrow_returns_ipc_stream(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """?format=arrow returns a gzip'd Arrow IPC stream matching the JSON rows."""
+        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            body = {
+                "model_id": None,
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country"],
+                        "measures": ["Total Revenue"],
+                    },
+                },
+                "dialect": "duckdb",
+            }
+            with patch("orionbelt.api.query_cache.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    mid = (
+                        await c.post(
+                            f"/v1/sessions/{sid}/models",
+                            json={"model_yaml": SAMPLE_MODEL_YAML},
+                        )
+                    ).json()["model_id"]
+                    body["model_id"] = mid
+
+                    json_resp = await c.post(f"/v1/sessions/{sid}/query/execute", json=body)
+                    arrow_resp = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format=arrow",
+                        json=body,
+                        headers={"Accept-Encoding": "gzip"},
+                    )
+                    # Accept-header negotiation reaches the same Arrow stream.
+                    accept_resp = await c.post(
+                        f"/v1/sessions/{sid}/query/execute",
+                        json=body,
+                        headers={"Accept": "application/vnd.apache.arrow.stream"},
+                    )
+
+            assert arrow_resp.status_code == 200
+            assert arrow_resp.headers["content-type"].startswith(
+                "application/vnd.apache.arrow.stream"
+            )
+            # Server gzip'd the body; httpx transparently decodes it.
+            assert arrow_resp.headers.get("content-encoding") == "gzip"
+            assert accept_resp.headers["content-type"].startswith(
+                "application/vnd.apache.arrow.stream"
+            )
+
+            # The Arrow stream carries the same columns + rows as the JSON shape.
+            table = pa.ipc.open_stream(pa.BufferReader(arrow_resp.content)).read_all()
+            data = json_resp.json()
+            assert table.column_names == [c["name"] for c in data["columns"]]
+            assert table.to_pylist() == [
+                dict(zip(table.column_names, row, strict=True)) for row in data["rows"]
+            ]
+
+            # Self-contained: the full envelope rides in the schema metadata, so
+            # sql / columns / dialect are restored from the one stream.
+            from orionbelt.cache.result_codec import read_envelope
+
+            env = read_envelope(table)
+            assert env["sql"] == data["sql"]
+            assert env["dialect"] == data["dialect"]
+            assert env["columns"] == data["columns"]
+            assert env["row_count"] == data["row_count"]
+        finally:
+            reset_session_manager()
+
     async def test_execute_raw_mode_format_values_uses_executor_type_hint(
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:
