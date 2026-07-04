@@ -298,19 +298,32 @@ class TestOneshotBatchCache:
         mid = first_data["model_id"]
         assert first_data["results"][0]["cached"] is False
 
-        second = await client.post(
-            "/v1/oneshot/batch",
-            json={
-                "session_id": sid,
-                "model_id": mid,
-                "execute": True,
-                "queries": [{"id": "q1", "query": _QUERY_BODY}],
-                "dialect": "duckdb",
-            },
-        )
+        # The oneshot hit path decodes through the shared try_cache_get, which
+        # offloads the gzip + Arrow decode to a worker thread (never blocks the
+        # event loop). Assert the delegation so it can't silently regress to a
+        # synchronous inline decode.
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.routers.oneshot as osm
+
+        with _patch.object(
+            osm, "try_cache_get", new=AsyncMock(wraps=osm.try_cache_get)
+        ) as spy_get:
+            second = await client.post(
+                "/v1/oneshot/batch",
+                json={
+                    "session_id": sid,
+                    "model_id": mid,
+                    "execute": True,
+                    "queries": [{"id": "q1", "query": _QUERY_BODY}],
+                    "dialect": "duckdb",
+                },
+            )
         assert second.status_code == 200
         result = second.json()["results"][0]
         assert result["cached"] is True
+        assert spy_get.await_count == 1  # hit went through the offloaded shared getter
         assert result["row_count"] == 2
 
 

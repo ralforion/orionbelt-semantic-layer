@@ -22,7 +22,7 @@ from orionbelt.api.deps import (
     is_query_execute_enabled,
     is_single_model_mode,
 )
-from orionbelt.api.query_cache import encode_cached_payload
+from orionbelt.api.query_cache import encode_cached_payload, try_cache_get
 from orionbelt.api.routers.sessions import (
     _build_execute_response,
     _build_explain_response,
@@ -46,7 +46,6 @@ from orionbelt.cache import (
     is_nondeterministic_sql,
 )
 from orionbelt.cache.protocol import Cache
-from orionbelt.cache.result_codec import decode as cache_decode
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -619,20 +618,16 @@ def _resolve_oneshot_ttl(
 
 
 async def _try_oneshot_cache_get(cache: Cache, key: str) -> tuple[Any, str] | None:
-    """Best-effort cache get for oneshot. Returns (envelope, cached_at_iso) or None."""
-    try:
-        result = await cache.get(key)
-    except Exception:
-        logger.debug("oneshot cache.get error", exc_info=True)
+    """Best-effort cache get for oneshot. Returns (envelope, cached_at_iso) or None.
+
+    Delegates to the shared :func:`try_cache_get`, which offloads the gzip +
+    Arrow IPC decode to a worker thread so a oneshot cache hit never blocks the
+    event loop (mirrors the REST path).
+    """
+    envelope = await try_cache_get(cache, key)
+    if envelope is None:
         return None
-    if result is None:
-        return None
-    try:
-        envelope = cache_decode(result.payload)
-    except Exception:
-        logger.debug("oneshot cache decode failed", exc_info=True)
-        return None
-    return envelope, result.cached_at.isoformat().replace("+00:00", "Z")
+    return envelope, envelope.cached_at_iso
 
 
 async def _try_oneshot_cache_set(
