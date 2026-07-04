@@ -307,9 +307,7 @@ class TestOneshotBatchCache:
 
         import orionbelt.api.routers.oneshot as osm
 
-        with _patch.object(
-            osm, "try_cache_get", new=AsyncMock(wraps=osm.try_cache_get)
-        ) as spy_get:
+        with _patch.object(osm, "try_cache_get", new=AsyncMock(wraps=osm.try_cache_get)) as spy_get:
             second = await client.post(
                 "/v1/oneshot/batch",
                 json={
