@@ -56,6 +56,22 @@ def test_payload_is_gzip() -> None:
     assert payload[:2] == b"\x1f\x8b"  # gzip magic
 
 
+def test_encode_cached_payload_stamps_cached_true() -> None:
+    """The shared storage encoder stamps cached=true so raw-arrow hits can be
+    served verbatim. All cache writers (REST + oneshot) must route through it."""
+    from orionbelt.api.query_cache import encode_cached_payload
+
+    payload = encode_cached_payload(**_SAMPLE)
+    table = pa.ipc.open_stream(pa.BufferReader(gzip.decompress(payload))).read_all()
+    env = result_codec.read_envelope(table)
+    assert env["cached"] is True
+    assert env["cached_at"] is not None
+    # A bare encode (used for the miss response) is NOT flagged cached.
+    bare = result_codec.encode(**_SAMPLE)
+    bare_tbl = pa.ipc.open_stream(pa.BufferReader(gzip.decompress(bare))).read_all()
+    assert result_codec.read_envelope(bare_tbl)["cached"] is False
+
+
 def test_inner_stream_is_uncompressed_arrow_ipc() -> None:
     """Un-gzipping yields a plain, universally-readable IPC stream with the
     envelope in schema metadata and no Arrow-level buffer compression (§4)."""

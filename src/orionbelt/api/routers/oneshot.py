@@ -22,6 +22,7 @@ from orionbelt.api.deps import (
     is_query_execute_enabled,
     is_single_model_mode,
 )
+from orionbelt.api.query_cache import encode_cached_payload
 from orionbelt.api.routers.sessions import (
     _build_execute_response,
     _build_explain_response,
@@ -46,7 +47,6 @@ from orionbelt.cache import (
 )
 from orionbelt.cache.protocol import Cache
 from orionbelt.cache.result_codec import decode as cache_decode
-from orionbelt.cache.result_codec import encode as cache_encode
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -649,7 +649,11 @@ async def _try_oneshot_cache_set(
 ) -> None:
     """Best-effort cache set for oneshot batch entries."""
     try:
-        payload = cache_encode(
+        # Encode through the shared stamped encoder so oneshot-written blobs
+        # carry the same ``cached=true`` stamp as the REST writer — otherwise a
+        # later raw-arrow byte-passthrough hit would serve them with
+        # ``cached=false`` in the Arrow metadata and mislabel the hit.
+        payload = encode_cached_payload(
             columns=[c.model_dump() for c in envelope.columns],
             rows=envelope.rows,
             sql=envelope.sql,

@@ -209,16 +209,47 @@ class TestSessionExecuteCache:
         assert read_envelope(stored_tbl)["cached"] is True
 
         # Arrow hit: served via byte-passthrough of that stored blob. httpx auto-
-        # gunzips, so compare the decoded table + the in-band cached flag.
-        hit = await client.post(
-            f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
-        )
+        # gunzips, so compare the decoded table + the in-band cached flag. The
+        # hit must be TRUE zero-copy: the gzip/Arrow decode is skipped entirely,
+        # so cache_decode is never called during the request.
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.query_cache as qc
+
+        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+            hit = await client.post(
+                f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+            )
         assert hit.status_code == 200
         assert hit.headers.get("content-encoding") == "gzip"
+        assert spy_decode.call_count == 0  # zero-copy: no decode on the raw-arrow hit
         hit_tbl = pa.ipc.open_stream(pa.BufferReader(hit.content)).read_all()
         assert read_envelope(hit_tbl)["cached"] is True
         assert hit_tbl.to_pylist() == miss_tbl.to_pylist()
         assert hit_tbl.equals(stored_tbl)
+
+    async def test_json_hit_still_decodes(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """A JSON (non-passthrough) hit still decodes the blob to rebuild rows."""
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.query_cache as qc
+
+        client, _ = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+
+        assert (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()[
+            "cached"
+        ] is False
+        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+            hit = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
+        assert hit.json()["cached"] is True
+        assert spy_decode.call_count == 1  # JSON path needs the decoded rows
 
 
 class TestShortcutExecuteCache:

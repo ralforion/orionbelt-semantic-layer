@@ -386,6 +386,11 @@ async def _run_with_cache(
     # inside execute_query_with_cache.
     cacheable = getattr(cache, "backend_name", "noop") != "noop"
 
+    # A raw ``format=arrow`` request (no value formatting) only needs the stored
+    # blob to hand back verbatim, so tell the cache to skip the gzip + Arrow
+    # decode on a hit (true zero-copy). Every other surface needs decoded rows.
+    decode_payload = not (response_format == "arrow" and not format_values)
+
     try:
         cached = await execute_query_with_cache(
             store=store,
@@ -398,6 +403,7 @@ async def _run_with_cache(
             tz=tz,
             override_db_tz=override_db_tz,
             cacheable=cacheable,
+            decode_payload=decode_payload,
         )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
@@ -418,12 +424,14 @@ async def _run_with_cache(
         # value-formatted json, tsv, or arrow) exactly like a fresh result.
         assert cached.cache_key is not None
         assert cached.fetch_elapsed_ms is not None
-        assert cached.envelope is not None
         # Raw-arrow hit (the UI round trip): serve the stored gzip'd Arrow blob
-        # byte-for-byte, skipping the decode -> re-encode round trip. Value-
-        # formatted arrow still renders on delivery below.
+        # byte-for-byte. The cache skipped the decode for this path, so
+        # ``envelope`` is None and ``payload_blob`` holds the verbatim bytes —
+        # true zero-copy, no decode and no re-encode. Value-formatted arrow and
+        # every other surface fall through to render from the decoded envelope.
         if response_format == "arrow" and not format_values and cached.payload_blob is not None:
             return _arrow_passthrough_response(cached.payload_blob, accept_encoding)
+        assert cached.envelope is not None
         return _build_cached_response(
             envelope=cached.envelope,
             cache_key=cached.cache_key,
