@@ -607,9 +607,12 @@ async def execute_query(
       Arrow IPC stream (``application/vnd.apache.arrow.stream``) of typed,
       locale-neutral values, gzip'd when the client's ``Accept-Encoding``
       allows. The Arrow stream is also selectable via the ``Accept`` header.
-    * ``format_values`` — when true, numeric cells in the JSON response are
-      rendered as locale-aware display strings using each column's
-      ``format`` pattern (matches the Gradio UI). Default false.
+    * ``format_values`` — when true, numeric cells are rendered as
+      locale-aware display strings using each column's ``format`` pattern
+      (matches the Gradio UI). Applies to both ``json`` and ``arrow`` (the
+      display strings are baked into the IPC blob); raw ``arrow`` (the default,
+      as used by the UI round trip) ships typed values and formats client-side.
+      Default false.
     * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
       to ``DEFAULT_LOCALE`` env when omitted.
     * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the

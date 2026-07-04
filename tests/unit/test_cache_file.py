@@ -184,3 +184,36 @@ class TestSweep:
             assert await fc.get("expired") is None
         finally:
             await fc.shutdown()
+
+
+class TestDeferredCounters:
+    """Hit/miss counters accumulate in memory and flush lazily (no per-hit write)."""
+
+    async def test_hits_misses_accumulate_then_flush_into_stats(self, cache: FileCache) -> None:
+        await cache.set(
+            "k1",
+            b"payload",
+            ttl_seconds=300,
+            physical_tables=["t"],
+            datasource="s",
+            model_id="m",
+            query_hash="h",
+            dialect="d",
+            row_count=1,
+        )
+        # 3 hits + 2 misses; these live in memory, not yet in the DuckDB counters.
+        for _ in range(3):
+            assert await cache.get("k1") is not None
+        for _ in range(2):
+            assert await cache.get("absent") is None
+        assert cache._pending_counters.get("hits") == 3
+        assert cache._pending_counters.get("misses") == 2
+
+        # stats() flushes the pending counters and reports the merged totals.
+        stats = await cache.stats()
+        assert stats.hit_count_total == 3
+        assert stats.miss_count_total == 2
+        assert stats.hit_rate == pytest.approx(0.6)
+        # Drained after flush — no double counting on the next read.
+        assert cache._pending_counters.get("hits", 0) == 0
+        assert cache._pending_counters.get("misses", 0) == 0

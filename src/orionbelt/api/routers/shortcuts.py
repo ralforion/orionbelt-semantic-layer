@@ -553,9 +553,11 @@ async def shortcut_execute_query(
       tab-separated body; cells with tab/newline/CR/double-quote are RFC 4180
       quoted. ``tsv`` implies ``format_values=true``. ``arrow`` returns an
       Arrow IPC stream (also selectable via the ``Accept`` header).
-    * ``format_values`` — when true, numeric cells in the JSON response are
-      rendered as locale-aware display strings using each column's
-      ``format`` pattern (matches the Gradio UI). Default false.
+    * ``format_values`` — when true, numeric cells are rendered as
+      locale-aware display strings using each column's ``format`` pattern
+      (matches the Gradio UI). Applies to both ``json`` and ``arrow`` (baked
+      into the IPC blob); raw ``arrow`` (the default) ships typed values and
+      formats client-side. Default false.
     * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
       to ``DEFAULT_LOCALE`` env when omitted.
     * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the

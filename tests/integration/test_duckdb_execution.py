@@ -1287,6 +1287,77 @@ class TestAPIExecuteEndpoint:
         finally:
             reset_session_manager()
 
+    async def test_execute_format_arrow_format_values_bakes_display_strings(
+        self, api_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """?format=arrow&format_values=true bakes locale display strings; raw stays typed."""
+        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
+        app = create_app(settings=settings)
+        mgr = SessionManager(
+            ttl_seconds=settings.session_ttl_seconds,
+            cleanup_interval=settings.session_cleanup_interval,
+        )
+        init_session_manager(mgr, query_execute_enabled=True, db_vendor="duckdb")
+        try:
+            mock_exec = _make_execute_sql(api_duckdb)
+            body = {
+                "model_id": None,
+                "query": {
+                    "select": {
+                        "dimensions": ["Customer Country"],
+                        "measures": ["Total Revenue"],
+                    },
+                },
+                "dialect": "duckdb",
+            }
+            with patch("orionbelt.api.query_cache.execute_sql", mock_exec):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as c:
+                    sid = (await c.post("/v1/sessions")).json()["session_id"]
+                    mid = (
+                        await c.post(
+                            f"/v1/sessions/{sid}/models",
+                            json={"model_yaml": SAMPLE_MODEL_YAML},
+                        )
+                    ).json()["model_id"]
+                    body["model_id"] = mid
+
+                    raw_resp = await c.post(
+                        f"/v1/sessions/{sid}/query/execute?format=arrow",
+                        json=body,
+                    )
+                    fmt_resp = await c.post(
+                        f"/v1/sessions/{sid}/query/execute"
+                        "?format=arrow&format_values=true&locale=de",
+                        json=body,
+                    )
+
+            raw_tbl = pa.ipc.open_stream(pa.BufferReader(raw_resp.content)).read_all()
+            fmt_tbl = pa.ipc.open_stream(pa.BufferReader(fmt_resp.content)).read_all()
+            assert raw_tbl.column_names == fmt_tbl.column_names
+
+            raw_rev = raw_tbl.column("Total Revenue").to_pylist()
+            fmt_rev = fmt_tbl.column("Total Revenue").to_pylist()
+            # Raw arrow ships typed numeric values (UI round trip formats client-side).
+            assert all(isinstance(v, (int, float)) for v in raw_rev if v is not None)
+            # format_values bakes locale-aware display strings into the blob,
+            # exactly as the shared value_formatting helper would render them.
+            from orionbelt.cache.result_codec import read_envelope
+            from orionbelt.service.value_formatting import format_number
+
+            fmt_pattern = next(
+                c.get("format")
+                for c in read_envelope(fmt_tbl)["columns"]
+                if c["name"] == "Total Revenue"
+            )
+            assert all(isinstance(v, str) for v in fmt_rev if v is not None)
+            assert fmt_rev == [
+                format_number(v, fmt_pattern, "de") if v is not None else None for v in raw_rev
+            ]
+        finally:
+            reset_session_manager()
+
     async def test_execute_raw_mode_format_values_uses_executor_type_hint(
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:

@@ -104,23 +104,23 @@ def _build_arrow_response(
     return Response(content=gzip.decompress(blob), media_type=ARROW_STREAM_MEDIA_TYPE)
 
 
-def _arrow_envelope_from_cache(env: Any) -> dict[str, Any]:
-    """Build ``result_codec.encode`` kwargs from a decoded cache envelope."""
-    return {
-        "columns": env.columns,
-        "rows": env.rows,
-        "sql": env.sql,
-        "dialect": env.dialect,
-        "explain": env.explain,
-        "warnings": env.warnings,
-        "sql_valid": env.sql_valid,
-        "execution_time_ms": env.execution_time_ms,
-        "timezone": env.timezone,
-        "resolved": env.resolved,
-        "physical_tables": env.physical_tables,
-        "cached": True,
-        "cached_at": getattr(env, "cached_at_iso", None),
-    }
+def _arrow_passthrough_response(blob: bytes, accept_encoding: str | None) -> Response:
+    """Return a stored gzip'd Arrow blob verbatim (byte-passthrough on a hit).
+
+    The cache stores the exact self-contained Arrow IPC stream we serve, with
+    ``cached=true`` baked into the schema metadata at write time, so a raw-arrow
+    hit skips the decode -> re-encode round trip entirely. gzip stays on the wire
+    when the client accepts it; otherwise the blob is inflated once. Note the
+    baked ``execution_time_ms`` is the original DB compute time (not the cache
+    fetch time) — the intended, informative value for a zero-copy hit.
+    """
+    if _negotiate_content_encoding(accept_encoding) == "gzip":
+        return Response(
+            content=blob,
+            media_type=ARROW_STREAM_MEDIA_TYPE,
+            headers={"Content-Encoding": "gzip"},
+        )
+    return Response(content=gzip.decompress(blob), media_type=ARROW_STREAM_MEDIA_TYPE)
 
 
 def _physical_tables_for(model: Any, result: Any) -> list[str]:
@@ -143,6 +143,133 @@ def _physical_tables_for(model: Any, result: Any) -> list[str]:
         parts = [p for p in (obj.database, obj.schema_name, obj.code) if p]
         out.append(".".join(parts) if parts else nm)
     return out
+
+
+def _render_response(
+    *,
+    response_format: ExecuteFormat,
+    format_values: bool,
+    locale: str,
+    accept_encoding: str | None,
+    columns_meta: list[ColumnMetadata],
+    rows: list[list[Any]],
+    fmt_map: dict[str, Any],
+    type_map: dict[str, str],
+    sql: str,
+    dialect: str,
+    explain: ExplainPlanResponse | None,
+    warnings: list[Any],
+    sql_valid: bool,
+    resolved: ResolvedInfoResponse,
+    physical_tables: list[str],
+    row_count: int,
+    execution_time_ms: float,
+    timezone: str | None,
+    cached: bool = False,
+    cached_at: str | None = None,
+) -> QueryExecuteResponse | Response:
+    """Render already-resolved columns + RAW rows into the requested surface.
+
+    Shared by the fresh-execute and cache-hit paths so a cached raw result is
+    delivered identically to a freshly executed one. Value-formatting is a
+    delivery-time leaf op applied *here* (never baked into the cache): ``tsv``
+    always formats, ``json`` and ``arrow`` format only when ``format_values`` is
+    set. Arrow without ``format_values`` (the UI round trip) ships raw typed,
+    locale-neutral values verbatim; arrow *with* ``format_values`` bakes the
+    locale-aware display strings into the IPC blob.
+    """
+    column_names = [c.name for c in columns_meta]
+
+    if response_format == "arrow":
+        # Default (UI round trip): raw typed, locale-neutral values, formatted
+        # client-side. With format_values the locale-aware display strings are
+        # baked into the blob, mirroring the JSON format_values variant. Either
+        # way the full envelope rides the Arrow schema metadata.
+        arrow_rows: list[list[Any]]
+        if format_values:
+            arrow_rows = [
+                cast(
+                    list[Any],
+                    format_row(
+                        row,
+                        column_names=column_names,
+                        fmt_map=fmt_map,
+                        type_map=type_map,
+                        locale=locale,
+                    ),
+                )
+                for row in rows
+            ]
+        else:
+            arrow_rows = rows
+        return _build_arrow_response(
+            envelope={
+                "columns": [c.model_dump() for c in columns_meta],
+                "rows": arrow_rows,
+                "sql": sql,
+                "dialect": dialect,
+                "explain": explain.model_dump() if explain else None,
+                "warnings": [w.model_dump() for w in warnings],
+                "sql_valid": sql_valid,
+                "execution_time_ms": execution_time_ms,
+                "timezone": timezone,
+                "resolved": resolved.model_dump(),
+                "physical_tables": list(physical_tables),
+                "cached": cached,
+                "cached_at": cached_at,
+            },
+            accept_encoding=accept_encoding,
+        )
+
+    if response_format == "tsv":
+        formatted = [
+            format_row(
+                row,
+                column_names=column_names,
+                fmt_map=fmt_map,
+                type_map=type_map,
+                locale=locale,
+            )
+            for row in rows
+        ]
+        return Response(
+            content=to_tsv(column_names, formatted),
+            media_type="text/tab-separated-values",
+        )
+
+    if format_values:
+        out_rows: list[list[Any]] = [
+            cast(
+                list[Any],
+                format_row(
+                    row,
+                    column_names=column_names,
+                    fmt_map=fmt_map,
+                    type_map=type_map,
+                    locale=locale,
+                ),
+            )
+            for row in rows
+        ]
+    else:
+        out_rows = rows
+
+    return QueryExecuteResponse(
+        sql=sql,
+        dialect=dialect,
+        columns=columns_meta,
+        rows=out_rows,
+        row_count=row_count,
+        execution_time_ms=execution_time_ms,
+        timezone=timezone,
+        resolved=resolved,
+        warnings=warnings,
+        sql_valid=sql_valid,
+        explain=explain,
+        physical_tables=list(physical_tables),
+        cached=cached,
+        cached_at=cached_at,
+    )
 
 
 def _build_execute_response(
@@ -173,7 +300,6 @@ def _build_execute_response(
     for c in exec_result.columns:
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
-    column_names = [c.name for c in exec_result.columns]
 
     # Canonical column shape (also what the result cache persists) — built via
     # the shared helper so REST, the cache payload, and pgwire all agree. Reuse
@@ -191,82 +317,29 @@ def _build_execute_response(
         c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_result.columns
     }
 
-    # Arrow: one self-contained IPC blob (typed, locale-neutral rows + the full
-    # envelope in schema metadata). No locale/format rendering — that stays a
-    # JSON/TSV presentation concern.
-    if response_format == "arrow":
-        explain_resp = _build_explain_response(compile_result)
-        return _build_arrow_response(
-            envelope={
-                "columns": [c.model_dump() for c in columns_meta],
-                "rows": exec_result.rows,
-                "sql": format_sql(compile_result.sql, compile_result.dialect),
-                "dialect": compile_result.dialect,
-                "explain": explain_resp.model_dump() if explain_resp else None,
-                "warnings": [
-                    semantic_error_to_warning(w).model_dump() for w in compile_result.warnings
-                ],
-                "sql_valid": compile_result.sql_valid,
-                "execution_time_ms": exec_result.execution_time_ms,
-                "timezone": exec_result.timezone,
-                "resolved": ResolvedInfoResponse(
-                    fact_tables=compile_result.resolved.fact_tables,
-                    dimensions=compile_result.resolved.dimensions,
-                    measures=compile_result.resolved.measures,
-                ).model_dump(),
-                "physical_tables": list(compile_result.physical_tables),
-            },
-            accept_encoding=accept_encoding,
-        )
-
-    if response_format == "tsv":
-        formatted = [
-            format_row(
-                row,
-                column_names=column_names,
-                fmt_map=fmt_map,
-                type_map=type_map,
-                locale=locale,
-            )
-            for row in exec_result.rows
-        ]
-        body = to_tsv(column_names, formatted)
-        return Response(content=body, media_type="text/tab-separated-values")
-
-    if format_values:
-        rows: list[list[Any]] = [
-            cast(
-                list[Any],
-                format_row(
-                    row,
-                    column_names=column_names,
-                    fmt_map=fmt_map,
-                    type_map=type_map,
-                    locale=locale,
-                ),
-            )
-            for row in exec_result.rows
-        ]
-    else:
-        rows = exec_result.rows
-
-    return QueryExecuteResponse(
+    return _render_response(
+        response_format=response_format,
+        format_values=format_values,
+        locale=locale,
+        accept_encoding=accept_encoding,
+        columns_meta=columns_meta,
+        rows=exec_result.rows,
+        fmt_map=fmt_map,
+        type_map=type_map,
         sql=format_sql(compile_result.sql, compile_result.dialect),
         dialect=compile_result.dialect,
-        columns=columns_meta,
-        rows=rows,
-        row_count=exec_result.row_count,
-        execution_time_ms=exec_result.execution_time_ms,
-        timezone=exec_result.timezone,
+        explain=_build_explain_response(compile_result),
+        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
+        sql_valid=compile_result.sql_valid,
         resolved=ResolvedInfoResponse(
             fact_tables=compile_result.resolved.fact_tables,
             dimensions=compile_result.resolved.dimensions,
             measures=compile_result.resolved.measures,
         ),
-        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
-        sql_valid=compile_result.sql_valid,
-        explain=_build_explain_response(compile_result),
         physical_tables=list(compile_result.physical_tables),
+        row_count=exec_result.row_count,
+        execution_time_ms=exec_result.execution_time_ms,
+        timezone=exec_result.timezone,
     )
 
 
@@ -289,10 +362,10 @@ async def _run_with_cache(
     """Cache-aware execute pipeline shared by session and shortcut endpoints.
 
     Looks up the cache before executing, stores on miss, and surfaces the
-    ``cached`` / ``ttl_*`` metadata. The canonical JSON shape and the Arrow
-    stream are cached and *share* entries (the key is query-only, both carry
-    typed values); TSV + value-formatted JSON skip caching to avoid locale-keyed
-    proliferation.
+    ``cached`` / ``ttl_*`` metadata. The cache holds RAW, locale-neutral rows
+    keyed on the query alone, so every surface — raw JSON, value-formatted JSON,
+    TSV and Arrow — shares one entry and is rendered on delivery. Formatting is
+    never baked into the cache.
     """
     model_default_tz: str | None = None
     override_db_tz = False
@@ -306,9 +379,17 @@ async def _run_with_cache(
     # skip caching (locale-keyed proliferation). Skip the whole cache machinery
     # (key + freshness TTL + get) when the backend is a no-op, so the default
     # deployment doesn't pay a per-query model scan for a cache that never hits.
-    cacheable = getattr(cache, "backend_name", "noop") != "noop" and (
-        response_format == "arrow" or (response_format == "json" and not format_values)
-    )
+    # Caching stores RAW, locale-neutral rows keyed on the query only;
+    # presentation (format_values / tsv / arrow) is a delivery-time leaf op.
+    # So cacheability is format-independent — every surface reads/writes the
+    # same raw entry. Determinism + freshness TTL still gate the actual store
+    # inside execute_query_with_cache.
+    cacheable = getattr(cache, "backend_name", "noop") != "noop"
+
+    # A raw ``format=arrow`` request (no value formatting) only needs the stored
+    # blob to hand back verbatim, so tell the cache to skip the gzip + Arrow
+    # decode on a hit (true zero-copy). Every other surface needs decoded rows.
+    decode_payload = not (response_format == "arrow" and not format_values)
 
     try:
         cached = await execute_query_with_cache(
@@ -322,39 +403,46 @@ async def _run_with_cache(
             tz=tz,
             override_db_tz=override_db_tz,
             cacheable=cacheable,
+            decode_payload=decode_payload,
         )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ExecutionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
+    # Locale resolution order: request ?locale= -> model settings.defaultLocale
+    # -> DEFAULT_LOCALE env. Drives value-formatting separators. Resolved before
+    # the hit/miss split because cache hits now format on delivery too.
+    model_default_locale = model.settings.default_locale if model.settings else None
+    effective_locale = (
+        locale if locale is not None else (model_default_locale or get_default_locale())
+    )
+
     if cached.cached:
-        # A cache hit always carries a key and a fetch time.
+        # A cache hit always carries a key and a fetch time. The cached rows are
+        # raw + locale-neutral; render them into the requested surface (raw json,
+        # value-formatted json, tsv, or arrow) exactly like a fresh result.
         assert cached.cache_key is not None
         assert cached.fetch_elapsed_ms is not None
-        if response_format == "arrow":
-            # Re-emit the cached entry as the same self-contained Arrow blob —
-            # the full envelope (sql, explain, warnings, …) is restored, not just
-            # the rows. (The cache entry is already this exact format, so this is
-            # a candidate for byte-passthrough later.)
-            assert cached.envelope is not None
-            return _build_arrow_response(
-                envelope=_arrow_envelope_from_cache(cached.envelope),
-                accept_encoding=accept_encoding,
-            )
+        # Raw-arrow hit (the UI round trip): serve the stored gzip'd Arrow blob
+        # byte-for-byte. The cache skipped the decode for this path, so
+        # ``envelope`` is None and ``payload_blob`` holds the verbatim bytes —
+        # true zero-copy, no decode and no re-encode. Value-formatted arrow and
+        # every other surface fall through to render from the decoded envelope.
+        if response_format == "arrow" and not format_values and cached.payload_blob is not None:
+            return _arrow_passthrough_response(cached.payload_blob, accept_encoding)
+        assert cached.envelope is not None
         return _build_cached_response(
             envelope=cached.envelope,
             cache_key=cached.cache_key,
             ttl_outcome=cached.ttl_outcome,
             fetch_elapsed_ms=cached.fetch_elapsed_ms,
+            response_format=response_format,
+            format_values=format_values,
+            locale=effective_locale,
+            accept_encoding=accept_encoding,
         )
 
-    # Locale resolution order: request ?locale= -> model settings.defaultLocale
-    # -> DEFAULT_LOCALE env. Drives result value-formatting separators.
-    model_default_locale = model.settings.default_locale if model.settings else None
-    effective_locale = (
-        locale if locale is not None else (model_default_locale or get_default_locale())
-    )
     response = _build_execute_response(
         compile_result=compile_result,
         exec_result=cached.exec_result,
@@ -404,17 +492,22 @@ def _build_cached_response(
     cache_key: str,
     ttl_outcome: Any,
     fetch_elapsed_ms: float,
-) -> QueryExecuteResponse:
-    """Reconstruct a :class:`QueryExecuteResponse` from a cached Parquet entry.
+    response_format: ExecuteFormat,
+    format_values: bool,
+    locale: str,
+    accept_encoding: str | None = None,
+) -> QueryExecuteResponse | Response:
+    """Render a cache hit into the requested surface from its RAW rows.
 
-    ``fetch_elapsed_ms`` is the wall-clock time spent reading + decoding the
-    cache entry. It replaces the original DB execution time on the wire so
-    callers see a realistic "this came from cache" duration; the original is
-    preserved on disk in the Parquet sidecar for forensic inspection.
+    The cache entry holds raw, locale-neutral rows keyed on the query alone, so
+    the same entry serves every presentation: raw / value-formatted JSON, TSV,
+    and Arrow. Formatting happens on delivery via :func:`_render_response`, never
+    in the cache. ``fetch_elapsed_ms`` (cache read + decode) replaces the DB
+    execution time on the wire so callers see a realistic "from cache" duration.
     """
     from orionbelt.api.schemas import StructuredWarning
 
-    columns = [
+    columns_meta = [
         ColumnMetadata(
             name=c.get("name", ""),
             type=c.get("type", "string"),
@@ -422,6 +515,11 @@ def _build_cached_response(
         )
         for c in envelope.columns
     ]
+    # format_row needs both maps; the cached columns already carry the display
+    # pattern and semantic type, so derive them straight from the envelope.
+    fmt_map: dict[str, Any] = {c.get("name"): c.get("format") for c in envelope.columns}
+    type_map: dict[str, str] = {c.get("name"): c.get("type", "") for c in envelope.columns}
+
     explain_resp: ExplainPlanResponse | None = None
     if envelope.explain:
         try:
@@ -435,23 +533,31 @@ def _build_cached_response(
         except Exception:
             continue
     cached_at_iso = envelope.cached_at_iso if hasattr(envelope, "cached_at_iso") else None
-    response = QueryExecuteResponse(
+
+    response = _render_response(
+        response_format=response_format,
+        format_values=format_values,
+        locale=locale,
+        accept_encoding=accept_encoding,
+        columns_meta=columns_meta,
+        rows=envelope.rows,
+        fmt_map=fmt_map,
+        type_map=type_map,
         sql=envelope.sql,
         dialect=envelope.dialect,
-        columns=columns,
-        rows=envelope.rows,
+        explain=explain_resp,
+        warnings=warnings_resp,
+        sql_valid=envelope.sql_valid,
+        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
+        physical_tables=list(envelope.physical_tables),
         row_count=envelope.row_count,
         execution_time_ms=fetch_elapsed_ms,
         timezone=envelope.timezone,
-        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
-        warnings=warnings_resp,
-        sql_valid=envelope.sql_valid,
-        explain=explain_resp,
-        physical_tables=list(envelope.physical_tables),
         cached=True,
         cached_at=cached_at_iso,
     )
-    if ttl_outcome.ttl is not None:
+    # TTL metadata is JSON-only (Arrow/TSV are bare Responses).
+    if isinstance(response, QueryExecuteResponse) and ttl_outcome.ttl is not None:
         response.ttl_seconds = ttl_outcome.ttl.seconds
         response.ttl_source = ttl_outcome.ttl.source
         response.ttl_limiting_table = ttl_outcome.ttl.limiting_table

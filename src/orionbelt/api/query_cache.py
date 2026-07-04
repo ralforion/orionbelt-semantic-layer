@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -223,12 +223,48 @@ async def try_cache_get(cache: Cache, key: str) -> Any:
     if result is None:
         return None
     try:
-        envelope = cache_decode(result.payload)
+        # Decode (gzip + Arrow IPC + row rebuild) runs off the event loop.
+        envelope = await asyncio.to_thread(cache_decode, result.payload)
     except Exception:
         logger.debug("cache decode failed", exc_info=True)
         return None
     envelope.cached_at_iso = result.cached_at.isoformat().replace("+00:00", "Z")
     return envelope
+
+
+async def try_cache_get_raw(cache: Cache, key: str) -> tuple[bytes, str] | None:
+    """Fetch a cached blob WITHOUT decoding it, for raw-arrow byte-passthrough.
+
+    Returns ``(raw_gzip_blob, cached_at_iso)`` or ``None``. Skips the whole
+    gzip + Arrow IPC + row-rebuild that :func:`try_cache_get` does, so a raw
+    ``format=arrow`` hit is truly zero-copy: the stored blob (stamped
+    ``cached=true`` at write time) is returned to the client verbatim.
+    """
+    try:
+        result = await cache.get(key)
+    except Exception:
+        logger.debug("cache.get error", exc_info=True)
+        return None
+    if result is None:
+        return None
+    return result.payload, result.cached_at.isoformat().replace("+00:00", "Z")
+
+
+def encode_cached_payload(**encode_kwargs: Any) -> bytes:
+    """Encode a result blob for cache STORAGE (stamped as a cache entry).
+
+    A stored blob is only ever served on a cache HIT, so it is stamped
+    ``cached=true`` + a store timestamp in its Arrow schema metadata. That lets
+    the raw-arrow hit path return it byte-for-byte (zero-copy passthrough) while
+    still carrying the in-band ``cached`` flag the UI reads for its "cache"
+    source label. Every cache writer (REST and oneshot) MUST encode through here
+    so the invariant holds regardless of which surface populated the entry.
+    """
+    from orionbelt.cache import result_codec
+
+    encode_kwargs["cached"] = True
+    encode_kwargs["cached_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return result_codec.encode(**encode_kwargs)
 
 
 async def try_cache_set(
@@ -253,10 +289,9 @@ async def try_cache_set(
 ) -> None:
     """Encode and store a result payload. Failures are logged and ignored."""
     from orionbelt.cache import key as cache_key_mod
-    from orionbelt.cache import result_codec
 
     try:
-        payload = result_codec.encode(
+        payload = encode_cached_payload(
             columns=[c.model_dump() for c in columns],
             rows=rows,
             sql=sql,
@@ -304,6 +339,8 @@ class CachedExecution:
     # Cached (hit) path:
     envelope: Any | None
     fetch_elapsed_ms: float | None
+    # Raw stored blob (gzip'd Arrow IPC) for byte-passthrough on raw-arrow hits.
+    payload_blob: bytes | None = None
 
 
 async def execute_query_with_cache(
@@ -319,6 +356,7 @@ async def execute_query_with_cache(
     tz: Any = None,
     override_db_tz: bool = False,
     cacheable: bool = True,
+    decode_payload: bool = True,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -326,6 +364,11 @@ async def execute_query_with_cache(
     non-deterministic. The actual DB execution runs off the event loop via
     ``asyncio.to_thread``. Shared by the REST, pgwire, and Flight surfaces so
     they hit one cache.
+
+    ``decode_payload=False`` lets a caller that only needs the raw stored blob
+    (the REST raw-arrow byte-passthrough) skip the gzip + Arrow decode on a hit:
+    the returned :class:`CachedExecution` carries ``payload_blob`` and a ``None``
+    ``envelope``. Every other surface leaves it True and gets the decoded rows.
 
     The cache is scoped to the ``datasource`` (defaults to the dialect, since
     connections are global per dialect today). Any session resolving to the
@@ -361,17 +404,33 @@ async def execute_query_with_cache(
             # the current TTL says the query is cacheable.
             if ttl_outcome.ttl is not None:
                 t0 = time.monotonic()
-                envelope = await try_cache_get(cache, cache_key)
-                if envelope is not None:
-                    return CachedExecution(
-                        cached=True,
-                        cache_key=cache_key,
-                        ttl_outcome=ttl_outcome,
-                        exec_result=None,
-                        columns=None,
-                        envelope=envelope,
-                        fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
-                    )
+                if decode_payload:
+                    envelope = await try_cache_get(cache, cache_key)
+                    if envelope is not None:
+                        return CachedExecution(
+                            cached=True,
+                            cache_key=cache_key,
+                            ttl_outcome=ttl_outcome,
+                            exec_result=None,
+                            columns=None,
+                            envelope=envelope,
+                            fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
+                        )
+                else:
+                    # Raw-arrow passthrough: fetch the blob without decoding it.
+                    raw = await try_cache_get_raw(cache, cache_key)
+                    if raw is not None:
+                        payload_blob, _cached_at_iso = raw
+                        return CachedExecution(
+                            cached=True,
+                            cache_key=cache_key,
+                            ttl_outcome=ttl_outcome,
+                            exec_result=None,
+                            columns=None,
+                            envelope=None,
+                            fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
+                            payload_blob=payload_blob,
+                        )
 
     exec_result = await asyncio.to_thread(
         execute_sql,
@@ -460,10 +519,12 @@ __all__ = [
     "build_format_map",
     "build_result_columns",
     "build_type_map",
+    "encode_cached_payload",
     "execute_query_with_cache",
     "execution_result_from_envelope",
     "RESULT_TYPE_TO_HINT",
     "resolve_effective_ttl",
     "try_cache_get",
+    "try_cache_get_raw",
     "try_cache_set",
 ]

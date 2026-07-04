@@ -165,6 +165,92 @@ class TestSessionExecuteCache:
         assert env["dialect"] == "duckdb"
         assert [c["name"] for c in env["columns"]] == ["Customer Country", "Total Revenue"]
 
+    async def test_arrow_hit_is_byte_passthrough_of_stored_blob(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """A raw-arrow hit returns the stored gzip'd blob verbatim (no re-encode).
+
+        The blob is stamped ``cached=true`` at write time, so the zero-copy hit
+        carries the in-band flag the UI reads for its "cache" source label.
+        """
+        import glob
+        import os
+
+        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        from orionbelt.cache.result_codec import read_envelope
+
+        client, cache = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+        hdrs = {"Accept-Encoding": "gzip"}
+
+        # Arrow miss populates the entry; the fresh response is NOT flagged cached.
+        miss = await client.post(
+            f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+        )
+        assert miss.status_code == 200
+        miss_tbl = pa.ipc.open_stream(pa.BufferReader(miss.content)).read_all()
+        assert read_envelope(miss_tbl)["cached"] is False
+
+        # The stored blob on disk (single .arrow payload) is what a hit serves.
+        stored_files = glob.glob(
+            os.path.join(str(cache._results_dir), "**", "*.arrow"), recursive=True
+        )
+        assert len(stored_files) == 1
+        import gzip as _gzip
+
+        stored_tbl = pa.ipc.open_stream(
+            pa.BufferReader(_gzip.decompress(Path(stored_files[0]).read_bytes()))
+        ).read_all()
+        # Stored blob is stamped cached=true at write time (enables verbatim serve).
+        assert read_envelope(stored_tbl)["cached"] is True
+
+        # Arrow hit: served via byte-passthrough of that stored blob. httpx auto-
+        # gunzips, so compare the decoded table + the in-band cached flag. The
+        # hit must be TRUE zero-copy: the gzip/Arrow decode is skipped entirely,
+        # so cache_decode is never called during the request.
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.query_cache as qc
+
+        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+            hit = await client.post(
+                f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+            )
+        assert hit.status_code == 200
+        assert hit.headers.get("content-encoding") == "gzip"
+        assert spy_decode.call_count == 0  # zero-copy: no decode on the raw-arrow hit
+        hit_tbl = pa.ipc.open_stream(pa.BufferReader(hit.content)).read_all()
+        assert read_envelope(hit_tbl)["cached"] is True
+        assert hit_tbl.to_pylist() == miss_tbl.to_pylist()
+        assert hit_tbl.equals(stored_tbl)
+
+    async def test_json_hit_still_decodes(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """A JSON (non-passthrough) hit still decodes the blob to rebuild rows."""
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.query_cache as qc
+
+        client, _ = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+
+        assert (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()[
+            "cached"
+        ] is False
+        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+            hit = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
+        assert hit.json()["cached"] is True
+        assert spy_decode.call_count == 1  # JSON path needs the decoded rows
+
 
 class TestShortcutExecuteCache:
     async def test_shortcut_execute_caches_then_hits(
@@ -212,19 +298,30 @@ class TestOneshotBatchCache:
         mid = first_data["model_id"]
         assert first_data["results"][0]["cached"] is False
 
-        second = await client.post(
-            "/v1/oneshot/batch",
-            json={
-                "session_id": sid,
-                "model_id": mid,
-                "execute": True,
-                "queries": [{"id": "q1", "query": _QUERY_BODY}],
-                "dialect": "duckdb",
-            },
-        )
+        # The oneshot hit path decodes through the shared try_cache_get, which
+        # offloads the gzip + Arrow decode to a worker thread (never blocks the
+        # event loop). Assert the delegation so it can't silently regress to a
+        # synchronous inline decode.
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.routers.oneshot as osm
+
+        with _patch.object(osm, "try_cache_get", new=AsyncMock(wraps=osm.try_cache_get)) as spy_get:
+            second = await client.post(
+                "/v1/oneshot/batch",
+                json={
+                    "session_id": sid,
+                    "model_id": mid,
+                    "execute": True,
+                    "queries": [{"id": "q1", "query": _QUERY_BODY}],
+                    "dialect": "duckdb",
+                },
+            )
         assert second.status_code == 200
         result = second.json()["results"][0]
         assert result["cached"] is True
+        assert spy_get.await_count == 1  # hit went through the offloaded shared getter
         assert result["row_count"] == 2
 
 

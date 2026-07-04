@@ -60,6 +60,9 @@ class CachedQueryEnvelope:
     physical_tables: list[str]
     row_count: int
     cached_at_iso: str | None = None
+    # Raw stored blob, attached by the cache-read layer for byte-passthrough
+    # (serving a raw-arrow hit verbatim). Not populated by :func:`decode`.
+    raw_payload: bytes | None = None
 
 
 def build_result_table(column_names: list[str], rows: list[list[Any]]) -> Any:

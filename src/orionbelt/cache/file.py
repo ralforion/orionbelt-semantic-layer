@@ -31,6 +31,12 @@ from orionbelt.cache.protocol import Cache, CachedResult, CacheStats
 logger = logging.getLogger(__name__)
 
 
+def _read_bytes(path: str) -> bytes:
+    """Read a payload file's bytes (offloaded to a worker thread by ``get``)."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 _SCHEMA_DDL = [
     """
     CREATE TABLE IF NOT EXISTS cache_entries (
@@ -99,6 +105,12 @@ class FileCache(Cache):
         self._lock = threading.Lock()
         self._sweep_task: asyncio.Task[None] | None = None
         self._next_sweep_at: float | None = None
+        # Hit/miss counts accumulate in memory and flush to DuckDB lazily (on
+        # sweep / stats / shutdown). This keeps the read-hot ``get`` path off a
+        # per-hit DuckDB UPDATE under the global lock — the counter write was a
+        # synchronous OLTP point-write on an OLAP engine on every cache hit.
+        self._counter_lock = threading.Lock()
+        self._pending_counters: dict[str, int] = {}
 
         os.makedirs(self._results_dir, exist_ok=True)
         self._meta = duckdb.connect(self._meta_path)
@@ -151,6 +163,19 @@ class FileCache(Cache):
         except Exception:
             logger.debug("cache counter bump failed", exc_info=True)
 
+    def _count(self, name: str, by: int = 1) -> None:
+        """Accumulate a counter in memory (flushed to DuckDB by :meth:`_flush_counters`)."""
+        with self._counter_lock:
+            self._pending_counters[name] = self._pending_counters.get(name, 0) + by
+
+    def _flush_counters(self) -> None:
+        """Drain the in-memory counters into the DuckDB ``cache_counters`` table."""
+        with self._counter_lock:
+            pending = {k: v for k, v in self._pending_counters.items() if v}
+            self._pending_counters.clear()
+        for name, by in pending.items():
+            self._bump(name, by)
+
     def _file_path(self, datasource: str, key: str) -> str:
         safe = (datasource or "_").replace(os.sep, "_")
         prefix = safe[:2]
@@ -169,6 +194,11 @@ class FileCache(Cache):
     # -- Cache Protocol -----------------------------------------------------
 
     async def get(self, key: str) -> CachedResult | None:
+        # The DuckDB metadata connection is single-threaded (touched only on the
+        # event loop, serialized by ``self._lock``), so its lookups stay here.
+        # Only the potentially-large payload file read is offloaded, and the
+        # per-hit counter is now an in-memory increment (no DuckDB write) — the
+        # two things that previously blocked the loop on a hit.
         try:
             row = self._exec(
                 "SELECT file_path, expires_at, created_at FROM cache_entries WHERE cache_key = ?",
@@ -179,26 +209,25 @@ class FileCache(Cache):
             return None
 
         if row is None:
-            self._bump("misses")
+            self._count("misses")
             return None
 
         file_path, expires_at, created_at = row
         now = datetime.now(UTC)
         if expires_at is None or expires_at <= now:
             await self._evict(key, file_path)
-            self._bump("misses")
+            self._count("misses")
             return None
 
         try:
-            with open(file_path, "rb") as f:
-                payload = f.read()
+            payload = await asyncio.to_thread(_read_bytes, file_path)
         except FileNotFoundError:
             await self._evict(key, file_path)
-            self._bump("misses")
+            self._count("misses")
             return None
         except Exception as exc:
             logger.warning("cache.get file error for %s: %s", key, exc)
-            self._bump("misses")
+            self._count("misses")
             return None
 
         try:
@@ -209,7 +238,7 @@ class FileCache(Cache):
         except Exception:
             physical_tables = []
 
-        self._bump("hits")
+        self._count("hits")
         return CachedResult(
             payload=payload,
             cached_at=created_at if isinstance(created_at, datetime) else now,
@@ -378,6 +407,8 @@ class FileCache(Cache):
         return len(rows)
 
     async def stats(self) -> CacheStats:
+        # Fold any in-memory hits/misses into the DuckDB counters before reading.
+        self._flush_counters()
         try:
             row = self._exec(
                 "SELECT count(*), coalesce(sum(size_bytes), 0), min(created_at) FROM cache_entries"
@@ -484,6 +515,8 @@ class FileCache(Cache):
             with contextlib.suppress(BaseException):
                 await self._sweep_task
             self._sweep_task = None
+        with contextlib.suppress(Exception):
+            self._flush_counters()
         with contextlib.suppress(Exception), self._lock:
             self._meta.close()
 
@@ -505,6 +538,7 @@ class FileCache(Cache):
 
     async def sweep_once(self) -> tuple[int, int]:
         """Run a single sweep pass. Returns ``(ttl_evicted, capacity_evicted)``."""
+        self._flush_counters()
         ttl_evicted = await self._sweep_ttl()
         capacity_evicted = await self._sweep_capacity()
         return ttl_evicted, capacity_evicted
