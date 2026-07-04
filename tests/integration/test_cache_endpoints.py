@@ -165,6 +165,61 @@ class TestSessionExecuteCache:
         assert env["dialect"] == "duckdb"
         assert [c["name"] for c in env["columns"]] == ["Customer Country", "Total Revenue"]
 
+    async def test_arrow_hit_is_byte_passthrough_of_stored_blob(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """A raw-arrow hit returns the stored gzip'd blob verbatim (no re-encode).
+
+        The blob is stamped ``cached=true`` at write time, so the zero-copy hit
+        carries the in-band flag the UI reads for its "cache" source label.
+        """
+        import glob
+        import os
+
+        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        from orionbelt.cache.result_codec import read_envelope
+
+        client, cache = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+        hdrs = {"Accept-Encoding": "gzip"}
+
+        # Arrow miss populates the entry; the fresh response is NOT flagged cached.
+        miss = await client.post(
+            f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+        )
+        assert miss.status_code == 200
+        miss_tbl = pa.ipc.open_stream(pa.BufferReader(miss.content)).read_all()
+        assert read_envelope(miss_tbl)["cached"] is False
+
+        # The stored blob on disk (single .arrow payload) is what a hit serves.
+        stored_files = glob.glob(
+            os.path.join(str(cache._results_dir), "**", "*.arrow"), recursive=True
+        )
+        assert len(stored_files) == 1
+        import gzip as _gzip
+
+        stored_tbl = pa.ipc.open_stream(
+            pa.BufferReader(_gzip.decompress(Path(stored_files[0]).read_bytes()))
+        ).read_all()
+        # Stored blob is stamped cached=true at write time (enables verbatim serve).
+        assert read_envelope(stored_tbl)["cached"] is True
+
+        # Arrow hit: served via byte-passthrough of that stored blob. httpx auto-
+        # gunzips, so compare the decoded table + the in-band cached flag.
+        hit = await client.post(
+            f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+        )
+        assert hit.status_code == 200
+        assert hit.headers.get("content-encoding") == "gzip"
+        hit_tbl = pa.ipc.open_stream(pa.BufferReader(hit.content)).read_all()
+        assert read_envelope(hit_tbl)["cached"] is True
+        assert hit_tbl.to_pylist() == miss_tbl.to_pylist()
+        assert hit_tbl.equals(stored_tbl)
+
 
 class TestShortcutExecuteCache:
     async def test_shortcut_execute_caches_then_hits(

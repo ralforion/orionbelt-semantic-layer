@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -223,11 +223,15 @@ async def try_cache_get(cache: Cache, key: str) -> Any:
     if result is None:
         return None
     try:
-        envelope = cache_decode(result.payload)
+        # Decode (gzip + Arrow IPC + row rebuild) runs off the event loop.
+        envelope = await asyncio.to_thread(cache_decode, result.payload)
     except Exception:
         logger.debug("cache decode failed", exc_info=True)
         return None
     envelope.cached_at_iso = result.cached_at.isoformat().replace("+00:00", "Z")
+    # Stash the raw stored blob so a raw-arrow hit can be served byte-for-byte
+    # (no decode -> re-encode round trip). Other surfaces ignore it.
+    envelope.raw_payload = result.payload
     return envelope
 
 
@@ -255,6 +259,13 @@ async def try_cache_set(
     from orionbelt.cache import key as cache_key_mod
     from orionbelt.cache import result_codec
 
+    # The stored blob is only ever served on a cache HIT, so bake the
+    # ``cached`` flag + timestamp in at write time. That lets the raw-arrow hit
+    # path return the blob verbatim (byte-passthrough) with the correct
+    # in-band ``cached=true`` the UI reads for its "cache" source label — no
+    # decode -> re-encode round trip needed. The miss response is built
+    # separately and is unaffected.
+    cached_at_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     try:
         payload = result_codec.encode(
             columns=[c.model_dump() for c in columns],
@@ -268,6 +279,8 @@ async def try_cache_set(
             timezone=timezone,
             resolved=resolved.model_dump(),
             physical_tables=list(physical_tables),
+            cached=True,
+            cached_at=cached_at_iso,
         )
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
@@ -304,6 +317,8 @@ class CachedExecution:
     # Cached (hit) path:
     envelope: Any | None
     fetch_elapsed_ms: float | None
+    # Raw stored blob (gzip'd Arrow IPC) for byte-passthrough on raw-arrow hits.
+    payload_blob: bytes | None = None
 
 
 async def execute_query_with_cache(
@@ -371,6 +386,7 @@ async def execute_query_with_cache(
                         columns=None,
                         envelope=envelope,
                         fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
+                        payload_blob=getattr(envelope, "raw_payload", None),
                     )
 
     exec_result = await asyncio.to_thread(
