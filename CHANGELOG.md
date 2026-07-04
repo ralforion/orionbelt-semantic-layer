@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.18.2] - 2026-07-04
+
+### Changed
+
+- **Result cache is now format-independent.** The cache stores raw, locale-neutral rows keyed on the query alone, so raw JSON, value-formatted JSON, TSV, and Arrow all share one entry; value formatting is applied on delivery instead of being baked into the cache. `format=arrow` now honors `format_values` (locale-aware display strings are baked into the IPC blob); raw `format=arrow`, used by the playground round trip, is unchanged.
+
+### Performance
+
+- **Faster cache hits.** Hit/miss counters accumulate in memory and flush to DuckDB lazily, removing a per-hit metadata write under the global lock. The payload file read and the gzip + Arrow decode are offloaded to a worker thread so a cache hit never blocks the event loop (REST and oneshot). Raw `format=arrow` hits are served via byte-passthrough: the stored blob is returned verbatim with no decode and no re-encode.
+
 ## [2.18.1] - 2026-07-03
 
 ### Fixed
