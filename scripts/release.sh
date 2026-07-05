@@ -5,7 +5,8 @@
 #
 # Publishes everything that lives in the public repo: it merges the release PR,
 # cuts the GitHub release (whose tag triggers both the Docker Hub and the PyPI
-# publish workflows), and deploys the docs. The Cloud Run deploy is intentionally
+# publish workflows). Docs are deployed by the ralforion.github.io Actions workflow;
+# the Cloud Run deploy is intentionally
 # NOT here — that is an infra concern; the private infra release wrapper runs
 # this script and then deploys to Cloud Run.
 #
@@ -34,7 +35,7 @@
 #   1. Create & merge PR (fix/ or feature/ branch → main) [skipped under --post-merge]
 #   2. Create GitHub release with changelog (tag triggers the publish workflows)
 #   3. Publish to PyPI (informational — the tag from Step 2 triggers the workflow)
-#   4. Deploy MkDocs to gh-pages
+#   4. Docs deploy note (handled by the ralforion.github.io Actions workflow)
 #
 # Docker images and PyPI packages are built and pushed by
 # .github/workflows/docker-publish.yml and .github/workflows/pypi-publish.yml,
@@ -447,12 +448,16 @@ fi
 if ! should_run 4; then
     step "4/4  Deploy MkDocs to gh-pages  [skipped — not selected]"
 else
-step "4/4  Deploy MkDocs to gh-pages"
+step "4/4  Docs deploy (handled by ralforion.github.io Actions)"
 
-if confirm "Deploy docs?"; then
-    bash "$REPO_ROOT/scripts/deploy-docs.sh"
-    ok "Docs deployed"
-fi
+# Docs are deployed by the ralforion.github.io repo's GitHub Actions workflow
+# (.github/workflows/deploy.yml), not from here — deploying from two places
+# force-pushes the same gh-pages branch and conflicts (see #168). Update the
+# orionbelt-semantic-layer docs in ralforion.github.io and push its main (or
+# run its Deploy workflow) to publish.
+ok "Docs deploy is handled by the ralforion.github.io GitHub Actions workflow"
+echo "  Repo:  https://github.com/ralforion/ralforion.github.io"
+echo "  Site:  https://ralforion.com/orionbelt-semantic-layer/"
 fi
 
 # ---------------------------------------------------------------------------
