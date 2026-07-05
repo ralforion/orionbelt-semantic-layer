@@ -2,6 +2,16 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.19.0] - 2026-07-05
+
+### Added
+
+- **Auto-synthesized row-count measures.** Every countable `dataObject` now yields a grain-anchored row-count measure whose name and label are the same human string (default `"Sales Count"`), exactly like a declared measure such as `"Order Count"`. Counts are governed named measures: reference `"Sales Count"` in `select.measures`, with no ad-hoc `COUNT(*)` in queries, and a `dataObject` is never a queryable FROM target. Knobs: per-object `countable` / `countLabel`, and model-level `exposeCounts` / `countLabelPattern` (whose only token is `{object}`). A declared measure of the same name overrides synthesis (for example `COUNT(DISTINCT sale_id)` for a self-fanning model). Counts participate fully in discovery, the BI catalog, metric references, and Artefacts Composability Resolution; their knobs roundtrip through OSI, and the derived measures are computed on read so they never persist to YAML/OSI.
+
+### Security
+
+- **Fixed two SQL-injection vectors in the Postgres wire (pgwire) extended-protocol parameter substitution.** Numeric-typed text bind parameters were spliced into SQL unvalidated (a value like `0 AND "x" = 'y'` became active SQL); they are now strictly parsed per their type OID and re-rendered as canonical numeric literals, and anything that is not a plain number is rejected. The `$N` placeholder scanner is now SQL-aware and skips line comments, nested block comments, quoted identifiers, and dollar-quoted strings, so a placeholder inside those contexts is no longer substituted (closing a break-out path via newline, `*/`, or `$$`).
+
 ## [2.18.2] - 2026-07-04
 
 ### Changed
