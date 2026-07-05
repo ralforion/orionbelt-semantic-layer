@@ -13,7 +13,7 @@ OrionBelt ML (OBML) is the YAML-based format for defining semantic models in Ori
 version: 1.0
 owner: team-data # Optional: model-level owner
 
-exposeCounts: true # Optional: synthesize <object>.count measures (default true)
+exposeCounts: true # Optional: synthesize per-object row-count measures (default true)
 countLabelPattern: "{object} Count" # Optional: count label template ({object} token only)
 
 settings: # Optional: model-level compilation settings
