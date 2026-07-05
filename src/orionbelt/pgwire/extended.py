@@ -31,6 +31,7 @@ the trade space we revisit in Step 7:
 
 from __future__ import annotations
 
+import decimal
 import logging
 import re
 import struct
@@ -439,7 +440,11 @@ def substitute_parameters(
         except UnicodeDecodeError as exc:
             raise _BadParameterError(f"Text-format parameter is not valid UTF-8: {exc}") from None
         if oid in _NUMERIC_TEXT_OIDS:
-            rendered.append(text)
+            # Never splice client bytes into SQL raw: strictly parse the text
+            # per its declared numeric OID and re-render a canonical literal.
+            # A value like ``0 AND "x" = 'y'`` fails the parse and is rejected
+            # instead of becoming active SQL.
+            rendered.append(_canonical_numeric_text(text, oid))
         elif oid in _BOOL_TEXT_OIDS:
             rendered.append("TRUE" if text.lower() in {"t", "true", "1", "y", "yes"} else "FALSE")
         else:
@@ -463,10 +468,44 @@ _OID_VARCHAR = 1043
 _OID_NAME = 19
 _OID_BPCHAR = 1042
 
+_OID_NUMERIC = 1700
+
+_INTEGER_TEXT_OIDS: frozenset[int] = frozenset({_OID_INT2, _OID_INT4, _OID_INT8})
+_INT_TEXT_RE = re.compile(r"[+-]?[0-9]+")
 _NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
-    {_OID_INT2, _OID_INT4, _OID_INT8, _OID_FLOAT4, _OID_FLOAT8, 1700}
+    {_OID_INT2, _OID_INT4, _OID_INT8, _OID_FLOAT4, _OID_FLOAT8, _OID_NUMERIC}
 )
 _BOOL_TEXT_OIDS: frozenset[int] = frozenset({_OID_BOOL})
+
+
+def _canonical_numeric_text(text: str, oid: int) -> str:
+    """Parse a text-format numeric parameter and re-render it canonically.
+
+    Security boundary for the extended-protocol Bind path: a numeric-typed
+    parameter's *text* is attacker-controlled, so it must never reach the SQL
+    string unvalidated. We parse it strictly per the declared OID and emit the
+    canonical string form of the parsed number — which contains only
+    ``[-+0-9.eE]`` and can carry no SQL syntax. Anything that is not a plain
+    number (``0 AND 1=1``, ``1); DROP TABLE t; --``, ``NaN``, ``Infinity``) is
+    rejected with :class:`_BadParameterError`.
+    """
+    s = text.strip()
+    try:
+        if oid in _INTEGER_TEXT_OIDS:
+            # Strict ASCII integer grammar (Python int() also accepts
+            # underscores / unicode digits — harmless to render but not what
+            # Postgres accepts, so reject for predictability).
+            if not _INT_TEXT_RE.fullmatch(s):
+                raise ValueError("not a plain integer")
+            return str(int(s))
+        value = decimal.Decimal(s)
+    except (ValueError, ArithmeticError) as exc:
+        raise _BadParameterError(f"Invalid numeric text parameter for OID {oid}: {text!r}") from exc
+    if not value.is_finite():
+        raise _BadParameterError(
+            f"Non-finite numeric text parameter not allowed for OID {oid}: {text!r}"
+        )
+    return str(value)
 
 
 def _decode_binary_param(raw: bytes, oid: int) -> str:
@@ -516,59 +555,108 @@ def _decode_binary_param(raw: bytes, oid: int) -> str:
     )
 
 
-def _replace_placeholders(sql: str, rendered: list[str]) -> str:
-    """Replace ``$N`` placeholders with their rendered literal.
+# Opener for a dollar-quoted string: ``$$`` or ``$tag$`` where ``tag`` is a
+# SQL identifier (letter/underscore start). A digit-led ``$1`` is NOT a valid
+# dollar-quote tag, so it stays unambiguously a bind placeholder.
+_DOLLAR_QUOTE_OPEN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
-    Implements a tiny hand-rolled scan so we don't trample on dollar-
-    quoted strings (``$tag$ … $tag$``) or numbers occurring inside
-    string literals.
+
+def _replace_placeholders(sql: str, rendered: list[str]) -> str:
+    """Replace ``$N`` bind placeholders with their rendered literal.
+
+    A small SQL-aware scanner substitutes ``$N`` **only** in default context.
+    It skips over string literals (``'…''…'``), quoted identifiers (``"…""…"``),
+    line comments (``-- … <newline>``), block comments (``/* … */``, nested),
+    and dollar-quoted strings (``$tag$ … $tag$``). Without this a ``$N`` inside
+    a comment or dollar-quote would be substituted, letting a text parameter
+    that contains a newline, ``*/``, or ``$$`` break out of that context and
+    inject SQL. Only bare ``$digits`` in default context is a placeholder.
     """
 
     out: list[str] = []
     i = 0
     n = len(sql)
-    in_single = False
-    in_double = False
     while i < n:
         ch = sql[i]
-        if in_single:
-            out.append(ch)
-            if ch == "'":
-                # Doubled single quote stays inside the literal.
-                if i + 1 < n and sql[i + 1] == "'":
-                    out.append("'")
-                    i += 2
-                    continue
-                in_single = False
-            i += 1
+
+        # Line comment: -- … up to and including the newline (or EOL).
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i + 2)
+            end = n if nl == -1 else nl + 1
+            out.append(sql[i:end])
+            i = end
             continue
-        if in_double:
-            out.append(ch)
-            if ch == '"':
-                in_double = False
-            i += 1
-            continue
-        if ch == "'":
-            out.append(ch)
-            in_single = True
-            i += 1
-            continue
-        if ch == '"':
-            out.append(ch)
-            in_double = True
-            i += 1
-            continue
-        if ch == "$" and i + 1 < n and sql[i + 1].isdigit():
-            # Read the placeholder index.
-            j = i + 1
-            while j < n and sql[j].isdigit():
-                j += 1
-            idx = int(sql[i + 1 : j]) - 1
-            if idx < 0 or idx >= len(rendered):
-                raise _BadParameterError(f"Placeholder ${idx + 1} has no bound value")
-            out.append(rendered[idx])
+
+        # Block comment: /* … */, nesting per Postgres.
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                if sql[j] == "/" and j + 1 < n and sql[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                elif sql[j] == "*" and j + 1 < n and sql[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            out.append(sql[i:j])
             i = j
             continue
+
+        # Single-quoted string literal ('' escapes an embedded quote).
+        if ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        # Double-quoted identifier ("" escapes an embedded quote).
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if sql[j] == '"':
+                    if j + 1 < n and sql[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        if ch == "$":
+            # Dollar-quoted string: copy verbatim through the matching close
+            # tag (never substitute inside it).
+            m = _DOLLAR_QUOTE_OPEN.match(sql, i)
+            if m:
+                tag = m.group(0)
+                close = sql.find(tag, m.end())
+                end = n if close == -1 else close + len(tag)
+                out.append(sql[i:end])
+                i = end
+                continue
+            # Bind placeholder $N (digits only; disjoint from dollar-quote tags).
+            if i + 1 < n and sql[i + 1].isdigit():
+                j = i + 1
+                while j < n and sql[j].isdigit():
+                    j += 1
+                idx = int(sql[i + 1 : j]) - 1
+                if idx < 0 or idx >= len(rendered):
+                    raise _BadParameterError(f"Placeholder ${idx + 1} has no bound value")
+                out.append(rendered[idx])
+                i = j
+                continue
+
         out.append(ch)
         i += 1
     return "".join(out)

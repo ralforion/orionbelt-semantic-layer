@@ -101,6 +101,57 @@ def test_substitute_skips_inside_double_quotes() -> None:
     assert sql == 'SELECT "$1" AS "$1", \'val\''
 
 
+def test_substitute_numeric_text_rejects_injection() -> None:
+    """A numeric-typed text param that carries SQL syntax is rejected, not spliced."""
+    from orionbelt.pgwire.extended import _BadParameterError
+
+    with pytest.raises(_BadParameterError):
+        substitute_parameters(
+            'SELECT * FROM m WHERE "Total Revenue" > $1',
+            (b"0 AND \"Customer Country\" = 'US'",),
+            [0],
+            param_oids=(23,),  # INT4
+        )
+
+
+def test_substitute_numeric_text_canonicalizes() -> None:
+    """Valid numeric text params render as canonical numeric literals."""
+    assert substitute_parameters("x $1", (b"  -7 ",), [0], param_oids=(23,)) == "x -7"
+    assert substitute_parameters("x $1", (b"3.14",), [0], param_oids=(1700,)) == "x 3.14"
+    assert substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x 1E+3"
+
+
+def test_substitute_numeric_text_rejects_non_finite() -> None:
+    from orionbelt.pgwire.extended import _BadParameterError
+
+    for payload in (b"NaN", b"Infinity", b"-Infinity"):
+        with pytest.raises(_BadParameterError):
+            substitute_parameters("x $1", (payload,), [0], param_oids=(1700,))
+
+
+def test_substitute_skips_inside_line_comment() -> None:
+    sql = substitute_parameters("SELECT 1 -- $1\nWHERE x = $1", (b"v",), [0])
+    assert sql == "SELECT 1 -- $1\nWHERE x = 'v'"
+
+
+def test_substitute_skips_inside_block_comment() -> None:
+    sql = substitute_parameters("SELECT /* $1 nested /* $1 */ */ $1", (b"v",), [0])
+    assert sql == "SELECT /* $1 nested /* $1 */ */ 'v'"
+
+
+def test_substitute_skips_inside_dollar_quote() -> None:
+    assert substitute_parameters("SELECT $$ $1 $$, $1", (b"v",), [0]) == "SELECT $$ $1 $$, 'v'"
+    assert (
+        substitute_parameters("SELECT $tag$ $1 $tag$, $1", (b"v",), [0])
+        == "SELECT $tag$ $1 $tag$, 'v'"
+    )
+
+
+def test_substitute_dollar_digit_is_placeholder_not_tag() -> None:
+    """``$1`` is a placeholder even next to a stray ``$`` (digit-led tags are invalid)."""
+    assert substitute_parameters("SELECT $1$", (b"v",), [0]) == "SELECT 'v'$"
+
+
 def test_substitute_rejects_binary_format_for_unknown_oid() -> None:
     """Unknown binary OID still errors — we only decode a small allow-list."""
     from orionbelt.pgwire.extended import _BinaryParameterError
