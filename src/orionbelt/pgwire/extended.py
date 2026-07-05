@@ -472,6 +472,11 @@ _OID_NUMERIC = 1700
 
 _INTEGER_TEXT_OIDS: frozenset[int] = frozenset({_OID_INT2, _OID_INT4, _OID_INT8})
 _INT_TEXT_RE = re.compile(r"[+-]?[0-9]+")
+# ASCII decimal/float literal (sign, digits, optional fraction, optional
+# exponent). Postgres numeric text input has no room for underscores or
+# unicode digits, which ``Decimal`` would otherwise accept and silently
+# normalize; match the DB grammar so those forms are rejected.
+_NUMERIC_TEXT_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _NUMERIC_TEXT_OIDS: frozenset[int] = frozenset(
     {_OID_INT2, _OID_INT4, _OID_INT8, _OID_FLOAT4, _OID_FLOAT8, _OID_NUMERIC}
 )
@@ -498,6 +503,10 @@ def _canonical_numeric_text(text: str, oid: int) -> str:
             if not _INT_TEXT_RE.fullmatch(s):
                 raise ValueError("not a plain integer")
             return str(int(s))
+        # Float / numeric: enforce the ASCII decimal grammar before Decimal so
+        # underscores and unicode digits are rejected rather than normalized.
+        if not _NUMERIC_TEXT_RE.fullmatch(s):
+            raise ValueError("not a plain decimal/float")
         value = decimal.Decimal(s)
     except (ValueError, ArithmeticError) as exc:
         raise _BadParameterError(f"Invalid numeric text parameter for OID {oid}: {text!r}") from exc
