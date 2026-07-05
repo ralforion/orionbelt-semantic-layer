@@ -99,7 +99,7 @@ def test_empty_query_offers_everything(sales_model: SemanticModel) -> None:
     result = resolve_composables_for_query(sales_model, QueryObject(select={"dimensions": []}))
     assert result.anchor_objects == []
     assert set(result.dimensions) == set(sales_model.dimensions)
-    assert set(result.measures) == set(sales_model.measures)
+    assert set(result.measures) == set(sales_model.effective_measures)
     assert set(result.metrics) == set(sales_model.metrics)
     assert result.cfl_measures == []
 
@@ -129,6 +129,21 @@ def test_measure_anchor_offers_dimensions(sales_model: SemanticModel) -> None:
     assert "Order Count" in result.measures
 
 
+def test_synthesized_count_is_composable_and_anchor(sales_model: SemanticModel) -> None:
+    """Synthesized <object> Count measures take part in ACR like declared ones:
+    offered as composable measures, and usable as an anchor that resolves to
+    its source object."""
+    # Offered as a composable measure when anchoring on a reachable object.
+    offered = resolve_composables_for_anchors(sales_model, ["Revenue"])
+    assert "Orders Count" in offered.measures
+    assert "Customers Count" in offered.measures
+
+    # Usable as the anchor itself: resolves to the Orders fact.
+    anchored = resolve_composables_for_anchors(sales_model, ["Orders Count"])
+    assert anchored.anchor_objects == ["Orders"]
+    assert "Revenue" in anchored.measures
+
+
 def test_query_as_anchor_star(sales_model: SemanticModel) -> None:
     query = QueryObject(select={"dimensions": ["Customer Country"], "measures": ["Revenue"]})
     result = resolve_composables_for_query(sales_model, query)
@@ -149,6 +164,16 @@ def test_independent_fact_measure_is_cfl(multi_fact_model: SemanticModel) -> Non
     assert "Sales Amount" in result.measures
     assert "Return Amount" not in result.measures
     assert "Return Amount" in result.cfl_measures
+
+
+def test_synthesized_count_cfl_classification(multi_fact_model: SemanticModel) -> None:
+    """A count anchored on the query's fact is direct; a count on an independent
+    fact is offered via CFL, matching declared-measure classification."""
+    query = QueryObject(select={"dimensions": ["Customer Country"], "measures": ["Sales Amount"]})
+    result = resolve_composables_for_query(multi_fact_model, query)
+    assert "Sales Count" in result.measures
+    assert "Returns Count" not in result.measures
+    assert "Returns Count" in result.cfl_measures
 
 
 def test_shared_dimension_anchor_offers_both_facts_directly(
@@ -179,7 +204,7 @@ def test_unknown_anchor_resolves_to_empty(sales_model: SemanticModel) -> None:
     result = resolve_composables_for_anchors(sales_model, ["No Such Thing"])
     # Unknown name contributes no anchor objects -> treated as empty anchor.
     assert result.anchor_objects == []
-    assert set(result.measures) == set(sales_model.measures)
+    assert set(result.measures) == set(sales_model.effective_measures)
 
 
 def test_metric_anchor_resolves_to_underlying_fact(sales_model: SemanticModel) -> None:

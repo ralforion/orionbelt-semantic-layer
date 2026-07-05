@@ -49,7 +49,7 @@ class ComposablesResult:
 
 def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
     """Data objects a measure aggregates over (source columns + expression refs)."""
-    m = model.measures.get(name)
+    m = model.effective_measures.get(name)
     if m is None:
         return set()
     objects = {c.view for c in m.columns if c.view}
@@ -127,7 +127,7 @@ class ComposabilityResolver:
 
         measure_objects: set[str] = set()
         for ref in query.select.measures:
-            if ref in self.model.measures:
+            if ref in self.model.effective_measures:
                 measure_objects |= measure_source_objects(self.model, ref)
             elif ref in self.model.metrics:
                 measure_objects |= metric_source_objects(self.model, ref)
@@ -146,7 +146,7 @@ class ComposabilityResolver:
         if anchor_type in (None, "dimension") and name in self.model.dimensions:
             obj = _dimension_object(self.model, name)
             return ({obj} if obj else set()), set()
-        if anchor_type in (None, "measure") and name in self.model.measures:
+        if anchor_type in (None, "measure") and name in self.model.effective_measures:
             return set(), measure_source_objects(self.model, name)
         if anchor_type in (None, "metric") and name in self.model.metrics:
             return set(), metric_source_objects(self.model, name)
@@ -174,7 +174,7 @@ class ComposabilityResolver:
             return ComposablesResult(
                 anchor_objects=[],
                 dimensions=sorted(self.model.dimensions),
-                measures=sorted(self.model.measures),
+                measures=sorted(self.model.effective_measures),
                 metrics=sorted(self.model.metrics),
             )
 
@@ -192,7 +192,7 @@ class ComposabilityResolver:
 
         measures: list[str] = []
         cfl_measures: list[str] = []
-        for name in self.model.measures:
+        for name in self.model.effective_measures:
             status = self._measure_status(measure_source_objects(self.model, name), anchor, spine)
             if status == "direct":
                 measures.append(name)

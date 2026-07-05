@@ -62,7 +62,10 @@ class TestSchema:
         assert data["version"] == 1.0
         assert len(data["data_objects"]) == 2
         assert len(data["dimensions"]) == 1
-        assert len(data["measures"]) == 3
+        # 3 declared + 2 synthesized row-count measures (one per data object).
+        assert len(data["measures"]) == 5
+        measure_names = {m["name"] for m in data["measures"]}
+        assert {"Orders Count", "Customers Count"} <= measure_names
         assert len(data["metrics"]) == 2
 
     async def test_schema_data_object_detail(
@@ -116,10 +119,12 @@ class TestMeasures:
         resp = await client.get(f"/v1/sessions/{sid}/models/{mid}/measures")
         assert resp.status_code == 200
         measures = resp.json()
-        assert len(measures) == 3
+        # 3 declared + 2 synthesized row-count measures.
+        assert len(measures) == 5
         names = {m["name"] for m in measures}
         assert "Total Revenue" in names
         assert "Order Count" in names
+        assert {"Orders Count", "Customers Count"} <= names
 
     async def test_get_measure(
         self, client: AsyncClient, session_with_model: tuple[str, str]
@@ -534,7 +539,8 @@ class TestShortcuts:
     ) -> None:
         resp = await client.get("/v1/measures")
         assert resp.status_code == 200
-        assert len(resp.json()) == 3
+        # 3 declared + 2 synthesized row-count measures.
+        assert len(resp.json()) == 5
 
     async def test_shortcut_metrics(
         self, client: AsyncClient, session_with_model: tuple[str, str]

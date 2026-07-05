@@ -312,3 +312,79 @@ class TestPoPMetricDataType:
         m = result["metrics"]["YoY Growth"]
         assert m.get("dataType") == "NUMERIC(10,4)"
         assert m.get("owner") == "finance-team"
+
+
+class TestCountSynthesisKnobs:
+    """Count-synthesis knobs roundtrip via OBML-vendor custom_extensions.
+
+    The synthesized ``<object>.count`` measures are derived (regenerated on
+    load), so they are never emitted to OSI; only the knobs must survive.
+    """
+
+    _OBML_COUNTS = {
+        "version": 1.0,
+        "exposeCounts": False,
+        "countLabelPattern": "# {object}",
+        "dataObjects": {
+            "Sales": {
+                "code": "SALES",
+                "database": "W",
+                "schema": "P",
+                "countable": True,
+                "countLabel": "Sales headcount",
+                "columns": {"Amount": {"code": "AMT", "abstractType": "float"}},
+            },
+            "Returns": {
+                "code": "RET",
+                "database": "W",
+                "schema": "P",
+                "countable": False,
+                "columns": {"Qty": {"code": "Q", "abstractType": "int"}},
+            },
+        },
+        "measures": {
+            "Revenue": {
+                "aggregation": "sum",
+                "columns": [{"dataObject": "Sales", "column": "Amount"}],
+            }
+        },
+    }
+
+    def test_model_level_knobs_roundtrip(self):
+        result = _roundtrip(self._OBML_COUNTS)
+        assert result.get("exposeCounts") is False
+        assert result.get("countLabelPattern") == "# {object}"
+
+    def test_data_object_knobs_roundtrip(self):
+        result = _roundtrip(self._OBML_COUNTS)
+        sales = result["dataObjects"]["Sales"]
+        returns = result["dataObjects"]["Returns"]
+        assert sales.get("countable") is True
+        assert sales.get("countLabel") == "Sales headcount"
+        assert returns.get("countable") is False
+
+    def test_no_synthesized_count_measures_emitted(self):
+        osi = conv.OBMLtoOSI(self._OBML_COUNTS).convert()
+        # No ``.count`` measure leaks into the OSI datasets/metrics.
+        blob = str(osi)
+        assert "Sales.count" not in blob
+        result = _roundtrip(self._OBML_COUNTS)
+        assert set(result.get("measures", {})) == {"Revenue"}
+
+    def test_defaults_absent_when_unset(self):
+        obml = {
+            "version": 1.0,
+            "dataObjects": {
+                "Sales": {
+                    "code": "SALES",
+                    "database": "W",
+                    "schema": "P",
+                    "columns": {"Amount": {"code": "AMT", "abstractType": "float"}},
+                }
+            },
+        }
+        result = _roundtrip(obml)
+        # Unset knobs are not re-materialized (pydantic defaults apply on load).
+        assert "exposeCounts" not in result
+        assert "countLabelPattern" not in result
+        assert "countable" not in result["dataObjects"]["Sales"]

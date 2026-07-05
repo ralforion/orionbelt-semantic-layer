@@ -344,6 +344,24 @@ class DataObject(BaseModel):
     description: str | None = None
     comment: str | None = None
     owner: str | None = None
+    countable: bool = Field(
+        True,
+        description=(
+            "When true (default), the model synthesizes a grain-anchored row-count "
+            "measure for this data object (name == label, e.g. 'Sales Count'). Set "
+            "false to opt out (no count measure is added to the model's measure list)."
+        ),
+    )
+    count_label: str | None = Field(
+        None,
+        alias="countLabel",
+        description=(
+            "Optional name/label for this object's synthesized count measure (the "
+            "count's id is its label). Overrides the model-level ``countLabelPattern``. "
+            "The ``{object}`` token interpolates the object's display label. Ignored "
+            "when ``countable`` is false."
+        ),
+    )
     synonyms: list[str] = Field(default_factory=list)
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
     refresh: RefreshPolicy | None = Field(
@@ -358,6 +376,23 @@ class DataObject(BaseModel):
     def qualified_code(self) -> str:
         """Full qualified table reference: database.schema.code."""
         return f"{self.database}.{self.schema_name}.{self.code}"
+
+    @model_validator(mode="after")
+    def _validate_count_label(self) -> DataObject:
+        """``countLabel`` only has an effect when the object is countable.
+
+        Warn (do not error) so a stray override on a non-countable object is
+        surfaced without breaking model load.
+        """
+        if self.count_label is not None and not self.countable:
+            import warnings
+
+            warnings.warn(
+                f"Data object '{self.label}' sets 'countLabel' but 'countable' is false; "
+                "the label is ignored because no count measure is synthesized.",
+                stacklevel=2,
+            )
+        return self
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -848,9 +883,64 @@ class SemanticModel(BaseModel):
     extends_sources: list[str] = Field(default_factory=list)
     inherits_source: str | None = None
     owner: str | None = None
+    expose_counts: bool = Field(
+        True,
+        alias="exposeCounts",
+        description=(
+            "When true (default), synthesize a row-count measure for every countable "
+            "data object. Set false to suppress all synthesized counts (e.g. wide "
+            "models where N facts would balloon the measure list). Declared measures "
+            "are unaffected."
+        ),
+    )
+    count_label_pattern: str = Field(
+        "{object} Count",
+        alias="countLabelPattern",
+        description=(
+            "Name/label template for synthesized count measures (the count's id is "
+            "its label). The only valid token is ``{object}``, which interpolates each "
+            "object's display label (e.g. 'Sales' -> 'Sales Count'). A per-object "
+            "``countLabel`` overrides it."
+        ),
+    )
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @field_validator("count_label_pattern", mode="before")
+    @classmethod
+    def _validate_count_label_pattern(cls, v: object) -> object:
+        """The pattern may reference only the ``{object}`` token.
+
+        Reject any other field access (``{name}``, ``{object.__class__}``, ...) —
+        cheap insurance even though OBML is author-controlled. Bare/escaped braces
+        and positional ``{}`` are rejected too; only the named ``{object}`` field
+        is allowed. Delegates to the shared ``count_pattern_error`` so the OBML
+        resolver reports the same rule as a structured error.
+        """
+        from orionbelt.models.synthesis import count_pattern_error
+
+        if not isinstance(v, str):
+            return v
+        msg = count_pattern_error(v)
+        if msg is not None:
+            raise ValueError(msg)
+        return v
+
+    @property
+    def effective_measures(self) -> dict[str, Measure]:
+        """Declared measures plus synthesized row-count measures (declared win).
+
+        The single source of truth for the model's queryable measure namespace.
+        Synthesized counts are *not* persisted on ``measures`` (they never
+        roundtrip through YAML/OSI) — they are computed on demand here so every
+        read/resolve surface sees them as ordinary named measures.
+        """
+        from orionbelt.models.synthesis import synthesize_count_measures
+
+        merged = dict(self.measures)
+        merged.update(synthesize_count_measures(self))
+        return merged
 
     @field_validator("name", mode="before")
     @classmethod

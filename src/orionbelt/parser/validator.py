@@ -14,6 +14,7 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     SemanticModel,
 )
+from orionbelt.models.synthesis import count_label, model_count_pattern
 
 
 class SemanticValidator:
@@ -67,6 +68,47 @@ class SemanticValidator:
 
         for name in model.metrics:
             _register(name, "metric", f"metrics.{name}")
+
+        # Synthesized count measures (name == resolved count label, e.g.
+        # "Sales Count") occupy the measure namespace too (models/synthesis.py).
+        # A declared measure of the same name is the intended override (D4) and
+        # is fine; but a dimension or metric with that name would be shadowed by
+        # the synthesized measure at query time, so reject the collision. Two
+        # countable objects that resolve to the same count name also collide.
+        if getattr(model, "expose_counts", True):
+            pattern = model_count_pattern(model)
+            seen_counts: dict[str, str] = {}  # count name -> data object key
+            for obj_key, obj in model.data_objects.items():
+                if not obj.countable:
+                    continue
+                cid = count_label(obj_key, obj, pattern)
+                clashing = all_names.get(cid)
+                if clashing in ("dimension", "metric"):
+                    errors.append(
+                        SemanticError(
+                            code="DUPLICATE_IDENTIFIER",
+                            message=(
+                                f"{str(clashing).title()} '{cid}' conflicts with the synthesized "
+                                f"count measure for data object '{obj_key}'. Rename it, set "
+                                f"'countLabel'/'countLabelPattern', or 'countable: false'."
+                            ),
+                            path=f"{clashing}s.{cid}",
+                        )
+                    )
+                elif cid in seen_counts:
+                    errors.append(
+                        SemanticError(
+                            code="DUPLICATE_IDENTIFIER",
+                            message=(
+                                f"Data objects '{seen_counts[cid]}' and '{obj_key}' both "
+                                f"synthesize a count measure named '{cid}'. Give one a distinct "
+                                f"'countLabel' or set 'countable: false'."
+                            ),
+                            path=f"dataObjects.{obj_key}.countLabel",
+                        )
+                    )
+                else:
+                    seen_counts[cid] = obj_key
 
         return errors
 

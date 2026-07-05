@@ -16,6 +16,7 @@ from orionbelt.compiler.health import compute_health
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN
 from orionbelt.models.warnings import WarningCode
 from orionbelt.obsl.exporter import export_obsl
 from orionbelt.obsl.sparql import SPARQLResult, execute_sparql
@@ -433,6 +434,10 @@ class ModelStore:
         raw: dict[str, object] = {"version": model.version}
         if model.description:
             raw["description"] = model.description
+        if not model.expose_counts:
+            raw["exposeCounts"] = False
+        if model.count_label_pattern != DEFAULT_COUNT_PATTERN:
+            raw["countLabelPattern"] = model.count_label_pattern
         if model.data_objects:
             objs: dict[str, object] = {}
             for name, obj in model.data_objects.items():
@@ -463,6 +468,12 @@ class ModelStore:
                             jd["pathName"] = j.path_name
                         joins.append(jd)
                     obj_raw["joins"] = joins
+                # Carry count-synthesis knobs when non-default so inheritance
+                # does not silently re-enable a suppressed count.
+                if not obj.countable:
+                    obj_raw["countable"] = False
+                if obj.count_label is not None:
+                    obj_raw["countLabel"] = obj.count_label
                 if obj.refresh is not None:
                     refresh: dict[str, object] = {"mode": obj.refresh.mode}
                     if obj.refresh.interval:

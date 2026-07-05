@@ -33,6 +33,7 @@ from orionbelt.models.semantic import (
     RefreshPolicy,
     SemanticModel,
 )
+from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
 from orionbelt.parser.loader import SourceMap
 
 
@@ -409,6 +410,8 @@ class ReferenceResolver:
                     description=raw_obj.get("description"),
                     comment=raw_obj.get("comment"),
                     owner=raw_obj.get("owner"),
+                    countable=raw_obj.get("countable", True),
+                    count_label=raw_obj.get("countLabel"),
                     synonyms=raw_obj.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_obj),
                     refresh=_parse_refresh(raw_obj.get("refresh"), name, errors),
@@ -729,6 +732,53 @@ class ReferenceResolver:
                     )
                 )
 
+        # Validate the count-synthesis knobs here so a bad value becomes a
+        # structured SemanticError rather than a raw AttributeError (list
+        # pattern) or an uncaught Pydantic ValidationError (invalid token) at
+        # model construction below. Fall back to safe values so resolution can
+        # continue collecting errors.
+        _count_pattern = raw.get("countLabelPattern", DEFAULT_COUNT_PATTERN)
+        _pattern_err = count_pattern_error(_count_pattern)
+        if _pattern_err is not None:
+            span = source_map.get("countLabelPattern") if source_map else None
+            errors.append(
+                SemanticError(
+                    code="INVALID_COUNT_LABEL_PATTERN",
+                    message=_pattern_err,
+                    path="countLabelPattern",
+                    span=span,
+                )
+            )
+            _count_pattern = DEFAULT_COUNT_PATTERN
+        _expose_counts = raw.get("exposeCounts", True)
+        if not isinstance(_expose_counts, bool):
+            span = source_map.get("exposeCounts") if source_map else None
+            errors.append(
+                SemanticError(
+                    code="INVALID_EXPOSE_COUNTS",
+                    message="exposeCounts must be a boolean (true/false)",
+                    path="exposeCounts",
+                    span=span,
+                )
+            )
+            _expose_counts = True
+
+        # Names of synthesized count measures (name == resolved count label,
+        # e.g. "Sales Count"). These are valid measure references (metrics may
+        # target them) even though they are not declared — they are materialized
+        # on read via ``effective_measures`` (see models/synthesis.py). Declared
+        # measures already sit in ``measures``; a declared count of the same
+        # name overrides synthesis, so unioning is safe either way.
+        synthesized_measure_names: set[str] = (
+            {
+                count_label(key, obj, _count_pattern)
+                for key, obj in data_objects.items()
+                if obj.countable
+            }
+            if _expose_counts
+            else set()
+        )
+
         # Parse metrics
         metrics: dict[str, Metric] = {}
         raw_metrics = raw.get("metrics", {})
@@ -758,7 +808,11 @@ class ReferenceResolver:
                 if metric_type == MetricType.CUMULATIVE:
                     # Cumulative metric: validate measure reference exists
                     ref_measure = raw_metric.get("measure", "")
-                    if ref_measure and ref_measure not in measures:
+                    if (
+                        ref_measure
+                        and ref_measure not in measures
+                        and ref_measure not in synthesized_measure_names
+                    ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(
                             SemanticError(
@@ -811,7 +865,13 @@ class ReferenceResolver:
                     # Period-over-period metric: validate expression + PoP config
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
-                        name, expression, measures, errors, source_map, metrics
+                        name,
+                        expression,
+                        measures,
+                        errors,
+                        source_map,
+                        metrics,
+                        synthesized_measure_names,
                     )
 
                     raw_pop = raw_metric.get("periodOverPeriod")
@@ -874,7 +934,11 @@ class ReferenceResolver:
                 elif metric_type == MetricType.WINDOW:
                     # Window metric (rank/lag/lead/ntile/first_value/last_value)
                     ref_measure = raw_metric.get("measure")
-                    if ref_measure and ref_measure not in measures:
+                    if (
+                        ref_measure
+                        and ref_measure not in measures
+                        and ref_measure not in synthesized_measure_names
+                    ):
                         span = source_map.get(f"metrics.{name}.measure") if source_map else None
                         errors.append(
                             SemanticError(
@@ -928,7 +992,13 @@ class ReferenceResolver:
                     # Derived metric (default)
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
-                        name, expression, measures, errors, source_map, metrics
+                        name,
+                        expression,
+                        measures,
+                        errors,
+                        source_map,
+                        metrics,
+                        synthesized_measure_names,
                     )
 
                     metrics[name] = Metric(
@@ -1034,6 +1104,10 @@ class ReferenceResolver:
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
+            # Sanitized above so an invalid value is a structured error, not a
+            # ValidationError raised here.
+            expose_counts=_expose_counts,
+            count_label_pattern=_count_pattern,
             custom_extensions=_parse_extensions(raw, "", errors, source_map),
             settings=settings,
         )
@@ -1255,6 +1329,7 @@ class ReferenceResolver:
         errors: list[SemanticError],
         source_map: SourceMap | None,
         metrics: dict[str, Metric] | None = None,
+        synthesized_measures: set[str] | None = None,
     ) -> None:
         """Validate {[Measure Name]} references in a metric expression.
 
@@ -1262,7 +1337,9 @@ class ReferenceResolver:
         (typically cumulative or window metrics that have been parsed earlier
         in the same model). ``metrics`` defaults to ``None`` so existing
         callers continue to work; the caller passes the in-progress metrics
-        dict to enable cross-metric composition.
+        dict to enable cross-metric composition. ``synthesized_measures`` names
+        the auto-generated ``<object>.count`` measures, which are valid
+        references even though they are not in ``measures``.
         """
         span = source_map.get(f"metrics.{metric_name}.expression") if source_map else None
 
@@ -1342,8 +1419,13 @@ class ReferenceResolver:
             )
 
         known_metrics = metrics or {}
+        known_counts = synthesized_measures or set()
         for ref_name in valid_refs:
-            if ref_name not in measures and ref_name not in known_metrics:
+            if (
+                ref_name not in measures
+                and ref_name not in known_metrics
+                and ref_name not in known_counts
+            ):
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_MEASURE_REF",
@@ -1352,7 +1434,9 @@ class ReferenceResolver:
                         span=span,
                         suggestions=_suggest_similar(
                             ref_name,
-                            list(measures.keys()) + list(known_metrics.keys()),
+                            list(measures.keys())
+                            + list(known_metrics.keys())
+                            + sorted(known_counts),
                         ),
                     )
                 )

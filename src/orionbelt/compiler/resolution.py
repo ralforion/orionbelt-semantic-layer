@@ -614,7 +614,7 @@ class QueryResolver:
                 )
             )
             return
-        if alias in ctx.model.dimensions or alias in ctx.model.measures:
+        if alias in ctx.model.dimensions or alias in ctx.model.effective_measures:
             ctx.errors.append(
                 SemanticError(
                     code="COALESCE_ALIAS_COLLISION",
@@ -702,7 +702,7 @@ class QueryResolver:
 
     def _resolve_measure(self, ctx: _ResolutionContext, name: str) -> ResolvedMeasure | None:
         """Resolve a measure name to its aggregate expression."""
-        measure = ctx.model.measures.get(name)
+        measure = ctx.model.effective_measures.get(name)
         if measure is None:
             metric = ctx.model.metrics.get(name)
             if metric:
@@ -771,6 +771,12 @@ class QueryResolver:
             for ref in measure.columns:
                 obj_name = ref.view or ""
                 col_name = ref.column or ""
+                # A column-less ref (``dataObject`` set, ``column`` empty) anchors the
+                # measure on the object without naming a column — used by the
+                # synthesized row-count measure to emit ``COUNT(*)`` while still
+                # contributing the anchor to source-object resolution.
+                if not col_name:
+                    continue
                 obj = ctx.model.data_objects.get(obj_name)
                 if obj and col_name in obj.columns:
                     args.append(make_column_expr(ctx.model, obj_name, col_name))
@@ -904,6 +910,7 @@ class QueryResolver:
 
         seen: set[str] = set()
         out: list[str] = []
+        measure_names = model.effective_measures
 
         def _visit(item: QueryFilterItem) -> None:
             if isinstance(item, QueryFilterGroup):
@@ -913,7 +920,7 @@ class QueryResolver:
             field = item.field
             if field in seen:
                 return
-            if field in model.measures or field in model.metrics:
+            if field in measure_names or field in model.metrics:
                 seen.add(field)
                 out.append(field)
 
@@ -925,7 +932,7 @@ class QueryResolver:
         """Extract all source data objects for a measure or metric."""
         result: set[str] = set()
 
-        measure = ctx.model.measures.get(name)
+        measure = ctx.model.effective_measures.get(name)
         if measure:
             for cref in measure.columns:
                 if cref.view:

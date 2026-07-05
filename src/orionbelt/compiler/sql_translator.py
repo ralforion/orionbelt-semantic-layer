@@ -164,9 +164,11 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
 
     _reject_unsupported_structure(ast, errors)
 
-    # Build label lookup tables (case-insensitive)
+    # Build label lookup tables (case-insensitive). ``effective_measures``
+    # includes synthesized ``<object>.count`` measures so a Semantic QL
+    # ``SELECT "Sales.count" FROM m`` resolves like any declared measure.
     dim_labels = {label.lower(): label for label in model.dimensions}
-    measure_labels = {label.lower(): label for label in model.measures}
+    measure_labels = {label.lower(): label for label in model.effective_measures}
     metric_labels = {label.lower(): label for label in model.metrics}
 
     def classify(name: str) -> str | None:
@@ -271,8 +273,9 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
                 continue
             canon = canonical(inner_label)
             # Determine if the inner is a measure or a metric for the
-            # idempotence / matching-aggregation check.
-            measure_obj = model.measures.get(canon)
+            # idempotence / matching-aggregation check. ``effective_measures``
+            # so a wrap on a synthesized count is validated like a declared one.
+            measure_obj = model.effective_measures.get(canon)
             metric_obj = model.metrics.get(canon)
             if metric_obj is not None:
                 # Metrics have no declared aggregation — they're derived

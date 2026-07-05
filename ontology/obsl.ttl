@@ -309,6 +309,30 @@ obsl:allowFanOut a owl:DatatypeProperty ;
     rdfs:comment "When true, permits this measure to be queried along fan-out join paths (bypasses fan-trap prevention)." ;
     rdfs:range xsd:boolean .
 
+obsl:countable a owl:DatatypeProperty ;
+    rdfs:label "countable" ;
+    rdfs:comment "When true (default), the model synthesizes a grain-anchored row-count measure for this data object (name == label, e.g. 'Sales Count').  Set false to opt out." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range xsd:boolean .
+
+obsl:countLabel a owl:DatatypeProperty ;
+    rdfs:label "count label" ;
+    rdfs:comment "Optional name/label for a data object's synthesized count measure (the count's id is its label); overrides the model-level countLabelPattern.  The {object} token interpolates the object's display label.  Ignored when countable is false." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range xsd:string .
+
+obsl:exposeCounts a owl:DatatypeProperty ;
+    rdfs:label "expose counts" ;
+    rdfs:comment "When true (default), synthesize a row-count measure for every countable data object.  Set false to suppress all synthesized counts.  Declared measures are unaffected." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range xsd:boolean .
+
+obsl:countLabelPattern a owl:DatatypeProperty ;
+    rdfs:label "count label pattern" ;
+    rdfs:comment "Name/label template for synthesized count measures (the count's id is its label).  The only valid token is {object}, which interpolates each object's display label (e.g. 'Sales' -> 'Sales Count').  A per-object countLabel overrides it." ;
+    rdfs:domain obsl:SemanticModel ;
+    rdfs:range xsd:string .
+
 obsl:delimiter a owl:DatatypeProperty ;
     rdfs:label "delimiter" ;
     rdfs:comment "Separator string used by LISTAGG / string_agg aggregations between concatenated values." ;

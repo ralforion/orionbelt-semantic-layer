@@ -251,7 +251,7 @@ def _apply_measure_cast(
     """
     if model is None or dialect is None:
         return expr
-    base_meas = model.measures.get(measure_name)
+    base_meas = model.effective_measures.get(measure_name)
     if base_meas is None:
         return expr
     resolved_type = resolve_measure_data_type(base_meas, model.settings)

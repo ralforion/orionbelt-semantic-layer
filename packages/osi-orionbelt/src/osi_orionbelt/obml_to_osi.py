@@ -101,6 +101,17 @@ class OBMLtoOSI:
         obml_owner = self.obml.get("owner")
         if obml_owner:
             roundtrip_data["obml_owner"] = obml_owner
+        # Preserve count-synthesis knobs (OSI has no native equivalent). The
+        # synthesized ``<object>.count`` measures themselves are NOT emitted —
+        # they are derived and regenerate on load — but the knobs must survive
+        # a roundtrip. ``is not None`` so an explicit ``exposeCounts: false`` is
+        # preserved (``False`` is falsy).
+        expose_counts = self.obml.get("exposeCounts")
+        if expose_counts is not None:
+            roundtrip_data["obml_expose_counts"] = expose_counts
+        count_label_pattern = self.obml.get("countLabelPattern")
+        if count_label_pattern is not None:
+            roundtrip_data["obml_count_label_pattern"] = count_label_pattern
         sem_model["custom_extensions"] = [
             {
                 "vendor_name": _VENDOR_OBML,
@@ -242,6 +253,11 @@ class OBMLtoOSI:
         # design/PLAN_freshness_driven_cache.md §5.
         if do_obj.get("refresh"):
             do_extras["obml_refresh"] = do_obj["refresh"]
+        # Count-synthesis knobs (``is not None`` so ``countable: false`` survives).
+        if do_obj.get("countable") is not None:
+            do_extras["obml_countable"] = do_obj["countable"]
+        if do_obj.get("countLabel") is not None:
+            do_extras["obml_count_label"] = do_obj["countLabel"]
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
             ds_exts.append(

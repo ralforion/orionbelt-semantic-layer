@@ -291,6 +291,40 @@ class TestStarSchemaExecution:
         assert by_country["US"] == 3
         assert by_country["UK"] == 2
 
+    def test_synthesized_count_matches_declared(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        """The synthesized ``Orders Count`` is grain-anchored: grouping by a
+        many-to-one dimension does NOT inflate the fact's row count, so it
+        equals the hand-declared ``Order Count`` (COUNT(DISTINCT ORDER_ID))."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"],
+                measures=["Orders Count"],
+            ),
+        )
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute_dict(duckdb_conn, sql)
+
+        by_country = {r["Customer Country"]: r["Orders Count"] for r in rows}
+        assert by_country["US"] == 3
+        assert by_country["UK"] == 2
+        assert sum(by_country.values()) == 5  # true row count, not inflated
+
+    def test_synthesized_count_alone(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        sales_model: SemanticModel,
+        pipeline: CompilationPipeline,
+    ) -> None:
+        query = QueryObject(select=QuerySelect(measures=["Orders Count"]))
+        sql = pipeline.compile(query, sales_model, "duckdb").sql
+        rows = _execute(duckdb_conn, sql)
+        assert rows == [(5,)]
+
     def test_multi_measure(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,

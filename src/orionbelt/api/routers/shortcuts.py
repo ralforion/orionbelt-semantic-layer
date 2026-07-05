@@ -227,7 +227,7 @@ async def shortcut_measure(
 ) -> MeasureDetail:
     """Get a measure by name (auto-resolves session/model)."""
     _, _, model = _resolve_single_model(mgr)
-    m = model.measures.get(name)
+    m = model.effective_measures.get(name)
     if not m:
         raise HTTPException(status_code=404, detail=f"Measure '{name}' not found")
     return MeasureDetail(

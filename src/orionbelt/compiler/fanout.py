@@ -128,8 +128,9 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
             _graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
         return _graph
 
+    effective_measures = model.effective_measures
     for measure_name in unique_measures:
-        model_measure = model.measures.get(measure_name)
+        model_measure = effective_measures.get(measure_name)
         if model_measure is None:
             continue
         if model_measure.allow_fan_out:
