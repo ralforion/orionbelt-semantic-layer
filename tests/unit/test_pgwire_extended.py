@@ -119,6 +119,20 @@ def test_substitute_numeric_text_canonicalizes() -> None:
     assert substitute_parameters("x $1", (b"  -7 ",), [0], param_oids=(23,)) == "x -7"
     assert substitute_parameters("x $1", (b"3.14",), [0], param_oids=(1700,)) == "x 3.14"
     assert substitute_parameters("x $1", (b"1e3",), [0], param_oids=(701,)) == "x 1E+3"
+    # Fractional edge forms Postgres accepts.
+    assert substitute_parameters("x $1", (b".5",), [0], param_oids=(1700,)) == "x 0.5"
+    assert substitute_parameters("x $1", (b"-2.5E-3",), [0], param_oids=(701,)) == "x -0.0025"
+
+
+def test_substitute_numeric_text_rejects_nonstandard_forms() -> None:
+    """Underscores / unicode digits / hex are rejected for float+numeric OIDs
+    (matching Postgres text grammar), not silently normalized by Decimal."""
+    from orionbelt.pgwire.extended import _BadParameterError
+
+    for oid in (700, 701, 1700):
+        for payload in (b"1_000", b"1__0", "１２".encode(), "٣".encode(), b"0x10"):
+            with pytest.raises(_BadParameterError):
+                substitute_parameters("x $1", (payload,), [0], param_oids=(oid,))
 
 
 def test_substitute_numeric_text_rejects_non_finite() -> None:
