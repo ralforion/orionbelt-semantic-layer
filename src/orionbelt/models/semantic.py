@@ -348,17 +348,18 @@ class DataObject(BaseModel):
         True,
         description=(
             "When true (default), the model synthesizes a grain-anchored row-count "
-            "measure ``<object>.count`` for this data object. Set false to opt out "
-            "(the count measure is not added to the model's measure list)."
+            "measure for this data object (name == label, e.g. 'Sales Count'). Set "
+            "false to opt out (no count measure is added to the model's measure list)."
         ),
     )
     count_label: str | None = Field(
         None,
         alias="countLabel",
         description=(
-            "Optional display label for this object's synthesized count measure. "
-            "Overrides the model-level ``countLabelPattern``. The ``{object}`` token "
-            "interpolates the object's display label. Ignored when ``countable`` is false."
+            "Optional name/label for this object's synthesized count measure (the "
+            "count's id is its label). Overrides the model-level ``countLabelPattern``. "
+            "The ``{object}`` token interpolates the object's display label. Ignored "
+            "when ``countable`` is false."
         ),
     )
     synonyms: list[str] = Field(default_factory=list)
@@ -886,20 +887,20 @@ class SemanticModel(BaseModel):
         True,
         alias="exposeCounts",
         description=(
-            "When true (default), synthesize a row-count measure ``<object>.count`` "
-            "for every countable data object. Set false to suppress all synthesized "
-            "counts (e.g. wide models where N facts would balloon the measure list). "
-            "Declared measures are unaffected."
+            "When true (default), synthesize a row-count measure for every countable "
+            "data object. Set false to suppress all synthesized counts (e.g. wide "
+            "models where N facts would balloon the measure list). Declared measures "
+            "are unaffected."
         ),
     )
     count_label_pattern: str = Field(
         "{object} Count",
         alias="countLabelPattern",
         description=(
-            "Display-label template for synthesized count measures. The only valid "
-            "token is ``{object}``, which interpolates each object's display label "
-            "(e.g. 'Sales' -> 'Sales Count'). A per-object ``countLabel`` overrides it. "
-            "Never templates the measure id (always ``<object>.count``)."
+            "Name/label template for synthesized count measures (the count's id is "
+            "its label). The only valid token is ``{object}``, which interpolates each "
+            "object's display label (e.g. 'Sales' -> 'Sales Count'). A per-object "
+            "``countLabel`` overrides it."
         ),
     )
     custom_extensions: list[CustomExtension] = Field(default_factory=list, alias="customExtensions")

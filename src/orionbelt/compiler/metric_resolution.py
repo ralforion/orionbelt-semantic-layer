@@ -110,7 +110,7 @@ def resolve_window_metric(
 
     # Validate referenced measure (if any) exists
     if base_measure_name is not None:
-        base_measure = ctx.model.measures.get(base_measure_name)
+        base_measure = ctx.model.effective_measures.get(base_measure_name)
         if base_measure is None:
             ctx.errors.append(
                 SemanticError(
@@ -280,7 +280,7 @@ def resolve_cumulative_metric(
         return None
 
     # Validate referenced measure exists
-    base_measure = ctx.model.measures.get(metric.measure)
+    base_measure = ctx.model.effective_measures.get(metric.measure)
     if base_measure is None:
         ctx.errors.append(
             SemanticError(

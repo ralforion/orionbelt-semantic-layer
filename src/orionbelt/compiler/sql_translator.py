@@ -164,9 +164,11 @@ def translate_sql_to_query(sql: str, model: SemanticModel) -> QueryObject:
 
     _reject_unsupported_structure(ast, errors)
 
-    # Build label lookup tables (case-insensitive)
+    # Build label lookup tables (case-insensitive). ``effective_measures``
+    # includes synthesized ``<object>.count`` measures so a Semantic QL
+    # ``SELECT "Sales.count" FROM m`` resolves like any declared measure.
     dim_labels = {label.lower(): label for label in model.dimensions}
-    measure_labels = {label.lower(): label for label in model.measures}
+    measure_labels = {label.lower(): label for label in model.effective_measures}
     metric_labels = {label.lower(): label for label in model.metrics}
 
     def classify(name: str) -> str | None:

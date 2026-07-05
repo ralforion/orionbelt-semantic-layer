@@ -1,26 +1,29 @@
 """Auto-synthesized row-count measures.
 
 Every countable :class:`~orionbelt.models.semantic.DataObject` bound to a model
-yields a grain-anchored count measure ``<object>.count``. The count rides the
-existing measure machinery: it is an ordinary ``COUNT`` aggregation anchored on
-the object (via a column-less :class:`DataColumnRef`), so the star / CFL planners
-and the fan-out guard treat it like any declared measure. No new grain concept
-and no ad-hoc in-query aggregation are introduced — the count is a *named,
-governed* measure.
+yields a grain-anchored count measure whose **name and label are the same
+human string** (default ``"Sales Count"``), exactly like a declared measure
+(``"Order Count"``, ``"Total Revenue"``). The count rides the existing measure
+machinery: it is an ordinary ``COUNT`` aggregation anchored on the object (via a
+column-less :class:`DataColumnRef`), so the star / CFL planners and the fan-out
+guard treat it like any declared measure. No new grain concept and no ad-hoc
+in-query aggregation are introduced -- the count is a *named, governed* measure.
 
 Design (see ``design/PLAN_synthesized_count_measures.md``):
 
-* **D1** — auto-synthesize one count per countable object.
-* **D2** — anchored ``COUNT(*)``; ``result_type = int`` so the formatter skips
+* **D1** -- auto-synthesize one count per countable object.
+* **D2** -- anchored ``COUNT(*)``; ``result_type = int`` so the formatter skips
   the ``CAST(... AS DECIMAL(p,s))`` path (and ``COUNT`` already infers bigint).
-* **D4** — a declared measure whose id equals ``<object>.count`` wins; synthesis
+* **D4** -- a declared measure whose name equals the count's name wins; synthesis
   steps aside (the self-fanning escape hatch, e.g. ``COUNT(DISTINCT sale_id)``).
-* **D5** — per-object ``countable`` opt-out; model-level ``exposeCounts`` default;
-  label precedence ``countLabel`` > ``countLabelPattern`` > ``"{object} Count"``.
+* **D5** -- per-object ``countable`` opt-out; model-level ``exposeCounts`` default;
+  name/label precedence ``countLabel`` > ``countLabelPattern`` > ``"{object} Count"``.
 
-The synthesized measures are **not** persisted on the model — they are computed
-on demand so they never roundtrip through YAML/OSI and the model stays byte-clean
-(the knobs roundtrip; the derived measures regenerate).
+The measure **name is the resolved label** (id == label): consistent with
+declared measures, so ``select.measures: ["Sales Count"]`` reads naturally next
+to ``["Order Count"]``. The synthesized measures are **not** persisted on the
+model -- they are computed on demand so they never roundtrip through YAML/OSI and
+the model stays byte-clean (the knobs roundtrip; the derived measures regenerate).
 """
 
 from __future__ import annotations
@@ -39,40 +42,40 @@ if TYPE_CHECKING:
 
 DEFAULT_COUNT_PATTERN = "{object} Count"
 
-#: Suffix that turns a data-object reference into its synthesized count id.
-COUNT_SUFFIX = ".count"
 
+def count_label(object_key: str, obj: DataObject, pattern: str | None = None) -> str:
+    """Resolve the name/label for an object's count measure (D5 precedence).
 
-def count_measure_id(object_key: str) -> str:
-    """The stable machine key for an object's synthesized count measure."""
-    return f"{object_key}{COUNT_SUFFIX}"
+    Precedence: per-object ``countLabel`` > model ``countLabelPattern`` (passed in
+    as ``pattern``) > built-in default ``"{object} Count"``. ``{object}``
+    interpolates the object's display label (``label`` falls back to the
+    reference key), so ``"# {object}"`` over a technical ``fact_sales`` labeled
+    ``Sales`` reads ``"# Sales"``. Uses ``str.replace`` (not ``.format``) so a
+    stray brace in a free-form ``countLabel`` override never raises.
 
-
-def count_label(object_key: str, obj: DataObject, model: SemanticModel) -> str:
-    """Resolve the display label for an object's count measure (D5 precedence).
-
-    ``{object}`` interpolates the object's display label (``label`` falls back to
-    the reference key), so ``"# {object}"`` over a technical ``fact_sales`` labeled
-    ``Sales`` reads ``"# Sales"``. Uses ``str.replace`` (not ``.format``) so a stray
-    brace in a free-form ``countLabel`` override never raises.
+    The returned string is BOTH the measure's queryable id and its display label.
     """
-    template = (
-        obj.count_label or getattr(model, "count_label_pattern", None) or DEFAULT_COUNT_PATTERN
-    )
+    template = obj.count_label or pattern or DEFAULT_COUNT_PATTERN
     display = obj.label or object_key
     return template.replace("{object}", display)
 
 
-def synthesize_count_measure(object_key: str, obj: DataObject, model: SemanticModel) -> Measure:
+def model_count_pattern(model: SemanticModel) -> str:
+    """The model's count label pattern, defaulted."""
+    return getattr(model, "count_label_pattern", None) or DEFAULT_COUNT_PATTERN
+
+
+def synthesize_count_measure(object_key: str, obj: DataObject, name: str) -> Measure:
     """Build the anchored ``COUNT`` measure for one countable data object.
 
-    The single column-less :class:`DataColumnRef` anchors the count on the object
-    (so ``_get_measure_source_objects`` picks it up and base-object selection and
+    ``name`` is the resolved count label (id == label). The single column-less
+    :class:`DataColumnRef` anchors the count on the object (so
+    ``_get_measure_source_objects`` picks it up and base-object selection and
     fan-out detection behave as for a declared measure) while the resolver emits
     ``COUNT(*)`` because the ref carries no column.
     """
     return Measure(
-        label=count_label(object_key, obj, model),
+        label=name,
         columns=[DataColumnRef(view=object_key)],
         aggregation=AggregationType.COUNT,
         result_type=DataType.INT,
@@ -82,19 +85,22 @@ def synthesize_count_measure(object_key: str, obj: DataObject, model: SemanticMo
 
 
 def synthesize_count_measures(model: SemanticModel) -> dict[str, Measure]:
-    """Return synthesized count measures keyed by ``<object>.count``.
+    """Return synthesized count measures keyed by their resolved name (== label).
 
     Honors ``exposeCounts`` (model), ``countable`` (object), and the declared-wins
-    override (D4): an id already present in ``model.measures`` is skipped.
+    override (D4): a name already present in ``model.measures`` is skipped. When
+    two objects resolve to the same count name, the first one wins here; the
+    collision is reported by the semantic validator.
     """
     if not getattr(model, "expose_counts", True):
         return {}
+    pattern = model_count_pattern(model)
     out: dict[str, Measure] = {}
     for object_key, obj in model.data_objects.items():
         if not obj.countable:
             continue
-        mid = count_measure_id(object_key)
-        if mid in model.measures:
+        name = count_label(object_key, obj, pattern)
+        if name in model.measures or name in out:
             continue
-        out[mid] = synthesize_count_measure(object_key, obj, model)
+        out[name] = synthesize_count_measure(object_key, obj, name)
     return out

@@ -297,19 +297,19 @@ class TestStarSchemaExecution:
         sales_model: SemanticModel,
         pipeline: CompilationPipeline,
     ) -> None:
-        """The synthesized ``Orders.count`` is grain-anchored: grouping by a
+        """The synthesized ``Orders Count`` is grain-anchored: grouping by a
         many-to-one dimension does NOT inflate the fact's row count, so it
         equals the hand-declared ``Order Count`` (COUNT(DISTINCT ORDER_ID))."""
         query = QueryObject(
             select=QuerySelect(
                 dimensions=["Customer Country"],
-                measures=["Orders.count"],
+                measures=["Orders Count"],
             ),
         )
         sql = pipeline.compile(query, sales_model, "duckdb").sql
         rows = _execute_dict(duckdb_conn, sql)
 
-        by_country = {r["Customer Country"]: r["Orders.count"] for r in rows}
+        by_country = {r["Customer Country"]: r["Orders Count"] for r in rows}
         assert by_country["US"] == 3
         assert by_country["UK"] == 2
         assert sum(by_country.values()) == 5  # true row count, not inflated
@@ -320,7 +320,7 @@ class TestStarSchemaExecution:
         sales_model: SemanticModel,
         pipeline: CompilationPipeline,
     ) -> None:
-        query = QueryObject(select=QuerySelect(measures=["Orders.count"]))
+        query = QueryObject(select=QuerySelect(measures=["Orders Count"]))
         sql = pipeline.compile(query, sales_model, "duckdb").sql
         rows = _execute(duckdb_conn, sql)
         assert rows == [(5,)]

@@ -65,7 +65,7 @@ class TestSchema:
         # 3 declared + 2 synthesized row-count measures (one per data object).
         assert len(data["measures"]) == 5
         measure_names = {m["name"] for m in data["measures"]}
-        assert {"Orders.count", "Customers.count"} <= measure_names
+        assert {"Orders Count", "Customers Count"} <= measure_names
         assert len(data["metrics"]) == 2
 
     async def test_schema_data_object_detail(
@@ -124,7 +124,7 @@ class TestMeasures:
         names = {m["name"] for m in measures}
         assert "Total Revenue" in names
         assert "Order Count" in names
-        assert {"Orders.count", "Customers.count"} <= names
+        assert {"Orders Count", "Customers Count"} <= names
 
     async def test_get_measure(
         self, client: AsyncClient, session_with_model: tuple[str, str]

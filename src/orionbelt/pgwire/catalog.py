@@ -953,7 +953,7 @@ def _ddl_fingerprint(table_ddl: str, model: SemanticModel) -> str:
 
     parts = [table_ddl]
     parts.extend(f"d:{label}" for label in sorted(model.dimensions))
-    parts.extend(f"u:{label}" for label in sorted(model.measures))
+    parts.extend(f"u:{label}" for label in sorted(model.effective_measures))
     parts.extend(f"m:{label}" for label in sorted(model.metrics))
     return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
 
@@ -991,7 +991,7 @@ def _model_columns(model: SemanticModel) -> Iterator[tuple[str, str]]:
         default_num = model.settings.default_numeric_data_type
     for label, dim in model.dimensions.items():
         yield label, _dim_sql_type(dim)
-    for label, measure in model.measures.items():
+    for label, measure in model.effective_measures.items():
         yield label, _measure_sql_type(measure, default_num)
     for label, metric in model.metrics.items():
         yield label, _metric_sql_type(metric, default_num)
@@ -1054,7 +1054,7 @@ def _build_measure_metadata_views(qdb: str, schema: str, model: SemanticModel) -
 
     rows_basic: list[str] = []
     rows_full: list[str] = []
-    for label, measure in model.measures.items():
+    for label, measure in model.effective_measures.items():
         agg = str(measure.aggregation) if measure.aggregation else ""
         data_type = str(measure.result_type) if measure.result_type else "number"
         expression = (getattr(measure, "expression", "") or "").replace("'", "''")

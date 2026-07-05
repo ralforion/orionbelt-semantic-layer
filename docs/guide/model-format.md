@@ -109,8 +109,8 @@ dataObjects:
 | `comment` | string | No | Documentation |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
-| `countable` | bool | No | Synthesize a `<dataObject>.count` row-count measure (default `true`); see [Row-Count Measures](#row-count-measures-auto-synthesized) |
-| `countLabel` | string | No | Display label for this object's synthesized count measure (overrides `countLabelPattern`) |
+| `countable` | bool | No | Synthesize a row-count measure for this object (default `true`); see [Row-Count Measures](#row-count-measures-auto-synthesized) |
+| `countLabel` | string | No | Name/label for this object's synthesized count measure (overrides `countLabelPattern`) |
 
 ### Columns
 
@@ -359,15 +359,16 @@ measures:
 
 Row counting is first-class in OBSL without exposing a `dataObject` as a queryable
 artifact and without ad-hoc `COUNT(*)` in queries. Every countable data object
-yields a **grain-anchored** count measure named `<dataObject>.count` that behaves
-like any other named measure: it appears in the model's measure list, on the
-discovery API, in the BI catalog, and in composability results.
+yields a **grain-anchored** count measure whose **name and label are the same
+human string** (default `"Sales Count"`) — exactly like a declared measure such as
+`"Order Count"`. It appears in the model's measure list, on the discovery API, in
+the BI catalog, and in composability results.
 
 ```yaml
 select:
  dimensions: [Customer Country]
  measures:
- - Sales.count # synthesized COUNT(*) anchored on Sales, integer-typed
+ - Sales Count # synthesized COUNT(*) anchored on Sales, integer-typed
 ```
 
 Because the count is anchored on its object and rides the normal planner, a
@@ -378,15 +379,16 @@ Knobs:
 | Knob | Level | Default | Effect |
 |------|-------|---------|--------|
 | `countable` | dataObject | `true` | Set `false` to opt a data object out of count synthesis |
-| `countLabel` | dataObject | — | Display label for this object's count (overrides the pattern) |
+| `countLabel` | dataObject | — | Name/label for this object's count (overrides the pattern) |
 | `exposeCounts` | model | `true` | Set `false` to suppress all synthesized counts |
-| `countLabelPattern` | model | `"{object} Count"` | Label template; the only valid token is `{object}` (interpolates the object's display label) |
+| `countLabelPattern` | model | `"{object} Count"` | Name/label template; the only valid token is `{object}` (interpolates the object's display label) |
 
-The measure **id is always `<dataObject>.count`** (the pattern sets only the display
-label). Declaring a measure named `<dataObject>.count` overrides synthesis — the
-escape hatch for self-fanning models (e.g. `aggregation: count_distinct` on a
-primary key). Synthesized counts are derived on read and never roundtrip through
-YAML/OSI; the knobs above do.
+The count measure's **name is its label** (name precedence: `countLabel` >
+`countLabelPattern` > `"{object} Count"`), so you reference it exactly as it reads
+(`measures: [Sales Count]`). Declaring a measure with that same name overrides
+synthesis — the escape hatch for self-fanning models (e.g. `aggregation:
+count_distinct` on a primary key). Synthesized counts are derived on read and
+never roundtrip through YAML/OSI; the knobs above do.
 
 ### Expression Measure (computed from columns)
 

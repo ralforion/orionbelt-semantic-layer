@@ -311,25 +311,25 @@ obsl:allowFanOut a owl:DatatypeProperty ;
 
 obsl:countable a owl:DatatypeProperty ;
     rdfs:label "countable" ;
-    rdfs:comment "When true (default), the model synthesizes a grain-anchored row-count measure <object>.count for this data object.  Set false to opt out." ;
+    rdfs:comment "When true (default), the model synthesizes a grain-anchored row-count measure for this data object (name == label, e.g. 'Sales Count').  Set false to opt out." ;
     rdfs:domain obsl:DataObject ;
     rdfs:range xsd:boolean .
 
 obsl:countLabel a owl:DatatypeProperty ;
     rdfs:label "count label" ;
-    rdfs:comment "Optional display label for a data object's synthesized count measure; overrides the model-level countLabelPattern.  The {object} token interpolates the object's display label.  Ignored when countable is false." ;
+    rdfs:comment "Optional name/label for a data object's synthesized count measure (the count's id is its label); overrides the model-level countLabelPattern.  The {object} token interpolates the object's display label.  Ignored when countable is false." ;
     rdfs:domain obsl:DataObject ;
     rdfs:range xsd:string .
 
 obsl:exposeCounts a owl:DatatypeProperty ;
     rdfs:label "expose counts" ;
-    rdfs:comment "When true (default), synthesize a row-count measure <object>.count for every countable data object.  Set false to suppress all synthesized counts.  Declared measures are unaffected." ;
+    rdfs:comment "When true (default), synthesize a row-count measure for every countable data object.  Set false to suppress all synthesized counts.  Declared measures are unaffected." ;
     rdfs:domain obsl:SemanticModel ;
     rdfs:range xsd:boolean .
 
 obsl:countLabelPattern a owl:DatatypeProperty ;
     rdfs:label "count label pattern" ;
-    rdfs:comment "Display-label template for synthesized count measures.  The only valid token is {object}, which interpolates each object's display label (e.g. 'Sales' -> 'Sales Count').  A per-object countLabel overrides it; the measure id is always <object>.count." ;
+    rdfs:comment "Name/label template for synthesized count measures (the count's id is its label).  The only valid token is {object}, which interpolates each object's display label (e.g. 'Sales' -> 'Sales Count').  A per-object countLabel overrides it." ;
     rdfs:domain obsl:SemanticModel ;
     rdfs:range xsd:string .
 
