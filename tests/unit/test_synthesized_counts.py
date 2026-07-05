@@ -487,3 +487,117 @@ measures:
     )
     errors = SemanticValidator().validate(m)
     assert not any(e.code == "DUPLICATE_IDENTIFIER" for e in errors)
+
+
+# --------------------------------------------------------------------------- #
+# Invalid knob values become structured errors, not raw exceptions
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_result(yaml_text: str):
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    return ReferenceResolver().resolve(raw, source_map)
+
+
+def test_resolver_list_pattern_is_structured_error() -> None:
+    _, result = _resolve_result(
+        """
+version: 1.0
+countLabelPattern: [not, a, string]
+dataObjects:
+  Sales: {code: S, database: W, schema: P, columns: {A: {code: A, abstractType: int}}}
+"""
+    )
+    assert not result.valid
+    assert any(e.code == "INVALID_COUNT_LABEL_PATTERN" for e in result.errors)
+
+
+def test_resolver_bad_pattern_token_is_structured_error() -> None:
+    _, result = _resolve_result(
+        """
+version: 1.0
+countLabelPattern: "{name} Count"
+dataObjects:
+  Sales: {code: S, database: W, schema: P, columns: {A: {code: A, abstractType: int}}}
+"""
+    )
+    assert not result.valid
+    assert any(e.code == "INVALID_COUNT_LABEL_PATTERN" for e in result.errors)
+
+
+def test_resolver_bad_expose_counts_is_structured_error() -> None:
+    _, result = _resolve_result(
+        """
+version: 1.0
+exposeCounts: [nope]
+dataObjects:
+  Sales: {code: S, database: W, schema: P, columns: {A: {code: A, abstractType: int}}}
+"""
+    )
+    assert not result.valid
+    assert any(e.code == "INVALID_EXPOSE_COUNTS" for e in result.errors)
+
+
+# --------------------------------------------------------------------------- #
+# Semantic QL: wrap validation treats synthesized counts like declared ones
+# --------------------------------------------------------------------------- #
+
+
+def test_semantic_ql_wrap_on_synth_count_uses_effective(model: SemanticModel) -> None:
+    from orionbelt.compiler.sql_translator import translate_sql_to_query
+
+    # COUNT wrap on a count-declared synthesized measure is the matching wrap
+    # (validated via effective_measures) and resolves to the bare count.
+    query = translate_sql_to_query('SELECT COUNT("Sales Count") FROM m', model)
+    assert "Sales Count" in query.select.measures
+
+
+# --------------------------------------------------------------------------- #
+# CFL: multi-fact synthesized counts get the integer CAST
+# --------------------------------------------------------------------------- #
+
+_CFL_YAML = """
+version: 1.0
+dataObjects:
+  Customers:
+    code: C
+    database: W
+    schema: P
+    columns:
+      CID: {code: CID, abstractType: string, primaryKey: true}
+      Country: {code: CO, abstractType: string}
+  Orders:
+    code: O
+    database: W
+    schema: P
+    columns:
+      OID: {code: OID, abstractType: string}
+      OCID: {code: CID, abstractType: string}
+    joins:
+      - {joinType: many-to-one, joinTo: Customers, columnsFrom: [OCID], columnsTo: [CID]}
+  Returns:
+    code: RT
+    database: W
+    schema: P
+    columns:
+      RID: {code: RID, abstractType: string}
+      RCID: {code: CID, abstractType: string}
+      Refund: {code: REF, abstractType: float}
+    joins:
+      - {joinType: many-to-one, joinTo: Customers, columnsFrom: [RCID], columnsTo: [CID]}
+dimensions:
+  Country: {dataObject: Customers, column: Country, resultType: string}
+measures:
+  Total Refunds: {aggregation: sum, columns: [{dataObject: Returns, column: Refund}]}
+"""
+
+
+def test_cfl_synthesized_count_gets_integer_cast(pipeline: CompilationPipeline) -> None:
+    m = _resolve(_CFL_YAML)
+    # Orders Count (synthesized) + Total Refunds (Returns) => CFL (independent facts).
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Country"], measures=["Orders Count", "Total Refunds"])
+    )
+    sql = pipeline.compile(query, m, "duckdb").sql
+    assert "UNION ALL" in sql  # confirms the CFL path
+    assert 'CAST(COUNT("composite_01"."Orders Count") AS INTEGER)' in sql

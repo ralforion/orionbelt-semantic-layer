@@ -33,7 +33,7 @@ from orionbelt.models.semantic import (
     RefreshPolicy,
     SemanticModel,
 )
-from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label
+from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count_pattern_error
 from orionbelt.parser.loader import SourceMap
 
 
@@ -732,20 +732,50 @@ class ReferenceResolver:
                     )
                 )
 
+        # Validate the count-synthesis knobs here so a bad value becomes a
+        # structured SemanticError rather than a raw AttributeError (list
+        # pattern) or an uncaught Pydantic ValidationError (invalid token) at
+        # model construction below. Fall back to safe values so resolution can
+        # continue collecting errors.
+        _count_pattern = raw.get("countLabelPattern", DEFAULT_COUNT_PATTERN)
+        _pattern_err = count_pattern_error(_count_pattern)
+        if _pattern_err is not None:
+            span = source_map.get("countLabelPattern") if source_map else None
+            errors.append(
+                SemanticError(
+                    code="INVALID_COUNT_LABEL_PATTERN",
+                    message=_pattern_err,
+                    path="countLabelPattern",
+                    span=span,
+                )
+            )
+            _count_pattern = DEFAULT_COUNT_PATTERN
+        _expose_counts = raw.get("exposeCounts", True)
+        if not isinstance(_expose_counts, bool):
+            span = source_map.get("exposeCounts") if source_map else None
+            errors.append(
+                SemanticError(
+                    code="INVALID_EXPOSE_COUNTS",
+                    message="exposeCounts must be a boolean (true/false)",
+                    path="exposeCounts",
+                    span=span,
+                )
+            )
+            _expose_counts = True
+
         # Names of synthesized count measures (name == resolved count label,
         # e.g. "Sales Count"). These are valid measure references (metrics may
         # target them) even though they are not declared — they are materialized
         # on read via ``effective_measures`` (see models/synthesis.py). Declared
         # measures already sit in ``measures``; a declared count of the same
         # name overrides synthesis, so unioning is safe either way.
-        _count_pattern = raw.get("countLabelPattern", DEFAULT_COUNT_PATTERN)
         synthesized_measure_names: set[str] = (
             {
                 count_label(key, obj, _count_pattern)
                 for key, obj in data_objects.items()
                 if obj.countable
             }
-            if raw.get("exposeCounts", True)
+            if _expose_counts
             else set()
         )
 
@@ -1074,8 +1104,10 @@ class ReferenceResolver:
             extends_sources=raw.get("_extends_sources", []),
             inherits_source=raw.get("_inherits_source"),
             owner=raw.get("owner"),
-            expose_counts=raw.get("exposeCounts", True),
-            count_label_pattern=raw.get("countLabelPattern", DEFAULT_COUNT_PATTERN),
+            # Sanitized above so an invalid value is a structured error, not a
+            # ValidationError raised here.
+            expose_counts=_expose_counts,
+            count_label_pattern=_count_pattern,
             custom_extensions=_parse_extensions(raw, "", errors, source_map),
             settings=settings,
         )

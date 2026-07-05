@@ -43,6 +43,28 @@ if TYPE_CHECKING:
 DEFAULT_COUNT_PATTERN = "{object} Count"
 
 
+def count_pattern_error(pattern: object) -> str | None:
+    """Return an error message if ``pattern`` is not a valid count-label pattern.
+
+    Valid = a string whose only replacement field is ``{object}``. Returns
+    ``None`` when valid. Shared by the Pydantic field validator (which raises)
+    and the OBML resolver (which records a structured error) so both surfaces
+    agree on what a legal ``countLabelPattern`` is.
+    """
+    if not isinstance(pattern, str):
+        return "countLabelPattern must be a string"
+    import string
+
+    for _text, field_name, _spec, _conv in string.Formatter().parse(pattern):
+        if field_name is None:
+            continue
+        if field_name != "object":
+            return (
+                f"countLabelPattern may only contain the '{{object}}' token, got '{{{field_name}}}'"
+            )
+    return None
+
+
 def count_label(object_key: str, obj: DataObject, pattern: str | None = None) -> str:
     """Resolve the name/label for an object's count measure (D5 precedence).
 

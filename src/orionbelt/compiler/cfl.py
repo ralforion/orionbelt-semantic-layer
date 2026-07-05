@@ -519,8 +519,10 @@ class CFLPlanner:
                     args=[ColumnRef(name=m.name, table=cte_name)],
                     distinct=distinct,
                 )
-            # Apply CAST for resolved data_type
-            model_measure = model.measures.get(m.name)
+            # Apply CAST for resolved data_type (effective_measures so
+            # multi-fact synthesized counts get the same integer CAST as
+            # declared count measures).
+            model_measure = model.effective_measures.get(m.name)
             if model_measure and dialect:
                 resolved_type = resolve_measure_data_type(model_measure, settings)
                 if resolved_type:

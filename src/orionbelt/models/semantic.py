@@ -915,20 +915,16 @@ class SemanticModel(BaseModel):
         Reject any other field access (``{name}``, ``{object.__class__}``, ...) —
         cheap insurance even though OBML is author-controlled. Bare/escaped braces
         and positional ``{}`` are rejected too; only the named ``{object}`` field
-        is allowed.
+        is allowed. Delegates to the shared ``count_pattern_error`` so the OBML
+        resolver reports the same rule as a structured error.
         """
+        from orionbelt.models.synthesis import count_pattern_error
+
         if not isinstance(v, str):
             return v
-        import string
-
-        for _text, field_name, _spec, _conv in string.Formatter().parse(v):
-            if field_name is None:
-                continue
-            if field_name != "object":
-                raise ValueError(
-                    f"countLabelPattern may only contain the '{{object}}' token, "
-                    f"got '{{{field_name}}}'"
-                )
+        msg = count_pattern_error(v)
+        if msg is not None:
+            raise ValueError(msg)
         return v
 
     @property
