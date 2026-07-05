@@ -123,7 +123,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             owner=m.owner,
             synonyms=m.synonyms,
         )
-        for name, m in model.measures.items()
+        for name, m in model.effective_measures.items()
     ]
 
     metrics = []
@@ -194,8 +194,8 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
         return ExplainResponse(name=name, type="dimension", lineage=lineage)
 
     # Check measures
-    if name in model.measures:
-        m = model.measures[name]
+    if name in model.effective_measures:
+        m = model.effective_measures[name]
         lineage = [
             ExplainLineageItem(
                 type="measure",
@@ -246,7 +246,7 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
         ]
         component_names = re.findall(r"\{\[([^\]]+)\]\}", met.expression or "")
         for comp_name in component_names:
-            comp = model.measures.get(comp_name)
+            comp = model.effective_measures.get(comp_name)
             if comp:
                 lineage.append(
                     ExplainLineageItem(
@@ -294,7 +294,7 @@ def _search_model_split(
             _consider(name, "dimension", list(dim.synonyms))
 
     if "measure" in types:
-        for name, m in model.measures.items():
+        for name, m in model.effective_measures.items():
             _consider(name, "measure", list(m.synonyms))
 
     if "metric" in types:
@@ -438,7 +438,7 @@ async def get_measure(
 ) -> MeasureDetail:
     """Get a single measure by name."""
     model = _get_model(session_id, model_id, mgr)
-    m = model.measures.get(name)
+    m = model.effective_measures.get(name)
     if not m:
         raise HTTPException(status_code=404, detail=f"Measure '{name}' not found")
     return MeasureDetail(

@@ -99,7 +99,7 @@ def test_empty_query_offers_everything(sales_model: SemanticModel) -> None:
     result = resolve_composables_for_query(sales_model, QueryObject(select={"dimensions": []}))
     assert result.anchor_objects == []
     assert set(result.dimensions) == set(sales_model.dimensions)
-    assert set(result.measures) == set(sales_model.measures)
+    assert set(result.measures) == set(sales_model.effective_measures)
     assert set(result.metrics) == set(sales_model.metrics)
     assert result.cfl_measures == []
 
@@ -179,7 +179,7 @@ def test_unknown_anchor_resolves_to_empty(sales_model: SemanticModel) -> None:
     result = resolve_composables_for_anchors(sales_model, ["No Such Thing"])
     # Unknown name contributes no anchor objects -> treated as empty anchor.
     assert result.anchor_objects == []
-    assert set(result.measures) == set(sales_model.measures)
+    assert set(result.measures) == set(sales_model.effective_measures)
 
 
 def test_metric_anchor_resolves_to_underlying_fact(sales_model: SemanticModel) -> None:

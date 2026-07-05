@@ -149,6 +149,18 @@ classes:
         json_schema: true
         ontology_property: owner
         osi_roundtrip: true
+      countable:
+        alias: countable
+        type: "bool"
+        json_schema: true
+        ontology_property: countable
+        osi_roundtrip: true
+      count_label:
+        alias: countLabel
+        type: "str | None"
+        json_schema: true
+        ontology_property: countLabel
+        osi_roundtrip: true
       synonyms:
         alias: synonyms
         type: "list[str]"
@@ -1043,6 +1055,18 @@ classes:
         type: "str | None"
         json_schema: true
         ontology_property: owner
+        osi_roundtrip: true
+      expose_counts:
+        alias: exposeCounts
+        type: "bool"
+        json_schema: true
+        ontology_property: exposeCounts
+        osi_roundtrip: true
+      count_label_pattern:
+        alias: countLabelPattern
+        type: "str"
+        json_schema: true
+        ontology_property: countLabelPattern
         osi_roundtrip: true
       custom_extensions:
         alias: customExtensions

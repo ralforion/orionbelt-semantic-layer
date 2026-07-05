@@ -175,7 +175,7 @@ class StarSchemaPlanner:
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             else:
                 expr = measure.expression
-                model_measure = model.measures.get(measure.name)
+                model_measure = model.effective_measures.get(measure.name)
                 if model_measure and dialect:
                     resolved_type = resolve_measure_data_type(model_measure, settings)
                     if resolved_type:

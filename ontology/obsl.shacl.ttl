@@ -41,6 +41,18 @@ obsl:SemanticModelShape a sh:NodeShape ;
         sh:path obsl:hasMetric ;
         sh:class obsl:Metric ;
         sh:name "has metric"
+    ] ;
+    sh:property [
+        sh:path obsl:exposeCounts ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+        sh:name "expose counts"
+    ] ;
+    sh:property [
+        sh:path obsl:countLabelPattern ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "count label pattern"
     ] .
 
 # -----------------------------------------------------------------------------
@@ -79,6 +91,18 @@ obsl:DataObjectShape a sh:NodeShape ;
         sh:maxCount 1 ;
         sh:name "schema" ;
         sh:message "Every data object must have exactly one obsl:schema."
+    ] ;
+    sh:property [
+        sh:path obsl:countable ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+        sh:name "countable"
+    ] ;
+    sh:property [
+        sh:path obsl:countLabel ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "count label"
     ] .
 
 # -----------------------------------------------------------------------------

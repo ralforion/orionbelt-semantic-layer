@@ -90,9 +90,12 @@ def build_measure_rows(
     """Extract one row per measure matching ``MEASURE_METADATA_COLUMNS``."""
 
     rows: list[tuple[str, str, str | None, str, str, str | None]] = []
-    if not getattr(model, "measures", None):
+    # Use effective measures so BI tools (Flight / pgwire catalog) see the
+    # synthesized ``<object>.count`` measures alongside declared ones.
+    effective = getattr(model, "effective_measures", None) or getattr(model, "measures", None)
+    if not effective:
         return rows
-    for meas_name, meas in model.measures.items():
+    for meas_name, meas in effective.items():
         name = getattr(meas, "label", meas_name) or meas_name
         aggregation = _enum_value(getattr(meas, "aggregation", None), default="") or ""
         expression = getattr(meas, "expression", None)

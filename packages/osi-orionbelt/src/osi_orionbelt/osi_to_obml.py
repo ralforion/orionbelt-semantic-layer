@@ -175,6 +175,10 @@ class OSItoOBML:
                         obml["settings"] = ext_data["obml_settings"]
                     if ext_data.get("obml_owner"):
                         obml["owner"] = ext_data["obml_owner"]
+                    if ext_data.get("obml_expose_counts") is not None:
+                        obml["exposeCounts"] = ext_data["obml_expose_counts"]
+                    if ext_data.get("obml_count_label_pattern") is not None:
+                        obml["countLabelPattern"] = ext_data["obml_count_label_pattern"]
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break
@@ -301,6 +305,10 @@ class OSItoOBML:
                         do["comment"] = ext_data["obml_comment"]
                     if ext_data.get("obml_refresh"):
                         do["refresh"] = ext_data["obml_refresh"]
+                    if ext_data.get("obml_countable") is not None:
+                        do["countable"] = ext_data["obml_countable"]
+                    if ext_data.get("obml_count_label") is not None:
+                        do["countLabel"] = ext_data["obml_count_label"]
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break

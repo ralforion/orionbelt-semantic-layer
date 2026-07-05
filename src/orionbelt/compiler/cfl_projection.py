@@ -138,7 +138,7 @@ def resolve_null_type_for_field(
     For multi-field measures (e.g. ``COUNT(a, b)``), per-column
     abstract types are used regardless of aggregation kind.
     """
-    model_measure = model.measures.get(measure.name)
+    model_measure = model.effective_measures.get(measure.name)
     if not model_measure:
         return None
     agg = (model_measure.aggregation or "").lower()
@@ -353,7 +353,7 @@ def group_measures_by_object(
                 comp = resolved.metric_components.get(comp_name)
                 if comp is None:
                     continue
-                model_measure = model.measures.get(comp_name)
+                model_measure = model.effective_measures.get(comp_name)
                 if model_measure and model_measure.columns:
                     obj_name = model_measure.columns[0].view or resolved.base_object
                 else:
@@ -363,7 +363,7 @@ def group_measures_by_object(
             if measure.name in seen:
                 continue
             seen.add(measure.name)
-            model_measure = model.measures.get(measure.name)
+            model_measure = model.effective_measures.get(measure.name)
             if not model_measure:
                 groups.setdefault(resolved.base_object, []).append(measure)
                 continue

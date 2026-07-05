@@ -98,6 +98,7 @@ Top-level YAML keys: `version`, `dataObjects`, `dimensions`, `measures`, `metric
 - **Measure expressions** reference columns by data object + column: `{[DataObject].[Column]}`
 - **Metric expressions** reference measures by name: `{[Measure Name]}`
 - **Secondary joins**: `secondary: true` + `pathName` on `DataObjectJoin` — unique per (source, target) pair
+- **Synthesized counts**: every countable `dataObject` yields a grain-anchored row-count measure `<object>.count` (an anchored `COUNT(*)`, integer-typed). Counts are **named measures — no ad-hoc aggregation in queries**; reference `Sales.count` like any measure. Knobs: per-object `countable: false` (opt-out) / `countLabel`; model-level `exposeCounts: false` / `countLabelPattern` (only the `{object}` token, interpolates the object's display label). A declared `<object>.count` measure overrides synthesis (e.g. `COUNT(DISTINCT pk)`). Synthesized counts are computed via `SemanticModel.effective_measures` (declared win) and are never persisted — they don't roundtrip through YAML/OSI (the knobs do, via `synthesis.py`). A `dataObject` is never a queryable FROM target.
 - **Queries** use `select: {dimensions: [...], measures: [...]}` structure with optional `where`, `having`, `orderBy`, `limit`, `usePathNames`
 
 ## REST API

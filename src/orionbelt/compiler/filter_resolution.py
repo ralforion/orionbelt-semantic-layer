@@ -189,7 +189,7 @@ def resolve_filter(
         subject_object = obj_name
 
     # 2. HAVING: try measure or metric name
-    elif is_having and (qf.field in ctx.model.measures or qf.field in ctx.model.metrics):
+    elif is_having and (qf.field in ctx.model.effective_measures or qf.field in ctx.model.metrics):
         col_expr = ColumnRef(name=qf.field)
 
     # 3. Try qualified column: "DataObject.Column"
