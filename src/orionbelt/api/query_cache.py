@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -25,10 +25,7 @@ from orionbelt.api.schemas import (
     ExplainCflLegResponse,
     ExplainJoinResponse,
     ExplainPlanResponse,
-    ResolvedInfoResponse,
-    StructuredWarning,
 )
-from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.cache import (
     build_cache_key,
     build_datasource_key,
@@ -36,14 +33,13 @@ from orionbelt.cache import (
     is_nondeterministic_sql,
 )
 from orionbelt.cache.protocol import Cache
-from orionbelt.cache.result_codec import decode as cache_decode
+from orionbelt.cache.result_codec import decode_data, encode_data, table_to_rows
 from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
     ColumnMeta,
     ExecutionResult,
     ExecutionUnavailableError,
-    coarse_hint_from_type_name,
     execute_sql,
 )
 
@@ -210,10 +206,13 @@ def resolve_effective_ttl(
     )
 
 
-async def try_cache_get(cache: Cache, key: str) -> Any:
+async def try_cache_get(cache: Cache, key: str) -> tuple[Any, str] | None:
     """Best-effort cache lookup; failures degrade to a miss.
 
-    Returns the decoded envelope with ``cached_at_iso`` attached, or None.
+    Returns ``(data_table, cached_at_iso)`` — the decoded pyarrow data table and
+    the store timestamp — or ``None``. The blob holds only row data; the
+    response envelope (sql, timing, ``cached`` flag, …) is rebuilt fresh by the
+    caller, so a hit's metadata is always correct.
     """
     try:
         result = await cache.get(key)
@@ -223,22 +222,21 @@ async def try_cache_get(cache: Cache, key: str) -> Any:
     if result is None:
         return None
     try:
-        # Decode (gzip + Arrow IPC + row rebuild) runs off the event loop.
-        envelope = await asyncio.to_thread(cache_decode, result.payload)
+        # Decode (gzip + Arrow IPC) runs off the event loop.
+        table = await asyncio.to_thread(decode_data, result.payload)
     except Exception:
         logger.debug("cache decode failed", exc_info=True)
         return None
-    envelope.cached_at_iso = result.cached_at.isoformat().replace("+00:00", "Z")
-    return envelope
+    return table, result.cached_at.isoformat().replace("+00:00", "Z")
 
 
 async def try_cache_get_raw(cache: Cache, key: str) -> tuple[bytes, str] | None:
-    """Fetch a cached blob WITHOUT decoding it, for raw-arrow byte-passthrough.
+    """Fetch a cached data blob WITHOUT decoding it, for arrow byte-passthrough.
 
-    Returns ``(raw_gzip_blob, cached_at_iso)`` or ``None``. Skips the whole
-    gzip + Arrow IPC + row-rebuild that :func:`try_cache_get` does, so a raw
-    ``format=arrow`` hit is truly zero-copy: the stored blob (stamped
-    ``cached=true`` at write time) is returned to the client verbatim.
+    Returns ``(raw_gzip_blob, cached_at_iso)`` or ``None``. Skips the gzip +
+    Arrow IPC decode that :func:`try_cache_get` does, so a ``format=arrow`` hit
+    ships the stored *data* blob verbatim (data stays zero-copy); the fresh JSON
+    envelope carrying timing + the ``cached`` flag is prepended by the caller.
     """
     try:
         result = await cache.get(key)
@@ -250,23 +248,6 @@ async def try_cache_get_raw(cache: Cache, key: str) -> tuple[bytes, str] | None:
     return result.payload, result.cached_at.isoformat().replace("+00:00", "Z")
 
 
-def encode_cached_payload(**encode_kwargs: Any) -> bytes:
-    """Encode a result blob for cache STORAGE (stamped as a cache entry).
-
-    A stored blob is only ever served on a cache HIT, so it is stamped
-    ``cached=true`` + a store timestamp in its Arrow schema metadata. That lets
-    the raw-arrow hit path return it byte-for-byte (zero-copy passthrough) while
-    still carrying the in-band ``cached`` flag the UI reads for its "cache"
-    source label. Every cache writer (REST and oneshot) MUST encode through here
-    so the invariant holds regardless of which surface populated the entry.
-    """
-    from orionbelt.cache import result_codec
-
-    encode_kwargs["cached"] = True
-    encode_kwargs["cached_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    return result_codec.encode(**encode_kwargs)
-
-
 async def try_cache_set(
     *,
     cache: Cache,
@@ -275,35 +256,22 @@ async def try_cache_set(
     rows: list[list[Any]],
     sql: str,
     dialect: str,
-    explain: ExplainPlanResponse | None,
-    warnings: list[StructuredWarning],
-    sql_valid: bool,
-    execution_time_ms: float,
-    timezone: str | None,
-    resolved: ResolvedInfoResponse,
     physical_tables: list[str],
     row_count: int,
     ttl_seconds: int,
     datasource: str,
     model_id: str,
 ) -> None:
-    """Encode and store a result payload. Failures are logged and ignored."""
+    """Encode and store the row data. Failures are logged and ignored.
+
+    Only the row data is cached; the response envelope (sql, explain, timing,
+    ``cached`` flag, …) is rebuilt fresh on every read, so it is never stored.
+    ``sql`` is used for the query-hash bookkeeping, not persisted in the blob.
+    """
     from orionbelt.cache import key as cache_key_mod
 
     try:
-        payload = encode_cached_payload(
-            columns=[c.model_dump() for c in columns],
-            rows=rows,
-            sql=sql,
-            dialect=dialect,
-            explain=explain.model_dump() if explain else None,
-            warnings=[w.model_dump() for w in warnings],
-            sql_valid=sql_valid,
-            execution_time_ms=execution_time_ms,
-            timezone=timezone,
-            resolved=resolved.model_dump(),
-            physical_tables=list(physical_tables),
-        )
+        payload = encode_data([c.name for c in columns], rows)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
@@ -328,7 +296,14 @@ async def try_cache_set(
 
 @dataclass
 class CachedExecution:
-    """Neutral result of a cache-aware execution, adapted per surface."""
+    """Neutral result of a cache-aware execution, adapted per surface.
+
+    Only row data is cached; each surface rebuilds the response envelope fresh
+    from ``compile_result`` + ``model``, so a hit's timing and ``cached`` flag
+    are always correct. A hit carries the decoded ``data_table`` (JSON/TSV and
+    pgwire) and/or the raw ``payload_blob`` (arrow data zero-copy), plus the
+    cache-read ``fetch_elapsed_ms`` and the entry's ``cached_at_iso``.
+    """
 
     cached: bool
     cache_key: str | None
@@ -337,9 +312,10 @@ class CachedExecution:
     exec_result: ExecutionResult | None
     columns: list[ColumnMetadata] | None
     # Cached (hit) path:
-    envelope: Any | None
     fetch_elapsed_ms: float | None
-    # Raw stored blob (gzip'd Arrow IPC) for byte-passthrough on raw-arrow hits.
+    data_table: Any | None = None
+    cached_at_iso: str | None = None
+    # Raw stored data blob (gzip'd Arrow IPC) for byte-passthrough on arrow hits.
     payload_blob: bytes | None = None
 
 
@@ -405,31 +381,33 @@ async def execute_query_with_cache(
             if ttl_outcome.ttl is not None:
                 t0 = time.monotonic()
                 if decode_payload:
-                    envelope = await try_cache_get(cache, cache_key)
-                    if envelope is not None:
+                    hit = await try_cache_get(cache, cache_key)
+                    if hit is not None:
+                        data_table, cached_at_iso = hit
                         return CachedExecution(
                             cached=True,
                             cache_key=cache_key,
                             ttl_outcome=ttl_outcome,
                             exec_result=None,
                             columns=None,
-                            envelope=envelope,
                             fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
+                            data_table=data_table,
+                            cached_at_iso=cached_at_iso,
                         )
                 else:
-                    # Raw-arrow passthrough: fetch the blob without decoding it.
+                    # Arrow data passthrough: fetch the blob without decoding it.
                     raw = await try_cache_get_raw(cache, cache_key)
                     if raw is not None:
-                        payload_blob, _cached_at_iso = raw
+                        payload_blob, cached_at_iso = raw
                         return CachedExecution(
                             cached=True,
                             cache_key=cache_key,
                             ttl_outcome=ttl_outcome,
                             exec_result=None,
                             columns=None,
-                            envelope=None,
                             fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
                             payload_blob=payload_blob,
+                            cached_at_iso=cached_at_iso,
                         )
 
     exec_result = await asyncio.to_thread(
@@ -454,16 +432,6 @@ async def execute_query_with_cache(
             rows=exec_result.rows,
             sql=format_sql(compile_result.sql, dialect),
             dialect=dialect,
-            explain=build_explain_response(compile_result),
-            warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
-            sql_valid=compile_result.sql_valid,
-            execution_time_ms=exec_result.execution_time_ms,
-            timezone=exec_result.timezone,
-            resolved=ResolvedInfoResponse(
-                fact_tables=compile_result.resolved.fact_tables,
-                dimensions=compile_result.resolved.dimensions,
-                measures=compile_result.resolved.measures,
-            ),
             physical_tables=compile_result.physical_tables,
             row_count=exec_result.row_count,
             ttl_seconds=ttl_outcome.ttl.seconds,
@@ -477,38 +445,54 @@ async def execute_query_with_cache(
         ttl_outcome=ttl_outcome,
         exec_result=exec_result,
         columns=columns,
-        envelope=None,
         fetch_elapsed_ms=None,
     )
 
 
-# --- pgwire adapter ---------------------------------------------------------
+# --- data-table adapters (cache-hit reconstruction) -------------------------
 
 
-def _obml_type_to_hint(type_str: str) -> str:
-    """Map a stored OBML/SQL column type to a pgwire coarse hint.
+def exec_columns_from_table(data_table: Any) -> list[ColumnMeta]:
+    """Reconstruct executor ``ColumnMeta`` from a cached data table's schema.
 
-    Delegates to the single shared classifier so the cache-hit pgwire path and
-    the live-execution path agree on number/datetime/binary/string.
+    Mirrors the executor's own column build from an Arrow result
+    (``db_executor`` uses the same ``_arrow_type_to_hint`` /
+    ``_default_format_for_arrow_type`` on live results), so a cache hit derives
+    identical type hints + default formats to a fresh execution — no column
+    metadata needs to be cached.
     """
-    return coarse_hint_from_type_name(type_str)
+    from orionbelt.service.db_executor import (
+        _arrow_type_to_hint,
+        _default_format_for_arrow_type,
+    )
 
-
-def execution_result_from_envelope(envelope: Any) -> ExecutionResult:
-    """Rebuild an ExecutionResult from a cached envelope for wire encoding."""
-    columns = [
+    return [
         ColumnMeta(
-            name=c.get("name", ""),
-            type_hint=_obml_type_to_hint(c.get("type", "string")),
-            default_format=c.get("format"),
+            name=field.name,
+            type_hint=_arrow_type_to_hint(field.type),
+            default_format=_default_format_for_arrow_type(field.type),
         )
-        for c in envelope.columns
+        for field in data_table.schema
     ]
+
+
+def execution_result_from_data(
+    data_table: Any, *, execution_time_ms: float, tz: Any = None
+) -> ExecutionResult:
+    """Rebuild an ExecutionResult from a cached data table for wire encoding.
+
+    The blob holds only row data; columns are recovered from the Arrow schema
+    via :func:`exec_columns_from_table`. ``execution_time_ms`` is the per-request
+    value (cache fetch time on a hit), never a stored one. ``tz`` is the resolved
+    fallback timezone used to label the response (the stored rows are already
+    materialized, so it is a label only).
+    """
     return ExecutionResult(
-        columns=columns,
-        raw_rows=list(envelope.rows),
-        row_count=envelope.row_count,
-        execution_time_ms=envelope.execution_time_ms,
+        columns=exec_columns_from_table(data_table),
+        raw_rows=table_to_rows(data_table),
+        row_count=data_table.num_rows,
+        execution_time_ms=execution_time_ms,
+        tz=tz,
     )
 
 
@@ -519,9 +503,9 @@ __all__ = [
     "build_format_map",
     "build_result_columns",
     "build_type_map",
-    "encode_cached_payload",
+    "exec_columns_from_table",
     "execute_query_with_cache",
-    "execution_result_from_envelope",
+    "execution_result_from_data",
     "RESULT_TYPE_TO_HINT",
     "resolve_effective_ttl",
     "try_cache_get",

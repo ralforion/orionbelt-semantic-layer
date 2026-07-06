@@ -22,7 +22,11 @@ from orionbelt.api.deps import (
     is_query_execute_enabled,
     is_single_model_mode,
 )
-from orionbelt.api.query_cache import encode_cached_payload, try_cache_get
+from orionbelt.api.query_cache import (
+    execution_result_from_data,
+    try_cache_get,
+    try_cache_set,
+)
 from orionbelt.api.routers.sessions import (
     _build_execute_response,
     _build_explain_response,
@@ -302,34 +306,40 @@ async def _run_query(
                 _cache_t0 = time.monotonic()
                 cached_hit = await _try_oneshot_cache_get(cache, cache_key)
         if cached_hit is not None:
-            envelope, cached_at_iso = cached_hit
+            data_table, cached_at_iso = cached_hit
             fetch_elapsed_ms = round((time.monotonic() - _cache_t0) * 1000, 2)
-            from orionbelt.api.schemas import ColumnMetadata as _ColMeta
-
-            cached_columns = [
-                _ColMeta(
-                    name=c.get("name", ""),
-                    type=c.get("type", "string"),
-                    format=c.get("format"),
-                )
-                for c in envelope.columns
-            ]
+            # Only row data is cached; rebuild the response from the compile
+            # result so column metadata + per-request timing match a fresh run.
+            hit_exec = execution_result_from_data(
+                data_table, execution_time_ms=fetch_elapsed_ms, tz=tz
+            )
+            hit_envelope = _build_execute_response(
+                compile_result=compile_result,
+                exec_result=hit_exec,
+                model=model,
+                response_format="json",
+                format_values=False,
+                locale="",
+                cached=True,
+                cached_at=cached_at_iso,
+            )
+            assert isinstance(hit_envelope, QueryExecuteResponse)
             return OneshotBatchQueryResult(
                 id=item.id,
                 status="ok",
-                sql=envelope.sql or sql_str,
-                dialect=envelope.dialect or dialect,
-                sql_valid=envelope.sql_valid,
-                explain=explain,
-                columns=cached_columns,
-                rows=envelope.rows,
-                row_count=envelope.row_count,
-                execution_time_ms=fetch_elapsed_ms,
+                sql=hit_envelope.sql,
+                dialect=hit_envelope.dialect,
+                sql_valid=hit_envelope.sql_valid,
+                explain=hit_envelope.explain,
+                columns=hit_envelope.columns,
+                rows=hit_envelope.rows,
+                row_count=hit_envelope.row_count,
+                execution_time_ms=hit_envelope.execution_time_ms,
                 executed=True,
                 warnings=warnings,
                 physical_tables=physical_tables,
                 cached=True,
-                cached_at=cached_at_iso,
+                cached_at=hit_envelope.cached_at,
                 ttl_seconds=ttl_outcome.ttl.seconds if ttl_outcome.ttl else None,
                 ttl_source=ttl_outcome.ttl.source if ttl_outcome.ttl else None,
                 ttl_limiting_table=(ttl_outcome.ttl.limiting_table if ttl_outcome.ttl else None),
@@ -401,7 +411,6 @@ async def _run_query(
                 datasource=build_datasource_key(dialect),
                 model_id=model_id,
                 dialect=dialect,
-                query=item.query,
                 physical_tables=physical_tables,
             )
         elif ttl_outcome.no_cache_reason is not None:
@@ -618,16 +627,14 @@ def _resolve_oneshot_ttl(
 
 
 async def _try_oneshot_cache_get(cache: Cache, key: str) -> tuple[Any, str] | None:
-    """Best-effort cache get for oneshot. Returns (envelope, cached_at_iso) or None.
+    """Best-effort cache get for oneshot. Returns (data_table, cached_at_iso) or None.
 
     Delegates to the shared :func:`try_cache_get`, which offloads the gzip +
     Arrow IPC decode to a worker thread so a oneshot cache hit never blocks the
-    event loop (mirrors the REST path).
+    event loop (mirrors the REST path). Only row data is cached; the caller
+    rebuilds the response envelope from the compile result.
     """
-    envelope = await try_cache_get(cache, key)
-    if envelope is None:
-        return None
-    return envelope, envelope.cached_at_iso
+    return await try_cache_get(cache, key)
 
 
 async def _try_oneshot_cache_set(
@@ -639,42 +646,19 @@ async def _try_oneshot_cache_set(
     datasource: str,
     model_id: str,
     dialect: str,
-    query: Any,
     physical_tables: list[str],
 ) -> None:
-    """Best-effort cache set for oneshot batch entries."""
-    try:
-        # Encode through the shared stamped encoder so oneshot-written blobs
-        # carry the same ``cached=true`` stamp as the REST writer — otherwise a
-        # later raw-arrow byte-passthrough hit would serve them with
-        # ``cached=false`` in the Arrow metadata and mislabel the hit.
-        payload = encode_cached_payload(
-            columns=[c.model_dump() for c in envelope.columns],
-            rows=envelope.rows,
-            sql=envelope.sql,
-            dialect=envelope.dialect,
-            explain=envelope.explain.model_dump() if envelope.explain else None,
-            warnings=[w.model_dump() for w in envelope.warnings],
-            sql_valid=envelope.sql_valid,
-            execution_time_ms=envelope.execution_time_ms,
-            timezone=envelope.timezone,
-            resolved=envelope.resolved.model_dump(),
-            physical_tables=physical_tables,
-        )
-    except Exception:
-        logger.debug("oneshot cache encode failed", exc_info=True)
-        return
-    try:
-        await cache.set(
-            key,
-            payload,
-            ttl_seconds=ttl_seconds,
-            physical_tables=physical_tables,
-            datasource=datasource,
-            model_id=model_id,
-            query_hash=key[:16],
-            dialect=dialect,
-            row_count=envelope.row_count,
-        )
-    except Exception:
-        logger.debug("oneshot cache.set error", exc_info=True)
+    """Best-effort cache set for oneshot batch entries (row data only)."""
+    await try_cache_set(
+        cache=cache,
+        key=key,
+        columns=list(envelope.columns),
+        rows=list(envelope.rows),
+        sql=envelope.sql,
+        dialect=envelope.dialect,
+        physical_tables=physical_tables,
+        row_count=envelope.row_count,
+        ttl_seconds=ttl_seconds,
+        datasource=datasource,
+        model_id=model_id,
+    )

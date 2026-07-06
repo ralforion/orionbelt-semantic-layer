@@ -27,7 +27,9 @@ import json
 import re
 from typing import Any
 
-KEY_VERSION = 3
+# v4: cache blobs hold only row data (no baked response envelope); entries
+# written under v3 recompute-miss and age out.
+KEY_VERSION = 4
 
 # Separator for composite datasource keys; an ASCII unit separator that cannot
 # appear in a dialect name or a sanitized principal id.

@@ -1,9 +1,9 @@
-"""The UI always fetches results as Arrow; verify its decoder reconstructs the
-same dict shape the JSON path used to yield (rows + full envelope)."""
+"""The UI fetches results as the length-prefixed Arrow frame; verify its decoder
+reconstructs the same dict shape the JSON path yields (rows + fresh envelope)."""
 
 from __future__ import annotations
 
-import gzip
+import json
 
 import pytest
 
@@ -15,34 +15,39 @@ from orionbelt.ui.handlers import _decode_arrow_execute_response  # noqa: E402
 
 
 class _FakeResp:
-    """Stand-in for an httpx response after Content-Encoding decode."""
+    """Stand-in for an httpx response carrying the raw result frame."""
 
     def __init__(self, content: bytes) -> None:
         self.content = content
 
 
+def _frame(meta: dict, column_names: list[str], rows: list[list]) -> bytes:
+    """Build the ``[u32 len][json meta][gzip'd arrow data]`` wire frame."""
+    gzipped = result_codec.encode_data(column_names, rows)
+    meta_bytes = json.dumps(meta).encode("utf-8")
+    return len(meta_bytes).to_bytes(4, "big") + meta_bytes + gzipped
+
+
 def test_ui_decodes_arrow_into_json_shaped_dict() -> None:
-    blob = result_codec.encode(
-        columns=[
+    meta = {
+        "columns": [
             {"name": "Country", "type": "string", "format": None},
             {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"},
         ],
-        rows=[["US", 100.0], ["UK", 200.0]],
-        sql="SELECT country, SUM(revenue) FROM sales GROUP BY country",
-        dialect="duckdb",
-        explain=None,
-        warnings=[],
-        sql_valid=True,
-        execution_time_ms=3.0,
-        timezone="UTC",
-        resolved={"fact_tables": ["SALES"], "dimensions": ["Country"], "measures": ["Revenue"]},
-        physical_tables=["WH.PUBLIC.SALES"],
-        cached=True,
-        cached_at="2026-07-02T00:00:00Z",
-    )
-    # httpx transparently gunzips the Content-Encoding: gzip body before the
-    # handler sees it, so feed the uncompressed IPC.
-    resp = _FakeResp(gzip.decompress(blob))
+        "sql": "SELECT country, SUM(revenue) FROM sales GROUP BY country",
+        "dialect": "duckdb",
+        "explain": None,
+        "warnings": [],
+        "sql_valid": True,
+        "execution_time_ms": 3.0,
+        "timezone": "UTC",
+        "resolved": {"fact_tables": ["SALES"], "dimensions": ["Country"], "measures": ["Revenue"]},
+        "physical_tables": ["WH.PUBLIC.SALES"],
+        "row_count": 2,
+        "cached": True,
+        "cached_at": "2026-07-02T00:00:00Z",
+    }
+    resp = _FakeResp(_frame(meta, ["Country", "Revenue"], [["US", 100.0], ["UK", 200.0]]))
 
     data = _decode_arrow_execute_response(resp)
 

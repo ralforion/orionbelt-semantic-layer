@@ -72,7 +72,6 @@ from orionbelt.api.services.query_compilation import (
 from orionbelt.api.services.query_execution import (
     _apply_no_cache_metadata,
     _apply_ttl_metadata,
-    _build_cached_response,
     _build_execute_response,
     _physical_tables_for,
     _run_with_cache,
@@ -125,7 +124,6 @@ __all__ = [
     "_physical_tables_for",
     "_apply_ttl_metadata",
     "_apply_no_cache_metadata",
-    "_build_cached_response",
 ]
 
 # Prefix lives on the constructor (not the include_router call) so the root
@@ -603,16 +601,19 @@ async def execute_query(
     ----------------
     * ``format`` — ``json`` (default), ``tsv``, or ``arrow``. ``tsv`` returns a
       tab-separated body; cells with tab/newline/CR/double-quote are RFC 4180
-      quoted. ``tsv`` implies ``format_values=true``. ``arrow`` returns an
-      Arrow IPC stream (``application/vnd.apache.arrow.stream``) of typed,
-      locale-neutral values, gzip'd when the client's ``Accept-Encoding``
-      allows. The Arrow stream is also selectable via the ``Accept`` header.
+      quoted. ``tsv`` implies ``format_values=true``. ``arrow`` returns a
+      length-prefixed result frame (``application/vnd.orionbelt.result+arrow``):
+      ``[u32 big-endian json_len][JSON envelope][gzip'd Arrow IPC data]``. The
+      JSON envelope (sql, columns, timing, ``cached`` flag, …) is assembled
+      fresh per request; the Arrow sub-part holds the typed, locale-neutral row
+      data (its own gzip, so a cache hit ships the stored data verbatim). The
+      Arrow frame is also selectable via the ``Accept`` header.
     * ``format_values`` — when true, numeric cells are rendered as
       locale-aware display strings using each column's ``format`` pattern
       (matches the Gradio UI). Applies to both ``json`` and ``arrow`` (the
-      display strings are baked into the IPC blob); raw ``arrow`` (the default,
-      as used by the UI round trip) ships typed values and formats client-side.
-      Default false.
+      display strings are encoded into the Arrow data); raw ``arrow`` (the
+      default, as used by the UI round trip) ships typed values and formats
+      client-side. Default false.
     * ``locale`` — BCP-47 locale tag (e.g. ``de``, ``en-US``). Falls back
       to ``DEFAULT_LOCALE`` env when omitted.
     * ``timezone`` — IANA TZ name (e.g. ``Europe/Berlin``). Overrides the

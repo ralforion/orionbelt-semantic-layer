@@ -147,7 +147,7 @@ Drops every cache entry regardless of TTL or freshness contract — useful from 
 The file backend uses two layers:
 
 - **DuckDB** (`{CACHE_DIR}/meta.duckdb`) for the control plane: cache entries, dependency tracking, heartbeats, sweep queries.
-- **Arrow IPC files** (`{CACHE_DIR}/results/…`), gzip-compressed, for the actual result payloads. Self-describing and type-precise; the same Arrow encoding is served directly when a query is executed with `format=arrow`, so a cache hit needs no re-encoding. A single entry is shared across REST, pgwire, and Flight (keyed on the data source).
+- **Arrow IPC files** (`{CACHE_DIR}/results/…`), gzip-compressed, holding **only the row data** (type-precise, no response envelope baked in). Response metadata (sql, explain, timing, cache status) is rebuilt fresh per request from the compile result, so a cache hit reports correct per-request timing on every surface. A `format=arrow` hit ships the stored data blob verbatim behind a freshly-assembled JSON envelope, so no re-encoding of the data is needed. A single entry is shared across REST, pgwire, and Flight (keyed on the data source).
 
 Capacity eviction is LRU (`last_hit_at NULLS FIRST, created_at ASC`); TTL eviction is lazy on read plus a periodic sweep every `CACHE_SWEEP_INTERVAL_SECONDS` (default 1 day). Lazy TTL on read keeps user-facing freshness correct, so the sweeper only matters for reclaiming disk from entries that expire without being read again.
 

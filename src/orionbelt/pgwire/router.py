@@ -30,7 +30,7 @@ import sqlglot.expressions as exp
 from orionbelt.api.query_cache import (
     build_type_map,
     execute_query_with_cache,
-    execution_result_from_envelope,
+    execution_result_from_data,
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
@@ -290,7 +290,10 @@ class SemanticRouter:
                     cacheable=getattr(self._cache, "backend_name", "noop") != "noop",
                 )
                 if cached.cached:
-                    result = execution_result_from_envelope(cached.envelope)
+                    result = execution_result_from_data(
+                        cached.data_table,
+                        execution_time_ms=cached.fetch_elapsed_ms or 0.0,
+                    )
                 else:
                     assert cached.exec_result is not None  # a miss always executed
                     result = cached.exec_result
