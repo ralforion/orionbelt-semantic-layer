@@ -23,7 +23,7 @@ def store() -> ModelStore:
 class TestLoadModel:
     def test_load_valid_model(self, store: ModelStore) -> None:
         result = store.load_model(SAMPLE_MODEL_YAML)
-        assert len(result.model_id) == 8
+        assert len(result.model_id) == 16
         assert result.data_objects == 2
         assert result.dimensions == 1
         assert result.measures == 3

@@ -62,13 +62,15 @@ class TestModelLoadDedup:
         assert r1.json()["model_id"] != r2.json()["model_id"]
         assert r2.json()["model_load"] == "fresh"
 
-    async def test_dedup_isolated_per_session(self, client: AsyncClient) -> None:
+    async def test_identical_yaml_shared_across_sessions(self, client: AsyncClient) -> None:
         s1 = (await client.post("/v1/sessions")).json()["session_id"]
         s2 = (await client.post("/v1/sessions")).json()["session_id"]
         r1 = await client.post(f"/v1/sessions/{s1}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
         r2 = await client.post(f"/v1/sessions/{s2}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
-        # Different sessions = different models, even with identical YAML.
-        assert r1.json()["model_id"] != r2.json()["model_id"]
+        # Identical YAML shares one content-addressed compiled model across
+        # sessions, so the model_id is stable. Each session still reports the
+        # load as "fresh" for its own store (the compile-skip is transparent).
+        assert r1.json()["model_id"] == r2.json()["model_id"]
         assert r2.json()["model_load"] == "fresh"
 
     async def test_dedup_after_remove_loads_fresh(self, client: AsyncClient) -> None:
@@ -77,7 +79,10 @@ class TestModelLoadDedup:
         mid = r1.json()["model_id"]
         await client.delete(f"/v1/sessions/{sid}/models/{mid}")
         r2 = await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
-        assert r2.json()["model_id"] != mid
+        # Content-derived ids are stable, so reloading identical YAML yields
+        # the same id — but it is a genuine recompile (model_load="fresh"),
+        # since the removal released the shared entry.
+        assert r2.json()["model_id"] == mid
         assert r2.json()["model_load"] == "fresh"
 
 

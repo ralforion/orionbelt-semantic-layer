@@ -386,3 +386,44 @@ class TestSessionIsolation:
 
         assert len(store_a.list_models()) == 1
         assert len(store_b.list_models()) == 0
+
+
+class TestCrossSessionModelCache:
+    def test_identical_model_shared_across_sessions(self, session_manager: SessionManager) -> None:
+        """Two sessions loading identical OBML share one compiled model + id."""
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        info_a = session_manager.create_session()
+        info_b = session_manager.create_session()
+        store_a = session_manager.get_store(info_a.session_id)
+        store_b = session_manager.get_store(info_b.session_id)
+
+        ra = store_a.load_model(SAMPLE_MODEL_YAML)
+        rb = store_b.load_model(SAMPLE_MODEL_YAML)
+
+        assert ra.model_id == rb.model_id
+        assert store_a.get_model(ra.model_id) is store_b.get_model(rb.model_id)
+
+    def test_closing_one_session_keeps_shared_model_for_the_other(
+        self, session_manager: SessionManager
+    ) -> None:
+        from tests.conftest import SAMPLE_MODEL_YAML
+
+        info_a = session_manager.create_session()
+        info_b = session_manager.create_session()
+        store_a = session_manager.get_store(info_a.session_id)
+        store_b = session_manager.get_store(info_b.session_id)
+        ra = store_a.load_model(SAMPLE_MODEL_YAML)
+        store_b.load_model(SAMPLE_MODEL_YAML)
+
+        cache = session_manager._model_cache
+        assert cache.stats()["refs"] == 2
+
+        # Closing one session releases its reference; the model survives.
+        session_manager.close_session(info_a.session_id)
+        assert cache.stats()["entries"] == 1
+        assert store_b.get_model(ra.model_id) is not None
+
+        # Closing the last session evicts the shared model.
+        session_manager.close_session(info_b.session_id)
+        assert cache.stats()["entries"] == 0

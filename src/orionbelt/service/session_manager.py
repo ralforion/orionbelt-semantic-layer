@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from orionbelt.service.model_cache import ModelCache
 from orionbelt.service.model_store import ModelStore
 
 logger = logging.getLogger("orionbelt.session")
@@ -107,6 +108,9 @@ class SessionManager:
         self._cleanup_interval = cleanup_interval
         self._is_single_model_mode = is_single_model_mode
         self._lock = threading.Lock()
+        # One process-wide content-addressed model cache shared by every
+        # per-session store, so identical OBML compiles once across sessions.
+        self._model_cache = ModelCache()
         self._sessions: dict[str, _Session] = {}
         self._stop_event = threading.Event()
         self._cleanup_thread: threading.Thread | None = None
@@ -172,7 +176,7 @@ class SessionManager:
         session_id = secrets.token_hex(16)  # 32-char hex (128-bit)
         session = _Session(
             session_id=session_id,
-            store=ModelStore(max_models=self._max_models),
+            store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
             created_at=now_wall,
             created_at_mono=now_mono,
             last_accessed=now_mono,
@@ -213,6 +217,7 @@ class SessionManager:
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
             if self._is_expired(session, now_mono):
                 reason = self._expiry_reason(session, now_mono)
+                session.store.close()
                 del self._sessions[session_id]
                 logger.info("Session expired on access: %s (%s)", session_id, reason)
                 raise SessionExpiredError(f"Session '{session_id}' has expired ({reason})")
@@ -229,6 +234,7 @@ class SessionManager:
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
             if self._is_expired(session, now_mono):
                 reason = self._expiry_reason(session, now_mono)
+                session.store.close()
                 del self._sessions[session_id]
                 logger.info("Session expired on access: %s (%s)", session_id, reason)
                 raise SessionExpiredError(f"Session '{session_id}' has expired ({reason})")
@@ -239,8 +245,10 @@ class SessionManager:
     def close_session(self, session_id: str) -> None:
         """Explicitly close a session."""
         with self._lock:
-            if session_id not in self._sessions:
+            session = self._sessions.get(session_id)
+            if session is None:
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
+            session.store.close()
             del self._sessions[session_id]
         logger.info("Session closed: %s", session_id)
 
@@ -289,7 +297,7 @@ class SessionManager:
             now_wall = datetime.now(UTC)
             session = _Session(
                 session_id=_DEFAULT_SESSION_ID,
-                store=ModelStore(max_models=self._max_models),
+                store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
                 created_at=now_wall,
                 created_at_mono=now_mono,
                 last_accessed=now_mono,
@@ -318,7 +326,7 @@ class SessionManager:
             now_wall = datetime.now(UTC)
             session = _Session(
                 session_id=session_id,
-                store=ModelStore(max_models=self._max_models),
+                store=ModelStore(max_models=self._max_models, shared_cache=self._model_cache),
                 created_at=now_wall,
                 created_at_mono=now_mono,
                 last_accessed=now_mono,
@@ -402,6 +410,7 @@ class SessionManager:
             ]
             for sid in expired:
                 reason = self._expiry_reason(self._sessions[sid], now_mono)
+                self._sessions[sid].store.close()
                 del self._sessions[sid]
                 logger.info("Session purged: %s (%s)", sid, reason)
         if expired:
