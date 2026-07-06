@@ -60,9 +60,10 @@ def test_nodes_cover_ontology_individuals() -> None:
 
 def test_expression_measure_connects_to_its_object() -> None:
     """Average Order Value sources its columns via an expression only; it must
-    still link to Orders (regression for the orphaned-node bug)."""
+    still link to Orders via referencesColumn (regression for the orphaned node
+    and for the SHACL-valid expression-dependency predicate)."""
     nodes, edges = _render()
-    assert ("Orders", "sourceColumn") in _edges_from(nodes, edges, "Average Order Value")
+    assert ("Orders", "referencesColumn") in _edges_from(nodes, edges, "Average Order Value")
 
 
 def test_synthesized_count_anchors_to_its_object() -> None:

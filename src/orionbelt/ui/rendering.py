@@ -219,12 +219,17 @@ def _generate_ontology_graph_html(
     for dim, obj in g.subject_objects(OBSL.via):
         link(dim, obj, "via", "#81C784", dashes=True)
 
-    # Measure → data object: sourceColumn collapsed via the owning object, plus
-    # the grain anchor for column-less (e.g. synthesized count) measures.
-    for meas, col in g.subject_objects(OBSL.sourceColumn):
-        obj_id = col_to_object.get(str(col))
-        if obj_id is not None:
-            link(meas, URIRef(obj_id), "sourceColumn", "#64B5F6")
+    # Measure → data object: declared sourceColumn and expression-referenced
+    # referencesColumn both collapse onto the column's owning object; plus the
+    # grain anchor for column-less (e.g. synthesized count) measures.
+    for pred, edge_label in (
+        (OBSL.sourceColumn, "sourceColumn"),
+        (OBSL.referencesColumn, "referencesColumn"),
+    ):
+        for meas, col in g.subject_objects(pred):
+            obj_id = col_to_object.get(str(col))
+            if obj_id is not None:
+                link(meas, URIRef(obj_id), edge_label, "#64B5F6")
     for meas, obj in g.subject_objects(OBSL.anchoredTo):
         link(meas, obj, "anchor", "#64B5F6")
 

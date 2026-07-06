@@ -264,6 +264,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.column, OBSL.Dimension, OBSL.Column),
         (OBSL.via, OBSL.Dimension, OBSL.DataObject),
         (OBSL.sourceColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.referencesColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.anchoredTo, OBSL.Measure, OBSL.DataObject),
         (OBSL.baseMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.referencesMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.timeDimension, OBSL.Metric, OBSL.Dimension),
@@ -457,11 +459,11 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         g.add((meas_uri, OBSL.aggregation, Literal(meas.aggregation)))
         g.add((meas_uri, OBSL.resultType, Literal(meas.result_type.value)))
 
-        # Source columns. A column-less ref (view but no column) means the
-        # measure is anchored to a data object's grain rather than a column —
-        # notably the auto-synthesized row counts (COUNT over the object). Emit
-        # obsl:anchoredTo so the ontology (and any graph rendered from it) links
-        # the measure to its object.
+        # Source form (SHACL MeasureShape requires exactly one):
+        #   * obsl:sourceColumn    — declared columns[] the measure aggregates
+        #   * obsl:expressionSource — the measure's formula
+        #   * obsl:anchoredTo      — the object grain a column-less measure
+        #                            counts (auto-synthesized row counts)
         for ref in meas.columns:
             if ref.view and ref.column:
                 src_col = col_uris.get((ref.view, ref.column))
@@ -470,18 +472,19 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             elif ref.view:
                 g.add((meas_uri, OBSL.anchoredTo, _data_object_uri(model_id, ref.view)))
 
-        # Expression string + the columns it references. A measure may source
-        # its columns purely via the expression (e.g.
-        # "{[Orders].[Price]} * {[Orders].[Quantity]}") with no `columns` list,
-        # so parse those refs into sourceColumn edges too.
+        # Expression string + the columns it references. An expression measure
+        # aggregates the formula, not a declared column, so its column
+        # dependencies use the distinct obsl:referencesColumn predicate —
+        # obsl:sourceColumn stays reserved for declared columns[] so consumers
+        # can't confuse the two.
         if meas.expression:
             g.add((meas_uri, OBSL.expressionSource, Literal(meas.expression)))
             for obj_name, col_name in re.findall(
                 r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
             ):
-                src_col = col_uris.get((obj_name, col_name))
-                if src_col:
-                    g.add((meas_uri, OBSL.sourceColumn, src_col))
+                ref_col = col_uris.get((obj_name, col_name))
+                if ref_col:
+                    g.add((meas_uri, OBSL.referencesColumn, ref_col))
 
         # Boolean flags (only emit when True)
         if meas.distinct:

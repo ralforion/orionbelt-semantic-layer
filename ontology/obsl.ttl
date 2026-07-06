@@ -175,9 +175,15 @@ obsl:sourceColumn a owl:ObjectProperty ;
     rdfs:domain obsl:Measure ;
     rdfs:range obsl:Column .
 
+obsl:referencesColumn a owl:ObjectProperty ;
+    rdfs:label "references column" ;
+    rdfs:comment "Column referenced by an expression-based measure's formula. Unlike obsl:sourceColumn (a declared columns[] the measure aggregates), this is a dependency edge derived from the expression; the measure still carries obsl:expressionSource as its source form." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:Column .
+
 obsl:anchoredTo a owl:ObjectProperty ;
     rdfs:label "anchored to" ;
-    rdfs:comment "Data object whose grain a measure is anchored to when it aggregates over the object rather than a column (e.g. an auto-synthesized row-count measure)." ;
+    rdfs:comment "Data object whose grain a column-less measure is anchored to when it aggregates over the object rather than a column (e.g. an auto-synthesized row-count measure). A source form alongside obsl:sourceColumn / obsl:expressionSource." ;
     rdfs:domain obsl:Measure ;
     rdfs:range obsl:DataObject .
 
