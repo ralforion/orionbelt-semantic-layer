@@ -750,7 +750,11 @@ measures:
     columns:
       - dataObject: Returns
         column: Return Quantity
-  Return Count:
+  # Overrides the auto-synthesized "Returns Count" (COUNT(*) on the Returns
+  # object) with COUNT(DISTINCT Return ID). Return ID is the PK so the value is
+  # identical here; this demonstrates the declared-measure-overrides-synthesis
+  # rule (the pattern you'd use for a self-fanning model).
+  Returns Count:
     aggregation: count_distinct
     dataType: bigint
     format: "#,##0"
