@@ -67,7 +67,7 @@ Every `query/execute` JSON response gains:
 | `ttl_limiting_table` | The physical table whose contract drove the TTL. |
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 
-On cache hits, `execution_time_ms` reports the wall-clock time spent reading + decoding the cached entry — *not* the original database run time. The original DB timing is preserved on disk alongside the cached payload; combine `cached: true` with `execution_time_ms` to distinguish "fresh from warehouse" vs "served from cache" durations.
+On cache hits, `execution_time_ms` reports the wall-clock time spent reading + decoding the cached entry — *not* the original database run time. Only the row data is cached (the response envelope, including the original DB timing, is rebuilt fresh per request), so combine `cached: true` with `execution_time_ms` to distinguish "fresh from warehouse" vs "served from cache" durations.
 
 ## UI controls
 
