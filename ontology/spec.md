@@ -180,8 +180,10 @@ Required:
 - `obsl:resultType`
 
 A measure MUST define exactly one source form:
-- one or more `obsl:sourceColumn`
+- one or more `obsl:sourceColumn` (declared `columns[]` the measure aggregates)
 - `obsl:expressionSource`
+- one or more `obsl:anchoredTo` — grain-anchored measures that aggregate over a
+  data object rather than a column (e.g. auto-synthesized row counts)
 
 Optional:
 - `obsl:distinct`
@@ -204,7 +206,7 @@ Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:aggregation`
 - exactly one `obsl:resultType`
-- either one or more `obsl:sourceColumn`, or exactly one `obsl:expressionSource`
+- exactly one source form: one or more `obsl:sourceColumn`, or exactly one `obsl:expressionSource`, or one or more `obsl:anchoredTo`
 - at most one `obsl:filterExpression`
 - at most one `obsl:grainMode`
 - at most one `obsl:filterContextMode`
@@ -267,7 +269,7 @@ Structured expression graphs are explicitly out of scope for `OBSL-Core 0.1`.
 
 Core-compatible derived links:
 - metrics MAY include `obsl:referencesMeasure`
-- expression-based measures MAY include `obsl:referencesColumn` in a future compatible extension, but this is not required for Core conformance
+- expression-based measures include `obsl:referencesColumn` for the columns their formula references (a dependency edge; the measure's source form is still `obsl:expressionSource`, and `obsl:sourceColumn` stays reserved for declared `columns[]`)
 
 ## 7. Filters
 Structured filter graphs (nested AND/OR trees) are out of scope for `OBSL-Core 0.1`.
@@ -396,9 +398,11 @@ Recommended practice:
 
 ### 10.6 Measures
 - `columns[]` -> `obsl:sourceColumn`
+- `columns[]` (column-less object ref, e.g. synthesized row counts) -> `obsl:anchoredTo`
 - `aggregation` -> `obsl:aggregation`
 - `resultType` -> `obsl:resultType`
 - `expression` -> `obsl:expressionSource`
+- columns referenced by `expression` -> `obsl:referencesColumn` (derived dependency edges)
 - `distinct` -> `obsl:distinct`
 - `total` -> `obsl:total`
 - `allowFanOut` -> `obsl:allowFanOut`

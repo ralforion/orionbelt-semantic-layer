@@ -199,7 +199,9 @@ def _generate_ontology_graph_html(
                 )
 
     if show_measures:
-        for meas_name, meas in model.measures.items():
+        # effective_measures includes auto-synthesized row-count measures (e.g.
+        # "Sales Count") so they appear in the graph like declared measures.
+        for meas_name, meas in model.effective_measures.items():
             nid = f"meas_{meas_name}"
             title = (
                 f"Measure: {meas_name}\nAggregation: {meas.aggregation}"
@@ -222,14 +224,40 @@ def _generate_ontology_graph_html(
                 if ref.view and ref.view not in seen:
                     seen.add(ref.view)
                     if show_data_objects and f"do_{ref.view}" in node_ids:
+                        # Synthesized counts are column-less (anchored to the
+                        # object grain), so label the edge accordingly.
+                        anchored = ref.column is None
                         add_edge(
                             nid,
                             f"do_{ref.view}",
-                            label="sourceColumn",
-                            title=f"{meas_name} → {ref.view}.{ref.column}",
+                            label="anchor" if anchored else "sourceColumn",
+                            title=(
+                                f"{meas_name} anchored to {ref.view}"
+                                if anchored
+                                else f"{meas_name} → {ref.view}.{ref.column}"
+                            ),
                             color="#64B5F6",
                             arrows="to",
                         )
+            # Expression-based measures reference columns via their formula
+            # (e.g. "{[Orders].[Price]} * {[Orders].[Quantity]}"); link those to
+            # the referenced objects. Labeled "referencesColumn" to match the
+            # ontology predicate (distinct from declared-column "sourceColumn").
+            if meas.expression:
+                for obj_name, _col in re.findall(
+                    r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
+                ):
+                    if obj_name not in seen:
+                        seen.add(obj_name)
+                        if show_data_objects and f"do_{obj_name}" in node_ids:
+                            add_edge(
+                                nid,
+                                f"do_{obj_name}",
+                                label="referencesColumn",
+                                title=f"{meas_name} → {obj_name}",
+                                color="#64B5F6",
+                                arrows="to",
+                            )
 
     if show_metrics:
         for met_name, met in model.metrics.items():
@@ -328,13 +356,20 @@ def _generate_ontology_graph_html(
 <html><head><style>
 html,body{{margin:0;padding:0;overflow:hidden;background:transparent;width:100%;height:100%}}
 #g{{width:100%;height:100%}}
-#dl-btn{{position:absolute;top:8px;right:8px;z-index:10;background:rgba(128,128,128,0.15);
-border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:5px 8px;cursor:pointer;
-color:inherit;font-size:16px;line-height:1}}
-#dl-btn:hover{{background:rgba(128,128,128,0.3)}}
+#gtoolbar{{position:absolute;top:8px;right:8px;z-index:10;display:flex;gap:6px}}
+.gbtn{{background:rgba(128,128,128,0.35);border:1px solid rgba(200,200,200,0.35);
+border-radius:6px;padding:6px 10px;cursor:pointer;color:#fff;font-size:18px;line-height:1;
+display:inline-flex;align-items:center;justify-content:center}}
+.gbtn:hover{{background:rgba(160,160,160,0.55)}}
+#dl-btn{{background:#2196F3;border-color:#1976D2}}
+#dl-btn:hover{{background:#1565C0}}
 </style></head><body>
 <div id="g"></div>
-<button id="dl-btn" title="Download as PNG">&#11123;</button>
+<div id="gtoolbar">
+<button id="rot-l" class="gbtn" title="Rotate left">&#8634;</button>
+<button id="rot-r" class="gbtn" title="Rotate right">&#8635;</button>
+<button id="dl-btn" class="gbtn" title="Download as PNG">&#11123;</button>
+</div>
 <script>
 var s=document.createElement('script');
 s.textContent=atob('{vis_b64}');
@@ -357,6 +392,22 @@ document.getElementById('dl-btn').onclick=function(){{
   a.download='ontology-graph.png';
   a.click();
 }};
+function rotate(deg){{
+  nw.setOptions({{physics:{{enabled:false}}}});
+  var rad=deg*Math.PI/180,pos=nw.getPositions(),ids=Object.keys(pos);
+  if(!ids.length)return;
+  var cx=0,cy=0;
+  ids.forEach(function(id){{cx+=pos[id].x;cy+=pos[id].y;}});
+  cx/=ids.length;cy/=ids.length;
+  var cs=Math.cos(rad),sn=Math.sin(rad);
+  ids.forEach(function(id){{
+    var dx=pos[id].x-cx,dy=pos[id].y-cy;
+    nw.moveNode(id,cx+dx*cs-dy*sn,cy+dx*sn+dy*cs);
+  }});
+  nw.fit({{animation:false,padding:15}});
+}}
+document.getElementById('rot-l').onclick=function(){{rotate(-15);}};
+document.getElementById('rot-r').onclick=function(){{rotate(15);}};
 </script></body></html>"""
 
     srcdoc = inner_html.replace("&", "&amp;").replace('"', "&quot;")

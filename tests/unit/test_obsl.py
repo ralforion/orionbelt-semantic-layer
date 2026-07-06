@@ -323,6 +323,40 @@ class TestExporterMeasures:
         uri = URIRef(f"{BASE}t1/measure/grand-total-revenue")
         assert (uri, OBSL.total, Literal(True)) in g
 
+    def test_synthesized_count_measures_exported(self, sales_model: SemanticModel) -> None:
+        """Auto-synthesized row-count measures are emitted as obsl:Measure.
+
+        They are not in ``model.measures`` (declared) but come from
+        ``effective_measures``, so the graph must build from the latter.
+        """
+        g = export_obsl(sales_model, "t1")
+        synthesized = [n for n in sales_model.effective_measures if n not in sales_model.measures]
+        assert synthesized, "expected the sales fixture to synthesize count measures"
+        uri = URIRef(f"{BASE}t1/measure/orders-count")
+        assert (uri, RDF.type, OBSL.Measure) in g
+        assert (uri, RDFS.label, Literal("Orders Count")) in g
+        assert (uri, OBSL.aggregation, Literal("count")) in g
+        assert (uri, OBSL.resultType, Literal("int")) in g
+        # SHACL source form: grain anchor (not sourceColumn / expressionSource).
+        assert (uri, OBSL.anchoredTo, URIRef(f"{BASE}t1/data-object/orders")) in g
+        assert not list(g.objects(uri, OBSL.sourceColumn))
+        assert not list(g.objects(uri, OBSL.expressionSource))
+
+    def test_expression_measure_references_columns(self, sales_model: SemanticModel) -> None:
+        """An expression measure keeps obsl:expressionSource as its source form;
+        its column dependencies use obsl:referencesColumn (not obsl:sourceColumn),
+        so it stays valid against the mutually-exclusive SHACL MeasureShape."""
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/measure/average-order-value")
+        price = URIRef(f"{BASE}t1/data-object/orders/column/price")
+        qty = URIRef(f"{BASE}t1/data-object/orders/column/quantity")
+        assert (uri, OBSL.referencesColumn, price) in g
+        assert (uri, OBSL.referencesColumn, qty) in g
+        # expressionSource is the source form; sourceColumn stays reserved for
+        # declared columns[] (this measure declares none).
+        assert list(g.objects(uri, OBSL.expressionSource))
+        assert not list(g.objects(uri, OBSL.sourceColumn))
+
     def test_filter_expression(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
         uri = URIRef(f"{BASE}t1/measure/us-revenue")
@@ -452,6 +486,19 @@ class TestExporterAxioms:
         from rdflib.namespace import OWL as OWL_NS
 
         assert (OBSL.CumulativeMetric, OWL_NS.disjointWith, OBSL.PeriodOverPeriodMetric) in g
+
+    def test_anchored_and_references_column_declared(self, sales_model: SemanticModel) -> None:
+        """The self-contained graph embeds type/domain/range for every predicate
+        it uses, including the added obsl:anchoredTo / obsl:referencesColumn."""
+        from rdflib.namespace import OWL as OWL_NS
+
+        g = export_obsl(sales_model, "t1")
+        assert (OBSL.anchoredTo, RDF.type, OWL_NS.ObjectProperty) in g
+        assert (OBSL.anchoredTo, RDFS.domain, OBSL.Measure) in g
+        assert (OBSL.anchoredTo, RDFS.range, OBSL.DataObject) in g
+        assert (OBSL.referencesColumn, RDF.type, OWL_NS.ObjectProperty) in g
+        assert (OBSL.referencesColumn, RDFS.domain, OBSL.Measure) in g
+        assert (OBSL.referencesColumn, RDFS.range, OBSL.Column) in g
 
     def test_functional_properties(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

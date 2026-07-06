@@ -314,6 +314,17 @@ _CSS = """\
 .orange-btn:hover {
   background: linear-gradient(135deg, #c2410c, #ea580c) !important;
 }
+.green-btn {
+  background: linear-gradient(135deg, #16a34a, #22c55e) !important;
+  border: none !important;
+  color: white !important;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  margin: 0 !important;
+}
+.green-btn:hover {
+  background: linear-gradient(135deg, #15803d, #16a34a) !important;
+}
 
 /* Custom upload button: match Gradio's native toolbar button style */
 .ob-upload-btn {
@@ -1969,6 +1980,12 @@ def create_blocks(
                         scale=1,
                         min_width=160,
                     )
+                    export_onto_btn = gr.Button(
+                        "Export Onto",
+                        elem_classes=["green-btn"],
+                        scale=1,
+                        min_width=160,
+                    )
 
                 ontology_output = gr.HTML(
                     value=(
@@ -2012,6 +2029,18 @@ def create_blocks(
                     fn=_render_ontology_graph,
                     inputs=_ontology_inputs,
                     outputs=[ontology_output],
+                )
+
+                # Export the ontology as RDF Turtle (same OBSL graph the API
+                # serves), reusing the model-editor turtle fetch + download JS.
+                export_onto_btn.click(
+                    fn=_fetch_obsl_turtle,
+                    inputs=[model_input, api_url, session_state, model_state],
+                    outputs=[obsl_turtle_state, session_state, model_state],
+                ).then(
+                    fn=None,
+                    inputs=[obsl_turtle_state],
+                    js=_DOWNLOAD_TTL_JS,
                 )
 
             with gr.Tab("Settings", id=4) as settings_tab:

@@ -264,6 +264,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.column, OBSL.Dimension, OBSL.Column),
         (OBSL.via, OBSL.Dimension, OBSL.DataObject),
         (OBSL.sourceColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.referencesColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.anchoredTo, OBSL.Measure, OBSL.DataObject),
         (OBSL.baseMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.referencesMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.timeDimension, OBSL.Metric, OBSL.Dimension),
@@ -446,7 +448,9 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         _emit_custom_extensions(g, dim_uri, getattr(dim, "custom_extensions", []))
 
     # -- Measures -----------------------------------------------------------
-    for meas_name, meas in model.measures.items():
+    # effective_measures includes auto-synthesized row-count measures (e.g.
+    # "Sales Count") so the ontology graph exposes them like declared measures.
+    for meas_name, meas in model.effective_measures.items():
         meas_uri = _measure_uri(model_id, meas_name)
         g.add((m_uri, OBSL.hasMeasure, meas_uri))
         g.add((meas_uri, RDF.type, OBSL.Measure))
@@ -455,16 +459,32 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         g.add((meas_uri, OBSL.aggregation, Literal(meas.aggregation)))
         g.add((meas_uri, OBSL.resultType, Literal(meas.result_type.value)))
 
-        # Source columns
+        # Source form (SHACL MeasureShape requires exactly one):
+        #   * obsl:sourceColumn    — declared columns[] the measure aggregates
+        #   * obsl:expressionSource — the measure's formula
+        #   * obsl:anchoredTo      — the object grain a column-less measure
+        #                            counts (auto-synthesized row counts)
         for ref in meas.columns:
             if ref.view and ref.column:
                 src_col = col_uris.get((ref.view, ref.column))
                 if src_col:
                     g.add((meas_uri, OBSL.sourceColumn, src_col))
+            elif ref.view:
+                g.add((meas_uri, OBSL.anchoredTo, _data_object_uri(model_id, ref.view)))
 
-        # Expression string
+        # Expression string + the columns it references. An expression measure
+        # aggregates the formula, not a declared column, so its column
+        # dependencies use the distinct obsl:referencesColumn predicate —
+        # obsl:sourceColumn stays reserved for declared columns[] so consumers
+        # can't confuse the two.
         if meas.expression:
             g.add((meas_uri, OBSL.expressionSource, Literal(meas.expression)))
+            for obj_name, col_name in re.findall(
+                r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
+            ):
+                ref_col = col_uris.get((obj_name, col_name))
+                if ref_col:
+                    g.add((meas_uri, OBSL.referencesColumn, ref_col))
 
         # Boolean flags (only emit when True)
         if meas.distinct:
@@ -544,7 +564,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             # Derive referencesMeasure links from expression
             measure_refs = re.findall(r"\{\[([^\]]+)\]\}", met.expression)
             for ref_name in measure_refs:
-                if ref_name in model.measures:
+                if ref_name in model.effective_measures:
                     ref_uri = _measure_uri(model_id, ref_name)
                     g.add((met_uri, OBSL.referencesMeasure, ref_uri))
 
