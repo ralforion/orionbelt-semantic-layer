@@ -73,8 +73,14 @@ router = APIRouter()
 def _candidate_session_ids(mgr: SessionManager) -> list[str]:
     """Ordered, deduplicated list of session ids the shortcut routes consult.
 
-    Order: ``__default__`` first (legacy single-model mode), then admin-
-    curated protected sessions (``MODEL_FILES``), then user-created sessions.
+    In admin-curated mode (``MODEL_FILES``) the shortcut resolves to the
+    curated **protected** session(s) *only* — transient ``__default__`` and
+    user-created sessions are ignored. Otherwise a short-lived extra model in a
+    scratch session would make the unique-model shortcut 409 even though the
+    curated model is unambiguous (observed on the demo deployment, where the
+    MCP audit's single-model shortcut intermittently 409'd against transient
+    sessions). Outside admin-curated mode, order is ``__default__`` (legacy
+    single-model), then protected, then user-created sessions.
     """
     seen: set[str] = set()
     ordered: list[str] = []
@@ -84,6 +90,11 @@ def _candidate_session_ids(mgr: SessionManager) -> list[str]:
             return
         seen.add(session_id)
         ordered.append(session_id)
+
+    if mgr.is_single_model_mode:
+        for sid in mgr.list_protected_session_ids():
+            _add(sid)
+        return ordered
 
     _add("__default__")
     for sid in mgr.list_protected_session_ids():
