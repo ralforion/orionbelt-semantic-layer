@@ -970,6 +970,35 @@ class TestSingleModelMode:
         assert response.status_code == 200, response.text
         assert "SELECT" in response.json()["sql"]
 
+    async def test_shortcut_ignores_transient_user_sessions(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """Regression: in admin-curated mode the shortcut must resolve to the
+        curated protected model even when transient user sessions exist.
+
+        Each ``POST /v1/sessions`` re-loads a *copy* of the protected model into
+        the new session (with a fresh uuid model_id). The unique-model shortcut
+        used to scan those copies too and 409 with "Multiple models loaded
+        across sessions" — observed intermittently on the demo deployment. The
+        shortcut now scopes to protected sessions in single-model mode.
+        """
+        # Create two user sessions — each inherits its own copy of the model.
+        for _ in range(2):
+            r = await single_model_client.post("/v1/sessions")
+            assert r.status_code == 201, r.text
+            assert r.json()["model_count"] == 1
+
+        # The shortcuts must still resolve the single curated model, not 409.
+        schema = await single_model_client.get("/v1/schema")
+        assert schema.status_code == 200, schema.text
+        assert schema.json().get("data_objects")
+
+        compiled = await single_model_client.post(
+            "/v1/query/sql?dialect=postgres",
+            json={"select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}},
+        )
+        assert compiled.status_code == 200, compiled.text
+
 
 # ---------------------------------------------------------------------------
 # Query execution endpoint
