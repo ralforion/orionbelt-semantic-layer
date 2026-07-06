@@ -25,6 +25,7 @@ from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.schema_validation import validate_obml_document
 from orionbelt.parser.validator import SemanticValidator
+from orionbelt.service.model_cache import CompiledModel, ModelCache
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -203,8 +204,16 @@ class ModelStore:
     same singleton pattern as ``api/deps.py``.
     """
 
-    def __init__(self, max_models: int = 10) -> None:
+    def __init__(self, max_models: int = 10, shared_cache: ModelCache | None = None) -> None:
         self._lock = threading.Lock()
+        # Process-wide content-addressed cache shared across sessions. When
+        # None (CLI, stateless helpers, bare unit tests) every model stays
+        # private to this store and ids are random — behaviour identical to
+        # before the cache existed.
+        self._shared_cache = shared_cache
+        # model_ids in this store that are backed by ``_shared_cache`` (so
+        # remove_model/close release the shared reference).
+        self._shared_ids: set[str] = set()
         self._models: dict[str, SemanticModel] = {}
         # Parallel storage of each loaded model's *merged* raw YAML dict
         # so inheritance can re-merge against the exact same content the
@@ -239,7 +248,58 @@ class ModelStore:
 
     @staticmethod
     def _new_id() -> str:
-        return uuid.uuid4().hex[:8]
+        return uuid.uuid4().hex[:16]
+
+    @staticmethod
+    def _content_id(content_hash: str) -> str:
+        """Stable content-derived id for a shared model.
+
+        A 64-bit prefix of the content hash: identical OBML always yields the
+        same id (so sessions loading matching bytes collapse to one shared
+        compiled model and one result-cache key), while the full 64-hex
+        ``content_hash`` remains the sharing key, so an id-label collision can
+        never cause a wrong-model share.
+        """
+        return content_hash[:16]
+
+    def _register_shared(self, entry: CompiledModel) -> None:
+        """Register a shared cache entry into this store's local view.
+
+        Caller must hold ``self._lock``. The store's read-through getters
+        (get_model/get_raw/get_graph/describe/list_models/...) then serve the
+        shared entry with no further changes.
+        """
+        self._models[entry.model_id] = entry.model
+        self._raws[entry.model_id] = entry.raw
+        self._graphs[entry.model_id] = entry.graph
+        self._summaries[entry.model_id] = entry.summary
+        self._content_hash_index[entry.content_hash] = entry.model_id
+        self._shared_ids.add(entry.model_id)
+
+    def _adopt_shared(self, entry: CompiledModel) -> None:
+        """Take ownership of one reference to ``entry`` for this store.
+
+        ``entry``'s refcount was already incremented by the caller (via
+        ``acquire`` / ``insert_or_acquire``). This store holds exactly one
+        reference per shared model_id it exposes, so a surplus reference (the
+        store already references this content, e.g. concurrent identical loads)
+        is released. Raises ``ModelCapacityError`` (releasing the reference
+        first) when the store is full.
+        """
+        assert self._shared_cache is not None  # only called on shared paths
+        with self._lock:
+            if entry.model_id in self._shared_ids:
+                surplus, over_cap = True, False
+            else:
+                surplus = False
+                over_cap = len(self._models) >= self._max_models
+            if not surplus and not over_cap:
+                self._register_shared(entry)
+        if surplus or over_cap:
+            # Release outside the store lock — the cache has its own lock.
+            self._shared_cache.release(entry.model_id)
+        if over_cap:
+            raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
 
     @staticmethod
     def _health_for(model: SemanticModel) -> ModelHealthSummary:
@@ -600,6 +660,25 @@ class ModelStore:
                 if existing_id is not None:
                     self._content_hash_index.pop(content_hash, None)
 
+        # Cross-session hit: another session already compiled these exact
+        # bytes. Adopt the shared compiled model with no recompile. From this
+        # store's perspective the load is still "fresh" (a new reference for
+        # this session); the compile-skip is a transparent optimisation.
+        if dedup_eligible and self._shared_cache is not None and content_hash is not None:
+            shared = self._shared_cache.acquire(content_hash)
+            if shared is not None:
+                self._adopt_shared(shared)
+                return LoadResult(
+                    model_id=shared.model_id,
+                    data_objects=shared.summary.data_objects,
+                    dimensions=shared.summary.dimensions,
+                    measures=shared.summary.measures,
+                    metrics=shared.summary.metrics,
+                    warnings=[],
+                    model_load="fresh",
+                    health=self._health_for(shared.model),
+                )
+
         with self._lock:
             if len(self._models) >= self._max_models:
                 raise ModelCapacityError(f"Maximum models per session reached ({self._max_models})")
@@ -613,7 +692,15 @@ class ModelStore:
         if errors:
             raise ModelValidationError(errors, warnings)
 
-        model_id = self._new_id()
+        shared_load = dedup_eligible and self._shared_cache is not None and content_hash is not None
+        # Content-derived id for shared models so identical bytes collapse to
+        # one id (and one result-cache key) across sessions; random id
+        # otherwise, preserving the ``dedup=False`` "distinct model" contract.
+        model_id = (
+            self._content_id(content_hash)
+            if content_hash is not None and shared_load
+            else self._new_id()
+        )
 
         # Eagerly export OBSL-Core graph (Option C: at model load time).
         graph = export_obsl(model, model_id)
@@ -627,6 +714,31 @@ class ModelStore:
             measures=len(model.measures),
             metrics=len(model.metrics),
         )
+
+        if shared_load:
+            assert self._shared_cache is not None and content_hash is not None
+            compiled = CompiledModel(
+                model_id=model_id,
+                content_hash=content_hash,
+                model=model,
+                raw=merged_raw,
+                graph=artifact,
+                summary=summary,
+            )
+            # A concurrent load of the same content may have won the race;
+            # insert_or_acquire returns the surviving entry either way.
+            entry = self._shared_cache.insert_or_acquire(compiled)
+            self._adopt_shared(entry)
+            return LoadResult(
+                model_id=entry.model_id,
+                data_objects=entry.summary.data_objects,
+                dimensions=entry.summary.dimensions,
+                measures=entry.summary.measures,
+                metrics=entry.summary.metrics,
+                warnings=warnings,
+                model_load="fresh",
+                health=self._health_for(entry.model),
+            )
 
         with self._lock:
             # Re-check capacity under lock — the first check (above) ran
@@ -770,6 +882,32 @@ class ModelStore:
             stale_hashes = [h for h, mid in self._content_hash_index.items() if mid == model_id]
             for h in stale_hashes:
                 del self._content_hash_index[h]
+            was_shared = model_id in self._shared_ids
+            self._shared_ids.discard(model_id)
+        # Release the shared reference outside the store lock. The shared model
+        # stays compiled while any other session still references it.
+        if was_shared and self._shared_cache is not None:
+            self._shared_cache.release(model_id)
+
+    def close(self) -> None:
+        """Drop this store, releasing every shared reference it holds.
+
+        Called by :class:`SessionManager` when a session is purged/expired/
+        closed, so shared models are refcount-released and can be evicted once
+        no live session references them. Private (non-shared) models are simply
+        discarded with the store.
+        """
+        with self._lock:
+            shared_ids = list(self._shared_ids)
+            self._shared_ids.clear()
+            self._models.clear()
+            self._raws.clear()
+            self._graphs.clear()
+            self._summaries.clear()
+            self._content_hash_index.clear()
+        if self._shared_cache is not None:
+            for mid in shared_ids:
+                self._shared_cache.release(mid)
 
     def compile_query(
         self,

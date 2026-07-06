@@ -253,11 +253,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             ", ".join(n for n, _ in named_preloads),
         )
 
-    # Wipe persisted cache state on startup. ``model_id`` is regenerated as
-    # a fresh UUID on every model load, so any entries from a previous
-    # process run are orphans by construction (their cache keys reference
-    # model_ids that no longer exist). Starting empty avoids accumulating
-    # dead state between restarts. See PLAN_freshness_driven_cache.md §7.
+    # Wipe persisted cache state on startup. Shared models now use a stable
+    # content-derived ``model_id`` (see service/model_cache.py), so cache keys
+    # from a previous run are no longer orphaned by construction — but we still
+    # wipe conservatively: a change to the compiler or model semantics between
+    # runs could otherwise let a stale row survive under a matching key.
+    # Starting empty avoids that risk (a future compiler-version stamp could
+    # enable cross-restart reuse). See PLAN_freshness_driven_cache.md §7.
     _wipe_file_cache_state(settings.cache_backend, settings.cache_dir)
 
     cache = build_cache(settings)
