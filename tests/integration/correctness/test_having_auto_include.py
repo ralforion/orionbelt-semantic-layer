@@ -42,22 +42,22 @@ def _to_decimal(v: Any) -> Decimal:
 def test_having_on_non_selected_measure_matches_explicit_form(
     run_query: Callable[[QueryObject], list[dict[str, Any]]],
 ) -> None:
-    """``Total Sales by Client Name HAVING Complaint Count > 0`` is well-formed.
+    """``Total Sales by Client Name HAVING Client Complaints Count > 0`` is well-formed.
 
     Compares two forms that should produce the same per-client Total
     Sales values:
 
     * **Implicit** — ``select.measures = ["Total Sales"]``,
-      ``HAVING Complaint Count > 0``. Pre-fix this emitted invalid SQL
+      ``HAVING Client Complaints Count > 0``. Pre-fix this emitted invalid SQL
       (binder error). Post-fix the resolver auto-includes
-      ``Complaint Count`` in the projection.
-    * **Explicit** — ``select.measures = ["Total Sales", "Complaint Count"]``,
+      ``Client Complaints Count`` in the projection.
+    * **Explicit** — ``select.measures = ["Total Sales", "Client Complaints Count"]``,
       same HAVING. Always compiled.
 
     Both forms should yield the same ``(Client Name, Total Sales)``
     pairs across the same set of clients.
     """
-    having = [QueryFilter(field="Complaint Count", op=FilterOperator.GT, value=0)]
+    having = [QueryFilter(field="Client Complaints Count", op=FilterOperator.GT, value=0)]
 
     implicit = run_query(
         QueryObject(
@@ -72,7 +72,7 @@ def test_having_on_non_selected_measure_matches_explicit_form(
         QueryObject(
             select=QuerySelect(
                 dimensions=["Client Name"],
-                measures=["Total Sales", "Complaint Count"],
+                measures=["Total Sales", "Client Complaints Count"],
             ),
             having=having,
         )
@@ -100,7 +100,7 @@ def test_having_on_non_selected_measure_matches_explicit_form(
     # Sanity: at least one row is left after HAVING — otherwise the
     # invariant is trivially satisfied and would mask a bug.
     assert impl_by_client, (
-        "HAVING Complaint Count > 0 should match at least one client; "
+        "HAVING Client Complaints Count > 0 should match at least one client; "
         "got an empty result. Possibly the auto-included measure was "
         "filtered out by an earlier resolution pass."
     )

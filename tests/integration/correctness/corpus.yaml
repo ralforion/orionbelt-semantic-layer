@@ -50,7 +50,7 @@
   description: >-
     Corpus #7 — CoalesceDimension over two role-playing client dims (Sales
     Client Name via Sales, Complaint Client Name via Client Complaints),
-    with HAVING on Complaint Count > 0 to filter to clients with complaints.
+    with HAVING on Client Complaints Count > 0 to filter to clients with complaints.
     Outer SELECT collapses the two role-playing legs with COALESCE(d1, d2)
     AS "Client" and groups by the alias — one row per physical client.
   lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[07_total_sales_by_client_with_complaints]
@@ -59,7 +59,7 @@
     sortKeys: [Client]
 
 - id: 08_average_sale
-  description: Corpus #8 — derived metric (Total Sales / Sales Order Count).
+  description: Corpus #8 — derived metric (Total Sales / Sales Count).
   lastVerifiedBy: tests/integration/correctness/test_metric_algebra.py::test_average_sale_equals_total_sales_over_order_count
 
 - id: 09_return_rate

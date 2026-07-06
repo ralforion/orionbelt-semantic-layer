@@ -129,7 +129,7 @@ FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC;
 ```
 
-`Average Sale` is a metric (`Total Sales / Sales Order Count`) defined in the
+`Average Sale` is a metric (`Total Sales / Sales Count`) defined in the
 model, not in the query. Single-fact metrics like this push down cleanly
 through Dremio's federation.
 
