@@ -192,7 +192,7 @@ are:
 | OBSL accepts | Meaning |
 |---|---|
 | Bare measure label | Works **only without `GROUP BY`** — Dremio pushes the SELECT down whole, OBSL applies the OBML `aggregation:` server-side |
-| Wrapping aggregate that **matches** the measure's declared agg | e.g. `SUM("Total Sales")` on a `sum:`-declared measure, `COUNT(DISTINCT "Sales Order Count")` on a `count_distinct:`-declared measure |
+| Wrapping aggregate that **matches** the measure's declared agg | e.g. `SUM("Total Sales")` on a `sum:`-declared measure, `COUNT(DISTINCT "Returns Count")` on a `count_distinct:`-declared measure |
 | `MEASURE("<label>")` | The portable semantic shim — but **Calcite has no `MEASURE()` operator** ([CALCITE-4496](https://issues.apache.org/jira/browse/CALCITE-4496)), so Dremio rejects it before it reaches the wire |
 
 Calcite also **rewrites** several aggregates into subqueries that OBSL
@@ -212,7 +212,7 @@ fails to pass through Dremio cleanly. In practice this means:
 
 ```sql
 -- ✅ Bare label — works for any measure, no GROUP BY:
-SELECT "Country Name", "Sales Order Count", "Total Sales"
+SELECT "Country Name", "Returns Count", "Total Sales"
   FROM obsl_pg.orionbelt_1_commerce."model"
   LIMIT 10;
 
@@ -232,7 +232,7 @@ Dremio, three options:
    `ROLLUP` / `HAVING` because OBSL parses the SQL itself; the
    Calcite-imposed "wrap or group" rule never applies.
 2. **Express the average as a sum-decomposed derived metric in OBML.**
-   `expression: '{[Total Sales]} / {[Sales Order Count]}'` — both inputs
+   `expression: '{[Total Sales]} / {[Sales Count]}'` — both inputs
    are SUM/COUNT-style measures, the metric inherits the
    `aggregation: sum` shim path, and through Dremio you wrap the metric
    in `SUM(...)` like any other additive measure.

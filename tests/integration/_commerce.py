@@ -167,7 +167,7 @@ COMMERCE_CASES: tuple[CommerceCase, ...] = (
         QueryObject(
             select=QuerySelect(
                 dimensions=["Product Category"],
-                measures=["Total Sales", "Sales Order Count"],
+                measures=["Total Sales", "Sales Count"],
             ),
         ),
     ),

@@ -79,7 +79,7 @@ LIMIT 4;
 
 
 -- A5. A governed metric, defined once in the model.
---     "Average Sale" = Total Sales / Sales Order Count - not in the query.
+--     "Average Sale" = Total Sales / Sales Count - not in the query.
 SELECT "Channel Name", "Total Sales", "Average Sale"
 FROM orionbelt.commerce.model
 ORDER BY "Total Sales" DESC;

@@ -8,7 +8,7 @@
 --           ...
 --    GROUP BY COALESCE("Sales Client Name", "Complaint Client Name")
 --
--- HAVING Complaint Count > 0 enforces the membership filter.
+-- HAVING Client Complaints Count > 0 enforces the membership filter.
 --
 -- Hand reference computes the two per-client aggregates independently
 -- and INNER-JOINs on client_id to enforce the filter, avoiding the fan
@@ -36,7 +36,7 @@ complaints_per_client AS (
 )
 SELECT s.clientname             AS "Client",
        s.total_sales            AS "Total Sales",
-       CAST(c.complaint_count AS BIGINT) AS "Complaint Count"
+       CAST(c.complaint_count AS BIGINT) AS "Client Complaints Count"
 FROM sales_per_client s
 INNER JOIN complaints_per_client c ON s.clientid = c.clientid
 WHERE c.complaint_count > 0
