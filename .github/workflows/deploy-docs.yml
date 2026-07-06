@@ -1,0 +1,71 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'pyproject.toml'  # In case version changes
+      - '.github/workflows/deploy-docs.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout orionbelt-semantic-layer
+        uses: actions/checkout@v4
+        with:
+          path: docs-source
+
+      - name: Checkout ralforion.github.io
+        uses: actions/checkout@v4
+        with:
+          repository: ralforion/ralforion.github.io
+          token: ${{ secrets.DEPLOY_PAT || secrets.GITHUB_TOKEN }}
+          path: main-site
+
+      - name: Set up Python with uv
+        uses: drivendataorg/setup-python-uv-action@v1
+        with:
+          python-version: "3.11"
+      
+      - name: Build documentation
+        working-directory: docs-source
+        run: |
+          uv run mkdocs build -d ../main-site/public/orionbelt-semantic-layer
+      
+      - name: Get version info
+        id: version
+        working-directory: docs-source
+        run: |
+          echo "version=$(grep project_version mkdocs.yml | cut -d':' -f2 | xargs)" >> $GITHUB_OUTPUT
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "branch=$(git branch --show-current)" >> $GITHUB_OUTPUT
+
+      - name: Deploy to ralforion.github.io
+        working-directory: main-site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [[ `git status --porcelain public/orionbelt-semantic-layer` ]]; then
+            git add public/orionbelt-semantic-layer
+            git commit -m "Update OrionBelt docs to ${{ steps.version.outputs.version }}
+
+            Built from ralforion/orionbelt-semantic-layer@${{ steps.version.outputs.commit }}
+            Triggered by: ${{ github.event_name }}
+            Branch: ${{ steps.version.outputs.branch }}"
+            
+            git push
+            echo "✅ Documentation deployed to ralforion.com/orionbelt-semantic-layer/"
+            echo "Version: ${{ steps.version.outputs.version }}"
+          else
+            echo "📝 No documentation changes detected"
+          fi
