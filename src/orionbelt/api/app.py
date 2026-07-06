@@ -283,20 +283,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
             from orionbelt.cache import result_codec
 
-            warm_payload = result_codec.encode(
-                columns=[{"name": "warm", "data_type": "string"}],
-                rows=[["warm"]],
-                sql="SELECT 1",
-                dialect=cache.backend_name,
-                explain=None,
-                warnings=[],
-                sql_valid=True,
-                execution_time_ms=0.0,
-                timezone=None,
-                resolved={},
-                physical_tables=[],
-            )
-            result_codec.decode(warm_payload)
+            warm_payload = result_codec.encode_data(["warm"], [["warm"]])
+            result_codec.decode_data(warm_payload)
             await cache.stats()  # exercises DuckDB meta read + pytz bind
         except Exception:
             logger.exception("Cache warm-up failed (non-fatal)")

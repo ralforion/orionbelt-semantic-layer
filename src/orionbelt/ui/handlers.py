@@ -598,16 +598,25 @@ def _decode_arrow_execute_response(resp: Any) -> Any:
     """Decode a ``format=arrow`` execute response into the same dict shape the
     JSON path yields, so downstream rendering is identical.
 
-    The self-contained Arrow stream carries the columnar rows plus the full
-    envelope (sql, columns, explain, …) in its schema metadata, so both come out
-    of one stream. httpx has already gunzip'd the body via ``Content-Encoding``.
+    The response is a length-prefixed frame separating the freshly-assembled
+    metadata from the cached row data::
+
+        [u32 big-endian json_len][JSON envelope utf-8][gzip'd Arrow IPC data]
+
+    The metadata (sql, columns, timing, ``cached`` flag, …) is parsed from the
+    JSON prefix; rows come from the gzip'd Arrow data sub-part. Because the
+    envelope is rebuilt per request, ``execution_time_ms`` / ``cached`` are
+    correct even on a cache hit.
     """
+    import gzip
+    import json
+
     import pyarrow as pa
 
-    from orionbelt.cache.result_codec import read_envelope
-
-    table = pa.ipc.open_stream(resp.content).read_all()
-    data: dict[str, Any] = read_envelope(table)
+    body = resp.content
+    meta_len = int.from_bytes(body[:4], "big")
+    data: dict[str, Any] = json.loads(body[4 : 4 + meta_len].decode("utf-8"))
+    table = pa.ipc.open_stream(gzip.decompress(body[4 + meta_len :])).read_all()
     names = table.column_names
     data["rows"] = [[row.get(n) for n in names] for row in table.to_pylist()]
     if not data.get("columns"):
@@ -744,6 +753,8 @@ def execute_query(
         columns = data.get("columns", [])
         rows = data.get("rows", [])
         row_count = data.get("row_count", 0)
+        # The metadata envelope is rebuilt per request, so on a cache hit this is
+        # the cache fetch time (not the stale original DB time).
         exec_time = data.get("execution_time_ms", 0.0)
 
         col_names = [c["name"] for c in columns]

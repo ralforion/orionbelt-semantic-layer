@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -47,6 +48,7 @@ _SCHEMA_DDL = [
         dialect        VARCHAR NOT NULL,
         file_path      VARCHAR NOT NULL,
         row_count      BIGINT,
+        columns_json   VARCHAR,
         size_bytes     BIGINT,
         created_at     TIMESTAMP WITH TIME ZONE NOT NULL,
         expires_at     TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -150,6 +152,11 @@ class FileCache(Cache):
                 )
             with contextlib.suppress(Exception):
                 self._meta.execute("DROP INDEX IF EXISTS idx_session")
+        # v4 (2026-07): the cached blob holds only row data; the result column
+        # schema now rides in this column so a hit rebuilds without decoding.
+        if "columns_json" not in cols:
+            with contextlib.suppress(Exception):
+                self._meta.execute("ALTER TABLE cache_entries ADD COLUMN columns_json VARCHAR")
 
     def _exec(
         self, sql: str, params: list[object] | tuple[object, ...] | None = None
@@ -201,7 +208,8 @@ class FileCache(Cache):
         # two things that previously blocked the loop on a hit.
         try:
             row = self._exec(
-                "SELECT file_path, expires_at, created_at FROM cache_entries WHERE cache_key = ?",
+                "SELECT file_path, expires_at, created_at, row_count, columns_json "
+                "FROM cache_entries WHERE cache_key = ?",
                 [key],
             ).fetchone()
         except Exception as exc:
@@ -212,7 +220,7 @@ class FileCache(Cache):
             self._count("misses")
             return None
 
-        file_path, expires_at, created_at = row
+        file_path, expires_at, created_at, row_count, columns_json = row
         now = datetime.now(UTC)
         if expires_at is None or expires_at <= now:
             await self._evict(key, file_path)
@@ -238,12 +246,19 @@ class FileCache(Cache):
         except Exception:
             physical_tables = []
 
+        columns = None
+        if columns_json:
+            with contextlib.suppress(Exception):
+                columns = json.loads(columns_json)
+
         self._count("hits")
         return CachedResult(
             payload=payload,
             cached_at=created_at if isinstance(created_at, datetime) else now,
             ttl_remaining_seconds=max(0, int((expires_at - now).total_seconds())),
             physical_tables=physical_tables,
+            row_count=int(row_count) if row_count is not None else 0,
+            columns=columns,
         )
 
     async def set(
@@ -258,6 +273,7 @@ class FileCache(Cache):
         query_hash: str,
         dialect: str,
         row_count: int,
+        columns_json: str | None = None,
     ) -> None:
         if ttl_seconds <= 0:
             return
@@ -288,9 +304,9 @@ class FileCache(Cache):
                     """
                     INSERT OR REPLACE INTO cache_entries
                         (cache_key, datasource, model_id, query_hash, dialect,
-                         file_path, row_count, size_bytes, created_at, expires_at,
-                         last_hit_at, hit_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+                         file_path, row_count, columns_json, size_bytes, created_at,
+                         expires_at, last_hit_at, hit_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
                     """,
                     [
                         key,
@@ -300,6 +316,7 @@ class FileCache(Cache):
                         dialect,
                         file_path,
                         row_count,
+                        columns_json,
                         size_bytes,
                         now,
                         expires_at,

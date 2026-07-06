@@ -26,6 +26,22 @@ from orionbelt.settings import Settings
 from tests.conftest import SAMPLE_MODEL_YAML
 
 
+def _decode_frame(content: bytes):
+    """Split the ``[u32 len][json meta][gzip'd arrow]`` frame into (meta, table).
+
+    Returns the parsed JSON envelope dict and the decoded pyarrow Table.
+    """
+    import gzip
+    import json
+
+    import pyarrow as pa
+
+    meta_len = int.from_bytes(content[:4], "big")
+    meta = json.loads(content[4 : 4 + meta_len].decode("utf-8"))
+    table = pa.ipc.open_stream(gzip.decompress(content[4 + meta_len :])).read_all()
+    return meta, table
+
+
 def _stub_exec_result() -> ExecutionResult:
     """A small fixed ExecutionResult — independent of dialect/SQL."""
     return ExecutionResult(
@@ -123,10 +139,9 @@ class TestSessionExecuteCache:
         """JSON and Arrow share one cache entry — the key is query-only.
 
         A canonical JSON execution writes the typed rows; a subsequent Arrow
-        request for the same query reads that same entry and serves it as an
-        Arrow IPC stream (PLAN_arrow_cache.md §3).
+        request for the same query reads that same entry and serves it as the
+        length-prefixed result frame (fresh JSON envelope + gzip'd Arrow data).
         """
-        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
         client, cache = cached_client
         sid = (await client.post("/v1/sessions")).json()["session_id"]
         mid = (
@@ -147,37 +162,35 @@ class TestSessionExecuteCache:
             headers={"Accept-Encoding": "gzip"},
         )
         assert arrow.status_code == 200
-        assert arrow.headers["content-type"].startswith("application/vnd.apache.arrow.stream")
+        assert arrow.headers["content-type"].startswith("application/vnd.orionbelt.result")
         assert (await cache.stats()).entry_count == 1
         assert (await cache.stats()).hit_count_total >= 1
 
-        table = pa.ipc.open_stream(pa.BufferReader(arrow.content)).read_all()
+        meta, table = _decode_frame(arrow.content)
         assert table.column_names == ["Customer Country", "Total Revenue"]
         assert table.to_pylist() == [
             {"Customer Country": "US", "Total Revenue": 100.0},
             {"Customer Country": "UK", "Total Revenue": 200.0},
         ]
-        # Full envelope restored on the Arrow hit, not just the rows.
-        from orionbelt.cache.result_codec import read_envelope
+        # Fresh envelope on the Arrow hit — rebuilt from the compile result.
+        assert meta["sql"] == first.json()["sql"]
+        assert meta["dialect"] == "duckdb"
+        assert [c["name"] for c in meta["columns"]] == ["Customer Country", "Total Revenue"]
+        assert meta["cached"] is True
 
-        env = read_envelope(table)
-        assert env["sql"] == first.json()["sql"]
-        assert env["dialect"] == "duckdb"
-        assert [c["name"] for c in env["columns"]] == ["Customer Country", "Total Revenue"]
-
-    async def test_arrow_hit_is_byte_passthrough_of_stored_blob(
+    async def test_arrow_hit_ships_stored_data_blob_verbatim(
         self, cached_client: tuple[AsyncClient, FileCache]
     ) -> None:
-        """A raw-arrow hit returns the stored gzip'd blob verbatim (no re-encode).
+        """A raw-arrow hit ships the stored DATA blob verbatim (data zero-copy).
 
-        The blob is stamped ``cached=true`` at write time, so the zero-copy hit
-        carries the in-band flag the UI reads for its "cache" source label.
+        The blob holds only row data; the JSON envelope (timing, ``cached``) is
+        rebuilt fresh, so the hit reports the cache fetch time — not the original
+        DB time — while the Arrow data bytes are the stored blob unchanged.
         """
         import glob
         import os
 
-        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
-        from orionbelt.cache.result_codec import read_envelope
+        pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
 
         client, cache = cached_client
         sid = (await client.post("/v1/sessions")).json()["session_id"]
@@ -192,46 +205,85 @@ class TestSessionExecuteCache:
             f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
         )
         assert miss.status_code == 200
-        miss_tbl = pa.ipc.open_stream(pa.BufferReader(miss.content)).read_all()
-        assert read_envelope(miss_tbl)["cached"] is False
+        miss_meta, _ = _decode_frame(miss.content)
+        assert miss_meta["cached"] is False
 
-        # The stored blob on disk (single .arrow payload) is what a hit serves.
+        # The stored blob on disk (single .arrow payload) is pure gzip'd data.
         stored_files = glob.glob(
             os.path.join(str(cache._results_dir), "**", "*.arrow"), recursive=True
         )
         assert len(stored_files) == 1
-        import gzip as _gzip
+        stored_bytes = Path(stored_files[0]).read_bytes()
 
-        stored_tbl = pa.ipc.open_stream(
-            pa.BufferReader(_gzip.decompress(Path(stored_files[0]).read_bytes()))
-        ).read_all()
-        # Stored blob is stamped cached=true at write time (enables verbatim serve).
-        assert read_envelope(stored_tbl)["cached"] is True
-
-        # Arrow hit: served via byte-passthrough of that stored blob. httpx auto-
-        # gunzips, so compare the decoded table + the in-band cached flag. The
-        # hit must be TRUE zero-copy: the gzip/Arrow decode is skipped entirely,
-        # so cache_decode is never called during the request.
+        # The raw-arrow hit builds its envelope from the entry's column-schema
+        # sidecar, so it must NOT decode the blob at all (true zero-copy).
         from unittest.mock import patch as _patch
 
         import orionbelt.api.query_cache as qc
+        import orionbelt.cache.result_codec as rc
 
-        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+        with (
+            _patch.object(qc, "decode_data", wraps=qc.decode_data) as spy_qc,
+            _patch.object(rc, "decode_data", wraps=rc.decode_data) as spy_rc,
+        ):
             hit = await client.post(
                 f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
             )
+        assert spy_qc.call_count == 0 and spy_rc.call_count == 0  # no decode on the raw-arrow hit
         assert hit.status_code == 200
-        assert hit.headers.get("content-encoding") == "gzip"
-        assert spy_decode.call_count == 0  # zero-copy: no decode on the raw-arrow hit
-        hit_tbl = pa.ipc.open_stream(pa.BufferReader(hit.content)).read_all()
-        assert read_envelope(hit_tbl)["cached"] is True
-        assert hit_tbl.to_pylist() == miss_tbl.to_pylist()
-        assert hit_tbl.equals(stored_tbl)
+        assert hit.headers["content-type"].startswith("application/vnd.orionbelt.result")
+        # The Arrow data sub-part (raw bytes after the JSON prefix) is the stored
+        # blob byte-for-byte (data zero-copy — no re-encode on the hit).
+        meta_len = int.from_bytes(hit.content[:4], "big")
+        hit_data = hit.content[4 + meta_len :]
+        assert hit_data == stored_bytes
+        hit_meta, hit_table = _decode_frame(hit.content)
+        # Fresh envelope: cached flag + realistic fetch-time duration.
+        assert hit_meta["cached"] is True
+        assert hit_meta["cached_at"] is not None
+        assert hit_meta["execution_time_ms"] >= 0
+        assert hit_table.to_pylist() == [
+            {"Customer Country": "US", "Total Revenue": 100.0},
+            {"Customer Country": "UK", "Total Revenue": 200.0},
+        ]
 
-    async def test_json_hit_still_decodes(
+    async def test_second_query_reports_cache_fetch_time_not_db_time(
         self, cached_client: tuple[AsyncClient, FileCache]
     ) -> None:
-        """A JSON (non-passthrough) hit still decodes the blob to rebuild rows."""
+        """Regression: the 2nd (cache-hit) run reports the cache fetch time.
+
+        The stubbed executor bakes ``execution_time_ms=1.0`` into the miss; a
+        hit must report the freshly-measured cache fetch time and ``cached=true``
+        for every surface (JSON here, Arrow envelope below), never the DB time.
+        """
+        client, _ = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+
+        miss = (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()
+        assert miss["cached"] is False
+
+        hit = (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()
+        assert hit["cached"] is True
+        # Fresh per-request timing — measured this request, not the baked DB time.
+        assert hit["execution_time_ms"] != miss["execution_time_ms"]
+
+        arrow = await client.post(
+            f"/v1/sessions/{sid}/query/execute?format=arrow",
+            json=body,
+            headers={"Accept-Encoding": "gzip"},
+        )
+        meta, _ = _decode_frame(arrow.content)
+        assert meta["cached"] is True
+        assert meta["execution_time_ms"] >= 0
+
+    async def test_json_hit_decodes_data_blob(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        """A JSON hit decodes the stored data blob to rebuild rows."""
         from unittest.mock import patch as _patch
 
         import orionbelt.api.query_cache as qc
@@ -246,10 +298,11 @@ class TestSessionExecuteCache:
         assert (await client.post(f"/v1/sessions/{sid}/query/execute", json=body)).json()[
             "cached"
         ] is False
-        with _patch.object(qc, "cache_decode", wraps=qc.cache_decode) as spy_decode:
+        with _patch.object(qc, "decode_data", wraps=qc.decode_data) as spy_decode:
             hit = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
         assert hit.json()["cached"] is True
-        assert spy_decode.call_count == 1  # JSON path needs the decoded rows
+        assert hit.json()["row_count"] == 2
+        assert spy_decode.call_count == 1  # JSON path decodes the data blob
 
 
 class TestShortcutExecuteCache:

@@ -1,7 +1,8 @@
 """Tests for the Arrow IPC + gzip cache codec (``orionbelt.cache.result_codec``).
 
-See ``design/PLAN_arrow_cache.md``. The codec stores an uncompressed Arrow IPC
-stream (envelope packed into schema metadata) gzip'd at the blob level.
+See ``design/PLAN_arrow_cache.md``. The codec stores ONLY row data as an
+uncompressed Arrow IPC stream, gzip'd at the blob level. No response envelope is
+baked in — metadata is rebuilt fresh on every read.
 """
 
 from __future__ import annotations
@@ -14,68 +15,37 @@ pa = pytest.importorskip("pyarrow", reason="pyarrow required for the result code
 
 from orionbelt.cache import result_codec  # noqa: E402
 
-_SAMPLE = dict(
-    columns=[
-        {"name": "Country", "type": "string", "format": None},
-        {"name": "Revenue", "type": "decimal(18, 2)", "format": "#,##0.00"},
-    ],
-    rows=[["US", 1234.5], ["UK", 6789.0]],
-    sql="SELECT country, SUM(revenue) FROM sales GROUP BY country",
-    dialect="duckdb",
-    explain=None,
-    warnings=[],
-    sql_valid=True,
-    execution_time_ms=12.5,
-    timezone="UTC",
-    resolved={"fact_tables": ["SALES"], "dimensions": ["Country"], "measures": ["Revenue"]},
-    physical_tables=["WH.PUBLIC.SALES"],
-)
+_COLUMN_NAMES = ["Country", "Revenue"]
+_ROWS = [["US", 1234.5], ["UK", 6789.0]]
 
 
 def test_encode_decode_round_trip() -> None:
-    payload = result_codec.encode(**_SAMPLE)
-    env = result_codec.decode(payload)
+    payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
+    table = result_codec.decode_data(payload)
 
-    assert env.columns == _SAMPLE["columns"]
-    assert env.rows == _SAMPLE["rows"]
-    assert env.sql == _SAMPLE["sql"]
-    assert env.dialect == "duckdb"
-    assert env.explain is None
-    assert env.warnings == []
-    assert env.sql_valid is True
-    assert env.execution_time_ms == 12.5
-    assert env.timezone == "UTC"
-    assert env.resolved == _SAMPLE["resolved"]
-    assert env.physical_tables == ["WH.PUBLIC.SALES"]
-    assert env.row_count == 2
+    assert table.column_names == _COLUMN_NAMES
+    assert table.num_rows == 2
+    assert result_codec.table_to_rows(table) == _ROWS
 
 
 def test_payload_is_gzip() -> None:
     """The blob is gzip'd at the transport/storage layer (§3)."""
-    payload = result_codec.encode(**_SAMPLE)
+    payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
     assert payload[:2] == b"\x1f\x8b"  # gzip magic
 
 
-def test_encode_cached_payload_stamps_cached_true() -> None:
-    """The shared storage encoder stamps cached=true so raw-arrow hits can be
-    served verbatim. All cache writers (REST + oneshot) must route through it."""
-    from orionbelt.api.query_cache import encode_cached_payload
-
-    payload = encode_cached_payload(**_SAMPLE)
-    table = pa.ipc.open_stream(pa.BufferReader(gzip.decompress(payload))).read_all()
-    env = result_codec.read_envelope(table)
-    assert env["cached"] is True
-    assert env["cached_at"] is not None
-    # A bare encode (used for the miss response) is NOT flagged cached.
-    bare = result_codec.encode(**_SAMPLE)
-    bare_tbl = pa.ipc.open_stream(pa.BufferReader(gzip.decompress(bare))).read_all()
-    assert result_codec.read_envelope(bare_tbl)["cached"] is False
+def test_blob_holds_only_data_no_envelope_metadata() -> None:
+    """The stored blob carries pure data — no ``obsl_`` envelope in the schema."""
+    payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
+    table = result_codec.decode_data(payload)
+    md = table.schema.metadata or {}
+    assert not any(key.startswith(b"obsl_") for key in md)
 
 
 def test_inner_stream_is_uncompressed_arrow_ipc() -> None:
-    """Un-gzipping yields a plain, universally-readable IPC stream with the
-    envelope in schema metadata and no Arrow-level buffer compression (§4)."""
-    payload = result_codec.encode(**_SAMPLE)
+    """Un-gzipping yields a plain, universally-readable IPC stream with no
+    Arrow-level buffer compression (§4)."""
+    payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
     raw = gzip.decompress(payload)
 
     with pa.ipc.open_stream(pa.BufferReader(raw)) as reader:
@@ -83,24 +53,21 @@ def test_inner_stream_is_uncompressed_arrow_ipc() -> None:
 
     assert table.num_rows == 2
     assert table.column_names == ["Country", "Revenue"]
-    md = table.schema.metadata or {}
-    assert b"obsl_sql" in md
-    assert b"obsl_columns" in md
 
 
 def test_empty_rows_round_trips() -> None:
-    sample = dict(_SAMPLE, rows=[])
-    env = result_codec.decode(result_codec.encode(**sample))
-    assert env.rows == []
-    assert env.row_count == 0
-    assert [c["name"] for c in env.columns] == ["Country", "Revenue"]
+    payload = result_codec.encode_data(_COLUMN_NAMES, [])
+    table = result_codec.decode_data(payload)
+    assert table.num_rows == 0
+    assert table.column_names == ["Country", "Revenue"]
+    assert result_codec.table_to_rows(table) == []
 
 
 def test_zero_columns_round_trips() -> None:
-    sample = dict(_SAMPLE, columns=[], rows=[])
-    env = result_codec.decode(result_codec.encode(**sample))
-    assert env.columns == []
-    assert env.rows == []
+    payload = result_codec.encode_data([], [])
+    table = result_codec.decode_data(payload)
+    assert table.column_names == []
+    assert result_codec.table_to_rows(table) == []
 
 
 def test_build_result_table_pads_short_rows() -> None:
@@ -120,11 +87,11 @@ def test_to_ipc_stream_is_readable_by_pyarrow() -> None:
     assert got.to_pylist() == [{"x": 1}, {"x": 2}, {"x": 3}]
 
 
-def test_decode_table_reads_encode_output() -> None:
-    """The Flight surface's ``decode_table`` reads what REST's ``encode`` wrote —
-    one blob format shared across surfaces (single-entry cache)."""
-    payload = result_codec.encode(**_SAMPLE)
-    table = result_codec.decode_table(payload)
+def test_decode_data_is_shared_across_surfaces() -> None:
+    """``decode_data`` reads what ``encode_data`` wrote — one blob format shared
+    across REST / pgwire / Flight (single-entry cache)."""
+    payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
+    table = result_codec.decode_data(payload)
     assert table.column_names == ["Country", "Revenue"]
     assert table.to_pylist() == [
         {"Country": "US", "Revenue": 1234.5},
@@ -132,26 +99,6 @@ def test_decode_table_reads_encode_output() -> None:
     ]
 
 
-def test_read_envelope_extracts_slots() -> None:
-    """``read_envelope`` recovers the full envelope from a decoded stream's
-    schema metadata (what a self-describing Arrow client / the UI reads)."""
-    payload = result_codec.encode(**_SAMPLE)
-    table = result_codec.decode_table(payload)
-    env = result_codec.read_envelope(table)
-    assert env["sql"] == _SAMPLE["sql"]
-    assert env["dialect"] == "duckdb"
-    assert env["columns"] == _SAMPLE["columns"]
-    assert env["physical_tables"] == ["WH.PUBLIC.SALES"]
-    assert env["row_count"] == 2
-
-
-def test_decode_survives_missing_metadata() -> None:
-    """A bare IPC stream (no obsl_ envelope) decodes to sensible defaults."""
-    table = result_codec.build_result_table(["x"], [[1]])
-    raw = result_codec.to_ipc_stream(table)
-    env = result_codec.decode(gzip.compress(raw))
-    assert env.sql == ""
-    assert env.columns == []
-    # Falls back to the table's own column names / row shape.
-    assert env.rows == [[1]]
-    assert env.row_count == 1
+def test_table_to_rows_preserves_schema_order() -> None:
+    table = result_codec.build_result_table(["x", "y"], [[1, 2], [3, 4]])
+    assert result_codec.table_to_rows(table) == [[1, 2], [3, 4]]

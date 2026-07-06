@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Response
@@ -14,9 +13,10 @@ from orionbelt.api.deps import (
 from orionbelt.api.query_cache import (
     build_explain_response,
     build_format_map,
-    build_result_columns,
     build_type_map,
+    exec_columns_from_table,
     execute_query_with_cache,
+    execution_result_from_data,
 )
 from orionbelt.api.schemas import (
     ColumnMetadata,
@@ -42,85 +42,88 @@ _build_type_map = build_type_map
 _build_format_map = build_format_map
 _build_explain_response = build_explain_response
 
-# Response formats the execute endpoints can emit. ``arrow`` is an uncompressed
-# Arrow IPC stream (see design/PLAN_arrow_cache.md), gzip'd at the HTTP layer.
+# Response formats the execute endpoints can emit.
 ExecuteFormat = Literal["json", "tsv", "arrow"]
 
+# Historical Accept token used to negotiate the arrow surface.
 ARROW_STREAM_MEDIA_TYPE = "application/vnd.apache.arrow.stream"
+
+# The ``format=arrow`` response is a length-prefixed frame that separates the
+# freshly-assembled metadata (JSON) from the cached row data (gzip'd Arrow IPC):
+#
+#     [u32 big-endian json_len][JSON envelope utf-8][gzip'd Arrow IPC stream]
+#
+# Only the row data is cached; the JSON envelope (sql, explain, timing,
+# ``cached`` flag, …) is rebuilt per request, so a cache hit reports correct
+# per-request metadata for every consumer. The Arrow sub-part carries its own
+# gzip, so on a hit it is the verbatim cached data blob (data stays zero-copy);
+# the whole frame is NOT additionally HTTP-gzip'd.
+ORIONBELT_RESULT_MEDIA_TYPE = "application/vnd.orionbelt.result+arrow"
 
 
 def negotiate_execute_format(format_param: ExecuteFormat, accept: str | None) -> ExecuteFormat:
     """Resolve the effective response format from ``?format=`` + the Accept header.
 
     An explicit ``?format=`` (``tsv``/``arrow``) always wins. Otherwise, a
-    client asking for the Arrow media type via ``Accept`` gets the Arrow stream;
-    everything else stays JSON.
+    client asking for the Arrow frame via ``Accept`` — either the result frame
+    media type this endpoint emits or the historical arrow-stream token — gets
+    the Arrow frame; everything else stays JSON.
     """
     if format_param in ("tsv", "arrow"):
         return format_param
-    if accept and ARROW_STREAM_MEDIA_TYPE in accept.lower():
-        return "arrow"
+    if accept:
+        lowered = accept.lower()
+        if ORIONBELT_RESULT_MEDIA_TYPE in lowered or ARROW_STREAM_MEDIA_TYPE in lowered:
+            return "arrow"
     return "json"
 
 
-def _negotiate_content_encoding(accept_encoding: str | None) -> str:
-    """Pick a blob codec for the Arrow body from the client's Accept-Encoding.
-
-    gzip is the universal default (every HTTP client and browser auto-decodes
-    it). A client that advertises no codec we store gets identity (the raw,
-    uncompressed IPC stream).
-    """
-    tokens = {t.strip().split(";")[0].lower() for t in (accept_encoding or "").split(",")}
-    if "gzip" in tokens or "*" in tokens:
-        return "gzip"
-    return "identity"
-
-
-def _build_arrow_response(
+def _arrow_envelope_dict(
     *,
-    envelope: dict[str, Any],
-    accept_encoding: str | None,
-) -> Response:
-    """Serialize a result as one self-contained Arrow IPC blob.
+    columns_meta: list[ColumnMetadata],
+    sql: str,
+    dialect: str,
+    explain: ExplainPlanResponse | None,
+    warnings: list[Any],
+    sql_valid: bool,
+    execution_time_ms: float,
+    timezone: str | None,
+    resolved: ResolvedInfoResponse,
+    physical_tables: list[str],
+    row_count: int,
+    cached: bool,
+    cached_at: str | None,
+) -> dict[str, Any]:
+    """Assemble the JSON metadata envelope prepended to the Arrow data frame.
 
-    ``envelope`` is the full response envelope (``result_codec.encode`` kwargs:
-    columns, rows, sql, dialect, explain, warnings, …). The columnar data is an
-    uncompressed Arrow IPC stream and the envelope rides in its schema metadata,
-    so a single stream restores everything the JSON response carries — the exact
-    same blob the cache stores. Compression is applied at the HTTP layer and
-    advertised via ``Content-Encoding`` so the client's HTTP stack transparently
-    decodes it before handing uncompressed IPC to its Arrow reader
-    (PLAN_arrow_cache.md §2/§3).
+    Mirrors the JSON ``QueryExecuteResponse`` fields minus ``rows`` (which ride
+    in the Arrow data sub-part). Built fresh every request from the compile
+    result + per-request timing, so it is never cached.
     """
-    from orionbelt.cache import result_codec
+    return {
+        "columns": [c.model_dump() for c in columns_meta],
+        "sql": sql,
+        "dialect": dialect,
+        "explain": explain.model_dump() if explain else None,
+        "warnings": [w.model_dump() for w in warnings],
+        "sql_valid": sql_valid,
+        "execution_time_ms": execution_time_ms,
+        "timezone": timezone,
+        "resolved": resolved.model_dump(),
+        "physical_tables": list(physical_tables),
+        "row_count": row_count,
+        "cached": cached,
+        "cached_at": cached_at,
+    }
 
-    blob = result_codec.encode(**envelope)  # gzip'd, self-contained (data + envelope)
-    if _negotiate_content_encoding(accept_encoding) == "gzip":
-        return Response(
-            content=blob,
-            media_type=ARROW_STREAM_MEDIA_TYPE,
-            headers={"Content-Encoding": "gzip"},
-        )
-    return Response(content=gzip.decompress(blob), media_type=ARROW_STREAM_MEDIA_TYPE)
 
+def _frame_result(meta: dict[str, Any], gzipped_data: bytes) -> Response:
+    """Emit the length-prefixed ``[u32 len][json][gzip'd arrow]`` frame."""
+    import json as _json
 
-def _arrow_passthrough_response(blob: bytes, accept_encoding: str | None) -> Response:
-    """Return a stored gzip'd Arrow blob verbatim (byte-passthrough on a hit).
-
-    The cache stores the exact self-contained Arrow IPC stream we serve, with
-    ``cached=true`` baked into the schema metadata at write time, so a raw-arrow
-    hit skips the decode -> re-encode round trip entirely. gzip stays on the wire
-    when the client accepts it; otherwise the blob is inflated once. Note the
-    baked ``execution_time_ms`` is the original DB compute time (not the cache
-    fetch time) — the intended, informative value for a zero-copy hit.
-    """
-    if _negotiate_content_encoding(accept_encoding) == "gzip":
-        return Response(
-            content=blob,
-            media_type=ARROW_STREAM_MEDIA_TYPE,
-            headers={"Content-Encoding": "gzip"},
-        )
-    return Response(content=gzip.decompress(blob), media_type=ARROW_STREAM_MEDIA_TYPE)
+    meta_bytes = _json.dumps(meta, default=str).encode("utf-8")
+    body = len(meta_bytes).to_bytes(4, "big") + meta_bytes + gzipped_data
+    return Response(content=body, media_type=ORIONBELT_RESULT_MEDIA_TYPE)
 
 
 def _physical_tables_for(model: Any, result: Any) -> list[str]:
@@ -176,15 +179,16 @@ def _render_response(
     always formats, ``json`` and ``arrow`` format only when ``format_values`` is
     set. Arrow without ``format_values`` (the UI round trip) ships raw typed,
     locale-neutral values verbatim; arrow *with* ``format_values`` bakes the
-    locale-aware display strings into the IPC blob.
+    locale-aware display strings into the Arrow data.
     """
     column_names = [c.name for c in columns_meta]
 
     if response_format == "arrow":
+        from orionbelt.cache import result_codec
+
         # Default (UI round trip): raw typed, locale-neutral values, formatted
         # client-side. With format_values the locale-aware display strings are
-        # baked into the blob, mirroring the JSON format_values variant. Either
-        # way the full envelope rides the Arrow schema metadata.
+        # encoded into the Arrow data, mirroring the JSON format_values variant.
         arrow_rows: list[list[Any]]
         if format_values:
             arrow_rows = [
@@ -202,24 +206,23 @@ def _render_response(
             ]
         else:
             arrow_rows = rows
-        return _build_arrow_response(
-            envelope={
-                "columns": [c.model_dump() for c in columns_meta],
-                "rows": arrow_rows,
-                "sql": sql,
-                "dialect": dialect,
-                "explain": explain.model_dump() if explain else None,
-                "warnings": [w.model_dump() for w in warnings],
-                "sql_valid": sql_valid,
-                "execution_time_ms": execution_time_ms,
-                "timezone": timezone,
-                "resolved": resolved.model_dump(),
-                "physical_tables": list(physical_tables),
-                "cached": cached,
-                "cached_at": cached_at,
-            },
-            accept_encoding=accept_encoding,
+        gzipped_data = result_codec.encode_data(column_names, arrow_rows)
+        meta = _arrow_envelope_dict(
+            columns_meta=columns_meta,
+            sql=sql,
+            dialect=dialect,
+            explain=explain,
+            warnings=warnings,
+            sql_valid=sql_valid,
+            execution_time_ms=execution_time_ms,
+            timezone=timezone,
+            resolved=resolved,
+            physical_tables=physical_tables,
+            row_count=row_count,
+            cached=cached,
+            cached_at=cached_at,
         )
+        return _frame_result(meta, gzipped_data)
 
     if response_format == "tsv":
         formatted = [
@@ -272,22 +275,15 @@ def _render_response(
     )
 
 
-def _build_execute_response(
-    *,
-    compile_result: Any,
-    exec_result: Any,
-    model: Any,
-    response_format: ExecuteFormat,
-    format_values: bool,
-    locale: str,
-    accept_encoding: str | None = None,
-) -> QueryExecuteResponse | Response:
-    """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
+def _columns_and_maps(
+    model: Any, exec_columns: list[Any]
+) -> tuple[list[ColumnMetadata], dict[str, Any], dict[str, str]]:
+    """Build ``columns_meta`` + the fmt/type maps from executor columns + model.
 
-    ``format_values`` is forced True for TSV; numeric cells are rendered with
-    each column's display ``format`` pattern using locale-aware separators.
-    ``arrow`` emits an uncompressed Arrow IPC stream (gzip'd per
-    ``accept_encoding``) carrying the typed, locale-neutral values verbatim.
+    Sourced from the executor's column list (name + ``type_hint`` +
+    ``default_format``), so a cache hit — whose columns are reconstructed from
+    the Arrow schema via :func:`exec_columns_from_table` — yields identical
+    metadata to a fresh execution.
     """
     model_type_map = _build_type_map(model)
     fmt_map = _build_format_map(model)
@@ -297,16 +293,18 @@ def _build_execute_response(
     # ``"#,##0.00"`` for floats and decimals). Raw-mode ``select.fields``
     # projections benefit most: physical columns no longer need a measure
     # to inherit a sensible locale-aware render.
-    for c in exec_result.columns:
+    for c in exec_columns:
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
 
-    # Canonical column shape (also what the result cache persists) — built via
-    # the shared helper so REST, the cache payload, and pgwire all agree. Reuse
-    # the maps already built above instead of rebuilding them.
-    columns_meta = build_result_columns(
-        model, exec_result, type_map=model_type_map, fmt_map=fmt_map
-    )
+    columns_meta = [
+        ColumnMetadata(
+            name=c.name,
+            type=model_type_map.get(c.name, c.type_hint or "string"),
+            format=fmt_map.get(c.name),
+        )
+        for c in exec_columns
+    ]
     # Merge the executor's type_hint as a fallback for columns that aren't
     # exposed via the dimension/measure/metric layer — notably raw-mode
     # ``select.fields`` projections, which reference physical columns the
@@ -314,8 +312,31 @@ def _build_execute_response(
     # column ("decimal(18, 2)" from the driver) wouldn't be classified as
     # numeric in format_row.
     type_map: dict[str, str] = {
-        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_result.columns
+        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_columns
     }
+    return columns_meta, fmt_map, type_map
+
+
+def _build_execute_response(
+    *,
+    compile_result: Any,
+    exec_result: Any,
+    model: Any,
+    response_format: ExecuteFormat,
+    format_values: bool,
+    locale: str,
+    accept_encoding: str | None = None,
+    cached: bool = False,
+    cached_at: str | None = None,
+) -> QueryExecuteResponse | Response:
+    """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
+
+    ``format_values`` is forced True for TSV; numeric cells are rendered with
+    each column's display ``format`` pattern using locale-aware separators. On a
+    cache hit ``exec_result`` is reconstructed from the cached data table, with
+    ``execution_time_ms`` set to the cache fetch time and ``cached=True``.
+    """
+    columns_meta, fmt_map, type_map = _columns_and_maps(model, exec_result.columns)
 
     return _render_response(
         response_format=response_format,
@@ -340,6 +361,8 @@ def _build_execute_response(
         row_count=exec_result.row_count,
         execution_time_ms=exec_result.execution_time_ms,
         timezone=exec_result.timezone,
+        cached=cached,
+        cached_at=cached_at,
     )
 
 
@@ -419,29 +442,75 @@ async def _run_with_cache(
     )
 
     if cached.cached:
-        # A cache hit always carries a key and a fetch time. The cached rows are
-        # raw + locale-neutral; render them into the requested surface (raw json,
-        # value-formatted json, tsv, or arrow) exactly like a fresh result.
-        assert cached.cache_key is not None
+        # Only row data is cached; rebuild the response envelope fresh from the
+        # compile result so per-request fields (timing, ``cached``) are correct
+        # for every surface. ``execution_time_ms`` becomes the cache fetch time.
         assert cached.fetch_elapsed_ms is not None
-        # Raw-arrow hit (the UI round trip): serve the stored gzip'd Arrow blob
-        # byte-for-byte. The cache skipped the decode for this path, so
-        # ``envelope`` is None and ``payload_blob`` holds the verbatim bytes —
-        # true zero-copy, no decode and no re-encode. Value-formatted arrow and
-        # every other surface fall through to render from the decoded envelope.
-        if response_format == "arrow" and not format_values and cached.payload_blob is not None:
-            return _arrow_passthrough_response(cached.payload_blob, accept_encoding)
-        assert cached.envelope is not None
-        return _build_cached_response(
-            envelope=cached.envelope,
-            cache_key=cached.cache_key,
-            ttl_outcome=cached.ttl_outcome,
-            fetch_elapsed_ms=cached.fetch_elapsed_ms,
+        fetch_ms = cached.fetch_elapsed_ms
+        if response_format == "arrow" and not format_values:
+            # Raw-arrow hit: ship the stored DATA blob verbatim (data stays
+            # zero-copy) with a fresh JSON envelope prepended. The column schema
+            # + row count come from the entry sidecar, so nothing decodes the
+            # blob. (Legacy entries without the sidecar decode for schema.)
+            assert cached.payload_blob is not None
+            if cached.hit_columns is not None:
+                columns_meta = [ColumnMetadata.model_validate(c) for c in cached.hit_columns]
+                row_count = cached.row_count or 0
+            else:
+                from orionbelt.cache import result_codec
+
+                data_table = result_codec.decode_data(cached.payload_blob)
+                columns_meta, _, _ = _columns_and_maps(model, exec_columns_from_table(data_table))
+                row_count = data_table.num_rows
+            meta = _arrow_envelope_dict(
+                columns_meta=columns_meta,
+                sql=format_sql(compile_result.sql, compile_result.dialect),
+                dialect=compile_result.dialect,
+                explain=_build_explain_response(compile_result),
+                warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
+                sql_valid=compile_result.sql_valid,
+                execution_time_ms=fetch_ms,
+                timezone=str(tz) if tz is not None else None,
+                resolved=ResolvedInfoResponse(
+                    fact_tables=compile_result.resolved.fact_tables,
+                    dimensions=compile_result.resolved.dimensions,
+                    measures=compile_result.resolved.measures,
+                ),
+                physical_tables=list(compile_result.physical_tables),
+                row_count=row_count,
+                cached=True,
+                cached_at=cached.cached_at_iso,
+            )
+            return _frame_result(meta, cached.payload_blob)
+
+        # JSON / TSV / value-formatted-arrow hit: reconstruct the executor result
+        # from the cached data table (columns from the schema sidecar, so exact
+        # types survive empty / all-null results) and render like a fresh run.
+        assert cached.data_table is not None
+        hit_exec_result = execution_result_from_data(
+            cached.data_table,
+            execution_time_ms=fetch_ms,
+            tz=tz,
+            columns=cached.hit_columns,
+        )
+        response = _build_execute_response(
+            compile_result=compile_result,
+            exec_result=hit_exec_result,
+            model=model,
             response_format=response_format,
             format_values=format_values,
             locale=effective_locale,
             accept_encoding=accept_encoding,
+            cached=True,
+            cached_at=cached.cached_at_iso,
         )
+        if (
+            isinstance(response, QueryExecuteResponse)
+            and cached.ttl_outcome is not None
+            and cached.ttl_outcome.ttl is not None
+        ):
+            _apply_ttl_metadata(response, cached.ttl_outcome)
+        return response
 
     response = _build_execute_response(
         compile_result=compile_result,
@@ -484,81 +553,3 @@ def _apply_no_cache_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -
         "no_cache" if reason.value == "unknown_freshness" else f"no_cache:{reason.value}"
     )
     response.ttl_limiting_table = ttl_outcome.no_cache_table
-
-
-def _build_cached_response(
-    *,
-    envelope: Any,
-    cache_key: str,
-    ttl_outcome: Any,
-    fetch_elapsed_ms: float,
-    response_format: ExecuteFormat,
-    format_values: bool,
-    locale: str,
-    accept_encoding: str | None = None,
-) -> QueryExecuteResponse | Response:
-    """Render a cache hit into the requested surface from its RAW rows.
-
-    The cache entry holds raw, locale-neutral rows keyed on the query alone, so
-    the same entry serves every presentation: raw / value-formatted JSON, TSV,
-    and Arrow. Formatting happens on delivery via :func:`_render_response`, never
-    in the cache. ``fetch_elapsed_ms`` (cache read + decode) replaces the DB
-    execution time on the wire so callers see a realistic "from cache" duration.
-    """
-    from orionbelt.api.schemas import StructuredWarning
-
-    columns_meta = [
-        ColumnMetadata(
-            name=c.get("name", ""),
-            type=c.get("type", "string"),
-            format=c.get("format"),
-        )
-        for c in envelope.columns
-    ]
-    # format_row needs both maps; the cached columns already carry the display
-    # pattern and semantic type, so derive them straight from the envelope.
-    fmt_map: dict[str, Any] = {c.get("name"): c.get("format") for c in envelope.columns}
-    type_map: dict[str, str] = {c.get("name"): c.get("type", "") for c in envelope.columns}
-
-    explain_resp: ExplainPlanResponse | None = None
-    if envelope.explain:
-        try:
-            explain_resp = ExplainPlanResponse(**envelope.explain)
-        except Exception:
-            explain_resp = None
-    warnings_resp: list[StructuredWarning] = []
-    for w in envelope.warnings or []:
-        try:
-            warnings_resp.append(StructuredWarning(**w))
-        except Exception:
-            continue
-    cached_at_iso = envelope.cached_at_iso if hasattr(envelope, "cached_at_iso") else None
-
-    response = _render_response(
-        response_format=response_format,
-        format_values=format_values,
-        locale=locale,
-        accept_encoding=accept_encoding,
-        columns_meta=columns_meta,
-        rows=envelope.rows,
-        fmt_map=fmt_map,
-        type_map=type_map,
-        sql=envelope.sql,
-        dialect=envelope.dialect,
-        explain=explain_resp,
-        warnings=warnings_resp,
-        sql_valid=envelope.sql_valid,
-        resolved=ResolvedInfoResponse(**(envelope.resolved or {})),
-        physical_tables=list(envelope.physical_tables),
-        row_count=envelope.row_count,
-        execution_time_ms=fetch_elapsed_ms,
-        timezone=envelope.timezone,
-        cached=True,
-        cached_at=cached_at_iso,
-    )
-    # TTL metadata is JSON-only (Arrow/TSV are bare Responses).
-    if isinstance(response, QueryExecuteResponse) and ttl_outcome.ttl is not None:
-        response.ttl_seconds = ttl_outcome.ttl.seconds
-        response.ttl_source = ttl_outcome.ttl.source
-        response.ttl_limiting_table = ttl_outcome.ttl.limiting_table
-    return response

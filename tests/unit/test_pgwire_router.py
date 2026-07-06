@@ -122,33 +122,29 @@ def _stub_execute_two_rows() -> ExecutionResult:
     )
 
 
-def test_execution_result_from_cache_envelope() -> None:
-    """A cached envelope rebuilds into an ExecutionResult for wire encoding."""
-    from types import SimpleNamespace
+def test_execution_result_from_cache_data() -> None:
+    """A cached data table rebuilds into an ExecutionResult for wire encoding.
 
-    from orionbelt.api.query_cache import _obml_type_to_hint, execution_result_from_envelope
+    The blob holds only row data; column hints + formats are recovered fresh
+    from the Arrow schema (mirroring the executor's own column build), so a hit
+    yields the same coarse pgwire hints as a live execution.
+    """
+    pa = pytest.importorskip("pyarrow", reason="pyarrow required for the data codec")
 
-    # Stored OBML/SQL column types map back to coarse pgwire hints.
-    assert _obml_type_to_hint("decimal(18, 2)") == "number"
-    assert _obml_type_to_hint("bigint") == "number"
-    assert _obml_type_to_hint("timestamp") == "datetime"
-    assert _obml_type_to_hint("string") == "string"
+    from orionbelt.api.query_cache import execution_result_from_data
+    from orionbelt.cache import result_codec
 
-    envelope = SimpleNamespace(
-        columns=[
-            {"name": "Country", "type": "string", "format": None},
-            {"name": "Total Sales", "type": "decimal(18, 2)", "format": "#,##0.00"},
-        ],
-        rows=[["DE", 1234.5], ["US", 9876.0]],
-        row_count=2,
-        execution_time_ms=0.0,
-    )
-    result = execution_result_from_envelope(envelope)
+    payload = result_codec.encode_data(["Country", "Total Sales"], [["DE", 1234.5], ["US", 9876.0]])
+    table = pa.ipc.open_stream(pa.BufferReader(__import__("gzip").decompress(payload))).read_all()
+
+    result = execution_result_from_data(table, execution_time_ms=0.7)
     assert [c.name for c in result.columns] == ["Country", "Total Sales"]
+    # string -> "string", float64 -> "number" (derived from the Arrow types).
     assert [c.type_hint for c in result.columns] == ["string", "number"]
     assert result.columns[1].default_format == "#,##0.00"
     assert result.rows == [["DE", 1234.5], ["US", 9876.0]]
     assert result.row_count == 2
+    assert result.execution_time_ms == 0.7
 
 
 def test_loaded_model_names_excludes_transient_sessions_in_single_model_mode() -> None:

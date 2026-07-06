@@ -226,6 +226,22 @@ def pipeline() -> CompilationPipeline:
     return CompilationPipeline()
 
 
+def _split_result_frame(content: bytes):
+    """Split the ``format=arrow`` result frame into (json envelope, arrow table).
+
+    Wire shape: ``[u32 big-endian json_len][json meta][gzip'd Arrow IPC data]``.
+    """
+    import gzip
+    import json
+
+    import pyarrow as pa
+
+    meta_len = int.from_bytes(content[:4], "big")
+    meta = json.loads(content[4 : 4 + meta_len].decode("utf-8"))
+    table = pa.ipc.open_stream(gzip.decompress(content[4 + meta_len :])).read_all()
+    return meta, table
+
+
 def _execute(conn: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[Any, ...]]:
     """Execute SQL on the test DuckDB and return rows as tuples."""
     return conn.execute(sql).fetchall()
@@ -1246,7 +1262,7 @@ class TestAPIExecuteEndpoint:
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:
         """?format=arrow returns a gzip'd Arrow IPC stream matching the JSON rows."""
-        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
         settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
         app = create_app(settings=settings)
         mgr = SessionManager(
@@ -1292,28 +1308,19 @@ class TestAPIExecuteEndpoint:
                     )
 
             assert arrow_resp.status_code == 200
-            assert arrow_resp.headers["content-type"].startswith(
-                "application/vnd.apache.arrow.stream"
-            )
-            # Server gzip'd the body; httpx transparently decodes it.
-            assert arrow_resp.headers.get("content-encoding") == "gzip"
+            assert arrow_resp.headers["content-type"].startswith("application/vnd.orionbelt.result")
             assert accept_resp.headers["content-type"].startswith(
-                "application/vnd.apache.arrow.stream"
+                "application/vnd.orionbelt.result"
             )
 
-            # The Arrow stream carries the same columns + rows as the JSON shape.
-            table = pa.ipc.open_stream(pa.BufferReader(arrow_resp.content)).read_all()
+            # The result frame separates a fresh JSON envelope from the gzip'd
+            # Arrow data; both carry the same columns + rows as the JSON shape.
+            env, table = _split_result_frame(arrow_resp.content)
             data = json_resp.json()
             assert table.column_names == [c["name"] for c in data["columns"]]
             assert table.to_pylist() == [
                 dict(zip(table.column_names, row, strict=True)) for row in data["rows"]
             ]
-
-            # Self-contained: the full envelope rides in the schema metadata, so
-            # sql / columns / dialect are restored from the one stream.
-            from orionbelt.cache.result_codec import read_envelope
-
-            env = read_envelope(table)
             assert env["sql"] == data["sql"]
             assert env["dialect"] == data["dialect"]
             assert env["columns"] == data["columns"]
@@ -1325,7 +1332,7 @@ class TestAPIExecuteEndpoint:
         self, api_duckdb: duckdb.DuckDBPyConnection
     ) -> None:
         """?format=arrow&format_values=true bakes locale display strings; raw stays typed."""
-        pa = pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
+        pytest.importorskip("pyarrow", reason="pyarrow required for arrow format")
         settings = Settings(session_ttl_seconds=3600, session_cleanup_interval=9999)
         app = create_app(settings=settings)
         mgr = SessionManager(
@@ -1367,23 +1374,20 @@ class TestAPIExecuteEndpoint:
                         json=body,
                     )
 
-            raw_tbl = pa.ipc.open_stream(pa.BufferReader(raw_resp.content)).read_all()
-            fmt_tbl = pa.ipc.open_stream(pa.BufferReader(fmt_resp.content)).read_all()
+            _, raw_tbl = _split_result_frame(raw_resp.content)
+            fmt_env, fmt_tbl = _split_result_frame(fmt_resp.content)
             assert raw_tbl.column_names == fmt_tbl.column_names
 
             raw_rev = raw_tbl.column("Total Revenue").to_pylist()
             fmt_rev = fmt_tbl.column("Total Revenue").to_pylist()
             # Raw arrow ships typed numeric values (UI round trip formats client-side).
             assert all(isinstance(v, (int, float)) for v in raw_rev if v is not None)
-            # format_values bakes locale-aware display strings into the blob,
+            # format_values bakes locale-aware display strings into the data,
             # exactly as the shared value_formatting helper would render them.
-            from orionbelt.cache.result_codec import read_envelope
             from orionbelt.service.value_formatting import format_number
 
             fmt_pattern = next(
-                c.get("format")
-                for c in read_envelope(fmt_tbl)["columns"]
-                if c["name"] == "Total Revenue"
+                c.get("format") for c in fmt_env["columns"] if c["name"] == "Total Revenue"
             )
             assert all(isinstance(v, str) for v in fmt_rev if v is not None)
             assert fmt_rev == [
