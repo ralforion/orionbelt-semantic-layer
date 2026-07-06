@@ -239,6 +239,24 @@ def _generate_ontology_graph_html(
                             color="#64B5F6",
                             arrows="to",
                         )
+            # Measures can source their columns purely via an expression
+            # (e.g. "{[Orders].[Price]} * {[Orders].[Quantity]}") with no
+            # `columns` list; link those to the referenced data objects too.
+            if meas.expression:
+                for obj_name, _col in re.findall(
+                    r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
+                ):
+                    if obj_name not in seen:
+                        seen.add(obj_name)
+                        if show_data_objects and f"do_{obj_name}" in node_ids:
+                            add_edge(
+                                nid,
+                                f"do_{obj_name}",
+                                label="sourceColumn",
+                                title=f"{meas_name} → {obj_name}",
+                                color="#64B5F6",
+                                arrows="to",
+                            )
 
     if show_metrics:
         for met_name, met in model.metrics.items():

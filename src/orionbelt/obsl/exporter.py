@@ -464,9 +464,18 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 if src_col:
                     g.add((meas_uri, OBSL.sourceColumn, src_col))
 
-        # Expression string
+        # Expression string + the columns it references. A measure may source
+        # its columns purely via the expression (e.g.
+        # "{[Orders].[Price]} * {[Orders].[Quantity]}") with no `columns` list,
+        # so parse those refs into sourceColumn edges too.
         if meas.expression:
             g.add((meas_uri, OBSL.expressionSource, Literal(meas.expression)))
+            for obj_name, col_name in re.findall(
+                r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
+            ):
+                src_col = col_uris.get((obj_name, col_name))
+                if src_col:
+                    g.add((meas_uri, OBSL.sourceColumn, src_col))
 
         # Boolean flags (only emit when True)
         if meas.distinct:
