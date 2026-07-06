@@ -2,6 +2,25 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.20.0] - 2026-07-06
+
+### Added
+
+- **Ontology Graph tab additions.** An **Export Onto** button downloads the model's OBSL RDF ontology (Turtle), synthesized row-count measures now appear in the graph, and the in-graph toolbar gained rotate-left / rotate-right controls plus a more visible PNG export button.
+- **Ontology predicates `obsl:anchoredTo` and `obsl:referencesColumn`.** Grain-anchored measures (auto-synthesized row counts) declare their object grain via `obsl:anchoredTo`, a new measure source form; expression-based measures declare the columns their formula reads via `obsl:referencesColumn` (a dependency edge, distinct from the declared-`columns[]` `obsl:sourceColumn`). The ontology, SHACL shapes, and spec were updated together, and exported graphs stay valid against `obsl.shacl.ttl`.
+
+### Changed
+
+- **The Ontology Graph is now rendered from the exported OBSL ontology** rather than re-derived from the model, so the graph and the RDF export can no longer drift.
+- **`format=arrow` response is now a length-prefixed frame** (`application/vnd.orionbelt.result+arrow`): `[u32 json length][JSON envelope][gzip'd Arrow data]`. The row data is cached; the metadata envelope (sql, explain, timing, `cached`, columns) is rebuilt fresh per request. The column schema + row count are stored alongside the cached blob so a raw-arrow hit serves the data verbatim with no decode. JSON and TSV responses are unchanged.
+
+### Fixed
+
+- **Cache hits reported the original DB execution time instead of the cache read time.** `execution_time_ms` on a hit is now the cache fetch time on every surface (JSON, TSV, Arrow, pgwire).
+- **Empty / all-null raw-field results lost their column types on a cache hit.** The result column schema is now cached, so types + formats survive regardless of the data.
+- **Expression-based measures showed as orphan nodes** in the ontology graph, and synthesized counts were absent; both now connect to their data object.
+- **Accept negotiation** for `format=arrow` now recognizes the emitted `application/vnd.orionbelt.result+arrow` media type in addition to the legacy Arrow-stream token.
+
 ## [2.19.0] - 2026-07-05
 
 ### Added
