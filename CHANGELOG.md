@@ -2,6 +2,21 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.21.0] - 2026-07-07
+
+### Added
+
+- **Cross-session content-addressed model cache.** Identical OBML loaded into different sessions now compiles once and is shared, keyed by a stable content-derived `model_id`, instead of each session recompiling its own copy under a random id. In admin-curated (`MODEL_FILES`) mode the curated model is compiled once for the process and every user session references it. Shared compiled models are refcounted and evicted once no live session references them; loads that fold in extra state (`extends`, `inherits`, raw dict, `dedup=false`) stay private with a random id. Because `model_id` is part of the result-cache key, identical model plus SQL now shares result-cache entries across sessions too.
+
+### Changed
+
+- **`model_id` is now stable and content-derived** for shared models: identical YAML always yields the same id, including after a remove and reload. Ids widened to 16 hex characters.
+- **Demo commerce models use synthesized row-count measures.** Two redundant declared count measures were dropped and one relabeled override kept, exercising the auto-synthesized counts introduced in 2.19.0.
+
+### Fixed
+
+- **Single-model shortcut resolution now scopes to protected sessions.** In admin-curated single-model mode, the top-level shortcut endpoints ignore transient user sessions, so a duplicated per-session copy of the curated model no longer triggers a spurious "multiple models loaded across sessions" error.
+
 ## [2.20.0] - 2026-07-06
 
 ### Added
