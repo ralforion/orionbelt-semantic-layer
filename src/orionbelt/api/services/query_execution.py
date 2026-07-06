@@ -65,13 +65,16 @@ def negotiate_execute_format(format_param: ExecuteFormat, accept: str | None) ->
     """Resolve the effective response format from ``?format=`` + the Accept header.
 
     An explicit ``?format=`` (``tsv``/``arrow``) always wins. Otherwise, a
-    client asking for the Arrow media type via ``Accept`` gets the Arrow frame;
-    everything else stays JSON.
+    client asking for the Arrow frame via ``Accept`` — either the result frame
+    media type this endpoint emits or the historical arrow-stream token — gets
+    the Arrow frame; everything else stays JSON.
     """
     if format_param in ("tsv", "arrow"):
         return format_param
-    if accept and ARROW_STREAM_MEDIA_TYPE in accept.lower():
-        return "arrow"
+    if accept:
+        lowered = accept.lower()
+        if ORIONBELT_RESULT_MEDIA_TYPE in lowered or ARROW_STREAM_MEDIA_TYPE in lowered:
+            return "arrow"
     return "json"
 
 
@@ -446,14 +449,19 @@ async def _run_with_cache(
         fetch_ms = cached.fetch_elapsed_ms
         if response_format == "arrow" and not format_values:
             # Raw-arrow hit: ship the stored DATA blob verbatim (data stays
-            # zero-copy) with a fresh JSON envelope prepended. Decoding only
-            # recovers the Arrow schema + row count — no python-row
-            # materialization and no re-encode of the data bytes.
+            # zero-copy) with a fresh JSON envelope prepended. The column schema
+            # + row count come from the entry sidecar, so nothing decodes the
+            # blob. (Legacy entries without the sidecar decode for schema.)
             assert cached.payload_blob is not None
-            from orionbelt.cache import result_codec
+            if cached.hit_columns is not None:
+                columns_meta = [ColumnMetadata.model_validate(c) for c in cached.hit_columns]
+                row_count = cached.row_count or 0
+            else:
+                from orionbelt.cache import result_codec
 
-            data_table = result_codec.decode_data(cached.payload_blob)
-            columns_meta, _, _ = _columns_and_maps(model, exec_columns_from_table(data_table))
+                data_table = result_codec.decode_data(cached.payload_blob)
+                columns_meta, _, _ = _columns_and_maps(model, exec_columns_from_table(data_table))
+                row_count = data_table.num_rows
             meta = _arrow_envelope_dict(
                 columns_meta=columns_meta,
                 sql=format_sql(compile_result.sql, compile_result.dialect),
@@ -469,17 +477,21 @@ async def _run_with_cache(
                     measures=compile_result.resolved.measures,
                 ),
                 physical_tables=list(compile_result.physical_tables),
-                row_count=data_table.num_rows,
+                row_count=row_count,
                 cached=True,
                 cached_at=cached.cached_at_iso,
             )
             return _frame_result(meta, cached.payload_blob)
 
         # JSON / TSV / value-formatted-arrow hit: reconstruct the executor result
-        # from the cached data table and render exactly like a fresh execution.
+        # from the cached data table (columns from the schema sidecar, so exact
+        # types survive empty / all-null results) and render like a fresh run.
         assert cached.data_table is not None
         hit_exec_result = execution_result_from_data(
-            cached.data_table, execution_time_ms=fetch_ms, tz=tz
+            cached.data_table,
+            execution_time_ms=fetch_ms,
+            tz=tz,
+            columns=cached.hit_columns,
         )
         response = _build_execute_response(
             compile_result=compile_result,

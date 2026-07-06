@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass
@@ -12,8 +12,12 @@ class CachedResult:
     """A cache hit envelope.
 
     ``payload`` is the raw bytes the backend wrote on ``set`` (typically a
-    gzip'd Arrow IPC blob produced by ``orionbelt.cache.result_codec``). The
-    caller decodes it. ``cached_at`` is when the entry was first written;
+    gzip'd Arrow IPC blob of row data produced by
+    ``orionbelt.cache.result_codec``). The caller decodes it for rows. The
+    result's column schema (``columns`` — ``[{name, type, format}]``) and
+    ``row_count`` are stored alongside the blob so a caller can rebuild the
+    response envelope — and serve a raw-arrow hit verbatim — without decoding
+    the payload. ``cached_at`` is when the entry was first written;
     ``ttl_remaining_seconds`` is the time left before expiry on ``get``.
     """
 
@@ -21,6 +25,8 @@ class CachedResult:
     cached_at: datetime
     ttl_remaining_seconds: int
     physical_tables: list[str]
+    row_count: int = 0
+    columns: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -60,8 +66,14 @@ class Cache(Protocol):
         query_hash: str,
         dialect: str,
         row_count: int,
+        columns_json: str | None = None,
     ) -> None:
-        """Store an entry, replacing any prior content for the same key."""
+        """Store an entry, replacing any prior content for the same key.
+
+        ``columns_json`` is the result's column schema (``[{name, type,
+        format}]``) as a JSON string, stored alongside the payload so a hit can
+        rebuild the response without decoding the blob.
+        """
 
     async def delete(self, key: str) -> None:
         """Drop a single entry by key."""

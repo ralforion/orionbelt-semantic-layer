@@ -293,6 +293,7 @@ class SemanticRouter:
                     result = execution_result_from_data(
                         cached.data_table,
                         execution_time_ms=cached.fetch_elapsed_ms or 0.0,
+                        columns=cached.hit_columns,
                     )
                 else:
                     assert cached.exec_result is not None  # a miss always executed

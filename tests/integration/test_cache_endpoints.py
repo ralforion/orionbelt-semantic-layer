@@ -215,9 +215,21 @@ class TestSessionExecuteCache:
         assert len(stored_files) == 1
         stored_bytes = Path(stored_files[0]).read_bytes()
 
-        hit = await client.post(
-            f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
-        )
+        # The raw-arrow hit builds its envelope from the entry's column-schema
+        # sidecar, so it must NOT decode the blob at all (true zero-copy).
+        from unittest.mock import patch as _patch
+
+        import orionbelt.api.query_cache as qc
+        import orionbelt.cache.result_codec as rc
+
+        with (
+            _patch.object(qc, "decode_data", wraps=qc.decode_data) as spy_qc,
+            _patch.object(rc, "decode_data", wraps=rc.decode_data) as spy_rc,
+        ):
+            hit = await client.post(
+                f"/v1/sessions/{sid}/query/execute?format=arrow", json=body, headers=hdrs
+            )
+        assert spy_qc.call_count == 0 and spy_rc.call_count == 0  # no decode on the raw-arrow hit
         assert hit.status_code == 200
         assert hit.headers["content-type"].startswith("application/vnd.orionbelt.result")
         # The Arrow data sub-part (raw bytes after the JSON prefix) is the stored

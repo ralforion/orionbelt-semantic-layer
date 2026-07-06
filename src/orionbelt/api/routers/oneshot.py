@@ -23,6 +23,7 @@ from orionbelt.api.deps import (
     is_single_model_mode,
 )
 from orionbelt.api.query_cache import (
+    CachedEntry,
     execution_result_from_data,
     try_cache_get,
     try_cache_set,
@@ -306,12 +307,15 @@ async def _run_query(
                 _cache_t0 = time.monotonic()
                 cached_hit = await _try_oneshot_cache_get(cache, cache_key)
         if cached_hit is not None:
-            data_table, cached_at_iso = cached_hit
             fetch_elapsed_ms = round((time.monotonic() - _cache_t0) * 1000, 2)
-            # Only row data is cached; rebuild the response from the compile
-            # result so column metadata + per-request timing match a fresh run.
+            cached_at_iso = cached_hit.cached_at_iso
+            # Only row data + column schema are cached; rebuild the response from
+            # the compile result so per-request timing matches a fresh run.
             hit_exec = execution_result_from_data(
-                data_table, execution_time_ms=fetch_elapsed_ms, tz=tz
+                cached_hit.data_table,
+                execution_time_ms=fetch_elapsed_ms,
+                tz=tz,
+                columns=cached_hit.columns,
             )
             hit_envelope = _build_execute_response(
                 compile_result=compile_result,
@@ -626,13 +630,13 @@ def _resolve_oneshot_ttl(
     )
 
 
-async def _try_oneshot_cache_get(cache: Cache, key: str) -> tuple[Any, str] | None:
-    """Best-effort cache get for oneshot. Returns (data_table, cached_at_iso) or None.
+async def _try_oneshot_cache_get(cache: Cache, key: str) -> CachedEntry | None:
+    """Best-effort cache get for oneshot. Returns a :class:`CachedEntry` or None.
 
     Delegates to the shared :func:`try_cache_get`, which offloads the gzip +
     Arrow IPC decode to a worker thread so a oneshot cache hit never blocks the
-    event loop (mirrors the REST path). Only row data is cached; the caller
-    rebuilds the response envelope from the compile result.
+    event loop (mirrors the REST path). Only row data + column schema are cached;
+    the caller rebuilds the response envelope from the compile result.
     """
     return await try_cache_get(cache, key)
 

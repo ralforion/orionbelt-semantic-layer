@@ -29,6 +29,7 @@ class NoopCache(Cache):
         query_hash: str,
         dialect: str,
         row_count: int,
+        columns_json: str | None = None,
     ) -> None:
         return None
 
