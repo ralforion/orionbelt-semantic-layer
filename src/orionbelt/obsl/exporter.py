@@ -446,7 +446,9 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         _emit_custom_extensions(g, dim_uri, getattr(dim, "custom_extensions", []))
 
     # -- Measures -----------------------------------------------------------
-    for meas_name, meas in model.measures.items():
+    # effective_measures includes auto-synthesized row-count measures (e.g.
+    # "Sales Count") so the ontology graph exposes them like declared measures.
+    for meas_name, meas in model.effective_measures.items():
         meas_uri = _measure_uri(model_id, meas_name)
         g.add((m_uri, OBSL.hasMeasure, meas_uri))
         g.add((meas_uri, RDF.type, OBSL.Measure))
@@ -544,7 +546,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             # Derive referencesMeasure links from expression
             measure_refs = re.findall(r"\{\[([^\]]+)\]\}", met.expression)
             for ref_name in measure_refs:
-                if ref_name in model.measures:
+                if ref_name in model.effective_measures:
                     ref_uri = _measure_uri(model_id, ref_name)
                     g.add((met_uri, OBSL.referencesMeasure, ref_uri))
 

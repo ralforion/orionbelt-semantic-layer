@@ -323,6 +323,21 @@ class TestExporterMeasures:
         uri = URIRef(f"{BASE}t1/measure/grand-total-revenue")
         assert (uri, OBSL.total, Literal(True)) in g
 
+    def test_synthesized_count_measures_exported(self, sales_model: SemanticModel) -> None:
+        """Auto-synthesized row-count measures are emitted as obsl:Measure.
+
+        They are not in ``model.measures`` (declared) but come from
+        ``effective_measures``, so the graph must build from the latter.
+        """
+        g = export_obsl(sales_model, "t1")
+        synthesized = [n for n in sales_model.effective_measures if n not in sales_model.measures]
+        assert synthesized, "expected the sales fixture to synthesize count measures"
+        uri = URIRef(f"{BASE}t1/measure/orders-count")
+        assert (uri, RDF.type, OBSL.Measure) in g
+        assert (uri, RDFS.label, Literal("Orders Count")) in g
+        assert (uri, OBSL.aggregation, Literal("count")) in g
+        assert (uri, OBSL.resultType, Literal("int")) in g
+
     def test_filter_expression(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
         uri = URIRef(f"{BASE}t1/measure/us-revenue")
