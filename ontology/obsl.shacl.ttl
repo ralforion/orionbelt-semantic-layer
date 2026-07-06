@@ -258,6 +258,10 @@ obsl:MeasureShape a sh:NodeShape ;
             sh:path obsl:expressionSource ;
             sh:maxCount 0 ;
             sh:message "Column-based measures must not have obsl:expressionSource."
+        ] ; sh:property [
+            sh:path obsl:anchoredTo ;
+            sh:maxCount 0 ;
+            sh:message "Column-based measures must not have obsl:anchoredTo."
         ] ]
         [ sh:property [
             sh:path obsl:expressionSource ;
@@ -268,7 +272,21 @@ obsl:MeasureShape a sh:NodeShape ;
         ] ; sh:property [
             sh:path obsl:sourceColumn ;
             sh:maxCount 0 ;
-            sh:message "Expression-based measures must not have obsl:sourceColumn."
+            sh:message "Expression-based measures must not have obsl:sourceColumn (dependencies use obsl:referencesColumn)."
+        ] ]
+        [ sh:property [
+            sh:path obsl:anchoredTo ;
+            sh:minCount 1 ;
+            sh:name "anchored to" ;
+            sh:message "Grain-anchored measures (e.g. synthesized row counts) must have at least one obsl:anchoredTo."
+        ] ; sh:property [
+            sh:path obsl:sourceColumn ;
+            sh:maxCount 0 ;
+            sh:message "Grain-anchored measures must not have obsl:sourceColumn."
+        ] ; sh:property [
+            sh:path obsl:expressionSource ;
+            sh:maxCount 0 ;
+            sh:message "Grain-anchored measures must not have obsl:expressionSource."
         ] ]
     ) .
 

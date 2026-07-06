@@ -337,6 +337,25 @@ class TestExporterMeasures:
         assert (uri, RDFS.label, Literal("Orders Count")) in g
         assert (uri, OBSL.aggregation, Literal("count")) in g
         assert (uri, OBSL.resultType, Literal("int")) in g
+        # SHACL source form: grain anchor (not sourceColumn / expressionSource).
+        assert (uri, OBSL.anchoredTo, URIRef(f"{BASE}t1/data-object/orders")) in g
+        assert not list(g.objects(uri, OBSL.sourceColumn))
+        assert not list(g.objects(uri, OBSL.expressionSource))
+
+    def test_expression_measure_references_columns(self, sales_model: SemanticModel) -> None:
+        """An expression measure keeps obsl:expressionSource as its source form;
+        its column dependencies use obsl:referencesColumn (not obsl:sourceColumn),
+        so it stays valid against the mutually-exclusive SHACL MeasureShape."""
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/measure/average-order-value")
+        price = URIRef(f"{BASE}t1/data-object/orders/column/price")
+        qty = URIRef(f"{BASE}t1/data-object/orders/column/quantity")
+        assert (uri, OBSL.referencesColumn, price) in g
+        assert (uri, OBSL.referencesColumn, qty) in g
+        # expressionSource is the source form; sourceColumn stays reserved for
+        # declared columns[] (this measure declares none).
+        assert list(g.objects(uri, OBSL.expressionSource))
+        assert not list(g.objects(uri, OBSL.sourceColumn))
 
     def test_filter_expression(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

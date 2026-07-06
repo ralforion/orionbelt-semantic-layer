@@ -239,9 +239,10 @@ def _generate_ontology_graph_html(
                             color="#64B5F6",
                             arrows="to",
                         )
-            # Measures can source their columns purely via an expression
-            # (e.g. "{[Orders].[Price]} * {[Orders].[Quantity]}") with no
-            # `columns` list; link those to the referenced data objects too.
+            # Expression-based measures reference columns via their formula
+            # (e.g. "{[Orders].[Price]} * {[Orders].[Quantity]}"); link those to
+            # the referenced objects. Labeled "referencesColumn" to match the
+            # ontology predicate (distinct from declared-column "sourceColumn").
             if meas.expression:
                 for obj_name, _col in re.findall(
                     r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
@@ -252,7 +253,7 @@ def _generate_ontology_graph_html(
                             add_edge(
                                 nid,
                                 f"do_{obj_name}",
-                                label="sourceColumn",
+                                label="referencesColumn",
                                 title=f"{meas_name} → {obj_name}",
                                 color="#64B5F6",
                                 arrows="to",
