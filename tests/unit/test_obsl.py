@@ -337,6 +337,18 @@ class TestExporterMeasures:
         assert (uri, RDFS.label, Literal("Orders Count")) in g
         assert (uri, OBSL.aggregation, Literal("count")) in g
         assert (uri, OBSL.resultType, Literal("int")) in g
+        # A column-less count is anchored to its data object's grain.
+        assert (uri, OBSL.anchoredTo, URIRef(f"{BASE}t1/data-object/orders")) in g
+
+    def test_expression_measure_source_columns(self, sales_model: SemanticModel) -> None:
+        """A measure sourced purely via an expression links to the columns the
+        expression references (regression: was emitted with no sourceColumn)."""
+        g = export_obsl(sales_model, "t1")
+        uri = URIRef(f"{BASE}t1/measure/average-order-value")
+        price = URIRef(f"{BASE}t1/data-object/orders/column/price")
+        qty = URIRef(f"{BASE}t1/data-object/orders/column/quantity")
+        assert (uri, OBSL.sourceColumn, price) in g
+        assert (uri, OBSL.sourceColumn, qty) in g
 
     def test_filter_expression(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

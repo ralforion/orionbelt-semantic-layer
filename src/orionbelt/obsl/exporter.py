@@ -457,12 +457,18 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         g.add((meas_uri, OBSL.aggregation, Literal(meas.aggregation)))
         g.add((meas_uri, OBSL.resultType, Literal(meas.result_type.value)))
 
-        # Source columns
+        # Source columns. A column-less ref (view but no column) means the
+        # measure is anchored to a data object's grain rather than a column —
+        # notably the auto-synthesized row counts (COUNT over the object). Emit
+        # obsl:anchoredTo so the ontology (and any graph rendered from it) links
+        # the measure to its object.
         for ref in meas.columns:
             if ref.view and ref.column:
                 src_col = col_uris.get((ref.view, ref.column))
                 if src_col:
                     g.add((meas_uri, OBSL.sourceColumn, src_col))
+            elif ref.view:
+                g.add((meas_uri, OBSL.anchoredTo, _data_object_uri(model_id, ref.view)))
 
         # Expression string + the columns it references. A measure may source
         # its columns purely via the expression (e.g.

@@ -93,9 +93,13 @@ def _generate_ontology_graph_html(
     show_joins: bool = True,
     node_spacing: int = 150,
 ) -> str:
-    """Build a self-contained vis-network HTML graph from OBML model YAML."""
+    """Build a self-contained vis-network HTML graph from OBML model YAML.
+
+    The graph is rendered *from the OBSL ontology*: the model is exported to an
+    RDF graph and its individuals/predicates drive the nodes/edges, so the graph
+    and the exported ontology never drift.
+    """
     import json
-    import re
     from collections import defaultdict
 
     from orionbelt.parser.loader import TrackedLoader
@@ -113,6 +117,21 @@ def _generate_ontology_graph_html(
     except Exception as exc:
         return f"<p style='color:#F44336;padding:16px'>Error: {exc}</p>"
 
+    # The graph is a rendering of the OBSL ontology (single source of truth):
+    # build the RDF graph, then map its individuals to nodes and its predicates
+    # to edges. This keeps the graph and the exported ontology in lock-step —
+    # a fix in the exporter shows up here for free.
+    from rdflib import RDF, RDFS, Literal, URIRef
+
+    from orionbelt.obsl.exporter import OBSL, export_obsl
+
+    g = export_obsl(model, "graph")
+
+    def _label(uri: Any) -> str:
+        for o in g.objects(uri, RDFS.label):
+            return str(o)
+        return str(uri).rsplit("/", 1)[-1]
+
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
     node_ids: set[str] = set()
@@ -128,173 +147,105 @@ def _generate_ontology_graph_html(
         kwargs["to"] = tgt
         edges.append(kwargs)
 
-    if show_data_objects:
-        for obj_name, obj in model.data_objects.items():
-            nid = f"do_{obj_name}"
-            title = f"DataObject: {obj_name}\nTable: {obj.qualified_code}"
-            if obj.description:
-                title += f"\n{obj.description}"
+    # Nodes: one per obsl individual, coloured by type, gated by the filters.
+    # (obsl:Column individuals are intentionally not shown — a measure's
+    # sourceColumn is collapsed onto its owning data object below.)
+    _node_types = [
+        (OBSL.DataObject, "DataObject", show_data_objects, "#9E9E9E", "#757575", 30),
+        (OBSL.Dimension, "Dimension", show_dimensions, "#4CAF50", "#388E3C", 20),
+        (OBSL.Measure, "Measure", show_measures, "#2196F3", "#1976D2", 20),
+        (OBSL.Metric, "Metric", show_metrics, "#9C27B0", "#7B1FA2", 20),
+    ]
+
+    def _node_title(uri: Any, kind: str) -> str:
+        parts = [f"{kind}: {_label(uri)}"]
+        for pred, lbl in (
+            (OBSL.code, "Table"),
+            (OBSL.aggregation, "Aggregation"),
+            (OBSL.resultType, "Type"),
+            (OBSL.metricType, "Metric type"),
+            (OBSL.expressionSource, "Expression"),
+        ):
+            val = next(iter(g.objects(uri, pred)), None)
+            if val is not None:
+                parts.append(f"{lbl}: {val}")
+        comment = next(iter(g.objects(uri, RDFS.comment)), None)
+        if comment is not None:
+            parts.append(str(comment))
+        return "\n".join(parts)
+
+    for cls, kind, shown, bg, border, size in _node_types:
+        if not shown:
+            continue
+        for subj in g.subjects(RDF.type, cls):
             add_node(
-                nid,
-                label=obj_name,
-                title=title,
-                color={"background": "#9E9E9E", "border": "#757575"},
+                str(subj),
+                label=_label(subj),
+                title=_node_title(subj, kind),
+                color={"background": bg, "border": border},
                 shape="box",
-                size=30,
+                size=size,
             )
 
-        if show_joins:
-            for obj_name, obj in model.data_objects.items():
-                for join in obj.joins:
-                    style: dict[str, object] = {
-                        "label": join.join_type.value,
-                        "title": f"{obj_name} → {join.join_to}\n{join.join_type.value}",
-                        "color": "#BDBDBD",
-                        "arrows": "to",
-                    }
-                    if join.secondary:
-                        style["dashes"] = True
-                        lbl = join.path_name or "secondary"
-                        style["label"] = lbl
-                        style["title"] = f"{obj_name} → {join.join_to}\n{lbl} (secondary)"
-                    add_edge(f"do_{obj_name}", f"do_{join.join_to}", **style)
+    # Map each obsl:Column to its owning data object so measure sourceColumn
+    # edges can collapse onto the object node.
+    col_to_object: dict[str, str] = {
+        str(col): str(obj) for obj, col in g.subject_objects(OBSL.hasColumn)
+    }
 
-    if show_dimensions:
-        for dim_name, dim in model.dimensions.items():
-            nid = f"dim_{dim_name}"
-            title = (
-                f"Dimension: {dim_name}\nDataObject: {dim.view}"
-                f"\nColumn: {dim.column}\nType: {dim.result_type.value}"
-            )
-            if dim.via:
-                title += f"\nVia: {dim.via}"
-            if dim.description:
-                title += f"\n{dim.description}"
-            add_node(
-                nid,
-                label=dim_name,
-                title=title,
-                color={"background": "#4CAF50", "border": "#388E3C"},
-                shape="box",
-                size=20,
-            )
-            if show_data_objects and f"do_{dim.view}" in node_ids:
-                add_edge(
-                    nid,
-                    f"do_{dim.view}",
-                    label="dataObject",
-                    title=f"{dim_name} → {dim.view}",
-                    color="#4CAF50",
-                    arrows="to",
-                )
-            if dim.via and show_data_objects and f"do_{dim.via}" in node_ids:
-                add_edge(
-                    nid,
-                    f"do_{dim.via}",
-                    label="via",
-                    title=f"{dim_name} via {dim.via}",
-                    color="#81C784",
-                    arrows="to",
-                    dashes=True,
-                )
+    seen_edges: set[tuple[str, str, str]] = set()
 
-    if show_measures:
-        # effective_measures includes auto-synthesized row-count measures (e.g.
-        # "Sales Count") so they appear in the graph like declared measures.
-        for meas_name, meas in model.effective_measures.items():
-            nid = f"meas_{meas_name}"
-            title = (
-                f"Measure: {meas_name}\nAggregation: {meas.aggregation}"
-                f"\nType: {meas.result_type.value}"
-            )
-            if meas.expression:
-                title += f"\nExpression: {meas.expression}"
-            if meas.description:
-                title += f"\n{meas.description}"
-            add_node(
-                nid,
-                label=meas_name,
-                title=title,
-                color={"background": "#2196F3", "border": "#1976D2"},
-                shape="box",
-                size=20,
-            )
-            seen: set[str] = set()
-            for ref in meas.columns:
-                if ref.view and ref.view not in seen:
-                    seen.add(ref.view)
-                    if show_data_objects and f"do_{ref.view}" in node_ids:
-                        # Synthesized counts are column-less (anchored to the
-                        # object grain), so label the edge accordingly.
-                        anchored = ref.column is None
-                        add_edge(
-                            nid,
-                            f"do_{ref.view}",
-                            label="anchor" if anchored else "sourceColumn",
-                            title=(
-                                f"{meas_name} anchored to {ref.view}"
-                                if anchored
-                                else f"{meas_name} → {ref.view}.{ref.column}"
-                            ),
-                            color="#64B5F6",
-                            arrows="to",
-                        )
-            # Measures can source their columns purely via an expression
-            # (e.g. "{[Orders].[Price]} * {[Orders].[Quantity]}") with no
-            # `columns` list; link those to the referenced data objects too.
-            if meas.expression:
-                for obj_name, _col in re.findall(
-                    r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
-                ):
-                    if obj_name not in seen:
-                        seen.add(obj_name)
-                        if show_data_objects and f"do_{obj_name}" in node_ids:
-                            add_edge(
-                                nid,
-                                f"do_{obj_name}",
-                                label="sourceColumn",
-                                title=f"{meas_name} → {obj_name}",
-                                color="#64B5F6",
-                                arrows="to",
-                            )
+    def link(src: Any, tgt: Any, label: str, color: str, *, dashes: bool = False) -> None:
+        s, t = str(src), str(tgt)
+        if s not in node_ids or t not in node_ids:
+            return
+        key = (s, t, label)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        style: dict[str, object] = {
+            "label": label,
+            "title": f"{_label(src)} → {_label(tgt)}",
+            "color": color,
+            "arrows": "to",
+        }
+        if dashes:
+            style["dashes"] = True
+        add_edge(s, t, **style)
 
-    if show_metrics:
-        for met_name, met in model.metrics.items():
-            nid = f"met_{met_name}"
-            title = f"Metric: {met_name}\nType: {met.type.value}"
-            if met.expression:
-                title += f"\nExpression: {met.expression}"
-            if met.description:
-                title += f"\n{met.description}"
-            add_node(
-                nid,
-                label=met_name,
-                title=title,
-                color={"background": "#9C27B0", "border": "#7B1FA2"},
-                shape="box",
-                size=20,
-            )
-            if met.expression and show_measures:
-                refs = re.findall(r"\{\[([^\]]+)\]\}", met.expression)
-                for ref_name in refs:
-                    if f"meas_{ref_name}" in node_ids:
-                        add_edge(
-                            nid,
-                            f"meas_{ref_name}",
-                            label="referencesMeasure",
-                            title=f"{met_name} → {ref_name}",
-                            color="#CE93D8",
-                            arrows="to",
-                        )
-            if met.measure and show_measures and f"meas_{met.measure}" in node_ids:
-                add_edge(
-                    nid,
-                    f"meas_{met.measure}",
-                    label="baseMeasure",
-                    title=f"{met_name} → {met.measure}",
-                    color="#CE93D8",
-                    arrows="to",
-                )
+    # Dimension → data object (and via).
+    for dim, obj in g.subject_objects(OBSL.dataObject):
+        link(dim, obj, "dataObject", "#4CAF50")
+    for dim, obj in g.subject_objects(OBSL.via):
+        link(dim, obj, "via", "#81C784", dashes=True)
+
+    # Measure → data object: sourceColumn collapsed via the owning object, plus
+    # the grain anchor for column-less (e.g. synthesized count) measures.
+    for meas, col in g.subject_objects(OBSL.sourceColumn):
+        obj_id = col_to_object.get(str(col))
+        if obj_id is not None:
+            link(meas, URIRef(obj_id), "sourceColumn", "#64B5F6")
+    for meas, obj in g.subject_objects(OBSL.anchoredTo):
+        link(meas, obj, "anchor", "#64B5F6")
+
+    # Metric → measure.
+    for met, meas in g.subject_objects(OBSL.referencesMeasure):
+        link(met, meas, "referencesMeasure", "#CE93D8")
+    for met, meas in g.subject_objects(OBSL.baseMeasure):
+        link(met, meas, "baseMeasure", "#CE93D8")
+
+    # Joins: obsl:Join individuals become data-object → data-object edges.
+    if show_joins:
+        for join in g.subjects(RDF.type, OBSL.Join):
+            targets = list(g.objects(join, OBSL.joinTo))
+            card = next(iter(g.objects(join, OBSL.cardinality)), None)
+            path = next(iter(g.objects(join, OBSL.pathName)), None)
+            secondary = (join, OBSL.secondary, Literal(True)) in g
+            label = str(path) if (secondary and path) else (str(card) if card else "join")
+            for src in g.subjects(OBSL.hasJoin, join):
+                for tgt in targets:
+                    if isinstance(tgt, URIRef):
+                        link(src, tgt, label, "#BDBDBD", dashes=secondary)
 
     edge_groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for edge in edges:

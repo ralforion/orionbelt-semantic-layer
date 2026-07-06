@@ -175,6 +175,12 @@ obsl:sourceColumn a owl:ObjectProperty ;
     rdfs:domain obsl:Measure ;
     rdfs:range obsl:Column .
 
+obsl:anchoredTo a owl:ObjectProperty ;
+    rdfs:label "anchored to" ;
+    rdfs:comment "Data object whose grain a measure is anchored to when it aggregates over the object rather than a column (e.g. an auto-synthesized row-count measure)." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:DataObject .
+
 obsl:baseMeasure a owl:ObjectProperty ;
     rdfs:label "base measure" ;
     rdfs:comment "Measure that a cumulative metric is computed from (used when metricType is cumulative)." ;
