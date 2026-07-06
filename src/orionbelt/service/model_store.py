@@ -199,9 +199,10 @@ class ModelCapacityError(Exception):
 class ModelStore:
     """In-memory model registry.  Thread-safe via ``threading.Lock``.
 
-    Models are keyed by short UUID (8-char hex).  All parsing, validation,
-    and compilation infrastructure is instantiated internally, following the
-    same singleton pattern as ``api/deps.py``.
+    Models are keyed by a 16-char hex id: content-derived for shared models
+    (see ``service/model_cache.py``) or random for private ones. All parsing,
+    validation, and compilation infrastructure is instantiated internally,
+    following the same singleton pattern as ``api/deps.py``.
     """
 
     def __init__(self, max_models: int = 10, shared_cache: ModelCache | None = None) -> None:
