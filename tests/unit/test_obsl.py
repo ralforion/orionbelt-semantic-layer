@@ -487,6 +487,19 @@ class TestExporterAxioms:
 
         assert (OBSL.CumulativeMetric, OWL_NS.disjointWith, OBSL.PeriodOverPeriodMetric) in g
 
+    def test_anchored_and_references_column_declared(self, sales_model: SemanticModel) -> None:
+        """The self-contained graph embeds type/domain/range for every predicate
+        it uses, including the added obsl:anchoredTo / obsl:referencesColumn."""
+        from rdflib.namespace import OWL as OWL_NS
+
+        g = export_obsl(sales_model, "t1")
+        assert (OBSL.anchoredTo, RDF.type, OWL_NS.ObjectProperty) in g
+        assert (OBSL.anchoredTo, RDFS.domain, OBSL.Measure) in g
+        assert (OBSL.anchoredTo, RDFS.range, OBSL.DataObject) in g
+        assert (OBSL.referencesColumn, RDF.type, OWL_NS.ObjectProperty) in g
+        assert (OBSL.referencesColumn, RDFS.domain, OBSL.Measure) in g
+        assert (OBSL.referencesColumn, RDFS.range, OBSL.Column) in g
+
     def test_functional_properties(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
         from rdflib.namespace import OWL as OWL_NS

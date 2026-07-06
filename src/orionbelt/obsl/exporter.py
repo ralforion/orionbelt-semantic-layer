@@ -264,6 +264,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.column, OBSL.Dimension, OBSL.Column),
         (OBSL.via, OBSL.Dimension, OBSL.DataObject),
         (OBSL.sourceColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.referencesColumn, OBSL.Measure, OBSL.Column),
+        (OBSL.anchoredTo, OBSL.Measure, OBSL.DataObject),
         (OBSL.baseMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.referencesMeasure, OBSL.Metric, OBSL.Measure),
         (OBSL.timeDimension, OBSL.Metric, OBSL.Dimension),
