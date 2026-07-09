@@ -8,8 +8,6 @@ on:
       - 'mkdocs.yml'
       - 'pyproject.toml'  # In case version changes
       - '.github/workflows/deploy-docs.yml'
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
