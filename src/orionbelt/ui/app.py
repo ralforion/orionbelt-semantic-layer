@@ -1558,33 +1558,33 @@ def create_blocks(
                 )
 
             with gr.Tab("Query Results", id=1, visible=query_exec_enabled) as results_tab:
-                # Execution info + actions on one row: a short info box, then the
-                # buttons inline to its right (all scale=0 so they pack left).
-                with gr.Row(elem_classes=["result-actions"]):
+                # Execution info + actions on one row: the info box fills the
+                # width (default scale), with the actions pinned to its right in
+                # a nested row (the ``result-actions`` CSS keeps them together).
+                with gr.Row():
                     result_info = gr.Textbox(
                         label="Execution Info",
                         interactive=False,
                         lines=1,
                         max_lines=1,
-                        scale=0,
-                        min_width=440,
                     )
-                    copy_data_btn = gr.Button(
-                        "Copy Data",
-                        visible=False,
-                        variant="secondary",
-                        size="sm",
-                        scale=0,
-                        min_width=110,
-                    )
-                    tsv_download = gr.DownloadButton(
-                        "↓ TSV",
-                        visible=False,
-                        variant="secondary",
-                        size="sm",
-                        scale=0,
-                        min_width=90,
-                    )
+                    # Keep both actions side by side on one row (the short
+                    # "↓ TSV" label lets them fit together even on phones).
+                    with gr.Row(elem_classes=["result-actions"]):
+                        copy_data_btn = gr.Button(
+                            "Copy Data",
+                            visible=False,
+                            variant="secondary",
+                            size="sm",
+                            min_width=100,
+                        )
+                        tsv_download = gr.DownloadButton(
+                            "↓ TSV",
+                            visible=False,
+                            variant="secondary",
+                            size="sm",
+                            min_width=80,
+                        )
                 # "Clear filters" button — full-width row so the filter list never
                 # wraps onto multiple lines.
                 with gr.Row():
