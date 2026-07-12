@@ -491,6 +491,22 @@ _CSS = """\
   min-width: 0 !important;
 }
 
+/* Execution Info: lay the textbox's own label inline (left of the value)
+   instead of stacking it above, so label + value sit on one line. */
+#exec-info label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+#exec-info label > span[data-testid="block-info"] {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  margin: 0 !important;
+  font-weight: 600 !important;
+}
+#exec-info .input-container { flex: 1 1 auto !important; }
+
 /* ── Responsive: narrower viewports ── */
 @media (max-width: 900px) {
   .settings-row { flex-wrap: wrap !important; }
@@ -1558,33 +1574,36 @@ def create_blocks(
                 )
 
             with gr.Tab("Query Results", id=1, visible=query_exec_enabled) as results_tab:
-                # Execution info + actions on one row: the info box fills the
-                # width (default scale), with the actions pinned to its right in
-                # a nested row (the ``result-actions`` CSS keeps them together).
+                # Execution info + actions all on one row: the info box grows to
+                # fill (scale=1) with the two actions pinned to its right
+                # (scale=0). The ``#exec-info`` CSS additionally lays the
+                # textbox's own "Execution Info" label inline to the left of the
+                # value instead of stacking it above.
                 with gr.Row():
                     result_info = gr.Textbox(
                         label="Execution Info",
                         interactive=False,
                         lines=1,
                         max_lines=1,
+                        scale=1,
+                        elem_id="exec-info",
                     )
-                    # Keep both actions side by side on one row (the short
-                    # "↓ TSV" label lets them fit together even on phones).
-                    with gr.Row(elem_classes=["result-actions"]):
-                        copy_data_btn = gr.Button(
-                            "Copy Data",
-                            visible=False,
-                            variant="secondary",
-                            size="sm",
-                            min_width=100,
-                        )
-                        tsv_download = gr.DownloadButton(
-                            "↓ TSV",
-                            visible=False,
-                            variant="secondary",
-                            size="sm",
-                            min_width=80,
-                        )
+                    copy_data_btn = gr.Button(
+                        "Copy Data",
+                        visible=False,
+                        variant="secondary",
+                        size="sm",
+                        scale=0,
+                        min_width=110,
+                    )
+                    tsv_download = gr.DownloadButton(
+                        "↓ TSV",
+                        visible=False,
+                        variant="secondary",
+                        size="sm",
+                        scale=0,
+                        min_width=90,
+                    )
                 # "Clear filters" button — full-width row so the filter list never
                 # wraps onto multiple lines.
                 with gr.Row():
@@ -1613,7 +1632,11 @@ def create_blocks(
                     show_label=False,
                 )
                 result_table = gr.Dataframe(
+                    # Label kept for accessibility but hidden — the tab is
+                    # already named "Query Results", so a visible heading above
+                    # the table is redundant.
                     label="Query Results",
+                    show_label=False,
                     interactive=False,
                     wrap=True,
                     max_height=800,
