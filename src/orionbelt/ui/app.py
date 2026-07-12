@@ -1632,7 +1632,11 @@ def create_blocks(
                     show_label=False,
                 )
                 result_table = gr.Dataframe(
+                    # Label kept for accessibility but hidden — the tab is
+                    # already named "Query Results", so a visible heading above
+                    # the table is redundant.
                     label="Query Results",
+                    show_label=False,
                     interactive=False,
                     wrap=True,
                     max_height=800,
