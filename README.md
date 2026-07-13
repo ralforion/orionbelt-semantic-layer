@@ -574,7 +574,9 @@ uv sync --extra docs && uv run mkdocs serve  # docs on :8080
 
 ## License
 
-Copyright 2025 [RALFORION d.o.o.](https://ralforion.com)
+Copyright © 2026 [RALFORION d.o.o.](https://ralforion.com)
+
+OrionBelt® is a registered trademark of RALFORION d.o.o.
 
 Licensed under the [Business Source License 1.1](LICENSE). The Licensed Work will convert to Apache License 2.0 on 2030-03-16.
 

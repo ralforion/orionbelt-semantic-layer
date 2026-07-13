@@ -197,5 +197,7 @@ Contact [RALFORION d.o.o.](https://ralforion.com) for details.
 <p align="center">
   <a href="https://ralforion.com"><img src="assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200"></a>
   <br>
-  Copyright 2025 RALFORION d.o.o. &mdash; Licensed under BSL 1.1
+  Copyright &copy; 2026 RALFORION d.o.o. &mdash; Licensed under BSL 1.1
+  <br>
+  OrionBelt&reg; is a registered trademark of RALFORION d.o.o.
 </p>
