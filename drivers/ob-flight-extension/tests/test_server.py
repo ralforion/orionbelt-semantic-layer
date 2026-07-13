@@ -486,14 +486,17 @@ class TestVirtualTables:
 
 
 class TestFlightCacheEnvelope:
-    """Regression: Flight cache writes must use the shared ``result_codec``
-    envelope so REST/pgwire readers can decode ``sql``/``dialect``/``columns``
-    instead of falling back to empty defaults — one entry per compiled query
-    across all surfaces.
+    """Regression: Flight cache writes must use the shared data-only codec
+    (``encode_data`` blob + ``columns_json`` schema sidecar) so REST/pgwire
+    readers decode the same entry — one entry per compiled query across all
+    surfaces. (The blob is data only; sql/dialect/types are metadata each
+    surface rebuilds fresh, carried as ``cache.set`` kwargs.)
     """
 
     def test_flight_cache_payload_is_decodable_by_rest(self) -> None:
-        from orionbelt.cache import result_codec
+        import json
+
+        from orionbelt.cache.result_codec import decode_data
 
         server = _make_server()
         captured: dict = {}
@@ -520,36 +523,40 @@ class TestFlightCacheEnvelope:
             },
         )
 
-        # REST/pgwire decode the full envelope; Flight decodes the bare table.
-        env = result_codec.decode(captured["payload"])
-        assert env.sql == "SELECT id, name FROM t"
-        assert env.dialect == "postgres"
-        assert env.physical_tables == ["main.t"]
-        assert [c["name"] for c in env.columns] == ["id", "name"]
-        assert env.rows == [[1, "alice"], [2, "bob"]]
-        # The datasource scoping reaches the backend (shared key across surfaces).
-        assert captured["kwargs"]["datasource"] == "postgres"
-
-        table_back = result_codec.decode_table(captured["payload"])
+        # The blob is a pure Arrow data stream any surface can decode.
+        table_back = decode_data(captured["payload"])
         assert table_back.column_names == ["id", "name"]
         assert table_back.to_pylist() == [
             {"id": 1, "name": "alice"},
             {"id": 2, "name": "bob"},
         ]
 
+        # Envelope metadata rides as cache.set kwargs, rebuilt fresh per read.
+        kwargs = captured["kwargs"]
+        assert kwargs["dialect"] == "postgres"
+        assert kwargs["physical_tables"] == ["main.t"]
+        assert kwargs["model_id"] == "m"
+        assert kwargs["row_count"] == 2
+        # The datasource scoping reaches the backend (shared key across surfaces).
+        assert kwargs["datasource"] == "postgres"
+        # Column schema sidecar preserves names for a cross-surface reader.
+        cols = json.loads(kwargs["columns_json"])
+        assert [c["name"] for c in cols] == ["id", "name"]
+
     def test_flight_cache_column_type_key_matches_rest_decoder(self) -> None:
         """Regression: Flight encoded column metadata under ``data_type`` but
         REST's decoder reads ``type``. A REST hit on a Flight-written entry
         decoded every column as ``string``, dropping numeric/datetime types.
+        Types now live in the ``columns_json`` sidecar under ``type``.
         """
-        from orionbelt.cache import result_codec
+        import json
 
         server = _make_server()
         captured: dict = {}
 
         class FakeCache:
             async def set(self, key, payload, **kwargs):
-                captured["payload"] = payload
+                captured["kwargs"] = kwargs
 
         server._cache = FakeCache()
 
@@ -576,8 +583,8 @@ class TestFlightCacheEnvelope:
             },
         )
 
-        env = result_codec.decode(captured["payload"])
-        by_name = {c["name"]: c for c in env.columns}
+        cols = json.loads(captured["kwargs"]["columns_json"])
+        by_name = {c["name"]: c for c in cols}
         # REST schema uses ``type`` (the Pydantic field name), not ``data_type``.
         # Vocabulary: string / number / datetime / binary.
         assert by_name["id"].get("type") == "number"
@@ -585,7 +592,54 @@ class TestFlightCacheEnvelope:
         assert by_name["ts"].get("type") == "datetime"
         assert by_name["name"].get("type") == "string"
         # The old (broken) key must NOT be present.
-        assert all("data_type" not in c for c in env.columns)
+        assert all("data_type" not in c for c in cols)
+
+    def test_flight_cache_roundtrip_get_after_put(self) -> None:
+        """A Flight writer's entry is read back by the Flight reader: the
+        ``encode_data`` blob decodes cleanly via ``decode_data`` (the same
+        codec REST/pgwire use), proving get/set share one byte format."""
+        from datetime import UTC, datetime
+
+        from orionbelt.cache.protocol import CachedResult
+
+        server = _make_server()
+        store: dict = {}
+
+        class FakeCache:
+            async def set(self, key, payload, **kwargs):
+                store[key] = CachedResult(
+                    payload=payload,
+                    cached_at=datetime.now(UTC),
+                    ttl_remaining_seconds=kwargs.get("ttl_seconds", 60),
+                    physical_tables=kwargs.get("physical_tables", []),
+                    row_count=kwargs.get("row_count", 0),
+                )
+
+            async def get(self, key):
+                return store.get(key)
+
+        server._cache = FakeCache()
+
+        table = pa.table({"id": [7, 8, 9], "name": ["x", "y", "z"]})
+        meta = {
+            "key": "rt",
+            "ttl": 60,
+            "physical_tables": [],
+            "datasource": "duckdb",
+            "model_id": "m",
+            "sql": "SELECT id, name FROM t",
+            "dialect": "duckdb",
+        }
+        server._cache_put_table(table, meta)
+
+        got = server._cache_get_table("rt")
+        assert got is not None
+        assert got.column_names == ["id", "name"]
+        assert got.to_pylist() == [
+            {"id": 7, "name": "x"},
+            {"id": 8, "name": "y"},
+            {"id": 9, "name": "z"},
+        ]
 
 
 class TestFlightBuildCacheMeta:

@@ -643,11 +643,12 @@ def execute_sql(
 def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     """Look up a Flight cache entry. Returns the decoded ``pa.Table`` or None.
 
-    The cache stores gzip'd Arrow IPC payloads via the shared
-    ``orionbelt.cache.result_codec`` envelope, so a Flight reader consumes a
-    REST/pgwire writer's entry and vice versa (one entry per compiled query).
-    Flight only needs the columnar data; the envelope metadata (sql, dialect,
-    explain, …) rides in the schema and is harmless to carry along.
+    The cache stores the row data as a gzip'd Arrow IPC blob via the shared
+    ``result_codec.decode_data`` / ``encode_data`` codec, so a Flight reader
+    consumes a REST/pgwire writer's entry and vice versa (one entry per compiled
+    query). Only the columnar data lives in the blob; the response envelope
+    (sql, dialect, column types, …) is metadata each surface rebuilds fresh, so
+    Flight ignores it and just streams the data table.
     """
     import asyncio
 
@@ -663,58 +664,50 @@ def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     if result is None or not getattr(result, "payload", None):
         return None
     try:
-        from orionbelt.cache import result_codec
+        from orionbelt.cache.result_codec import decode_data
 
-        return result_codec.decode_table(result.payload)
+        table: pa.Table = decode_data(result.payload)
+        return table
     except Exception:
         logger.debug("cache decode failed for key=%s", key, exc_info=True)
         return None
 
 
 def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[str, Any]) -> None:
-    """Serialize a ``pa.Table`` to the shared ``result_codec`` envelope and
-    store under ``cache_meta``.
+    """Serialize a ``pa.Table``'s row data to the shared blob codec and store it.
 
-    REST, pgwire, and Flight share the cache namespace — all encode the
-    same gzip'd Arrow IPC envelope so the other surfaces can decode ``sql``,
-    ``dialect``, ``columns``, etc. without falling back to defaults. Errors are
-    swallowed; cache writes must never break query execution.
+    REST, pgwire, and Flight share the cache namespace: all store the row data
+    as the same gzip'd Arrow IPC blob (``encode_data``) plus a ``columns_json``
+    schema sidecar, so any surface reads any other's entry. The blob holds only
+    data; the column *types* ride in ``columns_json`` (key ``type``, vocabulary
+    ``string`` / ``number`` / ``datetime`` / ``binary``) so a REST hit on a
+    Flight-written entry rebuilds exact types instead of falling back to
+    ``string``. Errors are swallowed; cache writes must never break execution.
     """
     import asyncio
+    import json
 
-    from orionbelt.cache import result_codec
+    from orionbelt.cache import query_hash as _query_hash
+    from orionbelt.cache.result_codec import encode_data
 
     rows = table.to_pylist()
-    list_of_lists: list[list[Any]] = [
-        [row.get(name) for name in table.column_names] for row in rows
-    ]
-    # REST's ColumnMetadata uses ``type`` (Pydantic field name) with the
-    # vocabulary ``string`` / ``number`` / ``datetime`` / ``binary`` —
-    # match it so a Flight-written cache entry decoded by REST yields
-    # the right column types instead of falling back to ``string``.
-    columns_meta = [
-        {"name": field.name, "type": _arrow_to_obsl_type_hint(field.type)} for field in table.schema
-    ]
+    column_names = table.column_names
+    list_of_lists: list[list[Any]] = [[row.get(name) for name in column_names] for row in rows]
 
     try:
-        payload = result_codec.encode(
-            columns=columns_meta,
-            rows=list_of_lists,
-            sql=cache_meta.get("sql", ""),
-            dialect=cache_meta.get("dialect", ""),
-            explain=None,
-            warnings=[],
-            sql_valid=True,
-            execution_time_ms=0.0,
-            timezone=None,
-            resolved={},
-            physical_tables=cache_meta.get("physical_tables", []),
-        )
+        payload = encode_data(column_names, list_of_lists)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
 
-    from orionbelt.cache import query_hash as _query_hash
+    # Column schema sidecar — matches REST's ``[{name, type, format}]`` shape so
+    # a cross-surface reader recovers exact types.
+    columns_json = json.dumps(
+        [
+            {"name": field.name, "type": _arrow_to_obsl_type_hint(field.type), "format": None}
+            for field in table.schema
+        ]
+    )
 
     try:
         loop = asyncio.new_event_loop()
@@ -730,6 +723,7 @@ def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[st
                     query_hash=_query_hash(sql=cache_meta["sql"]),
                     dialect=cache_meta["dialect"],
                     row_count=table.num_rows,
+                    columns_json=columns_json,
                 )
             )
         finally:
