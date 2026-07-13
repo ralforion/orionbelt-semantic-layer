@@ -588,6 +588,81 @@ class TestFlightCacheEnvelope:
         assert all("data_type" not in c for c in env.columns)
 
 
+class TestFlightBuildCacheMeta:
+    """Flight's ``build_cache_meta`` delegates key + TTL derivation to the
+    shared ``resolve_cache_plan`` (issue #126), so a compiled query keys and
+    TTLs identically on Flight and REST/pgwire. This exercises the real
+    delegation path end-to-end (server method -> server_execution ->
+    resolve_cache_plan), not just the shared plan in isolation.
+    """
+
+    def _server_with_cache(self, mock_session_manager, dialect: str = "postgres"):
+        server = _make_server(mock_session_manager, dialect)
+
+        class FakeCache:
+            backend_name = "memory"
+
+            def heartbeats_snapshot(self):
+                return {}
+
+        class FakeConfig:
+            min_ttl_seconds = 5
+            max_ttl_seconds = 86400
+            unknown_policy = "no_cache"
+            unknown_default_ttl_seconds = 300
+
+        server._cache = FakeCache()
+        server._cache_config = FakeConfig()
+        # compute_effective_ttl calls ``contracts.get(...)`` — hand it a real
+        # dict, not the MagicMock store's auto-attr.
+        mock_session_manager.get_store.return_value.refresh_contracts.return_value = {}
+        return server
+
+    def test_key_matches_rest_derivation(self, mock_session_manager):
+        """The Flight-derived key equals the canonical key REST/pgwire build
+        for the same compiled query — the cross-surface sharing guarantee."""
+        from orionbelt.cache.key import build_cache_key, build_datasource_key
+
+        server = self._server_with_cache(mock_session_manager)
+        sql = "SELECT a FROM t GROUP BY a"
+        meta = server._build_cache_meta(
+            compiled_sql=sql, dialect="postgres", context=None, physical_tables=[]
+        )
+        assert meta is not None
+        assert meta["key"] == build_cache_key(
+            datasource=build_datasource_key("postgres"),
+            model_id="test-model",
+            dialect="postgres",
+            sql=sql,
+        )
+        assert meta["datasource"] == "postgres"
+        assert meta["dialect"] == "postgres"
+        assert meta["model_id"] == "test-model"
+        # Empty physical_tables -> all-static -> capped at max TTL.
+        assert meta["ttl"] == 86400
+
+    def test_nondeterministic_sql_returns_none(self, mock_session_manager):
+        server = self._server_with_cache(mock_session_manager)
+        meta = server._build_cache_meta(
+            compiled_sql="SELECT NOW()",
+            dialect="postgres",
+            context=None,
+            physical_tables=[],
+        )
+        assert meta is None
+
+    def test_noop_backend_skips_cache(self, mock_session_manager):
+        server = self._server_with_cache(mock_session_manager)
+        server._cache.backend_name = "noop"
+        meta = server._build_cache_meta(
+            compiled_sql="SELECT a FROM t",
+            dialect="postgres",
+            context=None,
+            physical_tables=[],
+        )
+        assert meta is None
+
+
 class TestFlightCatalogFilter:
     """Regression: ``CommandGetTables`` / ``CommandGetColumns`` ignored
     protobuf field 1 (catalog), so BI clients selecting a catalog via the
