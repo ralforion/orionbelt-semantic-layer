@@ -3,7 +3,7 @@ site_description: "Open-source Semantic Sidecar for agentic AI, analytics, data 
 site_url: https://ralforion.com/orionbelt-semantic-layer/
 repo_url: https://github.com/ralforion/orionbelt-semantic-layer
 repo_name: orionbelt-semantic-layer
-copyright: Copyright &copy; 2025 RALFORION d.o.o., BSL 1.1
+copyright: Copyright &copy; 2026 RALFORION d.o.o., BSL 1.1 &mdash; OrionBelt&reg; is a registered trademark of RALFORION d.o.o.
 
 dev_addr: 127.0.0.1:8080
 
