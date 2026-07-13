@@ -677,6 +677,88 @@ class TestFlightCacheEnvelope:
         assert got.schema.field("ts").type == pa.timestamp("us")
         assert got.schema.field("name").type == pa.utf8()
 
+    def test_align_cached_table_restores_types_for_rest_written_empty(self) -> None:
+        """Regression: a REST/pgwire-written *empty* entry decodes to null-typed
+        columns (encode_data infers types from values, and there are none), so a
+        Flight cache hit would stream null/null even though FlightInfo advertised
+        the real types. Aligning the hit to the advertised schema fixes it."""
+        from ob_flight.server_execution import align_cached_table
+        from orionbelt.cache.result_codec import decode_data, encode_data
+
+        # REST-style empty payload for ["id", "name"] — types inferred as null.
+        decoded = decode_data(encode_data(["id", "name"], []))
+        assert decoded.schema.field("id").type == pa.null()
+        assert decoded.schema.field("name").type == pa.null()
+
+        advertised = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())])
+        aligned = align_cached_table(decoded, advertised)
+
+        assert aligned.num_rows == 0
+        assert aligned.schema.field("id").type == pa.int64()
+        assert aligned.schema.field("name").type == pa.utf8()
+
+    def test_execute_sql_cache_hit_aligns_to_advertised_schema(self, monkeypatch) -> None:
+        """End-to-end: a cache hit on a REST-written empty entry streams the
+        advertised schema (int64/utf8), not the null/null the blob decoded to."""
+        from datetime import UTC, datetime
+
+        from ob_flight import server_execution
+        from orionbelt.cache.protocol import CachedResult
+        from orionbelt.cache.result_codec import encode_data
+
+        server = _make_server()
+        store = {
+            "k": CachedResult(
+                payload=encode_data(["id", "name"], []),
+                cached_at=datetime.now(UTC),
+                ttl_remaining_seconds=60,
+                physical_tables=[],
+                row_count=0,
+            )
+        }
+
+        class FakeCache:
+            async def get(self, key):
+                return store.get(key)
+
+        server._cache = FakeCache()
+
+        captured: dict = {}
+
+        class FakeStream:
+            def __init__(self, table):
+                captured["table"] = table
+
+        monkeypatch.setattr(server_execution.flight, "RecordBatchStream", FakeStream)
+
+        advertised = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())])
+        server._execute_sql(
+            "SELECT id, name FROM t",
+            "duckdb",
+            cache_meta={"key": "k"},
+            result_schema=advertised,
+        )
+
+        streamed = captured["table"]
+        assert streamed.schema.field("id").type == pa.int64()
+        assert streamed.schema.field("name").type == pa.utf8()
+        assert streamed.num_rows == 0
+
+    def test_align_cached_table_noops_without_schema(self) -> None:
+        from ob_flight.server_execution import align_cached_table
+
+        table = pa.table({"id": pa.array([1], type=pa.int64())})
+        assert align_cached_table(table, None) is table
+
+    def test_align_cached_table_skips_on_column_mismatch(self) -> None:
+        """Guard: if the cached columns don't line up with the advertised schema
+        (name/order), return the table untouched rather than mis-cast."""
+        from ob_flight.server_execution import align_cached_table
+
+        table = pa.table({"a": pa.array([1], type=pa.int64())})
+        advertised = pa.schema([pa.field("b", pa.utf8())])
+        assert align_cached_table(table, advertised) is table
+
     def test_flight_cache_preserves_schema_for_all_null_result(self) -> None:
         """All-null typed columns must also keep their declared Arrow types."""
         server = self._roundtrip_server()

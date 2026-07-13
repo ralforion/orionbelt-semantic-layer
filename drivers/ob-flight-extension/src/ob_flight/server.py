@@ -115,10 +115,10 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         self._cache_config = cache_config
         self._lock = threading.Lock()
         # Pending queries: ticket_id -> (payload, timestamp). Payload is one
-        # of: ``("sql", sql, dialect, cache_meta|None)``,
+        # of: ``("sql", sql, dialect, cache_meta|None, advertised_schema|None)``,
         # ``("catalog", type_url, body_hex)``, or
         # ``("obsql_catalog_table", pa.Table)`` — so the element types are
-        # heterogeneous (str / dict / pa.Table). Use ``tuple[Any, ...]``.
+        # heterogeneous (str / dict / pa.Schema / pa.Table). Use ``tuple[Any, ...]``.
         self._pending: dict[str, tuple[tuple[Any, ...], float]] = {}
         # Prepared statements: handle_hex -> (kind_or_sql, dialect_or_table,
         # schema, cache_meta|None). Element 2 is either the dialect string
@@ -232,8 +232,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         sql: str,
         dialect: str,
         cache_meta: dict[str, Any] | None = None,
+        result_schema: pa.Schema | None = None,
     ) -> flight.RecordBatchStream:
-        return server_execution.execute_sql(self, sql, dialect, cache_meta)
+        return server_execution.execute_sql(self, sql, dialect, cache_meta, result_schema)
 
     def _cache_get_table(self, key: str) -> pa.Table | None:
         return server_execution.cache_get_table(self, key)
@@ -365,11 +366,16 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                     self._store_pending(ticket_id, ("obsql_catalog_table", table))
                     schema = table.schema
                 else:
-                    self._store_pending(ticket_id, ("sql", prepared_sql, dialect, cache_meta))
                     schema = (
                         schema_hint
                         if schema_hint is not None
                         else self._probe_schema(prepared_sql, dialect)
+                    )
+                    # Stash the advertised schema so a cache hit in do_get can
+                    # be cast back to it (an empty result's cached blob decodes
+                    # to null-typed columns otherwise).
+                    self._store_pending(
+                        ticket_id, ("sql", prepared_sql, dialect, cache_meta, schema)
                     )
 
             elif type_url == CMD_PREPARED_STATEMENT_QUERY:
@@ -387,8 +393,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                     # Precomputed catalog table — stream it directly.
                     self._store_pending(ticket_id, ("obsql_catalog_table", payload))
                 else:
-                    # Regular SQL path: first=sql, payload=dialect.
-                    self._store_pending(ticket_id, ("sql", first, payload, cache_meta_pp))
+                    # Regular SQL path: first=sql, payload=dialect, schema=entry[2].
+                    # Carry the advertised schema so a cache hit is cast to it.
+                    self._store_pending(ticket_id, ("sql", first, payload, cache_meta_pp, schema))
 
             elif type_url in _CATALOG_COMMANDS:
                 # Stash both the command type and its protobuf body so
@@ -428,12 +435,13 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             self._store_pending(ticket_id, ("obsql_catalog_table", table))
             schema = table.schema
         else:
-            self._store_pending(ticket_id, ("sql", prepared_sql, dialect, cache_meta))
             schema = (
                 schema_hint
                 if schema_hint is not None
                 else self._probe_schema(prepared_sql, dialect)
             )
+            # Advertised schema rides along so a cache hit can be cast to it.
+            self._store_pending(ticket_id, ("sql", prepared_sql, dialect, cache_meta, schema))
         ticket = flight.Ticket(ticket_id.encode("utf-8"))
         endpoint = flight.FlightEndpoint(ticket, [])
         return flight.FlightInfo(schema, descriptor, [endpoint], -1, -1)
@@ -468,14 +476,16 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             table = self._handle_catalog_sql(str(pending[1]), model)
             return flight.RecordBatchStream(table)
 
-        # kind == "sql" — possibly with a cache_meta as 4th element
+        # kind == "sql" — 4th element is cache_meta, 5th the advertised schema
         sql = str(pending[1])
         dialect = str(pending[2])
         cache_meta_raw = pending[3] if len(pending) > 3 else None
         cache_meta: dict[str, Any] | None = (
             cache_meta_raw if isinstance(cache_meta_raw, dict) else None
         )
-        return self._execute_sql(sql, dialect, cache_meta=cache_meta)
+        schema_raw = pending[4] if len(pending) > 4 else None
+        result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
+        return self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
 
     def do_action(self, context: flight.ServerCallContext, action: flight.Action) -> Any:
         """Handle Flight SQL actions (CreatePreparedStatement, ClosePreparedStatement)."""
