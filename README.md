@@ -314,7 +314,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 - **Cross-Schema Queries** — model data objects across multiple databases and schemas in a single model
 - **Static Model Filters** — mandatory WHERE conditions baked into the model, auto-applied with join extension
 - **OBSL Graph & SPARQL** — RDF graph export and read-only SPARQL querying for every loaded model
-- **OSI Interoperability** — bidirectional conversion between OBML and Open Semantic Interchange format
+- **OSI Interoperability** — bidirectional conversion between OBML and the Open Semantic Interchange format, now developed as [Apache Ossie (incubating)](https://github.com/apache/ossie)
 
 ### SQL Compilation
 
