@@ -486,14 +486,17 @@ class TestVirtualTables:
 
 
 class TestFlightCacheEnvelope:
-    """Regression: Flight cache writes must use the shared ``result_codec``
-    envelope so REST/pgwire readers can decode ``sql``/``dialect``/``columns``
-    instead of falling back to empty defaults — one entry per compiled query
-    across all surfaces.
+    """Regression: Flight cache writes must use the shared data-only codec
+    (``encode_data`` blob + ``columns_json`` schema sidecar) so REST/pgwire
+    readers decode the same entry — one entry per compiled query across all
+    surfaces. (The blob is data only; sql/dialect/types are metadata each
+    surface rebuilds fresh, carried as ``cache.set`` kwargs.)
     """
 
     def test_flight_cache_payload_is_decodable_by_rest(self) -> None:
-        from orionbelt.cache import result_codec
+        import json
+
+        from orionbelt.cache.result_codec import decode_data
 
         server = _make_server()
         captured: dict = {}
@@ -520,36 +523,40 @@ class TestFlightCacheEnvelope:
             },
         )
 
-        # REST/pgwire decode the full envelope; Flight decodes the bare table.
-        env = result_codec.decode(captured["payload"])
-        assert env.sql == "SELECT id, name FROM t"
-        assert env.dialect == "postgres"
-        assert env.physical_tables == ["main.t"]
-        assert [c["name"] for c in env.columns] == ["id", "name"]
-        assert env.rows == [[1, "alice"], [2, "bob"]]
-        # The datasource scoping reaches the backend (shared key across surfaces).
-        assert captured["kwargs"]["datasource"] == "postgres"
-
-        table_back = result_codec.decode_table(captured["payload"])
+        # The blob is a pure Arrow data stream any surface can decode.
+        table_back = decode_data(captured["payload"])
         assert table_back.column_names == ["id", "name"]
         assert table_back.to_pylist() == [
             {"id": 1, "name": "alice"},
             {"id": 2, "name": "bob"},
         ]
 
+        # Envelope metadata rides as cache.set kwargs, rebuilt fresh per read.
+        kwargs = captured["kwargs"]
+        assert kwargs["dialect"] == "postgres"
+        assert kwargs["physical_tables"] == ["main.t"]
+        assert kwargs["model_id"] == "m"
+        assert kwargs["row_count"] == 2
+        # The datasource scoping reaches the backend (shared key across surfaces).
+        assert kwargs["datasource"] == "postgres"
+        # Column schema sidecar preserves names for a cross-surface reader.
+        cols = json.loads(kwargs["columns_json"])
+        assert [c["name"] for c in cols] == ["id", "name"]
+
     def test_flight_cache_column_type_key_matches_rest_decoder(self) -> None:
         """Regression: Flight encoded column metadata under ``data_type`` but
         REST's decoder reads ``type``. A REST hit on a Flight-written entry
         decoded every column as ``string``, dropping numeric/datetime types.
+        Types now live in the ``columns_json`` sidecar under ``type``.
         """
-        from orionbelt.cache import result_codec
+        import json
 
         server = _make_server()
         captured: dict = {}
 
         class FakeCache:
             async def set(self, key, payload, **kwargs):
-                captured["payload"] = payload
+                captured["kwargs"] = kwargs
 
         server._cache = FakeCache()
 
@@ -576,8 +583,8 @@ class TestFlightCacheEnvelope:
             },
         )
 
-        env = result_codec.decode(captured["payload"])
-        by_name = {c["name"]: c for c in env.columns}
+        cols = json.loads(captured["kwargs"]["columns_json"])
+        by_name = {c["name"]: c for c in cols}
         # REST schema uses ``type`` (the Pydantic field name), not ``data_type``.
         # Vocabulary: string / number / datetime / binary.
         assert by_name["id"].get("type") == "number"
@@ -585,7 +592,269 @@ class TestFlightCacheEnvelope:
         assert by_name["ts"].get("type") == "datetime"
         assert by_name["name"].get("type") == "string"
         # The old (broken) key must NOT be present.
-        assert all("data_type" not in c for c in env.columns)
+        assert all("data_type" not in c for c in cols)
+
+    @staticmethod
+    def _roundtrip_server():
+        """A server whose FakeCache stores set() payloads and serves them on
+        get(), so a put/get pair exercises the real codec byte format."""
+        from datetime import UTC, datetime
+
+        from orionbelt.cache.protocol import CachedResult
+
+        server = _make_server()
+        store: dict = {}
+
+        class FakeCache:
+            async def set(self, key, payload, **kwargs):
+                store[key] = CachedResult(
+                    payload=payload,
+                    cached_at=datetime.now(UTC),
+                    ttl_remaining_seconds=kwargs.get("ttl_seconds", 60),
+                    physical_tables=kwargs.get("physical_tables", []),
+                    row_count=kwargs.get("row_count", 0),
+                )
+
+            async def get(self, key):
+                return store.get(key)
+
+        server._cache = FakeCache()
+        return server
+
+    @staticmethod
+    def _meta(key: str) -> dict:
+        return {
+            "key": key,
+            "ttl": 60,
+            "physical_tables": [],
+            "datasource": "duckdb",
+            "model_id": "m",
+            "sql": "SELECT id, name FROM t",
+            "dialect": "duckdb",
+        }
+
+    def test_flight_cache_roundtrip_get_after_put(self) -> None:
+        """A Flight writer's entry is read back by the Flight reader: the
+        ``encode_table`` blob decodes cleanly via ``decode_data`` (the same byte
+        format ``encode_data`` writes), proving get/set share one codec."""
+        server = self._roundtrip_server()
+
+        table = pa.table({"id": [7, 8, 9], "name": ["x", "y", "z"]})
+        server._cache_put_table(table, self._meta("rt"))
+
+        got = server._cache_get_table("rt")
+        assert got is not None
+        assert got.column_names == ["id", "name"]
+        assert got.to_pylist() == [
+            {"id": 7, "name": "x"},
+            {"id": 8, "name": "y"},
+            {"id": 9, "name": "z"},
+        ]
+
+    def test_flight_cache_preserves_schema_for_empty_result(self) -> None:
+        """Regression: an empty typed result must keep its Arrow schema through
+        the cache. ``encode_data`` re-infers types from values, so an empty
+        ``int64``/``string`` table came back ``null``/``null`` — a cache hit
+        would then stream a schema that no longer matches the one Flight
+        advertised in FlightInfo. ``encode_table`` preserves the exact schema."""
+        server = self._roundtrip_server()
+
+        empty = pa.table(
+            {
+                "id": pa.array([], type=pa.int64()),
+                "amount": pa.array([], type=pa.float64()),
+                "ts": pa.array([], type=pa.timestamp("us")),
+                "name": pa.array([], type=pa.utf8()),
+            }
+        )
+        server._cache_put_table(empty, self._meta("empty"))
+
+        got = server._cache_get_table("empty")
+        assert got is not None
+        assert got.num_rows == 0
+        assert got.schema.field("id").type == pa.int64()
+        assert got.schema.field("amount").type == pa.float64()
+        assert got.schema.field("ts").type == pa.timestamp("us")
+        assert got.schema.field("name").type == pa.utf8()
+
+    def test_align_cached_table_restores_types_for_rest_written_empty(self) -> None:
+        """Regression: a REST/pgwire-written *empty* entry decodes to null-typed
+        columns (encode_data infers types from values, and there are none), so a
+        Flight cache hit would stream null/null even though FlightInfo advertised
+        the real types. Aligning the hit to the advertised schema fixes it."""
+        from ob_flight.server_execution import align_cached_table
+        from orionbelt.cache.result_codec import decode_data, encode_data
+
+        # REST-style empty payload for ["id", "name"] — types inferred as null.
+        decoded = decode_data(encode_data(["id", "name"], []))
+        assert decoded.schema.field("id").type == pa.null()
+        assert decoded.schema.field("name").type == pa.null()
+
+        advertised = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())])
+        aligned = align_cached_table(decoded, advertised)
+
+        assert aligned.num_rows == 0
+        assert aligned.schema.field("id").type == pa.int64()
+        assert aligned.schema.field("name").type == pa.utf8()
+
+    def test_execute_sql_cache_hit_aligns_to_advertised_schema(self, monkeypatch) -> None:
+        """End-to-end: a cache hit on a REST-written empty entry streams the
+        advertised schema (int64/utf8), not the null/null the blob decoded to."""
+        from datetime import UTC, datetime
+
+        from ob_flight import server_execution
+        from orionbelt.cache.protocol import CachedResult
+        from orionbelt.cache.result_codec import encode_data
+
+        server = _make_server()
+        store = {
+            "k": CachedResult(
+                payload=encode_data(["id", "name"], []),
+                cached_at=datetime.now(UTC),
+                ttl_remaining_seconds=60,
+                physical_tables=[],
+                row_count=0,
+            )
+        }
+
+        class FakeCache:
+            async def get(self, key):
+                return store.get(key)
+
+        server._cache = FakeCache()
+
+        captured: dict = {}
+
+        class FakeStream:
+            def __init__(self, table):
+                captured["table"] = table
+
+        monkeypatch.setattr(server_execution.flight, "RecordBatchStream", FakeStream)
+
+        advertised = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.utf8())])
+        server._execute_sql(
+            "SELECT id, name FROM t",
+            "duckdb",
+            cache_meta={"key": "k"},
+            result_schema=advertised,
+        )
+
+        streamed = captured["table"]
+        assert streamed.schema.field("id").type == pa.int64()
+        assert streamed.schema.field("name").type == pa.utf8()
+        assert streamed.num_rows == 0
+
+    def test_align_cached_table_noops_without_schema(self) -> None:
+        from ob_flight.server_execution import align_cached_table
+
+        table = pa.table({"id": pa.array([1], type=pa.int64())})
+        assert align_cached_table(table, None) is table
+
+    def test_align_cached_table_skips_on_column_mismatch(self) -> None:
+        """Guard: if the cached columns don't line up with the advertised schema
+        (name/order), return the table untouched rather than mis-cast."""
+        from ob_flight.server_execution import align_cached_table
+
+        table = pa.table({"a": pa.array([1], type=pa.int64())})
+        advertised = pa.schema([pa.field("b", pa.utf8())])
+        assert align_cached_table(table, advertised) is table
+
+    def test_flight_cache_preserves_schema_for_all_null_result(self) -> None:
+        """All-null typed columns must also keep their declared Arrow types."""
+        server = self._roundtrip_server()
+
+        all_null = pa.table(
+            {
+                "id": pa.array([None, None], type=pa.int64()),
+                "name": pa.array([None, None], type=pa.utf8()),
+            }
+        )
+        server._cache_put_table(all_null, self._meta("allnull"))
+
+        got = server._cache_get_table("allnull")
+        assert got is not None
+        assert got.num_rows == 2
+        assert got.schema.field("id").type == pa.int64()
+        assert got.schema.field("name").type == pa.utf8()
+        assert got.to_pylist() == [
+            {"id": None, "name": None},
+            {"id": None, "name": None},
+        ]
+
+
+class TestFlightBuildCacheMeta:
+    """Flight's ``build_cache_meta`` delegates key + TTL derivation to the
+    shared ``resolve_cache_plan`` (issue #126), so a compiled query keys and
+    TTLs identically on Flight and REST/pgwire. This exercises the real
+    delegation path end-to-end (server method -> server_execution ->
+    resolve_cache_plan), not just the shared plan in isolation.
+    """
+
+    def _server_with_cache(self, mock_session_manager, dialect: str = "postgres"):
+        server = _make_server(mock_session_manager, dialect)
+
+        class FakeCache:
+            backend_name = "memory"
+
+            def heartbeats_snapshot(self):
+                return {}
+
+        class FakeConfig:
+            min_ttl_seconds = 5
+            max_ttl_seconds = 86400
+            unknown_policy = "no_cache"
+            unknown_default_ttl_seconds = 300
+
+        server._cache = FakeCache()
+        server._cache_config = FakeConfig()
+        # compute_effective_ttl calls ``contracts.get(...)`` — hand it a real
+        # dict, not the MagicMock store's auto-attr.
+        mock_session_manager.get_store.return_value.refresh_contracts.return_value = {}
+        return server
+
+    def test_key_matches_rest_derivation(self, mock_session_manager):
+        """The Flight-derived key equals the canonical key REST/pgwire build
+        for the same compiled query — the cross-surface sharing guarantee."""
+        from orionbelt.cache.key import build_cache_key, build_datasource_key
+
+        server = self._server_with_cache(mock_session_manager)
+        sql = "SELECT a FROM t GROUP BY a"
+        meta = server._build_cache_meta(
+            compiled_sql=sql, dialect="postgres", context=None, physical_tables=[]
+        )
+        assert meta is not None
+        assert meta["key"] == build_cache_key(
+            datasource=build_datasource_key("postgres"),
+            model_id="test-model",
+            dialect="postgres",
+            sql=sql,
+        )
+        assert meta["datasource"] == "postgres"
+        assert meta["dialect"] == "postgres"
+        assert meta["model_id"] == "test-model"
+        # Empty physical_tables -> all-static -> capped at max TTL.
+        assert meta["ttl"] == 86400
+
+    def test_nondeterministic_sql_returns_none(self, mock_session_manager):
+        server = self._server_with_cache(mock_session_manager)
+        meta = server._build_cache_meta(
+            compiled_sql="SELECT NOW()",
+            dialect="postgres",
+            context=None,
+            physical_tables=[],
+        )
+        assert meta is None
+
+    def test_noop_backend_skips_cache(self, mock_session_manager):
+        server = self._server_with_cache(mock_session_manager)
+        server._cache.backend_name = "noop"
+        meta = server._build_cache_meta(
+            compiled_sql="SELECT a FROM t",
+            dialect="postgres",
+            context=None,
+            physical_tables=[],
+        )
+        assert meta is None
 
 
 class TestFlightCatalogFilter:

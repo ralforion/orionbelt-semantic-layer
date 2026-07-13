@@ -85,8 +85,27 @@ def encode_data(column_names: list[str], rows: list[list[Any]]) -> bytes:
 
     No response envelope is baked in — the blob is a pure Arrow data stream. The
     caller stores this in the cache; metadata is rebuilt fresh on every read.
+    Types are inferred from the row values (see :func:`build_result_table`); a
+    caller that already holds a fully-typed table should use
+    :func:`encode_table` instead to preserve the exact schema.
     """
     table = build_result_table(column_names, rows)
+    return gzip.compress(to_ipc_stream(table), _GZIP_LEVEL)
+
+
+def encode_table(table: Any) -> bytes:
+    """Serialize a pyarrow ``Table`` as a gzip'd Arrow IPC blob, keeping its
+    exact schema.
+
+    Unlike :func:`encode_data` — which rebuilds the table from column names +
+    Python rows and so *re-infers* Arrow types — this preserves the caller's
+    original types. Use it when the caller already holds a fully-typed table
+    (e.g. Flight, whose warehouse driver returns typed columns): re-inference
+    would collapse an empty / all-null ``int64``/``string`` result to
+    ``null``-typed columns, so a cache hit would stream a schema that no longer
+    matches the fresh / advertised one. The byte format is identical to
+    :func:`encode_data`'s, so :func:`decode_data` reads either.
+    """
     return gzip.compress(to_ipc_stream(table), _GZIP_LEVEL)
 
 

@@ -455,16 +455,6 @@ def build_cache_meta(
     if backend == "noop":
         return None
 
-    # Non-deterministic SQL (RAND, NOW, CURRENT_DATE, TABLESAMPLE, ...)
-    # must bypass the cache — the SQL hash is the cache key, so caching
-    # would freeze one stale clock/random slice forever.
-    from orionbelt.cache import is_nondeterministic_sql
-
-    nondet, name = is_nondeterministic_sql(compiled_sql)
-    if nondet:
-        logger.info("cache skipped: non-deterministic SQL (%s)", name)
-        return None
-
     # Resolve session_id from the selector header. Falls back to the
     # __default__ slot for legacy single-model deployments — matches
     # how the REST endpoints derive session_id for the cache key.
@@ -483,48 +473,31 @@ def build_cache_meta(
     except Exception:
         return None
 
-    from orionbelt.cache import build_cache_key, build_datasource_key, compute_effective_ttl
+    # Delegate key + TTL derivation to the shared, layer-clean core so Flight,
+    # REST, and pgwire key and TTL the same compiled query identically (issue
+    # #126). v2 keys hash on the compiled SQL string — the canonical, dialect-
+    # rendered form actually sent to the warehouse; v3 scopes the key to the
+    # datasource (the dialect today), NOT the session, so all three surfaces
+    # share one entry per compiled query. Non-deterministic SQL (RAND/NOW/
+    # CURRENT_DATE/TABLESAMPLE/...) is rejected inside resolve_cache_plan.
+    from orionbelt.service.query_execution import resolve_cache_plan
 
-    # v2 keys hash on the compiled SQL string — the canonical, dialect-
-    # rendered form actually sent to the warehouse. v3 scopes the key to the
-    # datasource (the dialect today), NOT the session, so Flight, REST, and
-    # pgwire share one entry per compiled query. See orionbelt.cache.key.
-    datasource = build_datasource_key(dialect)
-    cache_key = build_cache_key(
-        datasource=datasource,
+    plan = resolve_cache_plan(
+        store=store,
         model_id=model_id,
         dialect=dialect,
         sql=compiled_sql,
-    )
-
-    # Resolve TTL from refresh contracts + heartbeats — same logic
-    # the REST endpoint uses.
-    try:
-        contracts = store.refresh_contracts(model_id)
-    except Exception:
-        contracts = {}
-    heartbeats: dict[str, Any] = {}
-    snapshot = getattr(server._cache, "heartbeats_snapshot", None)
-    if callable(snapshot):
-        try:
-            heartbeats = snapshot()
-        except Exception:
-            heartbeats = {}
-    ttl_outcome = compute_effective_ttl(
         physical_tables=physical_tables,
-        contracts=contracts,
-        heartbeats=heartbeats,
-        min_ttl_seconds=server._cache_config.min_ttl_seconds,
-        max_ttl_seconds=server._cache_config.max_ttl_seconds,
-        unknown_policy=server._cache_config.unknown_policy,
-        unknown_default_ttl_seconds=server._cache_config.unknown_default_ttl_seconds,
+        cache=server._cache,
+        cache_config=server._cache_config,
     )
-    if ttl_outcome.ttl is None:
+    ttl_result = plan.ttl_outcome.ttl
+    if plan.cache_key is None or ttl_result is None:
         return None
     return {
-        "key": cache_key,
-        "ttl": int(ttl_outcome.ttl.seconds),
-        "datasource": datasource,
+        "key": plan.cache_key,
+        "ttl": int(ttl_result.seconds),
+        "datasource": plan.datasource,
         "model_id": model_id,
         "physical_tables": physical_tables,
         "dialect": dialect,
@@ -592,11 +565,43 @@ def compile_obml(server: OBFlightServer, obml: dict[str, Any], model: Any, diale
     return CompilationPipeline().compile(query, model, dialect)
 
 
+def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:
+    """Cast a cache-hit table to the schema Flight advertised in ``FlightInfo``.
+
+    A cached blob carries only inferred Arrow types: an *empty* or all-null
+    result serialized by REST/pgwire (which infer types from row values via
+    ``encode_data``) decodes to ``null``-typed columns. Streaming that on a
+    cache hit would contradict the precise schema Flight already advertised
+    (``int64`` vs ``float64``, ``date32`` vs ``timestamp``, …), which strict
+    Flight SQL clients validate. Casting the hit to the advertised schema keeps
+    the streamed schema stable regardless of which surface wrote the entry or
+    whether the result was empty.
+
+    Best-effort and non-destructive: if the columns don't line up by name/order
+    or a cast isn't supported, the original table is returned unchanged (better
+    a slightly loose schema than a failed query).
+    """
+    if schema is None:
+        return table
+    try:
+        if table.schema.equals(schema):
+            return table
+        if list(table.column_names) != list(schema.names):
+            # Column set/order differs from the advertised schema — don't risk
+            # a positional cast onto the wrong columns.
+            return table
+        return table.cast(schema)
+    except Exception:
+        logger.debug("cache hit schema align failed; streaming raw", exc_info=True)
+        return table
+
+
 def execute_sql(
     server: OBFlightServer,
     sql: str,
     dialect: str,
     cache_meta: dict[str, Any] | None = None,
+    result_schema: pa.Schema | None = None,
 ) -> flight.RecordBatchStream:
     """Execute SQL on the vendor database and stream results.
 
@@ -609,6 +614,11 @@ def execute_sql(
     returns it directly; on miss it executes against the warehouse
     and writes the resulting ``pa.Table`` back to the cache under
     the TTL resolved at prepare time. See PLAN_freshness_driven_cache.
+
+    ``result_schema`` is the schema advertised in ``FlightInfo`` (from the
+    prepare step). A cache hit is cast to it so the streamed schema always
+    matches what the client was promised, even for an empty result whose
+    cached blob decoded to ``null``-typed columns.
     """
     # Virtual metadata tables — served from model, no DB needed
     vt = server._detect_virtual_table(sql)
@@ -619,6 +629,7 @@ def execute_sql(
     if cache_meta is not None and server._cache is not None:
         cached_table = server._cache_get_table(cache_meta["key"])
         if cached_table is not None:
+            cached_table = align_cached_table(cached_table, result_schema)
             logger.info(
                 "Flight cache HIT: key=%s rows=%d", cache_meta["key"], cached_table.num_rows
             )
@@ -670,11 +681,12 @@ def execute_sql(
 def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     """Look up a Flight cache entry. Returns the decoded ``pa.Table`` or None.
 
-    The cache stores gzip'd Arrow IPC payloads via the shared
-    ``orionbelt.cache.result_codec`` envelope, so a Flight reader consumes a
-    REST/pgwire writer's entry and vice versa (one entry per compiled query).
-    Flight only needs the columnar data; the envelope metadata (sql, dialect,
-    explain, …) rides in the schema and is harmless to carry along.
+    The cache stores the row data as a gzip'd Arrow IPC blob via the shared
+    ``result_codec.decode_data`` / ``encode_data`` codec, so a Flight reader
+    consumes a REST/pgwire writer's entry and vice versa (one entry per compiled
+    query). Only the columnar data lives in the blob; the response envelope
+    (sql, dialect, column types, …) is metadata each surface rebuilds fresh, so
+    Flight ignores it and just streams the data table.
     """
     import asyncio
 
@@ -690,58 +702,53 @@ def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
     if result is None or not getattr(result, "payload", None):
         return None
     try:
-        from orionbelt.cache import result_codec
+        from orionbelt.cache.result_codec import decode_data
 
-        return result_codec.decode_table(result.payload)
+        table: pa.Table = decode_data(result.payload)
+        return table
     except Exception:
         logger.debug("cache decode failed for key=%s", key, exc_info=True)
         return None
 
 
 def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[str, Any]) -> None:
-    """Serialize a ``pa.Table`` to the shared ``result_codec`` envelope and
-    store under ``cache_meta``.
+    """Serialize a ``pa.Table`` to the shared blob codec and store it.
 
-    REST, pgwire, and Flight share the cache namespace — all encode the
-    same gzip'd Arrow IPC envelope so the other surfaces can decode ``sql``,
-    ``dialect``, ``columns``, etc. without falling back to defaults. Errors are
-    swallowed; cache writes must never break query execution.
+    REST, pgwire, and Flight share the cache namespace: all store the row data
+    as a gzip'd Arrow IPC blob plus a ``columns_json`` schema sidecar, so any
+    surface reads any other's entry. The column *types* ride in ``columns_json``
+    (key ``type``, vocabulary ``string`` / ``number`` / ``datetime`` /
+    ``binary``) so a REST hit on a Flight-written entry rebuilds exact types
+    instead of falling back to ``string``.
+
+    Flight already holds a fully-typed table, so it serializes it directly via
+    ``encode_table`` rather than round-tripping through Python rows the way
+    ``encode_data`` does: re-inferring types would collapse an empty / all-null
+    ``int64``/``string`` result to ``null``-typed columns, and a later cache hit
+    would then stream a schema that no longer matches the one Flight advertised
+    in ``FlightInfo``. Errors are swallowed; cache writes must never break
+    execution.
     """
     import asyncio
+    import json
 
-    from orionbelt.cache import result_codec
-
-    rows = table.to_pylist()
-    list_of_lists: list[list[Any]] = [
-        [row.get(name) for name in table.column_names] for row in rows
-    ]
-    # REST's ColumnMetadata uses ``type`` (Pydantic field name) with the
-    # vocabulary ``string`` / ``number`` / ``datetime`` / ``binary`` —
-    # match it so a Flight-written cache entry decoded by REST yields
-    # the right column types instead of falling back to ``string``.
-    columns_meta = [
-        {"name": field.name, "type": _arrow_to_obsl_type_hint(field.type)} for field in table.schema
-    ]
+    from orionbelt.cache import query_hash as _query_hash
+    from orionbelt.cache.result_codec import encode_table
 
     try:
-        payload = result_codec.encode(
-            columns=columns_meta,
-            rows=list_of_lists,
-            sql=cache_meta.get("sql", ""),
-            dialect=cache_meta.get("dialect", ""),
-            explain=None,
-            warnings=[],
-            sql_valid=True,
-            execution_time_ms=0.0,
-            timezone=None,
-            resolved={},
-            physical_tables=cache_meta.get("physical_tables", []),
-        )
+        payload = encode_table(table)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
 
-    from orionbelt.cache import query_hash as _query_hash
+    # Column schema sidecar — matches REST's ``[{name, type, format}]`` shape so
+    # a cross-surface reader recovers exact types.
+    columns_json = json.dumps(
+        [
+            {"name": field.name, "type": _arrow_to_obsl_type_hint(field.type), "format": None}
+            for field in table.schema
+        ]
+    )
 
     try:
         loop = asyncio.new_event_loop()
@@ -757,6 +764,7 @@ def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[st
                     query_hash=_query_hash(sql=cache_meta["sql"]),
                     dialect=cache_meta["dialect"],
                     row_count=table.num_rows,
+                    columns_json=columns_json,
                 )
             )
         finally:
