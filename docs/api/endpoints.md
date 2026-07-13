@@ -625,11 +625,11 @@ Per-query `status` is `"ok"`, `"error"` (with an `error` envelope: `{code, messa
 
 ## OSI ↔ OBML Conversion
 
-Stateless endpoints for converting between [OSI (Open Semantic Interchange)](https://github.com/open-semantic-interchange/OSI) and OBML formats. No session required.
+Stateless endpoints for converting between [OSI (Open Semantic Interchange)](https://github.com/apache/ossie) and OBML formats. No session required.
 
 ### `POST /v1/convert/osi-to-obml`
 
-Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI v0.2.0.dev0](https://github.com/open-semantic-interchange/OSI/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
+Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI v0.2.0.dev0](https://github.com/apache/ossie/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
 
 **Request:**
 

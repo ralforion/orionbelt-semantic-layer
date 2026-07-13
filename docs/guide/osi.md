@@ -2,7 +2,10 @@
 
 **OSI (Open Semantic Interchange)** is an open standard for portable semantic models, founded with the goal of letting metric and dimension definitions move between BI tools, semantic layers, and data platforms without rewriting. See [open-semantic-interchange.org](https://open-semantic-interchange.org/) for the specification and contributor list.
 
-OrionBelt includes a bidirectional converter between OBML and the [OSI specification](https://github.com/open-semantic-interchange/OSI) format. The converter handles structural differences between the two formats — including metric decomposition, relationship restructuring, and lossless `ai_context` preservation via `customExtensions` — with built-in validation for both directions.
+!!! note "Now at the Apache Incubator"
+    OSI has been contributed to the Apache Software Foundation and is now developed as **[Apache Ossie (incubating)](https://github.com/apache/ossie)**. The specification and its converters (including the OrionBelt converter) live there going forward. Existing `github.com/open-semantic-interchange/OSI` links redirect to the new repository.
+
+OrionBelt includes a bidirectional converter between OBML and the [OSI specification](https://github.com/apache/ossie) format. The converter handles structural differences between the two formats — including metric decomposition, relationship restructuring, and lossless `ai_context` preservation via `customExtensions` — with built-in validation for both directions.
 
 The converter ships as a standalone `osi-orionbelt` package. It is an **optional** dependency: install it with `pip install 'orionbelt-semantic-layer[osi]'` (or standalone via `pip install osi-orionbelt`). The published API Docker images bundle it, so the `/convert`, `/models/from-osi`, and `/osi` endpoints work out of the box; on a bare install without the extra, those endpoints return a `503`.
 
