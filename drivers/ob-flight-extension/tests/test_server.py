@@ -594,10 +594,10 @@ class TestFlightCacheEnvelope:
         # The old (broken) key must NOT be present.
         assert all("data_type" not in c for c in cols)
 
-    def test_flight_cache_roundtrip_get_after_put(self) -> None:
-        """A Flight writer's entry is read back by the Flight reader: the
-        ``encode_data`` blob decodes cleanly via ``decode_data`` (the same
-        codec REST/pgwire use), proving get/set share one byte format."""
+    @staticmethod
+    def _roundtrip_server():
+        """A server whose FakeCache stores set() payloads and serves them on
+        get(), so a put/get pair exercises the real codec byte format."""
         from datetime import UTC, datetime
 
         from orionbelt.cache.protocol import CachedResult
@@ -619,10 +619,12 @@ class TestFlightCacheEnvelope:
                 return store.get(key)
 
         server._cache = FakeCache()
+        return server
 
-        table = pa.table({"id": [7, 8, 9], "name": ["x", "y", "z"]})
-        meta = {
-            "key": "rt",
+    @staticmethod
+    def _meta(key: str) -> dict:
+        return {
+            "key": key,
             "ttl": 60,
             "physical_tables": [],
             "datasource": "duckdb",
@@ -630,7 +632,15 @@ class TestFlightCacheEnvelope:
             "sql": "SELECT id, name FROM t",
             "dialect": "duckdb",
         }
-        server._cache_put_table(table, meta)
+
+    def test_flight_cache_roundtrip_get_after_put(self) -> None:
+        """A Flight writer's entry is read back by the Flight reader: the
+        ``encode_table`` blob decodes cleanly via ``decode_data`` (the same byte
+        format ``encode_data`` writes), proving get/set share one codec."""
+        server = self._roundtrip_server()
+
+        table = pa.table({"id": [7, 8, 9], "name": ["x", "y", "z"]})
+        server._cache_put_table(table, self._meta("rt"))
 
         got = server._cache_get_table("rt")
         assert got is not None
@@ -639,6 +649,54 @@ class TestFlightCacheEnvelope:
             {"id": 7, "name": "x"},
             {"id": 8, "name": "y"},
             {"id": 9, "name": "z"},
+        ]
+
+    def test_flight_cache_preserves_schema_for_empty_result(self) -> None:
+        """Regression: an empty typed result must keep its Arrow schema through
+        the cache. ``encode_data`` re-infers types from values, so an empty
+        ``int64``/``string`` table came back ``null``/``null`` — a cache hit
+        would then stream a schema that no longer matches the one Flight
+        advertised in FlightInfo. ``encode_table`` preserves the exact schema."""
+        server = self._roundtrip_server()
+
+        empty = pa.table(
+            {
+                "id": pa.array([], type=pa.int64()),
+                "amount": pa.array([], type=pa.float64()),
+                "ts": pa.array([], type=pa.timestamp("us")),
+                "name": pa.array([], type=pa.utf8()),
+            }
+        )
+        server._cache_put_table(empty, self._meta("empty"))
+
+        got = server._cache_get_table("empty")
+        assert got is not None
+        assert got.num_rows == 0
+        assert got.schema.field("id").type == pa.int64()
+        assert got.schema.field("amount").type == pa.float64()
+        assert got.schema.field("ts").type == pa.timestamp("us")
+        assert got.schema.field("name").type == pa.utf8()
+
+    def test_flight_cache_preserves_schema_for_all_null_result(self) -> None:
+        """All-null typed columns must also keep their declared Arrow types."""
+        server = self._roundtrip_server()
+
+        all_null = pa.table(
+            {
+                "id": pa.array([None, None], type=pa.int64()),
+                "name": pa.array([None, None], type=pa.utf8()),
+            }
+        )
+        server._cache_put_table(all_null, self._meta("allnull"))
+
+        got = server._cache_get_table("allnull")
+        assert got is not None
+        assert got.num_rows == 2
+        assert got.schema.field("id").type == pa.int64()
+        assert got.schema.field("name").type == pa.utf8()
+        assert got.to_pylist() == [
+            {"id": None, "name": None},
+            {"id": None, "name": None},
         ]
 
 

@@ -674,28 +674,31 @@ def cache_get_table(server: OBFlightServer, key: str) -> pa.Table | None:
 
 
 def cache_put_table(server: OBFlightServer, table: pa.Table, cache_meta: dict[str, Any]) -> None:
-    """Serialize a ``pa.Table``'s row data to the shared blob codec and store it.
+    """Serialize a ``pa.Table`` to the shared blob codec and store it.
 
     REST, pgwire, and Flight share the cache namespace: all store the row data
-    as the same gzip'd Arrow IPC blob (``encode_data``) plus a ``columns_json``
-    schema sidecar, so any surface reads any other's entry. The blob holds only
-    data; the column *types* ride in ``columns_json`` (key ``type``, vocabulary
-    ``string`` / ``number`` / ``datetime`` / ``binary``) so a REST hit on a
-    Flight-written entry rebuilds exact types instead of falling back to
-    ``string``. Errors are swallowed; cache writes must never break execution.
+    as a gzip'd Arrow IPC blob plus a ``columns_json`` schema sidecar, so any
+    surface reads any other's entry. The column *types* ride in ``columns_json``
+    (key ``type``, vocabulary ``string`` / ``number`` / ``datetime`` /
+    ``binary``) so a REST hit on a Flight-written entry rebuilds exact types
+    instead of falling back to ``string``.
+
+    Flight already holds a fully-typed table, so it serializes it directly via
+    ``encode_table`` rather than round-tripping through Python rows the way
+    ``encode_data`` does: re-inferring types would collapse an empty / all-null
+    ``int64``/``string`` result to ``null``-typed columns, and a later cache hit
+    would then stream a schema that no longer matches the one Flight advertised
+    in ``FlightInfo``. Errors are swallowed; cache writes must never break
+    execution.
     """
     import asyncio
     import json
 
     from orionbelt.cache import query_hash as _query_hash
-    from orionbelt.cache.result_codec import encode_data
-
-    rows = table.to_pylist()
-    column_names = table.column_names
-    list_of_lists: list[list[Any]] = [[row.get(name) for name in column_names] for row in rows]
+    from orionbelt.cache.result_codec import encode_table
 
     try:
-        payload = encode_data(column_names, list_of_lists)
+        payload = encode_table(table)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return

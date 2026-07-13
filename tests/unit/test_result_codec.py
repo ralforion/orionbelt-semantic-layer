@@ -28,6 +28,40 @@ def test_encode_decode_round_trip() -> None:
     assert result_codec.table_to_rows(table) == _ROWS
 
 
+def test_encode_table_preserves_schema() -> None:
+    """``encode_table`` keeps the caller's exact Arrow types, unlike
+    ``encode_data`` (which re-infers from values). An empty typed table must
+    survive the round-trip with its schema intact — the case Flight relies on so
+    a cache hit doesn't stream ``null``-typed columns for an empty result."""
+    table = pa.table(
+        {
+            "id": pa.array([], type=pa.int64()),
+            "amount": pa.array([], type=pa.float64()),
+            "ts": pa.array([], type=pa.timestamp("us")),
+            "name": pa.array([], type=pa.utf8()),
+        }
+    )
+    decoded = result_codec.decode_data(result_codec.encode_table(table))
+
+    assert decoded.num_rows == 0
+    assert decoded.schema.field("id").type == pa.int64()
+    assert decoded.schema.field("amount").type == pa.float64()
+    assert decoded.schema.field("ts").type == pa.timestamp("us")
+    assert decoded.schema.field("name").type == pa.utf8()
+
+
+def test_encode_table_shares_byte_format_with_encode_data() -> None:
+    """Both writers produce a blob ``decode_data`` reads, so any surface reads
+    any other's entry regardless of which encoder wrote it."""
+    table = result_codec.build_result_table(_COLUMN_NAMES, _ROWS)
+    payload = result_codec.encode_table(table)
+
+    assert payload[:2] == b"\x1f\x8b"  # gzip magic, same container as encode_data
+    decoded = result_codec.decode_data(payload)
+    assert decoded.column_names == _COLUMN_NAMES
+    assert result_codec.table_to_rows(decoded) == _ROWS
+
+
 def test_payload_is_gzip() -> None:
     """The blob is gzip'd at the transport/storage layer (§3)."""
     payload = result_codec.encode_data(_COLUMN_NAMES, _ROWS)
