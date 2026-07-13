@@ -6,7 +6,7 @@ description: OrionBelt Semantic Layer is an open-source Semantic Sidecar for age
   <img src="assets/ORIONBELT_Logo.png" alt="OrionBelt Logo" width="400">
 </p>
 
-# OrionBelt Semantic Layer and Sidecar
+# OrionBelt&reg; Semantic Layer and Sidecar
 
 **An open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.**
 
