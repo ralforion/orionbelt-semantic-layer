@@ -2,6 +2,17 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.21.1] - 2026-07-13
+
+### Fixed
+
+- **Arrow Flight SQL result cache was inoperative since 2.20.0.** Flight's cache read/write path called a result-codec API (`encode`/`decode`/`decode_table`) that 2.20.0 replaced with the data-only `encode_data`/`decode_data` codec plus a `columns_json` schema sidecar. Both calls raised an error swallowed by a `try/except`, so every Flight query silently missed the cache and never stored a result. Flight now uses the current codec and shares one cache entry per compiled query with REST and pgwire.
+- **Flight cache hits could stream a schema that did not match what FlightInfo advertised.** An empty or all-null result was re-typed from row values on write (collapsing typed columns to `null`), and a Flight hit streamed that schema even though the client was promised the model's types. Flight now preserves the exact Arrow schema on write and casts a cache hit back to the advertised schema, so the streamed schema is stable for any writer (REST, pgwire, Flight) and any result shape.
+
+### Changed
+
+- **Cache key and freshness-TTL derivation is now shared across REST, pgwire, and Flight** via a single layer-clean `service/query_execution.py` (`resolve_cache_plan`), replacing three copies that could drift. Same compiled query, same key and TTL on every surface. Internal refactor, no behavior change.
+
 ## [2.21.0] - 2026-07-07
 
 ### Added
