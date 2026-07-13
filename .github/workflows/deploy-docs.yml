@@ -18,22 +18,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout orionbelt-semantic-layer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: docs-source
 
       - name: Checkout ralforion.github.io
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ralforion/ralforion.github.io
           token: ${{ secrets.DOCS_DEPLOY_TOKEN }}
           path: main-site
 
-      - name: Set up Python with uv
-        uses: drivendataorg/setup-python-uv-action@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.11"
-      
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.11
+
       - name: Build documentation
         working-directory: docs-source
         run: |
