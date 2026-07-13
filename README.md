@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo — a stylized belt of three stars" width="400">
 </p>
 
-<h1 align="center">OrionBelt Semantic Layer and Sidecar</h1>
+<h1 align="center">OrionBelt&reg; Semantic Layer and Sidecar</h1>
 
 <p align="center"><strong>An Open Source <a href="https://ralforion.com/semantic-sidecar.html">Semantic Sidecar</a> for <a href="https://ralforion.com/agentic-ai-data-access.html">Agentic AI</a>, Analytics, Quality and Governance Systems.</strong></p>
 
