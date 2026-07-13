@@ -17,7 +17,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -26,15 +25,10 @@ from orionbelt.api.schemas import (
     ExplainJoinResponse,
     ExplainPlanResponse,
 )
-from orionbelt.cache import (
-    build_cache_key,
-    build_datasource_key,
-    compute_effective_ttl,
-    is_nondeterministic_sql,
-)
+from orionbelt.cache import build_datasource_key
 from orionbelt.cache.protocol import Cache
 from orionbelt.cache.result_codec import decode_data, encode_data, table_to_rows
-from orionbelt.cache.ttl import NoCacheReason, TtlResult
+from orionbelt.cache.ttl import TtlResult
 from orionbelt.compiler.validator import format_sql
 from orionbelt.service.db_executor import (
     ColumnMeta,
@@ -43,6 +37,7 @@ from orionbelt.service.db_executor import (
     coarse_hint_from_type_name,
     execute_sql,
 )
+from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -173,38 +168,11 @@ def build_explain_response(result: Any) -> ExplainPlanResponse | None:
 
 
 # --- TTL + cache get/set ----------------------------------------------------
-
-
-def resolve_effective_ttl(
-    *,
-    store: Any,
-    model_id: str,
-    cache: Cache,
-    cache_config: Any,
-    physical_tables: list[str],
-) -> TtlResult:
-    """Compose the effective TTL for a query, merging contracts + heartbeats."""
-    contracts: dict[str, Any] = {}
-    try:
-        contracts = store.refresh_contracts(model_id)
-    except Exception:
-        logger.debug("refresh_contracts failed", exc_info=True)
-    heartbeats: dict[str, datetime] = {}
-    snapshot = getattr(cache, "heartbeats_snapshot", None)
-    if callable(snapshot):
-        try:
-            heartbeats = snapshot()
-        except Exception:
-            heartbeats = {}
-    return compute_effective_ttl(
-        physical_tables=physical_tables,
-        contracts=contracts,
-        heartbeats=heartbeats,
-        min_ttl_seconds=cache_config.min_ttl_seconds,
-        max_ttl_seconds=cache_config.max_ttl_seconds,
-        unknown_policy=cache_config.unknown_policy,
-        unknown_default_ttl_seconds=cache_config.unknown_default_ttl_seconds,
-    )
+#
+# ``resolve_effective_ttl`` (and the ``resolve_cache_plan`` core it feeds) now
+# live in ``orionbelt.service.query_execution`` so the Flight driver shares the
+# exact key + TTL derivation without importing ``orionbelt.api``. It is
+# re-exported here for backwards-compatible imports. See issue #126.
 
 
 @dataclass
@@ -397,50 +365,48 @@ async def execute_query_with_cache(
     ttl_outcome: TtlResult | None = None
 
     if cacheable:
-        nondet, name = is_nondeterministic_sql(compile_result.sql)
-        if nondet:
-            logger.info("cache skipped for %s/%s: non-deterministic SQL (%s)", ds, model_id, name)
-            ttl_outcome = TtlResult(ttl=None, no_cache_reason=NoCacheReason.NON_DETERMINISTIC_SQL)
-        else:
-            cache_key = build_cache_key(
-                datasource=ds,
-                model_id=model_id,
-                dialect=dialect,
-                sql=compile_result.sql,
+        # Key + TTL derivation is shared with pgwire and Flight via
+        # ``resolve_cache_plan`` so the same compiled query is keyed and TTL'd
+        # identically on every surface (issue #126).
+        plan = resolve_cache_plan(
+            store=store,
+            model_id=model_id,
+            dialect=dialect,
+            sql=compile_result.sql,
+            physical_tables=compile_result.physical_tables,
+            cache=cache,
+            cache_config=cache_config,
+            datasource=ds,
+        )
+        ds = plan.datasource
+        cache_key = plan.cache_key
+        ttl_outcome = plan.ttl_outcome
+        # A "no cache" TTL (unknown freshness, missing heartbeat, below-min)
+        # must block reads as well as writes: serving an entry written
+        # during an earlier cacheable window would defeat the freshness
+        # policy. Writes are already gated on ttl below, so only read when
+        # the current TTL says the query is cacheable.
+        if cache_key is not None and ttl_outcome.ttl is not None:
+            t0 = time.monotonic()
+            entry = (
+                await try_cache_get(cache, cache_key)
+                if decode_payload
+                else await try_cache_get_raw(cache, cache_key)
             )
-            ttl_outcome = resolve_effective_ttl(
-                store=store,
-                model_id=model_id,
-                cache=cache,
-                cache_config=cache_config,
-                physical_tables=compile_result.physical_tables,
-            )
-            # A "no cache" TTL (unknown freshness, missing heartbeat, below-min)
-            # must block reads as well as writes: serving an entry written
-            # during an earlier cacheable window would defeat the freshness
-            # policy. Writes are already gated on ttl below, so only read when
-            # the current TTL says the query is cacheable.
-            if ttl_outcome.ttl is not None:
-                t0 = time.monotonic()
-                entry = (
-                    await try_cache_get(cache, cache_key)
-                    if decode_payload
-                    else await try_cache_get_raw(cache, cache_key)
+            if entry is not None:
+                return CachedExecution(
+                    cached=True,
+                    cache_key=cache_key,
+                    ttl_outcome=ttl_outcome,
+                    exec_result=None,
+                    columns=None,
+                    fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
+                    data_table=entry.data_table,
+                    payload_blob=entry.payload_blob,
+                    cached_at_iso=entry.cached_at_iso,
+                    hit_columns=entry.columns,
+                    row_count=entry.row_count,
                 )
-                if entry is not None:
-                    return CachedExecution(
-                        cached=True,
-                        cache_key=cache_key,
-                        ttl_outcome=ttl_outcome,
-                        exec_result=None,
-                        columns=None,
-                        fetch_elapsed_ms=round((time.monotonic() - t0) * 1000, 2),
-                        data_table=entry.data_table,
-                        payload_blob=entry.payload_blob,
-                        cached_at_iso=entry.cached_at_iso,
-                        hit_columns=entry.columns,
-                        row_count=entry.row_count,
-                    )
 
     exec_result = await asyncio.to_thread(
         execute_sql,
@@ -564,6 +530,7 @@ __all__ = [
     "execute_query_with_cache",
     "execution_result_from_data",
     "RESULT_TYPE_TO_HINT",
+    "resolve_cache_plan",
     "resolve_effective_ttl",
     "try_cache_get",
     "try_cache_get_raw",

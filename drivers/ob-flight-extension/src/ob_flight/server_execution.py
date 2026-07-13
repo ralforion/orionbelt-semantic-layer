@@ -455,16 +455,6 @@ def build_cache_meta(
     if backend == "noop":
         return None
 
-    # Non-deterministic SQL (RAND, NOW, CURRENT_DATE, TABLESAMPLE, ...)
-    # must bypass the cache — the SQL hash is the cache key, so caching
-    # would freeze one stale clock/random slice forever.
-    from orionbelt.cache import is_nondeterministic_sql
-
-    nondet, name = is_nondeterministic_sql(compiled_sql)
-    if nondet:
-        logger.info("cache skipped: non-deterministic SQL (%s)", name)
-        return None
-
     # Resolve session_id from the selector header. Falls back to the
     # __default__ slot for legacy single-model deployments — matches
     # how the REST endpoints derive session_id for the cache key.
@@ -483,48 +473,31 @@ def build_cache_meta(
     except Exception:
         return None
 
-    from orionbelt.cache import build_cache_key, build_datasource_key, compute_effective_ttl
+    # Delegate key + TTL derivation to the shared, layer-clean core so Flight,
+    # REST, and pgwire key and TTL the same compiled query identically (issue
+    # #126). v2 keys hash on the compiled SQL string — the canonical, dialect-
+    # rendered form actually sent to the warehouse; v3 scopes the key to the
+    # datasource (the dialect today), NOT the session, so all three surfaces
+    # share one entry per compiled query. Non-deterministic SQL (RAND/NOW/
+    # CURRENT_DATE/TABLESAMPLE/...) is rejected inside resolve_cache_plan.
+    from orionbelt.service.query_execution import resolve_cache_plan
 
-    # v2 keys hash on the compiled SQL string — the canonical, dialect-
-    # rendered form actually sent to the warehouse. v3 scopes the key to the
-    # datasource (the dialect today), NOT the session, so Flight, REST, and
-    # pgwire share one entry per compiled query. See orionbelt.cache.key.
-    datasource = build_datasource_key(dialect)
-    cache_key = build_cache_key(
-        datasource=datasource,
+    plan = resolve_cache_plan(
+        store=store,
         model_id=model_id,
         dialect=dialect,
         sql=compiled_sql,
-    )
-
-    # Resolve TTL from refresh contracts + heartbeats — same logic
-    # the REST endpoint uses.
-    try:
-        contracts = store.refresh_contracts(model_id)
-    except Exception:
-        contracts = {}
-    heartbeats: dict[str, Any] = {}
-    snapshot = getattr(server._cache, "heartbeats_snapshot", None)
-    if callable(snapshot):
-        try:
-            heartbeats = snapshot()
-        except Exception:
-            heartbeats = {}
-    ttl_outcome = compute_effective_ttl(
         physical_tables=physical_tables,
-        contracts=contracts,
-        heartbeats=heartbeats,
-        min_ttl_seconds=server._cache_config.min_ttl_seconds,
-        max_ttl_seconds=server._cache_config.max_ttl_seconds,
-        unknown_policy=server._cache_config.unknown_policy,
-        unknown_default_ttl_seconds=server._cache_config.unknown_default_ttl_seconds,
+        cache=server._cache,
+        cache_config=server._cache_config,
     )
-    if ttl_outcome.ttl is None:
+    ttl_result = plan.ttl_outcome.ttl
+    if plan.cache_key is None or ttl_result is None:
         return None
     return {
-        "key": cache_key,
-        "ttl": int(ttl_outcome.ttl.seconds),
-        "datasource": datasource,
+        "key": plan.cache_key,
+        "ttl": int(ttl_result.seconds),
+        "datasource": plan.datasource,
         "model_id": model_id,
         "physical_tables": physical_tables,
         "dialect": dialect,
