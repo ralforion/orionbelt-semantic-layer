@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.21.0"
+version = "2.21.1"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "info@ralforion.com"}]
