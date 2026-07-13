@@ -64,9 +64,19 @@ jobs:
             Triggered by: ${{ github.event_name }}
             Branch: ${{ steps.version.outputs.branch }}"
             
-            git push
-            echo "✅ Documentation deployed to ralforion.com/orionbelt-semantic-layer/"
-            echo "Version: ${{ steps.version.outputs.version }}"
+            # Push with rebase-and-retry to tolerate concurrent pushes to main
+            # (another deploy run or a manual edit landing between checkout and push).
+            for attempt in 1 2 3 4 5; do
+              if git push; then
+                echo "✅ Documentation deployed to ralforion.com/orionbelt-semantic-layer/"
+                echo "Version: ${{ steps.version.outputs.version }}"
+                exit 0
+              fi
+              echo "Push rejected (attempt ${attempt}/5); rebasing on latest main and retrying..."
+              git pull --rebase origin main
+            done
+            echo "::error::Failed to push docs after 5 attempts"
+            exit 1
           else
             echo "📝 No documentation changes detected"
           fi
