@@ -42,12 +42,6 @@ from osi_orionbelt._common import (
     _OBML_VENDOR_READ as _OBML_VENDOR_READ,
 )
 from osi_orionbelt._common import (
-    _OSI_KNOWN_DIALECTS as _OSI_KNOWN_DIALECTS,
-)
-from osi_orionbelt._common import (
-    _OSI_KNOWN_VENDORS as _OSI_KNOWN_VENDORS,
-)
-from osi_orionbelt._common import (
     _OSI_VENDOR_READ as _OSI_VENDOR_READ,
 )
 from osi_orionbelt._common import (

@@ -16,8 +16,6 @@ import re
 # 0.1.x (via the legacy shim) and 0.2.x.
 _OSI_VERSION = "0.2.0.dev0"
 
-# Dialect / vendor enum extras new in v0.2.0.dev0
-_OSI_KNOWN_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL")
 # SQL dialects (of the OSI enum) whose aggregation expressions our regex-based
 # metric parser can read, in preference order. ANSI_SQL first; SNOWFLAKE and
 # DATABRICKS are SQL engines OrionBelt also targets, and their simple/expression
@@ -36,16 +34,6 @@ _COLUMN_REF_RE = re.compile(
     r"\s*\.\s*"
     r'(?P<col>[A-Za-z_]\w*|"[^"]+"|`[^`]+`|\[[^\]]+\])'
 )
-_OSI_KNOWN_VENDORS = (
-    "COMMON",
-    "ORIONBELT",
-    "SNOWFLAKE",
-    "SALESFORCE",
-    "DBT",
-    "DATABRICKS",
-    "GOODDATA",
-)
-
 # Vendor identities for custom_extensions.
 #   ORIONBELT - OrionBelt/OBML-proprietary payloads we author on OBML -> OSI.
 #   OSI       - OSI-native fields OBML can't hold (unique_keys, field label,

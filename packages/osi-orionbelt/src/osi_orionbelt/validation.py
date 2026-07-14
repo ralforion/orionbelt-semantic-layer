@@ -13,13 +13,40 @@ from typing import Any
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _SCHEMAS_DIR = _SCRIPT_DIR / "schemas"
 
-# All three schemas are tracked files beside the converter, so the package is
-# self-contained (no repo-root dependency, sdist/wheel build in isolation). The
-# OBML schema is a vendored snapshot of the canonical repo-root
-# schema/obml-schema.json, kept in sync by a drift-guard test.
+# The OBML schema is OrionBelt's own format, always vendored beside the package
+# and kept in sync with the repo-root schema/obml-schema.json by a drift-guard
+# test.
 _OBML_SCHEMA_PATH = _SCHEMAS_DIR / "obml-schema.json"
-_OSI_SCHEMA_PATH = _SCHEMAS_DIR / "osi-schema.json"
-_OSI_ONTOLOGY_SCHEMA_PATH = _SCHEMAS_DIR / "osi-ontology-schema.json"
+
+
+def _osi_schema_path(filename: str) -> Path:
+    """Resolve an OSI core-spec schema without forcing a duplicate copy where a
+    canonical one already exists.
+
+    Resolution order:
+    1. A copy vendored beside this package (``schemas/<filename>``). The
+       standalone PyPI wheel and the OrionBelt product API rely on this, so the
+       package validates OSI documents self-contained and offline.
+    2. Otherwise ``core-spec/<filename>`` in an enclosing Ossie monorepo
+       checkout, found by walking up from this file. This lets the in-tree
+       converter drop its vendored copy and link the single canonical schema
+       rather than duplicating it.
+
+    Returns the vendored path unchanged when neither exists, so downstream
+    ``.exists()`` checks degrade to skip-with-warning rather than raising.
+    """
+    vendored = _SCHEMAS_DIR / filename
+    if vendored.exists():
+        return vendored
+    for parent in _SCRIPT_DIR.parents:
+        candidate = parent / "core-spec" / filename
+        if candidate.exists():
+            return candidate
+    return vendored
+
+
+_OSI_SCHEMA_PATH = _osi_schema_path("osi-schema.json")
+_OSI_ONTOLOGY_SCHEMA_PATH = _osi_schema_path("osi-ontology-schema.json")
 
 # The OSI ontology schema $refs the core-spec schema by its public raw URL for
 # ``ai_context`` and the embedded ``semantic_model``. Resolve that URL against
