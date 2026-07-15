@@ -108,3 +108,37 @@ jobs:
       - name: Mypy osi-orionbelt
         working-directory: packages/osi-orionbelt
         run: uv run mypy src/osi_orionbelt
+
+  # Import the UI against the dependency set the UI image actually ships.
+  #
+  # The `test` job installs --all-extras --all-groups, which pulls
+  # mkdocs-material (docs) and with it `requests`. The UI image installs
+  # `--no-dev --extra ui` and gets neither, so a gradio that imports requests
+  # from its __init__ passes every other job here and still exits(1) on
+  # startup. That shipped: 2.22.0's UI image could not boot. This job is the
+  # only one that resolves the same set the container does.
+  ui-shipped-deps:
+    name: UI imports on shipped deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # Match the UI image base (Dockerfile.ui).
+      - name: Install Python
+        run: uv python install 3.14
+
+      # Mirrors Dockerfile.ui's install line exactly.
+      - name: Install the shipped UI dependency set
+        env:
+          UV_PROJECT_ENVIRONMENT: /tmp/ui-venv
+        run: uv sync --no-dev --extra ui --no-editable --frozen
+
+      - name: Import gradio and the UI entrypoint
+        run: |
+          /tmp/ui-venv/bin/python -c "import gradio; print('gradio', gradio.__version__)"
+          /tmp/ui-venv/bin/python -c "from orionbelt.ui.app import main; print('UI entrypoint imports OK')"

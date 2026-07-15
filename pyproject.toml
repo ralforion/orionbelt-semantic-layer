@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "2.22.0"
+version = "2.22.1"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "info@ralforion.com"}]
@@ -97,7 +97,14 @@ docs = [
     "mkdocs-git-revision-date-localized-plugin>=1.2",
 ]
 ui = [
-    "gradio>=5.0,<6.0",
+    # Floor is 5.50, not 5.0: gradio <5.50 eagerly imports its CLI from
+    # __init__, which chains to `import requests` (gradio/cli/commands/
+    # components/docs.py). requests is not a gradio dependency and nothing in
+    # this extra provides it, so `import gradio` raises ModuleNotFoundError in
+    # the shipped UI venv. A Dependabot group update silently resolved gradio
+    # down to 5.23.1 under the old >=5.0 floor and shipped a UI image that
+    # could not start (2.22.0).
+    "gradio>=5.50,<6.0",
     # The playground fetches query results over the self-contained Arrow IPC
     # transport (format=arrow) and decodes them client-side, so the UI image
     # needs pyarrow even though it proxies execution to the API.
@@ -234,7 +241,8 @@ dev = [
     "mkdocs-autorefs>=1.4",
     "mkdocstrings[python]>=1.0",
     "mkdocs-git-revision-date-localized-plugin>=1.2",
-    "gradio>=5.0,<6.0",
+    # Keep in step with the `ui` extra floor (see the note there).
+    "gradio>=5.50,<6.0",
     "pyarrow>=16.0,<26.0",
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
