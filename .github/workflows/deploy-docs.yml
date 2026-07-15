@@ -18,12 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout orionbelt-semantic-layer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: docs-source
 
       - name: Checkout ralforion.github.io
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ralforion/ralforion.github.io
           token: ${{ secrets.DOCS_DEPLOY_TOKEN }}
