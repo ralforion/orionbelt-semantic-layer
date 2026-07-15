@@ -675,6 +675,9 @@ def _rewrite_fetch_to_limit(sql: str) -> str:
 
 
 _FLATTEN_HOISTABLE = ("where", "order", "limit")
+# Select args allowed on a flattenable wrapper: the projection list, the FROM
+# (renamed "from" -> "from_" in sqlglot 30), and the hoistable clauses.
+_FLATTEN_ALLOWED_ARGS = ("expressions", "from_", *_FLATTEN_HOISTABLE)
 _FLATTEN_MAX_DEPTH = 8
 
 
@@ -711,7 +714,7 @@ def _flatten_literal_value(node: exp.Expression) -> str | None:
 
 def _flatten_constant_projection(
     proj: exp.Expression, wheres: list[exp.Expression]
-) -> exp.Expression | None:
+) -> exp.Expr | None:
     """Map Dremio's constant-folded ``<literal> AS <dim>`` projection to a bare column.
 
     When a view is filtered with ``WHERE <dim> = <value>``, Dremio proves the
@@ -737,7 +740,7 @@ def _flatten_constant_projection(
                     and col.name == name
                     and _flatten_literal_value(lit_side) == lit
                 ):
-                    aliased: exp.Expression = exp.alias_(col.copy(), name)
+                    aliased: exp.Expr = exp.alias_(col.copy(), name)
                     return aliased
     return None
 
@@ -775,7 +778,7 @@ def _flatten_federation_subquery(sql: str) -> str:
         return sql
     # Only the projection list, FROM, and the hoistable clauses may appear; a
     # GROUP / DISTINCT / HAVING / CTE at any level means real work -> bail.
-    if any(v for k, v in ast.args.items() if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)):
+    if any(v for k, v in ast.args.items() if k not in _FLATTEN_ALLOWED_ARGS):
         return sql
 
     outer_projs = ast.expressions
@@ -796,7 +799,7 @@ def _flatten_federation_subquery(sql: str) -> str:
     node: exp.Select = ast
     base: exp.Table | None = None
     for depth in range(1, _FLATTEN_MAX_DEPTH + 1):
-        from_ = node.args.get("from")
+        from_ = node.args.get("from_")
         if from_ is None:
             return sql
         src = from_.this
@@ -808,11 +811,7 @@ def _flatten_federation_subquery(sql: str) -> str:
         inner = src.this
         if not isinstance(inner, exp.Select) or inner.args.get("joins"):
             return sql
-        if any(
-            v
-            for k, v in inner.args.items()
-            if k not in ("expressions", "from", *_FLATTEN_HOISTABLE)
-        ):
+        if any(v for k, v in inner.args.items() if k not in _FLATTEN_ALLOWED_ARGS):
             return sql
         # Intermediate layers must be pure pass-through projections.
         if not all(_flatten_is_passthrough(p) for p in inner.expressions):
@@ -851,7 +850,7 @@ def _flatten_federation_subquery(sql: str) -> str:
     # translator only accepts bare artefact references, and the semantic layer
     # re-derives the real type. A constant-folded literal projection maps back
     # to its dimension column.
-    new_projs: list[exp.Expression] = []
+    new_projs: list[exp.Expr] = []
     for proj in outer_projs:
         if _flatten_is_passthrough(proj):
             inner = _flatten_unwrap(proj.this if isinstance(proj, exp.Alias) else proj)
@@ -865,9 +864,9 @@ def _flatten_federation_subquery(sql: str) -> str:
 
     flat = exp.Select()
     flat.set("expressions", new_projs)
-    flat.set("from", exp.From(this=base.copy()))
+    flat.set("from_", exp.From(this=base.copy()))
     if wheres:
-        cond = wheres[0].copy()
+        cond: exp.Expr = wheres[0].copy()
         for extra in wheres[1:]:
             cond = exp.and_(cond, extra.copy())
         flat.set("where", exp.Where(this=cond))

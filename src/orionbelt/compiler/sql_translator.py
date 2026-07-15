@@ -576,7 +576,7 @@ def _reject_unsupported_structure(ast: exp.Select, errors: list[SemanticError]) 
                 ),
             )
         )
-    if ast.args.get("with") is not None:
+    if ast.args.get("with_") is not None:
         errors.append(
             SemanticError(
                 code="UNSUPPORTED_SQL_FEATURE",
@@ -660,7 +660,7 @@ def _collect_count_tautology_aggs(having_node: exp.Expression | None) -> list[ex
     return found
 
 
-def _flatten_and(expr: exp.Expression) -> list[exp.Expression]:
+def _flatten_and(expr: exp.Expr) -> list[exp.Expr]:
     """Like ``_walk_and`` but doesn't record errors — read-only."""
 
     if isinstance(expr, exp.And):
@@ -670,7 +670,7 @@ def _flatten_and(expr: exp.Expression) -> list[exp.Expression]:
     return [expr]
 
 
-def _match_count_tautology(atom: exp.Expression) -> exp.AggFunc | None:
+def _match_count_tautology(atom: exp.Expr) -> exp.AggFunc | None:
     """Return the COUNT aggregate iff ``atom`` is a tautology like
     ``COUNT(*) > 0`` / ``COUNT(*) >= 1`` / ``COUNT(*) != 0`` — i.e.
     a comparison that's trivially true for every non-empty group.
@@ -740,7 +740,7 @@ def _is_nonempty_group_tautology(
 
 # sqlglot expression types for comparison operators; used to mirror an
 # operator when the COUNT(*) appears on the right of the comparison.
-_MIRROR_OPS: dict[type[exp.Expression], type[exp.Expression]] = {
+_MIRROR_OPS: dict[type[exp.Expr], type[exp.Expr]] = {
     exp.GT: exp.LT,
     exp.GTE: exp.LTE,
     exp.LT: exp.GT,
@@ -1058,7 +1058,7 @@ def _build_raw_mode_query(
 
 
 def _atom_to_raw_filter(
-    atom: exp.Expression,
+    atom: exp.Expr,
     model: SemanticModel,  # noqa: ARG001 — reserved for future column-existence checks
     errors: list[SemanticError],
 ) -> QueryFilter | None:
@@ -1220,7 +1220,7 @@ def _split_predicates(
             where_filters.append(item)
 
 
-def _walk_and(expr: exp.Expression, errors: list[SemanticError]) -> list[exp.Expression]:
+def _walk_and(expr: exp.Expr, errors: list[SemanticError]) -> list[exp.Expr]:
     """Flatten an AND tree into a list of atomic predicates."""
     if isinstance(expr, exp.And):
         return [
@@ -1244,7 +1244,7 @@ def _walk_and(expr: exp.Expression, errors: list[SemanticError]) -> list[exp.Exp
 
 
 def _atom_to_query_filter(
-    atom: exp.Expression,
+    atom: exp.Expr,
     classify: Callable[[str], str | None],
     canonical: Callable[[str], str],
     errors: list[SemanticError],
@@ -1478,7 +1478,7 @@ def _translate_exists(
                 )
             )
             return None
-    from_node = inner.args.get("from")
+    from_node = inner.args.get("from_")
     if from_node is None or not isinstance(from_node.this, exp.Table):
         errors.append(
             SemanticError(
@@ -1519,9 +1519,7 @@ def _translate_exists(
     )
 
 
-def _atom_to_subquery_filter(
-    atom: exp.Expression, errors: list[SemanticError]
-) -> QueryFilter | None:
+def _atom_to_subquery_filter(atom: exp.Expr, errors: list[SemanticError]) -> QueryFilter | None:
     """Translate a single predicate inside an EXISTS subquery body.
 
     ``field`` is interpreted as a bare column name on the target data
