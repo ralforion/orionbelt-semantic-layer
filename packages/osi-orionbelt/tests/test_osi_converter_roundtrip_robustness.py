@@ -159,6 +159,54 @@ class TestMetricRoundTripCodeVsName:
         # It resolved to a clean single-column measure, not a dangling expression.
         assert "expression" not in m
 
+    def test_quoted_physical_identifiers_resolve(self) -> None:
+        # Snowflake/Databricks style: the source table and the field expression
+        # are quoted identifiers. A metric referencing the bare physical code
+        # must still resolve to a queryable measure, not fall through to LOSSY.
+        osi = {
+            "version": "0.2.0.dev0",
+            "semantic_model": [
+                {
+                    "name": "sales",
+                    "datasets": [
+                        {
+                            "name": "Orders",
+                            "source": 'WH.PUBLIC."fact_orders"',
+                            "fields": [
+                                {
+                                    "name": "Amount",
+                                    "expression": {
+                                        "dialects": [
+                                            {"dialect": "ANSI_SQL", "expression": '"net_amount"'}
+                                        ]
+                                    },
+                                    "data_type": "number",
+                                }
+                            ],
+                        }
+                    ],
+                    "metrics": [
+                        {
+                            "name": "Revenue",
+                            "expression": {
+                                "dialects": [
+                                    {
+                                        "dialect": "ANSI_SQL",
+                                        "expression": "SUM(fact_orders.net_amount)",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        obml = conv.OSItoOBML(osi).convert()
+        assert "Revenue" in obml.get("measures", {}), obml.get("measures")
+        assert obml["measures"]["Revenue"]["columns"] == [
+            {"dataObject": "Orders", "column": "Amount"}
+        ]
+
 
 # ---------------------------------------------------------------------------
 # P2: same field name in two datasets must not collide into one dimension

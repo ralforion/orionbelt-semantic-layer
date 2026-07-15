@@ -632,7 +632,9 @@ class OSItoOBML:
         for ds_name in ds_map:
             ds_lc.setdefault(ds_name.lower(), ds_name)
         for ds_name, ds in ds_map.items():
-            table_code = self._parse_source(ds.get("source", ds_name))[2]
+            # Unquote so a quoted source table (Snowflake/Databricks style,
+            # e.g. WH.PUBLIC."fact_orders") is indexed by its bare code.
+            table_code = self._unquote_identifier(self._parse_source(ds.get("source", ds_name))[2])
             if table_code:
                 ds_lc.setdefault(table_code.lower(), ds_name)
 
@@ -1021,10 +1023,11 @@ class OSItoOBML:
 
     @staticmethod
     def _field_expr_identifier(field: dict) -> str | None:
-        """Physical column code of a field when its expression is a bare
-        identifier, so code-based metric references (e.g. ``fact_orders.amount``)
-        resolve back to the field. Returns ``None`` for computed expressions
-        that have no single column code.
+        """Physical column code of a field when its expression is a single
+        (optionally quoted) identifier, so code-based metric references (e.g.
+        ``fact_orders.amount`` or a Snowflake ``"net_amount"``) resolve back to
+        the field. Returns ``None`` for computed expressions with no single
+        column code.
         """
         expr = field.get("expression")
         if not isinstance(expr, dict):
@@ -1032,8 +1035,10 @@ class OSItoOBML:
         for dialect in expr.get("dialects", []) or []:
             if isinstance(dialect, dict):
                 text = dialect.get("expression")
-                if isinstance(text, str) and re.fullmatch(r"\s*[A-Za-z_]\w*\s*", text):
-                    return text.strip()
+                if isinstance(text, str):
+                    candidate = OSItoOBML._unquote_identifier(text)
+                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
+                        return candidate
         return None
 
     def _resolve_column_refs(
