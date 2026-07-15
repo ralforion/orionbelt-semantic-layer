@@ -1,5 +1,5 @@
 # --- Build stage: install dependencies ---
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -33,7 +33,7 @@ COPY schema/ schema/
 RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
 
 # --- Runtime stage: minimal image ---
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -41,7 +41,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install IANA tzdata so Python's zoneinfo can resolve names like
-# Europe/Berlin. python:3.12-slim has no /usr/share/zoneinfo, and without
+# Europe/Berlin. python:3.14-slim has no /usr/share/zoneinfo, and without
 # it ZoneInfo("Europe/Berlin") raises ZoneInfoNotFoundError — the timezone
 # resolver then silently falls back to UTC. Belt-and-suspenders alongside
 # the tzdata Python dep.
