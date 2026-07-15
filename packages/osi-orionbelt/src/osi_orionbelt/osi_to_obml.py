@@ -578,7 +578,23 @@ class OSItoOBML:
                         except (json.JSONDecodeError, TypeError):
                             pass
                         break
-                dimensions[field_name] = dim_def
+                # Dimension names must be unique across the model. When the same
+                # field name occurs in more than one data object (e.g. Orders.date
+                # and Invoices.date), qualify the later one with its data object
+                # instead of silently overwriting the earlier dimension.
+                key = field_name
+                if key in dimensions and dimensions[key].get("dataObject") != ds_name:
+                    key = f"{ds_name} {field_name}"
+                    suffix = 2
+                    while key in dimensions:
+                        key = f"{ds_name} {field_name} {suffix}"
+                        suffix += 1
+                    self.warnings.append(
+                        f"Dimension name '{field_name}' occurs in multiple data "
+                        f"objects; emitted '{ds_name}.{field_name}' as dimension "
+                        f"'{key}' to avoid a collision."
+                    )
+                dimensions[key] = dim_def
         return dimensions
 
     def _convert_metrics(self, osi_metrics: list, ds_map: dict) -> tuple[dict, dict]:
@@ -600,16 +616,33 @@ class OSItoOBML:
 
         # Case-insensitive dataset/field index for resolving SQL identifiers
         # back to their canonical OSI names (Snowflake/Databricks expressions
-        # commonly upper-case or quote them).
-        ds_lc = {name.lower(): name for name in ds_map}
-        fields_lc = {
-            name: {
-                f["name"].lower(): f["name"]
-                for f in ds.get("fields", []) or []
-                if isinstance(f, dict) and f.get("name")
-            }
-            for name, ds in ds_map.items()
-        }
+        # commonly upper-case or quote them). Identifiers resolve by BOTH the
+        # OSI name and the physical code (source-table code / bare-identifier
+        # field expression): our own OBML -> OSI emitter writes metric SQL
+        # against the physical code (e.g. SUM(fact_orders.amount)), so resolving
+        # names only would drop such metrics on the return trip. Names take
+        # precedence over codes on any collision.
+        ds_lc: dict[str, str] = {}
+        for ds_name in ds_map:
+            ds_lc.setdefault(ds_name.lower(), ds_name)
+        for ds_name, ds in ds_map.items():
+            table_code = self._parse_source(ds.get("source", ds_name))[2]
+            if table_code:
+                ds_lc.setdefault(table_code.lower(), ds_name)
+
+        fields_lc: dict[str, dict[str, str]] = {}
+        for ds_name, ds in ds_map.items():
+            fmap: dict[str, str] = {}
+            osi_fields = ds.get("fields", []) or []
+            for f in osi_fields:
+                if isinstance(f, dict) and f.get("name"):
+                    fmap.setdefault(f["name"].lower(), f["name"])
+            for f in osi_fields:
+                if isinstance(f, dict) and f.get("name"):
+                    code = self._field_expr_identifier(f)
+                    if code:
+                        fmap.setdefault(code.lower(), f["name"])
+            fields_lc[ds_name] = fmap
 
         for m in osi_metrics:
             name = m["name"]
@@ -972,6 +1005,23 @@ class OSItoOBML:
         ):
             return ident[1:-1]
         return ident
+
+    @staticmethod
+    def _field_expr_identifier(field: dict) -> str | None:
+        """Physical column code of a field when its expression is a bare
+        identifier, so code-based metric references (e.g. ``fact_orders.amount``)
+        resolve back to the field. Returns ``None`` for computed expressions
+        that have no single column code.
+        """
+        expr = field.get("expression")
+        if not isinstance(expr, dict):
+            return None
+        for dialect in expr.get("dialects", []) or []:
+            if isinstance(dialect, dict):
+                text = dialect.get("expression")
+                if isinstance(text, str) and re.fullmatch(r"\s*[A-Za-z_]\w*\s*", text):
+                    return text.strip()
+        return None
 
     def _resolve_column_refs(
         self, expr: str, ds_lc: dict[str, str], fields_lc: dict[str, dict[str, str]]
