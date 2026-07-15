@@ -2,6 +2,24 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.22.0] - 2026-07-15
+
+### Added
+
+- **Python 3.14 support.** All three Docker images (API, UI, Flight) now build on `python:3.14-slim`, and 3.14 joined the CI test matrix alongside 3.12 and 3.13. Reaching it required `snowflake-connector-python` 4.3.0 -> 4.6.0 and `pyarrow` 19.0.1 -> 25.0.0: the previously locked versions had no cp314 wheels, so the slim image tried to build them from source and failed.
+
+### Changed
+
+- **sqlglot 30.** The constraint moved from `>=26.0,<27.0` to `>=30.0,<31.0`. sqlglot 30 renamed the `Select` args that collide with Python keywords (`from` -> `from_`, `with` -> `with_`) and made `exp.Expr` the common base class, so the OBSQL translator (`compiler/sql_translator.py`) and the pgwire federation-subquery flattening (`pgwire/router.py`) were updated to match. No behavior change, but installs pinning sqlglot 26 will need to move.
+- **Dependency constraints widened**: `pyarrow` `>=16.0,<20.0` -> `>=16.0,<26.0` (the old cap had no version-specific rationale and blocked the cp314 wheels the 3.14 images need) and `structlog` `>=25.1,<26.0` -> `>=25.1,<27.0`.
+
+### Fixed
+
+- **OSI converter dropped metrics whose SQL referenced physical codes** (`osi-orionbelt` 0.1.1). `OBMLtoOSI` emits metric SQL against the physical code (e.g. `SUM(fact_orders.amount)`), but `OSItoOBML` resolved references by OSI dataset/field name only, so any metric over a data object whose code differed from its display name was dropped on the return trip. References now resolve by both name and physical code, including quoted physical identifiers (a Snowflake/Databricks `"net_amount"` field expression or a `WH.PUBLIC."fact_orders"` source table) that previously fell through to a LOSSY unconverted metric.
+- **OSI converter silently overwrote colliding dimension names** (`osi-orionbelt` 0.1.1). `_extract_dimensions` keyed dimensions by bare field name, so the same field name in two datasets (`Orders.date`, `Invoices.date`) meant the second silently replaced the first. The later one is now qualified with its data object and a warning is recorded.
+- **OSI converter emitted invalid OBML for fields with spaces in the display name** (`osi-orionbelt` 0.1.1). Resolving a physical code to a display name containing a space spliced `Orders.Net Amount` into the intermediate SQL, which the downstream parsers split on the space, emitting `{[Orders].[Net]} Amount` with no LOSSY warning. Resolved names that are not bare SQL words are now bracket-quoted, and the `dataset.column` parsers accept and unquote bracketed identifiers.
+- **`validate_osi` raised `AttributeError` on malformed input** (`osi-orionbelt` 0.1.1). Its semantic loops now guard against datasets and fields that are not lists of dicts, returning schema errors instead of crashing.
+
 ## [2.21.1] - 2026-07-13
 
 ### Fixed
