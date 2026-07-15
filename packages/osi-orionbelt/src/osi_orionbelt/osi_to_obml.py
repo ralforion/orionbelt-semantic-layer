@@ -20,6 +20,12 @@ from osi_orionbelt._common import (
     OSI_TO_OBML_TYPE,
 )
 
+# A dataset/column identifier in a resolved metric expression: either a bare SQL
+# word or a bracket-quoted token. ``_resolve_column_refs`` bracket-quotes any
+# canonical name that is not a bare word (e.g. a display name with spaces) so the
+# downstream ``dataset.column`` parsers below never split it on whitespace.
+_RESOLVED_IDENT = r"(?:\w+|\[[^\]]+\])"
+
 
 class OSItoOBML:
     """Convert an OSI semantic model YAML to OBML format."""
@@ -1007,6 +1013,13 @@ class OSItoOBML:
         return ident
 
     @staticmethod
+    def _q_ident(name: str) -> str:
+        """Bracket-quote a canonical name that is not a bare SQL word, so the
+        downstream ``dataset.column`` parsers (which split on ``\\w+``) do not
+        break on display names containing spaces or other punctuation."""
+        return name if re.fullmatch(r"\w+", name) else f"[{name}]"
+
+    @staticmethod
     def _field_expr_identifier(field: dict) -> str | None:
         """Physical column code of a field when its expression is a bare
         identifier, so code-based metric references (e.g. ``fact_orders.amount``)
@@ -1049,7 +1062,9 @@ class OSItoOBML:
             if col_real is None:
                 unresolved = True
                 return match.group(0)
-            return f"{ds_real}.{col_real}"
+            # Bracket-quote names that are not bare words so the downstream
+            # dataset.column parsers keep multi-word display names intact.
+            return f"{self._q_ident(ds_real)}.{self._q_ident(col_real)}"
 
         rewritten = _COLUMN_REF_RE.sub(repl, expr)
         return None if unresolved else rewritten
@@ -1077,13 +1092,13 @@ class OSItoOBML:
         import re
 
         expr = expr.strip()
-        pattern = r"^(\w+)\(\s*(DISTINCT\s+)?(\w+)\.(\w+)\s*\)$"
+        pattern = rf"^(\w+)\(\s*(DISTINCT\s+)?({_RESOLVED_IDENT})\.({_RESOLVED_IDENT})\s*\)$"
         match = re.match(pattern, expr, re.IGNORECASE)
         if match:
             agg = match.group(1)
             is_distinct = match.group(2) is not None
-            dataset = match.group(3)
-            column = match.group(4)
+            dataset = self._unquote_identifier(match.group(3))
+            column = self._unquote_identifier(match.group(4))
             return agg, dataset, column, is_distinct
         return None
 
@@ -1120,10 +1135,10 @@ class OSItoOBML:
             return None  # Unmatched open paren
 
         # Must contain dataset.column references
-        if not re.search(r"\w+\.\w+", inner):
+        if not re.search(rf"{_RESOLVED_IDENT}\.{_RESOLVED_IDENT}", inner):
             return None
         # Must NOT be a simple dataset.column (already handled by _parse_simple_agg)
-        if re.match(r"^(DISTINCT\s+)?\w+\.\w+$", inner, re.IGNORECASE):
+        if re.match(rf"^(DISTINCT\s+)?{_RESOLVED_IDENT}\.{_RESOLVED_IDENT}$", inner, re.IGNORECASE):
             return None
         # Must NOT contain nested aggregation calls (those are complex metrics)
         if re.search(r"\b(" + "|".join(agg_funcs) + r")\s*\(", inner, re.IGNORECASE):
@@ -1139,7 +1154,14 @@ class OSItoOBML:
         (resolved upstream), so the bare-identifier branch is what fires.
         """
         return _COLUMN_REF_RE.sub(
-            lambda m: "{[" + m.group("ds") + "].[" + m.group("col") + "]}", sql_expr
+            lambda m: (
+                "{["
+                + self._unquote_identifier(m.group("ds"))
+                + "].["
+                + self._unquote_identifier(m.group("col"))
+                + "]}"
+            ),
+            sql_expr,
         )
 
     def _decompose_complex_metric(self, name: str, expr: str) -> tuple[str, dict]:
@@ -1196,12 +1218,13 @@ class OSItoOBML:
                 inner_clean = inner[dm.end() :].strip()
 
             # Is it a simple dataset.column?
-            simple = re.match(r"^(\w+)\.(\w+)$", inner_clean)
+            simple = re.match(rf"^({_RESOLVED_IDENT})\.({_RESOLVED_IDENT})$", inner_clean)
             if simple:
-                dataset = simple.group(1)
-                column = simple.group(2)
+                dataset = self._unquote_identifier(simple.group(1))
+                column = self._unquote_identifier(simple.group(2))
                 suffix = "_distinct" if is_distinct else ""
-                measure_key = f"_{dataset}_{column}_{agg.lower()}{suffix}"
+                key_stub = re.sub(r"\W+", "_", f"{dataset}_{column}")
+                measure_key = f"_{key_stub}_{agg.lower()}{suffix}"
                 measure_def: dict[str, Any] = {
                     "columns": [{"dataObject": dataset, "column": column}],
                     "resultType": "float",

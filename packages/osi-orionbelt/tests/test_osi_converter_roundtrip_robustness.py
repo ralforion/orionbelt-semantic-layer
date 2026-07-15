@@ -108,6 +108,57 @@ class TestMetricRoundTripCodeVsName:
             {"dataObject": "Orders", "column": "Amount"}
         ]
 
+    def test_physical_code_maps_to_field_name_with_space(self) -> None:
+        # OSI field display name contains a space; the metric references the
+        # physical column code. Resolution must produce a valid OBML measure
+        # (column "Net Amount"), not a broken "{[Orders].[Net]} Amount" that
+        # fails query resolution.
+        osi = {
+            "version": "0.2.0.dev0",
+            "semantic_model": [
+                {
+                    "name": "sales",
+                    "datasets": [
+                        {
+                            "name": "Orders",
+                            "source": "WH.PUBLIC.fact_orders",
+                            "fields": [
+                                {
+                                    "name": "Net Amount",
+                                    "expression": {
+                                        "dialects": [
+                                            {"dialect": "ANSI_SQL", "expression": "net_amount"}
+                                        ]
+                                    },
+                                    "data_type": "number",
+                                }
+                            ],
+                        }
+                    ],
+                    "metrics": [
+                        {
+                            "name": "Net Revenue",
+                            "expression": {
+                                "dialects": [
+                                    {
+                                        "dialect": "ANSI_SQL",
+                                        "expression": "SUM(fact_orders.net_amount)",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        obml = conv.OSItoOBML(osi).convert()
+        assert "Net Revenue" in obml.get("measures", {}), obml.get("measures")
+        m = obml["measures"]["Net Revenue"]
+        assert m["aggregation"] == "sum"
+        assert m["columns"] == [{"dataObject": "Orders", "column": "Net Amount"}]
+        # It resolved to a clean single-column measure, not a dangling expression.
+        assert "expression" not in m
+
 
 # ---------------------------------------------------------------------------
 # P2: same field name in two datasets must not collide into one dimension
