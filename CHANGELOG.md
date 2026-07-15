@@ -2,6 +2,17 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.22.1] - 2026-07-16
+
+### Fixed
+
+- **The 2.22.0 UI Docker image could not start.** `import gradio` raised `ModuleNotFoundError: No module named 'requests'`, so `orionbelt-semantic-layer-ui:2.22.0` exited immediately on boot and the Cloud Run UI deploy rolled back. Gradio below 5.50 eagerly imports its CLI from `__init__`, which chains to `import requests`; requests is not a gradio dependency and nothing in the `ui` extra provides it. Only the UI image was affected: the API, Flight, PyPI packages, and the running deployment were fine throughout (Cloud Run kept serving the previous UI revision).
+- **The `ui` extra now floors gradio at 5.50** (was `>=5.0`). The old floor let a Dependabot group update (#206) resolve gradio *down* to 5.23.1 in order to keep a pydantic bump to 2.13.4, which gradio 5.50.0 caps at `<=2.12.3`. This restores gradio 5.50.0 and pydantic 2.12.3, the combination 2.21.1 shipped.
+
+### Added
+
+- **CI now imports the UI against the dependency set the UI image actually ships** (`uv sync --no-dev --extra ui`). Every existing job installs `--all-extras --all-groups`, which pulls `mkdocs-material` and with it `requests`, so a gradio that cannot import in the shipped venv passed all of CI. Nothing built or ran a UI container before the release tag, and the tag-triggered image build never started the container it published.
+
 ## [2.22.0] - 2026-07-15
 
 ### Added

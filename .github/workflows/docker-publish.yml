@@ -26,14 +26,20 @@ jobs:
             dockerfile: Dockerfile
             title: OrionBelt Semantic Layer (API)
             description: REST API for the OrionBelt semantic layer engine.
+            port: 8080
+            health_path: /health
           - image: orionbelt-semantic-layer-flight
             dockerfile: Dockerfile.flight
             title: OrionBelt Semantic Layer (Flight SQL)
             description: REST API + Arrow Flight SQL for the OrionBelt semantic layer engine.
+            port: 8080
+            health_path: /health
           - image: orionbelt-semantic-layer-ui
             dockerfile: Dockerfile.ui
             title: OrionBelt Semantic Layer (UI)
             description: Gradio playground UI for the OrionBelt semantic layer engine.
+            port: 7860
+            health_path: /
     steps:
       - uses: actions/checkout@v7
 
@@ -90,6 +96,50 @@ jobs:
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.description=${{ matrix.description }}
+
+      # Prove the container boots BEFORE anything reaches Docker Hub.
+      #
+      # 2.22.0 published a UI image that exit(1)'d on startup: the build
+      # succeeded, the push succeeded, and nothing ever ran it. A green publish
+      # meant nothing. buildx cannot `load` a multi-arch build, so build amd64
+      # only here (the runner is amd64), smoke it, then let the push step below
+      # reuse the layers from the gha cache.
+      - name: Build amd64 locally for smoke test
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          provenance: false
+          sbom: false
+          tags: smoke-target:${{ matrix.image }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Smoke test - container starts and serves its health path
+        run: |
+          set -u
+          docker run -d --name smoke -p 18080:${{ matrix.port }} smoke-target:${{ matrix.image }}
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:18080${{ matrix.health_path }}" >/dev/null 2>&1; then
+              echo "OK: ${{ matrix.image }} served ${{ matrix.health_path }} after ${i}s"
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Status}}' smoke)" != "running" ]; then
+              echo "FAIL: ${{ matrix.image }} exited before serving a request"
+              docker logs smoke
+              docker rm -f smoke >/dev/null
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "FAIL: ${{ matrix.image }} never served ${{ matrix.health_path }} within 120s"
+          docker logs smoke
+          docker rm -f smoke >/dev/null
+          exit 1
 
       - name: Build and push
         uses: docker/build-push-action@v7
