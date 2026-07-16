@@ -244,6 +244,76 @@ def test_convert_roundtrip_osi_to_obml(model_file, tmp_path):
     assert "dataObjects" in back.stdout
 
 
+def test_convert_osi_to_obml_remote_surfaces_input_schema(monkeypatch, tmp_path):
+    """The --server path surfaces input schema issues the REST endpoint returns
+    under input_validation.schema_errors (not warnings). See #225."""
+    from orionbelt.cli import _remote
+
+    def fake(self, input_yaml):
+        return {
+            "output_yaml": "dataObjects: {}\n",
+            "warnings": [],
+            "input_validation": {
+                "schema_valid": False,
+                "schema_errors": ["[semantic_model.0.datasets.0] bad OSI input"],
+            },
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "convert_osi_to_obml", fake)
+    osi_file = tmp_path / "in.osi.yaml"
+    osi_file.write_text("version: '0.2.0.dev0'\n", encoding="utf-8")
+    result = runner.invoke(app, ["convert", "osi-to-obml", str(osi_file), "-s", "http://example"])
+    assert result.exit_code == 0
+    assert "dataObjects" in result.stdout
+    assert "bad osi input" in result.output.lower()
+
+
+def test_convert_obml_to_osi_remote_surfaces_input_schema(monkeypatch, tmp_path):
+    """The --server obml-to-osi path likewise surfaces input_validation
+    schema errors (latent gap from #223's REST change)."""
+    from orionbelt.cli import _remote
+
+    def fake(self, input_yaml, *, model_name="semantic_model", include_ontology=False):
+        return {
+            "output_yaml": "semantic_model: []\n",
+            "warnings": [],
+            "input_validation": {
+                "schema_valid": False,
+                "schema_errors": ["[measures.Revenue] 'label' was unexpected"],
+            },
+        }
+
+    monkeypatch.setattr(_remote.RemoteClient, "convert_obml_to_osi", fake)
+    obml_file = tmp_path / "in.yaml"
+    obml_file.write_text("version: 1.0\n", encoding="utf-8")
+    result = runner.invoke(app, ["convert", "obml-to-osi", str(obml_file), "-s", "http://example"])
+    assert result.exit_code == 0
+    assert "semantic_model" in result.stdout
+    assert "label" in result.output.lower()
+
+
+def test_convert_osi_to_obml_surfaces_input_schema_issue(model_file, tmp_path):
+    """A schema violation in the OSI input is surfaced as a warning (advisory),
+    mirroring the REST endpoint and the obml-to-osi CLI path. Conversion still
+    runs. See #225.
+    """
+    import yaml
+
+    # Generate a genuinely valid OSI document, then inject an unexpected field
+    # property the OSI schema forbids (but the converter tolerates).
+    osi = runner.invoke(app, ["convert", "obml-to-osi", model_file])
+    assert osi.exit_code == 0
+    doc = yaml.safe_load(osi.stdout)
+    doc["semantic_model"][0]["datasets"][0]["fields"][0]["bogusProp"] = "x"
+    osi_file = tmp_path / "bad.osi.yaml"
+    osi_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    back = runner.invoke(app, ["convert", "osi-to-obml", str(osi_file)])
+    assert back.exit_code == 0  # advisory: conversion still succeeds
+    assert "dataObjects" in back.stdout  # output still produced
+    assert "bogusprop" in back.output.lower()  # the violation is surfaced
+
+
 # -- dialects ---------------------------------------------------------------
 
 
