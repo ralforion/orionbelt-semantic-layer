@@ -83,9 +83,25 @@ def validate(model_yaml: str) -> ValidationSummary:
 def _load(model_yaml: str) -> tuple[ModelStore, str, SemanticModel]:
     """Load a model into a fresh store, returning the store, id and model.
 
-    Raises ``ModelValidationError`` (from the store) when the model is invalid;
-    the caller maps that to a clean CLI failure.
+    The CLI is an external ingestion boundary, so it enforces the published
+    JSON Schema here the same way the REST API does via its request guards
+    (``api/schema_guards.py``). ``ModelStore.load_model`` itself stays
+    coercion-tolerant for internal callers; the strictness lives at the
+    boundary. Without this, a schema violation the API rejects with 422
+    (e.g. an authored ``label:`` on a dimension) would be silently coerced
+    away by the CLI.
+
+    Raises ``CliError`` on a JSON Schema violation, and ``ModelValidationError``
+    (from the store) on a semantic error; the caller maps both to a clean CLI
+    failure.
     """
+    from orionbelt.parser.schema_validation import validate_obml_yaml
+
+    schema_errors = validate_obml_yaml(model_yaml)
+    if schema_errors:
+        details = "; ".join(f"[{e.code}] {e.message}" for e in schema_errors)
+        raise CliError(f"Model failed schema validation: {details}")
+
     store = ModelStore()
     result = store.load_model(model_yaml, dedup=False)
     return store, result.model_id, store.get_model(result.model_id)
@@ -269,6 +285,13 @@ def convert_obml_to_osi(
     data = yaml.safe_load(input_yaml)
     if not isinstance(data, dict):
         raise CliError("OBML input must be a YAML/JSON mapping (object)")
+    # The CLI is an external boundary: surface OBML input schema issues (e.g. an
+    # authored ``label:``) instead of silently coercing them away. Advisory,
+    # matching the REST convert endpoints — conversion still runs.
+    input_warnings = [
+        f"OBML input schema: {msg}"
+        for msg in _validation_dict(mod.validate_obml, data).get("schema_errors", [])
+    ]
     converter = mod.OBMLtoOSI(
         data,
         model_name=model_name,
@@ -279,7 +302,7 @@ def convert_obml_to_osi(
         result: dict[str, Any] = converter.convert()
     except Exception as exc:  # noqa: BLE001
         raise CliError(f"OBML -> OSI conversion failed: {exc}") from None
-    warnings = list(converter.warnings)
+    warnings = input_warnings + list(converter.warnings)
 
     ontology: dict[str, Any] | None = None
     if include_ontology:

@@ -113,6 +113,25 @@ def test_compile_unknown_measure_clean_error(model_file, tmp_path):
     assert "Traceback" not in result.output
 
 
+def test_compile_rejects_authored_label(tmp_path, query_file):
+    """The CLI is an external boundary: an authored ``label:`` on a dimension
+    fails schema validation with a clean error (no traceback), matching the
+    REST API's 422 guard rather than being silently coerced. See #221.
+    """
+    import yaml
+
+    raw = yaml.safe_load(SAMPLE_MODEL_YAML)
+    dim_key = next(iter(raw["dimensions"]))
+    raw["dimensions"][dim_key]["label"] = "Authored"
+    bad = tmp_path / "model.yaml"
+    bad.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = runner.invoke(app, ["compile", str(bad), "-q", query_file])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "schema validation" in result.output.lower()
+
+
 def test_compile_explain(model_file, query_file):
     result = runner.invoke(
         app, ["compile", model_file, "-q", query_file, "-d", "postgres", "--explain"]
@@ -194,6 +213,25 @@ def test_convert_obml_to_osi(model_file):
     result = runner.invoke(app, ["convert", "obml-to-osi", model_file])
     assert result.exit_code == 0
     assert "semantic_model" in result.stdout
+
+
+def test_convert_obml_to_osi_surfaces_authored_label(tmp_path):
+    """An authored ``label:`` in the OBML input is surfaced as a schema warning
+    (advisory) instead of being silently coerced away. Conversion still runs.
+    See #221.
+    """
+    import yaml
+
+    raw = yaml.safe_load(SAMPLE_MODEL_YAML)
+    mkey = next(iter(raw["measures"]))
+    raw["measures"][mkey]["label"] = "Authored"
+    bad = tmp_path / "model.yaml"
+    bad.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = runner.invoke(app, ["convert", "obml-to-osi", str(bad)])
+    assert result.exit_code == 0  # advisory: conversion still succeeds
+    assert "semantic_model" in result.stdout  # output still produced
+    assert "label" in result.output.lower()  # the violation is surfaced
 
 
 def test_convert_roundtrip_osi_to_obml(model_file, tmp_path):

@@ -30,6 +30,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 jsonschema = pytest.importorskip("jsonschema", reason="jsonschema required for contract test")
 
@@ -102,7 +103,16 @@ def test_timegrain_enum_matches_python_enum(obml_schema) -> None:
 
 @pytest.mark.parametrize(
     "removed_field",
-    ["dimension.group", "measure.reduceToRelationDimensionality"],
+    [
+        "dimension.group",
+        "measure.reduceToRelationDimensionality",
+        # `label` is not authorable on the analytical types: the identity is the
+        # mapping key, which the resolver copies into `label` (like DataObject /
+        # Column). Same treatment must hold in the schema. See #221.
+        "dimension.label",
+        "measure.label",
+        "metric.label",
+    ],
 )
 def test_removed_fields_absent_from_schema(obml_schema, removed_field) -> None:
     """Strict parser (v2.7.2) rejects unknown keys; schema must not
@@ -116,6 +126,48 @@ def test_removed_fields_absent_from_schema(obml_schema, removed_field) -> None:
         f"``{removed_field}`` is no longer a model field but the JSON "
         f"Schema still advertises it. Users following the schema get "
         f"``UNKNOWN_PROPERTY`` from the runtime parser. See #85."
+    )
+
+
+@pytest.mark.parametrize("parent", ["dimensions", "measures", "metrics"])
+def test_authored_label_fails_schema_validation(parent) -> None:
+    """An authored ``label:`` on an analytical type is rejected by schema
+    validation rather than silently coerced away. See #221.
+    """
+    from orionbelt.parser.schema_validation import validate_obml_yaml
+
+    base = {
+        "dimensions": {
+            "Region": {"dataObject": "Sales", "column": "Region", "resultType": "string"}
+        },
+        "measures": {
+            "Revenue": {
+                "columns": [{"dataObject": "Sales", "column": "Amount"}],
+                "aggregation": "sum",
+            }
+        },
+        "metrics": {"Margin": {"type": "derived", "expression": "{[Revenue]} * 0.1"}},
+    }
+    entry = next(iter(base[parent].values()))
+    entry["label"] = "Authored Label"
+    doc = {
+        "version": 1.0,
+        "dataObjects": {
+            "Sales": {
+                "code": "SALES",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {
+                    "Region": {"code": "REGION", "abstractType": "string"},
+                    "Amount": {"code": "AMOUNT", "abstractType": "float"},
+                },
+            }
+        },
+        **base,
+    }
+    errors = validate_obml_yaml(yaml.safe_dump(doc))
+    assert any(e.code == "SCHEMA_VALIDATION" and "label" in e.message for e in errors), (
+        f"authored label on {parent} should fail schema validation, got {errors}"
     )
 
 

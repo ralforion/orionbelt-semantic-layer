@@ -188,45 +188,62 @@ class TestOsiToObmlInputValidation:
         assert body["validation"]["schema_valid"] is True
 
 
-class TestObmlToOsiBackwardCompat:
-    """The reverse endpoint must NOT regress — input_validation should be
-    None when no input-side check runs (the obml-to-osi endpoint doesn't
-    validate input yet)."""
+class TestObmlToOsiInputValidation:
+    """The obml-to-osi endpoint validates its OBML input against the schema
+    (advisory), mirroring osi-to-obml — a violation is surfaced in
+    ``input_validation`` rather than silently coerced away."""
 
-    async def test_obml_to_osi_input_validation_absent(self, client: AsyncClient) -> None:
-        obml = {
-            "version": 1.0,
-            "dataObjects": {
-                "Orders": {
-                    "code": "orders",
-                    "database": "WAREHOUSE",
-                    "schema": "PUBLIC",
-                    "columns": {
-                        "Amount": {"code": "amount", "abstractType": "float"},
-                    },
-                }
-            },
-            "measures": {
-                "Revenue": {
-                    "columns": [{"dataObject": "Orders", "column": "Amount"}],
-                    "resultType": "float",
-                    "aggregation": "sum",
-                }
-            },
-        }
+    _VALID_OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "orders",
+                "database": "WAREHOUSE",
+                "schema": "PUBLIC",
+                "columns": {
+                    "Amount": {"code": "amount", "abstractType": "float"},
+                },
+            }
+        },
+        "measures": {
+            "Revenue": {
+                "columns": [{"dataObject": "Orders", "column": "Amount"}],
+                "resultType": "float",
+                "aggregation": "sum",
+            }
+        },
+    }
+
+    async def test_valid_input_reports_schema_valid(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/v1/convert/obml-to-osi",
+            json={"input_yaml": yaml.safe_dump(self._VALID_OBML)},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["input_validation"] is not None
+        assert body["input_validation"]["schema_valid"] is True
+        # No ontology unless explicitly requested.
+        assert body["ontology_yaml"] is None
+        assert body["ontology_validation"] is None
+
+    async def test_authored_label_surfaced_but_conversion_runs(self, client: AsyncClient) -> None:
+        obml = json.loads(json.dumps(self._VALID_OBML))
+        obml["measures"]["Revenue"]["label"] = "Authored"
         response = await client.post(
             "/v1/convert/obml-to-osi",
             json={"input_yaml": yaml.safe_dump(obml)},
         )
+        # Advisory: conversion still succeeds (200), but the schema violation
+        # is surfaced rather than silently dropped.
         assert response.status_code == 200
         body = response.json()
-        # input_validation field exists but is None — the obml-to-osi endpoint
-        # doesn't currently run input-side schema validation.
-        assert "input_validation" in body
-        assert body["input_validation"] is None
-        # No ontology unless explicitly requested.
-        assert body["ontology_yaml"] is None
-        assert body["ontology_validation"] is None
+        iv = body["input_validation"]
+        assert iv is not None
+        assert iv["schema_valid"] is False
+        assert any("label" in e for e in iv["schema_errors"]), iv["schema_errors"]
+        # The conversion still produced OSI output.
+        assert body["output_yaml"]
 
 
 class TestObmlToOsiOntology:
