@@ -317,9 +317,11 @@ classes:
       label:
         alias: label
         type: "str"
-        json_schema: true
+        # Not authorable: the dimension's identity is its mapping key, which the
+        # resolver copies into `label`. Same treatment as DataObject/Column.
+        json_schema: false
         ontology_property: null
-        osi_roundtrip: true
+        osi_roundtrip: false
       view:
         alias: dataObject
         type: "str"
@@ -516,9 +518,11 @@ classes:
       label:
         alias: label
         type: "str"
-        json_schema: true
+        # Not authorable: the measure's identity is its mapping key, which the
+        # resolver copies into `label`. Same treatment as DataObject/Column.
+        json_schema: false
         ontology_property: null
-        osi_roundtrip: true
+        osi_roundtrip: false
       columns:
         alias: columns
         type: "list[DataColumnRef]"
@@ -681,9 +685,11 @@ classes:
       label:
         alias: label
         type: "str"
-        json_schema: true
+        # Not authorable: the metric's identity is its mapping key, which the
+        # resolver copies into `label`. Same treatment as DataObject/Column.
+        json_schema: false
         ontology_property: null
-        osi_roundtrip: true
+        osi_roundtrip: false
       type:
         alias: type
         type: "MetricType"

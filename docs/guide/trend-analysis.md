@@ -111,9 +111,21 @@ The killer feature is composing window metrics through `DERIVED`:
 
 ```yaml
 metrics:
-  - { label: Revenue MA3,  type: cumulative, measure: Revenue, timeDimension: order_month, cumulativeType: avg, window: 3,  partitionBy: [Country] }
-  - { label: Revenue MA12, type: cumulative, measure: Revenue, timeDimension: order_month, cumulativeType: avg, window: 12, partitionBy: [Country] }
-  - label: MA Crossover Signal
+  Revenue MA3:
+    type: cumulative
+    measure: Revenue
+    timeDimension: order_month
+    cumulativeType: avg
+    window: 3
+    partitionBy: [Country]
+  Revenue MA12:
+    type: cumulative
+    measure: Revenue
+    timeDimension: order_month
+    cumulativeType: avg
+    window: 12
+    partitionBy: [Country]
+  MA Crossover Signal:
     type: derived
     expression: "CASE WHEN {[Revenue MA3]} > {[Revenue MA12]} THEN 1 ELSE -1 END"
 ```

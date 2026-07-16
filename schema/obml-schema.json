@@ -492,9 +492,6 @@
           "$ref": "#/definitions/dataType",
           "description": "Data type of the result (informative only, not used for SQL generation)"
         },
-        "label": {
-          "type": "string"
-        },
         "timeGrain": {
           "$ref": "#/definitions/timeGrain"
         },
@@ -646,9 +643,6 @@
           "items": {
             "$ref": "#/definitions/queryColumn"
           }
-        },
-        "label": {
-          "type": "string"
         },
         "resultType": {
           "$ref": "#/definitions/dataType",
@@ -857,9 +851,6 @@
       "type": "object",
       "description": "Metric definition. A derived metric (expression referencing measures), a cumulative metric (window function over a measure), or a period-over-period metric (comparing a measure across time periods).",
       "properties": {
-        "label": {
-          "type": "string"
-        },
         "type": {
           "description": "Metric category: derived (expression-based), cumulative (windowed aggregation over a measure), period_over_period (time comparison), or window (rank/lag/lead/ntile/first_value/last_value).",
           "enum": [
