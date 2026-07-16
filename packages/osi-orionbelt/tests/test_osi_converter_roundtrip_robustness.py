@@ -440,6 +440,41 @@ class TestMultipleDimensionsPerColumn:
         _, warnings = self._roundtrip()
         assert any("backs 3 OBML dimensions" in w for w in warnings), warnings
 
+    def test_extra_dimension_synonyms_and_extensions_preserved(self) -> None:
+        # An extra dimension's own synonyms and vendor extensions must survive,
+        # matching the primary's fidelity (not just the scalar props).
+        obml = {
+            "version": 1.0,
+            "dataObjects": {
+                "Orders": {
+                    "code": "F",
+                    "database": "W",
+                    "schema": "P",
+                    "columns": {"date": {"code": "dt", "abstractType": "date"}},
+                }
+            },
+            "dimensions": {
+                "Order Day": {
+                    "dataObject": "Orders",
+                    "column": "date",
+                    "resultType": "date",
+                    "timeGrain": "day",
+                },
+                "Order Month": {
+                    "dataObject": "Orders",
+                    "column": "date",
+                    "resultType": "date",
+                    "timeGrain": "month",
+                    "synonyms": ["monthly date"],
+                    "customExtensions": [{"vendor": "ACME", "data": '{"y": 2}'}],
+                },
+            },
+        }
+        back = conv.OSItoOBML(conv.OBMLtoOSI(obml, model_name="s").convert()).convert()
+        month = back["dimensions"]["Order Month"]
+        assert month.get("synonyms") == ["monthly date"]
+        assert month.get("customExtensions") == [{"vendor": "ACME", "data": '{"y": 2}'}]
+
     @pytest.mark.parametrize(
         "bad",
         [
@@ -449,6 +484,10 @@ class TestMultipleDimensionsPerColumn:
             [{"name": ["x"]}],
             [{"name": ""}],
             [{"name": "OK"}, 7],
+            [{"name": "OK", "synonyms": "not-a-list"}],
+            [{"name": "OK", "synonyms": [1, {}]}],
+            [{"name": "OK", "customExtensions": "bad"}],
+            [{"name": "OK", "customExtensions": [7]}],
         ],
     )
     def test_malformed_extra_dimensions_never_crash(self, bad: Any) -> None:

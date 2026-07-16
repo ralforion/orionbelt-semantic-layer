@@ -628,6 +628,19 @@ class OSItoOBML:
                         value = desc.get(prop)
                         if isinstance(value, str) and value:
                             extra_def[prop] = value
+                    # Restore the extra dimension's own synonyms / vendor
+                    # extensions. Opaque foreign data, so keep only well-shaped
+                    # entries (string synonyms; dict extensions).
+                    syns = desc.get("synonyms")
+                    if isinstance(syns, list):
+                        clean_syns = [s for s in syns if isinstance(s, str) and s]
+                        if clean_syns:
+                            extra_def["synonyms"] = clean_syns
+                    exts = desc.get("customExtensions")
+                    if isinstance(exts, list):
+                        clean_exts = [e for e in exts if isinstance(e, dict)]
+                        if clean_exts:
+                            extra_def["customExtensions"] = clean_exts
                     self._insert_dimension(dimensions, ds_name, dname, extra_def)
         return dimensions
 

@@ -423,6 +423,12 @@ class OBMLtoOSI:
                 for prop in ("resultType", "timeGrain", "format", "description", "owner", "via"):
                     if dim_obj.get(prop):
                         descriptor[prop] = dim_obj[prop]
+                # Carry the extra dimension's own synonyms and vendor extensions
+                # too, so it round-trips with the same fidelity as the primary.
+                if dim_obj.get("synonyms"):
+                    descriptor["synonyms"] = dim_obj["synonyms"]
+                if dim_obj.get("customExtensions"):
+                    descriptor["customExtensions"] = dim_obj["customExtensions"]
                 extra_dims.append(descriptor)
         if extra_dims:
             ext_data["obml_extra_dimensions"] = extra_dims
