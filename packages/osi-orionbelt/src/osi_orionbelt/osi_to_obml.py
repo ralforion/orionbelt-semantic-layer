@@ -570,8 +570,14 @@ class OSItoOBML:
                     if ext.get("vendor_name") in _OBML_VENDOR_READ:
                         try:
                             ext_data = json.loads(ext.get("data", "{}"))
-                            if ext_data.get("obml_dimension_name"):
-                                restored_name = ext_data["obml_dimension_name"]
+                            # Extension data is opaque to ``validate_osi``, so a
+                            # foreign payload may put any JSON here. Only accept a
+                            # non-empty string as the dimension name (it becomes a
+                            # dict key); otherwise ignore it and fall back to the
+                            # field name.
+                            _name = ext_data.get("obml_dimension_name")
+                            if isinstance(_name, str) and _name:
+                                restored_name = _name
                             if ext_data.get("obml_time_grain"):
                                 dim_def["timeGrain"] = ext_data["obml_time_grain"]
                             if ext_data.get("obml_dimension_format"):

@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 import osi_orionbelt.converter as conv
 
 # ---------------------------------------------------------------------------
@@ -330,6 +332,43 @@ class TestDimensionNameRoundTrip:
         # The dimension must not carry its own restored name as a synonym.
         for name, dim in obml["dimensions"].items():
             assert name not in dim.get("synonyms", [])
+
+    @pytest.mark.parametrize("bad", [["x"], 5, "", {}, None])
+    def test_non_string_restored_name_is_ignored(self, bad: Any) -> None:
+        # obml_dimension_name is opaque to validate_osi, so a foreign payload may
+        # put any JSON there. A non-string (would be an unhashable dict key) must
+        # be ignored and fall back to the field name, never crash the converter.
+        osi = {
+            "version": "0.2.0.dev0",
+            "semantic_model": [
+                {
+                    "name": "s",
+                    "datasets": [
+                        {
+                            "name": "Orders",
+                            "source": "WH.PUBLIC.orders",
+                            "fields": [
+                                {
+                                    "name": "dt",
+                                    "expression": {
+                                        "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
+                                    },
+                                    "dimension": {},
+                                    "custom_extensions": [
+                                        {
+                                            "vendor_name": "ORIONBELT",
+                                            "data": json.dumps({"obml_dimension_name": bad}),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        obml = conv.OSItoOBML(osi).convert()
+        assert list(obml["dimensions"]) == ["dt"]
 
 
 # ---------------------------------------------------------------------------
