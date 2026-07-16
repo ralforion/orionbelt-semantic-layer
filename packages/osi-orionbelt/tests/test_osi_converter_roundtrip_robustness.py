@@ -372,6 +372,126 @@ class TestDimensionNameRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# #222: N OBML dimensions over one column
+# ---------------------------------------------------------------------------
+
+
+class TestMultipleDimensionsPerColumn:
+    """OBML allows N dimensions over one column (grain variants, role-playing);
+    OSI is one-dimension-per-field. The export preserves the extras via an
+    extension and warns (not silent); the import rebuilds them all (#222)."""
+
+    _OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "FACT",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {
+                    "date": {"code": "order_date", "abstractType": "date"},
+                    "Amount": {"code": "amt", "abstractType": "float"},
+                },
+            }
+        },
+        "dimensions": {
+            "Order Day": {
+                "dataObject": "Orders",
+                "column": "date",
+                "resultType": "date",
+                "timeGrain": "day",
+            },
+            "Order Month": {
+                "dataObject": "Orders",
+                "column": "date",
+                "resultType": "date",
+                "timeGrain": "month",
+            },
+            "Order Quarter": {
+                "dataObject": "Orders",
+                "column": "date",
+                "resultType": "date",
+                "timeGrain": "quarter",
+            },
+        },
+        "measures": {
+            "Revenue": {
+                "columns": [{"dataObject": "Orders", "column": "Amount"}],
+                "aggregation": "sum",
+                "resultType": "float",
+            }
+        },
+    }
+
+    def _roundtrip(self) -> tuple[dict[str, Any], list[str]]:
+        exp = conv.OBMLtoOSI(self._OBML, model_name="s")
+        osi = exp.convert()
+        return conv.OSItoOBML(osi).convert(), exp.warnings
+
+    def test_all_dimensions_survive_with_distinct_grains(self) -> None:
+        obml, _ = self._roundtrip()
+        dims = obml["dimensions"]
+        assert set(dims) == {"Order Day", "Order Month", "Order Quarter"}
+        assert {d["timeGrain"] for d in dims.values()} == {"day", "month", "quarter"}
+        # All three still point at the same physical column.
+        assert {d["column"] for d in dims.values()} == {"order_date"}
+
+    def test_export_warns_not_silent(self) -> None:
+        _, warnings = self._roundtrip()
+        assert any("backs 3 OBML dimensions" in w for w in warnings), warnings
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "not-a-list",
+            [5],
+            [{"no_name": 1}],
+            [{"name": ["x"]}],
+            [{"name": ""}],
+            [{"name": "OK"}, 7],
+        ],
+    )
+    def test_malformed_extra_dimensions_never_crash(self, bad: Any) -> None:
+        # obml_extra_dimensions is opaque to validate_osi. A malformed payload
+        # (not a list, or items that are not dicts / lack a string name) must be
+        # skipped, never crash the converter on an unhashable key.
+        osi = {
+            "version": "0.2.0.dev0",
+            "semantic_model": [
+                {
+                    "name": "s",
+                    "datasets": [
+                        {
+                            "name": "Orders",
+                            "source": "WH.PUBLIC.orders",
+                            "fields": [
+                                {
+                                    "name": "dt",
+                                    "expression": {
+                                        "dialects": [{"dialect": "ANSI_SQL", "expression": "dt"}]
+                                    },
+                                    "dimension": {},
+                                    "custom_extensions": [
+                                        {
+                                            "vendor_name": "ORIONBELT",
+                                            "data": json.dumps({"obml_extra_dimensions": bad}),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        obml = conv.OSItoOBML(osi).convert()
+        # The primary field-name dimension is always present; any well-formed
+        # extra (the {"name": "OK"} case) is rebuilt, malformed items skipped.
+        assert "dt" in obml["dimensions"]
+        assert all(isinstance(k, str) for k in obml["dimensions"])
+
+
+# ---------------------------------------------------------------------------
 # P2: validate_osi robustness on malformed input
 # ---------------------------------------------------------------------------
 
