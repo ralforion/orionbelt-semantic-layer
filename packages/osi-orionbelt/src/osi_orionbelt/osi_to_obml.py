@@ -565,10 +565,19 @@ class OSItoOBML:
                 if isinstance(ai_ctx, dict) and ai_ctx.get("synonyms"):
                     dim_def["synonyms"] = list(ai_ctx["synonyms"])
                 # Restore OBML-only dimension properties from custom_extensions
+                restored_name: str | None = None
                 for ext in field.get("custom_extensions", []):
                     if ext.get("vendor_name") in _OBML_VENDOR_READ:
                         try:
                             ext_data = json.loads(ext.get("data", "{}"))
+                            # Extension data is opaque to ``validate_osi``, so a
+                            # foreign payload may put any JSON here. Only accept a
+                            # non-empty string as the dimension name (it becomes a
+                            # dict key); otherwise ignore it and fall back to the
+                            # field name.
+                            _name = ext_data.get("obml_dimension_name")
+                            if isinstance(_name, str) and _name:
+                                restored_name = _name
                             if ext_data.get("obml_time_grain"):
                                 dim_def["timeGrain"] = ext_data["obml_time_grain"]
                             if ext_data.get("obml_dimension_format"):
@@ -584,20 +593,32 @@ class OSItoOBML:
                         except (json.JSONDecodeError, TypeError):
                             pass
                         break
+                # Prefer the dimension's restored OBML name (export stashes it on
+                # the field). The OSI field name is the physical code, so this is
+                # what keeps an OBML-origin round-trip from renaming dimensions to
+                # their code. Drop it from synonyms to avoid a self-referential
+                # alias.
+                if restored_name and dim_def.get("synonyms"):
+                    dim_def["synonyms"] = [s for s in dim_def["synonyms"] if s != restored_name]
+                    if not dim_def["synonyms"]:
+                        del dim_def["synonyms"]
+                base_name = restored_name or field_name
                 # Dimension names must be unique across the model. When the same
-                # field name occurs in more than one data object (e.g. Orders.date
-                # and Invoices.date), qualify the later one with its data object
-                # instead of silently overwriting the earlier dimension.
-                key = field_name
+                # name occurs in more than one data object (e.g. foreign OSI where
+                # two datasets share a bare field name and no OBML-origin name was
+                # restored), qualify the later one with its data object instead of
+                # silently overwriting the earlier dimension. A restored OBML name
+                # is unique by construction, so this fallback is foreign-OSI only.
+                key = base_name
                 if key in dimensions and dimensions[key].get("dataObject") != ds_name:
-                    key = f"{ds_name} {field_name}"
+                    key = f"{ds_name} {base_name}"
                     suffix = 2
                     while key in dimensions:
-                        key = f"{ds_name} {field_name} {suffix}"
+                        key = f"{ds_name} {base_name} {suffix}"
                         suffix += 1
                     self.warnings.append(
-                        f"Dimension name '{field_name}' occurs in multiple data "
-                        f"objects; emitted '{ds_name}.{field_name}' as dimension "
+                        f"Dimension name '{base_name}' occurs in multiple data "
+                        f"objects; emitted '{ds_name}.{base_name}' as dimension "
                         f"'{key}' to avoid a collision."
                     )
                 dimensions[key] = dim_def
