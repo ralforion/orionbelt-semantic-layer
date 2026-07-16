@@ -805,7 +805,7 @@ class ModelStore:
 
         data_objects = [
             DataObjectInfo(
-                label=obj.label,
+                label=obj.name,
                 code=obj.qualified_code,
                 columns=list(obj.columns.keys()),
                 join_targets=[j.join_to for j in obj.joins],
@@ -817,7 +817,7 @@ class ModelStore:
 
         dimensions = [
             DimensionInfo(
-                name=dim.label,
+                name=dim.name,
                 result_type=dim.result_type.value,
                 data_object=dim.view,
                 column=dim.column,
@@ -830,7 +830,7 @@ class ModelStore:
 
         measures = [
             MeasureInfo(
-                name=m.label,
+                name=m.name,
                 result_type=m.result_type.value,
                 aggregation=m.aggregation,
                 expression=m.expression,
@@ -842,7 +842,7 @@ class ModelStore:
 
         metrics = [
             MetricInfo(
-                name=met.label,
+                name=met.name,
                 expression=met.expression,
                 synonyms=met.synonyms,
                 type=met.type.value,

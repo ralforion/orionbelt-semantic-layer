@@ -92,19 +92,19 @@ class TestMeasureDirectConstruction:
 
         with pytest.raises(ValidationError):
             Measure(
-                label="M",
+                name="M",
                 aggregation="ssum",  # type: ignore[arg-type]
                 result_type="float",
             )
 
     def test_direct_construction_accepts_enum(self) -> None:
         m = Measure(
-            label="M",
+            name="M",
             aggregation=AggregationType.SUM,
             result_type="float",
         )
         assert m.aggregation == AggregationType.SUM
 
     def test_direct_construction_normalizes_case(self) -> None:
-        m = Measure(label="M", aggregation="Sum", result_type="float")  # type: ignore[arg-type]
+        m = Measure(name="M", aggregation="Sum", result_type="float")  # type: ignore[arg-type]
         assert m.aggregation == AggregationType.SUM

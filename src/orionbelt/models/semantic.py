@@ -261,7 +261,7 @@ class DataObjectColumn(BaseModel):
     syntax (``regexp_replace``, ``btrim``, etc.).
     """
 
-    label: str
+    name: str
     code: str = ""
     abstract_type: DataType = Field(alias="abstractType")
     sql_type: str | None = Field(None, alias="sqlType")
@@ -335,7 +335,7 @@ class RefreshPolicy(BaseModel):
 class DataObject(BaseModel):
     """A database table or view with its columns and joins."""
 
-    label: str
+    name: str
     code: str
     database: str
     schema_name: str = Field(alias="schema")
@@ -388,7 +388,7 @@ class DataObject(BaseModel):
             import warnings
 
             warnings.warn(
-                f"Data object '{self.label}' sets 'countLabel' but 'countable' is false; "
+                f"Data object '{self.name}' sets 'countLabel' but 'countable' is false; "
                 "the label is ignored because no count measure is synthesized.",
                 stacklevel=2,
             )
@@ -400,7 +400,7 @@ class DataObject(BaseModel):
 class Dimension(BaseModel):
     """A named dimension referencing a data object column."""
 
-    label: str
+    name: str
     view: str = Field(alias="dataObject")
     column: str = ""
     result_type: DataType = Field(DataType.STRING, alias="resultType")
@@ -488,7 +488,7 @@ class PeriodOverPeriod(BaseModel):
 class Measure(BaseModel):
     """An aggregation measure with optional expression template."""
 
-    label: str
+    name: str
     columns: list[DataColumnRef] = []
     result_type: DataType = Field(DataType.FLOAT, alias="resultType")
     aggregation: AggregationType
@@ -633,7 +633,7 @@ class Metric(BaseModel):
     a synthetical date spine.  Supports ratio, difference, previous value, and percent change.
     """
 
-    label: str
+    name: str
     type: MetricType = MetricType.DERIVED
     # Derived metrics
     expression: str | None = None

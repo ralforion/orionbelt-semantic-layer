@@ -95,8 +95,8 @@ classes:
     json_schema_def: dataObject
     ontology_class: DataObject
     fields:
-      label:
-        alias: label
+      name:
+        alias: name
         type: "str"
         json_schema: false
         ontology_property: null
@@ -184,8 +184,8 @@ classes:
     json_schema_def: column
     ontology_class: Column
     fields:
-      label:
-        alias: label
+      name:
+        alias: name
         type: "str"
         json_schema: false
         ontology_property: null
@@ -314,11 +314,11 @@ classes:
     json_schema_def: dimension
     ontology_class: Dimension
     fields:
-      label:
-        alias: label
+      name:
+        alias: name
         type: "str"
         # Not authorable: the dimension's identity is its mapping key, which the
-        # resolver copies into `label`. Same treatment as DataObject/Column.
+        # resolver copies into `name`. Same treatment as DataObject/Column.
         json_schema: false
         ontology_property: null
         osi_roundtrip: false
@@ -515,11 +515,11 @@ classes:
     json_schema_def: measure
     ontology_class: Measure
     fields:
-      label:
-        alias: label
+      name:
+        alias: name
         type: "str"
         # Not authorable: the measure's identity is its mapping key, which the
-        # resolver copies into `label`. Same treatment as DataObject/Column.
+        # resolver copies into `name`. Same treatment as DataObject/Column.
         json_schema: false
         ontology_property: null
         osi_roundtrip: false
@@ -682,11 +682,11 @@ classes:
     json_schema_def: metric
     ontology_class: Metric
     fields:
-      label:
-        alias: label
+      name:
+        alias: name
         type: "str"
         # Not authorable: the metric's identity is its mapping key, which the
-        # resolver copies into `label`. Same treatment as DataObject/Column.
+        # resolver copies into `name`. Same treatment as DataObject/Column.
         json_schema: false
         ontology_property: null
         osi_roundtrip: false

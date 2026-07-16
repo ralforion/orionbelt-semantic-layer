@@ -825,7 +825,7 @@ def _try_translate_raw_mode(ast: exp.Select, model: SemanticModel) -> list[str] 
     known_objects: set[str] = set()
     for obj_name, obj in model.data_objects.items():
         known_objects.add(obj_name.lower())
-        label = getattr(obj, "label", obj_name) or obj_name
+        label = getattr(obj, "name", obj_name) or obj_name
         known_objects.add(str(label).lower())
 
     bare_aggregate_labels: set[str] = set()
@@ -850,7 +850,7 @@ def _try_translate_raw_mode(ast: exp.Select, model: SemanticModel) -> list[str] 
                 # Find the canonical (case-preserved) data-object label.
                 canonical_obj = None
                 for obj_name, obj in model.data_objects.items():
-                    label = getattr(obj, "label", obj_name) or obj_name
+                    label = getattr(obj, "name", obj_name) or obj_name
                     if obj_name.lower() == table_lc or str(label).lower() == table_lc:
                         canonical_obj = str(label) if label else obj_name
                         break

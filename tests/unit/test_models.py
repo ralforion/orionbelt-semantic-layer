@@ -62,26 +62,26 @@ class TestDataColumnRef:
 
 class TestDataObjectColumn:
     def test_data_object_column_creation(self) -> None:
-        col = DataObjectColumn(label="Amount", code="AMOUNT", abstractType="float")
-        assert col.label == "Amount"
+        col = DataObjectColumn(name="Amount", code="AMOUNT", abstractType="float")
+        assert col.name == "Amount"
         assert col.code == "AMOUNT"
         assert col.abstract_type == DataType.FLOAT
 
     def test_data_object_column_with_num_class(self) -> None:
         col = DataObjectColumn(
-            label="Amount", code="AMOUNT", abstractType="float", numClass="additive"
+            name="Amount", code="AMOUNT", abstractType="float", numClass="additive"
         )
         assert col.num_class == NumClass.ADDITIVE
 
     def test_data_object_column_num_class_defaults_to_none(self) -> None:
-        col = DataObjectColumn(label="Amount", code="AMOUNT", abstractType="float")
+        col = DataObjectColumn(name="Amount", code="AMOUNT", abstractType="float")
         assert col.num_class is None
 
 
 class TestDataObject:
     def test_data_object_qualified_code(self) -> None:
         obj = DataObject(
-            label="Orders",
+            name="Orders",
             code="ORDERS",
             database="WAREHOUSE",
             schema="PUBLIC",
@@ -91,7 +91,7 @@ class TestDataObject:
 
 class TestDimension:
     def test_dimension_with_data_object_column(self) -> None:
-        dim = Dimension(label="Country", view="Customers", column="Country", resultType="string")
+        dim = Dimension(name="Country", view="Customers", column="Country", resultType="string")
         assert dim.view == "Customers"
         assert dim.column == "Country"
 
@@ -99,7 +99,7 @@ class TestDimension:
 class TestMeasure:
     def test_simple_measure(self) -> None:
         m = Measure(
-            label="Revenue",
+            name="Revenue",
             columns=[DataColumnRef(view="Orders", column="Amount")],
             resultType="float",
             aggregation="sum",
@@ -109,7 +109,7 @@ class TestMeasure:
 
     def test_measure_with_expression(self) -> None:
         m = Measure(
-            label="Profit",
+            name="Profit",
             columns=[
                 DataColumnRef(view="Sales", column="Amount"),
                 DataColumnRef(view="Sales", column="Cost"),

@@ -142,11 +142,11 @@ def _load_model(yaml: str = TREND_MODEL_YAML) -> SemanticModel:
 class TestMetricPartitionByValidation:
     def test_derived_rejects_partition_by(self) -> None:
         with pytest.raises(ValueError, match="partitionBy"):
-            Metric(label="Bad", type=MetricType.DERIVED, expression="{[X]}", partition_by=["Dim"])
+            Metric(name="Bad", type=MetricType.DERIVED, expression="{[X]}", partition_by=["Dim"])
 
     def test_cumulative_accepts_partition_by(self) -> None:
         m = Metric(
-            label="OK",
+            name="OK",
             type=MetricType.CUMULATIVE,
             measure="Revenue",
             time_dimension="Order Date",
@@ -156,12 +156,12 @@ class TestMetricPartitionByValidation:
 
     def test_window_metric_requires_window_function(self) -> None:
         with pytest.raises(ValueError, match="windowFunction"):
-            Metric(label="Bad", type=MetricType.WINDOW, measure="Revenue")
+            Metric(name="Bad", type=MetricType.WINDOW, measure="Revenue")
 
     def test_window_lag_requires_offset(self) -> None:
         with pytest.raises(ValueError, match="offset"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.WINDOW,
                 window_function=WindowFunctionKind.LAG,
                 measure="Revenue",
@@ -171,7 +171,7 @@ class TestMetricPartitionByValidation:
     def test_window_lag_requires_time_dimension(self) -> None:
         with pytest.raises(ValueError, match="timeDimension"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.WINDOW,
                 window_function=WindowFunctionKind.LAG,
                 measure="Revenue",
@@ -181,7 +181,7 @@ class TestMetricPartitionByValidation:
     def test_window_ntile_requires_buckets(self) -> None:
         with pytest.raises(ValueError, match="buckets"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.WINDOW,
                 window_function=WindowFunctionKind.NTILE,
                 measure="Revenue",
@@ -190,7 +190,7 @@ class TestMetricPartitionByValidation:
     def test_window_row_number_no_measure_ok(self) -> None:
         # ROW_NUMBER can rank without an explicit measure
         m = Metric(
-            label="RN",
+            name="RN",
             type=MetricType.WINDOW,
             window_function=WindowFunctionKind.ROW_NUMBER,
             time_dimension="Order Date",
@@ -200,7 +200,7 @@ class TestMetricPartitionByValidation:
     def test_window_rejects_expression(self) -> None:
         with pytest.raises(ValueError, match="must not have 'expression'"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.WINDOW,
                 window_function=WindowFunctionKind.RANK,
                 measure="Revenue",
@@ -210,7 +210,7 @@ class TestMetricPartitionByValidation:
     def test_window_invalid_order_direction(self) -> None:
         with pytest.raises(ValueError, match="orderDirection"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.WINDOW,
                 window_function=WindowFunctionKind.RANK,
                 measure="Revenue",
@@ -222,7 +222,7 @@ class TestStatisticalAggregationArity:
     def test_corr_requires_two_columns(self) -> None:
         with pytest.raises(ValueError, match="2 columns"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="corr",
                 columns=[{"dataObject": "Orders", "column": "Amount"}],
             )
@@ -235,7 +235,7 @@ class TestStatisticalAggregationArity:
         at load time, not at compile time."""
         with pytest.raises(ValueError, match=r"corr.*expression"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="corr",
                 expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
             )
@@ -243,7 +243,7 @@ class TestStatisticalAggregationArity:
     def test_covar_pop_rejects_expression_form(self) -> None:
         with pytest.raises(ValueError, match=r"covar_pop.*expression"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="covar_pop",
                 expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
             )
@@ -251,7 +251,7 @@ class TestStatisticalAggregationArity:
     def test_regr_slope_rejects_expression_form(self) -> None:
         with pytest.raises(ValueError, match=r"regr_slope.*expression"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="regr_slope",
                 expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
             )
@@ -262,7 +262,7 @@ class TestStatisticalAggregationArity:
         columns restriction only applies to TWO-column aggregates,
         where collapsing two args into one scalar would break the call."""
         m = Measure(
-            label="OK",
+            name="OK",
             aggregation="stddev",
             expression="{[Orders].[Amount]} + 100",
         )
@@ -271,7 +271,7 @@ class TestStatisticalAggregationArity:
     def test_stddev_requires_one_column(self) -> None:
         with pytest.raises(ValueError, match="1 column"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="stddev",
                 columns=[
                     {"dataObject": "Orders", "column": "Amount"},
@@ -281,7 +281,7 @@ class TestStatisticalAggregationArity:
 
     def test_stddev_accepts_one_column(self) -> None:
         m = Measure(
-            label="OK",
+            name="OK",
             aggregation="stddev",
             columns=[{"dataObject": "Orders", "column": "Amount"}],
         )
@@ -289,7 +289,7 @@ class TestStatisticalAggregationArity:
 
     def test_corr_accepts_two_columns(self) -> None:
         m = Measure(
-            label="OK",
+            name="OK",
             aggregation="corr",
             columns=[
                 {"dataObject": "Orders", "column": "Amount"},
@@ -310,7 +310,7 @@ class TestStatisticalAggregationArity:
         """
         # Non-statistical aggregation + expression: still allowed.
         m = Measure(
-            label="OK",
+            name="OK",
             aggregation="sum",
             expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
         )
@@ -318,7 +318,7 @@ class TestStatisticalAggregationArity:
         # Statistical aggregation + expression: rejected.
         with pytest.raises(ValueError, match=r"corr.*expression"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="corr",
                 expression="{[Orders].[Amount]} + {[Orders].[Spend]}",
             )

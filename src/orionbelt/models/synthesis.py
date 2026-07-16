@@ -78,7 +78,7 @@ def count_label(object_key: str, obj: DataObject, pattern: str | None = None) ->
     The returned string is BOTH the measure's queryable id and its display label.
     """
     template = obj.count_label or pattern or DEFAULT_COUNT_PATTERN
-    display = obj.label or object_key
+    display = obj.name or object_key
     return template.replace("{object}", display)
 
 
@@ -97,12 +97,12 @@ def synthesize_count_measure(object_key: str, obj: DataObject, name: str) -> Mea
     ``COUNT(*)`` because the ref carries no column.
     """
     return Measure(
-        label=name,
+        name=name,
         columns=[DataColumnRef(view=object_key)],
         aggregation=AggregationType.COUNT,
         result_type=DataType.INT,
         data_type="integer",
-        description=f"Row count of {obj.label or object_key}.",
+        description=f"Row count of {obj.name or object_key}.",
     )
 
 

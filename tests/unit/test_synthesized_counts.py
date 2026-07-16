@@ -36,7 +36,6 @@ version: 1.0
 
 dataObjects:
   Sales:
-    label: Sales
     code: SALES
     database: WAREHOUSE
     schema: PUBLIC
@@ -58,7 +57,6 @@ dataObjects:
         columnsTo: [Region Code]
 
   Region:
-    label: Region
     code: REGIONS
     database: WAREHOUSE
     schema: PUBLIC
@@ -163,7 +161,7 @@ def test_count_by_many_to_one_dim_no_fanout(
 
 def test_declared_override_wins(model: SemanticModel, pipeline: CompilationPipeline) -> None:
     declared = Measure(
-        label="Sales Count",
+        name="Sales Count",
         columns=[DataColumnRef(view="Sales", column="Sale ID")],
         aggregation=AggregationType.COUNT_DISTINCT,
         result_type=DataType.INT,
@@ -185,13 +183,13 @@ def test_declared_override_wins(model: SemanticModel, pipeline: CompilationPipel
 
 def test_per_object_opt_out() -> None:
     obj = DataObject(
-        label="Sales",
+        name="Sales",
         code="SALES",
         database="W",
         schema="P",
         countable=False,
         columns={
-            "Amount": DataObjectColumn(label="Amount", code="AMT", abstract_type=DataType.FLOAT)
+            "Amount": DataObjectColumn(name="Amount", code="AMT", abstract_type=DataType.FLOAT)
         },
     )
     m = SemanticModel(data_objects={"Sales": obj})
@@ -200,12 +198,12 @@ def test_per_object_opt_out() -> None:
 
 def test_model_expose_counts_false() -> None:
     obj = DataObject(
-        label="Sales",
+        name="Sales",
         code="SALES",
         database="W",
         schema="P",
         columns={
-            "Amount": DataObjectColumn(label="Amount", code="AMT", abstract_type=DataType.FLOAT)
+            "Amount": DataObjectColumn(name="Amount", code="AMT", abstract_type=DataType.FLOAT)
         },
     )
     m = SemanticModel(data_objects={"Sales": obj}, expose_counts=False)
@@ -213,57 +211,57 @@ def test_model_expose_counts_false() -> None:
 
 
 def test_label_default_pattern(model: SemanticModel) -> None:
-    assert model.effective_measures["Sales Count"].label == "Sales Count"
+    assert model.effective_measures["Sales Count"].name == "Sales Count"
 
 
 def test_label_model_pattern() -> None:
     obj = DataObject(
-        label="Sales",
+        name="Sales",
         code="SALES",
         database="W",
         schema="P",
         columns={
-            "Amount": DataObjectColumn(label="Amount", code="AMT", abstract_type=DataType.FLOAT)
+            "Amount": DataObjectColumn(name="Amount", code="AMT", abstract_type=DataType.FLOAT)
         },
     )
     m = SemanticModel(data_objects={"Sales": obj}, count_label_pattern="# {object}")
     # Name == label, so the pattern sets both the key and the label.
     assert "# Sales" in m.effective_measures
-    assert m.effective_measures["# Sales"].label == "# Sales"
+    assert m.effective_measures["# Sales"].name == "# Sales"
 
 
 def test_label_per_object_override() -> None:
     obj = DataObject(
-        label="Sales",
+        name="Sales",
         code="SALES",
         database="W",
         schema="P",
         count_label="Sales headcount",
         columns={
-            "Amount": DataObjectColumn(label="Amount", code="AMT", abstract_type=DataType.FLOAT)
+            "Amount": DataObjectColumn(name="Amount", code="AMT", abstract_type=DataType.FLOAT)
         },
     )
     m = SemanticModel(data_objects={"Sales": obj}, count_label_pattern="# {object}")
     # Per-object override beats the model pattern (and is the name too).
     assert "Sales headcount" in m.effective_measures
-    assert m.effective_measures["Sales headcount"].label == "Sales headcount"
+    assert m.effective_measures["Sales headcount"].name == "Sales headcount"
 
 
 def test_label_interpolates_display_label_not_key() -> None:
     """``{object}`` fills from the object's display label, not the reference key."""
     obj = DataObject(
-        label="Sales",
+        name="Sales",
         code="FACT_SALES",
         database="W",
         schema="P",
         columns={
-            "Amount": DataObjectColumn(label="Amount", code="AMT", abstract_type=DataType.FLOAT)
+            "Amount": DataObjectColumn(name="Amount", code="AMT", abstract_type=DataType.FLOAT)
         },
     )
     m = SemanticModel(data_objects={"fact_sales": obj})
     # Name/label interpolate the display label ("Sales"), not the key.
     assert "Sales Count" in m.effective_measures
-    assert m.effective_measures["Sales Count"].label == "Sales Count"
+    assert m.effective_measures["Sales Count"].name == "Sales Count"
 
 
 def test_pattern_validation_rejects_other_tokens() -> None:
@@ -275,7 +273,7 @@ def test_count_label_ignored_when_not_countable_warns() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         DataObject(
-            label="Sales",
+            name="Sales",
             code="SALES",
             database="W",
             schema="P",
@@ -349,7 +347,6 @@ def test_resolver_honors_count_label() -> None:
 version: 1.0
 dataObjects:
   Sales:
-    label: Sales
     code: SALES
     database: W
     schema: P
@@ -360,7 +357,7 @@ dataObjects:
     )
     # countLabel sets both the name and the label.
     assert "Deals" in m.effective_measures
-    assert m.effective_measures["Deals"].label == "Deals"
+    assert m.effective_measures["Deals"].name == "Deals"
 
 
 # --------------------------------------------------------------------------- #

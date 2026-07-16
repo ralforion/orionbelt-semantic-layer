@@ -77,6 +77,36 @@ class TestOBMLStrictParsing:
         assert "UNKNOWN_PROPERTY" in codes
         assert any("dataObjects.Orders" in p for p in paths)
 
+    @pytest.mark.parametrize("key", ["label", "name"])
+    @pytest.mark.parametrize(
+        ("source", "anchor", "path"),
+        [
+            (_BASE, "    code: ORDERS", "dataObjects.Orders"),
+            (_BASE, "        code: ID", "dataObjects.Orders.columns.ID"),
+            (_BASE, "    resultType: string", "dimensions.Order ID"),
+            (_BASE, "    aggregation: sum", "measures.Revenue"),
+            (
+                _BASE + 'metrics:\n  Margin:\n    expression: "{[Revenue]}"\n',
+                "    expression:",
+                "metrics.Margin",
+            ),
+        ],
+    )
+    def test_identity_field_is_not_authorable(
+        self, key: str, source: str, anchor: str, path: str
+    ) -> None:
+        """Neither ``label`` (the old field name) nor ``name`` (the resolved-only
+        identity field, #224) is authorable on any OBML type. Identity comes only
+        from the mapping key, so authoring either is a strict-parse
+        ``UNKNOWN_PROPERTY`` error, not a silently-dropped key. Guards against the
+        rename re-introducing a silently-accepted authored key.
+        """
+        indent = anchor[: len(anchor) - len(anchor.lstrip())]
+        yaml = source.replace(anchor, f"{anchor}\n{indent}{key}: Nope", 1)
+        codes, paths = _resolve(yaml)
+        assert "UNKNOWN_PROPERTY" in codes
+        assert any(path in p for p in paths)
+
     def test_unknown_column_key(self) -> None:
         yaml = _BASE.replace(
             "      ID:\n        code: ID\n        abstractType: string",
