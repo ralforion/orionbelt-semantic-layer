@@ -566,6 +566,7 @@ class OSItoOBML:
                     dim_def["synonyms"] = list(ai_ctx["synonyms"])
                 # Restore OBML-only dimension properties from custom_extensions
                 restored_name: str | None = None
+                extra_descriptors: list[Any] = []
                 for ext in field.get("custom_extensions", []):
                     if ext.get("vendor_name") in _OBML_VENDOR_READ:
                         try:
@@ -590,6 +591,24 @@ class OSItoOBML:
                                 dim_def["owner"] = ext_data["obml_dimension_owner"]
                             if ext_data.get("obml_dimension_via"):
                                 dim_def["via"] = ext_data["obml_dimension_via"]
+                            # The dimension's own synonyms / vendor extensions,
+                            # restored authoritatively to the dimension. Opaque
+                            # foreign data, so keep only well-shaped entries.
+                            _syns = ext_data.get("obml_dimension_synonyms")
+                            if isinstance(_syns, list):
+                                clean_syns = [s for s in _syns if isinstance(s, str) and s]
+                                if clean_syns:
+                                    dim_def["synonyms"] = clean_syns
+                            _exts = ext_data.get("obml_dimension_custom_extensions")
+                            if isinstance(_exts, list):
+                                clean_exts = [e for e in _exts if isinstance(e, dict)]
+                                if clean_exts:
+                                    dim_def["customExtensions"] = clean_exts
+                            # Additional dimensions over the same column, preserved
+                            # by the export because OSI has no slot for them.
+                            _extras = ext_data.get("obml_extra_dimensions")
+                            if isinstance(_extras, list):
+                                extra_descriptors = _extras
                         except (json.JSONDecodeError, TypeError):
                             pass
                         break
@@ -603,26 +622,66 @@ class OSItoOBML:
                     if not dim_def["synonyms"]:
                         del dim_def["synonyms"]
                 base_name = restored_name or field_name
-                # Dimension names must be unique across the model. When the same
-                # name occurs in more than one data object (e.g. foreign OSI where
-                # two datasets share a bare field name and no OBML-origin name was
-                # restored), qualify the later one with its data object instead of
-                # silently overwriting the earlier dimension. A restored OBML name
-                # is unique by construction, so this fallback is foreign-OSI only.
-                key = base_name
-                if key in dimensions and dimensions[key].get("dataObject") != ds_name:
-                    key = f"{ds_name} {base_name}"
-                    suffix = 2
-                    while key in dimensions:
-                        key = f"{ds_name} {base_name} {suffix}"
-                        suffix += 1
-                    self.warnings.append(
-                        f"Dimension name '{base_name}' occurs in multiple data "
-                        f"objects; emitted '{ds_name}.{base_name}' as dimension "
-                        f"'{key}' to avoid a collision."
-                    )
-                dimensions[key] = dim_def
+                self._insert_dimension(dimensions, ds_name, base_name, dim_def)
+                # Rebuild any additional OBML dimensions the export preserved for
+                # this column (OSI is one-dimension-per-field). Each descriptor is
+                # opaque foreign-modifiable data, so guard its shape.
+                for desc in extra_descriptors:
+                    if not isinstance(desc, dict):
+                        continue
+                    dname = desc.get("name")
+                    if not (isinstance(dname, str) and dname):
+                        continue
+                    extra_def: dict[str, Any] = {
+                        "dataObject": ds_name,
+                        "column": field_name,
+                        "resultType": desc.get("resultType") or abstract_type,
+                    }
+                    for prop in ("timeGrain", "format", "description", "owner", "via"):
+                        value = desc.get(prop)
+                        if isinstance(value, str) and value:
+                            extra_def[prop] = value
+                    # Restore the extra dimension's own synonyms / vendor
+                    # extensions. Opaque foreign data, so keep only well-shaped
+                    # entries (string synonyms; dict extensions).
+                    syns = desc.get("synonyms")
+                    if isinstance(syns, list):
+                        clean_syns = [s for s in syns if isinstance(s, str) and s]
+                        if clean_syns:
+                            extra_def["synonyms"] = clean_syns
+                    exts = desc.get("customExtensions")
+                    if isinstance(exts, list):
+                        clean_exts = [e for e in exts if isinstance(e, dict)]
+                        if clean_exts:
+                            extra_def["customExtensions"] = clean_exts
+                    self._insert_dimension(dimensions, ds_name, dname, extra_def)
         return dimensions
+
+    def _insert_dimension(
+        self, dimensions: dict[str, Any], ds_name: str, base_name: str, dim_def: dict[str, Any]
+    ) -> None:
+        """Insert ``dim_def`` under a unique key.
+
+        Dimension names must be unique across the model. When ``base_name``
+        already names a dimension on a *different* data object (foreign OSI where
+        two datasets share a bare field name and no OBML-origin name was
+        restored), qualify the later one with its data object and warn instead of
+        silently overwriting the earlier dimension. A restored OBML name is unique
+        by construction, so the qualification is foreign-OSI only.
+        """
+        key = base_name
+        if key in dimensions and dimensions[key].get("dataObject") != ds_name:
+            key = f"{ds_name} {base_name}"
+            suffix = 2
+            while key in dimensions:
+                key = f"{ds_name} {base_name} {suffix}"
+                suffix += 1
+            self.warnings.append(
+                f"Dimension name '{base_name}' occurs in multiple data "
+                f"objects; emitted '{ds_name}.{base_name}' as dimension "
+                f"'{key}' to avoid a collision."
+            )
+        dimensions[key] = dim_def
 
     def _convert_metrics(self, osi_metrics: list, ds_map: dict) -> tuple[dict, dict]:
         """
