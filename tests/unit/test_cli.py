@@ -244,6 +244,28 @@ def test_convert_roundtrip_osi_to_obml(model_file, tmp_path):
     assert "dataObjects" in back.stdout
 
 
+def test_convert_osi_to_obml_surfaces_input_schema_issue(model_file, tmp_path):
+    """A schema violation in the OSI input is surfaced as a warning (advisory),
+    mirroring the REST endpoint and the obml-to-osi CLI path. Conversion still
+    runs. See #225.
+    """
+    import yaml
+
+    # Generate a genuinely valid OSI document, then inject an unexpected field
+    # property the OSI schema forbids (but the converter tolerates).
+    osi = runner.invoke(app, ["convert", "obml-to-osi", model_file])
+    assert osi.exit_code == 0
+    doc = yaml.safe_load(osi.stdout)
+    doc["semantic_model"][0]["datasets"][0]["fields"][0]["bogusProp"] = "x"
+    osi_file = tmp_path / "bad.osi.yaml"
+    osi_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    back = runner.invoke(app, ["convert", "osi-to-obml", str(osi_file)])
+    assert back.exit_code == 0  # advisory: conversion still succeeds
+    assert "dataObjects" in back.stdout  # output still produced
+    assert "bogusprop" in back.output.lower()  # the violation is surfaced
+
+
 # -- dialects ---------------------------------------------------------------
 
 
