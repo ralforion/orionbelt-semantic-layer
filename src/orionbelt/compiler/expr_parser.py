@@ -257,7 +257,7 @@ def tokenize_measure_expression(
                         name = match.group(1).strip()
                         cols = getattr(_obj, "columns", None) if _obj is not None else None
                         if cols is not None and name in cols:
-                            label = getattr(_obj, "label", _default_label) or _default_label
+                            label = getattr(_obj, "name", _default_label) or _default_label
                             return f"{{[{label}].[{name}]}}"
                         return match.group(0)
 

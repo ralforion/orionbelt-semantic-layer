@@ -67,7 +67,7 @@ def _build_computed_column_expr(
 ) -> Expr:
     """Parse a computed column's ``expression`` into an AST.
 
-    ``{name}`` placeholders are substituted with ``{[obj.label].[name]}`` so
+    ``{name}`` placeholders are substituted with ``{[obj.name].[name]}`` so
     the existing measure-expression tokenizer resolves them to physical
     table-qualified column refs. Falls back to a column ref to the column's
     own ``code`` if parsing fails — defensive: never block compilation on
@@ -78,7 +78,7 @@ def _build_computed_column_expr(
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1).strip()
         if name in obj.columns:
-            return f"{{[{obj.label}].[{name}]}}"
+            return f"{{[{obj.name}].[{name}]}}"
         return match.group(0)
 
     rewritten = _COMPUTED_PLACEHOLDER.sub(_sub, expr_str)
@@ -86,7 +86,7 @@ def _build_computed_column_expr(
         tokens = tokenize_measure_expression(rewritten, model)
         return parse_expression(tokens)
     except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
-        return ColumnRef(name=column.code or column.label, table=obj.label)
+        return ColumnRef(name=column.code or column.name, table=obj.name)
 
 
 def make_column_expr(model: SemanticModel, object_name: str, column_label: str) -> Expr:
@@ -755,7 +755,7 @@ class QueryResolver:
         if measure.aggregation == AggregationType.MEASURE:
             return FunctionCall(
                 name="MEASURE",
-                args=[ColumnRef(name=measure.label, table=None)],
+                args=[ColumnRef(name=measure.name, table=None)],
             )
         if measure.expression:
             return self._expand_expression(ctx, measure)

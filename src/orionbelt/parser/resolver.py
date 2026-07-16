@@ -364,7 +364,7 @@ class ReferenceResolver:
                         source_map,
                     )
                     obj_columns[fname] = DataObjectColumn(
-                        label=fname,
+                        name=fname,
                         code=fdata.get("code", fname if not fdata.get("expression") else ""),
                         abstract_type=fdata.get("abstractType", "string"),
                         sql_type=fdata.get("sqlType"),
@@ -401,7 +401,7 @@ class ReferenceResolver:
                     )
 
                 data_objects[name] = DataObject(
-                    label=name,
+                    name=name,
                     code=raw_obj.get("code", ""),
                     database=raw_obj.get("database", ""),
                     schema_name=raw_obj.get("schema", ""),
@@ -501,7 +501,7 @@ class ReferenceResolver:
                     )
 
                 dimensions[name] = Dimension(
-                    label=name,
+                    name=name,
                     view=data_object or "",
                     column=column or "",
                     result_type=raw_dim.get("resultType", "string"),
@@ -701,7 +701,7 @@ class ReferenceResolver:
                             )
 
                 measures[name] = Measure(
-                    label=name,
+                    name=name,
                     columns=measure_columns,
                     result_type=raw_meas.get("resultType", "float"),
                     aggregation=raw_meas.get("aggregation", "sum"),
@@ -846,7 +846,7 @@ class ReferenceResolver:
                         )
 
                     metrics[name] = Metric(
-                        label=name,
+                        name=name,
                         type=MetricType.CUMULATIVE,
                         measure=raw_metric.get("measure"),
                         time_dimension=raw_metric.get("timeDimension"),
@@ -920,7 +920,7 @@ class ReferenceResolver:
                     )
 
                     metrics[name] = Metric(
-                        label=name,
+                        name=name,
                         type=MetricType.PERIOD_OVER_PERIOD,
                         expression=expression,
                         period_over_period=pop_config,
@@ -971,7 +971,7 @@ class ReferenceResolver:
                         )
 
                     metrics[name] = Metric(
-                        label=name,
+                        name=name,
                         type=MetricType.WINDOW,
                         measure=ref_measure,
                         time_dimension=raw_metric.get("timeDimension"),
@@ -1002,7 +1002,7 @@ class ReferenceResolver:
                     )
 
                     metrics[name] = Metric(
-                        label=name,
+                        name=name,
                         expression=expression,
                         data_type=raw_metric.get("dataType"),
                         description=raw_metric.get("description"),

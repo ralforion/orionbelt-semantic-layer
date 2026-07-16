@@ -179,12 +179,12 @@ class TestMetricModel:
 class TestMetricValidation:
     def test_derived_requires_expression(self) -> None:
         with pytest.raises(ValueError, match="expression"):
-            Metric(label="Bad", type=MetricType.DERIVED)
+            Metric(name="Bad", type=MetricType.DERIVED)
 
     def test_cumulative_requires_measure(self) -> None:
         with pytest.raises(ValueError, match="measure"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.CUMULATIVE,
                 time_dimension="Order Date",
             )
@@ -192,7 +192,7 @@ class TestMetricValidation:
     def test_cumulative_requires_time_dimension(self) -> None:
         with pytest.raises(ValueError, match="timeDimension"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.CUMULATIVE,
                 measure="Revenue",
             )
@@ -200,7 +200,7 @@ class TestMetricValidation:
     def test_cumulative_rejects_expression(self) -> None:
         with pytest.raises(ValueError, match="must not have"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.CUMULATIVE,
                 measure="Revenue",
                 time_dimension="Order Date",
@@ -210,7 +210,7 @@ class TestMetricValidation:
     def test_window_and_grain_to_date_mutually_exclusive(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.CUMULATIVE,
                 measure="Revenue",
                 time_dimension="Order Date",
@@ -221,7 +221,7 @@ class TestMetricValidation:
     def test_window_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="window"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.CUMULATIVE,
                 measure="Revenue",
                 time_dimension="Order Date",

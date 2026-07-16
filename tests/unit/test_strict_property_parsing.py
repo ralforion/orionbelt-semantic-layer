@@ -77,6 +77,25 @@ class TestOBMLStrictParsing:
         assert "UNKNOWN_PROPERTY" in codes
         assert any("dataObjects.Orders" in p for p in paths)
 
+    @pytest.mark.parametrize(
+        ("anchor", "path"),
+        [
+            ("    code: ORDERS", "dataObjects.Orders"),
+            ("    resultType: string", "dimensions.Order ID"),
+            ("    aggregation: sum", "measures.Revenue"),
+        ],
+    )
+    def test_label_is_not_an_authorable_key(self, anchor: str, path: str) -> None:
+        """``label`` was renamed to the resolved-only ``name`` field (#224), so
+        an authored ``label:`` on an analytical type is now a strict-parse error
+        rather than a silently-dropped key. The identity comes from the mapping
+        key, never an authored property.
+        """
+        yaml = _BASE.replace(anchor, f"{anchor}\n    label: Nope", 1)
+        codes, paths = _resolve(yaml)
+        assert "UNKNOWN_PROPERTY" in codes
+        assert any(path in p for p in paths)
+
     def test_unknown_column_key(self) -> None:
         yaml = _BASE.replace(
             "      ID:\n        code: ID\n        abstractType: string",

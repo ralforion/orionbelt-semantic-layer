@@ -44,18 +44,18 @@ def _make_model(
     instead of Orders, simulating a reversed-traversal fanout scenario.
     """
     orders = DataObject(
-        label="Orders",
+        name="Orders",
         code="ORDERS",
         database="WH",
         schema_name="PUBLIC",
         columns={
             "Order ID": DataObjectColumn(
-                label="Order ID", code="ORDER_ID", abstract_type=DataType.STRING
+                name="Order ID", code="ORDER_ID", abstract_type=DataType.STRING
             ),
             "Customer ID": DataObjectColumn(
-                label="Customer ID", code="CUSTOMER_ID", abstract_type=DataType.STRING
+                name="Customer ID", code="CUSTOMER_ID", abstract_type=DataType.STRING
             ),
-            "Amount": DataObjectColumn(label="Amount", code="AMOUNT", abstract_type=DataType.FLOAT),
+            "Amount": DataObjectColumn(name="Amount", code="AMOUNT", abstract_type=DataType.FLOAT),
         },
         joins=[
             DataObjectJoin(
@@ -67,19 +67,19 @@ def _make_model(
         ],
     )
     customers = DataObject(
-        label="Customers",
+        name="Customers",
         code="CUSTOMERS",
         database="WH",
         schema_name="PUBLIC",
         columns={
             "Cust ID": DataObjectColumn(
-                label="Cust ID", code="CUST_ID", abstract_type=DataType.STRING
+                name="Cust ID", code="CUST_ID", abstract_type=DataType.STRING
             ),
             "Country": DataObjectColumn(
-                label="Country", code="COUNTRY", abstract_type=DataType.STRING
+                name="Country", code="COUNTRY", abstract_type=DataType.STRING
             ),
             "Revenue": DataObjectColumn(
-                label="Revenue", code="REVENUE", abstract_type=DataType.FLOAT
+                name="Revenue", code="REVENUE", abstract_type=DataType.FLOAT
             ),
         },
     )
@@ -91,7 +91,7 @@ def _make_model(
 
     measures: dict[str, Measure] = {
         "Total Revenue": Measure(
-            label="Total Revenue",
+            name="Total Revenue",
             columns=[{"dataObject": measure_obj, "column": measure_col}],
             result_type=DataType.FLOAT,
             aggregation="sum",
@@ -101,13 +101,13 @@ def _make_model(
     metrics: dict[str, Metric] = {}
     if add_metric:
         measures["Order Count"] = Measure(
-            label="Order Count",
+            name="Order Count",
             columns=[{"dataObject": measure_obj, "column": measure_col}],
             result_type=DataType.INT,
             aggregation="count",
         )
         metrics["Revenue per Order"] = Metric(
-            label="Revenue per Order",
+            name="Revenue per Order",
             expression="{[Total Revenue]} / {[Order Count]}",
         )
 
@@ -115,7 +115,7 @@ def _make_model(
         data_objects={"Orders": orders, "Customers": customers},
         dimensions={
             "Customer Country": Dimension(
-                label="Customer Country",
+                name="Customer Country",
                 view="Customers",
                 column="Country",
                 result_type=DataType.STRING,
@@ -517,7 +517,7 @@ class TestJunctionTableFanout:
         model = self._make_movies_model()
         # Override measure to use MAX
         model.measures["Movies Cnt"] = Measure(
-            label="Movies Cnt",
+            name="Movies Cnt",
             columns=[{"dataObject": "Movies", "column": "Movie ID"}],
             result_type=DataType.INT,
             aggregation="max",
@@ -601,16 +601,16 @@ class TestPipelineFanout:
         silently-wrong SQL.
         """
         orders = DataObject(
-            label="Orders",
+            name="Orders",
             code="ORDERS",
             database="WH",
             schema_name="PUBLIC",
             columns={
                 "Order ID": DataObjectColumn(
-                    label="Order ID", code="ORDER_ID", abstract_type=DataType.STRING
+                    name="Order ID", code="ORDER_ID", abstract_type=DataType.STRING
                 ),
                 "Customer ID": DataObjectColumn(
-                    label="Customer ID", code="CUSTOMER_ID", abstract_type=DataType.STRING
+                    name="Customer ID", code="CUSTOMER_ID", abstract_type=DataType.STRING
                 ),
             },
             joins=[
@@ -623,16 +623,16 @@ class TestPipelineFanout:
             ],
         )
         customers = DataObject(
-            label="Customers",
+            name="Customers",
             code="CUSTOMERS",
             database="WH",
             schema_name="PUBLIC",
             columns={
                 "Cust ID": DataObjectColumn(
-                    label="Cust ID", code="CUST_ID", abstract_type=DataType.STRING
+                    name="Cust ID", code="CUST_ID", abstract_type=DataType.STRING
                 ),
                 "Revenue": DataObjectColumn(
-                    label="Revenue", code="REVENUE", abstract_type=DataType.FLOAT
+                    name="Revenue", code="REVENUE", abstract_type=DataType.FLOAT
                 ),
             },
         )
@@ -641,7 +641,7 @@ class TestPipelineFanout:
             data_objects={"Orders": orders, "Customers": customers},
             dimensions={
                 "Order ID": Dimension(
-                    label="Order ID",
+                    name="Order ID",
                     view="Orders",
                     column="Order ID",
                     result_type=DataType.STRING,
@@ -649,7 +649,7 @@ class TestPipelineFanout:
             },
             measures={
                 "Cust Revenue": Measure(
-                    label="Cust Revenue",
+                    name="Cust Revenue",
                     columns=[{"dataObject": "Customers", "column": "Revenue"}],
                     result_type=DataType.FLOAT,
                     aggregation="sum",

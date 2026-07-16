@@ -188,7 +188,7 @@ class TestFilterContextModel:
 
     def test_measure_filter_context_field(self):
         m = Measure(
-            label="test",
+            name="test",
             aggregation="sum",
             filter_context=FilterContext(mode=FilterContextMode.FIXED),
         )
@@ -196,7 +196,7 @@ class TestFilterContextModel:
         assert m.filter_context.mode == FilterContextMode.FIXED
 
     def test_measure_filter_context_none_by_default(self):
-        m = Measure(label="test", aggregation="sum")
+        m = Measure(name="test", aggregation="sum")
         assert m.filter_context is None
 
 

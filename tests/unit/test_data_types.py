@@ -80,23 +80,23 @@ class TestParseDataType:
 
 class TestResolveMeasureDataType:
     def test_explicit_wins(self) -> None:
-        m = Measure(label="Revenue", aggregation="sum", data_type="decimal(38, 8)")
+        m = Measure(name="Revenue", aggregation="sum", data_type="decimal(38, 8)")
         result = resolve_measure_data_type(m, None)
         assert result == DecimalType(38, 8)
 
     def test_count_infers_bigint(self) -> None:
-        m = Measure(label="Order Count", aggregation="count")
+        m = Measure(name="Order Count", aggregation="count")
         result = resolve_measure_data_type(m, None)
         assert result == SimpleType("bigint")
 
     def test_count_distinct_infers_bigint(self) -> None:
-        m = Measure(label="Unique Customers", aggregation="count_distinct")
+        m = Measure(name="Unique Customers", aggregation="count_distinct")
         result = resolve_measure_data_type(m, None)
         assert result == SimpleType("bigint")
 
     def test_division_infers_decimal_18_6(self) -> None:
         m = Measure(
-            label="Rate",
+            name="Rate",
             aggregation="sum",
             expression="{[Orders].[Amount]} / {[Orders].[Count]}",
         )
@@ -104,33 +104,33 @@ class TestResolveMeasureDataType:
         assert result == DIVISION_DEFAULT
 
     def test_sum_uses_builtin_default(self) -> None:
-        m = Measure(label="Revenue", aggregation="sum")
+        m = Measure(name="Revenue", aggregation="sum")
         result = resolve_measure_data_type(m, None)
         assert result == BUILTIN_DEFAULT
 
     def test_avg_uses_builtin_default(self) -> None:
-        m = Measure(label="Average", aggregation="avg")
+        m = Measure(name="Average", aggregation="avg")
         result = resolve_measure_data_type(m, None)
         assert result == BUILTIN_DEFAULT
 
     def test_model_settings_override(self) -> None:
-        m = Measure(label="Revenue", aggregation="sum")
+        m = Measure(name="Revenue", aggregation="sum")
         settings = ModelSettings(default_numeric_data_type="decimal(18, 4)")
         result = resolve_measure_data_type(m, settings)
         assert result == DecimalType(18, 4)
 
     def test_min_passthrough(self) -> None:
-        m = Measure(label="Min Price", aggregation="min")
+        m = Measure(name="Min Price", aggregation="min")
         result = resolve_measure_data_type(m, None)
         assert result is None
 
     def test_max_passthrough(self) -> None:
-        m = Measure(label="Max Price", aggregation="max")
+        m = Measure(name="Max Price", aggregation="max")
         result = resolve_measure_data_type(m, None)
         assert result is None
 
     def test_listagg_passthrough(self) -> None:
-        m = Measure(label="Names", aggregation="listagg")
+        m = Measure(name="Names", aggregation="listagg")
         result = resolve_measure_data_type(m, None)
         assert result is None
 
@@ -138,7 +138,7 @@ class TestResolveMeasureDataType:
 class TestResolveMetricDataType:
     def test_explicit_wins(self) -> None:
         m = Metric(
-            label="Rate",
+            name="Rate",
             expression="{[Revenue]} / {[Count]}",
             data_type="decimal(18, 4)",
         )
@@ -146,12 +146,12 @@ class TestResolveMetricDataType:
         assert result == DecimalType(18, 4)
 
     def test_division_infers_decimal_18_6(self) -> None:
-        m = Metric(label="Rate", expression="{[Revenue]} / {[Count]}")
+        m = Metric(name="Rate", expression="{[Revenue]} / {[Count]}")
         result = resolve_metric_data_type(m, None)
         assert result == DIVISION_DEFAULT
 
     def test_simple_expression_uses_default(self) -> None:
-        m = Metric(label="Total", expression="{[Revenue]} + {[Tax]}")
+        m = Metric(name="Total", expression="{[Revenue]} + {[Tax]}")
         result = resolve_metric_data_type(m, None)
         assert result == BUILTIN_DEFAULT
 
@@ -201,20 +201,20 @@ class TestDialectRendering:
 
 class TestModelValidation:
     def test_valid_data_type_on_measure(self) -> None:
-        m = Measure(label="Rev", aggregation="sum", data_type="decimal(18, 2)")
+        m = Measure(name="Rev", aggregation="sum", data_type="decimal(18, 2)")
         assert m.data_type == "decimal(18, 2)"
 
     def test_invalid_data_type_on_measure(self) -> None:
         with pytest.raises(ValueError):
-            Measure(label="Rev", aggregation="sum", data_type="varchar(255)")
+            Measure(name="Rev", aggregation="sum", data_type="varchar(255)")
 
     def test_valid_data_type_on_metric(self) -> None:
-        m = Metric(label="Rate", expression="{[A]} / {[B]}", data_type="decimal(18, 6)")
+        m = Metric(name="Rate", expression="{[A]} / {[B]}", data_type="decimal(18, 6)")
         assert m.data_type == "decimal(18, 6)"
 
     def test_invalid_data_type_on_metric(self) -> None:
         with pytest.raises(ValueError):
-            Metric(label="Rate", expression="{[A]} / {[B]}", data_type="number(18, 2)")
+            Metric(name="Rate", expression="{[A]} / {[B]}", data_type="number(18, 2)")
 
     def test_valid_model_settings(self) -> None:
         s = ModelSettings(default_numeric_data_type="decimal(18, 4)")

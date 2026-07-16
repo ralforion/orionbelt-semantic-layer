@@ -19,19 +19,19 @@ def _sample_model() -> SemanticModel:
     return SemanticModel(
         data_objects={
             "Orders": DataObject(
-                label="Orders",
+                name="Orders",
                 code="orders",
                 database="DB",
                 schema_name="PUBLIC",
                 columns={
                     "Order ID": DataObjectColumn(
-                        label="Order ID", code="order_id", abstract_type=DataType.STRING
+                        name="Order ID", code="order_id", abstract_type=DataType.STRING
                     ),
                     "Customer ID": DataObjectColumn(
-                        label="Customer ID", code="customer_id", abstract_type=DataType.STRING
+                        name="Customer ID", code="customer_id", abstract_type=DataType.STRING
                     ),
                     "Amount": DataObjectColumn(
-                        label="Amount", code="amount", abstract_type=DataType.FLOAT
+                        name="Amount", code="amount", abstract_type=DataType.FLOAT
                     ),
                 },
                 joins=[
@@ -44,23 +44,23 @@ def _sample_model() -> SemanticModel:
                 ],
             ),
             "Customers": DataObject(
-                label="Customers",
+                name="Customers",
                 code="customers",
                 database="DB",
                 schema_name="PUBLIC",
                 columns={
                     "Cust ID": DataObjectColumn(
-                        label="Cust ID", code="cust_id", abstract_type=DataType.STRING
+                        name="Cust ID", code="cust_id", abstract_type=DataType.STRING
                     ),
                     "Name": DataObjectColumn(
-                        label="Name", code="name", abstract_type=DataType.STRING
+                        name="Name", code="name", abstract_type=DataType.STRING
                     ),
                 },
             ),
         },
         dimensions={
             "Customer Name": Dimension(
-                label="Customer Name",
+                name="Customer Name",
                 view="Customers",
                 column="Name",
                 result_type=DataType.STRING,
@@ -168,13 +168,13 @@ class TestGenerateMermaidER:
         model = SemanticModel(
             data_objects={
                 "Sales": DataObject(
-                    label="Sales",
+                    name="Sales",
                     code="sales",
                     database="DB",
                     schema_name="PUBLIC",
                     columns={
                         "Date": DataObjectColumn(
-                            label="Date", code="dt", abstract_type=DataType.DATE
+                            name="Date", code="dt", abstract_type=DataType.DATE
                         ),
                     },
                     joins=[
@@ -189,13 +189,13 @@ class TestGenerateMermaidER:
                     ],
                 ),
                 "Calendar": DataObject(
-                    label="Calendar",
+                    name="Calendar",
                     code="calendar",
                     database="DB",
                     schema_name="PUBLIC",
                     columns={
                         "Cal Date": DataObjectColumn(
-                            label="Cal Date", code="cal_date", abstract_type=DataType.DATE
+                            name="Cal Date", code="cal_date", abstract_type=DataType.DATE
                         ),
                     },
                 ),
@@ -209,7 +209,7 @@ class TestGenerateMermaidER:
         model = SemanticModel(
             data_objects={
                 "A": DataObject(
-                    label="A",
+                    name="A",
                     code="a",
                     database="DB",
                     schema_name="PUBLIC",
@@ -222,7 +222,7 @@ class TestGenerateMermaidER:
                         ),
                     ],
                 ),
-                "B": DataObject(label="B", code="b", database="DB", schema_name="PUBLIC"),
+                "B": DataObject(name="B", code="b", database="DB", schema_name="PUBLIC"),
             },
         )
         result = generate_mermaid_er(model)
@@ -235,13 +235,13 @@ class TestGenerateMermaidER:
         model = SemanticModel(
             data_objects={
                 "Account Balances": DataObject(
-                    label="Account Balances",
+                    name="Account Balances",
                     code="acct_bal",
                     database="DB",
                     schema_name="PUBLIC",
                     columns={
                         "Account ID": DataObjectColumn(
-                            label="Account ID",
+                            name="Account ID",
                             code="account_id",
                             abstract_type=DataType.STRING,
                         ),

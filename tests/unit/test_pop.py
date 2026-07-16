@@ -192,7 +192,7 @@ class TestPoPValidation:
     def test_pop_requires_expression(self) -> None:
         with pytest.raises(ValueError, match="expression"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.PERIOD_OVER_PERIOD,
                 period_over_period=PeriodOverPeriod(
                     time_dimension="D",
@@ -204,7 +204,7 @@ class TestPoPValidation:
     def test_pop_requires_period_over_period(self) -> None:
         with pytest.raises(ValueError, match="periodOverPeriod"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.PERIOD_OVER_PERIOD,
                 expression="{[Revenue]}",
             )
@@ -212,7 +212,7 @@ class TestPoPValidation:
     def test_pop_rejects_cumulative_fields(self) -> None:
         with pytest.raises(ValueError, match="must not have"):
             Metric(
-                label="Bad",
+                name="Bad",
                 type=MetricType.PERIOD_OVER_PERIOD,
                 expression="{[Revenue]}",
                 period_over_period=PeriodOverPeriod(

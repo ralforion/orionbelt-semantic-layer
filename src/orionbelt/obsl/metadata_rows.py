@@ -74,7 +74,7 @@ def build_dimension_rows(
     if not getattr(model, "dimensions", None):
         return rows
     for dim_name, dim in model.dimensions.items():
-        name = getattr(dim, "label", dim_name) or dim_name
+        name = getattr(dim, "name", dim_name) or dim_name
         data_object = getattr(dim, "view", "") or ""
         column = getattr(dim, "column", "") or ""
         type_ = _enum_value(getattr(dim, "result_type", None), default="string") or "string"
@@ -96,7 +96,7 @@ def build_measure_rows(
     if not effective:
         return rows
     for meas_name, meas in effective.items():
-        name = getattr(meas, "label", meas_name) or meas_name
+        name = getattr(meas, "name", meas_name) or meas_name
         aggregation = _enum_value(getattr(meas, "aggregation", None), default="") or ""
         expression = getattr(meas, "expression", None)
         type_ = _enum_value(getattr(meas, "result_type", None), default="float") or "float"
@@ -144,7 +144,7 @@ def build_metric_rows(
     if not getattr(model, "metrics", None):
         return rows
     for met_name, met in model.metrics.items():
-        name = getattr(met, "label", met_name) or met_name
+        name = getattr(met, "name", met_name) or met_name
         metric_type = _enum_value(getattr(met, "type", None), default="derived") or "derived"
         expression = getattr(met, "expression", None)
         measure = getattr(met, "measure", None)

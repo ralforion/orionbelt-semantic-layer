@@ -193,7 +193,7 @@ class TestGrainOverrideModel:
     def test_total_and_grain_mutual_exclusion(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):
             Measure(
-                label="Bad",
+                name="Bad",
                 aggregation="sum",
                 total=True,
                 grain=GrainOverride(mode=GrainMode.FIXED),

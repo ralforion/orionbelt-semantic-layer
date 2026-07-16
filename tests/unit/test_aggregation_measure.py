@@ -85,7 +85,7 @@ def test_measure_alias_normalizes_to_canonical_enum(alias: str) -> None:
     """``agg`` / ``aggregate`` are accepted as aliases for ``measure`` so OBML
     reads naturally regardless of which vendor convention the user is used to.
     """
-    m = Measure(label="X", aggregation=alias)
+    m = Measure(name="X", aggregation=alias)
     assert m.aggregation == AggregationType.MEASURE
 
 
@@ -100,7 +100,7 @@ def test_measure_aggregation_rejects_columns() -> None:
     """
     with pytest.raises(ValueError, match="columns:"):
         Measure(
-            label="Revenue",
+            name="Revenue",
             aggregation="measure",
             columns=[{"dataObject": "Sales", "column": "Amount"}],  # type: ignore[arg-type]
         )
@@ -109,7 +109,7 @@ def test_measure_aggregation_rejects_columns() -> None:
 def test_measure_aggregation_rejects_expression() -> None:
     with pytest.raises(ValueError, match="expression:"):
         Measure(
-            label="Revenue",
+            name="Revenue",
             aggregation="measure",
             expression="{[Sales].[Amount]} * 1.1",
         )
@@ -118,7 +118,7 @@ def test_measure_aggregation_rejects_expression() -> None:
 def test_measure_aggregation_rejects_filters() -> None:
     with pytest.raises(ValueError, match="filters:"):
         Measure(
-            label="Revenue",
+            name="Revenue",
             aggregation="measure",
             filters=[
                 {
@@ -132,14 +132,14 @@ def test_measure_aggregation_rejects_filters() -> None:
 
 def test_measure_aggregation_rejects_total() -> None:
     with pytest.raises(ValueError, match="total"):
-        Measure(label="Revenue", aggregation="measure", total=True)
+        Measure(name="Revenue", aggregation="measure", total=True)
 
 
 def test_measure_aggregation_allows_minimal_form() -> None:
     """Bare label + ``aggregation: measure`` must parse cleanly — that's
     the entire intended surface (the engine knows the rest).
     """
-    m = Measure(label="Total Revenue", aggregation="measure")
+    m = Measure(name="Total Revenue", aggregation="measure")
     assert m.aggregation == AggregationType.MEASURE
     assert m.columns == []
     assert m.expression is None
