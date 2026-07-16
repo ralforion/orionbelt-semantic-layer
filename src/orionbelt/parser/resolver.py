@@ -37,13 +37,23 @@ from orionbelt.models.synthesis import DEFAULT_COUNT_PATTERN, count_label, count
 from orionbelt.parser.loader import SourceMap
 
 
-def _allowed_keys(*model_classes: type[BaseModel], extra: tuple[str, ...] = ()) -> frozenset[str]:
+def _allowed_keys(
+    *model_classes: type[BaseModel],
+    extra: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
+) -> frozenset[str]:
     """Return the set of YAML keys accepted at a parse site.
 
     Includes every field name and alias for the given Pydantic model classes,
     plus any extra keys (used for legacy / internal markers like
     ``_extends_sources`` or the ``filter`` (singular) backward-compat key on
     measures).
+
+    ``exclude`` drops resolved-only fields that exist on the model but are not
+    authorable in YAML — notably ``name``, the identity that the resolver
+    always derives from the mapping key. Excluding it keeps authoring ``name:``
+    an ``UNKNOWN_PROPERTY`` error, consistent with its ``json_schema: false``
+    status, rather than being silently accepted and dropped.
     """
     keys: set[str] = set(extra)
     for cls in model_classes:
@@ -51,7 +61,7 @@ def _allowed_keys(*model_classes: type[BaseModel], extra: tuple[str, ...] = ()) 
             keys.add(name)
             if fdef.alias:
                 keys.add(fdef.alias)
-    return frozenset(keys)
+    return frozenset(keys - set(exclude))
 
 
 def _check_unknown_keys(
@@ -100,12 +110,12 @@ _TOP_LEVEL_KEYS = _allowed_keys(
         # — leave the existing check to flag them as unknown.
     ),
 )
-_DATA_OBJECT_KEYS = _allowed_keys(DataObject, extra=("schema",))
-_DATA_OBJECT_COLUMN_KEYS = _allowed_keys(DataObjectColumn)
+_DATA_OBJECT_KEYS = _allowed_keys(DataObject, extra=("schema",), exclude=("name",))
+_DATA_OBJECT_COLUMN_KEYS = _allowed_keys(DataObjectColumn, exclude=("name",))
 _DATA_OBJECT_JOIN_KEYS = _allowed_keys(DataObjectJoin)
 _REFRESH_KEYS = _allowed_keys(RefreshPolicy, extra=("maxStaleness",))
-_DIMENSION_KEYS = _allowed_keys(Dimension)
-_MEASURE_KEYS = _allowed_keys(Measure, extra=("filter",))
+_DIMENSION_KEYS = _allowed_keys(Dimension, exclude=("name",))
+_MEASURE_KEYS = _allowed_keys(Measure, extra=("filter",), exclude=("name",))
 _GRAIN_OVERRIDE_KEYS = _allowed_keys(GrainOverride)
 _FILTER_CONTEXT_KEYS = _allowed_keys(FilterContext)
 _FILTER_CONTEXT_FILTER_KEYS = _allowed_keys(FilterContextFilter)
@@ -120,7 +130,7 @@ _CUSTOM_EXTENSION_KEYS = _allowed_keys(CustomExtension)
 # Period-over-period / Window / Cumulative metric blocks share the Metric
 # field set, but the inner periodOverPeriod block has its own shape.
 _PERIOD_OVER_PERIOD_KEYS = _allowed_keys(PeriodOverPeriod)
-_METRIC_KEYS = _allowed_keys(Metric)
+_METRIC_KEYS = _allowed_keys(Metric, exclude=("name",))
 
 
 def _parse_extensions(

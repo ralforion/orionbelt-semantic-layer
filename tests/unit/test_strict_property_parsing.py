@@ -77,21 +77,32 @@ class TestOBMLStrictParsing:
         assert "UNKNOWN_PROPERTY" in codes
         assert any("dataObjects.Orders" in p for p in paths)
 
+    @pytest.mark.parametrize("key", ["label", "name"])
     @pytest.mark.parametrize(
-        ("anchor", "path"),
+        ("source", "anchor", "path"),
         [
-            ("    code: ORDERS", "dataObjects.Orders"),
-            ("    resultType: string", "dimensions.Order ID"),
-            ("    aggregation: sum", "measures.Revenue"),
+            (_BASE, "    code: ORDERS", "dataObjects.Orders"),
+            (_BASE, "        code: ID", "dataObjects.Orders.columns.ID"),
+            (_BASE, "    resultType: string", "dimensions.Order ID"),
+            (_BASE, "    aggregation: sum", "measures.Revenue"),
+            (
+                _BASE + 'metrics:\n  Margin:\n    expression: "{[Revenue]}"\n',
+                "    expression:",
+                "metrics.Margin",
+            ),
         ],
     )
-    def test_label_is_not_an_authorable_key(self, anchor: str, path: str) -> None:
-        """``label`` was renamed to the resolved-only ``name`` field (#224), so
-        an authored ``label:`` on an analytical type is now a strict-parse error
-        rather than a silently-dropped key. The identity comes from the mapping
-        key, never an authored property.
+    def test_identity_field_is_not_authorable(
+        self, key: str, source: str, anchor: str, path: str
+    ) -> None:
+        """Neither ``label`` (the old field name) nor ``name`` (the resolved-only
+        identity field, #224) is authorable on any OBML type. Identity comes only
+        from the mapping key, so authoring either is a strict-parse
+        ``UNKNOWN_PROPERTY`` error, not a silently-dropped key. Guards against the
+        rename re-introducing a silently-accepted authored key.
         """
-        yaml = _BASE.replace(anchor, f"{anchor}\n    label: Nope", 1)
+        indent = anchor[: len(anchor) - len(anchor.lstrip())]
+        yaml = source.replace(anchor, f"{anchor}\n{indent}{key}: Nope", 1)
         codes, paths = _resolve(yaml)
         assert "UNKNOWN_PROPERTY" in codes
         assert any(path in p for p in paths)
