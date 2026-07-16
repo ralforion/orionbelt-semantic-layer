@@ -254,6 +254,85 @@ class TestDimensionNameCollision:
 
 
 # ---------------------------------------------------------------------------
+# #220: OBML dimension name restored across the round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestDimensionNameRoundTrip:
+    """An OBML-origin round-trip restores each dimension's name (the OSI field
+    name is the physical code, so without the ``obml_dimension_name`` extension
+    the dimension would be renamed to its code) and never trips the collision
+    fallback, since the restored names are unique by construction."""
+
+    _OBML = {
+        "version": 1.0,
+        "dataObjects": {
+            "Orders": {
+                "code": "FACT_ORDERS",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {
+                    "Order Date": {"code": "order_dt", "abstractType": "date"},
+                    "Region": {"code": "rgn", "abstractType": "string"},
+                    "Amount": {"code": "amt", "abstractType": "float"},
+                },
+            },
+            "Invoices": {
+                "code": "FACT_INV",
+                "database": "WH",
+                "schema": "PUBLIC",
+                "columns": {"Invoice Date": {"code": "inv_dt", "abstractType": "date"}},
+            },
+        },
+        # Names deliberately differ from their column codes; both date dims would
+        # collide on the code path if names were not restored.
+        "dimensions": {
+            "Order Placed On": {
+                "dataObject": "Orders",
+                "column": "Order Date",
+                "resultType": "date",
+            },
+            "Sales Region": {"dataObject": "Orders", "column": "Region", "resultType": "string"},
+            "Invoice Raised On": {
+                "dataObject": "Invoices",
+                "column": "Invoice Date",
+                "resultType": "date",
+            },
+        },
+        "measures": {
+            "Revenue": {
+                "columns": [{"dataObject": "Orders", "column": "Amount"}],
+                "aggregation": "sum",
+                "resultType": "float",
+            }
+        },
+    }
+
+    def _roundtrip(self) -> tuple[dict[str, Any], list[str]]:
+        osi = conv.OBMLtoOSI(self._OBML, model_name="sales").convert()
+        c = conv.OSItoOBML(osi)
+        return c.convert(), c.warnings
+
+    def test_names_restored_not_renamed_to_code(self) -> None:
+        obml, _ = self._roundtrip()
+        assert set(obml["dimensions"]) == {
+            "Order Placed On",
+            "Sales Region",
+            "Invoice Raised On",
+        }
+
+    def test_no_collision_fallback_for_obml_origin(self) -> None:
+        _, warnings = self._roundtrip()
+        assert not any("collision" in w.lower() for w in warnings), warnings
+
+    def test_restored_name_not_left_as_a_synonym(self) -> None:
+        obml, _ = self._roundtrip()
+        # The dimension must not carry its own restored name as a synonym.
+        for name, dim in obml["dimensions"].items():
+            assert name not in dim.get("synonyms", [])
+
+
+# ---------------------------------------------------------------------------
 # P2: validate_osi robustness on malformed input
 # ---------------------------------------------------------------------------
 

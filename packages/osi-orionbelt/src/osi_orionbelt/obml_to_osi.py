@@ -393,6 +393,11 @@ class OBMLtoOSI:
         for _dim_name, dim_obj in obml_dimensions.items():
             if dim_obj.get("dataObject") == do_name and dim_obj.get("column") == col_name:
                 matched_dim = dim_obj
+                # Preserve the dimension's OBML name explicitly. The OSI field
+                # name is the physical code, so without this the round-trip
+                # would rename the dimension to its column code. Authoritative
+                # (do not rely on synonyms, which mix names and user aliases).
+                ext_data["obml_dimension_name"] = _dim_name
                 if dim_obj.get("timeGrain"):
                     ext_data["obml_time_grain"] = dim_obj["timeGrain"]
                 if dim_obj.get("format"):
