@@ -137,6 +137,18 @@ def _emit_warnings(warnings: list[Any]) -> None:
             _render.warn(str(w))
 
 
+def _remote_input_schema_warnings(data: dict[str, Any], label: str) -> list[str]:
+    """Input-schema issues from a convert response, as warning strings.
+
+    The REST convert endpoints surface input schema violations under
+    ``input_validation.schema_errors`` rather than ``warnings``. The local
+    conversion paths fold the same issues into their warnings, so mirror that
+    for ``--server`` users to keep both paths symmetric (see #225).
+    """
+    iv = data.get("input_validation") or {}
+    return [f"{label} input schema: {msg}" for msg in (iv.get("schema_errors") or [])]
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -501,7 +513,8 @@ def convert(
                 data = RemoteClient(server, api_key).convert_osi_to_obml(input_yaml)
             except CliError as exc:
                 raise _fail(str(exc)) from None
-            output, warnings = data.get("output_yaml", ""), data.get("warnings") or []
+            output = data.get("output_yaml", "")
+            warnings = _remote_input_schema_warnings(data, "OSI") + (data.get("warnings") or [])
         else:
             import yaml
 
@@ -526,7 +539,8 @@ def convert(
             )
         except CliError as exc:
             raise _fail(str(exc)) from None
-        output, warnings = data.get("output_yaml", ""), data.get("warnings") or []
+        output = data.get("output_yaml", "")
+        warnings = _remote_input_schema_warnings(data, "OBML") + (data.get("warnings") or [])
         onto_yaml = data.get("ontology_yaml")
     else:
         import yaml
