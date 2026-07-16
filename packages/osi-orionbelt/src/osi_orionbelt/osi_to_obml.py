@@ -591,6 +591,19 @@ class OSItoOBML:
                                 dim_def["owner"] = ext_data["obml_dimension_owner"]
                             if ext_data.get("obml_dimension_via"):
                                 dim_def["via"] = ext_data["obml_dimension_via"]
+                            # The dimension's own synonyms / vendor extensions,
+                            # restored authoritatively to the dimension. Opaque
+                            # foreign data, so keep only well-shaped entries.
+                            _syns = ext_data.get("obml_dimension_synonyms")
+                            if isinstance(_syns, list):
+                                clean_syns = [s for s in _syns if isinstance(s, str) and s]
+                                if clean_syns:
+                                    dim_def["synonyms"] = clean_syns
+                            _exts = ext_data.get("obml_dimension_custom_extensions")
+                            if isinstance(_exts, list):
+                                clean_exts = [e for e in _exts if isinstance(e, dict)]
+                                if clean_exts:
+                                    dim_def["customExtensions"] = clean_exts
                             # Additional dimensions over the same column, preserved
                             # by the export because OSI has no slot for them.
                             _extras = ext_data.get("obml_extra_dimensions")

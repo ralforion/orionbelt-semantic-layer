@@ -418,6 +418,16 @@ class OBMLtoOSI:
                     ext_data["obml_dimension_owner"] = dim_obj["owner"]
                 if dim_obj.get("via"):
                     ext_data["obml_dimension_via"] = dim_obj["via"]
+                # The dimension's own synonyms and vendor extensions have no
+                # native OSI slot (OSI has no dimension entity), so preserve them
+                # authoritatively here for the reverse trip. The customExtensions
+                # are also emitted as field foreign extensions below for OSI-tool
+                # visibility; that path lands them on the column on re-import,
+                # while this one restores them to the dimension.
+                if dim_obj.get("synonyms"):
+                    ext_data["obml_dimension_synonyms"] = dim_obj["synonyms"]
+                if dim_obj.get("customExtensions"):
+                    ext_data["obml_dimension_custom_extensions"] = dim_obj["customExtensions"]
             else:
                 descriptor: dict[str, Any] = {"name": _dim_name}
                 for prop in ("resultType", "timeGrain", "format", "description", "owner", "via"):

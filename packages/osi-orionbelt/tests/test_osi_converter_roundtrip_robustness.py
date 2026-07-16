@@ -333,6 +333,33 @@ class TestDimensionNameRoundTrip:
         for name, dim in obml["dimensions"].items():
             assert name not in dim.get("synonyms", [])
 
+    def test_primary_dimension_synonyms_and_extensions_preserved(self) -> None:
+        # The primary (single) dimension on a column keeps its own synonyms and
+        # vendor extensions across the round-trip, not just the scalar props.
+        obml = {
+            "version": 1.0,
+            "dataObjects": {
+                "Orders": {
+                    "code": "o",
+                    "database": "W",
+                    "schema": "P",
+                    "columns": {"Status": {"code": "status", "abstractType": "string"}},
+                }
+            },
+            "dimensions": {
+                "Status": {
+                    "dataObject": "Orders",
+                    "column": "Status",
+                    "synonyms": ["state", "condition"],
+                    "customExtensions": [{"vendor": "TABLEAU", "data": '{"role": "dim"}'}],
+                }
+            },
+        }
+        back = conv.OSItoOBML(conv.OBMLtoOSI(obml).convert()).convert()
+        dim = back["dimensions"]["Status"]
+        assert dim.get("synonyms") == ["state", "condition"]
+        assert dim.get("customExtensions") == [{"vendor": "TABLEAU", "data": '{"role": "dim"}'}]
+
     @pytest.mark.parametrize("bad", [["x"], 5, "", {}, None])
     def test_non_string_restored_name_is_ignored(self, bad: Any) -> None:
         # obml_dimension_name is opaque to validate_osi, so a foreign payload may
