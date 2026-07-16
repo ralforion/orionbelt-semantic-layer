@@ -285,6 +285,13 @@ def convert_obml_to_osi(
     data = yaml.safe_load(input_yaml)
     if not isinstance(data, dict):
         raise CliError("OBML input must be a YAML/JSON mapping (object)")
+    # The CLI is an external boundary: surface OBML input schema issues (e.g. an
+    # authored ``label:``) instead of silently coercing them away. Advisory,
+    # matching the REST convert endpoints — conversion still runs.
+    input_warnings = [
+        f"OBML input schema: {msg}"
+        for msg in _validation_dict(mod.validate_obml, data).get("schema_errors", [])
+    ]
     converter = mod.OBMLtoOSI(
         data,
         model_name=model_name,
@@ -295,7 +302,7 @@ def convert_obml_to_osi(
         result: dict[str, Any] = converter.convert()
     except Exception as exc:  # noqa: BLE001
         raise CliError(f"OBML -> OSI conversion failed: {exc}") from None
-    warnings = list(converter.warnings)
+    warnings = input_warnings + list(converter.warnings)
 
     ontology: dict[str, Any] | None = None
     if include_ontology:

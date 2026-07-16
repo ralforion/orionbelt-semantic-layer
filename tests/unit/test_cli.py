@@ -215,6 +215,25 @@ def test_convert_obml_to_osi(model_file):
     assert "semantic_model" in result.stdout
 
 
+def test_convert_obml_to_osi_surfaces_authored_label(tmp_path):
+    """An authored ``label:`` in the OBML input is surfaced as a schema warning
+    (advisory) instead of being silently coerced away. Conversion still runs.
+    See #221.
+    """
+    import yaml
+
+    raw = yaml.safe_load(SAMPLE_MODEL_YAML)
+    mkey = next(iter(raw["measures"]))
+    raw["measures"][mkey]["label"] = "Authored"
+    bad = tmp_path / "model.yaml"
+    bad.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = runner.invoke(app, ["convert", "obml-to-osi", str(bad)])
+    assert result.exit_code == 0  # advisory: conversion still succeeds
+    assert "semantic_model" in result.stdout  # output still produced
+    assert "label" in result.output.lower()  # the violation is surfaced
+
+
 def test_convert_roundtrip_osi_to_obml(model_file, tmp_path):
     osi = runner.invoke(app, ["convert", "obml-to-osi", model_file])
     assert osi.exit_code == 0

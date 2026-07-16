@@ -71,6 +71,12 @@ async def obml_to_osi(body: OBMLtoOSIRequest) -> ConvertResponse:
     data = parse_yaml(body.input_yaml)
     mod = get_converter_module()
 
+    # Validate the OBML input against the schema before converting. Advisory —
+    # surfaced in ``input_validation`` so an authored ``label:`` (or any other
+    # schema violation) is reported rather than silently coerced away, matching
+    # the osi-to-obml direction.
+    input_validation = run_validation(mod.validate_obml, data)
+
     try:
         converter = mod.OBMLtoOSI(
             data,
@@ -116,6 +122,7 @@ async def obml_to_osi(body: OBMLtoOSIRequest) -> ConvertResponse:
         output_yaml=output_yaml,
         warnings=warnings,
         validation=validation,
+        input_validation=input_validation,
         ontology_yaml=ontology_yaml,
         ontology_validation=ontology_validation,
     )
