@@ -491,6 +491,47 @@ class FileCache(Cache):
         except Exception:
             return
 
+    async def warmup(self) -> None:
+        """Drive the full hit fetch path once so the first real hit isn't cold.
+
+        A plain ``get`` miss short-circuits at ``row is None`` before the
+        off-loop blob read and the ``cache_entry_tables`` lookup, so it warms
+        only the first metadata SELECT. Instead run a reserved-key
+        ``set`` -> read-back -> ``_evict`` round-trip, exercising the INSERT,
+        both hit-path SELECTs and the off-loop ``_read_bytes`` a real hit uses.
+        It bypasses the public hit/miss counters and evicts the entry before
+        returning, so ``stats()`` is untouched. Best-effort and idempotent.
+        """
+        key = "__obsl_warmup__"
+        file_path: str | None = None
+        try:
+            await self.set(
+                key,
+                b"warmup",
+                ttl_seconds=60,
+                physical_tables=["__obsl_warmup__"],
+                datasource="__obsl_warmup__",
+                model_id="__obsl_warmup__",
+                query_hash="__obsl_warmup__",
+                dialect="__obsl_warmup__",
+                row_count=0,
+            )
+            # Re-run the exact reads ``get`` does on a hit, minus the counters.
+            row = self._exec(
+                "SELECT file_path FROM cache_entries WHERE cache_key = ?", [key]
+            ).fetchone()
+            if row is not None:
+                file_path = row[0]
+                await asyncio.to_thread(_read_bytes, file_path)
+                self._exec(
+                    "SELECT table_ref FROM cache_entry_tables WHERE cache_key = ?", [key]
+                ).fetchall()
+        except Exception:
+            logger.debug("cache warmup failed", exc_info=True)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._evict(key, file_path)
+
     async def record_heartbeat(self, table_ref: str, observed_at: datetime) -> None:
         """Record a heartbeat for a physical table (idempotent on regression)."""
         now = datetime.now(UTC)
