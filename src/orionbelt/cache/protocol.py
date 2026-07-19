@@ -113,5 +113,14 @@ class Cache(Protocol):
     async def record_hit(self, key: str) -> None:
         """Increment hit counters. Fire-and-forget; cheap when noop."""
 
+    async def warmup(self) -> None:
+        """Exercise the read path once at startup so the first hit isn't cold.
+
+        Default no-op (inherited by backends that have no cold path). A
+        disk-backed cache overrides this to warm its metadata queries and
+        off-loop blob read. Implementations MUST NOT mutate the hit/miss
+        counters or leave a persisted entry, so ``stats()`` stays clean.
+        """
+
     async def shutdown(self) -> None:
         """Release resources (file handles, sweep tasks). Idempotent."""

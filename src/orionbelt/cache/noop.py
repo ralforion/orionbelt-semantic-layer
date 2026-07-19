@@ -54,5 +54,8 @@ class NoopCache(Cache):
     async def record_hit(self, key: str) -> None:
         return None
 
+    async def warmup(self) -> None:
+        return None
+
     async def shutdown(self) -> None:
         return None

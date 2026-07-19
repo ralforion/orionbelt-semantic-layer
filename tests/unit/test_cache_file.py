@@ -217,3 +217,28 @@ class TestDeferredCounters:
         # Drained after flush — no double counting on the next read.
         assert cache._pending_counters.get("hits", 0) == 0
         assert cache._pending_counters.get("misses", 0) == 0
+
+
+class TestWarmup:
+    """warmup() drives the full hit path without polluting stats or entries."""
+
+    async def test_warmup_leaves_stats_and_entries_clean(self, cache: FileCache) -> None:
+        await cache.warmup()
+
+        # No synthetic hit/miss recorded, no lingering entry or table dep.
+        assert cache._pending_counters.get("hits", 0) == 0
+        assert cache._pending_counters.get("misses", 0) == 0
+        stats = await cache.stats()
+        assert stats.hit_count_total == 0
+        assert stats.miss_count_total == 0
+        assert stats.entry_count == 0
+        assert stats.tracked_physical_tables == 0
+
+        # The reserved key is gone (evicted), so a later lookup is a normal miss.
+        assert await cache.get("__obsl_warmup__") is None
+
+    async def test_warmup_is_idempotent(self, cache: FileCache) -> None:
+        await cache.warmup()
+        await cache.warmup()
+        stats = await cache.stats()
+        assert stats.entry_count == 0
