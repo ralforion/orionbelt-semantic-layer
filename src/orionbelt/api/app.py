@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -480,6 +481,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             cache=cache,
             cache_config=cache_config,
         )
+
+    # Warm the result-cache decode path off the request hot path. pyarrow is
+    # imported lazily inside ``decode_data``, so without this the first cache
+    # HIT pays the ~100-250ms C-extension load inside the timed fetch and
+    # reports an inflated ``execution_time_ms``. Running it via ``to_thread``
+    # also warms the default threadpool worker that ``try_cache_get`` uses.
+    # Best-effort: never let a warmup failure block startup.
+    try:
+        from orionbelt.cache import result_codec
+
+        await asyncio.to_thread(result_codec.warm)
+    except Exception:
+        logger.debug("result-cache codec warmup failed", exc_info=True)
 
     try:
         yield

@@ -128,3 +128,18 @@ def table_to_rows(table: Any) -> list[list[Any]]:
     """Return a decoded table's rows as list-of-lists in schema column order."""
     names = table.column_names
     return [[row.get(n) for n in names] for row in table.to_pylist()]
+
+
+def warm() -> None:
+    """Warm the encode/decode path so the first real cache hit isn't slow.
+
+    ``decode_data`` imports pyarrow lazily (the C-extension load alone is
+    ~100-250ms), so the first cache *hit* pays that one-time cost inside the
+    timed fetch and reports an inflated ``execution_time_ms`` (issue: first hit
+    on a freshly-started Cloud Run instance shows hundreds of ms, every
+    subsequent hit is single-digit). Running a tiny round-trip at startup loads
+    pyarrow and warms the decode path off the request hot path. Best-effort: a
+    failure here must never block startup.
+    """
+    encode_data(["_"], [[0]])
+    decode_data(encode_data(["_"], [[0]]))
