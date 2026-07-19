@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -285,8 +286,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
             from orionbelt.cache import result_codec
 
-            warm_payload = result_codec.encode_data(["warm"], [["warm"]])
-            result_codec.decode_data(warm_payload)
+            # Run the encode → decode round-trip on the default threadpool so
+            # the same worker ``try_cache_get`` uses for its off-loop decode is
+            # warmed too, not just the (process-global) pyarrow import.
+            await asyncio.to_thread(result_codec.warm)
             await cache.stats()  # exercises DuckDB meta read + pytz bind
         except Exception:
             logger.exception("Cache warm-up failed (non-fatal)")
