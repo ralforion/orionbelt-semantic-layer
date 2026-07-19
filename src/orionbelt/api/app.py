@@ -291,6 +291,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # warmed too, not just the (process-global) pyarrow import.
             await asyncio.to_thread(result_codec.warm)
             await cache.stats()  # exercises DuckDB meta read + pytz bind
+            # A hit's fetch path is a DuckDB metadata SELECT plus an off-loop
+            # blob read, none of which ``stats()`` touches. Fire a throwaway
+            # lookup (a miss is fine) so the ``cache_entries`` /
+            # ``cache_entry_tables`` prepared statements and the off-loop read
+            # path are warm before the first real hit — otherwise it lands on
+            # the caller inside the timed fetch and inflates the reported time.
+            await cache.get("__warmup__")
         except Exception:
             logger.exception("Cache warm-up failed (non-fatal)")
 
