@@ -2,6 +2,18 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.22.2] - 2026-07-19
+
+### Fixed
+
+- **OSI converter renamed dimensions to their physical column code on the round trip** (`osi-orionbelt` 0.1.2). The OSI field name is the physical column code, so `OBML -> OSI -> OBML` renamed every dimension to its code (`Order Placed On` came back as `order_dt`) and could then trip the dimension-name collision fallback for names that were unique in the source. The dimension name is now preserved in an `obml_dimension_name` extension and restored on import, so the space-qualified collision fallback is genuinely foreign-OSI only. A non-string value in that extension is ignored rather than crashing the converter on an unhashable dict key.
+- **OSI converter silently dropped multiple dimensions on one column** (`osi-orionbelt` 0.1.2). OBML allows several dimensions over one column (grain variants, role-playing via `via`); OSI represents one dimension per field, so every dimension past the first was dropped with no warning. Extra dimensions are now preserved in an `obml_extra_dimensions` extension (with a fidelity warning on export) and rebuilt on import, each carrying its own synonyms and vendor extensions. Malformed extension payloads are filtered, never crash.
+- **`obsl convert` did not surface input schema violations.** Both the local and `--server` convert paths now report OSI/OBML input schema errors (advisory - the conversion still runs), matching the REST convert endpoints, instead of silently coercing invalid input.
+
+### Changed
+
+- **`label` is no longer an authorable property on dimensions, measures, and metrics.** It was a vestige of the old list-keyed-by-label format that the resolver silently ignored - the identity comes from the mapping key, exactly as it already did for `dataObject` and column labels. Authoring `label:` on one of these now fails schema validation and is rejected by the parser. No shipped model authored it; `description` and `synonyms` cover the adjacent needs. Internally the resolved identity field was renamed `label` -> `name` to match what it holds.
+
 ## [2.22.1] - 2026-07-16
 
 ### Fixed

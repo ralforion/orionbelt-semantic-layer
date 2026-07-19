@@ -2321,7 +2321,7 @@ wheels = [
 
 [[package]]
 name = "orionbelt-semantic-layer"
-version = "2.22.1"
+version = "2.22.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -2582,7 +2582,7 @@ wheels = [
 
 [[package]]
 name = "osi-orionbelt"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/osi-orionbelt" }
 dependencies = [
     { name = "jsonschema" },
