@@ -104,7 +104,7 @@ ui = [
     # the shipped UI venv. A Dependabot group update silently resolved gradio
     # down to 5.23.1 under the old >=5.0 floor and shipped a UI image that
     # could not start (2.22.0).
-    "gradio>=5.50,<6.0",
+    "gradio>=5.50,<7.0",
     # The playground fetches query results over the self-contained Arrow IPC
     # transport (format=arrow) and decodes them client-side, so the UI image
     # needs pyarrow even though it proxies execution to the API.
@@ -242,7 +242,7 @@ dev = [
     "mkdocstrings[python]>=1.0",
     "mkdocs-git-revision-date-localized-plugin>=1.2",
     # Keep in step with the `ui` extra floor (see the note there).
-    "gradio>=5.50,<6.0",
+    "gradio>=5.50,<7.0",
     "pyarrow>=16.0,<26.0",
     "ob-flight-extension>=0.1",
     "ob-driver-core>=0.1",
