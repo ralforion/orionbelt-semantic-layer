@@ -96,7 +96,9 @@ def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataTyp
         and isinstance(desc_precision, int)
         and desc_precision > 0
         and isinstance(desc_scale, int)
-        and desc_scale >= 0
+        # ``>=`` not ``>``: a legal decimal can have precision == scale (e.g.
+        # NUMERIC(2, 2) for values in [0, 1) — zero integer digits).
+        and desc_precision >= desc_scale >= 0
     )
     # Non-decimal sampled values (int / str / …), or no decimal signal at all.
     if not decimals and (sampled or not has_desc):
@@ -107,7 +109,7 @@ def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataTyp
     if (
         isinstance(desc_precision, int)
         and isinstance(desc_scale, int)
-        and desc_precision > desc_scale
+        and desc_precision >= desc_scale >= 0
     ):
         scale = max(scale, desc_scale)
         int_digits = max(int_digits, desc_precision - desc_scale)

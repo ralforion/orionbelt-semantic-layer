@@ -119,6 +119,18 @@ class TestSchemaFromDescription:
         schema = schema_from_description(desc, sample_rows=[(5,)])
         assert schema.field(0).type == pa.int64()
 
+    def test_precision_equals_scale_keeps_scale(self):
+        # NUMERIC(2, 2) — a legal decimal for values in [0, 1) with zero integer
+        # digits — must keep its scale even with an all-NULL first batch, so a
+        # later Decimal('0.12') doesn't fail to rescale (issue #136 P2).
+        from decimal import Decimal
+
+        desc = (("frac", NUMBER, None, None, 2, 2, None),)
+        schema = schema_from_description(desc, sample_rows=[(None,)])
+        assert schema.field(0).type == pa.decimal128(38, 2)
+        val = Decimal("0.12")
+        assert rows_to_batch([(val,)], schema).column(0).to_pylist()[0] == val
+
 
 class TestDecimalArrowType:
     def test_within_decimal128_uses_max_headroom(self):
