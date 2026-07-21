@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: OrionBelt Semantic Layer
-  version: 2.22.2
+  version: 2.23.0
   description: >
     Compile YAML semantic models (OBML) as analytical SQL across 8 database dialects.
     This API runs in single-model mode with a pre-loaded semantic model.
