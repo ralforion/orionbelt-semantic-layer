@@ -79,6 +79,27 @@ class TestSchemaFromDescription:
         schema = schema_from_description(desc, sample_rows=[(None,)])
         assert schema.field(0).type == pa.float64()
 
+    def test_driver_precision_scale_beats_narrow_first_batch(self):
+        # A NUMERIC(40, 2) whose first batch is all small values must still be
+        # typed wide enough (decimal256) from the driver-reported precision/scale
+        # so a later 40-precision row doesn't overflow the reused schema (#136).
+        from decimal import Decimal
+
+        desc = (("amt", NUMBER, None, None, 40, 2, None),)  # description[4]=40, [5]=2
+        schema = schema_from_description(desc, sample_rows=[(Decimal("1.23"),)])
+        assert schema.field(0).type == pa.decimal256(76, 2)
+        wide = Decimal("1" * 38 + ".50")  # precision 40 — arrives in a later batch
+        assert rows_to_batch([(wide,)], schema).column(0).to_pylist()[0] == wide
+
+    def test_driver_precision_over_76_degrades_to_float(self):
+        # A driver-reported precision beyond decimal256's limit degrades to
+        # float64 instead of raising during schema construction.
+        from decimal import Decimal
+
+        desc = (("amt", NUMBER, None, None, 100, 2, None),)
+        schema = schema_from_description(desc, sample_rows=[(Decimal("1.23"),)])
+        assert schema.field(0).type == pa.float64()
+
 
 class TestDecimalArrowType:
     def test_within_decimal128_uses_max_headroom(self):

@@ -76,6 +76,29 @@ def decimal_arrow_type(precision: int, scale: int, *, exact: bool = False) -> pa
     return pa.float64()
 
 
+def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataType:
+    """Arrow type for a DECIMAL column from its PEP 249 description + samples.
+
+    A column's first fetched batch can under-represent its declared width (e.g.
+    a ``NUMERIC(40, 2)`` whose early rows are all small), so the driver-reported
+    precision/scale (``description[4]`` / ``[5]``) — which bound *every* row —
+    take priority. The sampled width is combined in (via ``max``) so neither an
+    under-sampled batch nor an under-reported description can narrow the type,
+    then the width is chosen by :func:`decimal_arrow_type` (decimal128 ≤ 38,
+    decimal256 ≤ 76, float64 beyond). See issue #136.
+    """
+    ps = [_decimal_precision_scale(v) for v in sampled if isinstance(v, Decimal)]
+    scale = max((s for _, s in ps), default=0)
+    int_digits = max((p - s for p, s in ps), default=0)
+    desc_precision = col[4] if len(col) > 4 else None
+    desc_scale = col[5] if len(col) > 5 else None
+    if isinstance(desc_scale, int) and desc_scale >= 0:
+        scale = max(scale, desc_scale)
+        if isinstance(desc_precision, int) and desc_precision > desc_scale:
+            int_digits = max(int_digits, desc_precision - desc_scale)
+    return decimal_arrow_type(int_digits + scale, scale)
+
+
 def _python_type_to_arrow(value: Any) -> pa.DataType:
     """Infer Arrow type from a Python value (fallback when type codes are unreliable)."""
     if isinstance(value, bool):
@@ -112,11 +135,11 @@ def schema_from_description(
     for some columns. Passing sample_rows allows scanning multiple rows to find
     the first non-None value per column.
 
-    For DECIMAL columns the Arrow precision and scale are taken from the widest
-    sampled value so the type covers every value in the column — a fixed-scale
-    ``NUMERIC(p, s)`` column reports a stable scale, so the sample is
-    representative; the width jumps to decimal256 when the sampled precision
-    exceeds 38 (issue #136).
+    For DECIMAL columns the Arrow precision/scale come from the driver-reported
+    ``description[4]`` / ``[5]`` when present (they bound every row), combined
+    with the widest sampled value as a fallback — so a column whose first batch
+    under-represents its declared width is still typed wide enough. The width
+    jumps to decimal256 past precision 38 and to float64 past 76 (issue #136).
     """
     # Normalize: prefer sample_rows, fall back to single sample_row
     rows = sample_rows or ([sample_row] if sample_row is not None else [])
@@ -127,12 +150,7 @@ def schema_from_description(
         # Collect this column's non-None sample values (across rows).
         sampled = [row[i] for row in rows if i < len(row) and row[i] is not None]
         if sampled and isinstance(sampled[0], Decimal):
-            # Cover the widest sampled precision and scale so no value overflows
-            # the type — combine the max integer digits with the max scale.
-            ps = [_decimal_precision_scale(v) for v in sampled if isinstance(v, Decimal)]
-            max_scale = max(s for _, s in ps)
-            max_int_digits = max(p - s for p, s in ps)
-            arrow_type = decimal_arrow_type(max_int_digits + max_scale, max_scale)
+            arrow_type = _decimal_column_type(col, sampled)
         elif sampled:
             arrow_type = _python_type_to_arrow(sampled[0])
         else:
