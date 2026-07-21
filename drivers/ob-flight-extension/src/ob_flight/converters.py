@@ -31,6 +31,37 @@ def pep249_type_to_arrow(type_code: Any) -> pa.DataType:
     return pa.utf8()  # fallback
 
 
+# pyarrow decimal128 tops out at precision 38, decimal256 at 76. We advertise
+# the maximum precision so a column's magnitude cannot overflow the inferred
+# type for realistic NUMERIC data, and prefer decimal128 (universally supported
+# by Arrow clients — arrow-js, JDBC, ODBC) unless the scale needs more room.
+_DECIMAL128_MAX_PRECISION = 38
+_DECIMAL256_MAX_PRECISION = 76
+
+
+def _decimal_scale(value: Decimal) -> int:
+    """Number of fractional digits in a Decimal (0 for integers or specials)."""
+    exponent = value.as_tuple().exponent
+    return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+def decimal_arrow_type(scale: int) -> pa.DataType:
+    """Widest safe Arrow decimal type for a column with the given fractional scale.
+
+    Preserves NUMERIC precision that ``float64`` would round away past ~15-16
+    significant digits (issue #136). Uses the maximum precision so the column's
+    integer magnitude cannot overflow the type for realistic data, preferring
+    ``decimal128`` and only widening to ``decimal256`` when the scale is large.
+    Falls back to ``float64`` for pathological scales neither decimal represents.
+    """
+    scale = max(0, scale)
+    if scale <= _DECIMAL128_MAX_PRECISION:
+        return pa.decimal128(_DECIMAL128_MAX_PRECISION, scale)
+    if scale <= _DECIMAL256_MAX_PRECISION:
+        return pa.decimal256(_DECIMAL256_MAX_PRECISION, scale)
+    return pa.float64()
+
+
 def _python_type_to_arrow(value: Any) -> pa.DataType:
     """Infer Arrow type from a Python value (fallback when type codes are unreliable)."""
     if isinstance(value, bool):
@@ -40,7 +71,7 @@ def _python_type_to_arrow(value: Any) -> pa.DataType:
     if isinstance(value, float):
         return pa.float64()
     if isinstance(value, Decimal):
-        return pa.float64()
+        return decimal_arrow_type(_decimal_scale(value))
     if isinstance(value, datetime.datetime):
         return pa.timestamp("us")
     if isinstance(value, datetime.date):
@@ -66,6 +97,10 @@ def schema_from_description(
     For UNION ALL queries with NULL padding, a single sample row may have None
     for some columns. Passing sample_rows allows scanning multiple rows to find
     the first non-None value per column.
+
+    For DECIMAL columns the Arrow scale is taken from the widest sampled value
+    so it covers every value in the column — a fixed-scale ``NUMERIC(p, s)``
+    column reports a stable scale, so the sample is representative (issue #136).
     """
     # Normalize: prefer sample_rows, fall back to single sample_row
     rows = sample_rows or ([sample_row] if sample_row is not None else [])
@@ -73,17 +108,16 @@ def schema_from_description(
     fields = []
     for i, col in enumerate(description):
         name = col[0]
-        # Scan rows for first non-None value in this column
-        value = None
-        for row in rows:
-            if i < len(row) and row[i] is not None:
-                value = row[i]
-                break
-        if value is not None:
-            arrow_type = _python_type_to_arrow(value)
+        # Collect this column's non-None sample values (across rows).
+        sampled = [row[i] for row in rows if i < len(row) and row[i] is not None]
+        if sampled and isinstance(sampled[0], Decimal):
+            # Cover the widest sampled scale so no value overflows the type.
+            max_scale = max(_decimal_scale(v) for v in sampled if isinstance(v, Decimal))
+            arrow_type = decimal_arrow_type(max_scale)
+        elif sampled:
+            arrow_type = _python_type_to_arrow(sampled[0])
         else:
-            type_code = col[1]
-            arrow_type = pep249_type_to_arrow(type_code)
+            arrow_type = pep249_type_to_arrow(col[1])
         fields.append(pa.field(name, arrow_type))
     return pa.schema(fields)
 

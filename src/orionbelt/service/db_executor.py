@@ -485,11 +485,16 @@ def _serialize_value(val: Any, tz: ZoneInfo | None = None) -> Any:
     only holds ~15-16 significant digits, so a wide NUMERIC (e.g.
     ``Decimal('123456789012345678.90')``) would round on the way through and
     surface as ``123456789012345680.00`` on the pgwire NUMERIC path (issue
-    #136). Every boundary handles the Decimal without a lossy float hop — the
+    #136). Every boundary carries the Decimal without a lossy float hop — the
     pgwire encoder emits exact fixed-scale text, the Arrow result cache stores
     it as ``decimal128``/``decimal256``, and ``value_formatting.format_row``
-    formats it directly. REST/JSON is the one exception: FastAPI's encoder
-    still narrows a Decimal to a float, matching the pre-existing JSON shape.
+    formats it directly.
+
+    On the raw REST/JSON surface the value is deliberately delivered as an
+    **exact decimal string** (Pydantic v2 serializes ``Decimal`` as a JSON
+    string), not a lossy float — a fixed, value-independent contract so a
+    column's JSON type never changes row to row. This is documented on
+    ``api.schemas.ColumnMetadata.type``.
     """
     if val is None:
         return None

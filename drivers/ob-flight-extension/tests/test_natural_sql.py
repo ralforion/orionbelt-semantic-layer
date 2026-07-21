@@ -15,8 +15,10 @@ Spec: design/PLAN_flight_natural_sql.md.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pyarrow as pa
 import pyarrow.flight as flight
 import pytest
 
@@ -26,6 +28,7 @@ from ob_flight.catalog import (
 )
 from ob_flight.flight_sql import build_columns_table, build_tables_table
 from ob_flight.server import OBFlightServer
+from ob_flight.server_execution import semantic_result_schema
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
@@ -452,3 +455,69 @@ class TestSchemaProbeShortcut:
         assert schema is not None
         names = [f.name for f in schema]
         assert "_g_Customer Country" in names
+
+
+class TestSemanticResultSchemaDecimals:
+    """A governed DECIMAL measure/metric is advertised as an exact Arrow decimal
+    so the FlightInfo schema matches the high-precision value the stream carries
+    (issue #136), sourced from the declared ``dataType`` like pgwire (#116)."""
+
+    def _query(self, measures: list[str]):
+        return SimpleNamespace(
+            select=SimpleNamespace(dimensions=["Region"], measures=measures),
+            grouping=None,
+        )
+
+    def _model(self, **kw):
+        dim = SimpleNamespace(result_type=SimpleNamespace(value="string"))
+        return SimpleNamespace(
+            dimensions={"Region": dim},
+            measures=kw.get("measures", {}),
+            metrics=kw.get("metrics", {}),
+            settings=SimpleNamespace(default_numeric_data_type=kw.get("default_numeric_data_type")),
+        )
+
+    def test_declared_decimal_measure_advertised_as_decimal(self) -> None:
+        model = self._model(
+            measures={
+                "Revenue": SimpleNamespace(
+                    data_type="decimal(18, 2)",
+                    result_type=SimpleNamespace(value="float"),
+                )
+            }
+        )
+        schema = semantic_result_schema(None, self._query(["Revenue"]), model)
+        assert schema.field("Revenue").type == pa.decimal128(18, 2)
+
+    def test_float_measure_stays_double(self) -> None:
+        model = self._model(
+            measures={
+                "Ratio": SimpleNamespace(data_type=None, result_type=SimpleNamespace(value="float"))
+            }
+        )
+        schema = semantic_result_schema(None, self._query(["Ratio"]), model)
+        assert schema.field("Ratio").type == pa.float64()
+
+    def test_declared_decimal_metric_advertised_as_decimal(self) -> None:
+        model = self._model(
+            metrics={
+                "Margin": SimpleNamespace(
+                    data_type="decimal(30, 4)",
+                    result_type=SimpleNamespace(value="float"),
+                )
+            }
+        )
+        schema = semantic_result_schema(None, self._query(["Margin"]), model)
+        assert schema.field("Margin").type == pa.decimal128(30, 4)
+
+    def test_default_numeric_data_type_fallback(self) -> None:
+        model = self._model(
+            measures={
+                "Amount": SimpleNamespace(
+                    data_type=None, result_type=SimpleNamespace(value="float")
+                )
+            },
+            default_numeric_data_type="decimal(12, 3)",
+        )
+        schema = semantic_result_schema(None, self._query(["Amount"]), model)
+        assert schema.field("Amount").type == pa.decimal128(12, 3)

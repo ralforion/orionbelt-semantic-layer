@@ -489,3 +489,64 @@ class TestHeartbeatInvalidatesShortcut:
             "/v1/query/execute", json=_QUERY_BODY, params={"dialect": "duckdb"}
         )
         assert miss.json()["cached"] is False
+
+
+class TestDecimalPrecisionContract:
+    """Issue #136: a high-precision DECIMAL survives end to end.
+
+    On the raw JSON surface it is delivered as an **exact decimal string**
+    (Pydantic v2 serializes ``Decimal`` as a JSON string), and a cache hit —
+    which rebuilds the row from the stored Arrow ``decimal128`` blob — reproduces
+    the identical string. The pgwire NUMERIC encoding of the same value is exact
+    too (unit-covered in ``tests/unit/test_pgwire_types``); asserted here as well
+    so all three surfaces are proven together.
+    """
+
+    async def test_raw_json_decimal_is_exact_string_and_survives_cache(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        from decimal import Decimal
+
+        from orionbelt.pgwire.types import encode_value
+
+        client, _ = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        mid = (
+            await client.post(f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML})
+        ).json()["model_id"]
+        body = {"model_id": mid, "query": _QUERY_BODY, "dialect": "duckdb"}
+
+        # A value wider than float's ~15-16 significant digits: casting to float
+        # would round it to 123456789012345680.00.
+        wide = ExecutionResult(
+            columns=[
+                ColumnMeta("Customer Country", "string"),
+                ColumnMeta("Total Revenue", "number", "#,##0.00"),
+            ],
+            raw_rows=[["US", Decimal("123456789012345678.90")]],
+            row_count=1,
+            execution_time_ms=1.0,
+        )
+
+        # Fresh miss populates the cache with the wide decimal.
+        with patch("orionbelt.api.query_cache.execute_sql", return_value=wide):
+            first = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
+        assert first.status_code == 200, first.text
+        fdata = first.json()
+        assert fdata["cached"] is False
+        # Raw JSON: exact decimal string, not a rounded float.
+        assert fdata["rows"][0][1] == "123456789012345678.90"
+        assert isinstance(fdata["rows"][0][1], str)
+
+        # Cache hit rebuilds the row from the stored Arrow decimal blob — the
+        # same exact string, never routed back through execute_sql.
+        second = await client.post(f"/v1/sessions/{sid}/query/execute", json=body)
+        assert second.status_code == 200
+        sdata = second.json()
+        assert sdata["cached"] is True
+        assert sdata["rows"][0][1] == "123456789012345678.90"
+
+        # pgwire NUMERIC text for the same value is exact and fixed-scale.
+        assert encode_value(Decimal("123456789012345678.90"), "decimal", 0, 2) == (
+            "123456789012345678.90"
+        )

@@ -292,11 +292,40 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
     return _MODE_REJECTED
 
 
+def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
+    """Advertise a governed measure/metric's declared DECIMAL as an Arrow decimal.
+
+    A DECIMAL column's precision/scale comes from the model's declared
+    ``dataType`` (e.g. ``decimal(18, 2)``), falling back to the model-level
+    ``defaultNumericDataType`` — the same source of truth the pgwire NUMERIC
+    surface uses (issue #116). Advertising the exact Arrow decimal here keeps
+    the FlightInfo schema aligned with the exact value the stream carries so
+    high-precision decimals survive (issue #136). Returns ``None`` when the item
+    has no declared decimal type, so the caller falls back to ``result_type``.
+    """
+    from orionbelt.service.db_executor import parse_decimal_type
+
+    declared = getattr(item, "data_type", None)
+    if not declared:
+        settings = getattr(model, "settings", None)
+        declared = getattr(settings, "default_numeric_data_type", None) if settings else None
+    if not declared:
+        return None
+    parsed = parse_decimal_type(declared)
+    if parsed is None:
+        return None
+    precision, scale = parsed
+    if precision <= 38:
+        return pa.decimal128(precision, scale)
+    return pa.decimal256(precision, scale)
+
+
 def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa.Schema:
     """Build the result Arrow schema for a semantic query without DB I/O.
 
-    Reads ``result_type`` from each selected dimension / measure / metric.
-    See ``design/PLAN_flight_natural_sql.md`` §3.4 "Schema probe".
+    Reads ``result_type`` from each selected dimension / measure / metric,
+    upgrading governed DECIMAL measures/metrics to an exact Arrow decimal
+    (issue #136). See ``design/PLAN_flight_natural_sql.md`` §3.4 "Schema probe".
     """
     from ob_flight.catalog import _obml_type_to_arrow
 
@@ -313,11 +342,12 @@ def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa
     for label in measures:
         meas = model.measures.get(label)
         met = model.metrics.get(label) if meas is None else None
-        if meas is not None:
+        decimal_type = _numeric_result_arrow_type(meas or met, model)
+        if decimal_type is not None:
+            fields.append(pa.field(label, decimal_type))
+        elif meas is not None:
             rt = getattr(getattr(meas, "result_type", None), "value", None) or "float"
             fields.append(pa.field(label, _obml_type_to_arrow(rt)))
-        elif met is not None:
-            fields.append(pa.field(label, pa.float64()))
         else:
             fields.append(pa.field(label, pa.float64()))
     if query.grouping is not None:
@@ -669,7 +699,15 @@ def execute_sql(
 
         table = pa.Table.from_batches(batches)
 
-        # Cache populate — write back after a successful warehouse run.
+        # Cast to the schema advertised in FlightInfo so the streamed schema
+        # matches what the client was promised — e.g. a governed DECIMAL column
+        # inferred as decimal128(38, s) narrows to the declared decimal(p, s)
+        # (issue #136). Best-effort: a mismatch leaves the table unchanged.
+        table = align_cached_table(table, result_schema)
+
+        # Cache populate — write back after a successful warehouse run. Storing
+        # the aligned table keeps the cached decimal type consistent with the
+        # REST/pgwire writers and with a subsequent Flight cache hit.
         if cache_meta is not None and server._cache is not None:
             server._cache_put_table(table, cache_meta)
 
