@@ -38,6 +38,25 @@ jobs:
         working-directory: packages/osi-orionbelt
         run: uv run pytest --tb=short -q
 
+      # Driver workspace members (drivers/*) also sit outside the root
+      # testpaths and carry duplicate test-module basenames across packages
+      # (e.g. several test_driver.py), so a root-level collection errors on the
+      # name clashes. Run each package's suite from its own directory instead,
+      # same as osi-orionbelt. Exit code 5 = "no tests collected" is treated as
+      # success so a driver without tests (e.g. ob-bigquery) doesn't fail CI.
+      - name: Run driver test suites
+        run: |
+          rc=0
+          for d in drivers/*/; do
+            [ -d "${d}tests" ] || continue
+            echo "::group::${d}"
+            (cd "$d" && uv run pytest --tb=short -q)
+            code=$?
+            echo "::endgroup::"
+            if [ "$code" -ne 0 ] && [ "$code" -ne 5 ]; then rc=1; fi
+          done
+          exit $rc
+
   coverage:
     runs-on: ubuntu-latest
     steps:
