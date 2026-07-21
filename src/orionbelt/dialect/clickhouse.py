@@ -265,6 +265,7 @@ class ClickHouseDialect(Dialect):
             "day": "addDays",
             "week": "addWeeks",
             "month": "addMonths",
+            "quarter": "addQuarters",
             "year": "addYears",
         }
         func = funcs.get(unit)

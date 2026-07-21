@@ -714,7 +714,7 @@ class TestWindowFunctionRendering:
         ("bigquery", "CURRENT_DATE()", "DATE_ADD"),
         ("clickhouse", "today()", "addDays"),
         ("databricks", "current_date()", "date_add("),
-        ("dremio", "CURRENT_DATE", "DATE_ADD"),
+        ("dremio", "CURRENT_DATE", "TIMESTAMPADD"),
         ("duckdb", "CURRENT_DATE", "INTERVAL"),
         ("mysql", "CURDATE()", "DATE_SUB"),
         ("postgres", "CURRENT_DATE", "INTERVAL"),
