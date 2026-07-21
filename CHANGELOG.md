@@ -2,6 +2,17 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.23.0] - 2026-07-21
+
+### Changed
+
+- **High-precision DECIMAL values are preserved exactly across every surface** (issue #136). Values wider than IEEE-754 double precision (past ~15-16 significant digits) previously lost precision because the executor cast every `Decimal` to `float`, so `123456789012345678.90` came back as `123456789012345680.00`. The `Decimal` is now carried end to end. This changes two consumer-visible output shapes: raw REST JSON delivers DECIMAL cells as **exact decimal strings** (e.g. `"123456789012345678.90"`) instead of rounded floats, a fixed value-independent contract now documented on the `columns[].type` field; and Arrow Flight advertises governed DECIMAL measures/metrics as `DECIMAL(p, s)` instead of `DOUBLE`, so BI tools over JDBC/ODBC see the precise type. The pgwire NUMERIC surface (already exact since #116), the shared result cache, and value-formatted / TSV output keep their shape and are now exact too. Note: the MCP server relays REST query results, so its consumers see the same decimal-string shape (no MCP change required for a passthrough client).
+
+### Fixed
+
+- **Arrow Flight catalog probes were rejected under sqlglot 30** (#237). sqlglot 30 renamed the `SELECT` node's FROM argument key (`from` to `from_`), so `information_schema` / `pg_catalog` discovery queries fell through the classifier and returned a malformed result instead of the model's table/column listing, breaking BI-tool schema discovery (DBeaver, Tableau) over Flight SQL. The Flight driver test suite was not run by CI, which let this regress unnoticed.
+- **Driver package test suites now run in CI** (#239). The root `testpaths` excluded `drivers/*`, so the Flight and ClickHouse driver suites were never exercised; both had silently rotted (the sqlglot 30 break above, and the ClickHouse tests had drifted from the driver's `query_arrow()` migration, realigned in #238). Each driver package's suite now runs from its own directory in the test job.
+
 ## [2.22.2] - 2026-07-19
 
 ### Fixed
