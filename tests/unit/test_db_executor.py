@@ -49,7 +49,17 @@ class TestSerializeValue:
         assert _serialize_value(d) == "2024-06-01"
 
     def test_decimal(self) -> None:
-        assert _serialize_value(Decimal("99.95")) == 99.95
+        # Decimals are preserved (not cast to float) so wide NUMERIC values
+        # keep full precision on the pgwire / cache paths (issue #136).
+        result = _serialize_value(Decimal("99.95"))
+        assert result == Decimal("99.95")
+        assert isinstance(result, Decimal)
+
+    def test_high_precision_decimal_is_not_rounded(self) -> None:
+        # A value wider than float's ~15-16 significant digits would round to
+        # 123456789012345680.00 if cast to float.
+        val = Decimal("123456789012345678.90")
+        assert _serialize_value(val) == val
 
     def test_bytes(self) -> None:
         assert _serialize_value(b"\x00\x01\x02") == "AAEC"
@@ -62,7 +72,7 @@ class TestSerializeRow:
     def test_mixed_row(self) -> None:
         row = ("US", 42, Decimal("100.5"), None, datetime(2024, 1, 1))
         result = _serialize_row(row)
-        assert result == ["US", 42, 100.5, None, "2024-01-01T00:00:00"]
+        assert result == ["US", 42, Decimal("100.5"), None, "2024-01-01T00:00:00"]
 
 
 @pytest.mark.skipif(not _has_ob_driver_core, reason="ob_driver_core not installed")

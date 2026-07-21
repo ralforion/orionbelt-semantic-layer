@@ -83,16 +83,18 @@ class TestDefaultFormatForArrowType:
 
 
 class TestArrowToRowsStringNumericNormalisation:
-    def test_string_numeric_is_parsed_to_float(self) -> None:
+    def test_string_numeric_is_parsed_to_decimal(self) -> None:
         """The string cell from ADBC's opaque[string] type is parsed to
-        Decimal in ``_arrow_to_rows``; ``_serialize_value`` then converts
-        to float for downstream JSON-friendly output."""
+        Decimal in ``_arrow_to_rows`` and preserved as a Decimal by
+        ``_serialize_value`` (no lossy float hop — issue #136)."""
+        from decimal import Decimal
+
         table = _opaque_numeric_table(["2045134942.09"])
         rows = _arrow_to_rows(table)
         assert len(rows) == 1
         cell = rows[0][0]
-        assert isinstance(cell, float)
-        assert cell == 2045134942.09
+        assert isinstance(cell, Decimal)
+        assert cell == Decimal("2045134942.09")
 
     def test_unparseable_string_passes_through(self) -> None:
         """Garbage in the string column doesn't crash — falls back to the
@@ -103,13 +105,13 @@ class TestArrowToRowsStringNumericNormalisation:
         # _serialize_value sees the original string and returns it unchanged.
         assert rows[0][0] == "not-a-number"
 
-    def test_plain_decimal128_unchanged(self) -> None:
-        """The non-ADBC path (pydict already yields ``Decimal``) is
-        unaffected — _serialize_value still converts Decimal → float."""
+    def test_plain_decimal128_preserved(self) -> None:
+        """The non-ADBC path (pydict already yields ``Decimal``) keeps the
+        Decimal — ``_serialize_value`` no longer casts it to float (#136)."""
         from decimal import Decimal
 
         arr = pa.array([Decimal("123.45")], type=pa.decimal128(18, 2))
         table = pa.table({"x": arr})
         rows = _arrow_to_rows(table)
-        assert rows[0][0] == 123.45
-        assert isinstance(rows[0][0], float)
+        assert rows[0][0] == Decimal("123.45")
+        assert isinstance(rows[0][0], Decimal)

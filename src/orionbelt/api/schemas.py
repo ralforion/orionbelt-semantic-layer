@@ -96,7 +96,15 @@ class ColumnMetadata(BaseModel):
     """Metadata for a single result column."""
 
     name: str
-    type: str = Field(description="Type hint: string, number, datetime, binary")
+    type: str = Field(
+        description=(
+            "Column type: 'string', 'number', 'datetime', 'binary', or a "
+            "'decimal(p, s)' string for governed DECIMAL columns. DECIMAL "
+            "cells are delivered in JSON as an exact decimal string (not a "
+            "float) so precision beyond float's ~15-16 significant digits is "
+            "preserved (issue #136); the pgwire surface reports them as NUMERIC."
+        )
+    )
     format: str | None = Field(
         default=None,
         description="Display format pattern from model (e.g. '#,##0.00', '0.00%')",

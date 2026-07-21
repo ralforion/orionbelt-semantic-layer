@@ -117,6 +117,12 @@ def test_encode_decimal_fixed_scale() -> None:
     assert pgtypes.encode_value(-16050258.53, "decimal", 0, 2) == "-16050258.53"
     # Large magnitude must not come out as ``1.605...E7``.
     assert "E" not in pgtypes.encode_value(16050258.53, "decimal", 0, 2).upper()
+    # A Decimal wider than float precision must survive exactly, not round to
+    # ``123456789012345680.00`` (issue #136).
+    assert (
+        pgtypes.encode_value(Decimal("123456789012345678.90"), "decimal", 0, 2)
+        == "123456789012345678.90"
+    )
 
 
 def test_encode_decimal_without_scale_keeps_value() -> None:
