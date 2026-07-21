@@ -6,8 +6,11 @@ OBML tests additionally mock the REST API call to ``/v1/query/sql``.
 
 from __future__ import annotations
 
+import datetime as _dt
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import pyarrow as pa
 import pytest
 
 import ob_clickhouse
@@ -16,42 +19,74 @@ from ob_clickhouse.cursor import Cursor
 from ob_clickhouse.exceptions import NotSupportedError, ProgrammingError
 from ob_clickhouse.type_codes import DATETIME, NUMBER, STRING
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build mock clickhouse-connect objects
+#
+# ``Cursor.execute`` uses ``Client.query_arrow()`` (Arrow columnar) and derives
+# the PEP 249 description from the returned table's Arrow schema, so the mocks
+# return real pyarrow Tables whose column types mirror what clickhouse-connect
+# would emit for a given ClickHouse type.
 # ---------------------------------------------------------------------------
 
 
 def _make_mock_client() -> MagicMock:
-    """Return a mock clickhouse-connect Client."""
+    """Return a mock clickhouse-connect Client.
+
+    ``query_arrow`` defaults to an empty Arrow table; ``query`` stays a plain
+    MagicMock for the ``executemany`` path, which still uses it.
+    """
     client = MagicMock()
-    # Default: query returns empty result
-    result = MagicMock()
-    result.result_rows = []
-    result.column_names = []
-    result.column_types = []
-    client.query.return_value = result
+    client.query_arrow.return_value = pa.table({})
     return client
 
 
-def _make_query_result(
+def _ch_type_to_arrow(ch_type: str) -> pa.DataType:
+    """Map a ClickHouse type name to the Arrow type ``query_arrow`` would yield.
+
+    Only the coarse families the driver's description mapping distinguishes are
+    needed. ``Nullable(...)`` / ``LowCardinality(...)`` wrappers are stripped;
+    unknown types fall back to string (mirroring the driver's STRING default).
+    """
+    t = ch_type.strip()
+    for wrapper in ("Nullable(", "LowCardinality("):
+        if t.startswith(wrapper) and t.endswith(")"):
+            t = t[len(wrapper) : -1].strip()
+    if t.startswith(("Int", "UInt")):
+        return pa.int64()
+    if t.startswith("Float"):
+        return pa.float64()
+    if t.startswith("Decimal"):
+        return pa.decimal128(18, 2)
+    if t.startswith(("DateTime", "Date")):
+        return pa.timestamp("us")
+    if t.startswith("Array"):
+        return pa.list_(pa.int64())
+    return pa.string()
+
+
+def _coerce(value: object, arrow_type: pa.DataType) -> object:
+    """Coerce a test value into something ``pa.array`` accepts for the type."""
+    if value is None:
+        return None
+    if pa.types.is_timestamp(arrow_type) and isinstance(value, str):
+        return _dt.datetime.fromisoformat(value)
+    if pa.types.is_decimal(arrow_type) and not isinstance(value, Decimal):
+        return Decimal(str(value))
+    return value
+
+
+def _make_arrow_table(
     rows: list[tuple[object, ...]],
     column_names: list[str],
     column_types: list[str],
-) -> MagicMock:
-    """Create a mock QueryResult with the given data."""
-    result = MagicMock()
-    result.result_rows = rows
-    result.column_names = column_names
-    # clickhouse-connect column_types are ClickHouseType objects; str() gives
-    # the type name.  We mock them so str(t) returns the desired string.
-    mock_types = []
-    for t in column_types:
-        mt = MagicMock()
-        mt.__str__ = MagicMock(return_value=t)
-        mock_types.append(mt)
-    result.column_types = mock_types
-    return result
+) -> pa.Table:
+    """Build a pyarrow Table mirroring a clickhouse-connect ``query_arrow`` result."""
+    arrays = []
+    for i, ch_type in enumerate(column_types):
+        arrow_type = _ch_type_to_arrow(ch_type)
+        values = [_coerce(row[i], arrow_type) for row in rows]
+        arrays.append(pa.array(values, type=arrow_type))
+    return pa.Table.from_arrays(arrays, names=list(column_names))
 
 
 def _mock_api_response(sql: str) -> MagicMock:
@@ -196,12 +231,12 @@ def test_connection_passes_ob_params_to_cursor() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cursor_execute_calls_client_query() -> None:
+def test_cursor_execute_calls_client_query_arrow() -> None:
     mock_client = _make_mock_client()
     conn = Connection(mock_client)
     with conn.cursor() as cur:
         cur.execute("SELECT 1")
-        mock_client.query.assert_called_once_with("SELECT 1")
+        mock_client.query_arrow.assert_called_once_with("SELECT 1")
 
 
 def test_cursor_execute_with_params() -> None:
@@ -209,7 +244,7 @@ def test_cursor_execute_with_params() -> None:
     conn = Connection(mock_client)
     with conn.cursor() as cur:
         cur.execute("SELECT %(a)s + %(b)s", {"a": 3, "b": 4})
-        mock_client.query.assert_called_once_with(
+        mock_client.query_arrow.assert_called_once_with(
             "SELECT %(a)s + %(b)s", parameters={"a": 3, "b": 4}
         )
 
@@ -224,12 +259,12 @@ def test_cursor_execute_returns_self() -> None:
 
 def test_cursor_description_with_types() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(42, "hello", "2024-01-15")],
         column_names=["num", "txt", "dt"],
         column_types=["Int64", "String", "DateTime"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -248,12 +283,12 @@ def test_cursor_description_with_types() -> None:
 def test_cursor_description_nullable_type() -> None:
     """Nullable wrapper should be stripped before type lookup."""
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(None,)],
         column_names=["val"],
         column_types=["Nullable(Int32)"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -265,12 +300,12 @@ def test_cursor_description_nullable_type() -> None:
 def test_cursor_description_decimal_with_params() -> None:
     """Decimal(18,2) should map to NUMBER after stripping params."""
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(3.14,)],
         column_names=["price"],
         column_types=["Decimal(18,2)"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -288,12 +323,12 @@ def test_cursor_description_none_before_execute() -> None:
 
 def test_cursor_rowcount_after_execute() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT id FROM t")
@@ -309,12 +344,12 @@ def test_cursor_rowcount_default() -> None:
 
 def test_cursor_fetchone() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(42, "hello")],
         column_names=["a", "b"],
         column_types=["Int32", "String"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -333,12 +368,12 @@ def test_cursor_fetchone_exhausted() -> None:
 def test_cursor_fetchone_sequential() -> None:
     """fetchone() should advance through rows one at a time."""
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT id FROM t")
@@ -350,12 +385,12 @@ def test_cursor_fetchone_sequential() -> None:
 
 def test_cursor_fetchall() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1, "a"), (2, "b"), (3, "c")],
         column_names=["id", "name"],
         column_types=["Int32", "String"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -368,12 +403,12 @@ def test_cursor_fetchall() -> None:
 def test_cursor_fetchall_after_fetchone() -> None:
     """fetchall() should return only remaining rows."""
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -385,12 +420,12 @@ def test_cursor_fetchall_after_fetchone() -> None:
 
 def test_cursor_fetchmany() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1,), (2,), (3,), (4,), (5,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -405,12 +440,12 @@ def test_cursor_fetchmany() -> None:
 
 def test_cursor_fetchmany_default_arraysize() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(1,), (2,), (3,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.arraysize = 2
@@ -421,12 +456,12 @@ def test_cursor_fetchmany_default_arraysize() -> None:
 
 def test_cursor_iteration() -> None:
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[(0,), (1,), (2,)],
         column_names=["id"],
         column_types=["Int32"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -532,20 +567,22 @@ def test_obml_compile_and_execute() -> None:
     """OBML query is compiled via REST API then executed on ClickHouse."""
     mock_client = _make_mock_client()
     compiled_sql = "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[("EMEA", 300.0), ("APAC", 150.0), ("AMER", 550.0)],
         column_names=["region", "revenue"],
         column_types=["String", "Float64"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
-        with conn.cursor() as cur:
-            cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
-            rows = cur.fetchall()
-            assert len(rows) == 3
-            # Verify the compiled SQL was passed to client.query
-            mock_client.query.assert_called_once_with(compiled_sql)
+    with (
+        patch("httpx.post", return_value=_mock_api_response(compiled_sql)),
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
+        rows = cur.fetchall()
+        assert len(rows) == 3
+        # Verify the compiled SQL was passed to client.query_arrow
+        mock_client.query_arrow.assert_called_once_with(compiled_sql)
 
 
 def test_obml_rest_dialect_is_clickhouse() -> None:
@@ -553,12 +590,14 @@ def test_obml_rest_dialect_is_clickhouse() -> None:
     mock_client = _make_mock_client()
     conn = Connection(mock_client)
     compiled_sql = "SELECT 1"
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("select:\n  measures:\n    - Revenue\n")
-            url = mock_post.call_args.args[0]
-            assert "/v1/query/sql" in url
-            assert mock_post.call_args.kwargs["params"] == {"dialect": "clickhouse"}
+    with (
+        patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post,
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  measures:\n    - Revenue\n")
+        url = mock_post.call_args.args[0]
+        assert "/v1/query/sql" in url
+        assert mock_post.call_args.kwargs["params"] == {"dialect": "clickhouse"}
 
 
 def test_obml_custom_api_url() -> None:
@@ -566,45 +605,48 @@ def test_obml_custom_api_url() -> None:
     mock_client = _make_mock_client()
     conn = Connection(mock_client, ob_api_url="http://my-api:9000")
     compiled_sql = "SELECT 1"
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("select:\n  measures:\n    - Revenue\n")
-            url = mock_post.call_args.args[0]
-            assert url == "http://my-api:9000/v1/query/sql"
+    with (
+        patch("httpx.post", return_value=_mock_api_response(compiled_sql)) as mock_post,
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  measures:\n    - Revenue\n")
+        url = mock_post.call_args.args[0]
+        assert url == "http://my-api:9000/v1/query/sql"
 
 
 def test_plain_sql_passthrough() -> None:
     """Plain SQL is passed through without OBML compilation — no REST call."""
     mock_client = _make_mock_client()
     conn = Connection(mock_client)
-    with patch("httpx.post") as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM orders")
-            mock_post.assert_not_called()
-            mock_client.query.assert_called_once_with("SELECT count(*) FROM orders")
+    with patch("httpx.post") as mock_post, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM orders")
+        mock_post.assert_not_called()
+        mock_client.query_arrow.assert_called_once_with("SELECT count(*) FROM orders")
 
 
 def test_obml_execute_with_description() -> None:
     """After OBML execute, description should reflect compiled result columns."""
     mock_client = _make_mock_client()
     compiled_sql = "SELECT region, sum(amount) AS revenue FROM orders GROUP BY region"
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[("EMEA", 300.0)],
         column_names=["region", "revenue"],
         column_types=["String", "Float64"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
-    with patch("httpx.post", return_value=_mock_api_response(compiled_sql)):
-        with conn.cursor() as cur:
-            cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
-            desc = cur.description
-            assert desc is not None
-            assert len(desc) == 2
-            assert desc[0][0] == "region"
-            assert desc[0][1] == STRING
-            assert desc[1][0] == "revenue"
-            assert desc[1][1] == NUMBER
+    with (
+        patch("httpx.post", return_value=_mock_api_response(compiled_sql)),
+        conn.cursor() as cur,
+    ):
+        cur.execute("select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n")
+        desc = cur.description
+        assert desc is not None
+        assert len(desc) == 2
+        assert desc[0][0] == "region"
+        assert desc[0][1] == STRING
+        assert desc[1][0] == "revenue"
+        assert desc[1][1] == NUMBER
 
 
 # ---------------------------------------------------------------------------
@@ -615,12 +657,12 @@ def test_obml_execute_with_description() -> None:
 def test_unknown_type_defaults_to_string() -> None:
     """Unknown ClickHouse types should default to STRING."""
     mock_client = _make_mock_client()
-    qr = _make_query_result(
+    qr = _make_arrow_table(
         rows=[([1, 2, 3],)],
         column_names=["arr"],
         column_types=["Array(Int32)"],
     )
-    mock_client.query.return_value = qr
+    mock_client.query_arrow.return_value = qr
     conn = Connection(mock_client)
     cur = conn.cursor()
     cur.execute("SELECT 1")
@@ -653,8 +695,8 @@ def test_type_map_covers_common_types() -> None:
 def test_exceptions_importable() -> None:
     """All PEP 249 exceptions should be importable from ob_clickhouse.exceptions."""
     from ob_clickhouse.exceptions import (
-        DataError,
         DatabaseError,
+        DataError,
         Error,
         IntegrityError,
         InterfaceError,
