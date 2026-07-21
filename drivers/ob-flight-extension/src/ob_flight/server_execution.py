@@ -302,8 +302,14 @@ def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
     the FlightInfo schema aligned with the exact value the stream carries so
     high-precision decimals survive (issue #136). Returns ``None`` when the item
     has no declared decimal type, so the caller falls back to ``result_type``.
+
+    A declared precision wider than Arrow's decimal256 limit (76) — which OBML
+    permits but Arrow cannot represent — degrades to ``float64`` via
+    ``decimal_arrow_type`` rather than raising during schema construction.
     """
     from orionbelt.service.db_executor import parse_decimal_type
+
+    from ob_flight.converters import decimal_arrow_type
 
     declared = getattr(item, "data_type", None)
     if not declared:
@@ -315,9 +321,7 @@ def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
     if parsed is None:
         return None
     precision, scale = parsed
-    if precision <= 38:
-        return pa.decimal128(precision, scale)
-    return pa.decimal256(precision, scale)
+    return decimal_arrow_type(precision, scale, exact=True)
 
 
 def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa.Schema:

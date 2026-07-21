@@ -521,3 +521,17 @@ class TestSemanticResultSchemaDecimals:
         )
         schema = semantic_result_schema(None, self._query(["Amount"]), model)
         assert schema.field("Amount").type == pa.decimal128(12, 3)
+
+    def test_declared_precision_beyond_arrow_limit_degrades_to_float(self) -> None:
+        # OBML permits precisions wider than Arrow's decimal256 max (76); such a
+        # declared type must degrade to float64, not raise during FlightInfo
+        # schema construction (issue #136 P2b).
+        model = self._model(
+            measures={
+                "Huge": SimpleNamespace(
+                    data_type="decimal(100, 2)", result_type=SimpleNamespace(value="float")
+                )
+            }
+        )
+        schema = semantic_result_schema(None, self._query(["Huge"]), model)
+        assert schema.field("Huge").type == pa.float64()

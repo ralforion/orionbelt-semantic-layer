@@ -81,26 +81,60 @@ class TestSchemaFromDescription:
 
 
 class TestDecimalArrowType:
-    def test_common_scales_use_decimal128(self):
-        assert decimal_arrow_type(2) == pa.decimal128(38, 2)
-        assert decimal_arrow_type(0) == pa.decimal128(38, 0)
+    def test_within_decimal128_uses_max_headroom(self):
+        # Inferred (non-exact): max precision of the chosen width so a later,
+        # wider row can't overflow.
+        assert decimal_arrow_type(20, 2) == pa.decimal128(38, 2)
+        assert decimal_arrow_type(1, 0) == pa.decimal128(38, 0)
 
-    def test_large_scale_uses_decimal256(self):
-        assert decimal_arrow_type(40) == pa.decimal256(76, 40)
+    def test_precision_over_38_uses_decimal256(self):
+        # Precision beyond decimal128's 38 must widen to decimal256, not
+        # overflow decimal128(38, s) (issue #136 P2a).
+        assert decimal_arrow_type(40, 2) == pa.decimal256(76, 2)
 
-    def test_pathological_scale_falls_back_to_float(self):
-        assert decimal_arrow_type(200) == pa.float64()
+    def test_precision_over_76_falls_back_to_float(self):
+        # Beyond decimal256's limit — no Arrow decimal can hold it (P2b).
+        assert decimal_arrow_type(100, 2) == pa.float64()
+        assert decimal_arrow_type(100, 2, exact=True) == pa.float64()
+
+    def test_exact_keeps_declared_precision(self):
+        # Advertised schema from an authoritative declared type keeps precision.
+        assert decimal_arrow_type(18, 2, exact=True) == pa.decimal128(18, 2)
+        assert decimal_arrow_type(40, 2, exact=True) == pa.decimal256(40, 2)
 
     def test_high_precision_roundtrips_exactly(self):
         from decimal import Decimal
 
         val = Decimal("123456789012345678.90")
-        schema = pa.schema([pa.field("x", decimal_arrow_type(2))])
+        schema = pa.schema([pa.field("x", decimal_arrow_type(20, 2))])
         batch = rows_to_batch([(val,)], schema)
         assert batch.column(0).to_pylist()[0] == val
 
+    def test_sampled_precision_over_38_infers_decimal256(self):
+        # A sampled value needing precision 40 must not be typed decimal128(38,2)
+        # (which would raise in rows_to_batch) — P2a regression.
+        from decimal import Decimal
+
+        wide = Decimal("1" * 38 + ".50")  # 38 integer digits + scale 2
+        desc = (("amt", NUMBER, None, None, None, None, None),)
+        schema = schema_from_description(desc, sample_rows=[(wide,)])
+        assert schema.field(0).type == pa.decimal256(76, 2)
+        # And it actually builds + round-trips exactly.
+        batch = rows_to_batch([(wide,)], schema)
+        assert batch.column(0).to_pylist()[0] == wide
+
 
 class TestRowsToBatch:
+    def test_decimal_into_float_column_is_coerced(self):
+        # The >76-precision fallback advertises float64; pyarrow can't build a
+        # float array straight from Decimals, so rows_to_batch coerces them so
+        # delivery degrades lossily instead of raising.
+        from decimal import Decimal
+
+        schema = pa.schema([pa.field("x", pa.float64())])
+        batch = rows_to_batch([(Decimal("1.5"),), (None,)], schema)
+        assert batch.column(0).to_pylist() == [1.5, None]
+
     def test_basic(self):
         schema = pa.schema([pa.field("x", pa.float64()), pa.field("y", pa.utf8())])
         rows = [(1.0, "a"), (2.0, "b"), (3.0, "c")]

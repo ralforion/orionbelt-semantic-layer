@@ -31,34 +31,48 @@ def pep249_type_to_arrow(type_code: Any) -> pa.DataType:
     return pa.utf8()  # fallback
 
 
-# pyarrow decimal128 tops out at precision 38, decimal256 at 76. We advertise
-# the maximum precision so a column's magnitude cannot overflow the inferred
-# type for realistic NUMERIC data, and prefer decimal128 (universally supported
-# by Arrow clients — arrow-js, JDBC, ODBC) unless the scale needs more room.
+# pyarrow decimal128 tops out at precision 38, decimal256 at 76.
 _DECIMAL128_MAX_PRECISION = 38
 _DECIMAL256_MAX_PRECISION = 76
 
 
-def _decimal_scale(value: Decimal) -> int:
-    """Number of fractional digits in a Decimal (0 for integers or specials)."""
+def _decimal_precision_scale(value: Decimal) -> tuple[int, int]:
+    """Return the ``(precision, scale)`` needed to represent a Decimal exactly.
+
+    ``precision`` is the count of significant digits (always ``>= scale``);
+    ``scale`` is the number of fractional digits (0 for integers / specials).
+    """
     exponent = value.as_tuple().exponent
-    return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    if not isinstance(exponent, int):  # NaN / Infinity
+        return (1, 0)
+    ndigits = len(value.as_tuple().digits)
+    if exponent >= 0:
+        # e.g. 12E3 == 12000 → 5 integer digits, no fraction.
+        return (ndigits + exponent, 0)
+    scale = -exponent
+    return (max(ndigits, scale), scale)
 
 
-def decimal_arrow_type(scale: int) -> pa.DataType:
-    """Widest safe Arrow decimal type for a column with the given fractional scale.
+def decimal_arrow_type(precision: int, scale: int, *, exact: bool = False) -> pa.DataType:
+    """Arrow decimal type wide enough for ``(precision, scale)``.
 
     Preserves NUMERIC precision that ``float64`` would round away past ~15-16
-    significant digits (issue #136). Uses the maximum precision so the column's
-    integer magnitude cannot overflow the type for realistic data, preferring
-    ``decimal128`` and only widening to ``decimal256`` when the scale is large.
-    Falls back to ``float64`` for pathological scales neither decimal represents.
+    significant digits (issue #136). Prefers ``decimal128`` (max precision 38,
+    the broadest Arrow-client support — arrow-js, JDBC, ODBC), widens to
+    ``decimal256`` (max 76) once precision exceeds 38, and falls back to
+    ``float64`` beyond 76 — a width no real NUMERIC column reaches.
+
+    Unless ``exact`` is set the maximum precision of the chosen width is used, so
+    a column whose *sampled* rows under-represent its true magnitude cannot
+    overflow a later row. ``exact`` keeps the given precision and is used when it
+    comes from an authoritative declared type (the DB enforces the bound).
     """
     scale = max(0, scale)
-    if scale <= _DECIMAL128_MAX_PRECISION:
-        return pa.decimal128(_DECIMAL128_MAX_PRECISION, scale)
-    if scale <= _DECIMAL256_MAX_PRECISION:
-        return pa.decimal256(_DECIMAL256_MAX_PRECISION, scale)
+    precision = max(precision, scale, 1)
+    if precision <= _DECIMAL128_MAX_PRECISION:
+        return pa.decimal128(precision if exact else _DECIMAL128_MAX_PRECISION, scale)
+    if precision <= _DECIMAL256_MAX_PRECISION:
+        return pa.decimal256(precision if exact else _DECIMAL256_MAX_PRECISION, scale)
     return pa.float64()
 
 
@@ -71,7 +85,7 @@ def _python_type_to_arrow(value: Any) -> pa.DataType:
     if isinstance(value, float):
         return pa.float64()
     if isinstance(value, Decimal):
-        return decimal_arrow_type(_decimal_scale(value))
+        return decimal_arrow_type(*_decimal_precision_scale(value))
     if isinstance(value, datetime.datetime):
         return pa.timestamp("us")
     if isinstance(value, datetime.date):
@@ -98,9 +112,11 @@ def schema_from_description(
     for some columns. Passing sample_rows allows scanning multiple rows to find
     the first non-None value per column.
 
-    For DECIMAL columns the Arrow scale is taken from the widest sampled value
-    so it covers every value in the column — a fixed-scale ``NUMERIC(p, s)``
-    column reports a stable scale, so the sample is representative (issue #136).
+    For DECIMAL columns the Arrow precision and scale are taken from the widest
+    sampled value so the type covers every value in the column — a fixed-scale
+    ``NUMERIC(p, s)`` column reports a stable scale, so the sample is
+    representative; the width jumps to decimal256 when the sampled precision
+    exceeds 38 (issue #136).
     """
     # Normalize: prefer sample_rows, fall back to single sample_row
     rows = sample_rows or ([sample_row] if sample_row is not None else [])
@@ -111,9 +127,12 @@ def schema_from_description(
         # Collect this column's non-None sample values (across rows).
         sampled = [row[i] for row in rows if i < len(row) and row[i] is not None]
         if sampled and isinstance(sampled[0], Decimal):
-            # Cover the widest sampled scale so no value overflows the type.
-            max_scale = max(_decimal_scale(v) for v in sampled if isinstance(v, Decimal))
-            arrow_type = decimal_arrow_type(max_scale)
+            # Cover the widest sampled precision and scale so no value overflows
+            # the type — combine the max integer digits with the max scale.
+            ps = [_decimal_precision_scale(v) for v in sampled if isinstance(v, Decimal)]
+            max_scale = max(s for _, s in ps)
+            max_int_digits = max(p - s for p, s in ps)
+            arrow_type = decimal_arrow_type(max_int_digits + max_scale, max_scale)
         elif sampled:
             arrow_type = _python_type_to_arrow(sampled[0])
         else:
@@ -133,11 +152,19 @@ def rows_to_batch(
     if not rows:
         return pa.RecordBatch.from_pydict({field.name: [] for field in schema}, schema=schema)
     n_cols = len(schema)
+    # Columns whose Arrow type is floating but whose Python values are Decimal —
+    # the pathological ``decimal_arrow_type`` fallback (precision > 76). pyarrow
+    # won't build a float array straight from Decimals, so coerce those cells so
+    # delivery degrades (lossily) instead of raising.
+    float_cols = {i for i in range(n_cols) if pa.types.is_floating(schema.field(i).type)}
     columns: dict[str, list[Any]] = {schema.field(i).name: [] for i in range(n_cols)}
     for row in rows:
         for i in range(n_cols):
             col_name = schema.field(i).name
-            columns[col_name].append(row[i] if i < len(row) else None)
+            value = row[i] if i < len(row) else None
+            if i in float_cols and isinstance(value, Decimal):
+                value = float(value)
+            columns[col_name].append(value)
     return pa.RecordBatch.from_pydict(columns, schema=schema)
 
 
