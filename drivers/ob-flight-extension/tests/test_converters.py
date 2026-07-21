@@ -100,6 +100,25 @@ class TestSchemaFromDescription:
         schema = schema_from_description(desc, sample_rows=[(Decimal("1.23"),)])
         assert schema.field(0).type == pa.float64()
 
+    def test_all_null_first_batch_uses_driver_precision_scale(self):
+        # A NUMERIC(40, 2) whose first batch is entirely NULL (UNION ALL padding)
+        # must still be typed decimal from the driver's precision/scale, so a
+        # later Decimal isn't degraded to float64 (issue #136 P2).
+        from decimal import Decimal
+
+        desc = (("amt", NUMBER, None, None, 40, 2, None),)
+        schema = schema_from_description(desc, sample_rows=[(None,)])
+        assert schema.field(0).type == pa.decimal256(76, 2)
+        wide = Decimal("1" * 38 + ".50")
+        assert rows_to_batch([(wide,)], schema).column(0).to_pylist()[0] == wide
+
+    def test_non_decimal_sampled_values_are_not_forced_to_decimal(self):
+        # A numeric column reporting precision/scale but yielding int values
+        # stays int64 — the driver width only applies to real decimal columns.
+        desc = (("id", NUMBER, None, None, 10, 0, None),)
+        schema = schema_from_description(desc, sample_rows=[(5,)])
+        assert schema.field(0).type == pa.int64()
+
 
 class TestDecimalArrowType:
     def test_within_decimal128_uses_max_headroom(self):

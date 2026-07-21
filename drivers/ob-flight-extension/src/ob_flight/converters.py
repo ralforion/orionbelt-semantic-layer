@@ -76,26 +76,41 @@ def decimal_arrow_type(precision: int, scale: int, *, exact: bool = False) -> pa
     return pa.float64()
 
 
-def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataType:
-    """Arrow type for a DECIMAL column from its PEP 249 description + samples.
+def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataType | None:
+    """Arrow decimal type for a DECIMAL column, or ``None`` if it isn't decimal.
 
-    A column's first fetched batch can under-represent its declared width (e.g.
-    a ``NUMERIC(40, 2)`` whose early rows are all small), so the driver-reported
-    precision/scale (``description[4]`` / ``[5]``) — which bound *every* row —
-    take priority. The sampled width is combined in (via ``max``) so neither an
-    under-sampled batch nor an under-reported description can narrow the type,
-    then the width is chosen by :func:`decimal_arrow_type` (decimal128 ≤ 38,
-    decimal256 ≤ 76, float64 beyond). See issue #136.
+    A decimal is recognised from either non-null ``Decimal`` sample values or —
+    when the first fetched batch is all NULL (e.g. UNION ALL NULL padding) — a
+    numeric column whose driver-reported precision/scale (``description[4]`` /
+    ``[5]``) are present. Those bound *every* row, so they take priority over the
+    sample and a narrow (or empty) first batch can't under-size the type; the
+    sampled width is combined in via ``max``. :func:`decimal_arrow_type` then
+    picks decimal128 (≤ 38), decimal256 (≤ 76), or the float64 fallback (> 76).
+    See issue #136.
     """
-    ps = [_decimal_precision_scale(v) for v in sampled if isinstance(v, Decimal)]
-    scale = max((s for _, s in ps), default=0)
-    int_digits = max((p - s for p, s in ps), default=0)
+    decimals = [v for v in sampled if isinstance(v, Decimal)]
     desc_precision = col[4] if len(col) > 4 else None
     desc_scale = col[5] if len(col) > 5 else None
-    if isinstance(desc_scale, int) and desc_scale >= 0:
+    has_desc = (
+        col[1] == NUMBER
+        and isinstance(desc_precision, int)
+        and desc_precision > 0
+        and isinstance(desc_scale, int)
+        and desc_scale >= 0
+    )
+    # Non-decimal sampled values (int / str / …), or no decimal signal at all.
+    if not decimals and (sampled or not has_desc):
+        return None
+    ps = [_decimal_precision_scale(v) for v in decimals]
+    scale = max((s for _, s in ps), default=0)
+    int_digits = max((p - s for p, s in ps), default=0)
+    if (
+        isinstance(desc_precision, int)
+        and isinstance(desc_scale, int)
+        and desc_precision > desc_scale
+    ):
         scale = max(scale, desc_scale)
-        if isinstance(desc_precision, int) and desc_precision > desc_scale:
-            int_digits = max(int_digits, desc_precision - desc_scale)
+        int_digits = max(int_digits, desc_precision - desc_scale)
     return decimal_arrow_type(int_digits + scale, scale)
 
 
@@ -149,12 +164,14 @@ def schema_from_description(
         name = col[0]
         # Collect this column's non-None sample values (across rows).
         sampled = [row[i] for row in rows if i < len(row) and row[i] is not None]
-        if sampled and isinstance(sampled[0], Decimal):
-            arrow_type = _decimal_column_type(col, sampled)
-        elif sampled:
-            arrow_type = _python_type_to_arrow(sampled[0])
-        else:
-            arrow_type = pep249_type_to_arrow(col[1])
+        # A DECIMAL column (from Decimal samples and/or the driver's
+        # precision/scale) is typed first; otherwise infer from the first
+        # sampled value, or the PEP 249 type code when the batch is all NULL.
+        arrow_type = _decimal_column_type(col, sampled)
+        if arrow_type is None:
+            arrow_type = (
+                _python_type_to_arrow(sampled[0]) if sampled else pep249_type_to_arrow(col[1])
+            )
         fields.append(pa.field(name, arrow_type))
     return pa.schema(fields)
 
