@@ -118,7 +118,10 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
 
     # SELECT against pg_catalog / information_schema or scalar probes
     if isinstance(ast, exp.Select):
-        from_node = ast.args.get("from")
+        # sqlglot stores the FROM clause under ``from`` in <30 and ``from_`` in
+        # 30.x; ``find(exp.From)`` is robust across both so information_schema /
+        # pg_catalog probes aren't misrouted to the scalar-probe path.
+        from_node = ast.args.get("from") or ast.args.get("from_") or ast.find(exp.From)
         if from_node is None:
             # Scalar probe: SELECT 1, SELECT version(), SELECT current_schema()
             return catalog_scalar_probe_table(ast)
