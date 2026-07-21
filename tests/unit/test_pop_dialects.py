@@ -147,6 +147,21 @@ def test_date_spine_offset_grain_no_raise(dialect_name: str, offset_grain: str) 
     assert "spine_date_prev" in sql.lower()
 
 
+def test_dremio_previous_value_references_base_measure() -> None:
+    """Dremio ``previousValue`` must reference ``pop_base`` to dodge a Dremio bug.
+
+    Dremio miscompiles a self-joined CTE column projected on its own (reads the
+    joined decimal's bytes as the output date, raising a monthOfYear range
+    error). The fix adds a value-preserving reference to the base measure. Only
+    Dremio needs it; every other dialect returns the prior value verbatim.
+    """
+    prev, current = 'pop_prev."m"', 'pop_base."m"'
+    dremio_sql = DialectRegistry.get("dremio").render_pop_previous_value_sql(prev, current)
+    assert current in dremio_sql and prev in dremio_sql
+    for other in [d for d in ALL_DIALECTS if d != "dremio"]:
+        assert DialectRegistry.get(other).render_pop_previous_value_sql(prev, current) == prev
+
+
 @pytest.mark.parametrize("grain", ["quarter", "week", "month", "year"])
 def test_quarter_week_spine_executes_on_duckdb(grain: str) -> None:
     """The generated DuckDB spine must be valid SQL a real engine accepts."""

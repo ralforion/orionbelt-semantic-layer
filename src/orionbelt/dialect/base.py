@@ -379,6 +379,16 @@ class Dialect(ABC):
         """
         return f"{left_sql} / {right_sql}"
 
+    def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:
+        """Render a ``previousValue`` PoP projection (the prior period's measure).
+
+        Default is the prior value verbatim. Dremio overrides this because its
+        executor miscompiles a self-joined CTE column projected on its own (see
+        ``DremioDialect``); ``current_sql`` (``pop_base``'s measure) is supplied
+        so a dialect can reference it in a value-preserving way if needed.
+        """
+        return prev_sql
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Compile COUNT with multiple fields by concatenating with ``||``.
 
