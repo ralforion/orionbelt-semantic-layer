@@ -173,7 +173,12 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
     #   on a single-model connection, so requiring the FROM is a tax.
     #   Any identifier that doesn't match falls through to REJECTED
     #   so users get RAW_SQL_REJECTED rather than UNKNOWN_SELECT_ITEM.
-    from_node = ast.args.get("from")
+    # sqlglot stores the FROM clause under ``from`` (<30) or ``from_`` (30.x) so
+    # information_schema / pg_catalog probes classify as catalog instead of
+    # being rejected. Read the node's own args only — a recursive lookup would
+    # pick up a subquery's FROM for a top-level no-FROM scalar probe like
+    # ``SELECT EXISTS(SELECT 1 FROM information_schema.tables)``.
+    from_node = ast.args.get("from") or ast.args.get("from_")
     if from_node is None:
         known_labels = {label.lower() for label in model.dimensions}
         known_labels |= {label.lower() for label in model.measures}

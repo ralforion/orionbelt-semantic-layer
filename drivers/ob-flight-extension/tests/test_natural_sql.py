@@ -243,6 +243,14 @@ class TestClassifySQL:
         mode = server._classify_sql("SELECT * FROM pg_catalog.pg_class", model)
         assert mode == "catalog"
 
+    def test_scalar_probe_wrapping_catalog_subquery_is_not_catalog(self, model) -> None:
+        # A top-level no-FROM scalar probe whose *subquery* selects from
+        # information_schema must not be misrouted to catalog mode by a
+        # recursive FROM lookup — only the statement's own FROM counts.
+        server = _make_server(model)
+        mode = server._classify_sql("SELECT EXISTS(SELECT 1 FROM information_schema.tables)", model)
+        assert mode != "catalog"
+
     def test_show_tables_is_catalog(self, model) -> None:
         server = _make_server(model)
         mode = server._classify_sql("SHOW TABLES", model)
@@ -399,6 +407,15 @@ class TestCatalogHandling:
         cols = table.column("column_name").to_pylist()
         assert "Customer Country" in cols
         assert "Total Revenue" in cols
+
+    def test_scalar_probe_wrapping_catalog_subquery_is_not_tables_listing(self, model) -> None:
+        # The subquery's information_schema FROM must not leak into a top-level
+        # no-FROM probe and turn it into the full tables listing.
+        server = _make_server(model)
+        table = server._handle_catalog_sql(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables)", model
+        )
+        assert "table_name" not in [f.name for f in table.schema]
 
     def test_select_one_returns_canned_value(self, model) -> None:
         server = _make_server(model)
