@@ -83,15 +83,19 @@ class SnowflakeDialect(Dialect):
     ) -> str:
         spine = f"DATEADD('{grain}', rn - 1, {min_date})::date"
         prev = f"DATEADD('{offset_grain}', {offset}, {spine})::date"
+        # GENERATOR(ROWCOUNT => n) requires a *constant* n; the row count is only
+        # known at run time (it depends on the date_range scalar subqueries), so
+        # generate a fixed upper bound and filter to the range — 100000 rows
+        # covers ~270 years at daily grain, far beyond any practical spine.
         return (
             f"SELECT {spine} AS spine_date,\n"
             f"       CASE WHEN {prev} >= {min_date}\n"
             f"            THEN {prev} END AS spine_date_prev\n"
             f"FROM (\n"
             f"  SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS rn\n"
-            f"  FROM TABLE(GENERATOR(ROWCOUNT => "
-            f"DATEDIFF('{grain}', {min_date}, {max_date}) + 1))\n"
-            f") AS t"
+            f"  FROM TABLE(GENERATOR(ROWCOUNT => 100000))\n"
+            f") AS t\n"
+            f"WHERE {spine} <= {max_date}"
         )
 
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:

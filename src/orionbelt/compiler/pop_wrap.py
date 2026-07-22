@@ -155,9 +155,12 @@ def wrap_with_pop(
     # --- CTE 2: date_spine ---
     # Use scalar subqueries so every dialect can resolve date_range references
     # without needing date_range in their FROM clause (universally compatible).
+    # Quote the CTE name so it matches the quoted declaration on case-folding
+    # dialects (Snowflake folds a bare ``date_range`` to ``DATE_RANGE``).
+    date_range_ref = dialect.quote_identifier("date_range")
     spine_sql = dialect.render_date_spine_cte_sql(
-        min_date="(SELECT min_date FROM date_range)",
-        max_date="(SELECT max_date FROM date_range)",
+        min_date=f"(SELECT min_date FROM {date_range_ref})",
+        max_date=f"(SELECT max_date FROM {date_range_ref})",
         grain=grain,
         offset=offset,
         offset_grain=offset_grain,
@@ -339,6 +342,11 @@ def _build_pop_base_sql(
     FROM date_spine, LEFT JOIN fact tables and dimension tables,
     GROUP BY spine_date + non-time dimensions.
     """
+    # Quote the spine CTE name so references match the quoted declaration on
+    # case-folding dialects (Snowflake); ``spine_date`` etc. stay bare, matching
+    # the spine's own bare column aliases.
+    spine_cte = dialect.quote_identifier("date_spine")
+
     # Dimension aliases: d1 = time dim (spine_date), d2..dN = others
     dim_selects: list[str] = []
     dim_groups: list[str] = []
@@ -346,7 +354,7 @@ def _build_pop_base_sql(
     for d_idx, dim in enumerate(resolved.dimensions, 1):
         pop_measure = next((m for m in resolved.measures if m.is_pop), None)
         if pop_measure and dim.name == pop_measure.pop_time_dimension:
-            dim_selects.append(f"date_spine.spine_date AS {dialect.quote_identifier(dim.name)}")
+            dim_selects.append(f"{spine_cte}.spine_date AS {dialect.quote_identifier(dim.name)}")
         else:
             obj_alias = dialect.quote_identifier(dim.object_name)
             col = dialect.quote_identifier(dim.source_column)
@@ -382,7 +390,7 @@ def _build_pop_base_sql(
     select_clause = ",\n       ".join(all_selects)
 
     # FROM date_spine
-    from_clause = "date_spine"
+    from_clause = spine_cte
     base_obj_name = resolved.base_object or time_obj_name
 
     # ── Build LEFT JOINs ──
@@ -401,7 +409,7 @@ def _build_pop_base_sql(
     time_col = f"{time_alias_q}.{dialect.quote_identifier(time_source_col)}"
     trunc_col = dialect.render_date_trunc_sql(time_col, grain)
     join_clauses.append(
-        f"\n  LEFT JOIN {time_table} AS {time_alias_q}\n    ON {trunc_col} = date_spine.spine_date"
+        f"\n  LEFT JOIN {time_table} AS {time_alias_q}\n    ON {trunc_col} = {spine_cte}.spine_date"
     )
     joined_objects.add(time_obj_name)
 
@@ -472,9 +480,15 @@ def _build_pop_compare_sql(
     time_q = dialect.quote_identifier(pop_time_dim or "")
     non_time_dims = [d for d in resolved.dimensions if d.name != pop_time_dim]
 
+    # Quote the CTE names so references match the quoted declarations on
+    # case-folding dialects (Snowflake). The self-join aliases (``pop_prev``)
+    # stay bare — they are declared and referenced bare, so they already agree.
+    base_cte = dialect.quote_identifier("pop_base")
+    spine_cte = dialect.quote_identifier("date_spine")
+
     def _dim_match(alias: str) -> str:
         parts = [
-            f"pop_base.{dialect.quote_identifier(d.name)} = "
+            f"{base_cte}.{dialect.quote_identifier(d.name)} = "
             f"{alias}.{dialect.quote_identifier(d.name)}"
             for d in non_time_dims
         ]
@@ -493,20 +507,20 @@ def _build_pop_compare_sql(
         if key == spine_key and "pop_prev" not in alias_by_key.values():
             alias = "pop_prev"
             join_clauses.append(
-                f"  LEFT JOIN date_spine ON pop_base.{time_q} = date_spine.spine_date"
+                f"  LEFT JOIN {spine_cte} ON {base_cte}.{time_q} = {spine_cte}.spine_date"
             )
             # NB: alias is ``pop_prev`` (not ``prev``) — ``prev`` is a reserved
             # word in Dremio and rejects as an unquoted table alias.
             join_clauses.append(
-                f"  LEFT JOIN pop_base AS {alias}\n"
-                f"    ON date_spine.spine_date_prev = {alias}.{time_q}{_dim_match(alias)}"
+                f"  LEFT JOIN {base_cte} AS {alias}\n"
+                f"    ON {spine_cte}.spine_date_prev = {alias}.{time_q}{_dim_match(alias)}"
             )
         else:
             alias = f"pop_prev_{len(alias_by_key)}"
             grain_val = m.pop_offset_grain.value if m.pop_offset_grain else "month"
-            prev_date = dialect.date_add_sql(f"pop_base.{time_q}", grain_val, m.pop_offset or 0)
+            prev_date = dialect.date_add_sql(f"{base_cte}.{time_q}", grain_val, m.pop_offset or 0)
             join_clauses.append(
-                f"  LEFT JOIN pop_base AS {alias}\n"
+                f"  LEFT JOIN {base_cte} AS {alias}\n"
                 f"    ON {alias}.{time_q} = {prev_date}{_dim_match(alias)}"
             )
         alias_by_key[key] = alias
@@ -515,11 +529,11 @@ def _build_pop_compare_sql(
     selects: list[str] = []
     for dim in resolved.dimensions:
         q = dialect.quote_identifier(dim.name)
-        selects.append(f"pop_base.{q} AS {q}")
+        selects.append(f"{base_cte}.{q} AS {q}")
     for m in resolved.measures:
         if not m.is_pop:
             q = dialect.quote_identifier(m.name)
-            selects.append(f"pop_base.{q} AS {q}")
+            selects.append(f"{base_cte}.{q} AS {q}")
     for m in pop_measures:
         if m.pop_comparison is None:
             raise ResolutionError(
@@ -535,7 +549,7 @@ def _build_pop_compare_sql(
         q_base = dialect.quote_identifier(base_name)
         q_metric = dialect.quote_identifier(m.name)
         alias = alias_by_key[(m.pop_offset, m.pop_offset_grain)]
-        current = f"pop_base.{q_base}"
+        current = f"{base_cte}.{q_base}"
         prev = f"{alias}.{q_base}"
         nullif_prev = f"NULLIF({prev}, 0)"
 
@@ -560,7 +574,7 @@ def _build_pop_compare_sql(
         selects.append(f"{expr} AS {q_metric}")
 
     select_clause = ",\n       ".join(selects)
-    return f"SELECT {select_clause}\n  FROM pop_base\n" + "\n".join(join_clauses)
+    return f"SELECT {select_clause}\n  FROM {base_cte}\n" + "\n".join(join_clauses)
 
 
 def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
