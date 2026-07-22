@@ -41,8 +41,28 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 COMMERCE_MODEL_YAML = REPO_ROOT / "examples" / "orionbelt_1_commerce.yaml"
 
 _RAW = yaml.safe_load(COMMERCE_MODEL_YAML.read_text()) if COMMERCE_MODEL_YAML.exists() else {}
-_MEASURES = list((_RAW.get("measures") or {}).keys())
 _METRICS = _RAW.get("metrics") or {}
+
+
+def _measure_names() -> list[str]:
+    """Full queryable measure namespace via ``effective_measures``.
+
+    Includes synthesised row-count measures (``Sales Count`` etc.), not just
+    declared measures. Falls back to the declared list at collection time.
+    """
+    if not COMMERCE_MODEL_YAML.exists():
+        return []
+    try:
+        raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        if result.valid:
+            return list(model.effective_measures.keys())
+    except Exception:  # noqa: BLE001 -- fall back to declared measures at collection time
+        pass
+    return list((_RAW.get("measures") or {}).keys())
+
+
+_MEASURES = _measure_names()
 
 
 def _time_dimension(spec: dict[str, Any]) -> str | None:

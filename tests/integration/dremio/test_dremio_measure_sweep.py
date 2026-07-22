@@ -30,6 +30,8 @@ from typing import Any
 import pytest
 import yaml
 
+from orionbelt.parser.loader import TrackedLoader
+from orionbelt.parser.resolver import ReferenceResolver
 from tests.integration.dremio.conftest import OBSL_MODEL_NAME
 
 pytestmark = pytest.mark.dremio
@@ -37,22 +39,39 @@ pytestmark = pytest.mark.dremio
 OBSL_PGWIRE_HOST_LOCAL = os.environ.get("OBSL_PGWIRE_HOST_LOCAL", "localhost")
 OBSL_PGWIRE_PORT_LOCAL = int(os.environ.get("OBSL_PGWIRE_PORT_LOCAL", "15432"))
 
-# The demo stack serves the commerce model; its measure/metric surface matches
-# the committed source model, which we read to parametrise the sweep.
+# The stack serves the commerce model; its measure/metric surface matches the
+# committed source model, which we resolve to parametrise the sweep.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_MODEL_YAML = REPO_ROOT / "examples" / "orionbelt_1_commerce.yaml"
 
+# Substrings that mean "this stack does not serve the commerce model" (wrong
+# stack) — the only case the probe skips on. Anything else (a real compile or
+# Dremio execution error) must surface as a failure, not a silent skip.
+_MODEL_NOT_SERVED = ("not found", "does not exist", "no such", "unknown model", "no model")
 
-def _load_model() -> dict[str, Any]:
+
+def _load() -> tuple[list[str], dict[str, Any]]:
+    """Resolve the model and return its full queryable measure namespace.
+
+    Uses ``SemanticModel.effective_measures`` so *synthesised* row-count
+    measures (``Sales Count`` etc.) are swept too, not just declared measures.
+    Falls back to the declared list if resolution is unavailable at collection.
+    """
     if not SOURCE_MODEL_YAML.exists():
-        return {}
-    with SOURCE_MODEL_YAML.open("r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        return [], {}
+    raw_dict = yaml.safe_load(SOURCE_MODEL_YAML.read_text()) or {}
+    metrics = raw_dict.get("metrics") or {}
+    try:
+        raw, source_map = TrackedLoader().load(SOURCE_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        if result.valid:
+            return list(model.effective_measures.keys()), metrics
+    except Exception:  # noqa: BLE001 -- fall back to declared measures at collection time
+        pass
+    return list((raw_dict.get("measures") or {}).keys()), metrics
 
 
-_MODEL = _load_model()
-_MEASURES = list((_MODEL.get("measures") or {}).keys())
-_METRICS = _MODEL.get("metrics") or {}
+_MEASURES, _METRICS = _load()
 
 
 def _time_dimension(spec: dict[str, Any]) -> str | None:
@@ -87,13 +106,21 @@ def pgwire_cursor():  # type: ignore[no-untyped-def]
         pytest.skip(f"OBSL pgwire not reachable at {endpoint}")
     with conn:
         cur = conn.cursor()
-        # Probe the served model before parametrised cases run.
+        # Probe the served model before parametrised cases run. Skip only when
+        # the model is not served here (wrong stack); a real compile/execution
+        # error must fail loudly rather than masquerade as a skip (that is the
+        # regression coverage this suite exists to provide).
         try:
             cur.execute(_sql(_MEASURES[0], []))
             cur.fetchall()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
             conn.rollback()
-            pytest.skip(f"stack on pgwire does not serve the commerce model as {OBSL_MODEL_NAME!r}")
+            if any(s in str(exc).lower() for s in _MODEL_NOT_SERVED):
+                pytest.skip(
+                    f"stack on pgwire does not serve the commerce model "
+                    f"as {OBSL_MODEL_NAME!r}: {exc}"
+                )
+            raise
         yield cur
 
 
