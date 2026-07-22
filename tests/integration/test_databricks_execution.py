@@ -48,6 +48,11 @@ from tests.integration._commerce import (  # noqa: E402
     open_duckdb_truth,
     parquet_path,
 )
+from tests.integration._measure_sweep import (  # noqa: E402
+    SWEEP_IDS,
+    SWEEP_ITEMS,
+    sweep_query,
+)
 
 pytestmark = pytest.mark.databricks
 
@@ -226,3 +231,20 @@ def test_commerce_case(databricks_setup, vendor_model, truth_results, case: Comm
     sql = compile_for(case.query, vendor_model, "databricks")
     actual = _fetch_databricks(con, sql)
     compare_rows(actual, truth_results[case.name], case=case.name)
+
+
+@pytest.mark.parametrize("kind,name,dims", SWEEP_ITEMS, ids=SWEEP_IDS)
+def test_measure_sweep(
+    databricks_setup, vendor_model, kind: str, name: str, dims: list[str]
+) -> None:
+    """Every measure and metric must execute on Databricks (execution only).
+
+    Breadth complement to ``test_commerce_case``: covers the full measure and
+    metric surface (incl. synthesised counts), asserting each runs rather than
+    comparing rows. Catches Databricks SQL that compiles but the engine rejects
+    (e.g. quarter-grain date arithmetic).
+    """
+    con, _cfg = databricks_setup
+    sql = compile_for(sweep_query(name, dims), vendor_model, "databricks")
+    rows = _fetch_databricks(con, sql)  # raises on a Databricks execution error
+    assert isinstance(rows, list), f"{kind} {name!r} returned no result set"

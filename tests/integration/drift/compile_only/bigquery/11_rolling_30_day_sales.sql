@@ -1,5 +1,5 @@
 WITH `cumulative_base` AS (
-SELECT DATE_TRUNC(`Sales`.`salesdate`, 'day') AS `Sales Date`, ROUND(CAST(SUM(`Sales`.`salesamount`) AS NUMERIC), 2) AS `Total Sales`
+SELECT DATE_TRUNC(`Sales`.`salesdate`, DAY) AS `Sales Date`, ROUND(CAST(SUM(`Sales`.`salesamount`) AS NUMERIC), 2) AS `Total Sales`
 FROM ``.`orionbelt_1`.`sales` AS `Sales`
 GROUP BY ALL
 )
