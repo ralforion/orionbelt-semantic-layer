@@ -23,8 +23,10 @@ Skips cleanly if pyspark is missing or no JDK is available.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -52,17 +54,40 @@ from tests.integration._measure_sweep import (  # noqa: E402
 
 pytestmark = pytest.mark.spark
 
-SCHEMA = "orionbelt_1"
+# Distinct DB name (not ``orionbelt_1``) so a run never clobbers a developer's
+# own Spark database, and an explicit LOCATION keeps its storage inside a temp
+# dir rather than the repo's default ``./spark-warehouse``.
+SCHEMA = "orionbelt_spark_test"
+
+# Artifacts Spark may still drop in the CWD despite the temp warehouse. We only
+# delete ones that did not exist before the fixture ran, never a pre-existing one.
+_CWD_STRAYS = ("spark-warehouse", "metastore_db", "derby.log")
 
 
 @pytest.fixture(scope="module")
 def spark_session():
     """A local Spark session (ANSI mode) seeded with the commerce parquet.
 
-    Warehouse + Derby metastore live under a temp dir so nothing lands in the
-    repo. Skips if a JDK is not available to start the JVM.
+    The database's storage is pinned to a temp dir via an explicit ``LOCATION``
+    (``spark.sql.warehouse.dir`` alone is unreliable for managed-table paths),
+    the database is dropped on teardown, and any stray CWD artifacts the JVM
+    still creates are removed — but only if this fixture created them. Skips if
+    a JDK is not available to start the JVM.
     """
     warehouse = tempfile.mkdtemp(prefix="obsl-spark-")
+    cwd = Path.cwd()
+    pre_existing = {name for name in _CWD_STRAYS if (cwd / name).exists()}
+
+    def _cleanup_cwd() -> None:
+        for name in _CWD_STRAYS:
+            if name in pre_existing:
+                continue
+            stray = cwd / name
+            if stray.is_dir():
+                shutil.rmtree(stray, ignore_errors=True)
+            elif stray.exists():
+                stray.unlink()
+
     try:
         spark = (
             SparkSession.builder.appName("obsl-databricks-local")
@@ -78,10 +103,12 @@ def spark_session():
         )
     except Exception as exc:  # noqa: BLE001 -- no JDK / JVM start failure → skip
         shutil.rmtree(warehouse, ignore_errors=True)
+        _cleanup_cwd()
         pytest.skip(f"could not start a local Spark session (needs a JDK): {exc}")
 
     spark.sparkContext.setLogLevel("ERROR")
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA}")
+    db_location = (Path(warehouse) / f"{SCHEMA}.db").as_uri()
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA} LOCATION '{db_location}'")
     for table in COMMERCE_TABLES:
         (
             spark.read.parquet(str(parquet_path(table)))
@@ -91,8 +118,12 @@ def spark_session():
     try:
         yield spark
     finally:
+        # Best-effort; the temp-dir removal below covers the storage regardless.
+        with contextlib.suppress(Exception):
+            spark.sql(f"DROP DATABASE IF EXISTS {SCHEMA} CASCADE")
         spark.stop()
         shutil.rmtree(warehouse, ignore_errors=True)
+        _cleanup_cwd()
 
 
 @pytest.fixture(scope="module")
