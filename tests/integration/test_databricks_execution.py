@@ -19,11 +19,16 @@ Required env vars (skipped if missing):
     DATABRICKS_SCHEMA           schema name (default: orionbelt_test)
 
 Fixture lifecycle: the module-scoped fixture ensures the schema exists,
-then for each commerce parquet fixture, seeds a Delta table via batched
-multi-row VALUES *only if* the table is missing or its row count differs
-from the parquet (cheap rowcount check). Tables are kept after the run to
-save compute on the next invocation. Set ``DATABRICKS_RESEED=1`` to force
-a drop-and-reload regardless of current state.
+then for each commerce parquet fixture, seeds a Delta table *only if* the
+table is missing or its row count differs from the parquet (cheap rowcount
+check). Tables are kept after the run to save compute on the next
+invocation. Set ``DATABRICKS_RESEED=1`` to force a drop-and-reload.
+
+Seeding prefers a **bulk** path: stage the parquet into a Unity Catalog
+Volume via ``PUT`` and load it with ``read_files`` (one upload + one
+statement per table). Row-by-row ``INSERT VALUES`` — dozens of warehouse
+round-trips that can outlive the warehouse's auto-stop — is the fallback
+when the workspace has no Volume support or the token lacks the privilege.
 """
 
 from __future__ import annotations
@@ -60,6 +65,11 @@ pytestmark = pytest.mark.databricks
 # Databricks INSERT VALUES has a statement-size limit; chunk wide tables so
 # no single insert exceeds the parser. 500 rows × ~10 cols stays comfortable.
 _INSERT_CHUNK_ROWS = 500
+
+# Bulk-seed staging: local dir the connector's PUT is allowed to read, and the
+# Unity Catalog volume the parquet is staged into.
+_STAGING_DIR = str(parquet_path(COMMERCE_TABLES[0]).parent)
+_SEED_VOLUME = "obsl_seed"
 
 
 _DBX_TYPE_MAP = {
@@ -126,6 +136,22 @@ def _parquet_rowcount(table: str) -> int:
     return pq.ParquetFile(parquet_path(table)).metadata.num_rows
 
 
+def _load_parquet_bulk(cur, catalog: str, schema: str, volume: str, table: str) -> None:
+    """Fast path: PUT the parquet into a UC volume, then CTAS via ``read_files``.
+
+    One file upload + one ``CREATE TABLE ... AS SELECT`` per table, versus the
+    dozens of ``INSERT`` round-trips the row-by-row path makes. Raises on any
+    failure so the caller can fall back to ``_load_parquet``.
+    """
+    qualified = f"`{catalog}`.`{schema}`.`{table}`"
+    volume_file = f"/Volumes/{catalog}/{schema}/{volume}/{table}.parquet"
+    cur.execute(f"PUT '{parquet_path(table)}' INTO '{volume_file}' OVERWRITE")
+    cur.execute(
+        f"CREATE OR REPLACE TABLE {qualified} USING DELTA AS "
+        f"SELECT * FROM read_files('{volume_file}', format => 'parquet')"
+    )
+
+
 def _load_parquet(cur, catalog: str, schema: str, table: str) -> None:
     """CREATE TABLE + chunked INSERT VALUES one parquet fixture into Databricks."""
     df = pd.read_parquet(parquet_path(table))
@@ -159,6 +185,7 @@ def databricks_setup():
             server_hostname=cfg["server_hostname"],
             http_path=cfg["http_path"],
             access_token=cfg["access_token"],
+            staging_allowed_local_path=_STAGING_DIR,  # lets PUT read the parquet fixtures
         )
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"Could not connect to Databricks: {e}")
@@ -171,6 +198,16 @@ def databricks_setup():
         con.close()
         raise
 
+    # Prefer the bulk (PUT + read_files) path; fall back to row-by-row INSERT if
+    # the workspace has no volume support or the token can't create one.
+    bulk_volume: str | None = _SEED_VOLUME
+    try:
+        cur.execute(
+            f"CREATE VOLUME IF NOT EXISTS `{cfg['catalog']}`.`{cfg['schema']}`.`{_SEED_VOLUME}`"
+        )
+    except Exception:  # noqa: BLE001 -- no UC volume → use the INSERT fallback
+        bulk_volume = None
+
     reseed = os.environ.get("DATABRICKS_RESEED", "").lower() in ("1", "true", "yes")
     try:
         for table in COMMERCE_TABLES:
@@ -179,7 +216,15 @@ def databricks_setup():
             actual = None if reseed else _table_rowcount(cur, qualified)
             if actual == expected:
                 continue
-            _load_parquet(cur, cfg["catalog"], cfg["schema"], table)
+            loaded = False
+            if bulk_volume is not None:
+                try:
+                    _load_parquet_bulk(cur, cfg["catalog"], cfg["schema"], bulk_volume, table)
+                    loaded = True
+                except Exception:  # noqa: BLE001 -- bulk failed → row-by-row fallback
+                    bulk_volume = None
+            if not loaded:
+                _load_parquet(cur, cfg["catalog"], cfg["schema"], table)
     except Exception:
         cur.close()
         con.close()
