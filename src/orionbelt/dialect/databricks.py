@@ -117,6 +117,8 @@ class DatabricksDialect(Dialect):
             return f"date_add({date_sql}, {count * 7})"
         if unit == "month":
             return f"add_months({date_sql}, {count})"
+        if unit == "quarter":
+            return f"add_months({date_sql}, {count * 3})"
         if unit == "year":
             return f"add_months({date_sql}, {count * 12})"
         raise ValueError(f"Unsupported unit '{unit}' for Databricks")
@@ -128,12 +130,14 @@ class DatabricksDialect(Dialect):
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
     ) -> str:
         prev = self.date_add_sql("d", offset_grain, offset)
+        # Spark's SEQUENCE step interval has no QUARTER unit; use 3 MONTH.
+        step = "INTERVAL 3 MONTH" if grain == "quarter" else f"INTERVAL 1 {grain.upper()}"
         return (
             f"SELECT d AS spine_date,\n"
             f"       CASE WHEN {prev} >= {min_date}\n"
             f"            THEN {prev} END AS spine_date_prev\n"
             f"FROM (SELECT EXPLODE(SEQUENCE("
-            f"{min_date}, {max_date}, INTERVAL 1 {grain.upper()})) AS d)"
+            f"{min_date}, {max_date}, {step})) AS d)"
         )
 
     def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:

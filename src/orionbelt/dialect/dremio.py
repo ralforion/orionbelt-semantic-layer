@@ -77,11 +77,25 @@ class DremioDialect(Dialect):
         return "CURRENT_DATE"
 
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
-        unit_sql = unit.upper()
-        return f"DATE_ADD({date_sql}, INTERVAL '{count}' {unit_sql})"
+        # TIMESTAMPADD (not DATE_ADD + INTERVAL) because Dremio/Calcite interval
+        # qualifiers are limited to YEAR/MONTH/DAY/HOUR/MINUTE/SECOND — QUARTER
+        # and WEEK are rejected as ``INTERVAL '-1' QUARTER`` but accepted as a
+        # TIMESTAMPADD unit. CAST back to DATE to preserve DATE typing (matches
+        # the forward spine in render_date_spine_cte_sql).
+        return f"CAST(TIMESTAMPADD({unit.upper()}, {count}, {date_sql}) AS DATE)"
 
     def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC('{grain}', {column_sql})"
+
+    def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:
+        # Dremio miscompiles a ``previousValue`` projection that reads *only* the
+        # self-joined ``pop_prev`` alias: its executor reads the joined decimal's
+        # bytes as the output date column, raising "Value <garbage> for
+        # monthOfYear must be in the range [1,12]". Comparisons that also touch
+        # ``pop_base`` (ratio/difference/percentChange) plan correctly, so add a
+        # value-preserving reference to the base measure (``+ 0 * COALESCE(...)``
+        # is always exactly 0 and never NULL-poisons the result).
+        return f"{prev_sql} + 0 * COALESCE({current_sql}, 0)"
 
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str

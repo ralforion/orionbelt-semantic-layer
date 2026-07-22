@@ -544,7 +544,7 @@ def _build_pop_compare_sql(
         elif m.pop_comparison == PeriodOverPeriodComparison.DIFFERENCE:
             expr = f"{current} - {prev}"
         elif m.pop_comparison == PeriodOverPeriodComparison.PREVIOUS_VALUE:
-            expr = prev
+            expr = dialect.render_pop_previous_value_sql(prev, current)
         elif m.pop_comparison == PeriodOverPeriodComparison.PERCENT_CHANGE:
             expr = dialect.render_decimal_division_sql(current, nullif_prev) + " - 1"
         else:

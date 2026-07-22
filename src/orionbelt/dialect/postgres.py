@@ -107,8 +107,17 @@ class PostgresDialect(Dialect):
     def current_date_sql(self) -> str:
         return "CURRENT_DATE"
 
+    @staticmethod
+    def _interval_parts(unit: str, count: int) -> tuple[int, str]:
+        # Postgres interval input rejects 'quarter' ("invalid input syntax for
+        # type interval"); express a quarter as three months instead.
+        if unit == "quarter":
+            return count * 3, "month"
+        return count, unit
+
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
-        return f"{date_sql} + INTERVAL '{count} {unit}'"
+        n, u = self._interval_parts(unit, count)
+        return f"{date_sql} + INTERVAL '{n} {u}'"
 
     def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"date_trunc('{grain}', {column_sql})"
@@ -116,13 +125,15 @@ class PostgresDialect(Dialect):
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str
     ) -> str:
-        prev = f"d + INTERVAL '{offset} {offset_grain}'"
+        prev_n, prev_u = self._interval_parts(offset_grain, offset)
+        step_n, step_u = self._interval_parts(grain, 1)
+        prev = f"d + INTERVAL '{prev_n} {prev_u}'"
         return (
             f"SELECT d::date AS spine_date,\n"
             f"       CASE WHEN ({prev})::date >= {min_date}\n"
             f"            THEN ({prev})::date END AS spine_date_prev\n"
             f"FROM generate_series({min_date}::timestamp, "
-            f"{max_date}::timestamp, INTERVAL '1 {grain}') AS d"
+            f"{max_date}::timestamp, INTERVAL '{step_n} {step_u}') AS d"
         )
 
     def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:

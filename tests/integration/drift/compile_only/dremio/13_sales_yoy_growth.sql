@@ -5,8 +5,8 @@ SELECT DATE_TRUNC('month', MIN("Sales"."salesdate")) AS min_date,
 ),
 "date_spine" AS (
 SELECT d AS spine_date,
-       CASE WHEN DATE_ADD(d, INTERVAL '-1' YEAR) >= (SELECT min_date FROM date_range)
-            THEN DATE_ADD(d, INTERVAL '-1' YEAR) END AS spine_date_prev
+       CASE WHEN CAST(TIMESTAMPADD(YEAR, -1, d) AS DATE) >= (SELECT min_date FROM date_range)
+            THEN CAST(TIMESTAMPADD(YEAR, -1, d) AS DATE) END AS spine_date_prev
 FROM (
   SELECT CAST(TIMESTAMPADD(MONTH, n, (SELECT min_date FROM date_range)) AS DATE) AS d
   FROM (
