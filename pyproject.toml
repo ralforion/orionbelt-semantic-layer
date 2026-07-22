@@ -90,6 +90,12 @@ dev = [
     "pymysql[rsa]>=1.0",
     "clickhouse-connect>=0.7",
 ]
+# Local Spark execution for the Databricks dialect. Databricks SQL *is* Spark
+# SQL, so a local PySpark session (ANSI mode) validates the dialect's analytical
+# query surface without a live Databricks warehouse. Needs a JDK on PATH.
+spark = [
+    "pyspark>=3.5,<4.0",
+]
 docs = [
     "mkdocs-material>=9.7",
     "mkdocs-autorefs>=1.4",
@@ -187,6 +193,7 @@ markers = [
     "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars); run with: pytest -m snowflake",
     "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC); run with: pytest -m bigquery",
     "databricks: requires a live Databricks workspace (DATABRICKS_* env vars); run with: pytest -m databricks",
+    "spark: executes the Databricks dialect on a local PySpark session (needs pyspark + a JDK); run with: pytest -m spark",
     "dremio: requires the Dremio + OBSL docker-compose stack; see tests/integration/dremio/README.md",
     "notebook: heavy end-to-end notebook execution (Colab quickstart); needs nbclient + ipykernel + duckdb; run with: pytest -m notebook",
 ]
