@@ -27,6 +27,8 @@ APPROVED_RAWSQL: dict[str, int] = {
     "src/orionbelt/compiler/pop_wrap.py": 4,
     # MySQL quarter truncation (nested DATE_ADD/MAKEDATE/QUARTER).
     "src/orionbelt/dialect/mysql.py": 1,
+    # BigQuery DATE_TRUNC date-part keyword (MONTH/ISOWEEK, not a quoted string).
+    "src/orionbelt/dialect/bigquery.py": 1,
 }
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
 from orionbelt.dialect.base import Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
@@ -94,9 +94,11 @@ class BigQueryDialect(Dialect):
         )
 
     def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
-        if grain == TimeGrain.WEEK:
-            return FunctionCall(name="DATE_TRUNC", args=[column, Literal.string("ISOWEEK")])
-        return FunctionCall(name="DATE_TRUNC", args=[column, Literal.string(grain.value)])
+        # BigQuery DATE_TRUNC takes a date-part *keyword* (MONTH, ISOWEEK), not a
+        # string literal: DATE_TRUNC(col, 'month') raises "A valid date part name
+        # is required". RawSQL: emit the bare keyword (matches render_date_trunc_sql).
+        part = "ISOWEEK" if grain == TimeGrain.WEEK else grain.value.upper()
+        return FunctionCall(name="DATE_TRUNC", args=[column, RawSQL(sql=part)])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
