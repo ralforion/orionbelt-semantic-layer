@@ -2,6 +2,20 @@
 
 All notable changes to OrionBelt Semantic Layer are documented here.
 
+## [2.23.1] - 2026-07-22
+
+### Fixed
+
+- **Quarter- and week-grain period-over-period metrics failed on four dialects** (#241). A period-over-period query at quarter grain (e.g. `Sales QoQ Ratio` with a `Sales Quarter` dimension) crashed or produced invalid SQL because the prior-period date was computed with an unsupported unit: Dremio emitted `DATE_ADD(d, INTERVAL '-1' QUARTER)` (`QUARTER`/`WEEK` are not valid Calcite interval qualifiers — now `TIMESTAMPADD`, which also fixes week), Postgres emitted `INTERVAL '-1 quarter'` (invalid interval input — now expressed as months), and Databricks and ClickHouse raised on the unsupported unit (now `add_months`×3 and native `addQuarters`). MySQL, BigQuery, Snowflake, and DuckDB were already correct.
+- **Dremio miscompiled the `previousValue` period-over-period comparison** (#241). `Sales Previous Year` failed on Dremio with `FUNCTION ERROR: Value <n> for monthOfYear must be in the range [1,12]` — its executor read the self-joined decimal column's bytes as the output date. Comparisons that also reference the current-period measure (ratio/difference/percentChange) plan correctly; `previousValue` now references the base measure in a value-preserving way so the plan holds.
+- **Grain-to-date cumulative metrics emitted a hardcoded `DATE_TRUNC`** (#241). `MTD Sales` / `YTD Sales` failed on MySQL (`FUNCTION DATE_TRUNC does not exist`) and used BigQuery's wrong date-part syntax, because the grain-to-date `PARTITION BY` bypassed the dialect. It now routes through the dialect's time-grain node (MySQL `DATE_FORMAT`, ClickHouse `toStartOfMonth`, etc.), the same one time-grain dimensions use.
+- **BigQuery rejected any query grouped by a time-grain dimension** (#242). `render_time_grain` emitted `DATE_TRUNC(col, 'month')` (a quoted string), but BigQuery requires the bare date-part keyword `MONTH` / `ISOWEEK` (`A valid date part name is required`). This affected time-grain dimensions and cumulative metrics.
+- **Snowflake could not execute period-over-period metrics** (#242). The date-spine CTEs were declared quoted (`WITH "date_range"`) but referenced bare (`FROM date_range`); Snowflake folds a bare identifier to upper case, so it could not find the quoted lower-case CTE (`Object 'DATE_RANGE' does not exist`). CTE references are now quoted to match, consistent with the star/CFL path. Separately, the Snowflake spine passed a non-constant row count to `GENERATOR(ROWCOUNT => ...)` (which requires a constant); it now generates a fixed upper bound and filters to the range.
+
+### Added
+
+- **Per-vendor measure/metric execution sweeps** (#242, #244). New integration tests execute *every* measure and metric of the commerce model against each engine — local Postgres/MySQL/ClickHouse/DuckDB testcontainers, live Dremio via pgwire, live BigQuery/Snowflake/Databricks, and a `pyspark`-gated local Spark run for the Databricks dialect — asserting the compiled SQL actually runs. This catches dialect SQL that compiles cleanly but the engine rejects at run time, the gap that let the fixes above ship undetected. The Databricks integration seed also gains a bulk `PUT` + `read_files` path (#243) so it completes within a SQL warehouse's auto-stop window.
+
 ## [2.23.0] - 2026-07-21
 
 ### Changed

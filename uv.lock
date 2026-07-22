@@ -2321,7 +2321,7 @@ wheels = [
 
 [[package]]
 name = "orionbelt-semantic-layer"
-version = "2.23.0"
+version = "2.23.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
