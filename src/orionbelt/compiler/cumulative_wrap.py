@@ -36,7 +36,7 @@ from orionbelt.compiler.type_resolver import (
     resolve_measure_data_type,
     resolve_metric_data_type,
 )
-from orionbelt.models.semantic import CumulativeAggType, GrainToDate
+from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
@@ -63,6 +63,7 @@ _GRAIN_TRUNC_MAP: dict[GrainToDate, str] = {
 def _build_cumulative_window(
     measure: ResolvedMeasure,
     time_dim_name: str,
+    dialect: Dialect | None = None,
 ) -> Expr:
     """Build the window function expression for a cumulative metric.
 
@@ -80,12 +81,18 @@ def _build_cumulative_window(
     ]
 
     if measure.cumulative_grain_to_date is not None:
-        # Grain-to-date: PARTITION BY DATE_TRUNC(grain, time_dim), unbounded frame
+        # Grain-to-date: PARTITION BY <truncated time_dim>, unbounded frame.
+        # Use the dialect's typed time-grain node (the same one time-grain
+        # dimensions use) so each engine emits valid truncation SQL — a hardcoded
+        # DATE_TRUNC() fails on engines without it (MySQL) or with different
+        # syntax (BigQuery). Fall back to the literal form only for legacy callers
+        # that pass no dialect.
         grain = _GRAIN_TRUNC_MAP[measure.cumulative_grain_to_date]
-        partition_expr = FunctionCall(
-            name="DATE_TRUNC",
-            args=[Literal.string(grain), time_ref],
-        )
+        partition_expr: Expr
+        if dialect is not None:
+            partition_expr = dialect.render_time_grain(time_ref, TimeGrain(grain))
+        else:
+            partition_expr = FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain), time_ref])
         return WindowFunction(
             func_name=func_name,
             args=[base_ref],
@@ -209,7 +216,7 @@ def wrap_with_cumulative(
         if m.is_cumulative:
             # Cumulative metric: build window function
             assert m.cumulative_time_dimension is not None
-            window_expr: Expr = _build_cumulative_window(m, m.cumulative_time_dimension)
+            window_expr: Expr = _build_cumulative_window(m, m.cumulative_time_dimension, dialect)
             window_expr = _apply_metric_cast(window_expr, m.name, model, dialect)
             outer_columns.append(AliasedExpr(expr=window_expr, alias=m.name))
         else:
