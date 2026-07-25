@@ -45,6 +45,17 @@ def _defs(schema: dict[str, Any]) -> dict[str, Any]:
     return schema.get("$defs") or schema.get("definitions") or {}
 
 
+def _version_const(schema: dict[str, Any]) -> Any:
+    """The pinned document `version` const (e.g. "0.2.0.dev0").
+
+    Ossie hard-pins the document version via ``properties.version.const``, and
+    two structurally different schemas can share the same value - so a change
+    here (e.g. the ``.dev0`` -> released ``0.2.0`` flip) is itself drift worth
+    catching, independent of the ``$defs`` surface.
+    """
+    return schema.get("properties", {}).get("version", {}).get("const")
+
+
 def _fingerprint(schema: dict[str, Any]) -> dict[str, Any]:
     """Structural surface we depend on: per-def props, required, enum."""
     out: dict[str, Any] = {}
@@ -60,6 +71,11 @@ def _fingerprint(schema: dict[str, Any]) -> dict[str, Any]:
 def diff(vendored: dict[str, Any], upstream: dict[str, Any]) -> list[str]:
     """Return human-readable drift lines; empty list means in sync."""
     lines: list[str] = []
+
+    v_ver, u_ver = _version_const(vendored), _version_const(upstream)
+    if v_ver != u_ver:
+        lines.append(f"- **document `version` const changed** `{v_ver}` -> `{u_ver}`")
+
     v, u = _fingerprint(vendored), _fingerprint(upstream)
 
     for name in sorted(set(u) - set(v)):

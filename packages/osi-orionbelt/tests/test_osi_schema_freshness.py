@@ -79,6 +79,13 @@ class TestVendoredSchemaContract:
         assert "primary_key" in props
         assert "unique_keys" in props
 
+    def test_version_const_pinned(self) -> None:
+        # The schema hard-pins the document version. When Ossie cuts a real
+        # 0.2.0 (dropping .dev0), this flips - and the converter's pinned version
+        # + fixtures will need updating, so it must be caught.
+        version = _load_schema().get("properties", {}).get("version", {}).get("const")
+        assert version == "0.2.0.dev0"
+
     def test_relationship_still_has_no_cardinality(self) -> None:
         # If upstream ever adds a cardinality field, cardinality inference from
         # unique_keys should defer to it - this test flags that change.
@@ -109,3 +116,14 @@ class TestDriftDiff:
         _defs(mutated)["Relationship"]["properties"]["cardinality"] = {"type": "string"}
         lines = mod.diff(base, mutated)
         assert any("cardinality" in line and "property added upstream" in line for line in lines)
+
+    def test_version_flip_is_reported(self) -> None:
+        # A .dev0 -> released 0.2.0 flip is drift even if $defs are identical.
+        mod = _drift_module()
+        base = _load_schema()
+        mutated = json.loads(json.dumps(base))
+        mutated["properties"]["version"]["const"] = "0.2.0"
+        lines = mod.diff(base, mutated)
+        assert any("version` const changed" in line for line in lines)
+        # Sanity: without the version change, identical schemas are in sync.
+        assert mod.diff(base, base) == []
