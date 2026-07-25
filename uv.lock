@@ -2592,6 +2592,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "pyyaml" },
     { name = "referencing" },
+    { name = "sqlglot" },
 ]
 
 [package.optional-dependencies]
@@ -2615,6 +2616,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "referencing", specifier = ">=0.30" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "sqlglot", specifier = ">=30.0,<31.0" },
     { name = "types-jsonschema", marker = "extra == 'dev'" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
 ]
