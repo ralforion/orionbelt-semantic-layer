@@ -83,8 +83,9 @@ OSI_TO_OBML_TYPE = {
 # `Decimal` has no logical-layer equivalent in OBML: OBML deliberately models
 # exact decimal at the physical/result layer (`sqlType`/`sqlPrecision`/
 # `sqlScale`, measure/metric `dataType` via `decimal(p, s)`), not as a coarse
-# `abstractType`. So `Decimal` narrows to `float` for fields; metrics will
-# recover it at the result layer in a follow-up.
+# `abstractType`. So `Decimal` narrows to `float` for fields, but is recovered
+# exactly for metrics via the physical `dataType` map below
+# (`OSI_DATATYPE_TO_OBML_PHYSICAL`).
 #
 # `Opaque` is Ossie's own "known type outside the portable vocabulary" marker
 # and is intentionally absent so it falls back to the name heuristic on import.
