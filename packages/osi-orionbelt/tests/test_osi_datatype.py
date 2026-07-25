@@ -163,3 +163,76 @@ class TestRoundtripLossless:
             # single column's abstractType regardless of its restored key.
             (col,) = _obml_columns(back).values()
             assert col["abstractType"] == abstract_type
+
+
+def _osi_model_with_metric(datatype: str) -> dict[str, Any]:
+    return {
+        "version": "0.2.0.dev0",
+        "semantic_model": [
+            {
+                "name": "sales",
+                "datasets": [
+                    {
+                        "name": "Orders",
+                        "source": "A.P.ORDERS",
+                        "fields": [_osi_field("amount")],
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "Total",
+                        "expression": {
+                            "dialects": [
+                                {"dialect": "ANSI_SQL", "expression": "SUM(Orders.amount)"}
+                            ]
+                        },
+                        "datatype": datatype,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+class TestMetricDatatype:
+    """Ossie metric ``datatype`` maps to the exact OBML ``dataType`` and round-trips."""
+
+    def test_import_sets_exact_data_type(self) -> None:
+        for osi_dt, expected in [
+            ("Decimal", "decimal(18, 2)"),
+            ("Integer", "integer"),
+            ("Float", "double"),
+        ]:
+            obml = conv.OSItoOBML(_osi_model_with_metric(osi_dt)).convert()
+            # SUM(Orders.amount) becomes an OBML measure named "Total".
+            assert obml["measures"]["Total"]["dataType"] == expected
+
+    def test_roundtrip_preserves_metric_datatype(self) -> None:
+        # Regression: OSI -> OBML -> OSI used to drop the metric datatype.
+        for osi_dt in ["Decimal", "Integer", "Float"]:
+            osi = _osi_model_with_metric(osi_dt)
+            back = conv.OBMLtoOSI(conv.OSItoOBML(osi).convert(), model_name="sales").convert()
+            metric = back["semantic_model"][0]["metrics"][0]
+            assert metric.get("datatype") == osi_dt
+
+    def test_plain_measure_emits_no_datatype(self) -> None:
+        # A measure with no explicit dataType (only the defaulted resultType)
+        # must not gain a datatype on export - keeps round trips idempotent.
+        obml = {
+            "dataObjects": {
+                "Orders": {
+                    "code": "orders",
+                    "columns": {"Amount": {"code": "amount", "abstractType": "float"}},
+                }
+            },
+            "measures": {
+                "Total": {
+                    "columns": [{"dataObject": "Orders", "column": "Amount"}],
+                    "resultType": "float",
+                    "aggregation": "sum",
+                }
+            },
+        }
+        osi = conv.OBMLtoOSI(obml, model_name="s").convert()
+        metric = osi["semantic_model"][0]["metrics"][0]
+        assert "datatype" not in metric

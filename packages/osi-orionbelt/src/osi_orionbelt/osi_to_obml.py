@@ -18,6 +18,7 @@ from osi_orionbelt._common import (
     _SQL_PARSEABLE_DIALECTS,
     _VENDOR_OSI,
     OSI_DATATYPE_TO_OBML_ABSTRACT,
+    OSI_DATATYPE_TO_OBML_PHYSICAL,
     OSI_TO_OBML_TYPE,
 )
 
@@ -905,6 +906,15 @@ class OSItoOBML:
             target = metrics.get(m["name"]) or measures.get(m["name"])
             if target is not None:
                 self._carry_foreign_extensions(m.get("custom_extensions"), target)
+                # Apache Ossie v0.2+ metric `datatype` -> OBML exact `dataType`
+                # (its natural home; `Decimal` -> decimal(p, s)). Don't override a
+                # dataType already restored from an OBML-origin extension, and
+                # skip Opaque/unknown (absent from the map).
+                osi_dt = m.get("datatype")
+                if osi_dt and not target.get("dataType"):
+                    obml_dt = OSI_DATATYPE_TO_OBML_PHYSICAL.get(osi_dt)
+                    if obml_dt:
+                        target["dataType"] = obml_dt
 
         return measures, metrics
 
