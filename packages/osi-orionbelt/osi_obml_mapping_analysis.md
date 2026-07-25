@@ -1,6 +1,6 @@
 # OSI ↔ OBML Mapping Analysis
 
-> Bidirectional conversion between [Open Semantic Interchange (OSI)](https://github.com/open-semantic-interchange/OSI) v0.2.0.dev0 and [OrionBelt ML (OBML)](https://github.com/ralforion/orionbelt-semantic-layer) v1.0 semantic model formats. OSI v0.1.x inputs are still accepted on read via a legacy normalization shim; output targets v0.2.0.dev0.
+> Bidirectional conversion between [Open Semantic Interchange (OSI)](https://github.com/apache/ossie) v0.2.0.dev0 and [OrionBelt ML (OBML)](https://github.com/ralforion/orionbelt-semantic-layer) v1.0 semantic model formats. OSI v0.1.x inputs are still accepted on read via a legacy normalization shim; output targets v0.2.0.dev0.
 
 ## 1. Structural Comparison
 
@@ -131,6 +131,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 - **`primary_key`** — natively represented: OSI's dataset-level `primary_key` array maps to per-column `primaryKey: true` on OBML columns (`DataObjectColumn.primaryKey`), and back to the dataset array on export.
 - **`unique_keys`** — no native OBML equivalent; round-trips via an `OSI`-vendor `customExtension` (`obml_unique_keys`).
 - **Multi-dialect expressions** — on import the converter reads the first available SQL dialect in the order `ANSI_SQL`, `SNOWFLAKE`, `DATABRICKS`; non-SQL dialects (`MDX`, `TABLEAU`, `MAQL`) are not parsed. A metric with no SQL-parseable dialect, or an expression OBML cannot decompose, is preserved verbatim (`obml_unconverted_metrics`) with a `LOSSY:` warning rather than dropped. On export, OBML measures/metrics emit `ANSI_SQL`.
+- **`datatype`** (Apache Ossie v0.2+) — the first-class `Field`/`Metric` `datatype` (capitalised `DataType` enum: `String`/`Integer`/`Decimal`/`Float`/`Boolean`/`Date`/`Time`/`DateTime`/`DateTimeTz`/`Opaque`) maps to OBML column `abstractType` on import, taking precedence over the name heuristic. `Decimal` narrows to `float` (OBML models exact decimal at the physical/result layer, not as a coarse `abstractType`); `Opaque` falls back to the heuristic (it signals "unknown / non-portable"). On export OBML emits `datatype` from `abstractType`, and the exact `abstractType` is stashed in `custom_extensions` (`obml_abstract_type`) so OBML → OSI → OBML restores it verbatim, lossless through the narrowing. (Metric `datatype`, where `Decimal` maps to an exact `decimal(p, s)` result type, follows in a subsequent change.)
 - **`ai_context`** — preserved losslessly via `customExtensions` (see Section 2.4).
 - **`custom_extensions`** — mapped to OBML `customExtensions`.
 
@@ -139,7 +140,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 ### 3.1 OSI → OBML
 
 1. Parse `source` string to extract `database`, `schema`, and `table`
-2. Convert fields to columns with type inference (heuristic-based `abstractType`)
+2. Convert fields to columns, mapping the Ossie `datatype` to `abstractType` when present, else inferring it from the name heuristic
 3. Restructure global relationships into inline joins on data objects
 4. Decompose metric SQL expressions into OBML measures + metrics
 5. Extract dimension-flagged fields into the top-level `dimensions` section (excluding FK/PK join keys)
@@ -148,7 +149,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 ### 3.2 OBML → OSI
 
 1. Combine `database.schema.code` into the OSI `source` string
-2. Convert columns to fields with `ANSI_SQL` dialect expressions
+2. Convert columns to fields with `ANSI_SQL` dialect expressions and a first-class `datatype` (from `abstractType`)
 3. Extract inline joins into global relationships with generated names
 4. Convert measures to OSI metrics with SQL expressions
 5. Expand metric templates by substituting measure SQL into `{[Name]}` references
@@ -231,7 +232,7 @@ assert result.valid
 
 ## 6. Example: TPC-DS Roundtrip
 
-The converter is validated against the official [TPC-DS example](https://github.com/open-semantic-interchange/OSI/blob/main/examples/tpcds_semantic_model.yaml) from the OSI repository. That file is vendored at `tests/fixtures/tpcds_semantic_model.yaml` and exercised by `tests/test_osi_tpcds_baseline.py`, which runs the OSI converters guide's [conceptual conversion flow](https://github.com/open-semantic-interchange/OSI/blob/main/converters/index.md#example-conceptual-conversion-flow) end to end: OSI to OBML to OSI, asserting validity at each step and that the example's `SALESFORCE` and `DBT` custom extensions survive the round-trip (step 7).
+The converter is validated against the official [TPC-DS example](https://github.com/apache/ossie/blob/main/examples/tpcds_semantic_model.yaml) from the OSI repository. That file is vendored at `tests/fixtures/tpcds_semantic_model.yaml` and exercised by `tests/test_osi_tpcds_baseline.py`, which runs the OSI converters guide's [conceptual conversion flow](https://github.com/apache/ossie/blob/main/converters/index.md#example-conceptual-conversion-flow) end to end: OSI to OBML to OSI, asserting validity at each step and that the example's `SALESFORCE` and `DBT` custom extensions survive the round-trip (step 7).
 
 ### OSI → OBML
 

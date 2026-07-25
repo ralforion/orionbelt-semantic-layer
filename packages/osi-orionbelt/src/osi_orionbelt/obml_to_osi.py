@@ -15,6 +15,7 @@ from osi_orionbelt._common import (
     _OSI_VENDOR_READ,
     _OSI_VERSION,
     _VENDOR_OBML,
+    OBML_ABSTRACT_TO_OSI_DATATYPE,
     OBML_TO_OSI_TYPE,
 )
 
@@ -368,8 +369,12 @@ class OBMLtoOSI:
         if ai_ctx:
             field["ai_context"] = ai_ctx
 
-        # Preserve OBML type info in custom_extensions for roundtrip fidelity
+        # Emit the first-class Apache Ossie `datatype` (v0.2+) from the OBML
+        # abstractType so exported fields carry a portable logical type...
         abstract_type = col_obj.get("abstractType", "string")
+        field["datatype"] = OBML_ABSTRACT_TO_OSI_DATATYPE.get(abstract_type, "String")
+        # ...and stash the exact abstractType in custom_extensions so the return
+        # trip restores it verbatim, lossless through the narrowing map.
         osi_type = OBML_TO_OSI_TYPE.get(abstract_type, "string")
         ext_data: dict[str, Any] = {
             "data_type": osi_type,

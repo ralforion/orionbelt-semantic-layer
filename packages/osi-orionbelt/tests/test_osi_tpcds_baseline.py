@@ -4,7 +4,7 @@ Exercises the conceptual conversion flow from the OSI converters guide against
 the canonical ``examples/tpcds_semantic_model.yaml`` from the OSI repository
 (vendored under ``fixtures/tpcds_semantic_model.yaml``, Apache-2.0):
 
-    https://github.com/open-semantic-interchange/OSI/blob/main/converters/index.md#example-conceptual-conversion-flow
+    https://github.com/apache/ossie/blob/main/converters/index.md#example-conceptual-conversion-flow
 
 The canonical example carries ``SALESFORCE`` and ``DBT`` custom_extensions, so
 this also pins step 7 of that flow: third-party vendor extensions are preserved

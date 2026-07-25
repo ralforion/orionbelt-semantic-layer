@@ -74,3 +74,42 @@ OSI_TO_OBML_TYPE = {
     "timestamp": "timestamp",
     "boolean": "boolean",
 }
+
+# ─── Apache Ossie DataType (v0.2+) ⇄ OBML ────────────────────────────────────
+# Apache Ossie added a first-class `datatype` on Field/Metric backed by a
+# capitalised `DataType` enum. It is a *logical* type - the same layer as OBML's
+# column `abstractType` - so this is the field/dimension mapping.
+#
+# `Decimal` has no logical-layer equivalent in OBML: OBML deliberately models
+# exact decimal at the physical/result layer (`sqlType`/`sqlPrecision`/
+# `sqlScale`, measure/metric `dataType` via `decimal(p, s)`), not as a coarse
+# `abstractType`. So `Decimal` narrows to `float` for fields; metrics will
+# recover it at the result layer in a follow-up.
+#
+# `Opaque` is Ossie's own "known type outside the portable vocabulary" marker
+# and is intentionally absent so it falls back to the name heuristic on import.
+OSI_DATATYPE_TO_OBML_ABSTRACT = {
+    "String": "string",
+    "Integer": "int",
+    "Float": "float",
+    "Decimal": "float",
+    "Boolean": "boolean",
+    "Date": "date",
+    "Time": "time",
+    "DateTime": "timestamp",
+    "DateTimeTz": "timestamp_tz",
+}
+
+# OBML column `abstractType` -> Ossie `DataType`, for the export direction.
+OBML_ABSTRACT_TO_OSI_DATATYPE = {
+    "string": "String",
+    "json": "Opaque",
+    "int": "Integer",
+    "float": "Float",
+    "date": "Date",
+    "time": "Time",
+    "time_tz": "Time",
+    "timestamp": "DateTime",
+    "timestamp_tz": "DateTimeTz",
+    "boolean": "Boolean",
+}

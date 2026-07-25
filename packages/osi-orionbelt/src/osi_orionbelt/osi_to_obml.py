@@ -17,6 +17,7 @@ from osi_orionbelt._common import (
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
     _VENDOR_OSI,
+    OSI_DATATYPE_TO_OBML_ABSTRACT,
     OSI_TO_OBML_TYPE,
 )
 
@@ -357,10 +358,17 @@ class OSItoOBML:
             elif code == name and dialects:
                 code = dialects[0].get("expression", name)
 
-        # Determine abstract type: prefer explicit data_type, fall back to heuristic
-        osi_type = field.get("data_type", "")
-        if osi_type and osi_type in OSI_TO_OBML_TYPE:
-            abstract_type = OSI_TO_OBML_TYPE[osi_type]
+        # Determine abstract type. Precedence: Apache Ossie's first-class
+        # `datatype` (v0.2+, capitalised `DataType` enum) > legacy lowercase
+        # `data_type` > name heuristic. An OBML-origin field additionally
+        # restores its exact `abstractType` from the stashed extension below
+        # (highest precedence), keeping OBML -> OSI -> OBML lossless.
+        osi_datatype = field.get("datatype", "")
+        legacy_type = field.get("data_type", "")
+        if osi_datatype in OSI_DATATYPE_TO_OBML_ABSTRACT:
+            abstract_type = OSI_DATATYPE_TO_OBML_ABSTRACT[osi_datatype]
+        elif legacy_type and legacy_type in OSI_TO_OBML_TYPE:
+            abstract_type = OSI_TO_OBML_TYPE[legacy_type]
         else:
             abstract_type = self._infer_obml_type(field)
 
@@ -394,6 +402,11 @@ class OSItoOBML:
             if ext.get("vendor_name") in _OBML_VENDOR_READ:
                 try:
                     ext_data = json.loads(ext.get("data", "{}"))
+                    # Restore the exact OBML abstractType stashed on export, so a
+                    # narrowing datatype map (e.g. Decimal -> float) never
+                    # degrades an OBML-origin round trip.
+                    if ext_data.get("obml_abstract_type"):
+                        col["abstractType"] = ext_data["obml_abstract_type"]
                     if ext_data.get("obml_sql_type"):
                         col["sqlType"] = ext_data["obml_sql_type"]
                     if ext_data.get("obml_sql_precision") is not None:
