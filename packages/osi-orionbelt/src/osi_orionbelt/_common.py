@@ -74,3 +74,92 @@ OSI_TO_OBML_TYPE = {
     "timestamp": "timestamp",
     "boolean": "boolean",
 }
+
+# ─── Apache Ossie DataType (v0.2+) ⇄ OBML ────────────────────────────────────
+# Apache Ossie added a first-class `datatype` on Field/Metric backed by a
+# capitalised `DataType` enum. It is a *logical* type - the same layer as OBML's
+# column `abstractType` - so this is the field/dimension mapping.
+#
+# `Decimal` has no logical-layer equivalent in OBML: OBML deliberately models
+# exact decimal at the physical/result layer (`sqlType`/`sqlPrecision`/
+# `sqlScale`, measure/metric `dataType` via `decimal(p, s)`), not as a coarse
+# `abstractType`. So `Decimal` narrows to `float` for fields, but is recovered
+# exactly for metrics via the physical `dataType` map below
+# (`OSI_DATATYPE_TO_OBML_PHYSICAL`).
+#
+# `Opaque` is Ossie's own "known type outside the portable vocabulary" marker
+# and is intentionally absent so it falls back to the name heuristic on import.
+OSI_DATATYPE_TO_OBML_ABSTRACT = {
+    "String": "string",
+    "Integer": "int",
+    "Float": "float",
+    "Decimal": "float",
+    "Boolean": "boolean",
+    "Date": "date",
+    "Time": "time",
+    "DateTime": "timestamp",
+    "DateTimeTz": "timestamp_tz",
+}
+
+# Metric/measure `datatype`. Unlike fields, measures/metrics carry an exact
+# OBML `dataType` (physical vocabulary: `integer`/`double`/`decimal(p, s)`/...),
+# which is where `Decimal` genuinely belongs. So Ossie metric `datatype` maps to
+# that field, not the coarse `abstractType`.
+OBML_DECIMAL_DEFAULT = "decimal(18, 2)"  # mirrors orionbelt.models.types.BUILTIN_DEFAULT
+
+# Ossie `DataType` -> OBML physical `dataType` string (import direction).
+# `Opaque` is omitted (unknown / non-portable). `DateTimeTz` has no tz-aware
+# physical form, so it narrows to `timestamp`.
+OSI_DATATYPE_TO_OBML_PHYSICAL = {
+    "String": "string",
+    "Integer": "integer",
+    "Float": "double",
+    "Decimal": OBML_DECIMAL_DEFAULT,
+    "Boolean": "boolean",
+    "Date": "date",
+    "Time": "time",
+    "DateTime": "timestamp",
+    "DateTimeTz": "timestamp",
+}
+
+# OBML physical `dataType` -> Ossie `DataType` (export direction). `decimal(p, s)`
+# is handled separately by ``obml_datatype_to_osi`` since it is parametrised.
+OBML_PHYSICAL_TO_OSI_DATATYPE = {
+    "string": "String",
+    "integer": "Integer",
+    "bigint": "Integer",
+    "double": "Float",
+    "boolean": "Boolean",
+    "date": "Date",
+    "time": "Time",
+    "timestamp": "DateTime",
+}
+
+
+def obml_datatype_to_osi(data_type: str | None) -> str | None:
+    """Map an explicit OBML measure/metric ``dataType`` to an Ossie ``DataType``.
+
+    Returns ``None`` when there is no mapping (so the caller emits nothing rather
+    than an unknown type). ``decimal(p, s)`` maps to ``Decimal``.
+    """
+    if not data_type:
+        return None
+    normalized = data_type.strip().lower()
+    if normalized.startswith("decimal"):
+        return "Decimal"
+    return OBML_PHYSICAL_TO_OSI_DATATYPE.get(normalized)
+
+
+# OBML column `abstractType` -> Ossie `DataType`, for the export direction.
+OBML_ABSTRACT_TO_OSI_DATATYPE = {
+    "string": "String",
+    "json": "Opaque",
+    "int": "Integer",
+    "float": "Float",
+    "date": "Date",
+    "time": "Time",
+    "time_tz": "Time",
+    "timestamp": "DateTime",
+    "timestamp_tz": "DateTimeTz",
+    "boolean": "Boolean",
+}

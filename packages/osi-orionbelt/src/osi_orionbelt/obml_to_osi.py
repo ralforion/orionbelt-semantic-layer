@@ -15,7 +15,9 @@ from osi_orionbelt._common import (
     _OSI_VENDOR_READ,
     _OSI_VERSION,
     _VENDOR_OBML,
+    OBML_ABSTRACT_TO_OSI_DATATYPE,
     OBML_TO_OSI_TYPE,
+    obml_datatype_to_osi,
 )
 
 
@@ -368,8 +370,12 @@ class OBMLtoOSI:
         if ai_ctx:
             field["ai_context"] = ai_ctx
 
-        # Preserve OBML type info in custom_extensions for roundtrip fidelity
+        # Emit the first-class Apache Ossie `datatype` (v0.2+) from the OBML
+        # abstractType so exported fields carry a portable logical type...
         abstract_type = col_obj.get("abstractType", "string")
+        field["datatype"] = OBML_ABSTRACT_TO_OSI_DATATYPE.get(abstract_type, "String")
+        # ...and stash the exact abstractType in custom_extensions so the return
+        # trip restores it verbatim, lossless through the narrowing map.
         osi_type = OBML_TO_OSI_TYPE.get(abstract_type, "string")
         ext_data: dict[str, Any] = {
             "data_type": osi_type,
@@ -576,6 +582,7 @@ class OBMLtoOSI:
             osi_metric = self._convert_measure(measure_name, measure_obj, data_objects)
             if osi_metric:
                 self._carry_foreign_to_osi_metric(measure_obj, osi_metric)
+                self._emit_osi_metric_datatype(measure_obj, osi_metric)
                 osi_metrics.append(osi_metric)
 
         # Convert OBML metrics (which reference measures) to OSI metrics
@@ -598,6 +605,7 @@ class OBMLtoOSI:
                 )
             if osi_metric:
                 self._carry_foreign_to_osi_metric(metric_obj, osi_metric)
+                self._emit_osi_metric_datatype(metric_obj, osi_metric)
                 osi_metrics.append(osi_metric)
 
         return osi_metrics
@@ -610,6 +618,20 @@ class OBMLtoOSI:
         )
         if not osi_metric["custom_extensions"]:
             del osi_metric["custom_extensions"]
+
+    def _emit_osi_metric_datatype(self, obml_obj: dict, osi_metric: dict) -> None:
+        """Emit a first-class Apache Ossie `datatype` from an explicit OBML
+        measure/metric `dataType`.
+
+        Only fires when the OBML object declares an exact `dataType` (its
+        physical/result-layer type), so plain measures - whose type is only the
+        defaulted `resultType` - stay untouched and round trips stay idempotent.
+        The exact `dataType` also round-trips via `obml_data_type` in
+        `custom_extensions`; this adds the portable first-class field alongside.
+        """
+        osi_dt = obml_datatype_to_osi(obml_obj.get("dataType"))
+        if osi_dt:
+            osi_metric["datatype"] = osi_dt
 
     def _convert_measure(self, name: str, measure: dict, data_objects: dict) -> dict | None:
         """Convert an OBML measure to an OSI metric."""

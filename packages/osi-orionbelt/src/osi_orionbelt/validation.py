@@ -52,7 +52,7 @@ _OSI_ONTOLOGY_SCHEMA_PATH = _osi_schema_path("osi-ontology-schema.json")
 # ``ai_context`` and the embedded ``semantic_model``. Resolve that URL against
 # the vendored local copy so validation never touches the network.
 _OSI_CORE_SPEC_RAW_URL = (
-    "https://raw.githubusercontent.com/open-semantic-interchange/OSI/main/core-spec/osi-schema.json"
+    "https://raw.githubusercontent.com/apache/ossie/main/core-spec/osi-schema.json"
 )
 
 
