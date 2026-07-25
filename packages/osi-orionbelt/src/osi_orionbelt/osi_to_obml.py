@@ -14,7 +14,6 @@ import sqlglot
 from sqlglot import expressions as exp
 
 from osi_orionbelt._common import (
-    _COLUMN_REF_RE,
     _INTERNAL_VENDORS,
     _OBML_VENDOR_READ,
     _OSI_VERSION,
@@ -32,6 +31,22 @@ _OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
     "ANSI_SQL": None,
     "SNOWFLAKE": "snowflake",
     "DATABRICKS": "databricks",
+}
+
+# sqlglot aggregate ``sql_name()`` -> OBML aggregation, i.e. the aggregates OBML
+# can model as a single-argument measure. Anything outside this set (multi-arg
+# like ``CORR(a, b)``, or statistical functions like ``VAR_POP`` that have no
+# OBML aggregation) is preserved verbatim rather than emitted as invalid OBML.
+# ``COUNT(DISTINCT ...)`` maps to ``count`` with the distinct flag carried
+# separately.
+_SQLGLOT_AGG_TO_OBML = {
+    "SUM": "sum",
+    "COUNT": "count",
+    "AVG": "avg",
+    "MIN": "min",
+    "MAX": "max",
+    "ANY_VALUE": "any_value",
+    "MEDIAN": "median",
 }
 
 
@@ -821,26 +836,15 @@ class OSItoOBML:
                 )
                 continue
 
-            # Resolve `dataset.column` references to canonical OSI names
-            # (case-insensitive, quote-stripped) before parsing. Copying raw
-            # Snowflake/Databricks identifiers verbatim would yield OBML refs to
-            # non-existent dataObjects/columns; when a reference cannot be
-            # mapped the metric is preserved rather than emitted dangling.
-            resolved_expr = self._resolve_column_refs(expr_text, ds_lc, fields_lc)
-            if resolved_expr is None:
-                self._preserve_unconverted_metric(
-                    m, "expression references columns not found in the model"
-                )
-                continue
-            expr_text = resolved_expr
-
-            # Classify + decompose the resolved SQL via sqlglot: a single
-            # aggregate over a column (simple measure), a single aggregate over
-            # an expression (expression measure), or aggregates embedded in a
-            # larger formula (auto-measures + a metric). Anything with no
-            # aggregate, with nested aggregates, or that sqlglot cannot parse is
-            # preserved verbatim. The source dialect tag drives the read grammar.
-            decomposed = self._decompose_metric(expr_text, _expr_dialect)
+            # Classify + decompose via sqlglot: a single aggregate over a column
+            # (simple measure), a single aggregate over an expression (expression
+            # measure), or aggregates embedded in a larger formula (auto-measures
+            # + a metric). Column refs are resolved on the parsed AST against the
+            # model (case-insensitive), so a dotted string literal is never taken
+            # for a reference. Anything with no aggregate, an unsupported or
+            # nested aggregate, an unresolvable reference, or that sqlglot cannot
+            # parse is preserved verbatim. The source dialect drives the grammar.
+            decomposed = self._decompose_metric(expr_text, _expr_dialect, ds_lc, fields_lc)
             if decomposed is None:
                 self._preserve_unconverted_metric(
                     m, f"expression not decomposable into OBML measures/metrics: {expr_text!r}"
@@ -1124,13 +1128,6 @@ class OSItoOBML:
         return ident
 
     @staticmethod
-    def _q_ident(name: str) -> str:
-        """Bracket-quote a canonical name that is not a bare SQL word, so the
-        downstream ``dataset.column`` parsers (which split on ``\\w+``) do not
-        break on display names containing spaces or other punctuation."""
-        return name if re.fullmatch(r"\w+", name) else f"[{name}]"
-
-    @staticmethod
     def _field_expr_identifier(field: dict) -> str | None:
         """Physical column code of a field when its expression is a single
         (optionally quoted) identifier, so code-based metric references (e.g.
@@ -1150,39 +1147,6 @@ class OSItoOBML:
                         return candidate
         return None
 
-    def _resolve_column_refs(
-        self, expr: str, ds_lc: dict[str, str], fields_lc: dict[str, dict[str, str]]
-    ) -> str | None:
-        """Rewrite ``dataset.column`` references to canonical OSI names.
-
-        Identifiers are matched case-insensitively and with SQL quoting
-        stripped, so Snowflake/Databricks forms such as ``SUM(ORDERS.AMOUNT)``
-        or ``SUM("Orders"."amount")`` resolve to the real ``Orders.amount``.
-        Returns the rewritten expression, or ``None`` if any reference cannot be
-        mapped (the caller then preserves the metric verbatim rather than emit a
-        dangling reference that would fail query resolution).
-        """
-        unresolved = False
-
-        def repl(match: re.Match[str]) -> str:
-            nonlocal unresolved
-            ds_real = ds_lc.get(self._unquote_identifier(match.group("ds")).lower())
-            if ds_real is None:
-                unresolved = True
-                return match.group(0)
-            col_real = fields_lc.get(ds_real, {}).get(
-                self._unquote_identifier(match.group("col")).lower()
-            )
-            if col_real is None:
-                unresolved = True
-                return match.group(0)
-            # Bracket-quote names that are not bare words so the downstream
-            # dataset.column parsers keep multi-word display names intact.
-            return f"{self._q_ident(ds_real)}.{self._q_ident(col_real)}"
-
-        rewritten = _COLUMN_REF_RE.sub(repl, expr)
-        return None if unresolved else rewritten
-
     def _preserve_unconverted_metric(self, osi_metric: dict, reason: str) -> None:
         """Preserve an OSI metric that has no OBML representation.
 
@@ -1199,12 +1163,18 @@ class OSItoOBML:
         )
 
     @staticmethod
+    def _obml_agg_name(node: exp.AggFunc) -> str | None:
+        """OBML aggregation name for a sqlglot aggregate, or ``None`` when OBML
+        has no single-argument equivalent (``VAR_POP``, ``CORR``, ...)."""
+        return _SQLGLOT_AGG_TO_OBML.get(node.sql_name())
+
+    @staticmethod
     def _measure_result_type(agg: str) -> str:
-        """OBML resultType for an aggregation: SUM/AVG yield a float, the
+        """OBML resultType for an aggregation: sum/avg yield a float, the
         count/min/max family an int. (This also fixes the old decompose path,
         which hard-coded every auto-measure to float - a decomposed COUNT is now
         correctly int.)"""
-        return "float" if agg.upper() in ("SUM", "AVG") else "int"
+        return "float" if agg in ("sum", "avg") else "int"
 
     @staticmethod
     def _agg_arg(node: exp.AggFunc) -> tuple[exp.Expression | None, bool]:
@@ -1231,40 +1201,62 @@ class OSItoOBML:
 
         return node.transform(_rewrite).sql()
 
-    def _decompose_metric(self, expr_text: str, osi_dialect: str | None) -> tuple | None:
-        """Classify/decompose a resolved metric SQL expression using sqlglot.
+    def _decompose_metric(
+        self,
+        expr_text: str,
+        osi_dialect: str | None,
+        ds_lc: dict[str, str],
+        fields_lc: dict[str, dict[str, str]],
+    ) -> tuple | None:
+        """Classify/decompose a metric SQL expression using sqlglot.
 
         Returns one of:
           ``("simple", agg, dataset, column, is_distinct)``   -> column measure
           ``("expr", agg, obml_expression, is_distinct)``     -> expression measure
           ``("complex", obml_outer_formula, auto_measures)``  -> measures + metric
-        or ``None`` when the expression has no aggregate, has a nested aggregate,
-        or sqlglot cannot parse it (the caller preserves it verbatim). Reading
-        with the source dialect means a Snowflake/Databricks aggregation is parsed
-        under the right grammar.
+        or ``None`` when the expression has no aggregate, an unsupported or nested
+        aggregate, a reference that cannot be resolved, or one sqlglot cannot
+        parse - the caller preserves it verbatim. Reading with the source dialect
+        means a Snowflake/Databricks aggregation is parsed under the right grammar.
         """
-        # The resolver bracket-quotes canonical names that are not bare words
-        # (``[Net Amount]``); rewrite those to ANSI double-quoted identifiers so
-        # sqlglot parses them. Bare-word refs are untouched.
-        sql = re.sub(
-            r"\[([^\]]+)\]",
-            lambda mm: '"' + mm.group(1).replace('"', '""') + '"',
-            expr_text,
-        )
         read = _OSI_DIALECT_TO_SQLGLOT.get(osi_dialect or "")
         try:
-            tree = sqlglot.parse_one(sql, read=read)
+            tree = sqlglot.parse_one(expr_text, read=read)
         except Exception:
             return None
         if tree is None:
             return None
 
+        # Resolve qualified column refs on the parsed AST, canonicalising each
+        # dataset/column to its model name (case-insensitively). Working on the
+        # tree rather than the raw text means a dotted string literal
+        # (``'north.us'``) is an ``exp.Literal``, never mistaken for a
+        # ``dataset.column`` reference. Preserve if any qualified ref is unknown.
+        unresolved = False
+
+        def _resolve(n: exp.Expression) -> exp.Expression:
+            nonlocal unresolved
+            if isinstance(n, exp.Column) and n.table:
+                ds_real = ds_lc.get(n.table.lower())
+                col_real = fields_lc.get(ds_real, {}).get(n.name.lower()) if ds_real else None
+                if not ds_real or not col_real:
+                    unresolved = True
+                    return n
+                return exp.column(col_real, table=ds_real)
+            return n
+
+        tree = tree.transform(_resolve)
+        if unresolved:
+            return None
+
         aggs = list(tree.find_all(exp.AggFunc))
         if not aggs:
             return None
-        # A nested aggregate (an aggregate inside another) is not representable as
-        # a measure + metric; preserve the metric verbatim.
+        # An unsupported aggregate (no single-argument OBML equivalent) or a
+        # nested aggregate cannot be modelled as measures + a formula; preserve.
         for a in aggs:
+            if self._obml_agg_name(a) is None:
+                return None
             p = a.parent
             while p is not None:
                 if isinstance(p, exp.AggFunc):
@@ -1274,9 +1266,9 @@ class OSItoOBML:
         # The whole expression is a single aggregate -> simple or expression
         # measure (no outer formula, so the metric name is the measure name).
         if isinstance(tree, exp.AggFunc) and len(aggs) == 1:
-            agg = tree.sql_name()
+            agg = self._obml_agg_name(tree)
             arg, is_distinct = self._agg_arg(tree)
-            if arg is None:
+            if agg is None or arg is None:
                 return None
             if isinstance(arg, exp.Column) and arg.table:
                 return ("simple", agg, arg.table, arg.name, is_distinct)
@@ -1287,27 +1279,27 @@ class OSItoOBML:
         # formula that becomes the metric expression.
         auto_measures: dict[str, Any] = {}
         for a in aggs:
-            agg = a.sql_name()
+            agg = self._obml_agg_name(a)
             arg, is_distinct = self._agg_arg(a)
-            if arg is None:
+            if agg is None or arg is None:
                 return None
             suffix = "_distinct" if is_distinct else ""
             if isinstance(arg, exp.Column) and arg.table:
                 ds, col = arg.table, arg.name
                 key_stub = re.sub(r"\W+", "_", f"{ds}_{col}")
-                key = f"_{key_stub}_{agg.lower()}{suffix}"
+                key = f"_{key_stub}_{agg}{suffix}"
                 measure_def: dict[str, Any] = {
                     "columns": [{"dataObject": ds, "column": col}],
                     "resultType": self._measure_result_type(agg),
-                    "aggregation": agg.lower(),
+                    "aggregation": agg,
                 }
             else:
                 expr_slug = re.sub(r"[^a-zA-Z0-9]", "_", arg.sql())[:40]
-                key = f"_{agg.lower()}_{expr_slug}{suffix}"
+                key = f"_{agg}_{expr_slug}{suffix}"
                 measure_def = {
                     "expression": self._render_obml(arg),
                     "resultType": self._measure_result_type(agg),
-                    "aggregation": agg.lower(),
+                    "aggregation": agg,
                 }
             if is_distinct:
                 measure_def["distinct"] = True

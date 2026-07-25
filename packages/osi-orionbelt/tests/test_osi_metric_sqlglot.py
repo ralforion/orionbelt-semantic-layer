@@ -88,14 +88,40 @@ class TestNewlyDecomposable:
         assert "{[_Orders_amount_sum]}" in expr and "{[_Orders_tax_sum]}" in expr
 
     def test_string_literal_with_dot_is_not_a_ref(self) -> None:
-        # 'north.1' is a string literal, not an Orders.<col> reference.
+        # 'north.us' looks exactly like a dataset.column ref; AST-based
+        # resolution must leave the string literal alone (the regex resolver used
+        # to mis-resolve it and preserve the whole metric as LOSSY).
         obml, lossy = _convert(
-            "SUM(CASE WHEN Orders.region = 'north.1' THEN Orders.amount ELSE 0 END)"
+            "SUM(CASE WHEN Orders.region = 'north.us' THEN Orders.amount ELSE 0 END)"
         )
         assert not lossy
         (measure,) = obml["measures"].values()
         assert "{[Orders].[region]}" in measure["expression"]
+        assert "'north.us'" in measure["expression"]
         assert "{[north]" not in measure["expression"]
+
+
+class TestUnsupportedAggregates:
+    """OBML has no single-argument equivalent -> preserve, never invalid OBML."""
+
+    def test_statistical_aggregate_is_preserved(self) -> None:
+        # VAR_POP has no OBML aggregation; emitting `aggregation: variance_pop`
+        # would fail validation, so the metric is preserved verbatim.
+        obml, lossy = _convert("VAR_POP(Orders.amount)")
+        assert lossy
+        assert not obml.get("measures")
+
+    def test_multi_argument_aggregate_is_preserved(self) -> None:
+        # CORR(a, b) is a two-argument aggregate; dropping the second arg would
+        # emit a wrong measure, so it is preserved.
+        obml, lossy = _convert("CORR(Orders.amount, Orders.tax)")
+        assert lossy
+        assert not obml.get("measures")
+
+    def test_supported_aggregate_mixed_with_unsupported_is_preserved(self) -> None:
+        obml, lossy = _convert("SUM(Orders.amount) + VAR_POP(Orders.tax)")
+        assert lossy
+        assert not obml.get("measures")
 
 
 class TestDecomposedCountIsInt:
