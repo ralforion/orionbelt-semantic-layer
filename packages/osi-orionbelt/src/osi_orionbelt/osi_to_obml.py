@@ -165,8 +165,10 @@ class OSItoOBML:
         datasets = model.get("datasets", [])
         relationships = model.get("relationships", [])
 
-        # Build lookup: dataset_name → dataset
+        # Build lookup: dataset_name → dataset. Stashed on self so relationship
+        # cardinality inference can reach each dataset's primary_key/unique_keys.
         ds_map = {ds["name"]: ds for ds in datasets}
+        self._datasets_by_name = ds_map
 
         # Build relationship index: from_dataset → [relationship, ...]
         rel_by_from: dict[str, list] = {}
@@ -552,42 +554,88 @@ class OSItoOBML:
 
         return "string"
 
-    # OSI relationship type → OBML joinType mapping
+    # OSI relationship 'type' → OBML joinType. The OSI logical schema has no
+    # cardinality field (additionalProperties: false), so this is only reached
+    # for a non-conforming input that carries one; it maps to the three OBML
+    # cardinalities only (OBML has no one-to-many - a one-to-many A→B is a
+    # many-to-one B→A). An explicit one-to-many therefore falls through to
+    # key-based inference rather than producing invalid OBML.
     _REL_TYPE_MAP: dict[str, str] = {
         "many_to_one": "many-to-one",
         "many-to-one": "many-to-one",
-        "one_to_many": "one-to-many",
-        "one-to-many": "one-to-many",
         "one_to_one": "one-to-one",
         "one-to-one": "one-to-one",
         "many_to_many": "many-to-many",
         "many-to-many": "many-to-many",
     }
 
+    @staticmethod
+    def _key_column_sets(dataset: dict | None) -> list[frozenset[str]]:
+        """The dataset's declared unique key column-sets (primary_key plus each
+        unique_keys entry), lower-cased. Empty when the dataset declares none."""
+        if not dataset:
+            return []
+        keys: list[frozenset[str]] = []
+        pk = dataset.get("primary_key")
+        if isinstance(pk, list) and pk:
+            keys.append(frozenset(str(c).lower() for c in pk))
+        for uk in dataset.get("unique_keys") or []:
+            if isinstance(uk, list) and uk:
+                keys.append(frozenset(str(c).lower() for c in uk))
+        return keys
+
+    def _side_uniqueness(self, cols: list, dataset: dict | None) -> str:
+        """Whether ``cols`` form a unique key on ``dataset``: ``"unique"`` (they
+        cover the primary key or a unique key), ``"not_unique"`` (the dataset has
+        keys but these columns are not one), or ``"unknown"`` (no keys declared,
+        so uniqueness can't be determined)."""
+        keys = self._key_column_sets(dataset)
+        if not keys:
+            return "unknown"
+        colset = {str(c).lower() for c in cols}
+        return "unique" if any(colset >= k for k in keys) else "not_unique"
+
+    def _infer_join_type(self, rel: dict) -> str:
+        """Infer the OBML join cardinality for an OSI relationship from the
+        datasets' declared keys, comparing ``to_columns`` against the ``to``
+        dataset's keys and ``from_columns`` against the ``from`` dataset's."""
+        # Honor an explicit (non-conforming) type when it maps to a valid OBML
+        # cardinality; otherwise infer from keys.
+        rel_type = rel.get("type", "")
+        if rel_type:
+            mapped = self._REL_TYPE_MAP.get(rel_type.lower())
+            if mapped:
+                return mapped
+
+        ds = getattr(self, "_datasets_by_name", {})
+        to_u = self._side_uniqueness(rel.get("to_columns", []), ds.get(rel.get("to")))
+        from_u = self._side_uniqueness(rel.get("from_columns", []), ds.get(rel.get("from")))
+
+        if to_u == "unique":
+            # Target row is unique per FK. If the source is also unique, it is a
+            # true one-to-one; otherwise the standard many-to-one.
+            return "one-to-one" if from_u == "unique" else "many-to-one"
+        if to_u == "not_unique":
+            # The target has keys but the FK doesn't reference a unique one, so a
+            # source row can match many target rows -> fan-out.
+            return "many-to-many"
+        # to_u == "unknown": the target declares no keys, so cardinality can't be
+        # proven. OSI's own schema describes ``from`` as "the many side" and
+        # ``to`` as "the one side", so default to that declared direction.
+        self.warnings.append(
+            f"Relationship '{rel.get('name', '?')}': no primary_key/unique_keys on "
+            f"'{rel.get('to')}' to infer cardinality; defaulting to many-to-one."
+        )
+        return "many-to-one"
+
     def _convert_relationship_to_join(self, rel: dict) -> dict:
         """Convert an OSI relationship to an OBML join.
 
-        Uses exact OSI names for joinTo and column references.
-        Maps OSI relationship 'type' to OBML joinType if present,
-        defaults to many-to-one with a warning otherwise.
-        """
-        rel_type = rel.get("type", "")
-        join_type = self._REL_TYPE_MAP.get(rel_type.lower(), "") if rel_type else ""
-        if not join_type:
-            join_type = "many-to-one"
-            if rel_type:
-                self.warnings.append(
-                    f"Relationship '{rel.get('name', '?')}': unknown type "
-                    f"'{rel_type}', defaulting to many-to-one."
-                )
-            else:
-                self.warnings.append(
-                    f"Relationship '{rel.get('name', '?')}': no type specified, "
-                    f"defaulting to many-to-one."
-                )
-
+        Uses exact OSI names for joinTo and column references. The OSI schema has
+        no cardinality field, so the join cardinality is inferred from the
+        datasets' primary_key / unique_keys (see ``_infer_join_type``)."""
         join: dict[str, Any] = {
-            "joinType": join_type,
+            "joinType": self._infer_join_type(rel),
             "joinTo": rel["to"],
             "columnsFrom": list(rel["from_columns"]),
             "columnsTo": list(rel["to_columns"]),
