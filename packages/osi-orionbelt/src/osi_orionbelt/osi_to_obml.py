@@ -33,12 +33,13 @@ _OSI_DIALECT_TO_SQLGLOT: dict[str, str | None] = {
     "DATABRICKS": "databricks",
 }
 
-# sqlglot aggregate ``sql_name()`` -> OBML aggregation, i.e. the aggregates OBML
-# can model as a single-argument measure. Anything outside this set (multi-arg
-# like ``CORR(a, b)``, or statistical functions like ``VAR_POP`` that have no
-# OBML aggregation) is preserved verbatim rather than emitted as invalid OBML.
-# ``COUNT(DISTINCT ...)`` maps to ``count`` with the distinct flag carried
-# separately.
+# sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
+# models as a *single-column* measure. Multi-argument aggregates OBML also
+# supports (``CORR``, ``COVAR_POP``, ``REGR_SLOPE``, ...) are intentionally
+# absent: they need a two-column measure, so they are preserved rather than
+# emitted with a dropped argument (see ``_agg_arg``). ``COUNT(DISTINCT ...)``
+# maps to ``count`` with the distinct flag carried separately. Note the name
+# normalisation: sqlglot renders ``VAR_POP`` as ``VARIANCE_POP``.
 _SQLGLOT_AGG_TO_OBML = {
     "SUM": "sum",
     "COUNT": "count",
@@ -47,7 +48,28 @@ _SQLGLOT_AGG_TO_OBML = {
     "MAX": "max",
     "ANY_VALUE": "any_value",
     "MEDIAN": "median",
+    "MODE": "mode",
+    "STDDEV": "stddev",
+    "STDDEV_POP": "stddev_pop",
+    "VARIANCE": "variance",
+    "VARIANCE_POP": "var_pop",
 }
+
+# Aggregates sqlglot parses as a generic ``exp.Anonymous`` (not ``exp.AggFunc``),
+# keyed by upper-cased function name. Single-argument only: ``LISTAGG(col)`` is a
+# measure; ``LISTAGG(col, delimiter)`` carries a delimiter OBML can't model here,
+# so it is preserved (see ``_agg_arg``).
+_ANON_AGG_TO_OBML = {
+    "LISTAGG": "listagg",
+}
+
+# Aggregations whose result is fractional regardless of the input column type.
+# Everything else defaults to int, except listagg (string) - see
+# ``_measure_result_type``. (Without the column's declared type this is a
+# best-effort guess, matching the converter's other type heuristics.)
+_FLOAT_RESULT_AGGS = frozenset(
+    {"sum", "avg", "median", "stddev", "stddev_pop", "variance", "var_pop"}
+)
 
 
 class OSItoOBML:
@@ -1163,31 +1185,84 @@ class OSItoOBML:
         )
 
     @staticmethod
-    def _obml_agg_name(node: exp.AggFunc) -> str | None:
+    def _obml_agg_name(node: exp.Expression) -> str | None:
         """OBML aggregation name for a sqlglot aggregate, or ``None`` when OBML
-        has no single-argument equivalent (``VAR_POP``, ``CORR``, ...)."""
-        return _SQLGLOT_AGG_TO_OBML.get(node.sql_name())
+        has no single-argument equivalent (``VAR_POP``, ``CORR``, ...). Handles
+        both real ``exp.AggFunc`` nodes and the ``exp.Anonymous`` nodes sqlglot
+        produces for ``LISTAGG``."""
+        if isinstance(node, exp.AggFunc):
+            return _SQLGLOT_AGG_TO_OBML.get(node.sql_name())
+        if isinstance(node, exp.Anonymous):
+            name = node.this if isinstance(node.this, str) else ""
+            return _ANON_AGG_TO_OBML.get(name.upper())
+        return None
+
+    @staticmethod
+    def _is_agg_node(node: exp.Expression) -> bool:
+        """Whether ``node`` is an aggregate call - a real ``exp.AggFunc`` (even
+        one OBML can't model, so we can preserve rather than mis-emit) or an
+        ``exp.Anonymous`` whose name is a known aggregate."""
+        if isinstance(node, exp.AggFunc):
+            return True
+        if isinstance(node, exp.Anonymous):
+            name = node.this if isinstance(node.this, str) else ""
+            return name.upper() in _ANON_AGG_TO_OBML
+        return False
 
     @staticmethod
     def _measure_result_type(agg: str) -> str:
-        """OBML resultType for an aggregation: sum/avg yield a float, the
-        count/min/max family an int. (This also fixes the old decompose path,
-        which hard-coded every auto-measure to float - a decomposed COUNT is now
-        correctly int.)"""
-        return "float" if agg in ("sum", "avg") else "int"
+        """OBML resultType for an aggregation: fractional aggregates yield a
+        float, listagg a string, the count/min/max/mode family an int. (This also
+        fixes the old decompose path, which hard-coded every auto-measure to
+        float - a decomposed COUNT is now correctly int.)"""
+        if agg == "listagg":
+            return "string"
+        return "float" if agg in _FLOAT_RESULT_AGGS else "int"
 
     @staticmethod
-    def _agg_arg(node: exp.AggFunc) -> tuple[exp.Expression | None, bool]:
-        """The aggregate's argument and whether it is DISTINCT, unwrapping the
-        ``exp.Distinct`` node that ``COUNT(DISTINCT x)`` / ``SUM(DISTINCT x)``
-        produce."""
+    def _agg_arg(node: exp.Expression) -> tuple[exp.Expression | None, bool]:
+        """The aggregate's single argument and whether it is DISTINCT. Unwraps
+        the ``exp.Distinct`` node of ``COUNT(DISTINCT x)``. Returns ``None`` for a
+        multi-argument aggregate - a two-column ``CORR(a, b)`` or a
+        ``LISTAGG(col, delimiter)`` - so the caller preserves the metric rather
+        than silently dropping the extra argument."""
+        if isinstance(node, exp.Anonymous):
+            args = node.expressions or []
+            return (args[0] if len(args) == 1 else None), False
         arg = node.this
         is_distinct = bool(node.args.get("distinct"))
         if isinstance(arg, exp.Distinct):
             is_distinct = True
             exprs = arg.expressions or ([arg.this] if arg.this else [])
             arg = exprs[0] if exprs else None
+        # A second positional argument (CORR/COVAR/REGR family) can't be modelled
+        # as a single-column measure -> preserve.
+        if node.args.get("expression") is not None:
+            return None, is_distinct
         return arg, is_distinct
+
+    @staticmethod
+    def _parse_metric_sql(expr_text: str, read: str | None) -> exp.Expression | None:
+        """Parse a metric SQL expression, retrying with bracket-quoted
+        identifiers (``[Orders].[amount]``) rewritten to ANSI double quotes when
+        the first parse fails (the default grammar does not read ``[...]``).
+        Because the rewrite is only reached on a parse failure, a valid
+        expression containing brackets inside a string literal is never touched."""
+        try:
+            return sqlglot.parse_one(expr_text, read=read)
+        except Exception:
+            pass
+        normalized = re.sub(
+            r"\[([^\]]+)\]",
+            lambda mm: '"' + mm.group(1).replace('"', '""') + '"',
+            expr_text,
+        )
+        if normalized == expr_text:
+            return None
+        try:
+            return sqlglot.parse_one(normalized, read=read)
+        except Exception:
+            return None
 
     def _render_obml(self, node: exp.Expression) -> str:
         """Render a sqlglot expression to OBML, rewriting qualified column refs
@@ -1220,10 +1295,7 @@ class OSItoOBML:
         means a Snowflake/Databricks aggregation is parsed under the right grammar.
         """
         read = _OSI_DIALECT_TO_SQLGLOT.get(osi_dialect or "")
-        try:
-            tree = sqlglot.parse_one(expr_text, read=read)
-        except Exception:
-            return None
+        tree = self._parse_metric_sql(expr_text, read)
         if tree is None:
             return None
 
@@ -1249,7 +1321,10 @@ class OSItoOBML:
         if unresolved:
             return None
 
-        aggs = list(tree.find_all(exp.AggFunc))
+        # Aggregate calls, including LISTAGG (which sqlglot models as Anonymous
+        # and find_all(exp.AggFunc) would miss); walk() yields every node so the
+        # Anonymous ones are seen.
+        aggs = [n for n in tree.walk() if self._is_agg_node(n)]
         if not aggs:
             return None
         # An unsupported aggregate (no single-argument OBML equivalent) or a
@@ -1259,13 +1334,13 @@ class OSItoOBML:
                 return None
             p = a.parent
             while p is not None:
-                if isinstance(p, exp.AggFunc):
+                if self._is_agg_node(p):
                     return None
                 p = p.parent
 
         # The whole expression is a single aggregate -> simple or expression
         # measure (no outer formula, so the metric name is the measure name).
-        if isinstance(tree, exp.AggFunc) and len(aggs) == 1:
+        if len(aggs) == 1 and aggs[0] is tree:
             agg = self._obml_agg_name(tree)
             arg, is_distinct = self._agg_arg(tree)
             if agg is None or arg is None:

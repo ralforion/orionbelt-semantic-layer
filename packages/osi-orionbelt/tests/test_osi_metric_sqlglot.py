@@ -101,27 +101,58 @@ class TestNewlyDecomposable:
         assert "{[north]" not in measure["expression"]
 
 
-class TestUnsupportedAggregates:
-    """OBML has no single-argument equivalent -> preserve, never invalid OBML."""
+class TestSingleColumnAggregates:
+    """Every single-column OBML aggregation converts to a measure, not LOSSY -
+    including MODE and LISTAGG (which sqlglot models as Anonymous) and the
+    statistical family. VAR_POP normalises to OBML `var_pop` (sqlglot renders it
+    `VARIANCE_POP`) rather than being dropped as invalid."""
 
-    def test_statistical_aggregate_is_preserved(self) -> None:
-        # VAR_POP has no OBML aggregation; emitting `aggregation: variance_pop`
-        # would fail validation, so the metric is preserved verbatim.
-        obml, lossy = _convert("VAR_POP(Orders.amount)")
-        assert lossy
-        assert not obml.get("measures")
+    def test_single_column_aggregates_convert(self) -> None:
+        for expr, agg, rtype in [
+            ("VAR_POP(Orders.amount)", "var_pop", "float"),
+            ("STDDEV(Orders.amount)", "stddev", "float"),
+            ("VARIANCE(Orders.amount)", "variance", "float"),
+            ("MEDIAN(Orders.amount)", "median", "float"),
+            ("MODE(Orders.region)", "mode", "int"),
+            ("LISTAGG(Orders.region)", "listagg", "string"),
+        ]:
+            obml, lossy = _convert(expr)
+            assert not lossy, expr
+            (measure,) = obml["measures"].values()
+            assert measure["aggregation"] == agg, expr
+            assert measure["resultType"] == rtype, expr
 
-    def test_multi_argument_aggregate_is_preserved(self) -> None:
-        # CORR(a, b) is a two-argument aggregate; dropping the second arg would
-        # emit a wrong measure, so it is preserved.
+
+class TestPreservedAggregates:
+    """Aggregates OBML cannot model as a single-column measure -> preserved,
+    never emitted with a dropped argument."""
+
+    def test_multi_column_aggregate_is_preserved(self) -> None:
+        # CORR(a, b) needs a two-column measure; dropping b would be wrong.
         obml, lossy = _convert("CORR(Orders.amount, Orders.tax)")
         assert lossy
         assert not obml.get("measures")
 
-    def test_supported_aggregate_mixed_with_unsupported_is_preserved(self) -> None:
-        obml, lossy = _convert("SUM(Orders.amount) + VAR_POP(Orders.tax)")
+    def test_listagg_with_delimiter_is_preserved(self) -> None:
+        # The delimiter is a second argument OBML can't carry here.
+        obml, lossy = _convert("LISTAGG(Orders.region, ',')")
         assert lossy
         assert not obml.get("measures")
+
+    def test_metric_mixing_supported_and_unmodellable_is_preserved(self) -> None:
+        obml, lossy = _convert("SUM(Orders.amount) + CORR(Orders.amount, Orders.tax)")
+        assert lossy
+        assert not obml.get("measures")
+
+
+class TestBracketIdentifiers:
+    """T-SQL-style [bracket] identifiers parse via the fallback normalisation."""
+
+    def test_bracket_quoted_refs_resolve(self) -> None:
+        obml, lossy = _convert("SUM([Orders].[amount])")
+        assert not lossy
+        (measure,) = obml["measures"].values()
+        assert measure["columns"] == [{"dataObject": "Orders", "column": "amount"}]
 
 
 class TestDecomposedCountIsInt:
