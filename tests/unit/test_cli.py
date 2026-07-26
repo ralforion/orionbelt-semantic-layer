@@ -273,7 +273,7 @@ def test_convert_obml_to_osi_remote_surfaces_input_schema(monkeypatch, tmp_path)
     schema errors (latent gap from #223's REST change)."""
     from orionbelt.cli import _remote
 
-    def fake(self, input_yaml, *, model_name="semantic_model", include_ontology=False):
+    def fake(self, input_yaml, *, model_name="semantic_model"):
         return {
             "output_yaml": "semantic_model: []\n",
             "warnings": [],
