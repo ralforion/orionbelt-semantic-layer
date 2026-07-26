@@ -99,3 +99,53 @@ class TestNonSqlDialectFallback:
         )
         assert code == "amount"
         assert not any("non-SQL" in w for w in warnings)
+
+
+class TestResolutionIndexMatchesCode:
+    """The metric-resolution index and the column code must agree - both use
+    the same SQL-dialect selection - so a metric referencing the SQL code
+    resolves instead of being preserved as LOSSY."""
+
+    def test_metric_resolves_when_non_sql_dialect_precedes_sql(self) -> None:
+        # Field: MDX `cube_revenue` then SNOWFLAKE `amount`. The code is `amount`;
+        # the resolver must index `amount` too (not the MDX `cube_revenue`), so
+        # SUM(Orders.amount) becomes a measure rather than a LOSSY metric.
+        osi = {
+            "version": "0.2.0.dev0",
+            "semantic_model": [
+                {
+                    "name": "s",
+                    "datasets": [
+                        {
+                            "name": "Orders",
+                            "source": "A.P.ORDERS",
+                            "fields": [
+                                {
+                                    "name": "revenue",
+                                    "expression": {
+                                        "dialects": [
+                                            _dialect("MDX", "cube_revenue"),
+                                            _dialect("SNOWFLAKE", "amount"),
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                    "metrics": [
+                        {
+                            "name": "Total",
+                            "expression": {
+                                "dialects": [_dialect("ANSI_SQL", "SUM(Orders.amount)")]
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        c = conv.OSItoOBML(osi)
+        obml = c.convert()
+        (column,) = obml["dataObjects"]["Orders"]["columns"].values()
+        assert column["code"] == "amount"
+        assert "Total" in obml.get("measures", {})
+        assert not [w for w in c.warnings if w.startswith("LOSSY")]
