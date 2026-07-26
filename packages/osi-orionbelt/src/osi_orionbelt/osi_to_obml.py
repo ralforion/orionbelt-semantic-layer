@@ -15,6 +15,7 @@ from sqlglot import expressions as exp
 
 from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
+    _NON_SQL_DIALECTS,
     _OBML_VENDOR_READ,
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
@@ -390,19 +391,31 @@ class OSItoOBML:
         """
         name = field["name"]
 
-        # Get expression (prefer ANSI_SQL dialect)
+        # Physical column code from the field's expression. Prefer ANSI_SQL,
+        # then any other SQL dialect; never write a non-SQL expression
+        # (MDX/TABLEAU/MAQL) into ``code`` - it is emitted as a physical SQL
+        # column reference, so fall back to the field name and warn instead.
         expr_obj = field.get("expression", {})
         code = name  # fallback
         if isinstance(expr_obj, dict):
-            dialects = expr_obj.get("dialects", [])
-            for d in dialects:
-                if d.get("dialect") == "ANSI_SQL":
-                    code = d.get("expression", name)
-                    break
-            if not dialects:
-                code = name
-            elif code == name and dialects:
-                code = dialects[0].get("expression", name)
+            by_dialect: dict[str, str] = {}
+            for d in expr_obj.get("dialects", []):
+                if isinstance(d, dict) and d.get("dialect"):
+                    by_dialect.setdefault(d["dialect"], d.get("expression") or name)
+            sql_expr = by_dialect.get("ANSI_SQL") or next(
+                (e for dia, e in by_dialect.items() if dia not in _NON_SQL_DIALECTS),
+                None,
+            )
+            if sql_expr is not None:
+                code = sql_expr
+            elif by_dialect:
+                # The field's only expressions are non-SQL languages, which
+                # cannot serve as a physical SQL column reference.
+                self.warnings.append(
+                    f"Field '{name}': only non-SQL dialect expression(s) "
+                    f"({', '.join(sorted(by_dialect))}); using the field name as the "
+                    f"column code (a non-SQL expression is not valid SQL)."
+                )
 
         # Determine abstract type. Precedence: Apache Ossie's first-class
         # `datatype` (v0.2+, capitalised `DataType` enum) > legacy lowercase

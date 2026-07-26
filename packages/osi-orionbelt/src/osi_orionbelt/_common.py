@@ -23,6 +23,12 @@ _OSI_VERSION = "0.2.0.dev0"
 # ANSI. MDX / TABLEAU / MAQL are non-SQL languages and are never parsed as SQL.
 _SQL_PARSEABLE_DIALECTS = ("ANSI_SQL", "SNOWFLAKE", "DATABRICKS")
 
+# Non-SQL expression languages of the OSI Dialect enum. Their expressions must
+# never be written into an OBML column ``code`` (a physical SQL column
+# reference) - doing so would emit broken SQL. Everything else in the enum
+# (ANSI_SQL, SNOWFLAKE, DATABRICKS, BIGQUERY) is SQL.
+_NON_SQL_DIALECTS = frozenset({"MDX", "TABLEAU", "MAQL"})
+
 # Matches a ``dataset.column`` reference inside a SQL expression, where each
 # side is a bare identifier or a quoted identifier (double quotes, backticks, or
 # brackets). The leading lookbehind prevents matching the tail of a longer path
