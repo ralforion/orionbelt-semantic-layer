@@ -15,6 +15,7 @@ from sqlglot import expressions as exp
 
 from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
+    _NON_SQL_DIALECTS,
     _OBML_VENDOR_READ,
     _OSI_VERSION,
     _SQL_PARSEABLE_DIALECTS,
@@ -390,19 +391,33 @@ class OSItoOBML:
         """
         name = field["name"]
 
-        # Get expression (prefer ANSI_SQL dialect)
+        # Physical column code from the field's expression. Prefer ANSI_SQL,
+        # then any other SQL dialect; never write a non-SQL expression
+        # (MDX/TABLEAU/MAQL) into ``code`` - it is emitted as a physical SQL
+        # column reference, so fall back to the field name and warn instead.
         expr_obj = field.get("expression", {})
-        code = name  # fallback
-        if isinstance(expr_obj, dict):
-            dialects = expr_obj.get("dialects", [])
-            for d in dialects:
-                if d.get("dialect") == "ANSI_SQL":
-                    code = d.get("expression", name)
-                    break
-            if not dialects:
-                code = name
-            elif code == name and dialects:
-                code = dialects[0].get("expression", name)
+        sql_expr = self._sql_dialect_expression(expr_obj)
+        if sql_expr is not None:
+            code = sql_expr
+        else:
+            code = name  # fallback
+            non_sql = sorted(
+                {
+                    d["dialect"]
+                    for d in (expr_obj.get("dialects", []) if isinstance(expr_obj, dict) else [])
+                    if isinstance(d, dict)
+                    and d.get("dialect") in _NON_SQL_DIALECTS
+                    and d.get("expression")
+                }
+            )
+            if non_sql:
+                # The field's only expressions are non-SQL languages, which
+                # cannot serve as a physical SQL column reference.
+                self.warnings.append(
+                    f"Field '{name}': only non-SQL dialect expression(s) "
+                    f"({', '.join(non_sql)}); using the field name as the column "
+                    f"code (a non-SQL expression is not valid SQL)."
+                )
 
         # Determine abstract type. Precedence: Apache Ossie's first-class
         # `datatype` (v0.2+, capitalised `DataType` enum) > legacy lowercase
@@ -1198,24 +1213,43 @@ class OSItoOBML:
         return ident
 
     @staticmethod
+    def _sql_dialect_expression(expr_obj: object) -> str | None:
+        """The field's physical SQL expression: the ``ANSI_SQL`` dialect if
+        present, else any other SQL dialect, and never a non-SQL
+        (``MDX``/``TABLEAU``/``MAQL``) one. Returns ``None`` when the field has no
+        SQL expression. Shared by the column ``code`` selection and the
+        metric-resolution index so the two can never disagree - an MDX expression
+        the code path rejects must not be what the resolver indexes."""
+        if not isinstance(expr_obj, dict):
+            return None
+        by_dialect: dict[str, str] = {}
+        for d in expr_obj.get("dialects", []) or []:
+            if (
+                isinstance(d, dict)
+                and d.get("dialect")
+                and isinstance(d.get("expression"), str)
+                and d["expression"]
+            ):
+                by_dialect.setdefault(d["dialect"], d["expression"])
+        return by_dialect.get("ANSI_SQL") or next(
+            (e for dia, e in by_dialect.items() if dia not in _NON_SQL_DIALECTS),
+            None,
+        )
+
+    @staticmethod
     def _field_expr_identifier(field: dict) -> str | None:
-        """Physical column code of a field when its expression is a single
+        """Physical column code of a field when its SQL expression is a single
         (optionally quoted) identifier, so code-based metric references (e.g.
         ``fact_orders.amount`` or a Snowflake ``"net_amount"``) resolve back to
-        the field. Returns ``None`` for computed expressions with no single
-        column code.
+        the field. Uses the same SQL-dialect selection as the column ``code`` so
+        the resolver never indexes a non-SQL expression. Returns ``None`` for a
+        computed expression, or one with no single-identifier SQL code.
         """
-        expr = field.get("expression")
-        if not isinstance(expr, dict):
+        text = OSItoOBML._sql_dialect_expression(field.get("expression"))
+        if text is None:
             return None
-        for dialect in expr.get("dialects", []) or []:
-            if isinstance(dialect, dict):
-                text = dialect.get("expression")
-                if isinstance(text, str):
-                    candidate = OSItoOBML._unquote_identifier(text)
-                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
-                        return candidate
-        return None
+        candidate = OSItoOBML._unquote_identifier(text)
+        return candidate if re.fullmatch(r"[A-Za-z_]\w*", candidate) else None
 
     def _preserve_unconverted_metric(self, osi_metric: dict, reason: str) -> None:
         """Preserve an OSI metric that has no OBML representation.
