@@ -1185,7 +1185,7 @@ class OSItoOBML:
         )
 
     @staticmethod
-    def _obml_agg_name(node: exp.Expression) -> str | None:
+    def _obml_agg_name(node: exp.Expr) -> str | None:
         """OBML aggregation name for a sqlglot aggregate, or ``None`` when OBML
         has no single-argument equivalent (``VAR_POP``, ``CORR``, ...). Handles
         both real ``exp.AggFunc`` nodes and the ``exp.Anonymous`` nodes sqlglot
@@ -1198,7 +1198,7 @@ class OSItoOBML:
         return None
 
     @staticmethod
-    def _is_agg_node(node: exp.Expression) -> bool:
+    def _is_agg_node(node: exp.Expr) -> bool:
         """Whether ``node`` is an aggregate call - a real ``exp.AggFunc`` (even
         one OBML can't model, so we can preserve rather than mis-emit) or an
         ``exp.Anonymous`` whose name is a known aggregate."""
@@ -1220,7 +1220,7 @@ class OSItoOBML:
         return "float" if agg in _FLOAT_RESULT_AGGS else "int"
 
     @staticmethod
-    def _agg_arg(node: exp.Expression) -> tuple[exp.Expression | None, bool]:
+    def _agg_arg(node: exp.Expr) -> tuple[exp.Expr | None, bool]:
         """The aggregate's single argument and whether it is DISTINCT. Unwraps
         the ``exp.Distinct`` node of ``COUNT(DISTINCT x)``. Returns ``None`` for a
         multi-argument aggregate - a two-column ``CORR(a, b)`` or a
@@ -1242,7 +1242,7 @@ class OSItoOBML:
         return arg, is_distinct
 
     @staticmethod
-    def _parse_metric_sql(expr_text: str, read: str | None) -> exp.Expression | None:
+    def _parse_metric_sql(expr_text: str, read: str | None) -> exp.Expr | None:
         """Parse a metric SQL expression, retrying with bracket-quoted
         identifiers (``[Orders].[amount]``) rewritten to ANSI double quotes when
         the first parse fails (the default grammar does not read ``[...]``).
@@ -1264,12 +1264,12 @@ class OSItoOBML:
         except Exception:
             return None
 
-    def _render_obml(self, node: exp.Expression) -> str:
+    def _render_obml(self, node: exp.Expr) -> str:
         """Render a sqlglot expression to OBML, rewriting qualified column refs
         ``ds.col`` to ``{[ds].[col]}``. Bare columns and literals are left as-is,
         so a numeric literal (``1.23``) is never mistaken for a reference."""
 
-        def _rewrite(n: exp.Expression) -> exp.Expression:
+        def _rewrite(n: exp.Expr) -> exp.Expr:
             if isinstance(n, exp.Column) and n.table:
                 return exp.var("{[" + n.table + "].[" + n.name + "]}")
             return n
@@ -1306,7 +1306,7 @@ class OSItoOBML:
         # ``dataset.column`` reference. Preserve if any qualified ref is unknown.
         unresolved = False
 
-        def _resolve(n: exp.Expression) -> exp.Expression:
+        def _resolve(n: exp.Expr) -> exp.Expr:
             nonlocal unresolved
             if isinstance(n, exp.Column) and n.table:
                 ds_real = ds_lc.get(n.table.lower())
