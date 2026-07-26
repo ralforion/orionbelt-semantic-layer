@@ -17,7 +17,6 @@ sibling modules to keep each file focused:
 * :mod:`osi_orionbelt._common` — shared constants and mapping tables
 * :mod:`osi_orionbelt.osi_to_obml` — :class:`OSItoOBML`
 * :mod:`osi_orionbelt.obml_to_osi` — :class:`OBMLtoOSI`
-* :mod:`osi_orionbelt.ontology` — :class:`OBMLtoOSIOntology`
 * :mod:`osi_orionbelt.validation` — :class:`ValidationResult` + ``validate_*``
 
 Every public name is re-exported here so ``osi_orionbelt.converter.<name>``
@@ -67,16 +66,9 @@ from osi_orionbelt._common import (
     OSI_TO_OBML_TYPE as OSI_TO_OBML_TYPE,
 )
 from osi_orionbelt.obml_to_osi import OBMLtoOSI as OBMLtoOSI
-from osi_orionbelt.ontology import OBMLtoOSIOntology as OBMLtoOSIOntology
 from osi_orionbelt.osi_to_obml import OSItoOBML as OSItoOBML
 from osi_orionbelt.validation import (
     _OBML_SCHEMA_PATH as _OBML_SCHEMA_PATH,
-)
-from osi_orionbelt.validation import (
-    _OSI_CORE_SPEC_RAW_URL as _OSI_CORE_SPEC_RAW_URL,
-)
-from osi_orionbelt.validation import (
-    _OSI_ONTOLOGY_SCHEMA_PATH as _OSI_ONTOLOGY_SCHEMA_PATH,
 )
 from osi_orionbelt.validation import (
     _OSI_SCHEMA_PATH as _OSI_SCHEMA_PATH,
@@ -91,9 +83,6 @@ from osi_orionbelt.validation import (
     ValidationResult as ValidationResult,
 )
 from osi_orionbelt.validation import (
-    _osi_core_registry as _osi_core_registry,
-)
-from osi_orionbelt.validation import (
     _validate_json_schema as _validate_json_schema,
 )
 from osi_orionbelt.validation import (
@@ -102,20 +91,15 @@ from osi_orionbelt.validation import (
 from osi_orionbelt.validation import (
     validate_osi as validate_osi,
 )
-from osi_orionbelt.validation import (
-    validate_osi_ontology as validate_osi_ontology,
-)
 
 __all__ = [
     "OBML_TO_OSI_TYPE",
     "OSI_TO_OBML_TYPE",
     "OBMLtoOSI",
-    "OBMLtoOSIOntology",
     "OSItoOBML",
     "ValidationResult",
     "validate_obml",
     "validate_osi",
-    "validate_osi_ontology",
     "main",
 ]
 

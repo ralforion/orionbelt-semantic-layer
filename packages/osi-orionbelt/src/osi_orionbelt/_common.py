@@ -1,7 +1,7 @@
 """Shared constants and mapping tables for the OSI ↔ OBML converter.
 
 These module-level constants are used by more than one of the converter
-direction classes (``OSItoOBML``, ``OBMLtoOSI``, ``OBMLtoOSIOntology``) and the
+direction classes (``OSItoOBML``, ``OBMLtoOSI``) and the
 validation helpers. They live here so both the facade ``converter`` module and
 the per-direction class modules can import them without forming an import cycle.
 """

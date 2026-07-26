@@ -4,7 +4,6 @@ A single ``osi-orionbelt`` command with two format-named subcommands, mirroring
 the OSI converter convention (e.g. ``osi-dbt msi-to-osi``):
 
     osi-orionbelt obml-to-osi  -i model.obml.yaml -o model.osi.yaml
-    osi-orionbelt obml-to-osi --ontology -i model.obml.yaml -o model.ontology.yaml
     osi-orionbelt osi-to-obml  -i model.osi.yaml  -o model.obml.yaml
 
 Both subcommands print conversion warnings and a validation summary to stderr,
@@ -23,11 +22,9 @@ import yaml
 
 from osi_orionbelt.converter import (
     OBMLtoOSI,
-    OBMLtoOSIOntology,
     OSItoOBML,
     validate_obml,
     validate_osi,
-    validate_osi_ontology,
 )
 
 
@@ -68,27 +65,18 @@ def _report_validation(label: str, result: dict[str, Any], validate_fn: Any) -> 
 
 
 def _cmd_obml_to_osi(args: argparse.Namespace) -> int:
-    """OBML -> OSI core-spec (or, with --ontology, OSI ontology)."""
+    """OBML -> OSI core-spec."""
     data = _load(args.input)
 
-    validate_fn: Any
-    if args.ontology:
-        converter: Any = OBMLtoOSIOntology(
-            data, args.model_name, args.description, args.ai_instructions
-        )
-        result = converter.convert()
-        validate_fn, label = validate_osi_ontology, "OSI ontology output"
-    else:
-        converter = OBMLtoOSI(data, args.model_name, args.description, args.ai_instructions)
-        result = converter.convert()
-        validate_fn, label = validate_osi, "OSI output"
+    converter = OBMLtoOSI(data, args.model_name, args.description, args.ai_instructions)
+    result = converter.convert()
 
     _emit(result, args.output)
     _print_warnings(converter.warnings)
 
     if args.no_validate:
         return 0
-    return 1 if _report_validation(label, result, validate_fn) else 0
+    return 1 if _report_validation("OSI output", result, validate_osi) else 0
 
 
 def _cmd_osi_to_obml(args: argparse.Namespace) -> int:
@@ -117,9 +105,6 @@ def main(argv: list[str] | None = None) -> int:
     o2s.add_argument("-i", "--input", required=True, metavar="FILE", help="Path to OBML YAML")
     o2s.add_argument(
         "-o", "--output", required=True, metavar="FILE", help="Path for output OSI YAML"
-    )
-    o2s.add_argument(
-        "--ontology", action="store_true", help="Emit an OSI ontology document instead of core-spec"
     )
     o2s.add_argument(
         "--model-name", default="semantic_model", metavar="NAME", help="OSI semantic model name"
