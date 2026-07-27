@@ -239,11 +239,7 @@ def _lit(v: Any, *, date_literals: bool = False, backslash_escape: bool = False)
     # GoogleSQL escapes a quote as ``\'``; every other dialect doubles it as
     # ``''``. In the backslash path, escape backslashes first so they don't
     # consume the quote escape.
-    s = (
-        s.replace("\\", "\\\\").replace("'", "\\'")
-        if backslash_escape
-        else s.replace("'", "''")
-    )
+    s = s.replace("\\", "\\\\").replace("'", "\\'") if backslash_escape else s.replace("'", "''")
     return f"'{s}'"
 
 
