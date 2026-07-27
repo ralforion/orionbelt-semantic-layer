@@ -795,6 +795,18 @@ class OBMLtoOSIRequest(ConvertRequest):
     model_name: str = Field(default="semantic_model", description="Name for the OSI model")
     model_description: str = Field(default="", description="Description for the OSI model")
     ai_instructions: str = Field(default="", description="AI instructions for the OSI model")
+    include_ontology: bool = Field(
+        default=False,
+        # OpenAPI-only deprecation flag; using ``deprecated=True`` would make
+        # Pydantic emit a DeprecationWarning on every attribute read (the handler
+        # reads it on every request), so mark it via the JSON schema instead.
+        json_schema_extra={"deprecated": True},
+        description=(
+            "Removed. The OSI ontology emit is no longer supported (generating an "
+            "ontology from a logical model is out of scope). Sending true returns "
+            "410 Gone; omit this field."
+        ),
+    )
 
 
 class ValidationDetail(BaseModel):

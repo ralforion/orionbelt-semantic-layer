@@ -240,3 +240,14 @@ class TestObmlToOsiInputValidation:
         assert iv["schema_valid"] is False
         assert any("label" in e for e in iv["schema_errors"]), iv["schema_errors"]
         # The conversion still produced OSI output.
+        assert body["output_yaml"]
+
+    async def test_include_ontology_returns_410(self, client: AsyncClient) -> None:
+        # The OSI ontology emit was removed; requesting it must fail loudly with
+        # 410 Gone rather than silently returning 200 without an ontology.
+        response = await client.post(
+            "/v1/convert/obml-to-osi",
+            json={"input_yaml": yaml.safe_dump(self._VALID_OBML), "include_ontology": True},
+        )
+        assert response.status_code == 410, response.text
+        assert "ontology" in response.json()["detail"].lower()

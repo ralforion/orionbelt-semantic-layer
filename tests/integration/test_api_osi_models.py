@@ -152,6 +152,22 @@ class TestExportModelToOsi:
         resp = await client.get(f"/v1/sessions/{sid}/models/nope/osi")
         assert resp.status_code == 404
 
+    async def test_export_include_ontology_returns_410(self, client: AsyncClient) -> None:
+        # The OSI ontology emit was removed; requesting it must fail with 410
+        # Gone rather than silently exporting without an ontology.
+        sid = await _new_session(client)
+        load = await client.post(
+            f"/v1/sessions/{sid}/models/from-osi",
+            json={"osi_yaml": yaml.safe_dump(_OSI_V02_MINIMAL)},
+        )
+        model_id = load.json()["model_id"]
+        export = await client.get(
+            f"/v1/sessions/{sid}/models/{model_id}/osi",
+            params={"include_ontology": "true"},
+        )
+        assert export.status_code == 410, export.text
+        assert "ontology" in export.json()["detail"].lower()
+
     async def test_export_unknown_session_returns_404(self, client: AsyncClient) -> None:
         resp = await client.get("/v1/sessions/does-not-exist/models/m1/osi")
         assert resp.status_code == 404

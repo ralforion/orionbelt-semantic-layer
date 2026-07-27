@@ -145,7 +145,6 @@ format:
 
 ```bash
 obsl convert obml-to-osi model.yaml > model.osi.yaml
-obsl convert obml-to-osi model.yaml --ontology          # also emit the OSI ontology
 obsl convert osi-to-obml model.osi.yaml > model.yaml
 ```
 

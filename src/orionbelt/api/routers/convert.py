@@ -68,6 +68,15 @@ async def osi_to_obml(body: ConvertRequest) -> ConvertResponse:
 )
 async def obml_to_osi(body: OBMLtoOSIRequest) -> ConvertResponse:
     """Convert OBML YAML → OSI YAML."""
+    if body.include_ontology:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "The OSI ontology emit has been removed (generating an ontology from a "
+                "logical model is out of scope). Omit 'include_ontology'; the core-spec "
+                "OSI conversion is unchanged."
+            ),
+        )
     data = parse_yaml(body.input_yaml)
     mod = get_converter_module()
 

@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from orionbelt.api.deps import (
     CacheRuntimeConfig,
@@ -364,6 +364,16 @@ async def export_model_to_osi(
     model_name: str = "semantic_model",
     model_description: str = "",
     ai_instructions: str = "",
+    include_ontology: Annotated[
+        bool,
+        Query(
+            deprecated=True,
+            description=(
+                "Removed. The OSI ontology emit is no longer supported; passing true "
+                "returns 410 Gone. Omit this parameter."
+            ),
+        ),
+    ] = False,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ConvertResponse:
     """Export a loaded model from the model store as OSI YAML.
@@ -374,6 +384,15 @@ async def export_model_to_osi(
     query params override the OSI model name, description, and AI
     instructions.
     """
+    if include_ontology:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "The OSI ontology emit has been removed (generating an ontology from a "
+                "logical model is out of scope). Omit 'include_ontology'; the core-spec "
+                "OSI export is unchanged."
+            ),
+        )
     store = _get_store(session_id, mgr)
     try:
         obml_dict = store.get_raw(model_id)
