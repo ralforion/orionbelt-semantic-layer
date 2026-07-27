@@ -28,9 +28,8 @@ def get_converter_module() -> types.ModuleType:
 
     The converter ships as the optional ``osi_orionbelt`` package and exposes
     its public symbols at the top level (``OSItoOBML``, ``OBMLtoOSI``,
-    ``OBMLtoOSIOntology``, ``validate_obml``, ``validate_osi``,
-    ``validate_osi_ontology``). It is not a hard dependency, so when it is not
-    installed the OSI endpoints return a clear 503 rather than a 500.
+    ``validate_obml``, ``validate_osi``). It is not a hard dependency, so when it
+    is not installed the OSI endpoints return a clear 503 rather than a 500.
     """
     try:
         return importlib.import_module("osi_orionbelt")

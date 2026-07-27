@@ -59,7 +59,7 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 | `describe` | `-f/--format` |
 | `diagram` | `--columns/--no-columns` (default columns) · `--theme NAME` (Mermaid theme, default `default`) |
 | `graph` | _(none)_ |
-| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--ontology` (obml-to-osi only) · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` |
+| `convert` | `DIRECTION` (`osi-to-obml`\|`obml-to-osi`) · `INPUT` · `--name NAME` (OSI model name, obml-to-osi) · `-s/--server` · `--api-key` |
 | `dialects` | `-f/--format` · `-s/--server` · `--api-key` |
 
 Global: `-V/--version`, `--install-completion`, `--show-completion`.
@@ -145,7 +145,6 @@ format:
 
 ```bash
 obsl convert obml-to-osi model.yaml > model.osi.yaml
-obsl convert obml-to-osi model.yaml --ontology          # also emit the OSI ontology
 obsl convert osi-to-obml model.osi.yaml > model.yaml
 ```
 

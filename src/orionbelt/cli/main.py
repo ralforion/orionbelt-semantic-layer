@@ -491,9 +491,6 @@ def convert(
     input_file: Annotated[
         str, typer.Argument(metavar="INPUT", help="Input YAML file (or '-' for stdin).")
     ],
-    ontology: Annotated[
-        bool, typer.Option("--ontology", help="Also emit the OSI ontology (obml-to-osi only).")
-    ] = False,
     model_name: Annotated[
         str, typer.Option("--name", help="OSI model name (obml-to-osi only).")
     ] = "semantic_model",
@@ -535,33 +532,24 @@ def convert(
 
         try:
             data = RemoteClient(server, api_key).convert_obml_to_osi(
-                input_yaml, model_name=model_name, include_ontology=ontology
+                input_yaml, model_name=model_name
             )
         except CliError as exc:
             raise _fail(str(exc)) from None
         output = data.get("output_yaml", "")
         warnings = _remote_input_schema_warnings(data, "OBML") + (data.get("warnings") or [])
-        onto_yaml = data.get("ontology_yaml")
     else:
         import yaml
 
         from orionbelt.cli import _local
 
         try:
-            result, warnings, _, onto = _local.convert_obml_to_osi(
-                input_yaml, model_name=model_name, include_ontology=ontology
-            )
+            result, warnings, _ = _local.convert_obml_to_osi(input_yaml, model_name=model_name)
         except CliError as exc:
             raise _fail(str(exc)) from None
         output = yaml.dump(result, sort_keys=False, allow_unicode=True, width=120)
-        onto_yaml = (
-            yaml.dump(onto, sort_keys=False, allow_unicode=True, width=120) if onto else None
-        )
     _emit_warnings(warnings)
     _render.raw(output)
-    if ontology and onto_yaml:
-        _render.note("--- ontology ---")
-        _render.raw(onto_yaml)
 
 
 @app.command()

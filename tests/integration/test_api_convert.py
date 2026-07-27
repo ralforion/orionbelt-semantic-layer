@@ -223,9 +223,6 @@ class TestObmlToOsiInputValidation:
         body = response.json()
         assert body["input_validation"] is not None
         assert body["input_validation"]["schema_valid"] is True
-        # No ontology unless explicitly requested.
-        assert body["ontology_yaml"] is None
-        assert body["ontology_validation"] is None
 
     async def test_authored_label_surfaced_but_conversion_runs(self, client: AsyncClient) -> None:
         obml = json.loads(json.dumps(self._VALID_OBML))
@@ -245,50 +242,12 @@ class TestObmlToOsiInputValidation:
         # The conversion still produced OSI output.
         assert body["output_yaml"]
 
-
-class TestObmlToOsiOntology:
-    """include_ontology=true adds a separate, individually-valid OSI ontology
-    document alongside the unchanged core-spec export."""
-
-    _OBML = {
-        "version": 1.0,
-        "dataObjects": {
-            "Orders": {
-                "code": "ORDERS",
-                "columns": {
-                    "Order ID": {"code": "ORDER_ID", "primaryKey": True},
-                    "Customer Ref": {"code": "CUSTOMER_ID"},
-                },
-                "joins": [
-                    {
-                        "joinType": "many-to-one",
-                        "joinTo": "Customers",
-                        "columnsFrom": ["Customer Ref"],
-                        "columnsTo": ["Customer ID"],
-                    }
-                ],
-            },
-            "Customers": {
-                "code": "CUSTOMERS",
-                "columns": {"Customer ID": {"code": "CUSTOMER_ID", "primaryKey": True}},
-            },
-        },
-    }
-
-    async def test_include_ontology_emits_valid_document(self, client: AsyncClient) -> None:
+    async def test_include_ontology_returns_410(self, client: AsyncClient) -> None:
+        # The OSI ontology emit was removed; requesting it must fail loudly with
+        # 410 Gone rather than silently returning 200 without an ontology.
         response = await client.post(
             "/v1/convert/obml-to-osi",
-            json={"input_yaml": yaml.safe_dump(self._OBML), "include_ontology": True},
+            json={"input_yaml": yaml.safe_dump(self._VALID_OBML), "include_ontology": True},
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        # Core export still present and valid.
-        assert "semantic_model" in yaml.safe_load(body["output_yaml"])
-        assert body["validation"]["schema_valid"] is True
-        # Ontology is a distinct, valid document (not merged into the core doc).
-        onto = yaml.safe_load(body["ontology_yaml"])
-        assert onto["version"] == "0.2.0.dev0"
-        assert {c["concept"]["name"] for c in onto["ontology"]} == {"Orders", "Customers"}
-        assert "semantic_model" not in onto
-        assert body["ontology_validation"]["schema_valid"] is True
-        assert body["ontology_validation"]["semantic_valid"] is True
+        assert response.status_code == 410, response.text
+        assert "ontology" in response.json()["detail"].lower()

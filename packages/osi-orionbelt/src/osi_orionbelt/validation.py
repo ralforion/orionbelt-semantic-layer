@@ -1,4 +1,4 @@
-"""Validation helpers for OBML / OSI / OSI-ontology documents.
+"""Validation helpers for OBML / OSI documents.
 
 Extracted verbatim from ``converter.py``. Schema files are vendored beside the
 package under ``schemas/``.
@@ -46,14 +46,6 @@ def _osi_schema_path(filename: str) -> Path:
 
 
 _OSI_SCHEMA_PATH = _osi_schema_path("osi-schema.json")
-_OSI_ONTOLOGY_SCHEMA_PATH = _osi_schema_path("osi-ontology-schema.json")
-
-# The OSI ontology schema $refs the core-spec schema by its public raw URL for
-# ``ai_context`` and the embedded ``semantic_model``. Resolve that URL against
-# the vendored local copy so validation never touches the network.
-_OSI_CORE_SPEC_RAW_URL = (
-    "https://raw.githubusercontent.com/apache/ossie/main/core-spec/osi-schema.json"
-)
 
 
 class ValidationResult:
@@ -126,30 +118,6 @@ def _validate_json_schema(
     for error in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path)):
         path = ".".join(str(p) for p in error.absolute_path) or "(root)"
         result.schema_errors.append(f"[{path}] {error.message}")
-
-
-def _osi_core_registry() -> Any | None:
-    """Build a ``referencing.Registry`` that resolves the OSI core-spec schema
-    URL (referenced by the ontology schema) to the vendored local copy. Returns
-    ``None`` if the dependencies or the local core schema are unavailable, in
-    which case the caller falls back to default (network) resolution."""
-    try:
-        from referencing import Registry, Resource
-        from referencing.jsonschema import DRAFT202012
-    except ImportError:
-        return None
-    if not _OSI_SCHEMA_PATH.exists():
-        return None
-    with open(_OSI_SCHEMA_PATH) as f:
-        core = json.load(f)
-    core_res = Resource.from_contents(core, default_specification=DRAFT202012)
-    # Register under both the raw URL used by the ontology schema's $refs and
-    # the core schema's own canonical $id (so its internal #/$defs refs resolve).
-    resources = [(_OSI_CORE_SPEC_RAW_URL, core_res)]
-    core_id = core_res.id()
-    if core_id:
-        resources.append((core_id, core_res))
-    return Registry().with_resources(resources)
 
 
 # ── OBML Validation ──────────────────────────────────────────────────────
@@ -294,61 +262,6 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
                 result.semantic_errors.append(
                     f"[UNKNOWN_DATASET_REF] Relationship '{rel_name}' "
                     f"references unknown dataset '{to_ds}'"
-                )
-
-    return result
-
-
-def validate_osi_ontology(
-    onto_dict: dict[str, Any], schema_path: Path | None = None
-) -> ValidationResult:
-    """Validate an OSI ontology dict against JSON Schema and semantic rules.
-
-    1. **JSON Schema** — structural correctness against ``osi-ontology-schema.json``
-       (Draft 2020-12). External ``$ref``s to the core-spec schema are resolved
-       against the vendored local copy via a ``referencing`` registry.
-    2. **Unique concept names** across the ``ontology`` components.
-    3. **Reference integrity** — relationship roles and concept_mappings
-       reference concepts defined in the ontology.
-    """
-    result = ValidationResult("OSI-ONTOLOGY")
-
-    # 1. JSON Schema validation (offline external-ref resolution).
-    _validate_json_schema(
-        onto_dict,
-        schema_path or _OSI_ONTOLOGY_SCHEMA_PATH,
-        result,
-        draft="draft2020",
-        registry=_osi_core_registry(),
-    )
-
-    # 2. Unique concept names + collect the defined set.
-    defined: set[str] = set()
-    for comp in onto_dict.get("ontology", []):
-        name = comp.get("concept", {}).get("name", "")
-        if name in defined:
-            result.semantic_errors.append(f"[DUPLICATE_CONCEPT] Duplicate concept name '{name}'")
-        defined.add(name)
-
-    # 3. Reference integrity — roles reference defined concepts.
-    for comp in onto_dict.get("ontology", []):
-        for rel in comp.get("relationships", []):
-            rel_name = rel.get("name", "<unnamed>")
-            for role in rel.get("roles", []):
-                rc = role.get("concept")
-                if rc and rc not in defined:
-                    result.semantic_errors.append(
-                        f"[UNKNOWN_CONCEPT_REF] Relationship '{rel_name}' role "
-                        f"references unknown concept '{rc}'"
-                    )
-
-    # concept_mappings reference defined concepts.
-    for omap in onto_dict.get("ontology_mappings", []):
-        for cm in omap.get("concept_mappings", []):
-            cc = cm.get("concept")
-            if cc and cc not in defined:
-                result.semantic_errors.append(
-                    f"[UNKNOWN_CONCEPT_REF] Concept mapping references unknown concept '{cc}'"
                 )
 
     return result

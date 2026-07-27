@@ -40,12 +40,10 @@ A single `osi-orionbelt` command with two subcommands (mirroring `osi-dbt`):
 | Subcommand | Direction | In | Out |
 |---------|-----------|----|----|
 | `obml-to-osi` | OBML -> OSI core-spec | OBML YAML | OSI YAML |
-| `obml-to-osi --ontology` | OBML -> OSI ontology | OBML YAML | OSI ontology YAML |
 | `osi-to-obml` | OSI core-spec -> OBML | OSI YAML | OBML YAML |
 
 ```bash
 osi-orionbelt obml-to-osi -i model.obml.yaml -o model.osi.yaml
-osi-orionbelt obml-to-osi --ontology -i model.obml.yaml -o model.ontology.yaml
 osi-orionbelt osi-to-obml -i model.osi.yaml -o model.obml.yaml
 ```
 
@@ -97,8 +95,6 @@ OBML, but are not interpreted by other OSI consumers:
   export.
 - **Named secondary join paths** - OBML's multiple join paths between the same
   pair of objects are an OBML-specific topology feature.
-- **Measures / metrics and column-level value concepts in the ontology layer** -
-  not represented in the OSI ontology export.
 - **OSI metrics with no OBML representation** - a metric whose only expression is
   in a non-SQL dialect (`MDX`, `TABLEAU`, `MAQL`), or whose SQL expression cannot
   be decomposed into OBML measures/metrics, is **not** dropped: the original OSI
@@ -112,9 +108,7 @@ OSI v0.1.x inputs are accepted on read via a legacy normalization shim; output
 targets OSI **v0.2.0.dev0**.
 
 See [`osi_obml_mapping_analysis.md`](./osi_obml_mapping_analysis.md) for the
-full OBML <-> OSI core-spec mapping and
-[`osi_obml_ontology_mapping_analysis.md`](./osi_obml_ontology_mapping_analysis.md)
-for the ontology-layer mapping and its documented gaps.
+full OBML <-> OSI core-spec mapping.
 
 ## Development
 

@@ -19,10 +19,8 @@ def test_get_converter_module_returns_package() -> None:
     for sym in (
         "OSItoOBML",
         "OBMLtoOSI",
-        "OBMLtoOSIOntology",
         "validate_obml",
         "validate_osi",
-        "validate_osi_ontology",
     ):
         assert hasattr(mod, sym)
 

@@ -286,11 +286,10 @@ def convert_obml_to_osi(
     model_name: str = "semantic_model",
     model_description: str = "",
     ai_instructions: str = "",
-    include_ontology: bool = False,
-) -> tuple[dict[str, Any], list[str], dict[str, Any], dict[str, Any] | None]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """Convert an OBML document to an OSI dict.
 
-    Returns ``(osi_dict, warnings, validation, ontology_dict_or_none)``.
+    Returns ``(osi_dict, warnings, validation)``.
     """
     import yaml
 
@@ -317,18 +316,4 @@ def convert_obml_to_osi(
         raise CliError(f"OBML -> OSI conversion failed: {exc}") from None
     warnings = input_warnings + list(converter.warnings)
 
-    ontology: dict[str, Any] | None = None
-    if include_ontology:
-        onto_conv = mod.OBMLtoOSIOntology(
-            data,
-            model_name=model_name,
-            model_description=model_description,
-            ai_instructions=ai_instructions,
-        )
-        try:
-            ontology = onto_conv.convert()
-        except Exception as exc:  # noqa: BLE001
-            raise CliError(f"OBML -> OSI ontology conversion failed: {exc}") from None
-        warnings = warnings + list(onto_conv.warnings)
-
-    return result, warnings, _validation_dict(mod.validate_osi, result), ontology
+    return result, warnings, _validation_dict(mod.validate_osi, result)

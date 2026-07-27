@@ -126,7 +126,6 @@ class RemoteClient:
         model_name: str = "semantic_model",
         model_description: str = "",
         ai_instructions: str = "",
-        include_ontology: bool = False,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
@@ -137,7 +136,6 @@ class RemoteClient:
                     "model_name": model_name,
                     "model_description": model_description,
                     "ai_instructions": ai_instructions,
-                    "include_ontology": include_ontology,
                 },
             ),
         )

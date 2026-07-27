@@ -797,10 +797,14 @@ class OBMLtoOSIRequest(ConvertRequest):
     ai_instructions: str = Field(default="", description="AI instructions for the OSI model")
     include_ontology: bool = Field(
         default=False,
+        # OpenAPI-only deprecation flag; using ``deprecated=True`` would make
+        # Pydantic emit a DeprecationWarning on every attribute read (the handler
+        # reads it on every request), so mark it via the JSON schema instead.
+        json_schema_extra={"deprecated": True},
         description=(
-            "Also emit the OSI ontology document (separate ontology.json-schema "
-            "artefact) in 'ontology_yaml' with its own 'ontology_validation'. The "
-            "core-spec 'output_yaml' is unchanged."
+            "Removed. The OSI ontology emit is no longer supported (generating an "
+            "ontology from a logical model is out of scope). Sending true returns "
+            "410 Gone; omit this field."
         ),
     )
 
@@ -832,18 +836,6 @@ class ConvertResponse(BaseModel):
             "input against the vendored OSI v0.2 schema). None when no input-side "
             "validation runs."
         ),
-    )
-    ontology_yaml: str | None = Field(
-        default=None,
-        description=(
-            "OSI ontology document (a separate artefact validated against the OSI "
-            "ontology schema), emitted only for OBML→OSI conversions when "
-            "'include_ontology' is requested. None otherwise."
-        ),
-    )
-    ontology_validation: ValidationDetail | None = Field(
-        default=None,
-        description="Validation results for 'ontology_yaml'. None when no ontology is emitted.",
     )
 
 

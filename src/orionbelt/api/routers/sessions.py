@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from orionbelt.api.deps import (
     CacheRuntimeConfig,
@@ -364,7 +364,16 @@ async def export_model_to_osi(
     model_name: str = "semantic_model",
     model_description: str = "",
     ai_instructions: str = "",
-    include_ontology: bool = False,
+    include_ontology: Annotated[
+        bool,
+        Query(
+            deprecated=True,
+            description=(
+                "Removed. The OSI ontology emit is no longer supported; passing true "
+                "returns 410 Gone. Omit this parameter."
+            ),
+        ),
+    ] = False,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ConvertResponse:
     """Export a loaded model from the model store as OSI YAML.
@@ -373,10 +382,17 @@ async def export_model_to_osi(
     time, falling back to a lossy reconstruction for programmatically
     built models) to Open Semantic Interchange (OSI) format. Optional
     query params override the OSI model name, description, and AI
-    instructions. Set ``include_ontology=true`` to also emit the OSI
-    ontology document in ``ontology_yaml`` (a separate artefact with its
-    own ``ontology_validation``); the core-spec ``output_yaml`` is unchanged.
+    instructions.
     """
+    if include_ontology:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "The OSI ontology emit has been removed (generating an ontology from a "
+                "logical model is out of scope). Omit 'include_ontology'; the core-spec "
+                "OSI export is unchanged."
+            ),
+        )
     store = _get_store(session_id, mgr)
     try:
         obml_dict = store.get_raw(model_id)
@@ -402,34 +418,10 @@ async def export_model_to_osi(
     )
     validation = run_validation(mod.validate_osi, osi_dict)
 
-    ontology_yaml: str | None = None
-    ontology_validation = None
-    if include_ontology:
-        try:
-            onto_conv = mod.OBMLtoOSIOntology(
-                obml_dict,
-                model_name=model_name,
-                model_description=model_description,
-                ai_instructions=ai_instructions,
-            )
-            onto_dict = onto_conv.convert()
-            warnings = warnings + list(onto_conv.warnings)
-        except Exception as exc:
-            logger.exception("OBML → OSI ontology conversion failed")
-            raise HTTPException(
-                status_code=422, detail=f"OBML → OSI ontology conversion failed: {exc}"
-            ) from exc
-        ontology_yaml = yaml.dump(
-            onto_dict, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120
-        )
-        ontology_validation = run_validation(mod.validate_osi_ontology, onto_dict)
-
     return ConvertResponse(
         output_yaml=output_yaml,
         warnings=warnings,
         validation=validation,
-        ontology_yaml=ontology_yaml,
-        ontology_validation=ontology_validation,
     )
 
 

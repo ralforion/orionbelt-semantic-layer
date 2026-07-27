@@ -192,9 +192,6 @@ osi-orionbelt obml-to-osi -i tpcds_as_obml.yaml -o tpcds_obml_as_osi.yaml \
   --model-name tpcds_retail_model \
   --description "TPC-DS retail semantic model"
 
-# OBML → OSI ontology document
-osi-orionbelt obml-to-osi --ontology -i tpcds_as_obml.yaml -o tpcds_ontology.yaml
-
 # Skip validation
 osi-orionbelt osi-to-obml -i input.yaml -o output.yaml --no-validate
 ```
@@ -205,7 +202,6 @@ osi-orionbelt osi-to-obml -i input.yaml -o output.yaml --no-validate
 |---|---|
 | `osi-to-obml` | Convert OSI → OBML |
 | `obml-to-osi` | Convert OBML → OSI |
-| `--ontology` | (`obml-to-osi`) emit an OSI ontology document instead of core-spec |
 | `-i`, `--input` | Input file (required) |
 | `-o`, `--output` | Output file (required) |
 | `--model-name` | Model name for OBML → OSI |
