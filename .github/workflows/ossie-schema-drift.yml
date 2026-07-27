@@ -31,7 +31,7 @@ jobs:
 
       - name: Open or update tracking issue on drift
         if: steps.drift.outputs.code == '1'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
