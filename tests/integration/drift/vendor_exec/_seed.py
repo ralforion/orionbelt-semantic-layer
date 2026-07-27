@@ -122,6 +122,11 @@ class VendorSpec:
     # four container-tested engines coerce plain strings happily and are
     # left as-is; the cloud engines are stricter.
     date_literals: bool = False
+    # GoogleSQL (BigQuery) escapes a single quote inside a string literal with a
+    # backslash (``\'``); the SQL-standard doubling (``''``) parses there as two
+    # adjacent literals ("O''Brien" -> 'O' 'Brien') and errors. Every other
+    # dialect here accepts ``''``. Set True to switch to backslash escaping.
+    backslash_escape: bool = False
     notes: tuple[str, ...] = ()
 
     def q(self, name: str) -> str:
@@ -178,6 +183,7 @@ _SPECS: dict[str, VendorSpec] = {
         container="SCHEMA",
         executed=False,
         date_literals=True,
+        backslash_escape=True,
         notes=("Run against the target project. `orionbelt_1` is the dataset.",),
     ),
     "snowflake": VendorSpec(
@@ -222,19 +228,31 @@ VENDORS: tuple[str, ...] = tuple(_SPECS)
 # ----------------------------------------------------------------------
 
 
-def _lit(v: Any, *, date_literals: bool = False) -> str:
+def _lit(v: Any, *, date_literals: bool = False, backslash_escape: bool = False) -> str:
     if v is None:
         return "NULL"
     if isinstance(v, (int, float, Decimal)):
         return str(v)
     if isinstance(v, date):
         return f"DATE '{v.isoformat()}'" if date_literals else f"'{v.isoformat()}'"
-    s = str(v).replace("'", "''")
+    s = str(v)
+    # GoogleSQL escapes a quote as ``\'``; every other dialect doubles it as
+    # ``''``. In the backslash path, escape backslashes first so they don't
+    # consume the quote escape.
+    s = (
+        s.replace("\\", "\\\\").replace("'", "\\'")
+        if backslash_escape
+        else s.replace("'", "''")
+    )
     return f"'{s}'"
 
 
 def _values_batches(
-    rows: list[tuple[Any, ...]], batch_size: int, *, date_literals: bool = False
+    rows: list[tuple[Any, ...]],
+    batch_size: int,
+    *,
+    date_literals: bool = False,
+    backslash_escape: bool = False,
 ) -> list[str]:
     """Yield ``(...), (...)`` strings, ``batch_size`` rows per chunk."""
     out: list[str] = []
@@ -242,7 +260,12 @@ def _values_batches(
         chunk = rows[i : i + batch_size]
         out.append(
             ", ".join(
-                "(" + ", ".join(_lit(v, date_literals=date_literals) for v in row) + ")"
+                "("
+                + ", ".join(
+                    _lit(v, date_literals=date_literals, backslash_escape=backslash_escape)
+                    for v in row
+                )
+                + ")"
                 for row in chunk
             )
         )
@@ -321,7 +344,10 @@ def plan(vendor: str, *, grant_user: str | None = None) -> SeedPlan:
         inserts = [
             f"INSERT INTO {spec.table(tbl)} VALUES {batch}"
             for batch in _values_batches(
-                payload["rows"], _BATCH_SIZE, date_literals=spec.date_literals
+                payload["rows"],
+                _BATCH_SIZE,
+                date_literals=spec.date_literals,
+                backslash_escape=spec.backslash_escape,
             )
         ]
         tables.append((table_ddl, inserts))
