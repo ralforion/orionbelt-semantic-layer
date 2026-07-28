@@ -13,9 +13,10 @@ Databricks warehouse — the credit-gated `-m databricks` suite is the only path
 that exercises the true Databricks SQL warehouse + Delta, but this catches the
 same class of dialect bugs the other vendor sweeps found.
 
-Opt-in via the ``spark`` marker (needs ``pyspark`` and a JDK)::
+Opt-in via the ``spark`` marker (needs ``pyspark`` and a JDK; Spark 4 dropped
+Java 8/11, so 4.x needs a JDK 17 or newer)::
 
-    uv pip install 'pyspark>=3.5,<4.0'   # or: pip install -e '.[spark]'
+    uv pip install 'pyspark>=3.5,<5.0'   # or: pip install -e '.[spark]'
     uv run pytest -m spark
 
 Skips cleanly if pyspark is missing or no JDK is available.
