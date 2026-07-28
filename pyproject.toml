@@ -94,7 +94,7 @@ dev = [
 # SQL, so a local PySpark session (ANSI mode) validates the dialect's analytical
 # query surface without a live Databricks warehouse. Needs a JDK on PATH.
 spark = [
-    "pyspark>=3.5,<4.0",
+    "pyspark>=3.5,<5.0",
 ]
 docs = [
     "mkdocs-material>=9.7",
