@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 
 import networkx as nx
@@ -9,12 +10,16 @@ import networkx as nx
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     DataType,
+    Measure,
     MeasureFilter,
     MeasureFilterGroup,
     MeasureFilterItem,
     SemanticModel,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
+
+# ``{[Data Object].[Column]}`` reference inside a measure expression.
+_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 
 
 class SemanticValidator:
@@ -33,6 +38,7 @@ class SemanticValidator:
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
+        errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
         return errors
@@ -478,6 +484,77 @@ class SemanticValidator:
                         )
                     )
         return errors
+
+    def _check_distinct_within_group(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject ``distinct: true`` + a ``withinGroup`` that is not the aggregated column.
+
+        SQL restricts a DISTINCT aggregate's ORDER BY to expressions that appear
+        in its argument list: the engine sorts the deduplicated values, so it
+        cannot order them by something it has just collapsed away. Postgres,
+        DuckDB and BigQuery all reject it outright ("In a DISTINCT aggregate,
+        ORDER BY expressions must appear in the argument list").
+
+        Without this check the model loads happily and every query touching the
+        measure fails at execution time with a driver-level binder error, which
+        points at generated SQL rather than at the two lines of OBML that caused
+        it.
+        """
+        errors: list[SemanticError] = []
+        for measure_name, measure in model.measures.items():
+            if not measure.distinct or measure.within_group is None:
+                continue
+
+            ordered = measure.within_group.column
+            ordered_ref = (ordered.view or "", ordered.column or "")
+            if ordered_ref in self._aggregated_column_refs(measure):
+                continue
+
+            aggregated = self._describe_aggregated_columns(measure)
+            errors.append(
+                SemanticError(
+                    code="WITHIN_GROUP_NOT_IN_DISTINCT_ARGS",
+                    message=(
+                        f"Measure '{measure_name}' is DISTINCT but orders by "
+                        f"'{ordered_ref[0]}.{ordered_ref[1]}', which is not among the "
+                        f"columns it aggregates ({aggregated}). A DISTINCT aggregate "
+                        f"can only be ordered by an expression in its argument list, "
+                        f"so this fails at execution time on Postgres, DuckDB and "
+                        f"BigQuery among others."
+                    ),
+                    path=f"measures.{measure_name}.withinGroup",
+                    hint=(
+                        "Order by the aggregated column itself, or drop "
+                        "`distinct: true` if the ordering matters more than "
+                        "deduplication."
+                    ),
+                )
+            )
+        return errors
+
+    @staticmethod
+    def _aggregated_column_refs(measure: Measure) -> set[tuple[str, str]]:
+        """The ``(dataObject, column)`` pairs that form a measure's aggregate argument.
+
+        Only a bare column reference can be matched against a ``withinGroup``
+        column. An ``expression`` that computes something (``a || b``) aggregates
+        that computed value, not its parts, so ordering by any single part is
+        still outside the argument list — hence the empty set.
+        """
+        if measure.columns:
+            return {(c.view or "", c.column or "") for c in measure.columns}
+        if measure.expression:
+            refs = _MEASURE_COLUMN_REF.findall(measure.expression.strip())
+            whole = _MEASURE_COLUMN_REF.fullmatch(measure.expression.strip())
+            if whole is not None and len(refs) == 1:
+                return {(refs[0][0], refs[0][1])}
+        return set()
+
+    @staticmethod
+    def _describe_aggregated_columns(measure: Measure) -> str:
+        refs = SemanticValidator._aggregated_column_refs(measure)
+        if refs:
+            return ", ".join(f"'{obj}.{col}'" for obj, col in sorted(refs))
+        return "a computed expression, which cannot be matched by column"
 
     def _check_measure_filter_refs(self, model: SemanticModel) -> list[SemanticError]:
         """Verify that measure filter columns reference existing data objects and columns."""
