@@ -168,10 +168,27 @@ class JoinGraph:
         if not steiner:
             return nodes[0]
 
+        # ``nodes`` can span disconnected components — the pairwise loop above
+        # simply skips those pairs, so a Steiner node need not reach every
+        # required node. Score an unreachable target as worse than any real
+        # distance instead of letting ``shortest_path_length`` raise.
+        unreachable = len(self._graph.nodes) + 1
+
+        def _eccentricity(node: str) -> int:
+            worst: int = 0
+            for target in nodes:
+                try:
+                    # Unweighted graph, so the hop count is always integral;
+                    # the stub types it as float to cover weighted callers.
+                    worst = max(worst, int(nx.shortest_path_length(self._graph, node, target)))
+                except nx.NetworkXNoPath:
+                    worst = max(worst, unreachable)
+            return worst
+
         best: str = nodes[0]
-        best_max: int | float = len(self._graph.nodes) + 1
+        best_max: int = unreachable + 1
         for node in sorted(steiner):
-            max_dist = max(nx.shortest_path_length(self._graph, node, r) for r in nodes)
+            max_dist = _eccentricity(node)
             if max_dist < best_max:
                 best_max = max_dist
                 best = node
