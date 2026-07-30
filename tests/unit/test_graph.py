@@ -77,3 +77,104 @@ class TestJoinGraph:
         graph = JoinGraph(model)
         cycles = graph.detect_cycles()
         assert len(cycles) == 0
+
+
+_DISCONNECTED_MODEL_YAML = """\
+version: 1.0
+
+dataObjects:
+  Products:
+    code: PRODUCTS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Product ID:
+        code: ID
+        abstractType: string
+      Category:
+        code: CATEGORY
+        abstractType: string
+
+  Sales:
+    code: SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Sale ID:
+        code: ID
+        abstractType: string
+      Sale Product ID:
+        code: PRODUCT_ID
+        abstractType: string
+      Region:
+        code: REGION
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+
+  Suppliers:
+    code: SUPPLIERS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Supplier ID:
+        code: ID
+        abstractType: string
+      Supplier Name:
+        code: NAME
+        abstractType: string
+
+dimensions:
+  Category:
+    dataObject: Products
+    column: Category
+    resultType: string
+  Region:
+    dataObject: Sales
+    column: Region
+    resultType: string
+  Supplier Name:
+    dataObject: Suppliers
+    column: Supplier Name
+    resultType: string
+"""
+
+
+class TestCommonRootDisconnected:
+    """``find_common_root`` over objects that span disconnected components.
+
+    No single node reaches all of them, so the search falls back to the
+    undirected Steiner centre. That fallback builds its candidate set from
+    *pairwise* shortest paths and therefore skips unreachable pairs — so a
+    candidate need not reach every required node. Scoring it used to assume
+    otherwise and raised ``NetworkXNoPath`` out of the compiler.
+    """
+
+    @staticmethod
+    def _graph() -> JoinGraph:
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(_DISCONNECTED_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return JoinGraph(model)
+
+    def test_returns_a_node_instead_of_raising(self) -> None:
+        """Two connected objects plus one disconnected: the crash shape.
+
+        Products/Sales populate the Steiner set; Suppliers is unreachable from
+        either, which is what the scoring pass could not handle.
+        """
+        root = self._graph().find_common_root({"Products", "Sales", "Suppliers"})
+        assert root in {"Products", "Sales", "Suppliers"}
+
+    def test_two_disconnected_objects_alone(self) -> None:
+        """No pair is connected, so the Steiner set stays empty."""
+        root = self._graph().find_common_root({"Products", "Suppliers"})
+        assert root in {"Products", "Suppliers"}
+
+    def test_connected_objects_still_resolve_to_the_real_root(self) -> None:
+        """The fallback must not disturb the ordinary directed-ancestor answer."""
+        assert self._graph().find_common_root({"Products", "Sales"}) == "Sales"
