@@ -214,6 +214,61 @@ FROM non_combinations
 
 The dimensions are partitioned into independent groups based on the join graph. Each group gets a CTE with distinct values, and the `all_pairs` CTE uses an implicit cross join (comma-separated FROM) to produce all possible combinations. The `EXCEPT` clause removes existing combinations found through the fact/bridge tables.
 
+## Phase 2.2: Grain Deduplication Wrap
+
+**Module:** `orionbelt.compiler.grain_dedup`
+
+Joins are declared from the *many* side (`joinType: many-to-one`), and the join
+graph only traverses them forward — reverse traversal is rejected outright,
+because it would multiply the base table's rows. A forward many-to-one is safe
+for a measure sourced from the many side, which is the side that sets the query
+grain.
+
+It is **not** safe for a measure sourced from the *one* side. Joining `Sales` to
+`Products` repeats each product row once per sale, so `SUM(Products.Stock On Hand)`
+grouped by `Sales.Region` would count each product once per sale it appeared in.
+
+When that happens, the affected measures are lifted into their own CTE and
+aggregated over rows deduplicated on the source object's `primaryKey` (falling
+back to the join's `columnsTo`), then joined back onto the query grain:
+
+```sql
+WITH main AS (                       -- measures at the base (sale) grain
+  SELECT region, SUM(s.quantity) AS "Sold Quantity"
+  FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  GROUP BY region
+), dedup_0 AS (                      -- one row per (region, product)
+  SELECT "Region", SUM(__ob_c0) AS "Total Stock On Hand"
+  FROM (
+    SELECT DISTINCT s.region AS "Region",
+           p.id AS __ob_k0, p.stock_on_hand AS __ob_c0
+    FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  ) dedup_src_0
+  WHERE __ob_k0 IS NOT NULL
+  GROUP BY "Region"
+)
+SELECT main."Region", main."Sold Quantity", dedup_0."Total Stock On Hand"
+FROM main LEFT JOIN dedup_0 ON ...
+```
+
+A measure is only rewritten when **every** column it reads comes from one
+replicated object. A measure that mixes grains — `{[Sales].[Quantity]} *
+{[Products].[List Price]}` — is evaluated per sale and is already correct, so it
+is left alone. `min`, `max`, `count_distinct`, and `any_value` return the same
+answer over duplicated rows and are also left alone.
+
+!!! warning "Deduplicated groups overlap"
+    Per-group values are correct, but a product sold in two regions is counted
+    in both, so the column does **not** add up to the product catalogue's grand
+    total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
+    saying so. Query the measure at its own grain for a total that adds up.
+
+Set `allowFanOut: true` on a measure to opt out and aggregate the duplicated
+rows as-is. Combinations the rewrite cannot express — `total: true`, filter
+context, period-over-period, cumulative and window metrics, `ROLLUP`/`CUBE`,
+metrics whose components need deduplication, and `HAVING` on a deduplicated
+measure — raise a fanout error rather than return an inflated number.
+
 ## Phase 2.4: Period-over-Period Wrap
 
 **Module:** `orionbelt.compiler.pop_wrap`

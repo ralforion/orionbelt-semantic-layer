@@ -18,6 +18,7 @@ import pytest
 from orionbelt.compiler.passes import (
     PASS_CUMULATIVE,
     PASS_FILTER_CONTEXT,
+    PASS_GRAIN_DEDUP,
     PASS_HAVING_CLEANUP,
     PASS_PERIOD_OVER_PERIOD,
     PASS_TOTALS,
@@ -34,8 +35,9 @@ _TOTALS_MARKER = "ignored when combined"
 def _resolved(**attrs: object) -> ResolvedQuery:
     """Build a stub with just the attributes the passes read.
 
-    Accepts ``grouping`` (str or None), ``having_only_measures`` (set), and
-    the ``has_*`` feature flags (bool). Anything unset defaults to off.
+    Accepts ``grouping`` (str or None), ``having_only_measures`` (set),
+    ``dedup_measures`` (dict), ``having_filters`` (list), and the ``has_*``
+    feature flags (bool). Anything unset defaults to off.
 
     ``has_window=True`` also seeds a window measure so the window pass's
     predicate (``window_pass_applies``, which inspects ``measures`` /
@@ -52,6 +54,8 @@ def _resolved(**attrs: object) -> ResolvedQuery:
         has_window=has_window,
         has_filter_context=attrs.get("has_filter_context", False),
         having_only_measures=attrs.get("having_only_measures") or set(),
+        dedup_measures=attrs.get("dedup_measures") or {},
+        having_filters=attrs.get("having_filters") or [],
         measures=measures,
         metric_components={},
     )
@@ -61,6 +65,7 @@ def _resolved(**attrs: object) -> ResolvedQuery:
 def test_pass_order_is_declared_once() -> None:
     names = [p.name for p in build_default_passes()]
     assert names == [
+        PASS_GRAIN_DEDUP,
         PASS_FILTER_CONTEXT,
         PASS_PERIOD_OVER_PERIOD,
         PASS_TOTALS,

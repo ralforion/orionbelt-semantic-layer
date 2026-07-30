@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
+from orionbelt.compiler.grain_dedup import detect_dedup_measures
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
@@ -170,6 +171,12 @@ class CompilationPipeline:
         # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
         if not resolved.requires_cfl:
             detect_fanout(resolved, model)
+            # Forward many-to-one joins replicate the *one* side, which
+            # `detect_fanout` treats as safe. Flag any measure sourced from a
+            # replicated object so the `grain_dedup` pass aggregates it over
+            # deduplicated rows instead of the flattened join.
+            if not resolved.is_raw:
+                resolved.dedup_measures = detect_dedup_measures(resolved, model)
 
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
