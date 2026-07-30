@@ -216,6 +216,15 @@ class ResolvedQuery:
     dimensions_exclude: bool = False
     coalesce_aliases: set[str] = field(default_factory=set)
     grouping: Grouping | None = None
+    dedup_measures: dict[str, str] = field(default_factory=dict)
+    """Measures that must aggregate over deduplicated rows, mapped to the
+    replicated data object they are sourced from.
+
+    Populated after planning by
+    :func:`~orionbelt.compiler.grain_dedup.detect_dedup_measures`; consumed by
+    the ``grain_dedup`` compiler pass. Empty for every query whose measures all
+    sit at (or below) the base object's grain."""
+
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
 

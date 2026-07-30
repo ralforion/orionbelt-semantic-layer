@@ -33,6 +33,11 @@ from dataclasses import dataclass, field, replace
 from orionbelt.ast.nodes import AliasedExpr, Select
 from orionbelt.compiler.cumulative_wrap import wrap_with_cumulative
 from orionbelt.compiler.filter_wrap import wrap_with_filter_context
+from orionbelt.compiler.grain_dedup import (
+    GrainDedupUnsupportedError,
+    dedup_warning,
+    wrap_with_grain_dedup,
+)
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import ResolvedQuery
 from orionbelt.compiler.total_wrap import wrap_with_totals
@@ -44,6 +49,7 @@ from orionbelt.models.warnings import WarningCode, warning
 
 # Canonical pass names. Used as identifiers in ordering, compatibility
 # metadata, and tests — keep them stable.
+PASS_GRAIN_DEDUP = "grain_dedup"
 PASS_FILTER_CONTEXT = "filter_context"
 PASS_PERIOD_OVER_PERIOD = "period_over_period"
 PASS_TOTALS = "totals"
@@ -122,6 +128,24 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     projection.
     """
     return (
+        CompilerPass(
+            name=PASS_GRAIN_DEDUP,
+            applies=lambda r: bool(r.dedup_measures),
+            run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
+            # Runs first: it rewrites the base projection into CTEs that every
+            # later wrapper then wraps. The wrappers below restructure that same
+            # projection, so combining them is rejected in
+            # ``evaluate_compatibility`` rather than composed.
+            incompatible_with=frozenset(
+                {
+                    PASS_FILTER_CONTEXT,
+                    PASS_PERIOD_OVER_PERIOD,
+                    PASS_TOTALS,
+                    PASS_CUMULATIVE,
+                    PASS_WINDOW,
+                }
+            ),
+        ),
         CompilerPass(
             name=PASS_FILTER_CONTEXT,
             applies=lambda r: r.has_filter_context,
@@ -248,6 +272,47 @@ def evaluate_compatibility(
                     },
                 )
             )
+
+    # Rule 3 (raising): grain dedup splits the projection across CTEs keyed on
+    # the query grain. Every wrapper in ``incompatible_with`` restructures that
+    # same projection, and ROLLUP/CUBE changes the grain itself, so the join
+    # back would silently mismatch. Suppressing either side would hand back an
+    # inflated number, which is the exact defect this pass exists to prevent —
+    # so this rule raises instead of warning.
+    dedup = by_name.get(PASS_GRAIN_DEDUP)
+    if dedup is not None and dedup.applies(resolved):
+        blocking = sorted(
+            name
+            for name in dedup.incompatible_with
+            if (p := by_name.get(name)) is not None and p.applies(resolved)
+        )
+        if resolved.grouping is not None:
+            blocking.append(f"grouping: {resolved.grouping.value}")
+        listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_measures))
+        if blocking:
+            msg = (
+                f"Measure(s) {listed} are sourced from an object whose rows this "
+                f"query's joins replicate, so they must be aggregated over "
+                f"deduplicated rows. That rewrite cannot yet be combined with "
+                f"{', '.join(blocking)}. Query them separately, or set "
+                f"allowFanOut: true to aggregate the duplicated rows as-is."
+            )
+            raise GrainDedupUnsupportedError(msg)
+
+        # HAVING is evaluated inside the main CTE, where a deduplicated measure
+        # does not exist yet.
+        referenced = {f for hf in resolved.having_filters for f in hf.referenced_fields}
+        clashing = sorted(referenced & set(resolved.dedup_measures))
+        if clashing:
+            msg = (
+                f"HAVING filters on {', '.join(repr(c) for c in clashing)}, which "
+                f"must be aggregated over deduplicated rows and so is not available "
+                f"at the point HAVING is applied. Filter it in the caller, or set "
+                f"allowFanOut: true to aggregate the duplicated rows as-is."
+            )
+            raise GrainDedupUnsupportedError(msg)
+
+        warnings.append(dedup_warning(resolved.dedup_measures))
 
     return CompatibilityResult(warnings=warnings, suppressed=frozenset(suppressed))
 

@@ -214,6 +214,93 @@ FROM non_combinations
 
 The dimensions are partitioned into independent groups based on the join graph. Each group gets a CTE with distinct values, and the `all_pairs` CTE uses an implicit cross join (comma-separated FROM) to produce all possible combinations. The `EXCEPT` clause removes existing combinations found through the fact/bridge tables.
 
+## Phase 2.2: Grain Deduplication Wrap
+
+**Module:** `orionbelt.compiler.grain_dedup`
+
+Joins are declared from the *many* side (`joinType: many-to-one`), and the join
+graph only traverses them forward — reverse traversal is rejected outright,
+because it would multiply the base table's rows. A forward many-to-one is safe
+for a measure sourced from the many side, which is the side that sets the query
+grain.
+
+It is **not** safe for a measure sourced from the *one* side. Joining `Sales` to
+`Products` repeats each product row once per sale, so `SUM(Products.Stock On Hand)`
+grouped by `Sales.Region` would count each product once per sale it appeared in.
+
+When that happens, the affected measures are lifted into their own CTE and
+aggregated over rows deduplicated on the source object's `primaryKey` (falling
+back to the join's `columnsTo`), then joined back onto the query grain:
+
+```sql
+WITH main AS (                       -- measures at the base (sale) grain
+  SELECT region, SUM(s.quantity) AS "Sold Quantity"
+  FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  GROUP BY region
+), dedup_0 AS (                      -- one row per (region, product)
+  SELECT "Region", SUM(__ob_c0) AS "Total Stock On Hand"
+  FROM (
+    SELECT DISTINCT s.region AS "Region",
+           p.id AS __ob_k0, p.stock_on_hand AS __ob_c0
+    FROM sales s LEFT JOIN products p ON s.product_id = p.id
+  ) dedup_src_0
+  WHERE __ob_k0 IS NOT NULL
+  GROUP BY "Region"
+)
+SELECT main."Region", main."Sold Quantity", dedup_0."Total Stock On Hand"
+FROM main LEFT JOIN dedup_0 ON ...
+```
+
+A measure is only rewritten when **every** column it reads comes from one
+replicated object. A measure that mixes grains — `{[Sales].[Quantity]} *
+{[Products].[List Price]}` — is evaluated per sale and is already correct, so it
+is left alone. `min`, `max`, `count_distinct`, and `any_value` return the same
+answer over duplicated rows and are also left alone, as is any measure with
+`distinct: true` — `AGG(DISTINCT x)` cannot see replication, and a `count` +
+`distinct` over the parent key is the most common one-side measure there is.
+
+A one-side measure queried *on its own* never reaches this pass: resolution
+anchors the base object on that measure's own source, from which the other
+objects are unreachable, and the query is refused. The rewrite applies when a
+base-grain measure is present to anchor the query.
+
+!!! warning "Deduplicated groups overlap"
+    Per-group values are correct, but a product sold in two regions is counted
+    in both, so the column does **not** add up to the product catalogue's grand
+    total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
+    saying so. Query the measure at its own grain for a total that adds up.
+
+A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
+rows on the joined object: that group contributes no row to the dedup CTE, so
+the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
+which is what SQL returns for an empty input.
+
+Set `allowFanOut: true` on a measure to opt out and aggregate the duplicated
+rows as-is. Combinations the rewrite cannot express raise a fanout error rather
+than return an inflated number:
+
+| Combination | Why |
+|---|---|
+| `total: true`, `filterContext`, period-over-period, cumulative, window | Each restructures the same projection the dedup CTEs own |
+| `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
+| A metric whose component needs deduplication | Metrics inline their components into one expression |
+| `HAVING` on a deduplicated measure | HAVING is applied inside `main`, where the measure does not exist yet |
+| A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
+
+Anything an aggregate reads beyond its own value columns has to be projected
+into the deduplicating inner `SELECT` so the rendered aggregate can reference it:
+a `filters:` predicate becomes `CASE WHEN` inside the aggregate, and a
+`withinGroup:` column becomes its `ORDER BY`. Whatever is projected joins the
+`DISTINCT`.
+
+A reference to the deduplicated object itself is harmless, because its columns
+are fixed by the key being deduplicated on. One that reaches any other object is
+not: the rows collapse to one per *(grain, product, referenced value)* instead of
+one per *(grain, product)*. A product with two sales at different quantities
+would be counted twice by a `filters:` predicate on `Sales.Quantity`, or listed
+twice by a `LISTAGG` ordered by it. Reference the deduplicated object instead, or
+query the measure at its own grain.
+
 ## Phase 2.4: Period-over-Period Wrap
 
 **Module:** `orionbelt.compiler.pop_wrap`

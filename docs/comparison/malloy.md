@@ -81,11 +81,11 @@ These are genuinely distinctive and OBSL has no direct equivalent:
 
 Malloy uses *symmetric aggregates* — the engine emits SQL that prevents double-counting when joining one-to-many. You write `line_items.amount.sum()` and it Just Works regardless of how the join graph fans out.
 
-OBSL takes a different route: it **detects** fanout statically (`compiler/fanout.py` raises `FanoutError`) and uses the **CFL planner** to emit `UNION ALL` legs across independent fact paths. Different mechanism, same goal: correctness on multi-fact queries.
+OBSL takes a different route: it **detects** fanout statically (`compiler/fanout.py` raises `FanoutError`), uses the **CFL planner** to emit `UNION ALL` legs across independent fact paths, and rewrites measures sourced from the *one* side of a join into a [grain-dedup CTE](../guide/compilation.md#phase-22-grain-deduplication-wrap) aggregated over rows deduplicated on that object's key. Different mechanism, same goal: correctness on multi-fact queries.
 
 | | Malloy | OBSL |
 |---|---|---|
-| Strategy | Symmetric aggregates (per-aggregate path qualification) | Static fanout detection + CFL `UNION ALL` planner |
+| Strategy | Symmetric aggregates (per-aggregate path qualification) | Static fanout detection + CFL `UNION ALL` planner + grain-dedup CTE for one-side measures |
 | Visibility | Implicit, automatic | Explicit error/plan; CFL is inspectable |
 | User experience | "It just works" | "Compiler tells you what it did" |
 
@@ -148,7 +148,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 |---|---|---|
 | Definition site | YAML `joins:` array on each `DataObject` | `join_one:`, `join_many:`, `join_cross:` inside `source extend { ... }` |
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | Cardinality is part of the join keyword: `join_one`, `join_many`, `join_cross` |
-| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregate logic |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregate logic |
 | Multiple paths between same tables | First-class via `secondary: true` + named `pathName`, selected per-query via `usePathNames: [{source, target, pathName}]` | Multiple `join_one`/`join_many` declarations with different aliases — no path-name primitive |
 | Cycle / multi-path validation | Built into resolver | Compiler-level checks |
 
@@ -231,7 +231,7 @@ Malloy's time syntax is more ergonomic in a query; OBSL's metric types are more 
 | Feature | OBSL | Malloy |
 |---|---|---|
 | Hierarchical / nested results | ❌ flat tables only | ✅ `nest:` is a headline feature |
-| Symmetric aggregates | ❌ uses static fanout detection + CFL | ✅ |
+| Symmetric aggregates | ❌ — static fanout detection + CFL, plus a grain-dedup CTE covering the one-side-measure case | ✅ general-purpose |
 | Pipeline operator / refinements | ❌ JSON queries are atomic | ✅ `->` and `+ { ... }` |
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Named secondary join paths | ✅ | ❌ |

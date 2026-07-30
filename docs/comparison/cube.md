@@ -174,13 +174,13 @@ See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (w
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` | `joins:` block inside each `cube` |
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `one_to_many`, `many_to_one` |
-| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregates |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql: "{CUBE}.id = {other.foo_id}"` (free-form SQL with `{CUBE}` reference) |
 | Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | No path-name primitive; workaround via `view`s exposing one path or aliased cubes |
 | Join direction | Directed, declared per data object | Bidirectional inference based on `relationship:` |
-| Symmetric aggregates | ❌ (uses CFL) | ✅ |
+| Symmetric aggregates | ❌ — CFL, plus a grain-dedup CTE covering the one-side-measure case | ✅ general-purpose |
 
-Cube's `relationship:` keyword drives symmetric aggregate logic (similar to LookML and Malloy). OBSL takes the static-fanout-detection + CFL approach instead.
+Cube's `relationship:` keyword drives symmetric aggregate logic (similar to LookML and Malloy). OBSL takes the static-fanout-detection + CFL approach instead, with a [grain-dedup CTE](../guide/compilation.md#phase-22-grain-deduplication-wrap) for the case a purely structural approach cannot cover: a measure sourced from the *one* side of a join, which the join replicates.
 
 ---
 
