@@ -446,19 +446,30 @@ def wrap_with_grain_dedup(
             measure_columns[alias] = col
 
     # --- main CTE: the query as planned, minus the measures being deduplicated ---
-    main_cte = CTE(
-        name=_MAIN_CTE,
-        query=Select(
-            columns=[c for c in ast.columns if _measure_alias(c) not in dedup_measures],
-            from_=ast.from_,
-            joins=ast.joins,
-            where=ast.where,
-            group_by=ast.group_by,
-            having=ast.having,
-            grouping=ast.grouping,
-        ),
-    )
-    all_ctes = list(ast.ctes) + [main_cte]
+    main_columns = [c for c in ast.columns if _measure_alias(c) not in dedup_measures]
+
+    # With no dimensions and every measure deduplicated, ``main`` would project
+    # nothing and degenerate to one row per base row — multiplying the single
+    # scalar result. Drop it and let the dedup CTEs stand alone; each already
+    # yields exactly one row at this grain.
+    keep_main = bool(main_columns)
+
+    all_ctes = list(ast.ctes)
+    if keep_main:
+        all_ctes.append(
+            CTE(
+                name=_MAIN_CTE,
+                query=Select(
+                    columns=main_columns,
+                    from_=ast.from_,
+                    joins=ast.joins,
+                    where=ast.where,
+                    group_by=ast.group_by,
+                    having=ast.having,
+                    grouping=ast.grouping,
+                ),
+            )
+        )
 
     # --- one dedup CTE per replicated source object ---
     effective_measures = model.effective_measures
@@ -584,9 +595,14 @@ def wrap_with_grain_dedup(
             measure_col = FunctionCall(name="COALESCE", args=[measure_col, Literal.number(0)])
         outer_columns.append(AliasedExpr(expr=measure_col, alias=alias))
 
+    # Without ``main`` the first dedup CTE becomes the FROM and the rest join to
+    # it; every one yields a single row at this grain, so a CROSS JOIN is exact.
+    ordered_ctes = [cte_for_object[name] for name in sorted(by_object)]
+    outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
+    joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
+
     outer_joins: list[Join] = []
-    for object_name in sorted(by_object):
-        cte_name = cte_for_object[object_name]
+    for cte_name in joined_ctes:
         if not dim_names:
             # Scalar grain: one row each side.
             outer_joins.append(Join(join_type=JoinType.CROSS, source=cte_name, alias=cte_name))
@@ -596,7 +612,7 @@ def wrap_with_grain_dedup(
             # NULL grain values must match, or a dimension that is legitimately
             # NULL would drop its deduplicated measure.
             condition: Expr = _null_safe_eq(
-                ColumnRef(name=name, table=_MAIN_CTE),
+                ColumnRef(name=name, table=outer_from),
                 ColumnRef(name=name, table=cte_name),
             )
             on_expr = condition if on_expr is None else BinaryOp(on_expr, "AND", condition)
@@ -632,7 +648,7 @@ def wrap_with_grain_dedup(
 
     return Select(
         columns=outer_columns,
-        from_=From(source=_MAIN_CTE, alias=_MAIN_CTE),
+        from_=From(source=outer_from, alias=outer_from),
         joins=outer_joins,
         order_by=outer_order_by,
         limit=ast.limit,

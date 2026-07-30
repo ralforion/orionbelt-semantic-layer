@@ -20,7 +20,6 @@ from ruamel.yaml import YAML
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
-from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -604,19 +603,94 @@ def test_average_over_the_one_side_is_unweighted_by_sale_count() -> None:
     assert [(r[0], float(r[2])) for r in rows] == [("tools", 35.0)]
 
 
-def test_a_one_side_measure_alone_is_still_refused_at_resolution() -> None:
-    """The dedup rewrite needs a base-grain measure to anchor the query.
+def test_a_one_side_measure_alone_reanchors_and_deduplicates() -> None:
+    """ "Average customer age per category" asked on its own, with no other measure.
 
-    With only a one-side measure, resolution anchors the base object on that
-    measure's own source ('Customers'), from which the dimension's object
-    ('Products') is unreachable — many-to-one joins are forward-only. The query
-    is refused before planning, so the rewrite never sees it.
-
-    Pinned here because it is the natural way to ask for "average customer age
-    per category", and it does not work yet.
+    Anchoring the base on the measure's own source picks 'Customers', which
+    reaches nothing — so this used to fail with UNREACHABLE_REQUIRED_OBJECT.
+    Resolution now re-anchors on the common root ('Sales'), and the measure is
+    deduplicated exactly as it is when a sale-grain measure rides along.
     """
-    with pytest.raises(ResolutionError, match="cannot be reached from base"):
-        _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 110, 'tools')"
+    )
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 50)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p2','c1','north',1), ('s4','p2','c2','north',1)"
+    )
+
+    result = _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
+
+    assert "dedup_0" in result.sql
+    assert [(r[0], float(r[1])) for r in con.execute(result.sql).fetchall()] == [("tools", 35.0)]
+
+
+def test_reanchoring_does_not_fire_for_multi_fact_queries() -> None:
+    """CFL detection runs on the base object, so multi-fact keeps its original base."""
+    yaml_text = """
+version: 1.0
+name: twofact
+dataObjects:
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: string, primaryKey: true}
+      Country: {code: country, abstractType: string}
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order ID: {code: id, abstractType: string, primaryKey: true}
+      Order Customer ID: {code: customer_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+  Shipments:
+    code: shipments
+    schema: main
+    columns:
+      Shipment ID: {code: id, abstractType: string, primaryKey: true}
+      Shipment Customer ID: {code: customer_id, abstractType: string}
+      Weight: {code: weight, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Shipment Customer ID]
+        columnsTo: [Customer ID]
+dimensions:
+  Country: {dataObject: Customers, column: Country, resultType: string}
+measures:
+  Order Amount:
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Amount]}'
+  Shipment Weight:
+    resultType: float
+    aggregation: sum
+    expression: '{[Shipments].[Weight]}'
+"""
+    result = _compile(
+        {"select": {"dimensions": ["Country"], "measures": ["Order Amount", "Shipment Weight"]}},
+        yaml_text,
+    )
+    assert result.explain is not None
+    assert result.explain.planner == "CFL"
+    assert "UNION ALL" in result.sql
 
 
 # --- Review findings on the first cut of this pass -----------------------
@@ -760,3 +834,157 @@ def test_within_group_on_the_dedup_object_itself_still_deduplicates() -> None:
     )
     # Each product once, ordered by stock (p2=7 then p1=100) — not 'p2,p1,p1'.
     assert [r[2] for r in con.execute(result.sql).fetchall()] == ["p2,p1"]
+
+
+def test_where_on_an_unreachable_object_re_anchors_instead_of_being_dropped() -> None:
+    """A WHERE filter must not be silently discarded.
+
+    WHERE filters resolve long after the base object is chosen, so the objects
+    they name have to be collected up front — otherwise the base stays on the
+    measure's own source, the filter's object is unreachable from it, and the
+    filter is dropped downstream as "irrelevant to this query". The query then
+    answers a different question than the one asked, with no error.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 7, 'parts')")
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 50), ('c3', 90)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # c1 and c2 buy tools; c3 buys parts only.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p1','c2','north',1), ('s4','p2','c3','north',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {"dimensions": [], "measures": ["Avg Customer Age"]},
+            "where": [{"field": "Category", "op": "=", "value": "tools"}],
+        }
+    )
+    assert "category" in result.sql  # the filter survived into the SQL
+    # Tools buyers are c1 (20) and c2 (50) — not the unfiltered (20+50+90)/3.
+    assert [float(r[0]) for r in con.execute(result.sql).fetchall()] == [35.0]
+
+
+def test_scalar_query_with_only_deduplicated_measures_returns_one_row() -> None:
+    """With no dimensions and every measure deduplicated, ``main`` projects nothing.
+
+    Left in place it degenerates to ``SELECT *`` over the base rows and
+    multiplies the single scalar result, so it is dropped and the dedup CTE
+    stands alone. The WHERE is what forces the join here — without it the
+    measure is queried at its own grain and no dedup is needed.
+    """
+    result = _compile(
+        {
+            "select": {"dimensions": [], "measures": ["Avg Customer Age"]},
+            "where": [{"field": "Category", "op": "=", "value": "tools"}],
+        }
+    )
+    assert "dedup_0" in result.sql
+    # The CTE alias, not the schema of the same name.
+    assert 'FROM "main" AS "main"' not in result.sql
+    assert "SELECT\n  *" not in result.sql
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools')")
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 60)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # c1 buys three times, c2 once — four base rows, one scalar answer.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p1','c1','north',1), ('s4','p1','c2','north',1)"
+    )
+    assert [float(r[0]) for r in con.execute(result.sql).fetchall()] == [40.0]
+
+
+def test_static_model_filters_do_not_drive_re_anchoring() -> None:
+    """Static filters are declared "apply where relevant", unlike a query WHERE.
+
+    They must not pull the base towards a table the query never mentioned.
+    """
+    yaml_text = (
+        MODEL_YAML
+        + """
+filters:
+  - dataObject: Products
+    column: Category
+    operator: equals
+    value: tools
+"""
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity"]}}, yaml_text
+    )
+    assert result.resolved.fact_tables == ["Sales"]
+
+
+def test_where_on_a_disconnected_object_is_still_skipped_not_crashed() -> None:
+    """Re-anchoring must not fire when nothing can reach the filter's object.
+
+    ``find_common_root`` falls back to an undirected Steiner centre, which is a
+    best effort rather than a guarantee — and used to raise ``NetworkXNoPath``
+    outright when the required objects spanned disconnected components. The base
+    stays put and the filter keeps its existing "irrelevant to this query" skip.
+    """
+    yaml_text = """
+version: 1.0
+name: disconnected
+dataObjects:
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Category: {code: category, abstractType: string}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Product ID: {code: product_id, abstractType: string}
+      Quantity: {code: quantity, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+  Suppliers:
+    code: suppliers
+    schema: main
+    columns:
+      Supplier ID: {code: id, abstractType: string, primaryKey: true}
+      Supplier Name: {code: name, abstractType: string}
+dimensions:
+  Category: {dataObject: Products, column: Category, resultType: string}
+  Supplier Name: {dataObject: Suppliers, column: Supplier Name, resultType: string}
+measures:
+  Sold Quantity:
+    resultType: int
+    aggregation: sum
+    expression: '{[Sales].[Quantity]}'
+"""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Category"], "measures": ["Sold Quantity"]},
+            "where": [{"field": "Supplier Name", "op": "=", "value": "Acme"}],
+        },
+        yaml_text,
+    )
+    assert result.resolved.fact_tables == ["Sales"]
+    assert "suppliers" not in result.sql

@@ -388,8 +388,13 @@ class QueryResolver:
                 ctx.result.measure_source_objects.update(source_objs)
                 ctx.result.required_objects.update(source_objs)
 
-        # 3. Determine base object (the one with most joins / most measures)
-        ctx.result.base_object = self._select_base_object(ctx)
+        # 3. Determine base object (the one with most joins / most measures).
+        # WHERE filters are resolved much later, so the objects they reference
+        # are collected up front — the base has to be able to reach them, or
+        # the filter is silently dropped as unreachable further down.
+        ctx.result.base_object = self._select_base_object(
+            ctx, self._collect_where_filter_objects(query, model)
+        )
         if ctx.result.base_object:
             ctx.result.required_objects.add(ctx.result.base_object)
 
@@ -972,7 +977,109 @@ class QueryResolver:
 
     # -- base object selection -----------------------------------------------
 
-    def _select_base_object(self, ctx: _ResolutionContext) -> str:
+    @staticmethod
+    def _collect_where_filter_objects(query: QueryObject, model: SemanticModel) -> set[str]:
+        """Data objects the query's WHERE clause references.
+
+        Walks ``query.where`` recursively; each ``field`` is either a dimension
+        name or a qualified ``DataObject.Column``. Measure names are skipped —
+        those are HAVING predicates, evaluated after aggregation rather than
+        joined into the FROM.
+
+        ``EXISTS`` / ``NONEXISTS`` targets are skipped too: they compile to a
+        correlated subquery, not a join, so they place no reachability demand on
+        the base object.
+        """
+        found: set[str] = set()
+        measure_names = model.effective_measures
+
+        def visit(item: QueryFilterItem) -> None:
+            if isinstance(item, QueryFilterGroup):
+                for child in item.filters:
+                    visit(child)
+                return
+            field = item.field
+            if not field or field in measure_names or field in model.metrics:
+                return
+            dimension = model.dimensions.get(field)
+            if dimension is not None:
+                if dimension.view:
+                    found.add(dimension.view)
+                return
+            if "." in field:
+                object_name = field.split(".", 1)[0].strip()
+                if object_name in model.data_objects:
+                    found.add(object_name)
+
+        for entry in query.where:
+            visit(entry)
+        return found
+
+    @staticmethod
+    def _reanchor_if_unreachable(
+        ctx: _ResolutionContext, best: str, filter_objects: set[str]
+    ) -> str:
+        """Re-anchor the base when the chosen measure source cannot reach the query.
+
+        Anchoring on a measure's own source object is right whenever that object
+        is the fact table. It is wrong when the measure lives on a *dimension*
+        table: joins are declared many-to-one and traversed forward-only, so a
+        base of ``Customers`` can reach nothing, and a query grouping
+        ``Avg Customer Age`` by ``Category`` fails with
+        ``UNREACHABLE_REQUIRED_OBJECT`` even though ``Sales`` joins to both.
+
+        Such a query is not multi-fact — it is single-fact viewed from the wrong
+        end. Re-anchoring on the common root that reaches every required object
+        makes it plan as an ordinary star; the measure then sits on the replicated
+        side of a forward join, where ``compiler.grain_dedup`` aggregates it over
+        deduplicated rows.
+
+        Deliberately narrow, so this can only turn an error into a result and
+        never re-plan a query that already works:
+
+        * Only with **one** measure source object. Multi-fact queries keep their
+          existing base so CFL detection (which runs on it straight after) is
+          untouched.
+        * Only when that base genuinely cannot reach the rest — the case that
+          errors today.
+        * Only when a common root actually exists; otherwise the original base
+          is returned and the existing error still fires.
+
+        *filter_objects* are the data objects the query's WHERE clause names.
+        They are not in ``required_objects`` yet — filters resolve much later —
+        but the base still has to reach them: a WHERE on an unreachable object
+        is silently dropped downstream, which would answer a different question
+        than the one asked. Static model filters are deliberately excluded; those
+        are declared "apply where relevant", so they must not drag the base
+        towards a table the query never mentioned.
+        """
+        if len(ctx.result.measure_source_objects) != 1:
+            return best
+
+        wanted = ctx.result.required_objects | filter_objects
+        remaining = wanted - {best}
+        if not remaining:
+            return best
+
+        graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
+        if remaining <= graph.descendants(best):
+            return best
+
+        root = graph.find_common_root(wanted | {best})
+        if not root:
+            return best
+        # ``find_common_root`` falls back to a Steiner centre when no single
+        # ancestor covers everything, so its answer is a best effort rather than
+        # a guarantee. Re-anchor only on a root that genuinely reaches the whole
+        # query; otherwise keep the original base and let the existing
+        # unreachable error or filter skip stand.
+        if wanted <= graph.descendants(root) | {root}:
+            return root
+        return best
+
+    def _select_base_object(
+        self, ctx: _ResolutionContext, filter_objects: set[str] | None = None
+    ) -> str:
         """Select the base (fact) object — prefer measure source objects with most joins."""
         if ctx.result.measure_source_objects:
             best = ""
@@ -984,11 +1091,13 @@ class QueryResolver:
                     best = obj_name
                     best_joins = n
             if best:
-                return best
+                return self._reanchor_if_unreachable(ctx, best, filter_objects or set())
 
         # Dimension-only: use JoinGraph to find the deepest ancestor
         # (possibly an intermediate fact/bridge table) that can reach
         # all required dimension objects via directed join paths.
+        # (See ``_reanchor_if_unreachable`` — the same idea, applied when a
+        # measure pinned the base to an object that cannot reach the rest.)
         if len(ctx.result.required_objects) > 1:
             graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
             root = graph.find_common_root(ctx.result.required_objects)
