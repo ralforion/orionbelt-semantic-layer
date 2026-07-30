@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -38,12 +39,19 @@ dataObjects:
       List Price: {code: list_price, abstractType: float}
       Stock On Hand: {code: stock_on_hand, abstractType: int}
       Category: {code: category, abstractType: string}
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: string, primaryKey: true}
+      Age: {code: age, abstractType: int}
   Sales:
     code: sales
     schema: main
     columns:
       Sale ID: {code: id, abstractType: string, primaryKey: true}
       Sale Product ID: {code: product_id, abstractType: string}
+      Sale Customer ID: {code: customer_id, abstractType: string}
       Region: {code: region, abstractType: string}
       Quantity: {code: quantity, abstractType: int}
     joins:
@@ -51,6 +59,10 @@ dataObjects:
         joinTo: Products
         columnsFrom: [Sale Product ID]
         columnsTo: [Product ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Sale Customer ID]
+        columnsTo: [Customer ID]
 
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
@@ -73,6 +85,17 @@ measures:
     resultType: int
     aggregation: count_distinct
     expression: '{[Products].[List Price]}'
+  Avg Customer Age:
+    resultType: float
+    aggregation: avg
+    expression: '{[Customers].[Age]}'
+  Product Count:
+    columns:
+      - dataObject: Products
+        column: Product ID
+    resultType: int
+    aggregation: count
+    distinct: true
   Sales Value:
     resultType: float
     aggregation: sum
@@ -86,6 +109,8 @@ measures:
 metrics:
   Price per Unit:
     expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
+  Quantity per Product:
+    expression: '{[Sold Quantity]} / {[Product Count]}'
 """
 
 
@@ -129,12 +154,13 @@ def test_deduplicated_measure_returns_the_uninflated_value() -> None:
         " ('p2', 9.99, 110, 'tools'), ('p3', 5.00, 300, 'parts')"
     )
     con.execute(
-        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, region VARCHAR, quantity INTEGER)"
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
     )
     # p1 sells twice in north — the naive join counts its stock twice.
     con.execute(
-        "INSERT INTO sales VALUES ('s1','p1','north',1), ('s2','p1','north',2),"
-        " ('s3','p2','north',4), ('s4','p3','south',8)"
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',2),"
+        " ('s3','p2','c2','north',4), ('s4','p3','c2','south',8)"
     )
 
     flattened = con.execute(
@@ -178,11 +204,14 @@ def test_grain_anchored_count_does_not_count_unmatched_rows() -> None:
     )
     con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools')")
     con.execute(
-        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, region VARCHAR, quantity INTEGER)"
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
     )
     # 's2' points at a product that does not exist, so the join yields a row
     # whose whole product side is NULL.
-    con.execute("INSERT INTO sales VALUES ('s1','p1','north',1), ('s2','ghost','north',5)")
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','ghost','c1','north',5)"
+    )
 
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Products Count"]}}
@@ -210,9 +239,15 @@ def test_measure_mixing_both_grains_is_untouched() -> None:
     assert "dedup_0" not in result.sql
 
 
-@pytest.mark.parametrize("measure", ["Highest List Price", "Distinct Prices"])
+@pytest.mark.parametrize("measure", ["Highest List Price", "Distinct Prices", "Product Count"])
 def test_multiplicity_safe_aggregations_are_untouched(measure: str) -> None:
-    """MAX and COUNT DISTINCT return the same answer over duplicated rows."""
+    """MAX and DISTINCT aggregates return the same answer over duplicated rows.
+
+    ``Product Count`` is ``count`` + ``distinct: true`` over the joined
+    object's key — counting parents from the child fact, the single most
+    common one-side measure there is. Keying the safe-list on the
+    ``aggregation`` string alone would wrongly rewrite it.
+    """
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", measure]}}
     )
@@ -392,12 +427,19 @@ dataObjects:
         joinTo: Suppliers
         columnsFrom: [Product Supplier ID]
         columnsTo: [Supplier ID]
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: string, primaryKey: true}
+      Age: {code: age, abstractType: int}
   Sales:
     code: sales
     schema: main
     columns:
       Sale ID: {code: id, abstractType: string, primaryKey: true}
       Sale Product ID: {code: product_id, abstractType: string}
+      Sale Customer ID: {code: customer_id, abstractType: string}
       Region: {code: region, abstractType: string}
       Quantity: {code: quantity, abstractType: int}
     joins:
@@ -405,6 +447,10 @@ dataObjects:
         joinTo: Products
         columnsFrom: [Sale Product ID]
         columnsTo: [Product ID]
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Sale Customer ID]
+        columnsTo: [Customer ID]
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
 measures:
@@ -423,3 +469,112 @@ measures:
     )
     assert "dedup_0" in result.sql
     assert '"Suppliers"."id" AS "__ob_k0"' in result.sql
+
+
+def test_distinct_aggregate_over_the_one_side_stays_correct() -> None:
+    """A DISTINCT aggregate is unaffected by replication, so it is not rewritten.
+
+    Executed rather than asserted on the SQL: two sales of ``p1`` in one region
+    must still count one product.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools')")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute("INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',2)")
+
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Product Count"]}}
+    )
+    assert "dedup_0" not in result.sql
+    assert [(r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall()] == [
+        ("north", 3, 1)
+    ]
+
+
+def test_having_on_a_distinct_one_side_measure_is_allowed() -> None:
+    """The pattern the TPC-H quickstart uses: HAVING on a COUNT DISTINCT of the parent."""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Product Count"]},
+            "having": [{"field": "Product Count", "op": "gt", "value": 1}],
+        }
+    )
+    assert "HAVING" in result.sql
+    assert "dedup_0" not in result.sql
+
+
+def test_metric_over_a_distinct_one_side_measure_is_allowed() -> None:
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Quantity per Product"]}})
+    assert "dedup_0" not in result.sql
+
+
+def test_average_over_the_one_side_is_unweighted_by_sale_count() -> None:
+    """ "Average customer age per category sold" — an AVG over the joined object.
+
+    The flattened join weights each customer by how many times they bought,
+    which answers a different (and rarely intended) question. Deduplicating on
+    the customer key averages each distinct buyer once.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 110, 'tools')"
+    )
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 50)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # c1 (20) buys three times, c2 (50) once — all in 'tools'.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p2','c1','north',1), ('s4','p2','c2','north',1)"
+    )
+
+    flattened = con.execute(
+        "SELECT p.category, AVG(c.age) FROM sales s"
+        " LEFT JOIN products p ON s.product_id = p.id"
+        " LEFT JOIN customers c ON s.customer_id = c.id"
+        " GROUP BY p.category"
+    ).fetchone()
+    # (20 + 20 + 20 + 50) / 4 — c1 counted once per purchase.
+    assert flattened == ("tools", 27.5)
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Category"],
+                "measures": ["Sold Quantity", "Avg Customer Age"],
+            }
+        }
+    )
+    rows = con.execute(result.sql).fetchall()
+
+    # (20 + 50) / 2 — each distinct buyer once.
+    assert [(r[0], float(r[2])) for r in rows] == [("tools", 35.0)]
+
+
+def test_a_one_side_measure_alone_is_still_refused_at_resolution() -> None:
+    """The dedup rewrite needs a base-grain measure to anchor the query.
+
+    With only a one-side measure, resolution anchors the base object on that
+    measure's own source ('Customers'), from which the dimension's object
+    ('Products') is unreachable — many-to-one joins are forward-only. The query
+    is refused before planning, so the rewrite never sees it.
+
+    Pinned here because it is the natural way to ask for "average customer age
+    per category", and it does not work yet.
+    """
+    with pytest.raises(ResolutionError, match="cannot be reached from base"):
+        _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})

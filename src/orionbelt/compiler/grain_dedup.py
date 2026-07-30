@@ -199,6 +199,13 @@ def _dedup_target(
     if measure is None or measure.allow_fan_out:
         return None
 
+    # ``distinct: true`` renders ``AGG(DISTINCT x)``. Replicating rows does not
+    # change the *set* of distinct values, so any such measure already reads
+    # correctly over a replicating join — most commonly a
+    # ``count`` + ``distinct`` over the parent key, counted from the child fact.
+    if measure.distinct:
+        return None
+
     aggregation = measure.aggregation.lower()
     if aggregation in MULTIPLICITY_SAFE_AGGREGATIONS or aggregation == _DELEGATED_AGGREGATION:
         return None

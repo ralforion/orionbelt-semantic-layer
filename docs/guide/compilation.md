@@ -255,7 +255,14 @@ A measure is only rewritten when **every** column it reads comes from one
 replicated object. A measure that mixes grains — `{[Sales].[Quantity]} *
 {[Products].[List Price]}` — is evaluated per sale and is already correct, so it
 is left alone. `min`, `max`, `count_distinct`, and `any_value` return the same
-answer over duplicated rows and are also left alone.
+answer over duplicated rows and are also left alone, as is any measure with
+`distinct: true` — `AGG(DISTINCT x)` cannot see replication, and a `count` +
+`distinct` over the parent key is the most common one-side measure there is.
+
+A one-side measure queried *on its own* never reaches this pass: resolution
+anchors the base object on that measure's own source, from which the other
+objects are unreachable, and the query is refused. The rewrite applies when a
+base-grain measure is present to anchor the query.
 
 !!! warning "Deduplicated groups overlap"
     Per-group values are correct, but a product sold in two regions is counted
