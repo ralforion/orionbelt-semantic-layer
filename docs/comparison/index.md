@@ -110,7 +110,7 @@ For **multi-path joins** between the same pair of entities (e.g., `Order.ship_ad
 
 1. **`UNION ALL` plan avoids the chasm trap by construction** — the two facts never share a `FROM` clause, so cross-product fanout is impossible. MetricFlow's `FULL OUTER JOIN` and Cube/LookML/AtScale's single-JOIN-path approach both have to *correct for* fanout (via pre-aggregation CTEs or symmetric aggregates respectively); CFL avoids needing a correction at all.
 2. **Per-query path selection** for multi-path joins — Cube has graph-aware multi-path resolution (heuristic), but OBSL is the only one where the *consumer of the query* picks the path explicitly. Shortest-path is a graph-theoretic answer to a semantic question.
-3. **Static fanout detection** as an explicit error class (`compiler/fanout.py` raises `FanoutError`) — wrong-direction many-to-one joins fail at compile time rather than producing silently-wrong row counts.
+3. **Static fanout detection** as an explicit error class (`compiler/fanout.py` raises `FanoutError`) — wrong-direction many-to-one joins fail at compile time rather than producing silently-wrong row counts. Where structure alone cannot decide — a measure sourced from the *one* side of a join, whose rows the join replicates — the [grain-dedup pass](../guide/compilation.md#phase-22-grain-deduplication-wrap) aggregates it over rows deduplicated on that object's key rather than over the flattened join.
 
 AtScale's conformed-dimensions-within-a-Cube + virtual cubes is the closest peer in *modeling capability*. Nothing in this comparison set matches OBSL's *combination* of UNION-ALL multi-fact plan + per-query path selection.
 

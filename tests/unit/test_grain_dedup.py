@@ -54,6 +54,7 @@ dataObjects:
       Sale Customer ID: {code: customer_id, abstractType: string}
       Region: {code: region, abstractType: string}
       Quantity: {code: quantity, abstractType: int}
+      Bumped Qty: {code: "", abstractType: int, expression: "{Quantity} + 1"}
     joins:
       - joinType: many-to-one
         joinTo: Products
@@ -67,6 +68,7 @@ dataObjects:
 dimensions:
   Region: {dataObject: Sales, column: Region, resultType: string}
   Category: {dataObject: Products, column: Category, resultType: string}
+  Bumped: {dataObject: Sales, column: Bumped Qty, resultType: int}
 
 measures:
   Sold Quantity:
@@ -96,6 +98,22 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+  Big Sale Stock:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    filters:
+      - column: {dataObject: Sales, column: Quantity}
+        operator: gt
+        values: [{dataType: int, valueInt: 1}]
+  Tools Stock:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    filters:
+      - column: {dataObject: Products, column: Category}
+        operator: equals
+        values: [{dataType: string, valueString: tools}]
   Sales Value:
     resultType: float
     aggregation: sum
@@ -442,6 +460,7 @@ dataObjects:
       Sale Customer ID: {code: customer_id, abstractType: string}
       Region: {code: region, abstractType: string}
       Quantity: {code: quantity, abstractType: int}
+      Bumped Qty: {code: "", abstractType: int, expression: "{Quantity} + 1"}
     joins:
       - joinType: many-to-one
         joinTo: Products
@@ -578,3 +597,102 @@ def test_a_one_side_measure_alone_is_still_refused_at_resolution() -> None:
     """
     with pytest.raises(ResolutionError, match="cannot be reached from base"):
         _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
+
+
+# --- Review findings on the first cut of this pass -----------------------
+
+
+def test_filter_reaching_outside_the_dedup_grain_is_refused() -> None:
+    """A measure filter compiles to CASE WHEN *inside* the aggregate.
+
+    Its predicate columns must be projected for the CASE to evaluate, which puts
+    them in the DISTINCT — so the rows collapse to one per (grain, product,
+    predicate value) rather than one per (grain, product). A product with two
+    qualifying sales at different quantities would be counted twice. Refuse
+    rather than return that number.
+    """
+    with pytest.raises(GrainDedupUnsupportedError, match="filters reference 'Sales'"):
+        _compile(
+            {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Big Sale Stock"]}}
+        )
+
+
+def test_filter_on_the_dedup_object_itself_still_deduplicates() -> None:
+    """Predicate columns on the dedup object are fixed by its key, so DISTINCT is safe."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 7, 'parts')")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # p1 sells twice at different quantities — the case that breaks a filter
+    # whose predicate reaches Sales.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',2), ('s2','p1','c1','north',3),"
+        " ('s3','p2','c1','north',1)"
+    )
+
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Tools Stock"]}}
+    )
+    assert "dedup_0" in result.sql
+    # Only p1 is 'tools', counted once despite two sales.
+    assert [(r[0], int(r[2])) for r in con.execute(result.sql).fetchall()] == [("north", 100)]
+
+
+def test_count_reads_zero_when_no_rows_match() -> None:
+    """A group whose rows all miss the joined object contributes no dedup row.
+
+    The LEFT JOIN then yields NULL, but COUNT over no rows is 0, not unknown.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools')")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # Every north sale points at a product that does not exist.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','ghost','c1','north',1), ('s2','ghost2','c1','north',1)"
+    )
+
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Products Count"]}}
+    )
+    assert "COALESCE" in result.sql
+    assert [(r[0], int(r[2])) for r in con.execute(result.sql).fetchall()] == [("north", 0)]
+
+
+def test_sum_stays_null_when_no_rows_match() -> None:
+    """Only counts read zero — SUM over an empty input is NULL in SQL."""
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Total Stock On Hand"]}}
+    )
+    assert 'COALESCE("dedup_0"."Total Stock On Hand"' not in result.sql
+
+
+def test_order_by_a_computed_dimension_targets_main() -> None:
+    """A computed column's ORDER BY is a whole expression tree, not a ColumnRef.
+
+    Left unmapped it would reference ``Sales`` in an outer query whose FROM is
+    only the CTEs, and the database would fail to bind it.
+    """
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region", "Bumped"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "orderBy": [{"field": "Bumped"}],
+        }
+    )
+    assert 'ORDER BY "main"."Bumped" ASC' in result.sql
+    assert '"Sales"."quantity" + 1 ASC' not in result.sql

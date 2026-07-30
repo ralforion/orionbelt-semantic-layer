@@ -270,11 +270,32 @@ base-grain measure is present to anchor the query.
     total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
     saying so. Query the measure at its own grain for a total that adds up.
 
+A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
+rows on the joined object: that group contributes no row to the dedup CTE, so
+the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
+which is what SQL returns for an empty input.
+
 Set `allowFanOut: true` on a measure to opt out and aggregate the duplicated
-rows as-is. Combinations the rewrite cannot express — `total: true`, filter
-context, period-over-period, cumulative and window metrics, `ROLLUP`/`CUBE`,
-metrics whose components need deduplication, and `HAVING` on a deduplicated
-measure — raise a fanout error rather than return an inflated number.
+rows as-is. Combinations the rewrite cannot express raise a fanout error rather
+than return an inflated number:
+
+| Combination | Why |
+|---|---|
+| `total: true`, `filterContext`, period-over-period, cumulative, window | Each restructures the same projection the dedup CTEs own |
+| `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
+| A metric whose component needs deduplication | Metrics inline their components into one expression |
+| `HAVING` on a deduplicated measure | HAVING is applied inside `main`, where the measure does not exist yet |
+| A measure `filters:` predicate reaching outside the dedup object | See below |
+
+A measure's `filters:` compile to `CASE WHEN` **inside** the aggregate, so the
+predicate's columns have to be projected for the `CASE` to evaluate — which puts
+them in the `DISTINCT`. A predicate over the deduplicated object itself is
+harmless, because its columns are fixed by the key being deduplicated on. One
+that reaches any other object is not: the rows would collapse to one per
+*(grain, product, predicate value)* instead of one per *(grain, product)*, and a
+product with two qualifying sales at different quantities would be counted
+twice. Filter on the deduplicated object instead, or query the measure at its
+own grain.
 
 ## Phase 2.4: Period-over-Period Wrap
 

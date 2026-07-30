@@ -170,7 +170,7 @@ OBSL's single-declaration approach is more ergonomic for the common case.
 
 | | OBSL | dbt SL |
 |---|---|---|
-| Fanout detection | Explicit `compiler/fanout.py` raises `FanoutError` | Avoided implicitly via entity types |
+| Fanout detection | Explicit `compiler/fanout.py` raises `FanoutError`; measures on the *one* side of a join are deduplicated on that object's key | Avoided implicitly via entity types |
 | Multi-fact strategy | Dedicated **CFL (Composite Fact Layer)** planner — `compiler/cfl.py` — emits `UNION ALL` legs with per-leg common-root resolution via `JoinGraph.find_common_root()` | MetricFlow join planner traverses entity graph; strategy is internal/opaque |
 | User control | Explicit star-vs-CFL switch surfaces in compilation | Not exposed |
 | Snowflake optimization | Uses `UNION ALL BY NAME` | n/a |

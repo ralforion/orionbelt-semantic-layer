@@ -63,6 +63,7 @@ from orionbelt.ast.nodes import (
     IsNull,
     Join,
     JoinType,
+    Literal,
     OrderByItem,
     RegexMatch,
     RelativeDateRange,
@@ -71,6 +72,7 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.filters import collect_measure_filter_objects
 from orionbelt.compiler.resolution import ResolvedQuery, make_column_expr
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
@@ -225,7 +227,31 @@ def _dedup_target(
         )
         raise GrainDedupUnsupportedError(msg)
 
-    return next(iter(sources))
+    target = next(iter(sources))
+
+    # A measure ``filters:`` clause compiles to CASE WHEN inside the aggregate,
+    # so its predicate columns have to be projected for the CASE to evaluate —
+    # which puts them in the DISTINCT and splits one source row into one row per
+    # distinct predicate value. A predicate over the dedup object itself is
+    # harmless (its columns are functionally determined by the key it is
+    # deduplicated on); one that reaches any other object is not.
+    filter_objects: set[str] = set()
+    for item in measure.filters:
+        collect_measure_filter_objects(item, filter_objects)
+    outside = filter_objects - {target}
+    if outside:
+        joined = ", ".join(f"'{s}'" for s in sorted(outside))
+        msg = (
+            f"Measure '{measure_name}' is sourced from '{target}', whose rows this "
+            f"query's joins replicate, but its filters reference {joined}. "
+            f"Deduplicating on '{target}' would keep one row per distinct filter "
+            f"value rather than one row per '{target}' row, so the result would be "
+            f"overcounted. Filter on '{target}' instead, query the measure at its "
+            f"own grain, or set allowFanOut: true if the duplication is intended."
+        )
+        raise GrainDedupUnsupportedError(msg)
+
+    return target
 
 
 def _identity_columns(
@@ -370,6 +396,11 @@ def _measure_alias(column: Expr) -> str | None:
     return column.alias if isinstance(column, AliasedExpr) else None
 
 
+def _counts_rows(measure: Measure | None) -> bool:
+    """Whether the measure counts rows, so an empty input must read 0 rather than NULL."""
+    return measure is not None and measure.aggregation.lower() in ("count", "count_distinct")
+
+
 def wrap_with_grain_dedup(
     ast: Select,
     resolved: ResolvedQuery,
@@ -408,6 +439,7 @@ def wrap_with_grain_dedup(
     all_ctes = list(ast.ctes) + [main_cte]
 
     # --- one dedup CTE per replicated source object ---
+    effective_measures = model.effective_measures
     by_object: dict[str, list[str]] = {}
     for measure_name, object_name in dedup_measures.items():
         by_object.setdefault(object_name, []).append(measure_name)
@@ -515,8 +547,20 @@ def wrap_with_grain_dedup(
         if alias is None:
             outer_columns.append(col)
             continue
-        source = cte_for_object[dedup_measures[alias]] if alias in dedup_measures else _MAIN_CTE
-        outer_columns.append(AliasedExpr(expr=ColumnRef(name=alias, table=source), alias=alias))
+        if alias not in dedup_measures:
+            outer_columns.append(
+                AliasedExpr(expr=ColumnRef(name=alias, table=_MAIN_CTE), alias=alias)
+            )
+            continue
+        source = cte_for_object[dedup_measures[alias]]
+        measure_col: Expr = ColumnRef(name=alias, table=source)
+        # A group whose rows all miss the joined object contributes no row to the
+        # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
+        # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
+        # NULL, which is what SQL returns for an empty input.
+        if _counts_rows(effective_measures.get(alias)):
+            measure_col = FunctionCall(name="COALESCE", args=[measure_col, Literal.number(0)])
+        outer_columns.append(AliasedExpr(expr=measure_col, alias=alias))
 
     outer_joins: list[Join] = []
     for object_name in sorted(by_object):
@@ -538,18 +582,26 @@ def wrap_with_grain_dedup(
             Join(join_type=JoinType.LEFT, source=cte_name, alias=cte_name, on=on_expr)
         )
 
-    # ORDER BY still holds planner-level expressions (a dimension's physical
-    # column, or a measure's full aggregate). Neither survives into the outer
-    # query, whose FROM is just the CTEs — repoint both at the CTE aliases.
-    dim_sources: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    measure_sources = [(m.expression, m.name) for m in resolved.measures]
+    # ORDER BY still holds planner-level expressions: a dimension's source
+    # expression (a plain column, a time-grain call, or a whole arithmetic tree
+    # for a computed column) or a measure's full aggregate. None of those survive
+    # into the outer query, whose FROM is just the CTEs, so every one is matched
+    # structurally against what the planner projected and repointed at its alias.
+    projected_exprs: list[tuple[Expr, str]] = []
+    for dim in resolved.dimensions:
+        order_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
+        if dim.grain:
+            order_expr = dialect.render_time_grain(order_expr, dim.grain)
+        projected_exprs.append((order_expr, dim.name))
+        # The star planner rewrites a time-grained dimension to its bare alias
+        # before emitting ORDER BY, so match that shape too.
+        if dim.grain:
+            projected_exprs.append((ColumnRef(name=dim.name), dim.name))
+    projected_exprs.extend((m.expression, m.name) for m in resolved.measures)
+
     outer_order_by = [
         OrderByItem(
-            expr=_order_expr_to_outer(
-                item.expr, dim_sources, measure_sources, dedup_measures, cte_for_object
-            ),
+            expr=_order_expr_to_outer(item.expr, projected_exprs, dedup_measures, cte_for_object),
             desc=item.desc,
             nulls_last=item.nulls_last,
         )
@@ -583,35 +635,33 @@ def _null_safe_eq(left: Expr, right: Expr) -> Expr:
 
 def _order_expr_to_outer(
     expr: Expr,
-    dim_sources: dict[tuple[str, str | None], str],
-    measure_sources: list[tuple[Expr, str]],
+    projected: list[tuple[Expr, str]],
     dedup_measures: dict[str, str],
     cte_for_object: dict[str, str],
 ) -> Expr:
     """Repoint one ORDER BY expression at the wrapper's CTE aliases.
 
-    A measure sorts against the CTE that computes it; everything else against
-    ``main``, which carries the full set of grain columns.
+    *projected* pairs each expression the planner emitted with the alias it was
+    emitted under. Matching is structural (AST nodes are frozen dataclasses, so
+    ``==`` compares by value), which covers a computed dimension's whole
+    arithmetic tree as readily as a plain column reference.
+
+    A deduplicated measure sorts against the CTE that computes it; everything
+    else against ``main``, which carries the full grain.
     """
 
     def source_of(name: str) -> str:
         target = dedup_measures.get(name)
         return _MAIN_CTE if target is None else cte_for_object[target]
 
-    for measure_expr, name in measure_sources:
-        if expr == measure_expr:
+    for candidate, name in projected:
+        if expr == candidate:
             return ColumnRef(name=name, table=source_of(name))
 
-    if isinstance(expr, ColumnRef):
-        # A time-grained dimension already sorts by its alias; a plain one still
-        # carries its physical column and object.
-        if expr.table is None:
-            if expr.name in dedup_measures:
-                return ColumnRef(name=expr.name, table=source_of(expr.name))
-            return ColumnRef(name=expr.name, table=_MAIN_CTE)
-        aliased = dim_sources.get((expr.name, expr.table))
-        if aliased is not None:
-            return ColumnRef(name=aliased, table=_MAIN_CTE)
+    # Resolution rejects an ORDER BY that is not in the SELECT, so anything left
+    # is already an alias reference.
+    if isinstance(expr, ColumnRef) and expr.table is None:
+        return ColumnRef(name=expr.name, table=source_of(expr.name))
 
     return expr
 

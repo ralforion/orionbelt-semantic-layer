@@ -48,11 +48,11 @@ LookML and Looker are inseparable in practice — you cannot run LookML without 
 
 ### 3.1 Symmetric aggregates (the original)
 
-Looker pioneered symmetric aggregates as a productionized concept. The `relationship:` keyword on each join (`one_to_one`, `many_to_one`, `one_to_many`, `many_to_many`) tells Looker how to wrap aggregates so joins can fan out without double-counting. OBSL uses a different approach: static fanout detection + the **CFL** planner emitting `UNION ALL` legs.
+Looker pioneered symmetric aggregates as a productionized concept. The `relationship:` keyword on each join (`one_to_one`, `many_to_one`, `one_to_many`, `many_to_many`) tells Looker how to wrap aggregates so joins can fan out without double-counting. OBSL uses a different approach: static fanout detection, the **CFL** planner emitting `UNION ALL` legs, and a [grain-dedup CTE](../guide/compilation.md#phase-22-grain-deduplication-wrap) for measures sourced from the *one* side of a join, which are aggregated over rows deduplicated on that object's key.
 
 | | LookML | OBSL |
 |---|---|---|
-| Strategy | Symmetric aggregates driven by `relationship:` | Static fanout detection + CFL `UNION ALL` planner |
+| Strategy | Symmetric aggregates driven by `relationship:` | Static fanout detection + CFL `UNION ALL` planner + grain-dedup CTE for one-side measures |
 | User experience | Implicit, "it just works" if you set `relationship` correctly | Explicit error/plan; CFL output is inspectable |
 | Failure mode | Wrong `relationship` → silently wrong numbers | Wrong join model → `FanoutError` raised at compile |
 
@@ -149,7 +149,7 @@ Bottom line: LookML wins on aggregate-variant *shape* (`sum_distinct`, `percenti
 |---|---|---|
 | Definition site | `joins:` array on `DataObject` (model-level) | `join:` blocks inside an `explore` (explore-level) |
 | Cardinality | `joinType`: `many-to-one`, `one-to-one`, `many-to-many` | `relationship`: `one_to_one`, `many_to_one`, `one_to_many`, `many_to_many` |
-| What cardinality drives | Static fanout detection + CFL multi-fact planning | Symmetric aggregates |
+| What cardinality drives | Static fanout detection + CFL multi-fact planning + grain dedup for one-side measures | Symmetric aggregates |
 | Join condition | `columnsFrom`/`columnsTo` arrays | `sql_on: ${a.id} = ${b.a_id} ;;` (free-form SQL) |
 | Multiple paths | First-class via `secondary: true` + named `pathName`, query-time selection via `usePathNames` | Multiple aliased joins via `from:` keyword + different names — no path naming primitive |
 | Multiple "starting points" | Each query picks a base data object | Each `explore` is a separate starting point with its own join tree |
