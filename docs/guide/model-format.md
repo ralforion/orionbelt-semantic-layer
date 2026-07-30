@@ -423,7 +423,7 @@ measures:
 | `grain` | object | No | [Grain override](grain-filter-context.md#grain-override) -- controls aggregation grain independently from query dimensions |
 | `filterContext` | object | No | [Filter context override](grain-filter-context.md#filter-context) -- controls which query WHERE filters apply |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
-| `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`) |
+| `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). With `distinct: true` the column must be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
 | `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `description` | string | No | Business description |
@@ -571,6 +571,13 @@ measures:
 ```
 
 The `delimiter` defaults to `","` if omitted. The `withinGroup` clause is optional and specifies ordering of the concatenated values.
+
+With `distinct: true`, `withinGroup.column` must be the column the measure aggregates. SQL restricts a DISTINCT
+aggregate's `ORDER BY` to expressions in its argument list — the engine sorts values it has already deduplicated,
+so it cannot order them by something it collapsed away. Postgres, DuckDB and BigQuery all reject it (*"In a
+DISTINCT aggregate, ORDER BY expressions must appear in the argument list"*). Model validation catches this up
+front (`WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`) rather than letting every query on the measure fail at execution
+time. Order by the aggregated column, or drop `distinct: true` if the ordering matters more.
 
 ## Metrics
 

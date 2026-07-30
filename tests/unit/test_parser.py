@@ -1263,6 +1263,30 @@ dataObjects:
         errors = validator.validate(model)
         assert any(e.code == "NUM_CLASS_ON_NON_NUMERIC" for e in errors)
 
+    def test_distinct_listagg_ordered_by_another_column_is_rejected(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        """A DISTINCT aggregate can only be ordered by an expression in its argument list.
+
+        Without this the model loads and every query touching the measure dies
+        at execution time with a driver binder error against generated SQL.
+        """
+        codes = _listagg_errors(resolver, distinct=True, order_column="Stock On Hand")
+        assert "WITHIN_GROUP_NOT_IN_DISTINCT_ARGS" in codes
+
+    def test_distinct_listagg_ordered_by_the_aggregated_column_is_allowed(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        codes = _listagg_errors(resolver, distinct=True, order_column="Product ID")
+        assert "WITHIN_GROUP_NOT_IN_DISTINCT_ARGS" not in codes
+
+    def test_non_distinct_listagg_may_order_by_any_column(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        """The restriction is DISTINCT's; plain LISTAGG can order by anything."""
+        codes = _listagg_errors(resolver, distinct=False, order_column="Stock On Hand")
+        assert "WITHIN_GROUP_NOT_IN_DISTINCT_ARGS" not in codes
+
     def test_num_class_on_numeric_column_ok(self, resolver: ReferenceResolver) -> None:
         """numClass on int/float columns should not produce errors."""
         yaml_content = """\
@@ -1625,3 +1649,42 @@ class TestMalformedMeasureExpressionRefs:
         errs = self._get_malformed(resolver, "{[Orders].Amount]}")
         assert len(errs) == 1
         assert "missing opening '[' on column" in errs[0].message  # type: ignore[union-attr]
+
+
+_LISTAGG_MODEL = """\
+version: 1.0
+dataObjects:
+  Products:
+    code: products
+    database: DB
+    schema: SCH
+    columns:
+      Product ID:
+        code: id
+        abstractType: string
+        primaryKey: true
+      Stock On Hand:
+        code: stock_on_hand
+        abstractType: int
+measures:
+  Product List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+{distinct}    columns:
+      - dataObject: Products
+        column: Product ID
+    withinGroup:
+      column: {{dataObject: Products, column: {order_column}}}
+      order: ASC
+"""
+
+
+def _listagg_errors(resolver: ReferenceResolver, *, distinct: bool, order_column: str):
+    yaml_content = _LISTAGG_MODEL.format(
+        distinct="    distinct: true\n" if distinct else "",
+        order_column=order_column,
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_content)
+    model, _ = resolver.resolve(raw, source_map)
+    return [e.code for e in SemanticValidator().validate(model)]
