@@ -229,29 +229,51 @@ def _dedup_target(
 
     target = next(iter(sources))
 
-    # A measure ``filters:`` clause compiles to CASE WHEN inside the aggregate,
-    # so its predicate columns have to be projected for the CASE to evaluate —
-    # which puts them in the DISTINCT and splits one source row into one row per
-    # distinct predicate value. A predicate over the dedup object itself is
-    # harmless (its columns are functionally determined by the key it is
-    # deduplicated on); one that reaches any other object is not.
-    filter_objects: set[str] = set()
-    for item in measure.filters:
-        collect_measure_filter_objects(item, filter_objects)
-    outside = filter_objects - {target}
-    if outside:
+    # Everything the aggregate reads beyond its own value columns has to be
+    # projected into the inner SELECT so the rendered aggregate can reference it
+    # — a ``filters:`` predicate becomes CASE WHEN inside the aggregate, a
+    # ``withinGroup:`` column becomes its ORDER BY. Whatever is projected joins
+    # the DISTINCT, so a reference to the dedup object itself is harmless (its
+    # columns are functionally determined by the key being deduplicated on)
+    # while a reference to any other object splits one source row into one row
+    # per distinct value of it.
+    for clause, referenced in _auxiliary_references(measure).items():
+        outside = referenced - {target}
+        if not outside:
+            continue
         joined = ", ".join(f"'{s}'" for s in sorted(outside))
         msg = (
             f"Measure '{measure_name}' is sourced from '{target}', whose rows this "
-            f"query's joins replicate, but its filters reference {joined}. "
-            f"Deduplicating on '{target}' would keep one row per distinct filter "
-            f"value rather than one row per '{target}' row, so the result would be "
-            f"overcounted. Filter on '{target}' instead, query the measure at its "
-            f"own grain, or set allowFanOut: true if the duplication is intended."
+            f"query's joins replicate, but its {clause} clause references {joined}. "
+            f"Deduplicating on '{target}' would keep one row per distinct value of "
+            f"that clause rather than one row per '{target}' row, so the result "
+            f"would be overcounted. Reference '{target}' there instead, query the "
+            f"measure at its own grain, or set allowFanOut: true if the duplication "
+            f"is intended."
         )
         raise GrainDedupUnsupportedError(msg)
 
     return target
+
+
+def _auxiliary_references(measure: Measure) -> dict[str, set[str]]:
+    """Objects a measure reads outside its own value columns, keyed by clause.
+
+    These are the references that get projected into the deduplicating inner
+    SELECT alongside the value columns, and so end up inside its DISTINCT.
+    """
+    references: dict[str, set[str]] = {}
+
+    filter_objects: set[str] = set()
+    for item in measure.filters:
+        collect_measure_filter_objects(item, filter_objects)
+    if filter_objects:
+        references["filters"] = filter_objects
+
+    if measure.within_group is not None and measure.within_group.column.view:
+        references["withinGroup"] = {measure.within_group.column.view}
+
+    return references
 
 
 def _identity_columns(

@@ -285,17 +285,21 @@ than return an inflated number:
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A metric whose component needs deduplication | Metrics inline their components into one expression |
 | `HAVING` on a deduplicated measure | HAVING is applied inside `main`, where the measure does not exist yet |
-| A measure `filters:` predicate reaching outside the dedup object | See below |
+| A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
-A measure's `filters:` compile to `CASE WHEN` **inside** the aggregate, so the
-predicate's columns have to be projected for the `CASE` to evaluate — which puts
-them in the `DISTINCT`. A predicate over the deduplicated object itself is
-harmless, because its columns are fixed by the key being deduplicated on. One
-that reaches any other object is not: the rows would collapse to one per
-*(grain, product, predicate value)* instead of one per *(grain, product)*, and a
-product with two qualifying sales at different quantities would be counted
-twice. Filter on the deduplicated object instead, or query the measure at its
-own grain.
+Anything an aggregate reads beyond its own value columns has to be projected
+into the deduplicating inner `SELECT` so the rendered aggregate can reference it:
+a `filters:` predicate becomes `CASE WHEN` inside the aggregate, and a
+`withinGroup:` column becomes its `ORDER BY`. Whatever is projected joins the
+`DISTINCT`.
+
+A reference to the deduplicated object itself is harmless, because its columns
+are fixed by the key being deduplicated on. One that reaches any other object is
+not: the rows collapse to one per *(grain, product, referenced value)* instead of
+one per *(grain, product)*. A product with two sales at different quantities
+would be counted twice by a `filters:` predicate on `Sales.Quantity`, or listed
+twice by a `LISTAGG` ordered by it. Reference the deduplicated object instead, or
+query the measure at its own grain.
 
 ## Phase 2.4: Period-over-Period Wrap
 

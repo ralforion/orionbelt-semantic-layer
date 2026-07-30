@@ -98,6 +98,26 @@ measures:
     resultType: int
     aggregation: count
     distinct: true
+  Product List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns:
+      - dataObject: Products
+        column: Product ID
+    withinGroup:
+      column: {dataObject: Sales, column: Quantity}
+      order: ASC
+  Ordered Product List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns:
+      - dataObject: Products
+        column: Product ID
+    withinGroup:
+      column: {dataObject: Products, column: Stock On Hand}
+      order: ASC
   Big Sale Stock:
     resultType: int
     aggregation: sum
@@ -611,7 +631,7 @@ def test_filter_reaching_outside_the_dedup_grain_is_refused() -> None:
     qualifying sales at different quantities would be counted twice. Refuse
     rather than return that number.
     """
-    with pytest.raises(GrainDedupUnsupportedError, match="filters reference 'Sales'"):
+    with pytest.raises(GrainDedupUnsupportedError, match="filters clause references 'Sales'"):
         _compile(
             {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Big Sale Stock"]}}
         )
@@ -696,3 +716,47 @@ def test_order_by_a_computed_dimension_targets_main() -> None:
     )
     assert 'ORDER BY "main"."Bumped" ASC' in result.sql
     assert '"Sales"."quantity" + 1 ASC' not in result.sql
+
+
+def test_within_group_reaching_outside_the_dedup_grain_is_refused() -> None:
+    """``withinGroup`` becomes the aggregate's ORDER BY, so its column is projected too.
+
+    Same mechanism as an out-of-grain ``filters:`` predicate: the projected
+    column joins the DISTINCT, so rows collapse to one per (grain, product,
+    ordering value). A product with two sales at different quantities would be
+    listed twice.
+    """
+    with pytest.raises(GrainDedupUnsupportedError, match="withinGroup clause references 'Sales'"):
+        _compile(
+            {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Product List"]}}
+        )
+
+
+def test_within_group_on_the_dedup_object_itself_still_deduplicates() -> None:
+    """Ordering by a column of the deduplicated object is fixed by its key, so it is safe."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 7, 'parts')")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # p1 sells twice at different quantities — what breaks an out-of-grain order.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',2), ('s2','p1','c1','north',3),"
+        " ('s3','p2','c1','north',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Ordered Product List"],
+            }
+        }
+    )
+    # Each product once, ordered by stock (p2=7 then p1=100) — not 'p2,p1,p1'.
+    assert [r[2] for r in con.execute(result.sql).fetchall()] == ["p2,p1"]
