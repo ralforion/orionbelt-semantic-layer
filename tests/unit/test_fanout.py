@@ -588,17 +588,18 @@ class TestJunctionTableFanout:
 
 
 class TestPipelineFanout:
-    def test_pipeline_raises_unreachable_error(self) -> None:
-        """CompilationPipeline should refuse to compile when a required object
-        is unreachable via directed joins.
+    def test_pipeline_reanchors_when_the_measure_is_on_the_dimension_table(self) -> None:
+        """A measure on the *one* side no longer blocks the query.
 
-        The join is declared as Orders many-to-one Customers.  The measure is
-        on Customers (dimension table) and the dimension is on Orders (fact
-        table).  Resolution selects Customers as the base object (measure
-        source).  Reaching Orders from Customers would require walking the
-        many-to-one in reverse, which would inflate row counts — so the
-        resolver raises UNREACHABLE_REQUIRED_OBJECT instead of generating
-        silently-wrong SQL.
+        The join is declared Orders many-to-one Customers. The measure is on
+        Customers (a dimension table) and the dimension is on Orders (the fact
+        table). Anchoring the base on the measure's own source picks Customers,
+        from which Orders is unreachable — many-to-one joins are forward-only.
+
+        This used to raise UNREACHABLE_REQUIRED_OBJECT. The query is not
+        multi-fact though, only viewed from the wrong end, so resolution now
+        re-anchors on the common root (Orders) and ``compiler.grain_dedup``
+        aggregates the measure over rows deduplicated on the customer key.
         """
         orders = DataObject(
             name="Orders",
@@ -665,7 +666,64 @@ class TestPipelineFanout:
         )
 
         pipeline = CompilationPipeline()
+        result = pipeline.compile(query, model, "postgres")
+
+        assert result.resolved.fact_tables == ["Customers"]
+        assert '"ORDERS"' in result.sql
+        # Deduplicated on the customer key rather than summed over the join.
+        assert "dedup_0" in result.sql
+        assert "SELECT DISTINCT" in result.sql
+
+    def test_pipeline_still_raises_when_no_common_root_exists(self) -> None:
+        """Re-anchoring only helps when something actually joins the two sides.
+
+        With no join at all between Orders and Customers there is no common
+        root to re-anchor on, so the original base stands and the unreachable
+        error still fires rather than a silently wrong cross join.
+        """
+        orders = DataObject(
+            name="Orders",
+            code="ORDERS",
+            database="WH",
+            schema_name="PUBLIC",
+            columns={
+                "Order ID": DataObjectColumn(
+                    name="Order ID", code="ORDER_ID", abstract_type=DataType.STRING
+                ),
+            },
+        )
+        customers = DataObject(
+            name="Customers",
+            code="CUSTOMERS",
+            database="WH",
+            schema_name="PUBLIC",
+            columns={
+                "Revenue": DataObjectColumn(
+                    name="Revenue", code="REVENUE", abstract_type=DataType.FLOAT
+                ),
+            },
+        )
+        model = SemanticModel(
+            data_objects={"Orders": orders, "Customers": customers},
+            dimensions={
+                "Order ID": Dimension(
+                    name="Order ID",
+                    view="Orders",
+                    column="Order ID",
+                    result_type=DataType.STRING,
+                ),
+            },
+            measures={
+                "Cust Revenue": Measure(
+                    name="Cust Revenue",
+                    columns=[{"dataObject": "Customers", "column": "Revenue"}],
+                    result_type=DataType.FLOAT,
+                    aggregation="sum",
+                ),
+            },
+        )
+        query = QueryObject(select=QuerySelect(dimensions=["Order ID"], measures=["Cust Revenue"]))
+
         with pytest.raises(ResolutionError) as exc_info:
-            pipeline.compile(query, model, "postgres")
-        codes = {e.code for e in exc_info.value.errors}
-        assert "UNREACHABLE_REQUIRED_OBJECT" in codes
+            CompilationPipeline().compile(query, model, "postgres")
+        assert "UNREACHABLE_REQUIRED_OBJECT" in {e.code for e in exc_info.value.errors}

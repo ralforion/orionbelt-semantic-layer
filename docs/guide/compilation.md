@@ -50,7 +50,7 @@ The resolver transforms a high-level `QueryObject` (business names) into a `Reso
 1. **Resolve dimensions** — Look up each dimension name in the model, find the source data object and column, apply time grain if requested
 2. **Resolve measures** — Expand expression placeholders (`{[DataObject].[Column]}`) into column references, wrap in aggregation functions
 3. **Resolve metrics** — Expand measure references (`{[Measure Name]}`), compose expressions
-4. **Select base object** — Choose the primary fact table (prefers data objects with joins defined)
+4. **Select base object** — Choose the primary fact table (prefers data objects with joins defined), re-anchoring on a common root when the measure's own source cannot reach the rest of the query
 5. **Find join paths** — Use the join graph to find the minimal set of joins connecting all required objects
 6. **Apply measure filters** — Measures with `filters` are wrapped in `CASE WHEN` inside the aggregate function
 7. **Classify query filters** — Dimension filters -> WHERE, measure filters -> HAVING
@@ -74,6 +74,34 @@ The output of resolution contains everything the planner needs:
 | `requires_cfl` | `bool` | Whether multi-fact CFL planning is needed |
 | `use_path_names` | `list[UsePathName]` | Secondary join overrides from the query |
 | `dimensions_exclude` | `bool` | Whether to generate anti-join EXCEPT query |
+
+### Base Object Selection
+
+The base object is the query's `FROM` table, and every join path hangs off it.
+It is normally the measure's own source object, which is right whenever that
+object is the fact table.
+
+It is wrong when the measure lives on a *dimension* table. `Avg Customer Age`
+grouped by `Category` would anchor on `Customers`, and because joins are
+declared many-to-one and traversed forward-only, `Customers` reaches nothing —
+so the query failed with `UNREACHABLE_REQUIRED_OBJECT` even though `Sales`
+joins to both `Customers` and `Products`.
+
+Such a query is not multi-fact, only single-fact viewed from the wrong end. When
+the chosen base cannot reach every required object, resolution re-anchors on
+`JoinGraph.find_common_root()` — here `Sales` — and the query plans as an
+ordinary star, with the measure deduplicated on the replicated side (see
+[Grain Deduplication Wrap](#phase-22-grain-deduplication-wrap)).
+
+The fallback is narrow by design, so it can only turn an error into a result and
+never re-plan a query that already works:
+
+- Only when there is exactly **one** measure source object. Multi-fact queries
+  keep their original base, so CFL detection — which runs on the base object
+  immediately afterwards — is untouched.
+- Only when that base genuinely cannot reach the rest, the case that errors today.
+- Only when a common root exists. With no connecting object the original base
+  stands and the unreachable error still fires, rather than a silent cross join.
 
 ### Join Graph
 
@@ -259,10 +287,10 @@ answer over duplicated rows and are also left alone, as is any measure with
 `distinct: true` — `AGG(DISTINCT x)` cannot see replication, and a `count` +
 `distinct` over the parent key is the most common one-side measure there is.
 
-A one-side measure queried *on its own* never reaches this pass: resolution
-anchors the base object on that measure's own source, from which the other
-objects are unreachable, and the query is refused. The rewrite applies when a
-base-grain measure is present to anchor the query.
+A one-side measure queried *on its own* is handled too. Anchoring the base on
+that measure's own source would reach nothing, so resolution re-anchors on the
+common root that reaches every required object (see *Base object selection*
+below) and the query plans as an ordinary star.
 
 !!! warning "Deduplicated groups overlap"
     Per-group values are correct, but a product sold in two regions is counted

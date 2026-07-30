@@ -972,6 +972,48 @@ class QueryResolver:
 
     # -- base object selection -----------------------------------------------
 
+    @staticmethod
+    def _reanchor_if_unreachable(ctx: _ResolutionContext, best: str) -> str:
+        """Re-anchor the base when the chosen measure source cannot reach the query.
+
+        Anchoring on a measure's own source object is right whenever that object
+        is the fact table. It is wrong when the measure lives on a *dimension*
+        table: joins are declared many-to-one and traversed forward-only, so a
+        base of ``Customers`` can reach nothing, and a query grouping
+        ``Avg Customer Age`` by ``Category`` fails with
+        ``UNREACHABLE_REQUIRED_OBJECT`` even though ``Sales`` joins to both.
+
+        Such a query is not multi-fact — it is single-fact viewed from the wrong
+        end. Re-anchoring on the common root that reaches every required object
+        makes it plan as an ordinary star; the measure then sits on the replicated
+        side of a forward join, where ``compiler.grain_dedup`` aggregates it over
+        deduplicated rows.
+
+        Deliberately narrow, so this can only turn an error into a result and
+        never re-plan a query that already works:
+
+        * Only with **one** measure source object. Multi-fact queries keep their
+          existing base so CFL detection (which runs on it straight after) is
+          untouched.
+        * Only when that base genuinely cannot reach the rest — the case that
+          errors today.
+        * Only when a common root actually exists; otherwise the original base
+          is returned and the existing error still fires.
+        """
+        if len(ctx.result.measure_source_objects) != 1:
+            return best
+
+        remaining = ctx.result.required_objects - {best}
+        if not remaining:
+            return best
+
+        graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
+        if remaining <= graph.descendants(best):
+            return best
+
+        root = graph.find_common_root(ctx.result.required_objects | {best})
+        return root or best
+
     def _select_base_object(self, ctx: _ResolutionContext) -> str:
         """Select the base (fact) object — prefer measure source objects with most joins."""
         if ctx.result.measure_source_objects:
@@ -984,11 +1026,13 @@ class QueryResolver:
                     best = obj_name
                     best_joins = n
             if best:
-                return best
+                return self._reanchor_if_unreachable(ctx, best)
 
         # Dimension-only: use JoinGraph to find the deepest ancestor
         # (possibly an intermediate fact/bridge table) that can reach
         # all required dimension objects via directed join paths.
+        # (See ``_reanchor_if_unreachable`` — the same idea, applied when a
+        # measure pinned the base to an object that cannot reach the rest.)
         if len(ctx.result.required_objects) > 1:
             graph = JoinGraph(ctx.model, use_path_names=ctx.result.use_path_names or None)
             root = graph.find_common_root(ctx.result.required_objects)

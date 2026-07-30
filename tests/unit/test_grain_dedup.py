@@ -20,7 +20,6 @@ from ruamel.yaml import YAML
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
-from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -604,19 +603,94 @@ def test_average_over_the_one_side_is_unweighted_by_sale_count() -> None:
     assert [(r[0], float(r[2])) for r in rows] == [("tools", 35.0)]
 
 
-def test_a_one_side_measure_alone_is_still_refused_at_resolution() -> None:
-    """The dedup rewrite needs a base-grain measure to anchor the query.
+def test_a_one_side_measure_alone_reanchors_and_deduplicates() -> None:
+    """ "Average customer age per category" asked on its own, with no other measure.
 
-    With only a one-side measure, resolution anchors the base object on that
-    measure's own source ('Customers'), from which the dimension's object
-    ('Products') is unreachable — many-to-one joins are forward-only. The query
-    is refused before planning, so the rewrite never sees it.
-
-    Pinned here because it is the natural way to ask for "average customer age
-    per category", and it does not work yet.
+    Anchoring the base on the measure's own source picks 'Customers', which
+    reaches nothing — so this used to fail with UNREACHABLE_REQUIRED_OBJECT.
+    Resolution now re-anchors on the common root ('Sales'), and the measure is
+    deduplicated exactly as it is when a sale-grain measure rides along.
     """
-    with pytest.raises(ResolutionError, match="cannot be reached from base"):
-        _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'), ('p2', 9.99, 110, 'tools')"
+    )
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 50)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p2','c1','north',1), ('s4','p2','c2','north',1)"
+    )
+
+    result = _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
+
+    assert "dedup_0" in result.sql
+    assert [(r[0], float(r[1])) for r in con.execute(result.sql).fetchall()] == [("tools", 35.0)]
+
+
+def test_reanchoring_does_not_fire_for_multi_fact_queries() -> None:
+    """CFL detection runs on the base object, so multi-fact keeps its original base."""
+    yaml_text = """
+version: 1.0
+name: twofact
+dataObjects:
+  Customers:
+    code: customers
+    schema: main
+    columns:
+      Customer ID: {code: id, abstractType: string, primaryKey: true}
+      Country: {code: country, abstractType: string}
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order ID: {code: id, abstractType: string, primaryKey: true}
+      Order Customer ID: {code: customer_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+  Shipments:
+    code: shipments
+    schema: main
+    columns:
+      Shipment ID: {code: id, abstractType: string, primaryKey: true}
+      Shipment Customer ID: {code: customer_id, abstractType: string}
+      Weight: {code: weight, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Shipment Customer ID]
+        columnsTo: [Customer ID]
+dimensions:
+  Country: {dataObject: Customers, column: Country, resultType: string}
+measures:
+  Order Amount:
+    resultType: float
+    aggregation: sum
+    expression: '{[Orders].[Amount]}'
+  Shipment Weight:
+    resultType: float
+    aggregation: sum
+    expression: '{[Shipments].[Weight]}'
+"""
+    result = _compile(
+        {"select": {"dimensions": ["Country"], "measures": ["Order Amount", "Shipment Weight"]}},
+        yaml_text,
+    )
+    assert result.explain is not None
+    assert result.explain.planner == "CFL"
+    assert "UNION ALL" in result.sql
 
 
 # --- Review findings on the first cut of this pass -----------------------
