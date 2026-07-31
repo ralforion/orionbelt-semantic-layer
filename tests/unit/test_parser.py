@@ -1597,12 +1597,14 @@ metrics:
 
 
 class TestNestedMetricRefs:
-    """A metric expression references measures, not other metrics.
+    """Which metric-over-metric references a metric expression may make.
 
-    The planner substitutes a metric's components one level only, so an inner
-    metric's own placeholders survived into the SQL as bare column names that no
-    engine can bind. The one composition the compiler does expand - a derived
-    metric over a window metric - stays valid.
+    A derived metric is expanded in place, so nesting one inside another is
+    valid at any depth. A cumulative or period-over-period metric is computed by
+    its own wrapper, which only runs when that metric is selected directly -
+    wrapping one in a derived metric skipped the wrapper and left the inner
+    metric's placeholders in the SQL as bare column names no engine can bind, so
+    it is refused.
     """
 
     @staticmethod
@@ -1612,18 +1614,18 @@ class TestNestedMetricRefs:
         _model, result = resolver.resolve(raw, source_map)
         return [e for e in result.errors if e.code == "UNSUPPORTED_METRIC_REF"]
 
-    def test_derived_over_derived_is_refused(self, resolver: ReferenceResolver) -> None:
-        errors = self._errors(
-            resolver,
-            "  Doubled:\n"
-            "    expression: '{[Revenue]} * 2'\n"
-            "  Quadrupled:\n"
-            "    expression: '{[Doubled]} * 2'\n",
+    def test_derived_over_derived_stays_valid(self, resolver: ReferenceResolver) -> None:
+        """Expanded in place by the planner, at any depth."""
+        assert (
+            self._errors(
+                resolver,
+                "  Doubled:\n"
+                "    expression: '{[Revenue]} * 2'\n"
+                "  Quadrupled:\n"
+                "    expression: '{[Doubled]} * 2'\n",
+            )
+            == []
         )
-        assert len(errors) == 1
-        assert "'Quadrupled' references metric 'Doubled'" in errors[0].message
-        assert errors[0].path == "metrics.Quadrupled.expression"
-        assert errors[0].hint and "Revenue" not in errors[0].hint.split("'")[0]
 
     def test_derived_over_cumulative_is_refused(self, resolver: ReferenceResolver) -> None:
         errors = self._errors(

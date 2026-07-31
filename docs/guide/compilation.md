@@ -366,7 +366,7 @@ than return an inflated number:
 | `filterContext` | It re-queries the fact tables under a *different* `WHERE`. The dedup output has already applied the query filters and aggregated, so there is no column to take by alias |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
-| A deduplicated measure reached through two metrics (a derived metric over a window metric) | The window wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve |
+| A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
 | `total: true` on a deduplicated metric *component* | The totals wrapper re-projects the component's raw aggregate into a CTE whose FROM is the dedup output |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 

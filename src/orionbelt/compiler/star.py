@@ -16,6 +16,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.models.query import NullsPosition
@@ -53,33 +54,15 @@ def _substitute_measure_refs(
     expr: Expr,
     components: dict[str, ResolvedMeasure],
 ) -> Expr:
-    """Walk a metric AST tree and replace ColumnRef placeholders with aggregate expressions.
+    """Inline each of a metric's components into its formula.
 
-    Recurses through ``BinaryOp`` and ``FunctionCall.args`` so a metric
-    formula like ``{Total Sales} / NULLIF({Order Count}, 0)`` correctly
-    inlines both refs (the FunctionCall wraps the divisor; without
-    recursion into ``args`` the inner ref would survive as a bare
-    ColumnRef and the compiler would emit ``NULLIF("Order Count", 0)``
-    against a non-existent column).
+    A component that is another *derived* metric is expanded in turn, so
+    ``Margin Pct: '{[Margin]} / {[Revenue]}'`` over ``Margin: '{[Revenue]} -
+    {[Cost]}'`` resolves down to real aggregates. A cumulative, window, or
+    period-over-period component stays a named reference for its own wrapper to
+    resolve — see :mod:`orionbelt.compiler.metric_expansion`.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in components:
-        return components[expr.name].expression
-    if isinstance(expr, BinaryOp):
-        new_left = _substitute_measure_refs(expr.left, components)
-        new_right = _substitute_measure_refs(expr.right, components)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [_substitute_measure_refs(a, components) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
+    return expand_metric_expression(expr, components, lambda comp: comp.expression)
 
 
 def _expand_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:

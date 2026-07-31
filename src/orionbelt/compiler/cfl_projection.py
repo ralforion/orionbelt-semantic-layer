@@ -24,6 +24,10 @@ from orionbelt.ast.nodes import (
     UnaryOp,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.metric_expansion import (
+    expand_metric_expression,
+    metric_leaf_components,
+)
 from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
@@ -206,45 +210,30 @@ def build_outer_metric_expr(
 def substitute_outer_refs(
     planner: CFLPlanner, expr: Expr, resolved: ResolvedQuery, cte_name: str
 ) -> Expr:
-    """Recursively substitute measure refs with outer aggregations.
+    """Substitute a metric's component refs with outer aggregations.
 
-    Walks ``BinaryOp`` and ``FunctionCall.args`` so a metric formula
-    with embedded SQL functions (e.g. ``... / NULLIF(other, 0)``)
-    substitutes refs inside the function call instead of leaving the
-    bare label, which would later bind against a non-existent
-    column.
+    Every reference in the formula becomes ``AGG("cte"."component")`` over the
+    UNION ALL composite, wherever it sits in the expression — inside a function
+    call (``... / NULLIF(other, 0)``), a ``CASE``, or a nested derived metric,
+    whose own formula is expanded here rather than left as a bare label that
+    would bind against a column no leg projects.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None:
-        comp = resolved.metric_components.get(expr.name)
-        if comp:
-            agg = comp.aggregation.upper()
-            distinct = False
-            if agg == "COUNT_DISTINCT":
-                agg = "COUNT"
-                distinct = True
-            if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
-                distinct = True
-            return FunctionCall(
-                name=agg,
-                args=[ColumnRef(name=comp.name, table=cte_name)],
-                distinct=distinct,
-            )
-    if isinstance(expr, BinaryOp):
-        new_left = planner._substitute_outer_refs(expr.left, resolved, cte_name)
-        new_right = planner._substitute_outer_refs(expr.right, resolved, cte_name)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [planner._substitute_outer_refs(a, resolved, cte_name) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
+
+    def value_of(comp: ResolvedMeasure) -> Expr:
+        agg = comp.aggregation.upper()
+        distinct = False
+        if agg == "COUNT_DISTINCT":
+            agg = "COUNT"
+            distinct = True
+        if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
+            distinct = True
+        return FunctionCall(
+            name=agg,
+            args=[ColumnRef(name=comp.name, table=cte_name)],
+            distinct=distinct,
+        )
+
+    return expand_metric_expression(expr, resolved.metric_components, value_of)
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
@@ -345,19 +334,27 @@ def group_measures_by_object(
 
     for measure in resolved.measures:
         if measure.component_measures:
-            # Metric: add each component measure to its source object
-            for comp_name in measure.component_measures:
-                if comp_name in seen:
+            # Metric: add each component measure to its source object, following
+            # nested derived metrics — those are expanded into the same formula,
+            # so it is their leaves that need a leg.
+            for comp in metric_leaf_components(measure, resolved.metric_components):
+                if comp.name in seen:
                     continue
-                seen.add(comp_name)
-                comp = resolved.metric_components.get(comp_name)
-                if comp is None:
-                    continue
-                model_measure = model.effective_measures.get(comp_name)
+                seen.add(comp.name)
+                model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:
                     obj_name = model_measure.columns[0].view or resolved.base_object
                 else:
-                    obj_name = resolved.base_object
+                    # Declared as an expression rather than ``columns:`` — the
+                    # source object is in the aggregate's own table references.
+                    # Falling back to the base object put the component in the
+                    # wrong leg, which then projected a column its FROM has not
+                    # joined.
+                    comp_objects: set[str] = set()
+                    planner._collect_table_refs(comp.expression, comp_objects)
+                    obj_name = (
+                        next(iter(sorted(comp_objects))) if comp_objects else resolved.base_object
+                    )
                 groups.setdefault(obj_name, []).append(comp)
         else:
             if measure.name in seen:

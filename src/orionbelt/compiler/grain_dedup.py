@@ -60,28 +60,29 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
-    Between,
     BinaryOp,
-    CaseExpr,
-    Cast,
     ColumnRef,
     Expr,
     From,
     FunctionCall,
-    InList,
     IsNull,
     Join,
     JoinType,
     Literal,
     OrderByItem,
-    RegexMatch,
-    RelativeDateRange,
     Select,
-    UnaryOp,
-    WindowFunction,
+)
+from orionbelt.compiler.expr_rewrite import (
+    collect_column_refs,
+    map_column_refs,
+    rewrite_column_refs,
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import collect_measure_filter_objects
+from orionbelt.compiler.metric_expansion import (
+    expand_metric_expression,
+    metric_leaf_components,
+)
 from orionbelt.compiler.resolution import (
     ResolvedFilter,
     ResolvedMeasure,
@@ -231,54 +232,40 @@ def _metric_component_targets(
     separately and rebuilds the metric expression over the results, so the
     inlined aggregate never reaches the replicated join.
 
-    A component that is *itself* a metric is refused. OBML allows exactly one
-    such nesting — a derived metric over a window metric — and the window
-    wrapper serves it by projecting the window metric's base measure as a column
-    of its own base CTE, rebuilt from the fact tables. A deduplicated base lives
-    in a dedup CTE instead, which that projection cannot reach.
+    Nested *derived* metrics are followed, because they are expanded in place
+    into the same expression. A component computed by its own wrapper — a
+    cumulative, window, or period-over-period metric — is refused instead: that
+    wrapper rebuilds its base measure's aggregate from the fact tables, which a
+    dedup CTE cannot serve.
     """
     targets: dict[str, str] = {}
-    for component in metric.component_measures:
-        nested = resolved.metric_components.get(component)
-        if nested is not None and nested.component_measures:
-            found = _nested_dedup_target(nested, resolved, effective, replicated)
-            if found is None:
-                continue
-            inner, inner_target = found
-            msg = (
-                f"Metric '{metric.name}' references metric '{component}', whose measure "
-                f"'{inner}' is sourced from '{inner_target}' — an object whose rows this "
-                f"query's joins replicate. A measure this query reaches through two "
-                f"metrics cannot be deduplicated, and the result would otherwise be "
-                f"overcounted. Query '{component}' on its own, or set allowFanOut: true "
-                f"on '{inner}' if the duplication is intended."
-            )
-            raise GrainDedupUnsupportedError(msg)
-
-        target = _dedup_target(component, effective, replicated)
-        if target is not None:
-            targets[component] = target
-    return targets
-
-
-def _nested_dedup_target(
-    metric: ResolvedMeasure,
-    resolved: ResolvedQuery,
-    effective: dict[str, Measure],
-    replicated: set[str],
-) -> tuple[str, str] | None:
-    """First ``(measure, object)`` below *metric* that would need dedup, if any."""
-    for component in metric.component_measures:
-        nested = resolved.metric_components.get(component)
-        if nested is not None and nested.component_measures:
-            found = _nested_dedup_target(nested, resolved, effective, replicated)
-            if found is not None:
-                return found
+    for component in metric_leaf_components(metric, resolved.metric_components):
+        if not component.component_measures:
+            target = _dedup_target(component.name, effective, replicated)
+            if target is not None:
+                targets[component.name] = target
             continue
-        target = _dedup_target(component, effective, replicated)
-        if target is not None:
-            return component, target
-    return None
+
+        # A wrapper-computed metric stands for the measure it windows over, so
+        # that is what the replication applies to.
+        base = (
+            component.window_base_measure
+            or component.cumulative_measure
+            or component.pop_base_measure
+        )
+        target = None if base is None else _dedup_target(base, effective, replicated)
+        if target is None:
+            continue
+        msg = (
+            f"Metric '{metric.name}' references metric '{component.name}', whose measure "
+            f"'{base}' is sourced from '{target}' — an object whose rows this query's "
+            f"joins replicate. '{component.name}' is computed by its own wrapper, which "
+            f"rebuilds that aggregate from the fact tables and so cannot read the "
+            f"deduplicated value. Query '{component.name}' on its own, or set "
+            f"allowFanOut: true on '{base}' if the duplication is intended."
+        )
+        raise GrainDedupUnsupportedError(msg)
+    return targets
 
 
 def _dedup_target(
@@ -393,120 +380,6 @@ def _identity_columns(
     return []
 
 
-def _map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
-    """Rebuild *expr*, passing every ``ColumnRef`` through *fn*.
-
-    Recurses through every composite node in the ``Expr`` union so a measure
-    body of any shape (``CASE``, ``CAST``, arithmetic, nested calls, window
-    frames) is visited completely. Both the rewrite and the collection pass are
-    built on this, so the two can never disagree about where column references
-    live.
-    """
-    match expr:
-        case ColumnRef():
-            return fn(expr)
-        case AliasedExpr(expr=inner, alias=alias):
-            return AliasedExpr(expr=_map_column_refs(inner, fn), alias=alias)
-        case FunctionCall(name=name, args=args):
-            return FunctionCall(
-                name=name,
-                args=[_map_column_refs(a, fn) for a in args],
-                distinct=expr.distinct,
-                order_by=[
-                    OrderByItem(
-                        expr=_map_column_refs(o.expr, fn),
-                        desc=o.desc,
-                        nulls_last=o.nulls_last,
-                    )
-                    for o in expr.order_by
-                ],
-                separator=expr.separator,
-            )
-        case BinaryOp(left=left, op=op, right=right):
-            return BinaryOp(
-                left=_map_column_refs(left, fn),
-                op=op,
-                right=_map_column_refs(right, fn),
-            )
-        case UnaryOp(op=op, operand=operand):
-            return UnaryOp(op=op, operand=_map_column_refs(operand, fn))
-        case IsNull(expr=inner, negated=negated):
-            return IsNull(expr=_map_column_refs(inner, fn), negated=negated)
-        case InList(expr=inner, values=values, negated=negated):
-            return InList(
-                expr=_map_column_refs(inner, fn),
-                values=[_map_column_refs(v, fn) for v in values],
-                negated=negated,
-            )
-        case CaseExpr(when_clauses=whens, else_clause=else_clause):
-            return CaseExpr(
-                when_clauses=[(_map_column_refs(w, fn), _map_column_refs(t, fn)) for w, t in whens],
-                else_clause=(None if else_clause is None else _map_column_refs(else_clause, fn)),
-            )
-        case Cast(expr=inner, type_name=type_name):
-            return Cast(expr=_map_column_refs(inner, fn), type_name=type_name)
-        case Between(expr=inner, low=low, high=high, negated=negated):
-            return Between(
-                expr=_map_column_refs(inner, fn),
-                low=_map_column_refs(low, fn),
-                high=_map_column_refs(high, fn),
-                negated=negated,
-            )
-        case RegexMatch(column=column, pattern=pattern, negated=negated):
-            return RegexMatch(
-                column=_map_column_refs(column, fn),
-                pattern=pattern,
-                negated=negated,
-            )
-        case RelativeDateRange(column=column):
-            return RelativeDateRange(
-                column=_map_column_refs(column, fn),
-                unit=expr.unit,
-                count=expr.count,
-                direction=expr.direction,
-                include_current=expr.include_current,
-            )
-        case WindowFunction(func_name=func_name, args=args):
-            return WindowFunction(
-                func_name=func_name,
-                args=[_map_column_refs(a, fn) for a in args],
-                partition_by=[_map_column_refs(p, fn) for p in expr.partition_by],
-                order_by=[
-                    OrderByItem(
-                        expr=_map_column_refs(o.expr, fn),
-                        desc=o.desc,
-                        nulls_last=o.nulls_last,
-                    )
-                    for o in expr.order_by
-                ],
-                frame=expr.frame,
-                distinct=expr.distinct,
-            )
-        case _:
-            # Literal, Star, RawSQL, SubqueryExpr, Exists — no column refs to
-            # rewrite at this level.
-            return expr
-
-
-def _rewrite_column_refs(expr: Expr, mapping: dict[tuple[str, str | None], ColumnRef]) -> Expr:
-    """Rebuild *expr* with every mapped ``ColumnRef`` replaced."""
-    return _map_column_refs(expr, lambda ref: mapping.get((ref.name, ref.table), ref))
-
-
-def _collect_column_refs(expr: Expr, found: list[ColumnRef]) -> None:
-    """Append every distinct ``ColumnRef`` in *expr* to *found*, in first-seen order."""
-    seen = {(ref.name, ref.table) for ref in found}
-
-    def visit(ref: ColumnRef) -> Expr:
-        key = (ref.name, ref.table)
-        if key not in seen:
-            seen.add(key)
-            found.append(ref)
-        return ref
-
-    _map_column_refs(expr, visit)
-
-
 def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
     """Replace every bare (unqualified) ``ColumnRef`` that names a mapped alias.
 
@@ -514,7 +387,7 @@ def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
     as a table-less ``ColumnRef`` carrying the measure's name — so one
     substitution serves both.
     """
-    return _map_column_refs(
+    return map_column_refs(
         expr,
         lambda ref: by_alias.get(ref.name, ref) if ref.table is None else ref,
     )
@@ -530,6 +403,7 @@ def _combine(exprs: Iterable[Expr]) -> Expr | None:
 
 def _metric_over_components(
     metric: ResolvedMeasure,
+    components: dict[str, ResolvedMeasure],
     measure_ref: Callable[[str], Expr],
     model: SemanticModel,
     dialect: Dialect,
@@ -539,12 +413,13 @@ def _metric_over_components(
     The planner inlines each component's aggregate into the metric's column,
     which over a replicating join reads the inflated value. Here the formula is
     re-expanded against *measure_ref* instead, so every component is read from
-    whichever CTE computed it — deduplicated or not. The declared ``dataType``
-    cast is reapplied exactly as ``star.py`` applies it, since the column it
-    wrapped no longer exists.
+    whichever CTE computed it — deduplicated or not — with nested derived
+    metrics expanded on the way, exactly as the planner expands them. The
+    declared ``dataType`` cast is reapplied as ``star.py`` applies it, since the
+    column it wrapped no longer exists.
     """
-    expr = _substitute_aliases(
-        metric.expression, {name: measure_ref(name) for name in metric.component_measures}
+    expr = expand_metric_expression(
+        metric.expression, components, lambda comp: measure_ref(comp.name)
     )
     metric_def = model.metrics.get(metric.name)
     if metric_def is None:
@@ -608,10 +483,14 @@ def wrap_with_grain_dedup(
 
     # A metric whose components the planner inlined into one expression is
     # rebuilt in the outer projection instead, over one column per component.
+    # Nested derived metrics were inlined the same way, so their leaves count.
+    leaf_components = {
+        m.name: metric_leaf_components(m, resolved.metric_components) for m in resolved.measures
+    }
     split_metrics = {
         m.name: m
         for m in resolved.measures
-        if any(c in resolved.dedup_components for c in m.component_measures)
+        if any(c.name in resolved.dedup_components for c in leaf_components[m.name])
     }
 
     # What each deduplicated measure aggregates, keyed by the alias it lands
@@ -635,13 +514,11 @@ def wrap_with_grain_dedup(
     # own right: the metric column that carried them is gone.
     main_aliases = {_measure_alias(c) for c in main_columns}
     for metric in split_metrics.values():
-        for name in metric.component_measures:
-            if name in dedup_targets or name in main_aliases:
+        for component in leaf_components[metric.name]:
+            if component.name in dedup_targets or component.name in main_aliases:
                 continue
-            main_columns.append(
-                AliasedExpr(expr=resolved.metric_components[name].expression, alias=name)
-            )
-            main_aliases.add(name)
+            main_columns.append(AliasedExpr(expr=component.expression, alias=component.name))
+            main_aliases.add(component.name)
 
     # With no dimensions and every measure deduplicated, ``main`` would project
     # nothing and degenerate to one row per base row — multiplying the single
@@ -752,7 +629,7 @@ def wrap_with_grain_dedup(
 
         refs: list[ColumnRef] = []
         for measure_name in measure_names:
-            _collect_column_refs(measure_columns[measure_name], refs)
+            collect_column_refs(measure_columns[measure_name], refs)
 
         ref_map: dict[tuple[str, str | None], ColumnRef] = {}
         for col_idx, ref in enumerate(refs):
@@ -776,7 +653,7 @@ def wrap_with_grain_dedup(
             for name in group_dim_names
         ]
         cte_columns.extend(
-            _rewrite_column_refs(measure_columns[name], ref_map) for name in measure_names
+            rewrite_column_refs(measure_columns[name], ref_map) for name in measure_names
         )
 
         # A base row with no match on the joined object still yields a row, with
@@ -825,7 +702,13 @@ def wrap_with_grain_dedup(
         if alias in split_metrics:
             outer_columns.append(
                 AliasedExpr(
-                    expr=_metric_over_components(split_metrics[alias], measure_ref, model, dialect),
+                    expr=_metric_over_components(
+                        split_metrics[alias],
+                        resolved.metric_components,
+                        measure_ref,
+                        model,
+                        dialect,
+                    ),
                     alias=alias,
                 )
             )

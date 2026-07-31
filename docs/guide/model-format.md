@@ -757,20 +757,33 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 
 | Placeholder | Resolves to |
 |-------------|-------------|
-| `{[Measure Name]}` | Named reference to any defined measure (derived metrics only) |
+| `{[Measure Name]}` | Named reference to any defined measure, or to another derived or window metric (derived metrics only) |
 
-!!! warning "Metrics do not nest"
-    A metric expression references **measures**. Referencing another derived,
-    cumulative, or period-over-period metric is rejected at model load with
-    `UNSUPPORTED_METRIC_REF`: the planner substitutes a metric's components one
-    level only, so the inner metric's own placeholders would survive into the
-    generated SQL as bare column names no engine can bind. Reference the
-    measures the inner metric is built from, or inline its expression.
+A metric expression may reference another **derived** metric, at any depth, so a
+KPI can be named once and reused:
 
-    The one exception is the composition documented above: a **derived metric
-    over a window metric** (`'{[Revenue]} - {[Revenue Prior Month]}'`), which
-    the window wrapper expands by projecting the window metric's base measure
-    as a column of its base CTE.
+```yaml
+metrics:
+  Margin:
+    expression: '{[Revenue]} - {[Total Cost]}'
+  Margin Pct:
+    expression: '{[Margin]} / {[Revenue]}'
+```
+
+The planner expands the inner metric in place, down to real aggregates, so
+`Margin Pct` compiles exactly as if its formula had been written out in full.
+
+!!! warning "Cumulative and period-over-period metrics do not nest"
+    Referencing a **cumulative** or **period-over-period** metric from another
+    metric is rejected at model load with `UNSUPPORTED_METRIC_REF`. Those are
+    computed by their own wrapper, which only runs when the metric carrying the
+    feature is selected directly, so wrapping one in a derived metric would
+    skip the wrapper and leave its placeholder in the SQL as a bare column name
+    no engine can bind. Reference the base measure instead.
+
+    A **window** metric is the exception (`'{[Revenue]} - {[Revenue Prior
+    Month]}'`): the window wrapper follows derived references and projects the
+    window metric's base measure as a column of its base CTE.
 
 ## Data Types & Numerical Precision
 

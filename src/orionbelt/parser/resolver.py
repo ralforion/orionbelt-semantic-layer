@@ -1001,10 +1001,11 @@ class ReferenceResolver:
                         custom_extensions=_parse_extensions(raw_metric),
                     )
                 else:
-                    # Derived metric (default). A window metric is the one
-                    # metric a derived expression may reference: the window
-                    # wrapper projects it as a column of its base CTE, which is
-                    # what makes ``{[Revenue]} - {[Revenue Prior Month]}`` work.
+                    # Derived metric (default). It may reference another derived
+                    # metric, expanded in place down to real aggregates, or a
+                    # window metric, which the window wrapper projects as a
+                    # column of its base CTE — that is what makes
+                    # ``{[Revenue]} - {[Revenue Prior Month]}`` work.
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
                         name,
@@ -1014,7 +1015,7 @@ class ReferenceResolver:
                         source_map,
                         metrics,
                         synthesized_measure_names,
-                        composable_metric_types=(MetricType.WINDOW,),
+                        composable_metric_types=(MetricType.DERIVED, MetricType.WINDOW),
                     )
 
                     metrics[name] = Metric(

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
-    BinaryOp,
     ColumnRef,
     Expr,
     From,
@@ -25,6 +24,10 @@ from orionbelt.ast.nodes import (
     OrderByItem,
     Select,
     WindowFunction,
+)
+from orionbelt.compiler.metric_expansion import (
+    expand_metric_expression,
+    metric_leaf_components,
 )
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
@@ -172,19 +175,19 @@ def _ddm_window_components(
 ) -> list[ResolvedMeasure]:
     """Return the window-metric components this derived measure references.
 
-    A "deferred derived metric" (DDM) is a non-window measure whose
-    ``component_measures`` include at least one window metric — the
-    derived expression cannot be computed inside the CTE because the
-    window function lives in the outer SELECT.
+    A "deferred derived metric" (DDM) is a non-window measure whose components
+    include at least one window metric — the derived expression cannot be
+    computed inside the CTE because the window function lives in the outer
+    SELECT.
+
+    Components are followed through nested derived metrics, since those are
+    expanded in place: a derived metric over a derived metric over a window
+    metric ends up carrying the window call just the same, and missing it left
+    the base measure unbound in the projection.
     """
     if measure.is_window or not measure.component_measures:
         return []
-    out: list[ResolvedMeasure] = []
-    for comp_name in measure.component_measures:
-        comp = metric_components.get(comp_name)
-        if comp is not None and comp.is_window:
-            out.append(comp)
-    return out
+    return [comp for comp in metric_leaf_components(measure, metric_components) if comp.is_window]
 
 
 def _base_measure_column(
@@ -252,23 +255,17 @@ def _substitute_for_outer(
       computed against the base measure projected by the CTE.
     * Non-window refs → a bare ``ColumnRef`` to the measure's alias,
       which the CTE projects (the outer SELECT picks it up by name).
+
+    A nested derived metric is expanded in place first, so a window call it
+    wraps still reaches the outer SELECT.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in metric_components:
-        comp = metric_components[expr.name]
+
+    def value_of(comp: ResolvedMeasure) -> Expr:
         if comp.is_window:
-            win_expr = _build_window_call(comp)
-            return _apply_metric_cast(win_expr, comp.name, model, dialect)
-        return ColumnRef(name=expr.name)
-    if isinstance(expr, BinaryOp):
-        new_left = _substitute_for_outer(
-            expr.left, metric_components, direct_measure_names, model, dialect
-        )
-        new_right = _substitute_for_outer(
-            expr.right, metric_components, direct_measure_names, model, dialect
-        )
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    return expr
+            return _apply_metric_cast(_build_window_call(comp), comp.name, model, dialect)
+        return ColumnRef(name=comp.name)
+
+    return expand_metric_expression(expr, metric_components, value_of)
 
 
 def wrap_with_window(

@@ -173,6 +173,8 @@ metrics:
     orderDirection: desc
   Doubled Stock Rank:
     expression: '{[Stock Rank]} * 2'
+  Doubled Price per Unit:
+    expression: '{[Price per Unit]} * 2'
 """
 
 
@@ -564,13 +566,32 @@ def test_order_by_a_metric_over_a_deduplicated_component() -> None:
     assert rows == ["south", "north"]
 
 
-def test_metric_reaching_a_deduplicated_measure_through_a_metric_is_refused() -> None:
-    """A derived metric over a window metric over a deduplicated measure.
+def test_a_nested_derived_metric_splits_the_same_way() -> None:
+    """A derived metric over a derived metric is inlined into one expression.
 
-    The one metric-over-metric composition OBML allows. The window wrapper
-    projects the window metric's base measure as a column of its base CTE,
-    which the split cannot supply from a dedup CTE, so the query is refused
-    rather than answered from the inflated value.
+    So its leaves face the same replicating join, and the split has to follow
+    the nesting to reach them.
+    """
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Doubled Price per Unit"]},
+            "orderBy": [{"field": "Region"}],
+        }
+    )
+    assert '"__ob_dedup_0"."Total Stock On Hand" / "__ob_main"."Sold Quantity"' in result.sql
+
+    rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
+    # Twice the per-region price per unit: 30 and 37.5 deduplicated.
+    assert rows == [("north", 60.0), ("south", 75.0)]
+
+
+def test_metric_reaching_a_deduplicated_measure_through_a_wrapper_metric_is_refused() -> None:
+    """A derived metric over a *window* metric over a deduplicated measure.
+
+    The window wrapper projects the window metric's base measure as a column of
+    its base CTE, rebuilt from the fact tables, which the split cannot supply
+    from a dedup CTE — so the query is refused rather than answered from the
+    inflated value.
     """
     with pytest.raises(GrainDedupUnsupportedError, match="Stock Rank"):
         _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Stock Rank"]}})

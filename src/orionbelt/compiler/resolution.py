@@ -180,6 +180,21 @@ class ResolvedMeasure:
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
 
+    @property
+    def is_derived_metric(self) -> bool:
+        """A metric that is only an expression over other measures.
+
+        The boundary
+        :func:`~orionbelt.compiler.metric_expansion.expand_metric_expression`
+        recurses through: a derived metric has no wrapper of its own, so its
+        placeholders have to be expanded in place. Cumulative, window, and
+        period-over-period metrics are computed by their wrapper and referenced
+        by name instead.
+        """
+        return bool(self.component_measures) and not (
+            self.is_cumulative or self.is_pop or self.is_window
+        )
+
 
 @dataclass
 class ResolvedFilter:
@@ -253,15 +268,24 @@ class ResolvedQuery:
             return sorted(self.measure_source_objects)
         return [self.base_object] if self.base_object else []
 
+    def _components_of(self, measure: ResolvedMeasure) -> list[ResolvedMeasure]:
+        """Components a measure reads, following nested derived metrics.
+
+        Imported lazily: ``metric_expansion`` needs ``ResolvedMeasure`` for its
+        annotations, so importing it at module scope here would be a cycle.
+        """
+        from orionbelt.compiler.metric_expansion import metric_leaf_components
+
+        return metric_leaf_components(measure, self.metric_components)
+
     @property
     def has_totals(self) -> bool:
         """Check if any measure (direct or metric component) uses total or grain override."""
         for m in self.measures:
             if m.total or m.grain_override is not None:
                 return True
-            for comp_name in m.component_measures:
-                comp = self.metric_components.get(comp_name)
-                if comp and (comp.total or comp.grain_override is not None):
+            for comp in self._components_of(m):
+                if comp.total or comp.grain_override is not None:
                     return True
         return False
 
@@ -271,9 +295,8 @@ class ResolvedQuery:
         for m in self.measures:
             if m.grain_override is not None:
                 return True
-            for comp_name in m.component_measures:
-                comp = self.metric_components.get(comp_name)
-                if comp and comp.grain_override is not None:
+            for comp in self._components_of(m):
+                if comp.grain_override is not None:
                     return True
         return False
 

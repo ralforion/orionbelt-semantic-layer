@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from orionbelt.compiler.graph import JoinGraph, JoinStep
+from orionbelt.compiler.metric_expansion import metric_leaf_names
 from orionbelt.compiler.resolution import ResolvedQuery
 from orionbelt.models.semantic import Cardinality, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
@@ -97,11 +98,13 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
     # Dimension objects in the query (these become GROUP BY columns)
     dim_objects = {d.object_name for d in resolved.dimensions}
 
-    # Build a set of measure names to check (direct + metric components)
+    # Build a set of measure names to check (direct + metric components,
+    # followed through nested derived metrics — those inline into the same
+    # expression, so their leaves face the same replicating join)
     measures_to_check: list[str] = []
     for m in resolved.measures:
         if m.component_measures:
-            measures_to_check.extend(m.component_measures)
+            measures_to_check.extend(metric_leaf_names(m, resolved.metric_components))
         else:
             measures_to_check.append(m.name)
 

@@ -30,6 +30,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
+from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
@@ -372,7 +373,19 @@ def _build_pop_base_sql(
                     expr_sql = dialect.compile_expr(comp.expression)
                     measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(comp_name)}")
         else:
-            expr_sql = dialect.compile_expr(m.expression)
+            # A metric rides along as its components' aggregates, not as its
+            # formula: the formula's placeholders are the *aliases* of columns
+            # this same SELECT list is producing, which only the dialects with
+            # lateral alias references would resolve — and a nested derived
+            # metric names a column nothing projects at all.
+            expr = (
+                expand_metric_expression(
+                    m.expression, resolved.metric_components, lambda comp: comp.expression
+                )
+                if m.component_measures
+                else m.expression
+            )
+            expr_sql = dialect.compile_expr(expr)
             measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(m.name)}")
 
     # Deduplicate measure selects (PoP metrics may share components)
