@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import CrossColumnOrderNotSupportedError, Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
@@ -249,10 +249,7 @@ class ClickHouseDialect(Dialect):
             ob_expr = order_by[0]
             ob_sql = self.compile_expr(ob_expr.expr)
             if ob_sql != col_sql:
-                raise ValueError(
-                    f"ClickHouse LISTAGG does not support ORDER BY on a different column "
-                    f"(aggregated: {col_sql}, order by: {ob_sql})"
-                )
+                raise CrossColumnOrderNotSupportedError("clickhouse", col_sql, ob_sql)
             sort_fn = "arrayReverseSort" if ob_expr.desc else "arraySort"
             inner = f"{sort_fn}({inner})"
         return f"arrayStringConcat({inner}, '{escaped_sep}')"

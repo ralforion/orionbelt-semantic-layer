@@ -1764,6 +1764,60 @@ metrics:
 )
 
 
+# A sort key that is a *computed* column on an object nothing else in the query
+# requires: the leg has to join it purely to project the ordering.
+CFL_COMPUTED_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+""",
+    """  Reason:
+    code: reason
+    schema: main
+    columns:
+      Reason ID: {code: id, abstractType: string, primaryKey: true}
+      Severity: {code: severity, abstractType: int}
+      Sort Case:
+        abstractType: int
+        expression: 'CASE WHEN {[Reason].[Severity]} > 2 THEN 1 ELSE 0 END'
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+      Reason Key: {code: reason_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Reason
+        columnsFrom: [Reason Key]
+        columnsTo: [Reason ID]
+""",
+).replace(
+    """      column: {dataObject: Calendar, column: Month}""",
+    """      column: {dataObject: Reason, column: Sort Case}""",
+)
+
+
+# LISTAGG ordered by the very column it aggregates.
+CFL_SELF_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """      column: {dataObject: Calendar, column: Month}""",
+    """      column: {dataObject: Returns, column: Return ID}""",
+)
+
+
 # Same shape, but the LISTAGG declares a non-default delimiter.
 CFL_DELIMITER_YAML = CFL_WITHIN_GROUP_YAML.replace(
     """  Return List:
@@ -1883,6 +1937,58 @@ def test_cfl_refuses_an_ordering_its_own_leg_cannot_reach() -> None:
             {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Cross Ordered"]}},
             CFL_UNREACHABLE_ORDER_YAML,
         )
+
+
+def test_cfl_joins_the_object_behind_a_computed_sort_key() -> None:
+    """The sort key can be a computed column, whose object still needs joining.
+
+    ``collect_table_refs`` walked only a handful of node types, so an expression
+    expanding to ``CASE`` contributed no tables: the leg projected
+    ``CASE WHEN "Reason"."severity" > 2 ...`` over a FROM that never joined
+    ``Reason``, and the query failed at execution with
+    ``Referenced table "Reason" not found``.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_COMPUTED_ORDER_YAML,
+    )
+    assert '"Reason"."severity"' in result.sql
+    assert '"main"."reason" AS "Reason"' in result.sql
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "clickhouse", "databricks"])
+def test_cfl_self_ordering_listagg_compiles_on_array_sorting_dialects(dialect: str) -> None:
+    """A self-ordering LISTAGG orders by the measure's own column, not a sort key.
+
+    ClickHouse (``arraySort``) and Databricks (``sort_array``) can only order by
+    the aggregated column and compare the two renderings textually, so pointing
+    the outer ORDER BY at a separate ``__wg`` alias made them reject an aggregate
+    their single-fact path supports.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_SELF_ORDER_YAML,
+        dialect,
+    )
+    # No redundant sort-key column: the value column is the sort key.
+    assert "__wg" not in result.sql
+
+
+def test_cross_column_listagg_order_raises_a_domain_error_not_a_value_error() -> None:
+    """Dialects that cannot express it must surface a 422-shaped domain error.
+
+    A bare ``ValueError`` out of codegen would surface as a 500.
+    """
+    from orionbelt.dialect.base import CrossColumnOrderNotSupportedError
+
+    with pytest.raises(CrossColumnOrderNotSupportedError) as excinfo:
+        _compile(
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+            CFL_WITHIN_GROUP_YAML,
+            "clickhouse",
+        )
+    assert excinfo.value.dialect == "clickhouse"
+    assert excinfo.value.aggregation == "listagg"
 
 
 def test_cfl_ordered_aggregate_matches_the_single_fact_result() -> None:

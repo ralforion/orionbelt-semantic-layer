@@ -300,13 +300,20 @@ class CFLPlanner:
 
     @staticmethod
     def _within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
-        """The ordered aggregate's sort key, or ``None`` if it has no ordering.
+        """The sort key a leg must carry, or ``None`` if it need not carry one.
 
         Read off the resolved expression rather than the model, so the sort
         column arrives already resolved to a column expression.
+
+        A self-ordering aggregate returns ``None``: it sorts by the column it
+        already projects as the measure's value, so a separate column would be
+        redundant — and on ClickHouse / Databricks actively harmful, since they
+        can only express ordering by the aggregated column itself.
         """
         expr = measure.expression
         if isinstance(expr, FunctionCall) and expr.order_by:
+            if cfl_projection.is_self_ordered(measure):
+                return None
             return expr.order_by[0]
         return None
 

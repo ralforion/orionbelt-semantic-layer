@@ -11,19 +11,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
-    Between,
     BinaryOp,
     Cast,
     ColumnRef,
     Expr,
     FunctionCall,
-    InList,
-    IsNull,
     Literal,
     OrderByItem,
-    RelativeDateRange,
-    UnaryOp,
 )
+from orionbelt.compiler.expr_rewrite import collect_column_refs
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
@@ -208,9 +204,22 @@ def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCa
         distinct = True
     order_by: list[OrderByItem] = []
     if source is not None and source.order_by:
+        # A self-ordering aggregate orders by the very column it aggregates.
+        # Point the outer ORDER BY at the measure's own column rather than a
+        # separate sort-key column: ClickHouse and Databricks cannot express
+        # cross-column ordering and compare the two renderings textually, so a
+        # distinct ``__wg`` alias would make them reject an aggregate they
+        # support perfectly well on the single-fact path.
         order_by = [
             OrderByItem(
-                expr=ColumnRef(name=within_group_cte_alias(measure.name), table=cte_name),
+                expr=ColumnRef(
+                    name=(
+                        measure.name
+                        if is_self_ordered(measure)
+                        else within_group_cte_alias(measure.name)
+                    ),
+                    table=cte_name,
+                ),
                 desc=source.order_by[0].desc,
             )
         ]
@@ -221,6 +230,21 @@ def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCa
         order_by=order_by,
         separator=source.separator if source is not None else None,
     )
+
+
+def is_self_ordered(measure: ResolvedMeasure) -> bool:
+    """Whether an ordered aggregate sorts by the same column it aggregates.
+
+    ``LISTAGG(x) WITHIN GROUP (ORDER BY x)`` needs no separate sort-key column
+    in the union: the value column already carries it. Dialects that can only
+    express self-ordering (ClickHouse's ``arraySort``, Databricks' ``sort_array``)
+    depend on this, since they compare the aggregate's argument and its order
+    key by rendered SQL.
+    """
+    source = measure.expression
+    if not isinstance(source, FunctionCall) or not source.order_by or not source.args:
+        return False
+    return source.order_by[0].expr == source.args[0]
 
 
 def within_group_cte_alias(measure_name: str) -> str:
@@ -284,26 +308,19 @@ def substitute_outer_refs(
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
-    """Recursively collect table names from ColumnRef nodes."""
-    if isinstance(expr, ColumnRef) and expr.table:
-        tables.add(expr.table)
-    elif isinstance(expr, BinaryOp):
-        collect_table_refs(expr.left, tables)
-        collect_table_refs(expr.right, tables)
-    elif isinstance(expr, UnaryOp):
-        collect_table_refs(expr.operand, tables)
-    elif isinstance(expr, (InList, IsNull, Between)):
-        collect_table_refs(expr.expr, tables)
-    elif isinstance(expr, RelativeDateRange):
-        collect_table_refs(expr.column, tables)
-    elif isinstance(expr, FunctionCall):
-        for arg in expr.args:
-            collect_table_refs(arg, tables)
-        # An ordered aggregate's sort key is not an argument but still has to
-        # be in scope wherever the aggregate is rendered: a LISTAGG ordered by
-        # ``Sales.qty`` needs ``Sales`` joined into the leg that projects it.
-        for item in expr.order_by:
-            collect_table_refs(item.expr, tables)
+    """Collect the table name of every ``ColumnRef`` anywhere in *expr*.
+
+    Delegates to the complete AST walk in :mod:`expr_rewrite` rather than
+    enumerating node types here. The hand-rolled version this replaces covered
+    only a handful of nodes and silently returned nothing for the rest, so a
+    computed column expanding to ``CASE`` or ``CAST`` contributed no tables:
+    the leg then projected ``CASE WHEN "Reason"."severity" > 2 ...`` over a
+    FROM that never joined ``Reason``. It also skipped an aggregate's
+    ``order_by``, which a ``withinGroup`` sort key lives in.
+    """
+    refs: list[ColumnRef] = []
+    collect_column_refs(expr, refs)
+    tables.update(ref.table for ref in refs if ref.table)
 
 
 def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:

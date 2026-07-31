@@ -45,6 +45,27 @@ class UnsupportedAggregationError(Exception):
         super().__init__(f"Dialect '{dialect}' does not support {aggregation.upper()} aggregation")
 
 
+class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
+    """Raised when a dialect can only order a LISTAGG by the column it aggregates.
+
+    ClickHouse (``arraySort``) and Databricks (``sort_array``) sort the array of
+    aggregated values, so ``ORDER BY`` on any other column cannot be expressed.
+    A domain error rather than a bare ``ValueError`` so routers surface the same
+    422 as every other unsupported-aggregation case instead of a 500.
+    """
+
+    def __init__(self, dialect: str, aggregated: str, order_by: str) -> None:
+        self.dialect = dialect
+        self.aggregation = "listagg"
+        Exception.__init__(
+            self,
+            f"Dialect '{dialect}' can only order LISTAGG by the column it "
+            f"aggregates (aggregated: {aggregated}, order by: {order_by}). "
+            f"Order the measure by its own column, or query it on a dialect "
+            f"that supports WITHIN GROUP ordering.",
+        )
+
+
 class UnsupportedGroupingError(Exception):
     """Raised when a dialect does not support a specific grouping modifier
     (``CUBE`` / ``ROLLUP`` / ``GROUPING SETS``). Routers translate this to

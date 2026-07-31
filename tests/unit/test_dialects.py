@@ -860,7 +860,14 @@ class TestListaggRendering:
 
     @pytest.mark.parametrize("dialect_name", ["clickhouse", "databricks"])
     def test_cross_column_order_by_raises(self, dialect_name: str) -> None:
-        """ORDER BY on different column than aggregated raises in ClickHouse/Databricks."""
+        """ORDER BY on different column than aggregated raises in ClickHouse/Databricks.
+
+        A domain ``UnsupportedAggregationError`` subclass, not a bare
+        ``ValueError``: routers translate the former to a 422 and would surface
+        the latter as a 500.
+        """
+        from orionbelt.dialect.base import CrossColumnOrderNotSupportedError
+
         dialect = DialectRegistry.get(dialect_name)
         expr = FunctionCall(
             name="LISTAGG",
@@ -868,8 +875,10 @@ class TestListaggRendering:
             order_by=[OrderByItem(expr=ColumnRef(name="created_at"))],
             separator=",",
         )
-        with pytest.raises(ValueError, match="does not support ORDER BY on a different column"):
+        with pytest.raises(CrossColumnOrderNotSupportedError) as excinfo:
             dialect.compile_expr(expr)
+        assert excinfo.value.dialect == dialect_name
+        assert excinfo.value.aggregation == "listagg"
 
     def test_clickhouse_desc_uses_reverse_sort(self) -> None:
         """ClickHouse uses arrayReverseSort for DESC ordering."""
