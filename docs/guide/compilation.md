@@ -261,22 +261,23 @@ aggregated over rows deduplicated on the source object's `primaryKey` (falling
 back to the join's `columnsTo`), then joined back onto the query grain:
 
 ```sql
-WITH main AS (                       -- measures at the base (sale) grain
+WITH __ob_main AS (                       -- measures at the base (sale) grain
   SELECT region, SUM(s.quantity) AS "Sold Quantity"
   FROM sales s LEFT JOIN products p ON s.product_id = p.id
   GROUP BY region
-), dedup_0 AS (                      -- one row per (region, product)
+), __ob_dedup_0 AS (                      -- one row per (region, product)
   SELECT "Region", SUM(__ob_c0) AS "Total Stock On Hand"
   FROM (
     SELECT DISTINCT s.region AS "Region",
            p.id AS __ob_k0, p.stock_on_hand AS __ob_c0
     FROM sales s LEFT JOIN products p ON s.product_id = p.id
-  ) dedup_src_0
+  ) __ob_dedup_src_0
   WHERE __ob_k0 IS NOT NULL
   GROUP BY "Region"
 )
-SELECT main."Region", main."Sold Quantity", dedup_0."Total Stock On Hand"
-FROM main LEFT JOIN dedup_0 ON ...
+SELECT __ob_main."Region", __ob_main."Sold Quantity",
+       __ob_dedup_0."Total Stock On Hand"
+FROM __ob_main LEFT JOIN __ob_dedup_0 ON ...
 ```
 
 A measure is only rewritten when **every** column it reads comes from one
@@ -318,8 +319,8 @@ than return an inflated number:
 | Combination | Why |
 |---|---|
 | `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
-| Cumulative, window | They re-project the measure's *raw aggregate* instead of selecting it by alias, emitting `SUM("Sales"."quantity")` into a CTE whose FROM is only `main`/`dedup_0`: `Referenced table "Sales" not found` |
-| `filterContext` | Emits its own CTE named `main`, colliding with the one dedup emits: `Duplicate CTE name "main"` |
+| Cumulative, window | They re-project the measure's *raw aggregate* instead of selecting it by alias, emitting `SUM("Sales"."quantity")` into a CTE whose FROM is only the dedup output: `Referenced table "Sales" not found` |
+| `filterContext` | Same re-projection problem as above. It also emitted its own CTE named `main`, which used to collide; the dedup CTEs are namespaced now, and the underlying `Referenced table` failure remains |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A metric whose component needs deduplication | Metrics inline their components into one expression |
