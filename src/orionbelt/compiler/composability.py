@@ -25,6 +25,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from orionbelt.compiler.grain_dedup import (
+    MULTIPLICITY_SAFE_AGGREGATIONS,
+    auxiliary_references,
+)
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.models.query import CoalesceDimension, QueryObject, UsePathName
 from orionbelt.models.semantic import MetricType, SemanticModel
@@ -219,8 +223,9 @@ class ComposabilityResolver:
         anchor_objects = sorted(anchor)
 
         # Empty anchor -> a fresh query: everything is composable, except a
-        # measure whose join-only objects cannot be reached at all. That is a
-        # property of the model, so it holds with no anchor too.
+        # measure whose join-only objects cannot be reached at all, or whose own
+        # clauses force a join that replicates its source. Both are properties of
+        # the model, so they hold with no anchor too.
         if not anchor:
             return ComposablesResult(
                 anchor_objects=[],
@@ -232,6 +237,7 @@ class ComposabilityResolver:
                         measure_join_requirements(self.model, name),
                         measure_source_objects(self.model, name),
                     )
+                    and not self._measure_blocked(name, set())
                 ),
                 metrics=sorted(
                     name
@@ -240,6 +246,7 @@ class ComposabilityResolver:
                         metric_join_requirements(self.model, name),
                         metric_source_objects(self.model, name),
                     )
+                    and not self._metric_blocked(name, set())
                 ),
             )
 
@@ -263,6 +270,8 @@ class ComposabilityResolver:
                 measure_join_requirements(self.model, name), anchor | sources
             ):
                 continue
+            if self._measure_blocked(name, anchor):
+                continue
             status = self._measure_status(sources, anchor, spine)
             if status == "direct":
                 measures.append(name)
@@ -276,6 +285,8 @@ class ComposabilityResolver:
             if not self._join_requirements_reachable(
                 metric_join_requirements(self.model, name), anchor | sources
             ):
+                continue
+            if self._metric_blocked(name, anchor):
                 continue
             status = self._measure_status(sources, anchor, spine)
             if status == "direct":
@@ -308,6 +319,77 @@ class ComposabilityResolver:
         if not required:
             return True
         return self._has_common_root(context | required)
+
+    def _dedup_disposition(self, name: str, drivers: set[str]) -> str | None:
+        """What ``compiler.grain_dedup`` would do with this measure at this anchor.
+
+        Returns ``None`` when the pass leaves it alone, ``"dedup"`` when it would
+        be aggregated over deduplicated rows, and ``"refused"`` when the rewrite
+        raises instead.
+
+        *drivers* are the objects whose presence forces a join: the anchor,
+        plus - for a metric component - its sibling components' sources, since
+        those all land in one query. The measure's own outside references are
+        added below, because the compiler joins those too: it re-anchors the base
+        object to reach a filter's data object rather than dropping the filter.
+        Judging on the anchor alone missed every anchor that does not already
+        reach the measure's source, the empty anchor included.
+
+        Decided statically, from the same declarations the compiler uses, so ACR
+        stays a pure read over the model rather than invoking the planner.
+        """
+        measure = self.model.effective_measures.get(name)
+        if measure is None or measure.allow_fan_out or measure.distinct:
+            return None
+        if measure.aggregation.lower() in MULTIPLICITY_SAFE_AGGREGATIONS:
+            return None
+
+        sources = measure_source_objects(self.model, name)
+        if not sources:
+            return None
+
+        referenced = {obj for objs in auxiliary_references(measure).values() for obj in objs}
+        outside = referenced - sources
+
+        # Everything that forces a join: the callers' drivers, plus whatever
+        # this measure's own clauses drag in.
+        forcing = drivers | outside
+        replicated = {
+            obj for obj in sources if any(obj in self.graph.descendants(d) for d in forcing)
+        }
+        if sources != replicated:
+            # Not replicated here, so the pass never runs on it.
+            return None
+
+        # Several replicated sources, or a clause reaching outside the one being
+        # deduplicated: the rewrite cannot express either and raises.
+        if len(sources) > 1 or outside:
+            return "refused"
+        return "dedup"
+
+    def _measure_blocked(self, name: str, anchor: set[str]) -> bool:
+        """A measure is only excluded when the rewrite would refuse it outright."""
+        return self._dedup_disposition(name, anchor) == "refused"
+
+    def _metric_blocked(self, name: str, anchor: set[str]) -> bool:
+        """A metric is excluded as soon as any component would be deduplicated.
+
+        Metrics inline their components into one expression, so the rewrite
+        cannot split a deduplicated component into its own CTE — it refuses the
+        whole metric. Unlike a measure, then, ``"dedup"`` is disqualifying here
+        and not just ``"refused"``.
+
+        Every component's sources count as drivers for every other: they all
+        land in one query, so a component on the *one* side is replicated by a
+        sibling on the many side even when the anchor reaches neither.
+        """
+        components = metric_measure_names(self.model, name)
+        drivers = set(anchor)
+        for component in components:
+            drivers |= measure_source_objects(self.model, component)
+        return any(
+            self._dedup_disposition(component, drivers) is not None for component in components
+        )
 
     def _dimension_composable(self, obj: str, spine: set[str], leg_facts: set[str]) -> bool:
         if leg_facts:
