@@ -177,7 +177,7 @@ def test_one_side_measure_is_deduplicated_when_a_many_side_measure_rides_along()
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Total Stock On Hand"]}}
     )
-    assert "dedup_0" in result.sql
+    assert "__ob_dedup_0" in result.sql
     assert "SELECT DISTINCT" in result.sql
     # The product key is what makes the DISTINCT collapse replication rather
     # than merging two products that happen to share a price.
@@ -269,7 +269,7 @@ def test_grain_anchored_count_does_not_count_unmatched_rows() -> None:
 
 def test_measure_at_base_grain_is_untouched() -> None:
     result = _compile({"select": {"dimensions": ["Region"], "measures": ["Sold Quantity"]}})
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
     assert "DISTINCT" not in result.sql
 
 
@@ -278,7 +278,7 @@ def test_measure_mixing_both_grains_is_untouched() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Sales Value"]}}
     )
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
 
 
 @pytest.mark.parametrize("measure", ["Highest List Price", "Distinct Prices", "Product Count"])
@@ -293,7 +293,7 @@ def test_multiplicity_safe_aggregations_are_untouched(measure: str) -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", measure]}}
     )
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
 
 
 def test_allow_fan_out_opts_out() -> None:
@@ -305,13 +305,13 @@ def test_allow_fan_out_opts_out() -> None:
             }
         }
     )
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
     assert 'SUM("Products"."stock_on_hand")' in result.sql
 
 
 def test_dimension_only_query_is_untouched() -> None:
     result = _compile({"select": {"dimensions": ["Region", "Category"], "measures": []}})
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
 
 
 # --- Grain and projection details ---------------------------------------
@@ -326,8 +326,8 @@ def test_dedup_joins_back_on_every_query_dimension() -> None:
             }
         }
     )
-    assert '"main"."Region" = "dedup_0"."Region"' in result.sql
-    assert '"main"."Category" = "dedup_0"."Category"' in result.sql
+    assert '"__ob_main"."Region" = "__ob_dedup_0"."Region"' in result.sql
+    assert '"__ob_main"."Category" = "__ob_dedup_0"."Category"' in result.sql
 
 
 def test_dedup_cross_joins_when_the_query_has_no_dimensions() -> None:
@@ -348,7 +348,7 @@ def test_order_by_a_deduplicated_measure_targets_its_cte() -> None:
             "orderBy": [{"field": "Total Stock On Hand", "direction": "desc"}],
         }
     )
-    assert 'ORDER BY "dedup_0"."Total Stock On Hand" DESC' in result.sql
+    assert 'ORDER BY "__ob_dedup_0"."Total Stock On Hand" DESC' in result.sql
     # The pre-wrap ORDER BY named the raw aggregate over a table the outer
     # query no longer selects from.
     assert "ORDER BY SUM(" not in result.sql
@@ -365,7 +365,7 @@ def test_order_by_a_dimension_targets_main() -> None:
             "orderBy": [{"field": "Region"}],
         }
     )
-    assert '"main"."Region" ASC' in result.sql
+    assert '"__ob_main"."Region" ASC' in result.sql
 
 
 def test_generated_sql_is_valid_for_every_dialect() -> None:
@@ -493,7 +493,7 @@ measures:
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Total Rating"]}},
         yaml_text,
     )
-    assert "dedup_0" in result.sql
+    assert "__ob_dedup_0" in result.sql
     assert '"Suppliers"."id" AS "__ob_k0"' in result.sql
 
 
@@ -518,7 +518,7 @@ def test_distinct_aggregate_over_the_one_side_stays_correct() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Product Count"]}}
     )
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
     assert [(r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall()] == [
         ("north", 3, 1)
     ]
@@ -533,12 +533,12 @@ def test_having_on_a_distinct_one_side_measure_is_allowed() -> None:
         }
     )
     assert "HAVING" in result.sql
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
 
 
 def test_metric_over_a_distinct_one_side_measure_is_allowed() -> None:
     result = _compile({"select": {"dimensions": ["Region"], "measures": ["Quantity per Product"]}})
-    assert "dedup_0" not in result.sql
+    assert "__ob_dedup_0" not in result.sql
 
 
 def test_average_over_the_one_side_is_unweighted_by_sale_count() -> None:
@@ -620,7 +620,7 @@ def test_a_one_side_measure_alone_reanchors_and_deduplicates() -> None:
 
     result = _compile({"select": {"dimensions": ["Category"], "measures": ["Avg Customer Age"]}})
 
-    assert "dedup_0" in result.sql
+    assert "__ob_dedup_0" in result.sql
     assert [(r[0], float(r[1])) for r in con.execute(result.sql).fetchall()] == [("tools", 35.0)]
 
 
@@ -721,7 +721,7 @@ def test_filter_on_the_dedup_object_itself_still_deduplicates() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Tools Stock"]}}
     )
-    assert "dedup_0" in result.sql
+    assert "__ob_dedup_0" in result.sql
     # Only p1 is 'tools', counted once despite two sales.
     assert [(r[0], int(r[2])) for r in con.execute(result.sql).fetchall()] == [("north", 100)]
 
@@ -758,7 +758,7 @@ def test_sum_stays_null_when_no_rows_match() -> None:
     result = _compile(
         {"select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Total Stock On Hand"]}}
     )
-    assert 'COALESCE("dedup_0"."Total Stock On Hand"' not in result.sql
+    assert 'COALESCE("__ob_dedup_0"."Total Stock On Hand"' not in result.sql
 
 
 def test_order_by_a_computed_dimension_targets_main() -> None:
@@ -776,7 +776,7 @@ def test_order_by_a_computed_dimension_targets_main() -> None:
             "orderBy": [{"field": "Bumped"}],
         }
     )
-    assert 'ORDER BY "main"."Bumped" ASC' in result.sql
+    assert 'ORDER BY "__ob_main"."Bumped" ASC' in result.sql
     assert '"Sales"."quantity" + 1 ASC' not in result.sql
 
 
@@ -876,9 +876,8 @@ def test_scalar_query_with_only_deduplicated_measures_returns_one_row() -> None:
             "where": [{"field": "Category", "op": "=", "value": "tools"}],
         }
     )
-    assert "dedup_0" in result.sql
-    # The CTE alias, not the schema of the same name.
-    assert 'FROM "main" AS "main"' not in result.sql
+    assert "__ob_dedup_0" in result.sql
+    assert 'FROM "__ob_main" AS "__ob_main"' not in result.sql
     assert "SELECT\n  *" not in result.sql
 
     con = duckdb.connect()
@@ -1012,7 +1011,7 @@ def test_total_on_a_base_grain_measure_composes_with_dedup() -> None:
             }
         }
     )
-    assert "dedup_0" in result.sql
+    assert "__ob_dedup_0" in result.sql
     assert "OVER ()" in result.sql
 
     rows = sorted((r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall())
@@ -1061,7 +1060,7 @@ def test_total_on_the_deduplicated_measure_uses_a_scalar_grain_dedup_cte() -> No
         },
         yaml_text,
     )
-    assert "dedup_total_0" in result.sql
+    assert "__ob_dedup_total_0" in result.sql
     assert "OVER ()" not in result.sql
 
     rows = sorted((r[0], int(r[2])) for r in con.execute(result.sql).fetchall())

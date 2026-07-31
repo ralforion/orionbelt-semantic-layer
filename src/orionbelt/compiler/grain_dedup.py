@@ -92,9 +92,19 @@ MULTIPLICITY_SAFE_AGGREGATIONS = frozenset({"min", "max", "count_distinct", "any
 # machinery, so we cannot reason about its multiplicity behaviour. Left alone.
 _DELEGATED_AGGREGATION = "measure"
 
+# Everything this pass introduces into the query namespace carries an ``__ob_``
+# prefix. A CTE named ``main`` — which is what this pass used to emit — is a
+# plausible schema or table name in a user's warehouse (it is DuckDB's default
+# schema), so the generated SQL read as ``FROM "main"."sales"`` on one line and
+# ``FROM "main"`` meaning the CTE on another. It resolved correctly, since a
+# schema-qualified reference cannot be confused with a single-identifier CTE,
+# but nothing about it was obvious to a reader debugging the output.
 _KEY_PREFIX = "__ob_k"
 _COL_PREFIX = "__ob_c"
-_MAIN_CTE = "main"
+_MAIN_CTE = "__ob_main"
+_DEDUP_CTE = "__ob_dedup"
+_DEDUP_SRC = "__ob_dedup_src"
+_DEDUP_TOTAL_CTE = "__ob_dedup_total"
 
 
 class GrainDedupUnsupportedError(FanoutError):
@@ -492,8 +502,8 @@ def wrap_with_grain_dedup(
     grand_total_ctes: set[str] = set()
     for idx, group_key in enumerate(sorted(by_group)):
         object_name, is_total = group_key
-        cte_name = f"dedup_total_{idx}" if is_total else f"dedup_{idx}"
-        src_alias = f"dedup_src_{idx}"
+        cte_name = f"{_DEDUP_TOTAL_CTE}_{idx}" if is_total else f"{_DEDUP_CTE}_{idx}"
+        src_alias = f"{_DEDUP_SRC}_{idx}"
         measure_names = by_group[group_key]
         for measure_name in measure_names:
             cte_for_measure[measure_name] = cte_name
@@ -502,7 +512,6 @@ def wrap_with_grain_dedup(
         # A grand total collapses the grain entirely.
         group_dims = [] if is_total else resolved.dimensions
         group_dim_names = [] if is_total else dim_names
-
         # Inner projection: the query's grain, the source object's identity, and
         # every column the measures read. DISTINCT over those collapses the
         # replication to exactly one row per (grain, source-object row).
