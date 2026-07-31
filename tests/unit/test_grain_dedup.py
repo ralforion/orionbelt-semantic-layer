@@ -137,6 +137,11 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{[Sales].[Quantity]} * {[Products].[List Price]}'
+  Grand Total Quantity:
+    resultType: int
+    aggregation: sum
+    total: true
+    expression: '{[Sales].[Quantity]}'
   Total Stock On Hand Raw:
     resultType: int
     aggregation: sum
@@ -382,23 +387,6 @@ def test_generated_sql_is_valid_for_every_dialect() -> None:
 
 
 # --- Combinations the rewrite refuses rather than getting wrong ---------
-
-
-def test_total_measure_combined_with_dedup_is_refused() -> None:
-    yaml_text = MODEL_YAML.replace(
-        "  Sold Quantity:\n    resultType: int\n    aggregation: sum\n",
-        "  Sold Quantity:\n    resultType: int\n    aggregation: sum\n    total: true\n",
-    )
-    with pytest.raises(GrainDedupUnsupportedError, match="deduplicated rows"):
-        _compile(
-            {
-                "select": {
-                    "dimensions": ["Region"],
-                    "measures": ["Sold Quantity", "Total Stock On Hand"],
-                }
-            },
-            yaml_text,
-        )
 
 
 def test_metric_over_a_deduplicated_component_is_refused() -> None:
@@ -988,3 +976,64 @@ measures:
     )
     assert result.resolved.fact_tables == ["Sales"]
     assert "suppliers" not in result.sql
+
+
+def test_total_on_a_base_grain_measure_composes_with_dedup() -> None:
+    """``total`` only conflicts when it sits on a deduplicated measure.
+
+    The totals pass runs after dedup and wraps its output in a ``base`` CTE, so
+    a total on a base-grain measure never reaches into the dedup CTE. Refusing
+    the whole query because some *other* measure carries ``total`` rejected work
+    that composes correctly.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'),"
+        " ('p2', 9.99, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',2),"
+        " ('s3','p2','c2','north',4), ('s4','p3','c2','south',8)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Grand Total Quantity", "Total Stock On Hand"],
+            }
+        }
+    )
+    assert "dedup_0" in result.sql
+    assert "OVER ()" in result.sql
+
+    rows = sorted((r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall())
+    # The total is the window over every row (1+2+4+8); the stock is still
+    # deduplicated per region, p1 counted once despite two sales.
+    assert rows == [("north", 15, 210), ("south", 15, 300)]
+
+
+def test_total_on_the_deduplicated_measure_is_still_refused() -> None:
+    """That value lives in a dedup CTE the totals wrapper does not reach into."""
+    yaml_text = MODEL_YAML.replace(
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n    total: true\n",
+    )
+    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
+        _compile(
+            {
+                "select": {
+                    "dimensions": ["Region"],
+                    "measures": ["Sold Quantity", "Total Stock On Hand"],
+                }
+            },
+            yaml_text,
+        )

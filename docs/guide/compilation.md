@@ -309,7 +309,10 @@ than return an inflated number:
 
 | Combination | Why |
 |---|---|
-| `total: true`, `filterContext`, period-over-period, cumulative, window | Each restructures the same projection the dedup CTEs own |
+| `total: true` **on a deduplicated measure** | Its value lives in a dedup CTE the totals wrapper does not reach into. A total on a base-grain measure composes fine - the totals pass wraps the dedup output |
+| `filterContext` | Emits its own CTE named `main`, colliding with the one dedup emits |
+| Period-over-period | Rebuilds the FROM clause from a date spine rather than wrapping the incoming AST |
+| Cumulative, window | May well compose, but unverified - blocked rather than assumed safe |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A metric whose component needs deduplication | Metrics inline their components into one expression |
 | `HAVING` on a deduplicated measure | HAVING is applied inside `main`, where the measure does not exist yet |

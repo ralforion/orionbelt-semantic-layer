@@ -193,6 +193,38 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     )
 
 
+def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
+    """Whether *pass_name* genuinely conflicts with the grain-dedup rewrite.
+
+    The wrappers run *after* dedup, on the CTEs it produced. Whether that is a
+    conflict depends on which measure carries the feature, not on whether the
+    query contains one anywhere.
+
+    ``totals`` composes: it wraps the dedup output in a ``base`` CTE and adds
+    ``AGG(x) OVER ()``, so a total on a base-grain measure never touches the
+    deduplicated one. Only a total on a measure that is *itself* deduplicated
+    conflicts — its value lives in a dedup CTE that the totals wrapper does not
+    reach into.
+
+    The rest stay blocked whenever they apply at all:
+
+    * ``filter_context`` emits its own CTE named ``main``, colliding with the
+      one dedup emits.
+    * ``period_over_period`` rebuilds the FROM clause from a date spine rather
+      than wrapping the incoming AST, so the dedup CTEs are simply dropped.
+    * ``cumulative`` and ``window`` wrap the AST much as ``totals`` does and may
+      well compose too, but that is unverified — they stay blocked rather than
+      assumed safe.
+    """
+    if pass_name != PASS_TOTALS:
+        return True
+    return any(
+        measure.total or measure.grain_override is not None
+        for measure in resolved.measures
+        if measure.name in resolved.dedup_measures
+    )
+
+
 def evaluate_compatibility(
     resolved: ResolvedQuery, passes: tuple[CompilerPass, ...]
 ) -> CompatibilityResult:
@@ -284,7 +316,9 @@ def evaluate_compatibility(
         blocking = sorted(
             name
             for name in dedup.incompatible_with
-            if (p := by_name.get(name)) is not None and p.applies(resolved)
+            if (p := by_name.get(name)) is not None
+            and p.applies(resolved)
+            and _conflicts_with_dedup(name, resolved)
         )
         if resolved.grouping is not None:
             blocking.append(f"grouping: {resolved.grouping.value}")
