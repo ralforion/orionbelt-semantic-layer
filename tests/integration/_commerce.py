@@ -257,6 +257,42 @@ COMMERCE_CASES: tuple[CommerceCase, ...] = (
             grouping=Grouping.CUBE,
         ),
     ),
+    # --- Grain deduplication (measures sourced from the *one* side) ---
+    # Products sits on the one side of Sales -> Products, so the join repeats
+    # each product once per sale. These aggregate over rows deduplicated on the
+    # product key instead; without that they are inflated by the sale count.
+    CommerceCase(
+        "dedup_stock_by_channel",
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Channel Name"],
+                measures=["Total Sales", "Total Units In Stock"],
+            ),
+        ),
+    ),
+    # AVG is the quiet case: weighted by sale count it answers "average price
+    # per sale" rather than "per product", and the two are close enough that
+    # only a vendor-to-vendor comparison would catch a regression.
+    CommerceCase(
+        "dedup_avg_unit_price_by_category",
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Product Category"],
+                measures=["Total Sales", "Avg Unit Price"],
+            ),
+        ),
+    ),
+    # total: true on a deduplicated measure takes a separate path again -- its
+    # own CTE at no grain, cross joined in.
+    CommerceCase(
+        "dedup_grand_total_stock_by_channel",
+        QueryObject(
+            select=QuerySelect(
+                dimensions=["Channel Name"],
+                measures=["Total Sales", "Grand Total Units In Stock"],
+            ),
+        ),
+    ),
 )
 
 

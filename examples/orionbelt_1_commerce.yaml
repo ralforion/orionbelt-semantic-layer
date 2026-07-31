@@ -788,10 +788,17 @@ measures:
     columns:
       - dataObject: Products
         column: Units In Stock
-  Catalogue Units In Stock:
-    # The same column at no grain: every product counted once across the whole
-    # query, so it can sit beside the per-group figure above and legitimately
-    # differ from the sum of it.
+  Grand Total Units In Stock:
+    # The same column with the grouping collapsed: each product counted once
+    # across the query, so it sits beside the per-group figure above and
+    # legitimately differs from the sum of it.
+    #
+    # Scoped to the query, NOT to the whole Products table. `total: true`
+    # removes the grouping, not the joins -- so asked alongside a Sales measure
+    # this is the stock of products that were *sold*, and alongside a Purchases
+    # measure the stock of products that were *purchased*. Those differ whenever
+    # a product appears on one path and not the other. Do not read it as a
+    # catalogue-wide figure; for that, query the measure on its own.
     aggregation: sum
     total: true
     dataType: "decimal(18, 2)"
