@@ -35,6 +35,38 @@ from orionbelt.models.semantic import (
 )
 
 
+class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
+    """Raised when an ordered aggregate cannot keep its ordering under CFL.
+
+    A ``withinGroup`` clause is the aggregate's ``ORDER BY``. The CFL outer
+    query re-aggregates over ``composite_01``, where the ordering column does
+    not exist: the legs project measure values and conformed dimensions, not an
+    arbitrary sort key. The rebuilt aggregate therefore came out unordered and
+    the result was silently in the wrong order - values right, sequence wrong,
+    which is worse than a failure for a measure whose whole point is its
+    sequence.
+
+    Ordering it properly means projecting the sort column into the leg that
+    owns the measure, NULL-padding it across the others, and pointing the outer
+    ``ORDER BY`` at that alias. Until that exists this refuses rather than
+    reorders. The single-fact star path is unaffected and keeps the ordering.
+    """
+
+    def __init__(self, measure_name: str, object_name: str) -> None:
+        self.measure_name = measure_name
+        self.dialect = "cfl"
+        self.aggregation = "listagg"
+        Exception.__init__(
+            self,
+            f"Measure '{measure_name}' is ordered by a column on '{object_name}' "
+            f"(withinGroup), but this query combines measures from more than one "
+            f"fact table. The multi-fact plan re-aggregates over a UNION ALL where "
+            f"that ordering column is not carried, so the result would come back in "
+            f"an arbitrary order. Query '{measure_name}' on its own, or only "
+            f"alongside measures from its own fact table.",
+        )
+
+
 class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
     """Raised when a measure's aggregation cannot be planned in CFL.
 
@@ -67,7 +99,12 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
         )
 
 
-__all__ = ["CFLPlanner", "FanoutError", "UnsupportedAggregationForCFLError"]
+__all__ = [
+    "CFLPlanner",
+    "FanoutError",
+    "UnsupportedAggregationForCFLError",
+    "WithinGroupNotSupportedInCFLError",
+]
 
 
 def _expand_cfl_measure_refs(expr: Expr, measure_exprs: dict[str, Expr]) -> Expr:
@@ -129,6 +166,19 @@ class CFLPlanner:
             agg = measure.aggregation.lower() if measure.aggregation else ""
             if agg in TWO_COLUMN_AGGREGATIONS:
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
+
+        # Ordered aggregates, including any reached through a metric. Checking
+        # only the selected names let a metric wrapping an ordered measure
+        # through, and CFL then expanded the component and rebuilt it unordered.
+        # ``metric_components`` is already the transitive closure, so a metric
+        # wrapping a metric is covered without walking the model again.
+        for name in [m.name for m in resolved.measures] + list(resolved.metric_components):
+            model_measure = model.effective_measures.get(name)
+            within_group = model_measure.within_group if model_measure else None
+            if within_group is not None:
+                raise WithinGroupNotSupportedInCFLError(
+                    name, within_group.column.view or "another data object"
+                )
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(
