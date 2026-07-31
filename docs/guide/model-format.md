@@ -596,7 +596,7 @@ metrics:
  expression: '{[Sales Amount]} - {[Return Amount]}'
 ```
 
-All artefacts (data objects, dimensions, measures, metrics) have unique names. The `{[Name]}` placeholders in a metric expression must match existing measure names exactly.
+All artefacts (data objects, dimensions, measures, metrics) have unique names. A `{[Name]}` placeholder must match one exactly — a measure, another derived metric, or a window metric. See [Metric Expression Placeholders](#metric-expression-placeholders) for what may be referenced where.
 
 ### Cumulative Metrics
 

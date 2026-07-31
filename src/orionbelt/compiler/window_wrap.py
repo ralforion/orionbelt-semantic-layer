@@ -169,6 +169,19 @@ def _get_alias(expr: Expr) -> str | None:
     return None
 
 
+def wraps_a_cte(ast: Select) -> bool:
+    """Whether *ast* selects from a CTE the pipeline itself built.
+
+    True once any earlier pass — grain dedup, cumulative, totals, PoP — has
+    replaced the planner's FROM with its own output. Everything downstream then
+    has to reference columns by alias, because the fact tables are no longer in
+    scope. The planner's own output never matches: it declares no CTEs, so its
+    qualified table name cannot collide with one.
+    """
+    source = ast.from_.source if ast.from_ is not None else None
+    return isinstance(source, str) and any(cte.name == source for cte in ast.ctes)
+
+
 def _ddm_window_components(
     measure: ResolvedMeasure,
     metric_components: dict[str, ResolvedMeasure],
@@ -193,29 +206,29 @@ def _ddm_window_components(
 def _base_measure_column(
     col_node: Expr,
     comp: ResolvedMeasure,
-    resolved: ResolvedQuery,
+    over_cte: bool,
     model: SemanticModel | None,
     dialect: Dialect | None,
 ) -> AliasedExpr:
     """Project a window metric's base measure into ``window_base``.
 
-    Normally the component's aggregate is re-derived from the fact tables.
-    That does not survive ``compiler.grain_dedup``, which rewrites the query
-    into CTEs — this wrapper's FROM becomes the dedup output, where
-    ``SUM("Sales"."quantity")`` has nothing to bind to. The metric's own column
-    already carries that aggregate, computed at the query grain before the
-    rewrite, so it is re-aliased rather than rebuilt.
+    Normally the component's aggregate is re-derived from the fact tables. That
+    only works while this wrapper still sits directly on the planner's output.
+    Any pass that ran first — grain dedup, cumulative, totals, PoP — replaced
+    the FROM with its own CTE, where ``SUM("Sales"."amount")`` has nothing to
+    bind to (``Referenced table "Sales" not found``).
+
+    The window metric's own column carries that aggregate: the planner projects
+    a window metric as its *base measure's* expression, computed at the query
+    grain, and each wrapper passes it through by alias. So when the input is a
+    CTE the column is re-aliased to the base measure's name rather than rebuilt.
 
     Only the direct window-metric column can be re-aliased this way. A derived
-    metric over several window metrics needs one base measure per component
-    from a single column, which no aliasing can supply; ``evaluate_compatibility``
-    keeps that combination blocked.
+    metric over a window metric carries the whole derived expression instead, so
+    there is no base value to lift out; ``evaluate_compatibility`` keeps that
+    combination blocked.
     """
-    source = (
-        col_node.expr
-        if resolved.dedup_targets and isinstance(col_node, AliasedExpr)
-        else comp.expression
-    )
+    source = col_node.expr if over_cte and isinstance(col_node, AliasedExpr) else comp.expression
     # The declared dataType cast belongs on whichever form is projected. Taking
     # the column by alias without it silently widened the result — a measure
     # declared decimal(18, 2) came back HUGEINT once a deduplicated measure
@@ -309,6 +322,9 @@ def wrap_with_window(
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
     window_names = set(effective_window)
     ddm_names = set(ddm_window_refs)
+    # Whether an earlier pass already replaced the FROM with its own CTE, which
+    # decides how a window metric's base measure can be projected below.
+    over_cte = wraps_a_cte(ast)
 
     # --- Build base CTE columns ---
     base_columns: list[Expr] = []
@@ -325,7 +341,7 @@ def wrap_with_window(
                     already_in_base = any(_get_alias(c) == base_name for c in base_columns)
                     if not already_in_base:
                         base_columns.append(
-                            _base_measure_column(col_node, comp, resolved, model, dialect)
+                            _base_measure_column(col_node, comp, over_cte, model, dialect)
                         )
         elif alias and alias in ddm_names:
             # DDM: drop the (incorrectly-pre-substituted) column; compute

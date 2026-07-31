@@ -362,7 +362,7 @@ than return an inflated number:
 | Combination | Why |
 |---|---|
 | `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
-| A derived metric over **window** metrics | Needs one base measure per component out of a single column, which re-aliasing cannot supply |
+| A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
 | `filterContext` | It re-queries the fact tables under a *different* `WHERE`. The dedup output has already applied the query filters and aggregated, so there is no column to take by alias |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |

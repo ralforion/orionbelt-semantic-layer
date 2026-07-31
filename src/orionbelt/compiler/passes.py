@@ -40,7 +40,7 @@ from orionbelt.compiler.grain_dedup import (
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
-from orionbelt.compiler.resolution import ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
@@ -341,6 +341,54 @@ def evaluate_compatibility(
                         "has_cumulative": resolved.has_cumulative,
                     },
                 )
+            )
+
+    # Rule 2b (raising): a derived metric over a window metric is a placeholder
+    # until the window pass resolves it. The planner projects it with the window
+    # metric's *base measure* inlined — an expression that only becomes valid
+    # once the window pass drops that column, projects the base measure into
+    # ``window_base``, and rebuilds the derived expression around an inline
+    # window call in the outer SELECT.
+    #
+    # Any wrapper running before it materializes that placeholder into a CTE of
+    # its own, where the reference resolves to nothing (or, on engines with
+    # lateral column aliases, to a sibling alias, which is how the combination
+    # appeared to work on DuckDB while failing everywhere else). A direct window
+    # metric survives this because its column *is* the base measure's value, so
+    # the window pass can take it by alias; a derived one carries the whole
+    # expression instead, with no base value to lift out.
+    ddm_metrics = sorted(
+        m.name for m in resolved.measures if _ddm_window_components(m, resolved.metric_components)
+    )
+    if ddm_metrics:
+        blocking = sorted(
+            name
+            for name in (PASS_FILTER_CONTEXT, PASS_PERIOD_OVER_PERIOD, PASS_TOTALS, PASS_CUMULATIVE)
+            if name not in suppressed
+            and (p := by_name.get(name)) is not None
+            and p.applies(resolved)
+        )
+        if blocking:
+            listed = ", ".join(f"'{m}'" for m in ddm_metrics)
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Metric(s) {listed} combine a window metric into a derived "
+                            f"expression, which is computed in the final projection. That "
+                            f"cannot be combined with {', '.join(blocking)}, whose own CTE "
+                            f"would have to materialize the expression before the window "
+                            f"function it contains exists."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the derived metric on its own, or drop the "
+                            "total / period-over-period / cumulative measure from this query."
+                        ),
+                        context={"metrics": ddm_metrics, "conflictsWith": blocking},
+                    )
+                ]
             )
 
     # Rule 3 (raising): grain dedup splits the projection across CTEs keyed on

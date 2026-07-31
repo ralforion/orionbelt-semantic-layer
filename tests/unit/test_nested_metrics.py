@@ -19,6 +19,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.resolver import ReferenceResolver
@@ -340,3 +341,58 @@ def test_a_component_spanning_joined_objects_gets_one_leg() -> None:
     rows = _cfl_db().execute(result.sql).fetchall()
     # (5 * 10) + (2 * 10) sold, less the 30 refunded.
     assert float(rows[0][0]) == 40.0
+
+
+# --- a window metric under another wrapper ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sibling", "expected"),
+    [
+        ("Running Revenue", [(1, 2, 100.0), (2, 1, 400.0)]),
+        ("Grand Total Revenue", [(1, 2, 400.0), (2, 1, 400.0)]),
+    ],
+)
+def test_window_metric_under_another_wrapper(sibling: str, expected: list[tuple]) -> None:
+    """The base measure has to come from the CTE the earlier wrapper built.
+
+    ``PASS_WINDOW`` runs last, so by the time it projects ``window_base`` the
+    FROM is the cumulative / totals CTE and the fact tables are out of scope -
+    re-deriving ``SUM("Sales"."amount")`` there raised ``Referenced table
+    "Sales" not found``. The window metric's own column already carries that
+    aggregate, so it is re-aliased instead.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Revenue Rank", sibling]}}
+    )
+    assert 'SUM("Sales"."amount")' not in result.sql.split("window_base")[-1]
+
+    rows = sorted(
+        (r[0].month, int(r[1]), float(r[2])) for r in _db().execute(result.sql).fetchall()
+    )
+    assert rows == expected
+
+
+def test_window_metric_under_a_period_over_period_wrapper() -> None:
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Revenue Rank", "Revenue MoM"]}}
+    )
+    rows = sorted(
+        (r[0].month, int(r[1]), None if r[2] is None else float(r[2]))
+        for r in _db().execute(result.sql).fetchall()
+    )
+    assert rows == [(1, 2, None), (2, 1, 200.0)]
+
+
+@pytest.mark.parametrize("sibling", ["Running Revenue", "Grand Total Revenue", "Revenue MoM"])
+def test_a_derived_metric_over_a_window_metric_refuses_an_earlier_wrapper(sibling: str) -> None:
+    """Unlike a direct window metric, a derived one has no base value to lift.
+
+    Its column is the whole derived expression, still carrying the window
+    metric's base measure inlined - a placeholder only the window pass can
+    resolve. An earlier wrapper materializes that placeholder into its own CTE,
+    where it binds to nothing (or, on engines with lateral column aliases, to
+    whichever sibling alias happens to precede it).
+    """
+    with pytest.raises(ResolutionError, match="Doubled Rank"):
+        _compile({"select": {"dimensions": ["Sale Month"], "measures": ["Doubled Rank", sibling]}})
