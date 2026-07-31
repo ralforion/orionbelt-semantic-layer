@@ -1346,3 +1346,118 @@ def test_dedup_path_keeps_the_base_measure_data_type_cast() -> None:
 
     assert "DECIMAL" in column_type(reference.sql)
     assert column_type(with_dedup.sql) == column_type(reference.sql)
+
+
+# --- CFL cannot carry a withinGroup ordering ------------------------------
+
+CFL_WITHIN_GROUP_YAML = """\
+version: 1.0
+name: cflwg
+dataObjects:
+  Calendar:
+    code: calendar
+    schema: main
+    columns:
+      Date Key: {code: datekey, abstractType: string, primaryKey: true}
+      Month: {code: month, abstractType: int}
+      Year: {code: year, abstractType: int}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Date Key: {code: datekey, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+dimensions:
+  Year: {dataObject: Calendar, column: Year, resultType: int}
+measures:
+  Sales Amount:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+  Return List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+"""
+
+
+CFL_WRAPPED_YAML = (
+    CFL_WITHIN_GROUP_YAML
+    + """
+metrics:
+  Wrapped Return List: {dataType: string, expression: '{[Return List]}'}
+  Double Wrapped: {dataType: string, expression: '{[Wrapped Return List]}'}
+"""
+)
+
+
+@pytest.mark.parametrize("measure", ["Wrapped Return List", "Double Wrapped"])
+def test_cfl_refusal_is_not_bypassed_by_wrapping_the_measure_in_a_metric(
+    measure: str,
+) -> None:
+    """Checking only the selected names let a metric through.
+
+    CFL then expanded the component and rebuilt it unordered, so the wrapper
+    returned the reversed sequence while the measure itself was refused.
+    ``metric_components`` is the transitive closure, so the second level is
+    covered by the same check.
+    """
+    from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
+
+    with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
+        _compile(
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+            CFL_WRAPPED_YAML,
+        )
+
+
+def test_cfl_refuses_an_ordered_aggregate_rather_than_reordering_it() -> None:
+    """The CFL outer query re-aggregates over a UNION ALL with no sort key.
+
+    The legs project measure values and conformed dimensions, not an arbitrary
+    ordering column, so the rebuilt aggregate came out unordered - right values
+    in the wrong sequence, for a measure whose whole point is its sequence.
+    """
+    from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
+
+    with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
+        _compile(
+            {
+                "select": {
+                    "dimensions": ["Year"],
+                    "measures": ["Sales Amount", "Return List"],
+                }
+            },
+            CFL_WITHIN_GROUP_YAML,
+        )
+
+
+def test_the_same_measure_keeps_its_ordering_on_the_single_fact_path() -> None:
+    """Only the multi-fact plan is affected; the star path orders correctly."""
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    assert "ORDER BY" in result.sql
+    assert '"Calendar"."month"' in result.sql
