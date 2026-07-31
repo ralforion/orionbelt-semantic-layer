@@ -154,10 +154,17 @@ def _component_base_column(
     instead of rebuilt — the same alias-not-expression rule that lets
     ``total_wrap`` compose.
     """
-    if resolved.dedup_measures and isinstance(col_node, AliasedExpr):
-        return AliasedExpr(expr=col_node.expr, alias=comp.name)
+    source = (
+        col_node.expr
+        if resolved.dedup_measures and isinstance(col_node, AliasedExpr)
+        else comp.expression
+    )
+    # The declared dataType cast belongs on whichever form is projected. Taking
+    # the column by alias without it silently widened the result — a measure
+    # declared decimal(18, 2) came back HUGEINT once a deduplicated measure
+    # pulled this path.
     return AliasedExpr(
-        expr=_apply_measure_cast(comp.expression, comp.name, model, dialect),
+        expr=_apply_measure_cast(source, comp.name, model, dialect),
         alias=comp.name,
     )
 

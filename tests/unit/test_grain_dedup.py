@@ -1206,7 +1206,11 @@ dataObjects:
 dimensions:
   Sale Month: {dataObject: Sales, column: Sale Date, resultType: date, timeGrain: month}
 measures:
-  Sold Quantity: {resultType: int, aggregation: sum, expression: '{[Sales].[Quantity]}'}
+  Sold Quantity:
+    resultType: int
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    expression: '{[Sales].[Quantity]}'
   Total Stock On Hand:
     resultType: int
     aggregation: sum
@@ -1254,7 +1258,9 @@ def test_cumulative_metric_composes_with_a_deduplicated_measure() -> None:
         },
         CUMULATIVE_YAML,
     )
-    assert '"__ob_main"."Running Quantity" AS "Sold Quantity"' in result.sql
+    # Taken by alias from the dedup output, wrapped in the measure's declared cast.
+    assert '"__ob_main"."Running Quantity"' in result.sql
+    assert 'AS "Sold Quantity"' in result.sql
     assert 'SUM("Sales"."quantity")' not in result.sql.split("cumulative_base")[-1]
 
     rows = _cumulative_db().execute(result.sql).fetchall()
@@ -1287,14 +1293,15 @@ def test_filter_context_with_a_deduplicated_measure_is_still_refused() -> None:
     to take by alias.
     """
     yaml_text = CUMULATIVE_YAML.replace(
-        "  Sold Quantity: {resultType: int, aggregation: sum, expression: '{[Sales].[Quantity]}'}",
-        "  Sold Quantity: {resultType: int, aggregation: sum, expression: '{[Sales].[Quantity]}'}\n"
+        "  Total Stock On Hand:\n",
         "  Unfiltered Quantity:\n"
         "    resultType: int\n"
         "    aggregation: sum\n"
         "    expression: '{[Sales].[Quantity]}'\n"
         "    filterContext:\n"
-        "      mode: FIXED\n",
+        "      mode: FIXED\n"
+        "  Total Stock On Hand:\n",
+        1,
     )
     with pytest.raises(GrainDedupUnsupportedError, match="filter_context"):
         _compile(
@@ -1306,3 +1313,36 @@ def test_filter_context_with_a_deduplicated_measure_is_still_refused() -> None:
             },
             yaml_text,
         )
+
+
+def test_dedup_path_keeps_the_base_measure_data_type_cast() -> None:
+    """Taking the column by alias must not drop its declared cast.
+
+    The non-dedup path wraps the component in the measure's ``dataType`` cast.
+    Re-aliasing without it silently widened the result: a measure declared
+    ``decimal(18, 2)`` came back as a plain integer type once a deduplicated
+    measure pulled the query onto the other branch. Asserted on the returned
+    column type, because the values compare equal either way.
+    """
+    con = _cumulative_db()
+
+    reference = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Running Quantity"]}},
+        CUMULATIVE_YAML,
+    )
+    with_dedup = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Running Quantity", "Total Stock On Hand"],
+            }
+        },
+        CUMULATIVE_YAML,
+    )
+
+    def column_type(sql: str) -> str:
+        rel = con.sql(sql)
+        return str(dict(zip(rel.columns, rel.types, strict=True))["Running Quantity"])
+
+    assert "DECIMAL" in column_type(reference.sql)
+    assert column_type(with_dedup.sql) == column_type(reference.sql)
