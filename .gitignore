@@ -22,6 +22,10 @@ htmlcov/
 *.log
 .DS_Store
 .claude/
+# Playwright MCP scratch output: accessibility snapshots and console logs
+# written per browser session. The console logs were already caught by
+# *.log above, which left only the .yml page dumps showing as untracked.
+.playwright-mcp/
 /cache/
 /usage/
 security/
