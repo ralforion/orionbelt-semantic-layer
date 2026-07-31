@@ -1461,3 +1461,74 @@ def test_the_same_measure_keeps_its_ordering_on_the_single_fact_path() -> None:
     )
     assert "ORDER BY" in result.sql
     assert '"Calendar"."month"' in result.sql
+
+
+# --- withinGroup objects must be joined -----------------------------------
+
+WITHIN_GROUP_YAML = """\
+version: 1.0
+name: wg
+dataObjects:
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Stock On Hand: {code: stock_on_hand, abstractType: int}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Product ID: {code: product_id, abstractType: string}
+      Region: {code: region, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+dimensions:
+  Region: {dataObject: Sales, column: Region, resultType: string}
+measures:
+  Sale List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Sales, column: Sale ID}]
+    withinGroup:
+      column: {dataObject: Products, column: Stock On Hand}
+      order: ASC
+"""
+
+
+def test_within_group_object_is_joined() -> None:
+    """``withinGroup`` becomes the aggregate's ORDER BY, so its object must resolve.
+
+    It was never added to the query's required objects, so the compiler emitted
+    ``ORDER BY "Products"."stock_on_hand"`` over a FROM containing only
+    ``sales`` - valid-looking SQL that every engine rejects at execution with
+    ``Referenced table "Products" not found``.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE products (id VARCHAR, stock_on_hand INTEGER)")
+    con.execute("INSERT INTO products VALUES ('p1', 100), ('p2', 7)")
+    con.execute("CREATE TABLE sales (id VARCHAR, product_id VARCHAR, region VARCHAR)")
+    con.execute("INSERT INTO sales VALUES ('s1','p1','north'), ('s2','p2','north')")
+
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sale List"]}}, WITHIN_GROUP_YAML
+    )
+    assert '"main"."products" AS "Products"' in result.sql
+
+    # p2 (stock 7) sorts before p1 (stock 100).
+    assert con.execute(result.sql).fetchall() == [("north", "s2,s1")]
+
+
+def test_within_group_object_does_not_become_a_fact_table() -> None:
+    """It is a join requirement, not a source: it must not enter CFL detection."""
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sale List"]}}, WITHIN_GROUP_YAML
+    )
+    assert result.resolved.fact_tables == ["Sales"]
+    assert result.explain is not None
+    assert result.explain.planner == "Star Schema"

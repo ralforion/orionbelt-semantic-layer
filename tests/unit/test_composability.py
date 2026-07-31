@@ -219,3 +219,109 @@ def test_resolver_reuse_across_anchors(multi_fact_model: SemanticModel) -> None:
     dims, measures = resolver.objects_from_anchor_name("Return Amount")
     assert dims == set()
     assert measures == {"Returns"}
+
+
+# --- join-only requirements (withinGroup) ---------------------------------
+
+DISCONNECTED_WITHIN_GROUP_YAML = """\
+version: 1.0
+
+dataObjects:
+  Products:
+    code: PRODUCTS
+    columns:
+      Product ID: {code: ID, abstractType: string, primaryKey: true}
+      Stock On Hand: {code: STOCK, abstractType: int}
+  Sales:
+    code: SALES
+    columns:
+      Sale ID: {code: ID, abstractType: string, primaryKey: true}
+      Region: {code: REGION, abstractType: string}
+
+dimensions:
+  Region: {dataObject: Sales, column: Region, resultType: string}
+
+measures:
+  Sale List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Sales, column: Sale ID}]
+    withinGroup:
+      column: {dataObject: Products, column: Stock On Hand}
+      order: ASC
+"""
+
+
+def test_acr_excludes_a_measure_whose_within_group_object_is_unreachable() -> None:
+    """``withinGroup`` is a join requirement, so an unreachable one is fatal.
+
+    The measure reads no value from ``Products``, but the compiler still has to
+    join it for the aggregate's ORDER BY. With no join path the query fails
+    with ``UNREACHABLE_REQUIRED_OBJECT``, so ACR must not advertise it - at any
+    anchor, including none.
+    """
+    raw, source_map = TrackedLoader().load_string(DISCONNECTED_WITHIN_GROUP_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    resolver = ComposabilityResolver(model)
+
+    for anchor in (None, "Region"):
+        if anchor is None:
+            composables = resolver.resolve(set(), set())
+        else:
+            composables = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        assert "Sale List" not in set(composables.measures) | set(composables.cfl_measures)
+
+
+def test_acr_keeps_a_measure_whose_within_group_object_is_reachable() -> None:
+    """The same measure stays composable once a join path exists."""
+    yaml_text = DISCONNECTED_WITHIN_GROUP_YAML.replace(
+        "      Region: {code: REGION, abstractType: string}\n",
+        "      Region: {code: REGION, abstractType: string}\n"
+        "      Sale Product ID: {code: PRODUCT_ID, abstractType: string}\n"
+        "    joins:\n"
+        "      - joinType: many-to-one\n"
+        "        joinTo: Products\n"
+        "        columnsFrom: [Sale Product ID]\n"
+        "        columnsTo: [Product ID]\n",
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+
+    resolver = ComposabilityResolver(model)
+    composables = resolver.resolve(*resolver.objects_from_anchor_name("Region"))
+    assert "Sale List" in set(composables.measures) | set(composables.cfl_measures)
+
+
+def test_acr_follows_join_requirements_through_nested_metrics() -> None:
+    """A metric wrapping a metric must inherit its components' requirements.
+
+    ``metric_measure_names`` returns whatever the expression references, which
+    may itself be a metric. Resolving one level only made a wrapper look like it
+    had no sources and no join requirements at all, so it was advertised while
+    compiling raised ``UNREACHABLE_REQUIRED_OBJECT``.
+    """
+    yaml_text = (
+        DISCONNECTED_WITHIN_GROUP_YAML
+        + """
+metrics:
+  Wrapped: {expression: "{[Sale List]}"}
+  Double Wrapped: {expression: "{[Wrapped]}"}
+  Triple Wrapped: {expression: "{[Double Wrapped]}"}
+"""
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    resolver = ComposabilityResolver(model)
+
+    for anchor in (None, "Region"):
+        if anchor is None:
+            composables = resolver.resolve(set(), set())
+        else:
+            composables = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        advertised = set(composables.metrics) | set(composables.cfl_metrics)
+        # Every level, not just the one directly over the measure.
+        assert not advertised & {"Wrapped", "Double Wrapped", "Triple Wrapped"}

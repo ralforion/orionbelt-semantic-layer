@@ -366,6 +366,9 @@ class QueryResolver:
                     source_objs = self._get_measure_source_objects(ctx, measure_name)
                     ctx.result.measure_source_objects.update(source_objs)
                     ctx.result.required_objects.update(source_objs)
+                    ctx.result.required_objects.update(
+                        self._get_measure_join_objects(ctx, measure_name)
+                    )
 
             # 2.5. Auto-include measures referenced by HAVING but not by SELECT.
             # Without this, codegen emits a HAVING clause that references an
@@ -387,6 +390,7 @@ class QueryResolver:
                 source_objs = self._get_measure_source_objects(ctx, ref)
                 ctx.result.measure_source_objects.update(source_objs)
                 ctx.result.required_objects.update(source_objs)
+                ctx.result.required_objects.update(self._get_measure_join_objects(ctx, ref))
 
         # 3. Determine base object (the one with most joins / most measures).
         # WHERE filters are resolved much later, so the objects they reference
@@ -941,6 +945,40 @@ class QueryResolver:
         for entry in query.having:
             _visit(entry)
         return out
+
+    def _get_measure_join_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
+        """Objects a measure needs *joined* without being sourced from them.
+
+        A ``withinGroup`` column becomes the aggregate's ``ORDER BY``, so it has
+        to resolve — but it contributes no value to the measure. Kept out of
+        ``measure_source_objects`` for that reason: that set drives CFL
+        detection and the explain output's fact-table list, and a LISTAGG's sort
+        column is neither a fact nor a source.
+
+        Without this the object is never joined and the compiler emits SQL that
+        binds to nothing:
+
+            SELECT LISTAGG("Products"."id", ',' ORDER BY "Sales"."quantity")
+            FROM "products" AS "Products"          -- Sales never joined
+
+        which every engine rejects at execution time.
+        """
+        result: set[str] = set()
+
+        measure = ctx.model.effective_measures.get(name)
+        if measure is not None:
+            if measure.within_group is not None and measure.within_group.column.view:
+                result.add(measure.within_group.column.view)
+            return result
+
+        metric = ctx.model.metrics.get(name)
+        if metric is not None:
+            if metric.measure:
+                result.update(self._get_measure_join_objects(ctx, metric.measure))
+            if metric.expression:
+                for ref_name in re.findall(r"\{\[([^\]]+)\]\}", metric.expression):
+                    result.update(self._get_measure_join_objects(ctx, ref_name))
+        return result
 
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
         """Extract all source data objects for a measure or metric."""

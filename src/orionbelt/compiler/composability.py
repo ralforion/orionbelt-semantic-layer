@@ -47,6 +47,31 @@ class ComposablesResult:
     cfl_metrics: list[str] = field(default_factory=list)
 
 
+def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
+    """Objects a measure needs *joined* without being sourced from them.
+
+    A ``withinGroup`` column becomes the aggregate's ``ORDER BY``, so the
+    compiler adds its data object to the query's required objects even though
+    the measure reads no value from it. If that object is not reachable, the
+    query fails with ``UNREACHABLE_REQUIRED_OBJECT`` — so ACR has to weigh it
+    alongside the value sources, or it advertises a measure that cannot be
+    planned.
+    """
+    measure = model.effective_measures.get(name)
+    if measure is None or measure.within_group is None:
+        return set()
+    view = measure.within_group.column.view
+    return {view} if view else set()
+
+
+def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
+    """``measure_join_requirements`` across every measure a metric reaches."""
+    result: set[str] = set()
+    for component in metric_leaf_measures(model, name):
+        result |= measure_join_requirements(model, component)
+    return result
+
+
 def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
     """Data objects a measure aggregates over (source columns + expression refs)."""
     m = model.effective_measures.get(name)
@@ -71,10 +96,34 @@ def metric_measure_names(model: SemanticModel, name: str) -> set[str]:
     return names
 
 
+def metric_leaf_measures(model: SemanticModel, name: str) -> set[str]:
+    """Every *measure* a metric depends on, following nested metrics.
+
+    ``metric_measure_names`` returns whatever the expression references, which
+    may itself be a metric. Resolving only that one level made a metric wrapping
+    a metric look like it had no sources at all, so both the reachability checks
+    below silently passed it.
+    """
+    leaves: set[str] = set()
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for ref in metric_measure_names(model, current):
+            if ref in model.metrics:
+                pending.append(ref)
+            else:
+                leaves.add(ref)
+    return leaves
+
+
 def metric_source_objects(model: SemanticModel, name: str) -> set[str]:
     """Data objects a metric ultimately aggregates over (via its measures)."""
     objects: set[str] = set()
-    for measure_name in metric_measure_names(model, name):
+    for measure_name in metric_leaf_measures(model, name):
         objects |= measure_source_objects(model, measure_name)
     return objects
 
@@ -169,13 +218,29 @@ class ComposabilityResolver:
         anchor = dim_objects | measure_objects
         anchor_objects = sorted(anchor)
 
-        # Empty anchor -> a fresh query: everything is composable.
+        # Empty anchor -> a fresh query: everything is composable, except a
+        # measure whose join-only objects cannot be reached at all. That is a
+        # property of the model, so it holds with no anchor too.
         if not anchor:
             return ComposablesResult(
                 anchor_objects=[],
                 dimensions=sorted(self.model.dimensions),
-                measures=sorted(self.model.effective_measures),
-                metrics=sorted(self.model.metrics),
+                measures=sorted(
+                    name
+                    for name in self.model.effective_measures
+                    if self._join_requirements_reachable(
+                        measure_join_requirements(self.model, name),
+                        measure_source_objects(self.model, name),
+                    )
+                ),
+                metrics=sorted(
+                    name
+                    for name in self.model.metrics
+                    if self._join_requirements_reachable(
+                        metric_join_requirements(self.model, name),
+                        metric_source_objects(self.model, name),
+                    )
+                ),
             )
 
         spine = dim_objects  # grouping dimensions shared across all legs
@@ -193,7 +258,12 @@ class ComposabilityResolver:
         measures: list[str] = []
         cfl_measures: list[str] = []
         for name in self.model.effective_measures:
-            status = self._measure_status(measure_source_objects(self.model, name), anchor, spine)
+            sources = measure_source_objects(self.model, name)
+            if not self._join_requirements_reachable(
+                measure_join_requirements(self.model, name), anchor | sources
+            ):
+                continue
+            status = self._measure_status(sources, anchor, spine)
             if status == "direct":
                 measures.append(name)
             elif status == "cfl":
@@ -202,7 +272,12 @@ class ComposabilityResolver:
         metrics: list[str] = []
         cfl_metrics: list[str] = []
         for name in self.model.metrics:
-            status = self._measure_status(metric_source_objects(self.model, name), anchor, spine)
+            sources = metric_source_objects(self.model, name)
+            if not self._join_requirements_reachable(
+                metric_join_requirements(self.model, name), anchor | sources
+            ):
+                continue
+            status = self._measure_status(sources, anchor, spine)
             if status == "direct":
                 metrics.append(name)
             elif status == "cfl":
@@ -216,6 +291,23 @@ class ComposabilityResolver:
             cfl_measures=sorted(cfl_measures),
             cfl_metrics=sorted(cfl_metrics),
         )
+
+    def _join_requirements_reachable(self, required: set[str], context: set[str]) -> bool:
+        """Whether the planner could reach a measure's join-only objects.
+
+        A ``withinGroup`` column becomes the aggregate's ``ORDER BY``, so the
+        compiler adds its data object to the query's required objects even
+        though the measure reads no value from it. Unreachable, that raises
+        ``UNREACHABLE_REQUIRED_OBJECT`` — so ACR has to weigh it alongside the
+        value sources or it advertises a measure that cannot be planned.
+
+        Nothing to reach is trivially satisfiable. Otherwise some single root
+        has to cover the measure's own objects and the ones it merely needs
+        joined, which is the condition the planner applies before raising.
+        """
+        if not required:
+            return True
+        return self._has_common_root(context | required)
 
     def _dimension_composable(self, obj: str, spine: set[str], leg_facts: set[str]) -> bool:
         if leg_facts:
