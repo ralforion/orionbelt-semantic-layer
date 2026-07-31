@@ -114,9 +114,17 @@ def _build_total_window(measure: ResolvedMeasure) -> Expr:
 
 
 def _collect_total_names(resolved: ResolvedQuery) -> set[str]:
-    """Collect names of all measures that need window wrapping (direct + metric components)."""
+    """Collect names of all measures that need window wrapping (direct + metric components).
+
+    Measures handled by ``compiler.grain_dedup`` are excluded: it computes their
+    grand total in a CTE deduplicated at no grain, which a window over this
+    pass's input cannot reproduce. Those per-group values belong to overlapping
+    groups, so ``SUM(...) OVER ()`` would double count.
+    """
     names: set[str] = set()
     for m in resolved.measures:
+        if m.name in resolved.dedup_measures:
+            continue
         if _needs_window_wrap(m):
             names.add(m.name)
         for comp_name in m.component_measures:

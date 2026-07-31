@@ -1021,11 +1021,61 @@ def test_total_on_a_base_grain_measure_composes_with_dedup() -> None:
     assert rows == [("north", 15, 210), ("south", 15, 300)]
 
 
-def test_total_on_the_deduplicated_measure_is_still_refused() -> None:
-    """That value lives in a dedup CTE the totals wrapper does not reach into."""
+def test_total_on_the_deduplicated_measure_uses_a_scalar_grain_dedup_cte() -> None:
+    """``total: true`` on a deduplicated measure means "each source row once, overall".
+
+    It cannot be a window over this pass's output: those per-group values belong
+    to overlapping groups — a product sold in two regions is legitimately in
+    both — so ``SUM(...) OVER ()`` would double count. The measure is instead
+    aggregated in its own CTE deduplicated at *no* grain.
+    """
     yaml_text = MODEL_YAML.replace(
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n    total: true\n",
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'),"
+        " ('p2', 9.99, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # p1 sells in BOTH regions, so it belongs to two groups.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p2','c1','north',1),"
+        " ('s3','p1','c1','south',1), ('s4','p3','c1','south',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            }
+        },
+        yaml_text,
+    )
+    assert "dedup_total_0" in result.sql
+    assert "OVER ()" not in result.sql
+
+    rows = sorted((r[0], int(r[2])) for r in con.execute(result.sql).fetchall())
+    # 100 + 110 + 300, each product once. Summing the per-group values
+    # (north 210 + south 400) would give 610.
+    assert rows == [("north", 510), ("south", 510)]
+
+
+def test_grain_override_on_a_deduplicated_measure_is_still_refused() -> None:
+    """Unlike ``total``, a grain override has no dedup CTE built for its grain yet."""
+    yaml_text = MODEL_YAML.replace(
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n"
+        "    grain:\n      mode: FIXED\n      keepOnly: [Region]\n",
     )
     with pytest.raises(GrainDedupUnsupportedError, match="totals"):
         _compile(
