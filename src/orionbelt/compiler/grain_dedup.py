@@ -471,24 +471,43 @@ def wrap_with_grain_dedup(
             )
         )
 
-    # --- one dedup CTE per replicated source object ---
+    # --- one dedup CTE per (source object, grain) ---
+    # A ``total: true`` measure is deduplicated at *no* grain: one row per source
+    # object row across the whole query, not per group. Summing the per-group
+    # values instead would double count anything belonging to several groups —
+    # a product sold in two regions is legitimately in both — which is exactly
+    # what a ``SUM(...) OVER ()`` over this pass's output would do.
     effective_measures = model.effective_measures
-    by_object: dict[str, list[str]] = {}
-    for measure_name, object_name in dedup_measures.items():
-        by_object.setdefault(object_name, []).append(measure_name)
+    totals = {
+        name
+        for name in dedup_measures
+        if (m := effective_measures.get(name)) is not None and m.total
+    }
 
-    cte_for_object: dict[str, str] = {}
-    for idx, object_name in enumerate(sorted(by_object)):
-        cte_name = f"dedup_{idx}"
+    by_group: dict[tuple[str, bool], list[str]] = {}
+    for measure_name, object_name in dedup_measures.items():
+        by_group.setdefault((object_name, measure_name in totals), []).append(measure_name)
+
+    cte_for_measure: dict[str, str] = {}
+    grand_total_ctes: set[str] = set()
+    for idx, group_key in enumerate(sorted(by_group)):
+        object_name, is_total = group_key
+        cte_name = f"dedup_total_{idx}" if is_total else f"dedup_{idx}"
         src_alias = f"dedup_src_{idx}"
-        cte_for_object[object_name] = cte_name
-        measure_names = by_object[object_name]
+        measure_names = by_group[group_key]
+        for measure_name in measure_names:
+            cte_for_measure[measure_name] = cte_name
+        if is_total:
+            grand_total_ctes.add(cte_name)
+        # A grand total collapses the grain entirely.
+        group_dims = [] if is_total else resolved.dimensions
+        group_dim_names = [] if is_total else dim_names
 
         # Inner projection: the query's grain, the source object's identity, and
         # every column the measures read. DISTINCT over those collapses the
         # replication to exactly one row per (grain, source-object row).
         inner_columns: list[Expr] = []
-        for dim in resolved.dimensions:
+        for dim in group_dims:
             dim_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
             if dim.grain:
                 dim_expr = dialect.render_time_grain(dim_expr, dim.grain)
@@ -542,7 +561,7 @@ def wrap_with_grain_dedup(
         # refs are repointed at the subquery projection.
         cte_columns: list[Expr] = [
             AliasedExpr(expr=ColumnRef(name=name, table=src_alias), alias=name)
-            for name in dim_names
+            for name in group_dim_names
         ]
         cte_columns.extend(
             _rewrite_column_refs(measure_columns[name], ref_map) for name in measure_names
@@ -568,7 +587,7 @@ def wrap_with_grain_dedup(
                     columns=cte_columns,
                     from_=From(source=deduplicated, alias=src_alias),
                     where=key_present,
-                    group_by=[ColumnRef(name=name, table=src_alias) for name in dim_names],
+                    group_by=[ColumnRef(name=name, table=src_alias) for name in group_dim_names],
                 ),
             )
         )
@@ -585,7 +604,7 @@ def wrap_with_grain_dedup(
                 AliasedExpr(expr=ColumnRef(name=alias, table=_MAIN_CTE), alias=alias)
             )
             continue
-        source = cte_for_object[dedup_measures[alias]]
+        source = cte_for_measure[alias]
         measure_col: Expr = ColumnRef(name=alias, table=source)
         # A group whose rows all miss the joined object contributes no row to the
         # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
@@ -597,13 +616,18 @@ def wrap_with_grain_dedup(
 
     # Without ``main`` the first dedup CTE becomes the FROM and the rest join to
     # it; every one yields a single row at this grain, so a CROSS JOIN is exact.
-    ordered_ctes = [cte_for_object[name] for name in sorted(by_object)]
+    ordered_ctes: list[str] = []
+    for group_key in sorted(by_group):
+        name = cte_for_measure[by_group[group_key][0]]
+        if name not in ordered_ctes:
+            ordered_ctes.append(name)
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
 
     outer_joins: list[Join] = []
     for cte_name in joined_ctes:
-        if not dim_names:
+        # A grand-total CTE is a single row with no grain to match on.
+        if not dim_names or cte_name in grand_total_ctes:
             # Scalar grain: one row each side.
             outer_joins.append(Join(join_type=JoinType.CROSS, source=cte_name, alias=cte_name))
             continue
@@ -639,7 +663,7 @@ def wrap_with_grain_dedup(
 
     outer_order_by = [
         OrderByItem(
-            expr=_order_expr_to_outer(item.expr, projected_exprs, dedup_measures, cte_for_object),
+            expr=_order_expr_to_outer(item.expr, projected_exprs, cte_for_measure),
             desc=item.desc,
             nulls_last=item.nulls_last,
         )
@@ -674,8 +698,7 @@ def _null_safe_eq(left: Expr, right: Expr) -> Expr:
 def _order_expr_to_outer(
     expr: Expr,
     projected: list[tuple[Expr, str]],
-    dedup_measures: dict[str, str],
-    cte_for_object: dict[str, str],
+    cte_for_measure: dict[str, str],
 ) -> Expr:
     """Repoint one ORDER BY expression at the wrapper's CTE aliases.
 
@@ -689,8 +712,7 @@ def _order_expr_to_outer(
     """
 
     def source_of(name: str) -> str:
-        target = dedup_measures.get(name)
-        return _MAIN_CTE if target is None else cte_for_object[target]
+        return cte_for_measure.get(name, _MAIN_CTE)
 
     for candidate, name in projected:
         if expr == candidate:

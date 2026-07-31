@@ -227,8 +227,12 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     """
     if pass_name != PASS_TOTALS:
         return True
+    # ``total`` on a deduplicated measure is handled by the dedup pass itself,
+    # which computes it in a CTE deduplicated at no grain. A ``grain`` override
+    # is not: its target grain would need its own dedup CTE, which is not built
+    # yet, so it still conflicts.
     return any(
-        measure.total or measure.grain_override is not None
+        measure.grain_override is not None
         for measure in resolved.measures
         if measure.name in resolved.dedup_measures
     )

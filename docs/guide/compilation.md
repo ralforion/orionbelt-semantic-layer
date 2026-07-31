@@ -298,6 +298,14 @@ below) and the query plans as an ordinary star.
     total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
     saying so. Query the measure at its own grain for a total that adds up.
 
+A `total: true` measure is deduplicated at **no** grain: one row per source
+object row across the whole query, in its own `dedup_total_N` CTE that is
+`CROSS JOIN`ed in. It cannot be a window over this pass's output, because those
+per-group values belong to overlapping groups — a product sold in two regions is
+legitimately in both — so `SUM(...) OVER ()` would double count. With stock
+100/110/300 and the first product sold in both regions, the grand total is 510;
+summing the per-group values (210 + 400) gives 610.
+
 A deduplicated `count` reads `0`, not `NULL`, when a group has no matching
 rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
@@ -309,7 +317,7 @@ than return an inflated number:
 
 | Combination | Why |
 |---|---|
-| `total: true` **on a deduplicated measure** | Its value lives in a dedup CTE the totals wrapper does not reach into. A total on a base-grain measure composes fine - the totals pass wraps the dedup output |
+| `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
 | Cumulative, window | They re-project the measure's *raw aggregate* instead of selecting it by alias, emitting `SUM("Sales"."quantity")` into a CTE whose FROM is only `main`/`dedup_0`: `Referenced table "Sales" not found` |
 | `filterContext` | Emits its own CTE named `main`, colliding with the one dedup emits: `Duplicate CTE name "main"` |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |

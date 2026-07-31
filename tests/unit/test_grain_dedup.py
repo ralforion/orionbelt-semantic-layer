@@ -1021,11 +1021,61 @@ def test_total_on_a_base_grain_measure_composes_with_dedup() -> None:
     assert rows == [("north", 15, 210), ("south", 15, 300)]
 
 
-def test_total_on_the_deduplicated_measure_is_still_refused() -> None:
-    """That value lives in a dedup CTE the totals wrapper does not reach into."""
+def test_total_on_the_deduplicated_measure_uses_a_scalar_grain_dedup_cte() -> None:
+    """``total: true`` on a deduplicated measure means "each source row once, overall".
+
+    It cannot be a window over this pass's output: those per-group values belong
+    to overlapping groups — a product sold in two regions is legitimately in
+    both — so ``SUM(...) OVER ()`` would double count. The measure is instead
+    aggregated in its own CTE deduplicated at *no* grain.
+    """
     yaml_text = MODEL_YAML.replace(
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
         "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n    total: true\n",
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'),"
+        " ('p2', 9.99, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # p1 sells in BOTH regions, so it belongs to two groups.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p2','c1','north',1),"
+        " ('s3','p1','c1','south',1), ('s4','p3','c1','south',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            }
+        },
+        yaml_text,
+    )
+    assert "dedup_total_0" in result.sql
+    assert "OVER ()" not in result.sql
+
+    rows = sorted((r[0], int(r[2])) for r in con.execute(result.sql).fetchall())
+    # 100 + 110 + 300, each product once. Summing the per-group values
+    # (north 210 + south 400) would give 610.
+    assert rows == [("north", 510), ("south", 510)]
+
+
+def test_grain_override_on_a_deduplicated_measure_is_still_refused() -> None:
+    """Unlike ``total``, a grain override has no dedup CTE built for its grain yet."""
+    yaml_text = MODEL_YAML.replace(
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n"
+        "    grain:\n      mode: FIXED\n      keepOnly: [Region]\n",
     )
     with pytest.raises(GrainDedupUnsupportedError, match="totals"):
         _compile(
@@ -1037,3 +1087,93 @@ def test_total_on_the_deduplicated_measure_is_still_refused() -> None:
             },
             yaml_text,
         )
+
+
+def test_deduplicated_total_is_not_rewrapped_when_another_total_is_present() -> None:
+    """The totals pass must treat dedup-handled measures as pass-through throughout.
+
+    Excluding them only while collecting names is not enough: the outer
+    projection re-tests each measure, so as soon as *another* measure pulls the
+    totals pass in, the deduplicated scalar gets a second
+    ``SUM(...) OVER ()`` wrapped around it — once per group row.
+    """
+    yaml_text = MODEL_YAML.replace(
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n",
+        "  Total Stock On Hand:\n    resultType: int\n    aggregation: sum\n    total: true\n",
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 9.99, 100, 'tools'),"
+        " ('p2', 9.99, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p2','c1','north',1),"
+        " ('s3','p1','c1','south',1), ('s4','p3','c1','south',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Grand Total Quantity", "Total Stock On Hand"],
+            }
+        },
+        yaml_text,
+    )
+    # The base-grain total is a window; the deduplicated one is projected as-is.
+    assert 'SUM("Grand Total Quantity") OVER ()' in result.sql
+    assert 'SUM("Total Stock On Hand") OVER ()' not in result.sql
+
+    rows = sorted((r[0], int(r[1]), int(r[2])) for r in con.execute(result.sql).fetchall())
+    # Stock is 510 (each product once), not 1020 (510 doubled by the second wrap).
+    assert rows == [("north", 4, 510), ("south", 4, 510)]
+
+
+def test_deduplicated_avg_total_alongside_another_total() -> None:
+    """AVG totals take a separate path with sum/count helper columns.
+
+    A deduplicated one must skip that path too, or the helpers are emitted for a
+    measure whose value never passes through the base CTE.
+    """
+    yaml_text = MODEL_YAML.replace(
+        "  Avg Customer Age:\n    resultType: float\n    aggregation: avg\n",
+        "  Avg Customer Age:\n    resultType: float\n    aggregation: avg\n    total: true\n",
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute("INSERT INTO products VALUES ('p1', 9.99, 100, 'tools')")
+    con.execute("CREATE TABLE customers (id VARCHAR, age INTEGER)")
+    con.execute("INSERT INTO customers VALUES ('c1', 20), ('c2', 60)")
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    # c1 buys three times, c2 once — weighting by purchase would give 30, not 40.
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',1),"
+        " ('s3','p1','c1','north',1), ('s4','p1','c2','south',1)"
+    )
+
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Grand Total Quantity", "Avg Customer Age"],
+            }
+        },
+        yaml_text,
+    )
+    assert "__sum" not in result.sql and "__count" not in result.sql
+    rows = sorted((r[0], float(r[2])) for r in con.execute(result.sql).fetchall())
+    assert rows == [("north", 40.0), ("south", 40.0)]
