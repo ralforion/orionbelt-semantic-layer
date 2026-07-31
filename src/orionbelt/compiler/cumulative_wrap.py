@@ -134,6 +134,34 @@ def _build_cumulative_window(
     )
 
 
+def _component_base_column(
+    col_node: Expr,
+    comp: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> AliasedExpr:
+    """Project a cumulative metric's base measure into the base CTE.
+
+    Normally that means re-deriving the component's aggregate from the fact
+    tables, which is what the planner would have emitted for it.
+
+    That does not survive ``compiler.grain_dedup``. It rewrites the query into
+    CTEs, so this wrapper's FROM is the dedup output rather than the fact
+    tables, and ``SUM("Sales"."quantity")`` re-projected there fails to bind.
+    The metric's own column already holds that aggregate, computed at the query
+    grain before the rewrite, so it is re-aliased to the component's name
+    instead of rebuilt — the same alias-not-expression rule that lets
+    ``total_wrap`` compose.
+    """
+    if resolved.dedup_measures and isinstance(col_node, AliasedExpr):
+        return AliasedExpr(expr=col_node.expr, alias=comp.name)
+    return AliasedExpr(
+        expr=_apply_measure_cast(comp.expression, comp.name, model, dialect),
+        alias=comp.name,
+    )
+
+
 def wrap_with_cumulative(
     ast: Select,
     resolved: ResolvedQuery,
@@ -180,8 +208,9 @@ def wrap_with_cumulative(
                     # Only add the component if not already present
                     already_in_base = any(_get_alias(c) == comp_name for c in base_columns)
                     if not already_in_base:
-                        comp_expr = _apply_measure_cast(comp.expression, comp.name, model, dialect)
-                        base_columns.append(AliasedExpr(expr=comp_expr, alias=comp.name))
+                        base_columns.append(
+                            _component_base_column(col_node, comp, resolved, model, dialect)
+                        )
             # If the base measure is already a direct measure, it's already in the columns
         else:
             base_columns.append(col_node)

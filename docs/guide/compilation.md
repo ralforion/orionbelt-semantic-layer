@@ -319,8 +319,8 @@ than return an inflated number:
 | Combination | Why |
 |---|---|
 | `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
-| Cumulative, window | They re-project the measure's *raw aggregate* instead of selecting it by alias, emitting `SUM("Sales"."quantity")` into a CTE whose FROM is only the dedup output: `Referenced table "Sales" not found` |
-| `filterContext` | Same re-projection problem as above. It also emitted its own CTE named `main`, which used to collide; the dedup CTEs are namespaced now, and the underlying `Referenced table` failure remains |
+| A derived metric over **window** metrics | Needs one base measure per component out of a single column, which re-aliasing cannot supply |
+| `filterContext` | It re-queries the fact tables under a *different* `WHERE`. The dedup output has already applied the query filters and aggregated, so there is no column to take by alias |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A metric whose component needs deduplication | Metrics inline their components into one expression |

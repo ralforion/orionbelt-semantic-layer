@@ -187,6 +187,35 @@ def _ddm_window_components(
     return out
 
 
+def _base_measure_column(
+    col_node: Expr,
+    comp: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> AliasedExpr:
+    """Project a window metric's base measure into ``window_base``.
+
+    Normally the component's aggregate is re-derived from the fact tables.
+    That does not survive ``compiler.grain_dedup``, which rewrites the query
+    into CTEs — this wrapper's FROM becomes the dedup output, where
+    ``SUM("Sales"."quantity")`` has nothing to bind to. The metric's own column
+    already carries that aggregate, computed at the query grain before the
+    rewrite, so it is re-aliased rather than rebuilt.
+
+    Only the direct window-metric column can be re-aliased this way. A derived
+    metric over several window metrics needs one base measure per component
+    from a single column, which no aliasing can supply; ``evaluate_compatibility``
+    keeps that combination blocked.
+    """
+    if resolved.dedup_measures and isinstance(col_node, AliasedExpr):
+        return AliasedExpr(expr=col_node.expr, alias=comp.name)
+    return AliasedExpr(
+        expr=_apply_measure_cast(comp.expression, comp.name, model, dialect),
+        alias=comp.name,
+    )
+
+
 def window_pass_applies(resolved: ResolvedQuery) -> bool:
     """True when :func:`wrap_with_window` will transform the AST.
 
@@ -291,8 +320,9 @@ def wrap_with_window(
                 if comp:
                     already_in_base = any(_get_alias(c) == base_name for c in base_columns)
                     if not already_in_base:
-                        comp_expr = _apply_measure_cast(comp.expression, comp.name, model, dialect)
-                        base_columns.append(AliasedExpr(expr=comp_expr, alias=comp.name))
+                        base_columns.append(
+                            _base_measure_column(col_node, comp, resolved, model, dialect)
+                        )
         elif alias and alias in ddm_names:
             # DDM: drop the (incorrectly-pre-substituted) column; compute
             # it at the outer level. Make sure each window component's
