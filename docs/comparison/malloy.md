@@ -136,7 +136,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 
 | OBSL | Malloy | Notes |
 |---|---|---|
-| `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) — nests other derived metrics at any depth (v2.23.2) | Composed by referencing other measures inside aggregate expressions | Both first-class and both composable |
+| `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) — nests other derived metrics at any depth | Composed by referencing other measures inside aggregate expressions | Both first-class and both composable |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
 | `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br> comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |

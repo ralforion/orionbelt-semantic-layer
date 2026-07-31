@@ -31,7 +31,7 @@ OBSL `MetricType` enum (`src/orionbelt/models/semantic.py`):
 | OBSL | dbt SL | Notes |
 |---|---|---|
 | `Measure` (sum/avg/count/min/max + `any_value` / `median` / `mode` / `listagg` + 9 statistical aggs, `total: bool` for grand totals) | `simple` metric over a `measure` (no statistical aggs) | OBSL wins on aggregate surface — see §6 |
-| `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression — nests other derived metrics at any depth (v2.23.2) | `ratio`, `derived` (both may reference other metrics) | Both first-class and both composable |
+| `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression — nests other derived metrics at any depth | `ratio`, `derived` (both may reference other metrics) | Both first-class and both composable |
 | `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
 | `Metric` `type: period_over_period` with 4 comparison modes | Approximated via `offset_window` and `metric_time` | OBSL has a dedicated metric type — see §4 |
 | `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |

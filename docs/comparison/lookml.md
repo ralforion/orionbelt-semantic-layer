@@ -205,7 +205,7 @@ Looker is broader on enterprise legacy databases; OBSL is competitive on modern 
 | Arrow Flight SQL | Yes — gRPC server on port 8815 for BI tool connectivity (DBeaver, Tableau, Power BI via Arrow Flight SQL JDBC/ODBC). Multi-model addressing via the `database` gRPC header. | No (Looker is the BI front-end itself) |
 | JDBC | Yes — via Arrow Flight SQL JDBC driver | n/a (Looker is the BI tool) |
 | DB-API 2.0 drivers | Yes — 8 drivers shipped | No |
-| MCP | Yes — first-party server | Not native; community efforts exist |
+| MCP | Yes — first-party server | Yes — managed Looker MCP server, plus the open-source MCP Toolbox (2026) |
 | GraphQL | No | No |
 | Native SDK | Python (FastAPI client) | Python, Ruby, TypeScript, Java, etc. (`looker-sdk`) |
 | UI / Playground | Interactive Gradio playground: SQL Compiler, Query Results table, auto-generated Mermaid ER diagrams, interactive RDF/OBSL ontology graph (vis-network), OSI import/export, settings panel | Looker IDE (very polished) + Looker Explore + dashboards |
@@ -307,7 +307,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 2. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently table calculations.
 3. **Named secondary join paths** with per-query selection.
 4. **RDF/SPARQL graph surface** for governance/lineage.
-5. **Native MCP server** for LLM/agent consumers.
+5. ~~Native MCP server~~ — **closed**: Looker ships a managed MCP server alongside the open-source MCP Toolbox.
 6. **OSI ↔ model round-trip** for portability.
 
 ---
