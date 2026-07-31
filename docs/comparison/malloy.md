@@ -1,6 +1,6 @@
 # OBSL vs Malloy
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** (the open-source data language and semantic modeling tool from the Malloy Data project). Captured 2026-05-23.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Malloy** (the open-source data language and semantic modeling tool from the Malloy Data project). Captured 2026-05-23, refreshed 2026-07-31.
 
 ---
 
@@ -88,6 +88,9 @@ OBSL takes a different route: it **detects** fanout statically (`compiler/fanout
 | Strategy | Symmetric aggregates (per-aggregate path qualification) | Static fanout detection + CFL `UNION ALL` planner + grain-dedup CTE for one-side measures |
 | Visibility | Implicit, automatic | Explicit error/plan; CFL is inspectable |
 | User experience | "It just works" | "Compiler tells you what it did" |
+| Coverage | General-purpose across the join graph | A curated envelope: a deduplicated measure composes with `total`, cumulative and window metrics, derived metrics, and `HAVING`; `filterContext`, period-over-period, `ROLLUP`/`CUBE`, and a `grain` override on a deduplicated measure are refused rather than answered wrong |
+
+The trade is worth stating plainly: Malloy answers a strictly wider set of fanout-sensitive queries without the modeler thinking about it. OBSL answers a curated set and names the reason when it won't — which is a worse experience than an answer, and a better one than a silently inflated number.
 
 ### 3.2 Nested queries (`nest:`)
 
@@ -133,7 +136,7 @@ OBSL has no named-view-with-refinements concept. Queries are constructed fresh e
 
 | OBSL | Malloy | Notes |
 |---|---|---|
-| `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) | Composed by referencing other measures inside aggregate expressions | Both first-class |
+| `Metric` `type: derived` (`{[Measure A]}/{[Measure B]}`) — nests other derived metrics at any depth | Composed by referencing other measures inside aggregate expressions | Both first-class and both composable |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | Express via **calculations** (window functions) inside queries | OBSL is declarative; Malloy is per-query |
 | `Metric` `type: period_over_period` with 4 comparison modes | Pattern via `prior_period` style queries; renderer's <pre><code>big_value {<br> comparison_field = ...<br>}</code></pre> for visual deltas | OBSL has a dedicated metric type; Malloy treats it as "just write the query" |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Calculations (`rank()`, `lag()`, `first_value()`) inside queries | OBSL exposes these as declarative reusable metric types; Malloy keeps them per-query (matches the "expressive queries" philosophy) |

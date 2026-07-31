@@ -1,13 +1,13 @@
 # OBSL vs LookML / Looker
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**, the modeling language behind Google Cloud's **Looker** BI platform. Captured 2026-05-23.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**, the modeling language behind Google Cloud's **Looker** BI platform. Captured 2026-05-23, refreshed 2026-07-31.
 
 ---
 
 ## TL;DR
 
 - **LookML wins on**: deep BI integration (drill fields, parameters, Liquid templating, PDTs, access filters/grants), `dimension_group` auto-timeframe expansion, symmetric aggregates (Looker invented the term), the broadest warehouse connector portfolio, and a polished proprietary IDE/UI.
-- **OBSL wins on**: being **open-source and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where LookML expresses these via table calculations or filtered measures — not declarative metric types, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, an explicit **CFL multi-fact planner**, and an MCP server for LLM/agent integration.
+- **OBSL wins on**: being **open-source and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where LookML expresses these via table calculations or filtered measures — not declarative metric types, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, and an explicit **CFL multi-fact planner**. (An MCP server is no longer an OBSL differentiator here: Looker shipped a managed MCP server in 2026, alongside the LookML Agent for AI-assisted modeling and a GA Conversational Analytics API.)
 - **Different niches**: LookML is "the modeling language for Looker, your BI platform." OBSL is "an embeddable semantic compiler that exposes metrics over a stable API to apps, agents, and BI tools you didn't have to buy."
 
 LookML and Looker are inseparable in practice — you cannot run LookML without Looker. So this is also a comparison of build-vs-buy on the runtime.
@@ -55,6 +55,7 @@ Looker pioneered symmetric aggregates as a productionized concept. The `relation
 | Strategy | Symmetric aggregates driven by `relationship:` | Static fanout detection + CFL `UNION ALL` planner + grain-dedup CTE for one-side measures |
 | User experience | Implicit, "it just works" if you set `relationship` correctly | Explicit error/plan; CFL output is inspectable |
 | Failure mode | Wrong `relationship` → silently wrong numbers | Wrong join model → `FanoutError` raised at compile |
+| Coverage | General-purpose across the explore's join graph | A curated envelope: a deduplicated measure composes with `total`, cumulative and window metrics, derived metrics, and `HAVING`; `filterContext`, period-over-period, `ROLLUP`/`CUBE`, and a `grain` override on a deduplicated measure are refused rather than answered wrong |
 
 ### 3.2 `dimension_group` (time auto-expansion)
 
@@ -204,7 +205,7 @@ Looker is broader on enterprise legacy databases; OBSL is competitive on modern 
 | Arrow Flight SQL | Yes — gRPC server on port 8815 for BI tool connectivity (DBeaver, Tableau, Power BI via Arrow Flight SQL JDBC/ODBC). Multi-model addressing via the `database` gRPC header. | No (Looker is the BI front-end itself) |
 | JDBC | Yes — via Arrow Flight SQL JDBC driver | n/a (Looker is the BI tool) |
 | DB-API 2.0 drivers | Yes — 8 drivers shipped | No |
-| MCP | Yes — first-party server | Not native; community efforts exist |
+| MCP | Yes — first-party server | Yes — managed Looker MCP server, plus the open-source MCP Toolbox (2026) |
 | GraphQL | No | No |
 | Native SDK | Python (FastAPI client) | Python, Ruby, TypeScript, Java, etc. (`looker-sdk`) |
 | UI / Playground | Interactive Gradio playground: SQL Compiler, Query Results table, auto-generated Mermaid ER diagrams, interactive RDF/OBSL ontology graph (vis-network), OSI import/export, settings panel | Looker IDE (very polished) + Looker Explore + dashboards |
@@ -252,7 +253,10 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Named secondary join paths | ✅ | ❌ |
 | Explicit CFL multi-fact planner | ✅ | n/a |
-| MCP server (LLM/agent) | ✅ | ❌ (not native) |
+| MCP server (LLM/agent) | ✅ | ✅ — managed Looker MCP server, plus open-source MCP Toolbox (2026) |
+| AI-assisted model authoring | ❌ | ✅ LookML Agent in the Looker VS Code extension (natural language → LookML, model generation from BigQuery/AlloyDB datasets) |
+| Conversational analytics | ❌ | ✅ Conversational Analytics API (GA) with SDK and iframe embedding |
+| Reads other vendors' semantic models | OSI ↔ OBML conversion | ✅ reads BigQuery graph definitions and Snowflake semantic views natively |
 | OSS / self-hostable | ✅ | ❌ |
 | Built-in BI front-end | ❌ | ✅ |
 
@@ -303,7 +307,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 2. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently table calculations.
 3. **Named secondary join paths** with per-query selection.
 4. **RDF/SPARQL graph surface** for governance/lineage.
-5. **Native MCP server** for LLM/agent consumers.
+5. ~~Native MCP server~~ — **closed**: Looker ships a managed MCP server alongside the open-source MCP Toolbox.
 6. **OSI ↔ model round-trip** for portability.
 
 ---
