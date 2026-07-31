@@ -200,21 +200,30 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     conflict depends on which measure carries the feature, not on whether the
     query contains one anywhere.
 
-    ``totals`` composes: it wraps the dedup output in a ``base`` CTE and adds
-    ``AGG(x) OVER ()``, so a total on a base-grain measure never touches the
-    deduplicated one. Only a total on a measure that is *itself* deduplicated
-    conflicts — its value lives in a dedup CTE that the totals wrapper does not
-    reach into.
+    ``totals`` composes, because it selects the base measure *by alias* from the
+    CTE beneath it: it wraps the dedup output in a ``base`` CTE and adds
+    ``AGG(x) OVER ()`` around a column the dedup CTEs already finished. So a
+    total on a base-grain measure never touches the deduplicated one. Only a
+    total on a measure that is *itself* deduplicated conflicts — that value
+    lives in a dedup CTE the totals wrapper does not reach into.
 
-    The rest stay blocked whenever they apply at all:
+    The rest stay blocked whenever they apply at all. Each was checked by
+    letting it through and executing the result:
 
+    * ``cumulative`` and ``window`` re-project the measure's *raw aggregate*
+      rather than selecting it by alias, emitting ``SUM("Sales"."quantity")``
+      into a CTE whose FROM is only ``main``/``dedup_0`` —
+      ``Referenced table "Sales" not found``. This is the dividing line against
+      ``totals``: alias reference composes, expression re-projection does not.
     * ``filter_context`` emits its own CTE named ``main``, colliding with the
-      one dedup emits.
-    * ``period_over_period`` rebuilds the FROM clause from a date spine rather
-      than wrapping the incoming AST, so the dedup CTEs are simply dropped.
-    * ``cumulative`` and ``window`` wrap the AST much as ``totals`` does and may
-      well compose too, but that is unverified — they stay blocked rather than
-      assumed safe.
+      one dedup emits — ``Duplicate CTE name "main"``.
+    * ``period_over_period`` rebuilds the FROM from a date spine and re-joins
+      the tables the dedup CTEs already joined —
+      ``Ambiguous reference to table ... duplicate alias``.
+
+    Cumulative and window could be made to compose by selecting from the dedup
+    output by alias, the same repointing ``grain_dedup`` already does for
+    ORDER BY. That is a change inside those wrappers, not a predicate here.
     """
     if pass_name != PASS_TOTALS:
         return True
