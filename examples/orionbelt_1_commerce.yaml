@@ -776,12 +776,39 @@ measures:
       - dataObject: Account Balances
         column: Balance Amount
   Total Units In Stock:
+    # Sourced from Products, the *one* side of Sales -> Products. Grouped by a
+    # Sales dimension the join repeats each product once per sale, so this is
+    # aggregated over rows deduplicated on the product key rather than over the
+    # flattened join. Per-group values are correct, but a product sold through
+    # two channels is counted in both, so the columns does not add up to the
+    # catalogue total -- see "Catalogue Units In Stock" for that.
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0"
     columns:
       - dataObject: Products
         column: Units In Stock
+  Catalogue Units In Stock:
+    # The same column at no grain: every product counted once across the whole
+    # query, so it can sit beside the per-group figure above and legitimately
+    # differ from the sum of it.
+    aggregation: sum
+    total: true
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
+    columns:
+      - dataObject: Products
+        column: Units In Stock
+  Avg Unit Price:
+    # AVG over the one side is the quiet case: without deduplication a product
+    # sold a hundred times would drag the average towards its own price, which
+    # answers "average price per sale" rather than "average price per product".
+    aggregation: avg
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    columns:
+      - dataObject: Products
+        column: Unit Price
 
 metrics:
   # ── Derived metrics — algebra over base measures ──
