@@ -78,6 +78,10 @@ metrics:
     expression: '{[Revenue Rank]} * 2'
   Doubled Rank Plus One:
     expression: '{[Doubled Rank]} + 1'
+  Row Num:
+    type: window
+    windowFunction: row_number
+    timeDimension: Sale Month
   Running Revenue:
     type: cumulative
     measure: Revenue
@@ -287,6 +291,11 @@ metrics:
   Net: {expression: '{[Sales Amount]} - {[Refund Amount]}'}
   Net Doubled: {expression: '{[Net]} * 2'}
   Net Value: {expression: '{[Sales Value]} - {[Refund Amount]}'}
+  Sales Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Sales Amount
+  Doubled Sales Rank: {expression: '{[Sales Rank]} * 2'}
 """
 
 
@@ -396,3 +405,54 @@ def test_a_derived_metric_over_a_window_metric_refuses_an_earlier_wrapper(siblin
     """
     with pytest.raises(ResolutionError, match="Doubled Rank"):
         _compile({"select": {"dimensions": ["Sale Month"], "measures": ["Doubled Rank", sibling]}})
+
+
+@pytest.mark.parametrize("sibling", ["Running Revenue", "Grand Total Revenue", "Revenue MoM"])
+def test_a_measureless_window_metric_under_another_wrapper(sibling: str) -> None:
+    """``row_number`` has no base measure to stand in for in the projection.
+
+    Naming the metric itself made the planner emit ``"Row Num" AS "Row Num"``, a
+    self-reference that only survived because the window pass dropped the column
+    before anything read it - any wrapper running in between materialized it
+    into its own CTE, where it bound to nothing. The planner projects NULL now,
+    which every wrapper carries harmlessly.
+    """
+    result = _compile({"select": {"dimensions": ["Sale Month"], "measures": ["Row Num", sibling]}})
+    assert 'NULL AS "Row Num"' in result.sql
+    assert "ROW_NUMBER()" in result.sql.upper()
+
+    rows = sorted((r[0].month, int(r[1])) for r in _db().execute(result.sql).fetchall())
+    # Ordered by the time dimension descending: February first.
+    assert rows == [(1, 2), (2, 1)]
+
+
+def test_a_measureless_window_metric_on_its_own() -> None:
+    result = _compile({"select": {"dimensions": ["Sale Month"], "measures": ["Row Num"]}})
+    rows = sorted((r[0].month, int(r[1])) for r in _db().execute(result.sql).fetchall())
+    assert rows == [(1, 2), (2, 1)]
+
+
+# --- window metrics over a multi-fact plan ------------------------------
+
+
+def test_window_metric_over_a_cfl_plan() -> None:
+    """CFL is chosen by the planner, before any pass runs, so the window pass
+    lands on ``composite_01`` the same way it lands on a wrapper's CTE."""
+    result = _compile(
+        {"select": {"dimensions": [], "measures": ["Sales Rank", "Refund Amount"]}},
+        CFL_YAML,
+    )
+    assert 'SUM("Sales"."amount")' not in result.sql.split("window_base")[-1]
+
+    rows = _cfl_db().execute(result.sql).fetchall()
+    assert (int(rows[0][0]), float(rows[0][1])) == (1, 30.0)
+
+
+def test_a_derived_metric_over_a_window_metric_refuses_a_cfl_plan() -> None:
+    """Same placeholder problem as with an earlier wrapper: the composite CTE
+    would have to carry the derived expression before its window call exists."""
+    with pytest.raises(ResolutionError, match="Doubled Sales Rank"):
+        _compile(
+            {"select": {"dimensions": [], "measures": ["Doubled Sales Rank", "Refund Amount"]}},
+            CFL_YAML,
+        )

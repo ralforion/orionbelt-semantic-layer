@@ -368,6 +368,10 @@ def evaluate_compatibility(
             and (p := by_name.get(name)) is not None
             and p.applies(resolved)
         )
+        # CFL is not a pass — the planner picks it before any of these run — but
+        # it lands the window pass on a ``composite_01`` CTE just the same.
+        if resolved.requires_cfl or resolved.dimensions_exclude:
+            blocking.append("a multi-fact (CFL) plan")
         if blocking:
             listed = ", ".join(f"'{m}'" for m in ddm_metrics)
             raise ResolutionError(
