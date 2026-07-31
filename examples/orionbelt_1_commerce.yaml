@@ -776,12 +776,46 @@ measures:
       - dataObject: Account Balances
         column: Balance Amount
   Total Units In Stock:
+    # Sourced from Products, the *one* side of Sales -> Products. Grouped by a
+    # Sales dimension the join repeats each product once per sale, so this is
+    # aggregated over rows deduplicated on the product key rather than over the
+    # flattened join. Per-group values are correct, but a product sold through
+    # two channels is counted in both, so the columns does not add up to the
+    # catalogue total -- see "Catalogue Units In Stock" for that.
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0"
     columns:
       - dataObject: Products
         column: Units In Stock
+  Grand Total Units In Stock:
+    # The same column with the grouping collapsed: each product counted once
+    # across the query, so it sits beside the per-group figure above and
+    # legitimately differs from the sum of it.
+    #
+    # Scoped to the query, NOT to the whole Products table. `total: true`
+    # removes the grouping, not the joins -- so asked alongside a Sales measure
+    # this is the stock of products that were *sold*, and alongside a Purchases
+    # measure the stock of products that were *purchased*. Those differ whenever
+    # a product appears on one path and not the other. Do not read it as a
+    # catalogue-wide figure; for that, query the measure on its own.
+    aggregation: sum
+    total: true
+    dataType: "decimal(18, 2)"
+    format: "#,##0"
+    columns:
+      - dataObject: Products
+        column: Units In Stock
+  Avg Unit Price:
+    # AVG over the one side is the quiet case: without deduplication a product
+    # sold a hundred times would drag the average towards its own price, which
+    # answers "average price per sale" rather than "average price per product".
+    aggregation: avg
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    columns:
+      - dataObject: Products
+        column: Unit Price
 
 metrics:
   # ── Derived metrics — algebra over base measures ──
