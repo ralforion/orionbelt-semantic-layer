@@ -41,7 +41,11 @@ from orionbelt.compiler.grain_dedup import (
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import ResolvedQuery
 from orionbelt.compiler.total_wrap import wrap_with_totals
-from orionbelt.compiler.window_wrap import window_pass_applies, wrap_with_window
+from orionbelt.compiler.window_wrap import (
+    _ddm_window_components,
+    window_pass_applies,
+    wrap_with_window,
+)
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import DataObject, SemanticModel
@@ -225,6 +229,12 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     output by alias, the same repointing ``grain_dedup`` already does for
     ORDER BY. That is a change inside those wrappers, not a predicate here.
     """
+    if pass_name == PASS_CUMULATIVE:
+        return False
+    if pass_name == PASS_WINDOW:
+        # A derived metric over window metrics needs several base measures
+        # out of one column, which re-aliasing cannot supply.
+        return any(_ddm_window_components(m, resolved.metric_components) for m in resolved.measures)
     if pass_name != PASS_TOTALS:
         return True
     # ``total`` on a deduplicated measure is handled by the dedup pass itself,
