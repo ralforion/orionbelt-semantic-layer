@@ -13,6 +13,7 @@ from orionbelt.ast.nodes import (
     Expr,
     FunctionCall,
     Literal,
+    OrderByItem,
     Select,
     UnionAll,
 )
@@ -36,20 +37,19 @@ from orionbelt.models.semantic import (
 
 
 class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
-    """Raised when an ordered aggregate cannot keep its ordering under CFL.
+    """Raised when an ordered aggregate's sort key is out of its leg's reach.
 
-    A ``withinGroup`` clause is the aggregate's ``ORDER BY``. The CFL outer
-    query re-aggregates over ``composite_01``, where the ordering column does
-    not exist: the legs project measure values and conformed dimensions, not an
-    arbitrary sort key. The rebuilt aggregate therefore came out unordered and
-    the result was silently in the wrong order - values right, sequence wrong,
-    which is worse than a failure for a measure whose whole point is its
-    sequence.
+    A ``withinGroup`` clause is the aggregate's ``ORDER BY``, and the CFL outer
+    query re-aggregates over ``composite_01``. The ordering survives because the
+    leg owning the measure projects the sort column as a column of its own
+    (:func:`cfl_projection.within_group_cte_alias`), sibling legs NULL-pad it,
+    and the rebuilt aggregate orders by that alias.
 
-    Ordering it properly means projecting the sort column into the leg that
-    owns the measure, NULL-padding it across the others, and pointing the outer
-    ``ORDER BY`` at that alias. Until that exists this refuses rather than
-    reorders. The single-fact star path is unaffected and keeps the ordering.
+    That only works where the sort column's object is reachable from the leg's
+    own fact. Where it is not - typically a sort key sitting on a *different*
+    fact - the leg has nothing to project, and the aggregate would come back in
+    an arbitrary order: values right, sequence wrong, which is worse than a
+    failure for a measure whose whole point is its sequence. Those refuse.
     """
 
     def __init__(self, measure_name: str, object_name: str) -> None:
@@ -60,10 +60,11 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
             self,
             f"Measure '{measure_name}' is ordered by a column on '{object_name}' "
             f"(withinGroup), but this query combines measures from more than one "
-            f"fact table. The multi-fact plan re-aggregates over a UNION ALL where "
-            f"that ordering column is not carried, so the result would come back in "
-            f"an arbitrary order. Query '{measure_name}' on its own, or only "
-            f"alongside measures from its own fact table.",
+            f"fact table and '{object_name}' is not reachable from the fact that "
+            f"owns '{measure_name}', so the multi-fact plan cannot carry the "
+            f"ordering column. The result would come back in an arbitrary order. "
+            f"Order '{measure_name}' by a column its own fact can reach, or query "
+            f"it on its own.",
         )
 
 
@@ -167,18 +168,16 @@ class CFLPlanner:
             if agg in TWO_COLUMN_AGGREGATIONS:
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
 
-        # Ordered aggregates, including any reached through a metric. Checking
-        # only the selected names let a metric wrapping an ordered measure
-        # through, and CFL then expanded the component and rebuilt it unordered.
-        # ``metric_components`` is already the transitive closure, so a metric
-        # wrapping a metric is covered without walking the model again.
-        for name in [m.name for m in resolved.measures] + list(resolved.metric_components):
-            model_measure = model.effective_measures.get(name)
-            within_group = model_measure.within_group if model_measure else None
-            if within_group is not None:
-                raise WithinGroupNotSupportedInCFLError(
-                    name, within_group.column.view or "another data object"
-                )
+        # Ordered aggregates now carry their sort key through the union as a
+        # column of its own, so the outer re-aggregation can order by it. That
+        # only works where the leg owning the measure can actually reach the
+        # sort column's object — otherwise the leg has nothing to project, and
+        # the aggregate would come back in an arbitrary order. Refuse those.
+        #
+        # A cross-fact measure has no single owning leg, so an ordering on one
+        # is refused outright. Metric components are covered because they are
+        # planned into legs like any other measure.
+        self._validate_ordered_aggregates(resolved, model, measures_by_object, cross_fact)
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(
@@ -190,6 +189,42 @@ class CFLPlanner:
             union_by_name=union_by_name,
             dialect=dialect,
         )
+
+    def _validate_ordered_aggregates(
+        self,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        measures_by_object: dict[str, list[ResolvedMeasure]],
+        cross_fact: list[ResolvedMeasure] | None,
+    ) -> None:
+        """Refuse ordered aggregates whose sort key their own leg cannot reach."""
+        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        owner: dict[str, str] = {}
+        for obj_name, measures in measures_by_object.items():
+            for measure in measures:
+                owner[measure.name] = obj_name
+
+        candidates = list(measures_by_object.values())
+        if cross_fact:
+            candidates.append(cross_fact)
+        for measures in candidates:
+            for measure in measures:
+                item = self._within_group_item(measure)
+                if item is None:
+                    continue
+                sort_objects: set[str] = set()
+                cfl_projection.collect_table_refs(item.expr, sort_objects)
+                if not sort_objects:
+                    continue
+                leg_object = owner.get(measure.name)
+                reachable: set[str] = (
+                    graph.descendants(leg_object) | {leg_object}
+                    if leg_object is not None
+                    else set()
+                )
+                unreachable = sort_objects - reachable
+                if unreachable:
+                    raise WithinGroupNotSupportedInCFLError(measure.name, sorted(unreachable)[0])
 
     def _validate_fanout(self, resolved: ResolvedQuery, model: SemanticModel) -> None:
         """Validate that grain is compatible and no fanout will occur."""
@@ -262,6 +297,18 @@ class CFLPlanner:
     def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
         """Recursively collect table names from ColumnRef nodes."""
         cfl_projection.collect_table_refs(expr, tables)
+
+    @staticmethod
+    def _within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
+        """The ordered aggregate's sort key, or ``None`` if it has no ordering.
+
+        Read off the resolved expression rather than the model, so the sort
+        column arrives already resolved to a column expression.
+        """
+        expr = measure.expression
+        if isinstance(expr, FunctionCall) and expr.order_by:
+            return expr.order_by[0]
+        return None
 
     @staticmethod
     def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
@@ -395,6 +442,16 @@ class CFLPlanner:
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
                     leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))
+                    # An ordered aggregate's sort key rides along as its own
+                    # column so the outer re-aggregation can order by it.
+                    wg_item = self._within_group_item(m)
+                    if wg_item is not None:
+                        leg_builder.select(
+                            AliasedExpr(
+                                expr=wg_item.expr,
+                                alias=cfl_projection.within_group_cte_alias(m.name),
+                            )
+                        )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
                     null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
@@ -406,6 +463,15 @@ class CFLPlanner:
                         else Literal.null()
                     )
                     leg_builder.select(AliasedExpr(expr=null_expr, alias=m.name))
+                    # Pad the sort-key column too, so every leg agrees on the
+                    # union's column list.
+                    if self._within_group_item(m) is not None:
+                        leg_builder.select(
+                            AliasedExpr(
+                                expr=Literal.null(),
+                                alias=cfl_projection.within_group_cte_alias(m.name),
+                            )
+                        )
 
             # Determine the common root for this leg:
             # the deepest directed ancestor that can reach all dimension
@@ -564,11 +630,10 @@ class CFLPlanner:
                     m.name, n_fields, agg, distinct, cte_name
                 )
             else:
-                agg_expr = FunctionCall(
-                    name=agg,
-                    args=[ColumnRef(name=m.name, table=cte_name)],
-                    distinct=distinct,
-                )
+                # Shared with the metric projection so the two cannot drift:
+                # this reapplies DISTINCT, the LISTAGG separator, and any
+                # withinGroup ordering over the sort key the legs carried.
+                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name)
             # Apply CAST for resolved data_type (effective_measures so
             # multi-fact synthesized counts get the same integer CAST as
             # declared count measures).

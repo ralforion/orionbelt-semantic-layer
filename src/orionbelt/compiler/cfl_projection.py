@@ -20,6 +20,7 @@ from orionbelt.ast.nodes import (
     InList,
     IsNull,
     Literal,
+    OrderByItem,
     RelativeDateRange,
     UnaryOp,
 )
@@ -130,14 +131,21 @@ def resolve_null_type_for_field(
       declared OBML ``abstractType: float`` mismatches storage as
       ``Decimal`` and produces ``ILLEGAL_TYPE_OF_ARGUMENT``).
 
-    * **Count-style aggregates** (COUNT / COUNT_DISTINCT) — the inner
-      column projection is the *raw column itself* (e.g. ``complid``,
+    * **Passthrough aggregates** (COUNT / COUNT_DISTINCT / LISTAGG) — the
+      inner column projection is the *raw column itself* (e.g. ``complid``,
       a text ID). The outer ``COUNT(DISTINCT ...)`` happily counts any
       type, but each CFL leg's column must agree on a type for
       ``UNION ALL``. Padding with the declared aggregate output type
       (BIGINT) trips strict-typed engines (Postgres / MySQL / strict
       ClickHouse) when the source column is text. Pad with the
       source column's abstract type instead.
+
+      LISTAGG belongs here for a sharper reason than type-strictness: its
+      declared result type resolves to the numeric default, so treating it
+      as a numeric aggregate cast the *source* column to it and emitted
+      ``CAST("Sales"."product" AS FLOAT)`` over a text column — SQL that
+      every engine rejects at execution ("Could not convert string 'widget'
+      to FLOAT"). Any LISTAGG in a multi-fact query was broken this way.
 
     For multi-field measures (e.g. ``COUNT(a, b)``), per-column
     abstract types are used regardless of aggregation kind.
@@ -146,7 +154,7 @@ def resolve_null_type_for_field(
     if not model_measure:
         return None
     agg = (model_measure.aggregation or "").lower()
-    is_count_style = agg in ("count", "count_distinct")
+    is_passthrough_style = agg in ("count", "count_distinct", "listagg")
     # Multi-field measures: per-column abstract_type for each slot.
     if len(model_measure.columns) > 1:
         if field_idx < len(model_measure.columns):
@@ -155,9 +163,9 @@ def resolve_null_type_for_field(
             if obj and ref.column in obj.columns:
                 return obj.columns[ref.column].abstract_type.value
         return model_measure.result_type.value
-    # Single-/zero-column COUNT-style: pad with the source column's
+    # Single-/zero-column passthrough: pad with the source column's
     # native type so UNION ALL legs agree (raw column, not aggregate).
-    if is_count_style and len(model_measure.columns) == 1:
+    if is_passthrough_style and len(model_measure.columns) == 1:
         ref = model_measure.columns[0]
         obj = model.data_objects.get(ref.view) if ref.view else None
         if obj and ref.column in obj.columns:
@@ -174,6 +182,56 @@ def resolve_null_type_for_field(
 def multi_field_cte_alias(measure_name: str, idx: int) -> str:
     """CTE column name for the *idx*-th field of a multi-field measure."""
     return f"{measure_name}__f{idx}"
+
+
+def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCall:
+    """Rebuild a measure's aggregate over the composite CTE.
+
+    The legs project the aggregate's *input*, so the outer query re-applies the
+    aggregation. Everything the aggregate carries besides its argument has to be
+    reapplied here too, or it is silently lost: ``DISTINCT``, the LISTAGG
+    ``separator`` (which otherwise falls back to ``","``, dropping a declared
+    ``delimiter``), and a ``withinGroup`` ordering, which reads the sort key the
+    legs carried through the union under :func:`within_group_cte_alias`.
+
+    Shared by the measure and metric projections. They each rebuilt this
+    independently before, and the metric copy silently lacked the ordering and
+    separator handling.
+    """
+    agg = measure.aggregation.upper()
+    distinct = False
+    if agg == "COUNT_DISTINCT":
+        agg = "COUNT"
+        distinct = True
+    source = measure.expression if isinstance(measure.expression, FunctionCall) else None
+    if source is not None and source.distinct:
+        distinct = True
+    order_by: list[OrderByItem] = []
+    if source is not None and source.order_by:
+        order_by = [
+            OrderByItem(
+                expr=ColumnRef(name=within_group_cte_alias(measure.name), table=cte_name),
+                desc=source.order_by[0].desc,
+            )
+        ]
+    return FunctionCall(
+        name=agg,
+        args=[ColumnRef(name=measure.name, table=cte_name)],
+        distinct=distinct,
+        order_by=order_by,
+        separator=source.separator if source is not None else None,
+    )
+
+
+def within_group_cte_alias(measure_name: str) -> str:
+    """CTE column name carrying an ordered aggregate's sort key.
+
+    The CFL outer query re-aggregates over ``composite_01``, so a
+    ``withinGroup`` clause can only survive if its sort column is carried
+    through the union as a column of its own. The leg that owns the measure
+    projects it under this alias; sibling legs NULL-pad it.
+    """
+    return f"{measure_name}__wg"
 
 
 def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
@@ -220,18 +278,7 @@ def substitute_outer_refs(
     """
 
     def value_of(comp: ResolvedMeasure) -> Expr:
-        agg = comp.aggregation.upper()
-        distinct = False
-        if agg == "COUNT_DISTINCT":
-            agg = "COUNT"
-            distinct = True
-        if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
-            distinct = True
-        return FunctionCall(
-            name=agg,
-            args=[ColumnRef(name=comp.name, table=cte_name)],
-            distinct=distinct,
-        )
+        return build_outer_aggregate(comp, cte_name)
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 
@@ -252,6 +299,11 @@ def collect_table_refs(expr: Expr, tables: set[str]) -> None:
     elif isinstance(expr, FunctionCall):
         for arg in expr.args:
             collect_table_refs(arg, tables)
+        # An ordered aggregate's sort key is not an argument but still has to
+        # be in scope wherever the aggregate is rendered: a LISTAGG ordered by
+        # ``Sales.qty`` needs ``Sales`` joined into the leg that projects it.
+        for item in expr.order_by:
+            collect_table_refs(item.expr, tables)
 
 
 def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:

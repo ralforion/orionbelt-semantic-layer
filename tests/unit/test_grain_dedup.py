@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -1763,46 +1764,157 @@ metrics:
 )
 
 
-@pytest.mark.parametrize("measure", ["Wrapped Return List", "Wrapped Rank"])
-def test_cfl_refusal_is_not_bypassed_by_wrapping_the_measure_in_a_metric(
-    measure: str,
-) -> None:
-    """Checking only the selected names let a metric through.
+# Same shape, but the LISTAGG declares a non-default delimiter.
+CFL_DELIMITER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Return List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """  Piped Returns:
+    resultType: string
+    aggregation: listagg
+    delimiter: " | "
+    columns: [{dataObject: Returns, column: Return ID}]
+""",
+)
 
-    CFL then expanded the component and rebuilt it unordered, so the wrapper
-    returned the reversed sequence while the measure itself was refused.
-    ``metric_components`` is the transitive closure, so the second level - a
-    derived metric over a window metric, the one nesting OBML allows - is
-    covered by the same check.
+
+# The sort column sits on Sales, which is not reachable from Returns: both are
+# facts hanging off Calendar, so the leg owning the measure cannot project it.
+CFL_UNREACHABLE_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """    withinGroup:
+      column: {dataObject: Sales, column: Amount}
+      order: ASC
+""",
+).replace("  Return List:", "  Cross Ordered:")
+
+
+def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
+    """A derived metric over an ordered measure is planned like the measure.
+
+    The component is projected into the leg that owns it, sort key included, so
+    the wrapper reads an ordered value rather than a rebuilt-unordered one.
     """
-    from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Return List"]}},
+        CFL_WRAPPED_YAML,
+    )
+    assert '"Return List__wg"' in result.sql
+    assert "ORDER BY" in result.sql
 
-    with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
+
+def test_a_derived_metric_over_a_window_metric_is_still_refused_under_cfl() -> None:
+    """Unrelated to ordering: that combination has its own guard.
+
+    Kept here because this shape used to be caught by the withinGroup refusal;
+    it must keep failing now that the ordering itself is supported.
+    """
+    with pytest.raises(ResolutionError, match="window metric"):
         _compile(
-            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Rank"]}},
             CFL_WRAPPED_YAML,
         )
 
 
-def test_cfl_refuses_an_ordered_aggregate_rather_than_reordering_it() -> None:
-    """The CFL outer query re-aggregates over a UNION ALL with no sort key.
+def test_cfl_carries_an_ordered_aggregates_sort_key_through_the_union() -> None:
+    """The leg owning the measure projects the sort key as a column of its own.
 
-    The legs project measure values and conformed dimensions, not an arbitrary
-    ordering column, so the rebuilt aggregate came out unordered - right values
-    in the wrong sequence, for a measure whose whole point is its sequence.
+    The outer re-aggregation then orders by that column, so the multi-fact plan
+    returns the same sequence as the single-fact one instead of an arbitrary
+    order (which is what it did before, and why it used to refuse).
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    # The sort key rides through the union under its own alias...
+    assert '"Calendar"."month" AS "Return List__wg"' in result.sql
+    # ...and the outer aggregate orders by it, not by the value column.
+    assert '"composite_01"."Return List__wg"' in result.sql
+
+
+def test_cfl_keeps_the_declared_listagg_delimiter() -> None:
+    """The outer rebuild dropped ``separator``, silently falling back to ",".
+
+    A measure declaring ``delimiter: " | "`` came back comma-separated as soon
+    as another fact's measure joined the query.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Piped Returns"]}},
+        CFL_DELIMITER_YAML,
+    )
+    assert "' | '" in result.sql
+
+
+def test_cfl_projects_a_listagg_source_column_with_its_own_type() -> None:
+    """LISTAGG's declared result type resolved to the numeric default.
+
+    Treating it as a numeric aggregate cast the *source* column to that type,
+    emitting ``CAST("Returns"."id" AS FLOAT)`` over a text column - SQL every
+    engine rejects at execution. Any LISTAGG in a multi-fact query was broken.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    assert "AS FLOAT" not in result.sql.upper()
+    assert 'CAST("Returns"."id" AS VARCHAR) AS "Return List"' in result.sql
+
+
+def test_cfl_refuses_an_ordering_its_own_leg_cannot_reach() -> None:
+    """The residual case: the sort column sits on an unreachable object.
+
+    The leg owning the measure has nothing to project, so the aggregate would
+    come back arbitrarily ordered. That still refuses rather than reorders.
     """
     from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
 
     with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
         _compile(
-            {
-                "select": {
-                    "dimensions": ["Year"],
-                    "measures": ["Sales Amount", "Return List"],
-                }
-            },
-            CFL_WITHIN_GROUP_YAML,
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Cross Ordered"]}},
+            CFL_UNREACHABLE_ORDER_YAML,
         )
+
+
+def test_cfl_ordered_aggregate_matches_the_single_fact_result() -> None:
+    """Execute both plans: the sequence must be identical.
+
+    This is the assertion the refusal existed to avoid getting wrong - right
+    values, wrong sequence - so it is checked against a real engine.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE calendar (datekey VARCHAR, month INTEGER, year INTEGER)")
+    con.execute("INSERT INTO calendar VALUES ('d1', 3, 2024), ('d2', 1, 2024), ('d3', 2, 2024)")
+    con.execute("CREATE TABLE sales (id VARCHAR, datekey VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO sales VALUES ('s1','d1',10.0)")
+    con.execute("CREATE TABLE returns (id VARCHAR, datekey VARCHAR)")
+    # Insertion order deliberately disagrees with month order, so an unordered
+    # rebuild returns r1,r2,r3 while the declared ASC ordering is r2,r3,r1.
+    con.execute("INSERT INTO returns VALUES ('r1','d1'), ('r2','d2'), ('r3','d3')")
+
+    star = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    cfl = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    star_rows = con.execute(star.sql).fetchall()
+    cfl_rows = con.execute(cfl.sql).fetchall()
+
+    assert star_rows == [(2024, "r2,r3,r1")]
+    # Same sequence out of the multi-fact plan, alongside the other fact's measure.
+    assert [(row[0], row[2]) for row in cfl_rows] == star_rows
 
 
 def test_the_same_measure_keeps_its_ordering_on_the_single_fact_path() -> None:
