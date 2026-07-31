@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from orionbelt.models.errors import SemanticError
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -1566,6 +1567,116 @@ metrics:
         _model, result = resolver.resolve(raw, source_map)
         malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
         assert len(malformed) == 0
+
+
+_NESTED_METRIC_MODEL = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    database: db
+    schema: public
+    columns:
+      Order Date:
+        code: order_date
+        abstractType: date
+      Amount:
+        code: amount
+        abstractType: float
+dimensions:
+  Order Month: {dataObject: Orders, column: Order Date, resultType: date, timeGrain: month}
+measures:
+  Revenue:
+    aggregation: SUM
+    resultType: float
+    columns:
+      - dataObject: Orders
+        column: Amount
+metrics:
+{metrics}"""
+
+
+class TestNestedMetricRefs:
+    """Which metric-over-metric references a metric expression may make.
+
+    A derived metric is expanded in place, so nesting one inside another is
+    valid at any depth. A cumulative or period-over-period metric is computed by
+    its own wrapper, which only runs when that metric is selected directly -
+    wrapping one in a derived metric skipped the wrapper and left the inner
+    metric's placeholders in the SQL as bare column names no engine can bind, so
+    it is refused.
+    """
+
+    @staticmethod
+    def _errors(resolver: ReferenceResolver, metrics: str) -> list[SemanticError]:
+        yaml_content = _NESTED_METRIC_MODEL.replace("{metrics}", metrics)
+        raw, source_map = TrackedLoader().load_string(yaml_content)
+        _model, result = resolver.resolve(raw, source_map)
+        return [e for e in result.errors if e.code == "UNSUPPORTED_METRIC_REF"]
+
+    def test_derived_over_derived_stays_valid(self, resolver: ReferenceResolver) -> None:
+        """Expanded in place by the planner, at any depth."""
+        assert (
+            self._errors(
+                resolver,
+                "  Doubled:\n"
+                "    expression: '{[Revenue]} * 2'\n"
+                "  Quadrupled:\n"
+                "    expression: '{[Doubled]} * 2'\n",
+            )
+            == []
+        )
+
+    def test_derived_over_cumulative_is_refused(self, resolver: ReferenceResolver) -> None:
+        errors = self._errors(
+            resolver,
+            "  Running Revenue:\n"
+            "    type: cumulative\n"
+            "    measure: Revenue\n"
+            "    timeDimension: Order Month\n"
+            "  Doubled Running:\n"
+            "    expression: '{[Running Revenue]} * 2'\n",
+        )
+        assert len(errors) == 1
+        assert "cumulative metric" in errors[0].message
+
+    def test_period_over_period_over_a_metric_is_refused(self, resolver: ReferenceResolver) -> None:
+        """PoP re-aggregates its base per period from the fact tables."""
+        errors = self._errors(
+            resolver,
+            "  Revenue Rank:\n"
+            "    type: window\n"
+            "    windowFunction: dense_rank\n"
+            "    measure: Revenue\n"
+            "  Rank YoY:\n"
+            "    type: period_over_period\n"
+            "    expression: '{[Revenue Rank]}'\n"
+            "    periodOverPeriod:\n"
+            "      timeDimension: Order Month\n"
+            "      grain: month\n"
+            "      offset: -1\n"
+            "      offsetGrain: year\n"
+            "      comparison: difference\n",
+        )
+        assert len(errors) == 1
+        assert "window metric" in errors[0].message
+
+    def test_derived_over_window_stays_valid(self, resolver: ReferenceResolver) -> None:
+        """The documented composition: a MoM delta against a lag metric."""
+        assert (
+            self._errors(
+                resolver,
+                "  Revenue Prior Month:\n"
+                "    type: window\n"
+                "    windowFunction: lag\n"
+                "    measure: Revenue\n"
+                "    offset: 1\n"
+                "    timeDimension: Order Month\n"
+                "  Revenue MoM Delta:\n"
+                "    expression: '{[Revenue]} - {[Revenue Prior Month]}'\n",
+            )
+            == []
+        )
 
 
 _MEASURE_EXPR_MODEL = """\

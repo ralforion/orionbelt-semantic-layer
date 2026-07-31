@@ -372,24 +372,58 @@ class ComposabilityResolver:
         return self._dedup_disposition(name, anchor) == "refused"
 
     def _metric_blocked(self, name: str, anchor: set[str]) -> bool:
-        """A metric is excluded as soon as any component would be deduplicated.
+        """A metric is excluded when the rewrite would refuse it.
 
-        Metrics inline their components into one expression, so the rewrite
-        cannot split a deduplicated component into its own CTE — it refuses the
-        whole metric. Unlike a measure, then, ``"dedup"`` is disqualifying here
-        and not just ``"refused"``.
+        The planner inlines a metric's components into one expression — nested
+        derived metrics included — and the rewrite splits the deduplicated ones
+        back out into their own CTE, recomputing the expression over the
+        results. So ``"dedup"`` is not disqualifying on its own, exactly as for
+        a plain measure.
 
-        Every component's sources count as drivers for every other: they all
+        A measure reached through a metric that has its *own wrapper*
+        (cumulative, window, period-over-period) still is: that wrapper rebuilds
+        the aggregate from the fact tables, which a dedup CTE cannot serve.
+
+        Every leaf measure's sources count as drivers for every other: they all
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
         """
-        components = metric_measure_names(self.model, name)
+        leaves = metric_leaf_measures(self.model, name)
+        behind_wrapper = self._wrapper_backed_measures(name)
         drivers = set(anchor)
-        for component in components:
-            drivers |= measure_source_objects(self.model, component)
-        return any(
-            self._dedup_disposition(component, drivers) is not None for component in components
-        )
+        for leaf in leaves:
+            drivers |= measure_source_objects(self.model, leaf)
+        for leaf in leaves:
+            disposition = self._dedup_disposition(leaf, drivers)
+            if disposition == "refused" or (disposition == "dedup" and leaf in behind_wrapper):
+                return True
+        return False
+
+    def _wrapper_backed_measures(self, name: str) -> set[str]:
+        """Measures *name* reaches only through a metric with its own wrapper.
+
+        Walks the same way the compiler expands: a derived reference is inlined,
+        so its leaves are reached directly; a cumulative / window /
+        period-over-period reference is not, so everything under it is served by
+        that metric's wrapper instead.
+        """
+        behind: set[str] = set()
+        seen: set[str] = set()
+        pending = [name]
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for ref in metric_measure_names(self.model, current):
+                referenced = self.model.metrics.get(ref)
+                if referenced is None:
+                    continue
+                if referenced.type == MetricType.DERIVED:
+                    pending.append(ref)
+                else:
+                    behind |= metric_leaf_measures(self.model, ref)
+        return behind
 
     def _dimension_composable(self, obj: str, spine: set[str], leg_facts: set[str]) -> bool:
         if leg_facts:

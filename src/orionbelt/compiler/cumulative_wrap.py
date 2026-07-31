@@ -156,7 +156,7 @@ def _component_base_column(
     """
     source = (
         col_node.expr
-        if resolved.dedup_measures and isinstance(col_node, AliasedExpr)
+        if resolved.dedup_targets and isinstance(col_node, AliasedExpr)
         else comp.expression
     )
     # The declared dataType cast belongs on whichever form is projected. Taking

@@ -24,6 +24,10 @@ from orionbelt.ast.nodes import (
     UnaryOp,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.metric_expansion import (
+    expand_metric_expression,
+    metric_leaf_components,
+)
 from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
@@ -206,45 +210,30 @@ def build_outer_metric_expr(
 def substitute_outer_refs(
     planner: CFLPlanner, expr: Expr, resolved: ResolvedQuery, cte_name: str
 ) -> Expr:
-    """Recursively substitute measure refs with outer aggregations.
+    """Substitute a metric's component refs with outer aggregations.
 
-    Walks ``BinaryOp`` and ``FunctionCall.args`` so a metric formula
-    with embedded SQL functions (e.g. ``... / NULLIF(other, 0)``)
-    substitutes refs inside the function call instead of leaving the
-    bare label, which would later bind against a non-existent
-    column.
+    Every reference in the formula becomes ``AGG("cte"."component")`` over the
+    UNION ALL composite, wherever it sits in the expression — inside a function
+    call (``... / NULLIF(other, 0)``), a ``CASE``, or a nested derived metric,
+    whose own formula is expanded here rather than left as a bare label that
+    would bind against a column no leg projects.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None:
-        comp = resolved.metric_components.get(expr.name)
-        if comp:
-            agg = comp.aggregation.upper()
-            distinct = False
-            if agg == "COUNT_DISTINCT":
-                agg = "COUNT"
-                distinct = True
-            if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
-                distinct = True
-            return FunctionCall(
-                name=agg,
-                args=[ColumnRef(name=comp.name, table=cte_name)],
-                distinct=distinct,
-            )
-    if isinstance(expr, BinaryOp):
-        new_left = planner._substitute_outer_refs(expr.left, resolved, cte_name)
-        new_right = planner._substitute_outer_refs(expr.right, resolved, cte_name)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    if isinstance(expr, FunctionCall):
-        new_args = [planner._substitute_outer_refs(a, resolved, cte_name) for a in expr.args]
-        if any(n is not o for n, o in zip(new_args, expr.args, strict=True)):
-            return FunctionCall(
-                name=expr.name,
-                args=new_args,
-                distinct=expr.distinct,
-                order_by=expr.order_by,
-                separator=expr.separator,
-            )
-    return expr
+
+    def value_of(comp: ResolvedMeasure) -> Expr:
+        agg = comp.aggregation.upper()
+        distinct = False
+        if agg == "COUNT_DISTINCT":
+            agg = "COUNT"
+            distinct = True
+        if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
+            distinct = True
+        return FunctionCall(
+            name=agg,
+            args=[ColumnRef(name=comp.name, table=cte_name)],
+            distinct=distinct,
+        )
+
+    return expand_metric_expression(expr, resolved.metric_components, value_of)
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
@@ -324,6 +313,29 @@ def build_outer_concat_count(
     return FunctionCall(name=agg, args=[concat], distinct=distinct)
 
 
+def _single_leg_root(
+    objects: set[str],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+) -> str | None:
+    """The object one leg can be rooted at to cover *objects*, if there is one.
+
+    A measure reading several objects is not automatically cross-fact: when the
+    objects are joined — ``{[Sales].[Qty]} * {[Products].[Price]}`` over a
+    many-to-one — one leg rooted at the common ancestor reaches them all and
+    projects the expression exactly as the star planner would. Only when no
+    single root reaches every object are they genuinely independent facts, which
+    is the case the caller hands to ``cross_fact``.
+    """
+    if len(objects) <= 1:
+        return next(iter(objects), None)
+    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    root = graph.find_common_root(objects)
+    if root and objects <= (graph.descendants(root) | {root}):
+        return root
+    return None
+
+
 def group_measures_by_object(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -345,20 +357,34 @@ def group_measures_by_object(
 
     for measure in resolved.measures:
         if measure.component_measures:
-            # Metric: add each component measure to its source object
-            for comp_name in measure.component_measures:
-                if comp_name in seen:
+            # Metric: add each component measure to its source object, following
+            # nested derived metrics — those are expanded into the same formula,
+            # so it is their leaves that need a leg.
+            for comp in metric_leaf_components(measure, resolved.metric_components):
+                if comp.name in seen:
                     continue
-                seen.add(comp_name)
-                comp = resolved.metric_components.get(comp_name)
-                if comp is None:
-                    continue
-                model_measure = model.effective_measures.get(comp_name)
+                seen.add(comp.name)
+                model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:
-                    obj_name = model_measure.columns[0].view or resolved.base_object
+                    comp_objects = {f.view for f in model_measure.columns if f.view}
                 else:
-                    obj_name = resolved.base_object
-                groups.setdefault(obj_name, []).append(comp)
+                    # Declared as an expression rather than ``columns:`` — the
+                    # source objects are in the aggregate's own table references.
+                    # Falling back to the base object put the component in the
+                    # wrong leg, which then projected a column its FROM has not
+                    # joined.
+                    comp_objects = set()
+                    planner._collect_table_refs(comp.expression, comp_objects)
+                root = _single_leg_root(comp_objects, resolved, model)
+                if root is None:
+                    # Reads facts no single leg reaches — same treatment as a
+                    # cross-fact direct measure: give every object a leg and let
+                    # ``_plan_union_all`` distribute the fields.
+                    cross_fact.append(comp)
+                    for obj in comp_objects:
+                        groups.setdefault(obj, [])
+                    continue
+                groups.setdefault(root or resolved.base_object, []).append(comp)
         else:
             if measure.name in seen:
                 continue
@@ -376,17 +402,15 @@ def group_measures_by_object(
                 # Expression-based measure: extract table refs from the AST
                 field_objects = set()
                 planner._collect_table_refs(measure.expression, field_objects)
-            if len(field_objects) > 1:
+            root = _single_leg_root(field_objects, resolved, model) if field_objects else None
+            if field_objects and root is None:
                 # Cross-fact multi-field measure: ensure each
                 # involved object has a leg, but don't assign
                 # the measure to any single group.
                 cross_fact.append(measure)
                 for obj in field_objects:
                     groups.setdefault(obj, [])
-            elif field_objects:
-                obj_name = next(iter(field_objects))
-                groups.setdefault(obj_name, []).append(measure)
             else:
-                groups.setdefault(resolved.base_object, []).append(measure)
+                groups.setdefault(root or resolved.base_object, []).append(measure)
 
     return groups, cross_fact

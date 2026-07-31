@@ -596,7 +596,7 @@ metrics:
  expression: '{[Sales Amount]} - {[Return Amount]}'
 ```
 
-All artefacts (data objects, dimensions, measures, metrics) have unique names. The `{[Name]}` placeholders in a metric expression must match existing measure names exactly.
+All artefacts (data objects, dimensions, measures, metrics) have unique names. A `{[Name]}` placeholder must match one exactly — a measure, another derived metric, or a window metric. See [Metric Expression Placeholders](#metric-expression-placeholders) for what may be referenced where.
 
 ### Cumulative Metrics
 
@@ -757,7 +757,33 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 
 | Placeholder | Resolves to |
 |-------------|-------------|
-| `{[Measure Name]}` | Named reference to any defined measure (derived metrics only) |
+| `{[Measure Name]}` | Named reference to any defined measure, or to another derived or window metric (derived metrics only) |
+
+A metric expression may reference another **derived** metric, at any depth, so a
+KPI can be named once and reused:
+
+```yaml
+metrics:
+  Margin:
+    expression: '{[Revenue]} - {[Total Cost]}'
+  Margin Pct:
+    expression: '{[Margin]} / {[Revenue]}'
+```
+
+The planner expands the inner metric in place, down to real aggregates, so
+`Margin Pct` compiles exactly as if its formula had been written out in full.
+
+!!! warning "Cumulative and period-over-period metrics do not nest"
+    Referencing a **cumulative** or **period-over-period** metric from another
+    metric is rejected at model load with `UNSUPPORTED_METRIC_REF`. Those are
+    computed by their own wrapper, which only runs when the metric carrying the
+    feature is selected directly, so wrapping one in a derived metric would
+    skip the wrapper and leave its placeholder in the SQL as a bare column name
+    no engine can bind. Reference the base measure instead.
+
+    A **window** metric is the exception (`'{[Revenue]} - {[Revenue Prior
+    Month]}'`): the window wrapper follows derived references and projects the
+    window metric's base measure as a column of its base CTE.
 
 ## Data Types & Numerical Precision
 

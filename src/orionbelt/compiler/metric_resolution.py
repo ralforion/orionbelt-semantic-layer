@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from orionbelt.ast.nodes import ColumnRef
+from orionbelt.ast.nodes import ColumnRef, Literal
 from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_metric_formula,
@@ -200,7 +200,18 @@ def resolve_window_metric(
     return ResolvedMeasure(
         name=name,
         aggregation=base_aggregation,
-        expression=ColumnRef(name=base_measure_name or name),
+        # A window metric stands in the projection for whatever its window
+        # function will be computed over: its base measure, which the planner
+        # inlines and ``window_wrap`` then lifts into ``window_base`` by alias.
+        # ``row_number`` and a bucket-only ``ntile`` have no base measure, and
+        # naming the metric itself made the planner emit ``"Row Num" AS
+        # "Row Num"`` — a self-reference that only survived because the window
+        # pass dropped the column before anything read it. Any wrapper running
+        # in between materialized it into its own CTE, where it bound to
+        # nothing. NULL carries through every wrapper harmlessly instead; the
+        # window pass drops it just the same and builds the call from the
+        # metric's own definition.
+        expression=ColumnRef(name=base_measure_name) if base_measure_name else Literal(value=None),
         is_expression=True,
         component_measures=[base_measure_name] if base_measure_name else [],
         is_window=True,

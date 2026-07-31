@@ -312,6 +312,49 @@ rows on the joined object: that group contributes no row to the dedup CTE, so
 the join back would otherwise yield `NULL`. Other aggregations keep `NULL`,
 which is what SQL returns for an empty input.
 
+### Metrics over a deduplicated component
+
+The planner inlines a metric's components into one expression, which over a
+replicating join would read the inflated value. When any component needs
+deduplication the pass splits that expression back apart: each component is
+computed on its own — the deduplicated ones in a dedup CTE, the rest in
+`__ob_main` — and the metric's formula is rebuilt over those columns in the
+outer projection, with its declared `dataType` cast reapplied.
+
+```sql
+SELECT __ob_main."Region",
+       CAST(__ob_dedup_0."Total Stock On Hand"
+            / __ob_main."Sold Quantity" AS DECIMAL(18, 6)) AS "Price per Unit"
+FROM __ob_main LEFT JOIN __ob_dedup_0 ON ...
+```
+
+A component that is also selected in its own right is computed once and read
+twice. A cumulative or window metric works the same way: its base measure is
+split out, and the wrapper windows over that column by alias.
+
+### `HAVING` on a deduplicated measure
+
+`HAVING` is applied inside `__ob_main`, where a deduplicated measure does not
+exist yet. Predicates that reference one move to the outer query's `WHERE`
+instead — that query is already one row per query grain, so the filter means
+the same thing. Predicates on base-grain measures stay where the planner put
+them, so a query can mix the two:
+
+```sql
+WITH __ob_main AS (
+  ... GROUP BY region HAVING SUM(s.quantity) > 5
+), __ob_dedup_0 AS ( ... )
+SELECT ...
+FROM __ob_main LEFT JOIN __ob_dedup_0 ON ...
+WHERE __ob_dedup_0."Total Stock On Hand" > 250
+```
+
+A predicate that constrains a deduplicated measure *and* a dimension in one
+group is refused: only the measures survive as columns out there, so the
+dimension's physical column reference would have nothing to bind to.
+
+### Refused combinations
+
 Set `allowFanOut: true` on a measure to opt out and aggregate the duplicated
 rows as-is. Combinations the rewrite cannot express raise a fanout error rather
 than return an inflated number:
@@ -319,12 +362,12 @@ than return an inflated number:
 | Combination | Why |
 |---|---|
 | `grain` override on a deduplicated measure | Its target grain would need its own dedup CTE, which is not built yet |
-| A derived metric over **window** metrics | Needs one base measure per component out of a single column, which re-aliasing cannot supply |
+| A derived metric over a **window** metric | Its column is the whole derived expression, with the window metric's base measure inlined — a placeholder only the window pass can resolve, so there is no base value for an earlier wrapper's CTE to carry |
 | `filterContext` | It re-queries the fact tables under a *different* `WHERE`. The dedup output has already applied the query filters and aggregated, so there is no column to take by alias |
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
-| A metric whose component needs deduplication | Metrics inline their components into one expression |
-| `HAVING` on a deduplicated measure | HAVING is applied inside `main`, where the measure does not exist yet |
+| A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
+| `total: true` or a `grain` override on *any* component of a split metric | The totals wrapper decomposes the metric again and re-projects every component's raw aggregate into a CTE whose FROM is the dedup output, so a total on a non-deduplicated sibling breaks it just as badly |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected

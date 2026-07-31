@@ -863,7 +863,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "Template string with {[Measure Name]} placeholders (required for derived and period_over_period metrics)"
+          "description": "Template string with {[Measure Name]} placeholders (required for derived and period_over_period metrics). A placeholder names a measure, another derived metric (expanded in place, at any depth), or a window metric. Referencing a cumulative or period-over-period metric is rejected with UNSUPPORTED_METRIC_REF: those are computed by their own wrapper and cannot be nested."
         },
         "measure": {
           "type": "string",

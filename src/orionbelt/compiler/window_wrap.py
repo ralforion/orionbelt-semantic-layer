@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
-    BinaryOp,
     ColumnRef,
     Expr,
     From,
@@ -25,6 +24,10 @@ from orionbelt.ast.nodes import (
     OrderByItem,
     Select,
     WindowFunction,
+)
+from orionbelt.compiler.metric_expansion import (
+    expand_metric_expression,
+    metric_leaf_components,
 )
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
@@ -166,53 +169,66 @@ def _get_alias(expr: Expr) -> str | None:
     return None
 
 
+def wraps_a_cte(ast: Select) -> bool:
+    """Whether *ast* selects from a CTE the pipeline itself built.
+
+    True once any earlier pass — grain dedup, cumulative, totals, PoP — has
+    replaced the planner's FROM with its own output. Everything downstream then
+    has to reference columns by alias, because the fact tables are no longer in
+    scope. The planner's own output never matches: it declares no CTEs, so its
+    qualified table name cannot collide with one.
+    """
+    source = ast.from_.source if ast.from_ is not None else None
+    return isinstance(source, str) and any(cte.name == source for cte in ast.ctes)
+
+
 def _ddm_window_components(
     measure: ResolvedMeasure,
     metric_components: dict[str, ResolvedMeasure],
 ) -> list[ResolvedMeasure]:
     """Return the window-metric components this derived measure references.
 
-    A "deferred derived metric" (DDM) is a non-window measure whose
-    ``component_measures`` include at least one window metric — the
-    derived expression cannot be computed inside the CTE because the
-    window function lives in the outer SELECT.
+    A "deferred derived metric" (DDM) is a non-window measure whose components
+    include at least one window metric — the derived expression cannot be
+    computed inside the CTE because the window function lives in the outer
+    SELECT.
+
+    Components are followed through nested derived metrics, since those are
+    expanded in place: a derived metric over a derived metric over a window
+    metric ends up carrying the window call just the same, and missing it left
+    the base measure unbound in the projection.
     """
     if measure.is_window or not measure.component_measures:
         return []
-    out: list[ResolvedMeasure] = []
-    for comp_name in measure.component_measures:
-        comp = metric_components.get(comp_name)
-        if comp is not None and comp.is_window:
-            out.append(comp)
-    return out
+    return [comp for comp in metric_leaf_components(measure, metric_components) if comp.is_window]
 
 
 def _base_measure_column(
     col_node: Expr,
     comp: ResolvedMeasure,
-    resolved: ResolvedQuery,
+    over_cte: bool,
     model: SemanticModel | None,
     dialect: Dialect | None,
 ) -> AliasedExpr:
     """Project a window metric's base measure into ``window_base``.
 
-    Normally the component's aggregate is re-derived from the fact tables.
-    That does not survive ``compiler.grain_dedup``, which rewrites the query
-    into CTEs — this wrapper's FROM becomes the dedup output, where
-    ``SUM("Sales"."quantity")`` has nothing to bind to. The metric's own column
-    already carries that aggregate, computed at the query grain before the
-    rewrite, so it is re-aliased rather than rebuilt.
+    Normally the component's aggregate is re-derived from the fact tables. That
+    only works while this wrapper still sits directly on the planner's output.
+    Any pass that ran first — grain dedup, cumulative, totals, PoP — replaced
+    the FROM with its own CTE, where ``SUM("Sales"."amount")`` has nothing to
+    bind to (``Referenced table "Sales" not found``).
+
+    The window metric's own column carries that aggregate: the planner projects
+    a window metric as its *base measure's* expression, computed at the query
+    grain, and each wrapper passes it through by alias. So when the input is a
+    CTE the column is re-aliased to the base measure's name rather than rebuilt.
 
     Only the direct window-metric column can be re-aliased this way. A derived
-    metric over several window metrics needs one base measure per component
-    from a single column, which no aliasing can supply; ``evaluate_compatibility``
-    keeps that combination blocked.
+    metric over a window metric carries the whole derived expression instead, so
+    there is no base value to lift out; ``evaluate_compatibility`` keeps that
+    combination blocked.
     """
-    source = (
-        col_node.expr
-        if resolved.dedup_measures and isinstance(col_node, AliasedExpr)
-        else comp.expression
-    )
+    source = col_node.expr if over_cte and isinstance(col_node, AliasedExpr) else comp.expression
     # The declared dataType cast belongs on whichever form is projected. Taking
     # the column by alias without it silently widened the result — a measure
     # declared decimal(18, 2) came back HUGEINT once a deduplicated measure
@@ -252,23 +268,17 @@ def _substitute_for_outer(
       computed against the base measure projected by the CTE.
     * Non-window refs → a bare ``ColumnRef`` to the measure's alias,
       which the CTE projects (the outer SELECT picks it up by name).
+
+    A nested derived metric is expanded in place first, so a window call it
+    wraps still reaches the outer SELECT.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None and expr.name in metric_components:
-        comp = metric_components[expr.name]
+
+    def value_of(comp: ResolvedMeasure) -> Expr:
         if comp.is_window:
-            win_expr = _build_window_call(comp)
-            return _apply_metric_cast(win_expr, comp.name, model, dialect)
-        return ColumnRef(name=expr.name)
-    if isinstance(expr, BinaryOp):
-        new_left = _substitute_for_outer(
-            expr.left, metric_components, direct_measure_names, model, dialect
-        )
-        new_right = _substitute_for_outer(
-            expr.right, metric_components, direct_measure_names, model, dialect
-        )
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    return expr
+            return _apply_metric_cast(_build_window_call(comp), comp.name, model, dialect)
+        return ColumnRef(name=comp.name)
+
+    return expand_metric_expression(expr, metric_components, value_of)
 
 
 def wrap_with_window(
@@ -312,6 +322,9 @@ def wrap_with_window(
     direct_measure_names = {m.name for m in resolved.measures if not m.component_measures}
     window_names = set(effective_window)
     ddm_names = set(ddm_window_refs)
+    # Whether an earlier pass already replaced the FROM with its own CTE, which
+    # decides how a window metric's base measure can be projected below.
+    over_cte = wraps_a_cte(ast)
 
     # --- Build base CTE columns ---
     base_columns: list[Expr] = []
@@ -328,7 +341,7 @@ def wrap_with_window(
                     already_in_base = any(_get_alias(c) == base_name for c in base_columns)
                     if not already_in_base:
                         base_columns.append(
-                            _base_measure_column(col_node, comp, resolved, model, dialect)
+                            _base_measure_column(col_node, comp, over_cte, model, dialect)
                         )
         elif alias and alias in ddm_names:
             # DDM: drop the (incorrectly-pre-substituted) column; compute

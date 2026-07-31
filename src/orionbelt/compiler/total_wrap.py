@@ -38,6 +38,7 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
+from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 
 _UNSUPPORTED_TOTAL_AGGS = frozenset({"MEDIAN", "MODE", "LISTAGG", "ANY_VALUE"})
@@ -139,9 +140,8 @@ def _collect_total_names(resolved: ResolvedQuery) -> set[str]:
     for m in resolved.measures:
         if _needs_window_wrap(m, dedup):
             names.add(m.name)
-        for comp_name in m.component_measures:
-            comp = resolved.metric_components.get(comp_name)
-            if comp and _needs_window_wrap(comp, dedup):
+        for comp in metric_leaf_components(m, resolved.metric_components):
+            if _needs_window_wrap(comp, dedup):
                 names.add(comp.name)
     return names
 
@@ -152,9 +152,8 @@ def _metrics_with_total_components(resolved: ResolvedQuery) -> set[str]:
     for m in resolved.measures:
         if not m.component_measures:
             continue
-        for comp_name in m.component_measures:
-            comp = resolved.metric_components.get(comp_name)
-            if comp and _needs_window_wrap(comp, resolved.dedup_measures):
+        for comp in metric_leaf_components(m, resolved.metric_components):
+            if _needs_window_wrap(comp, resolved.dedup_measures):
                 names.add(m.name)
                 break
     return names
@@ -169,19 +168,17 @@ def _substitute_metric_refs(
 
     Non-total components → ColumnRef (pass-through from base CTE).
     Total components → WindowFunction (re-aggregation).
+
+    A nested derived metric is expanded in place, so a ``total: true`` component
+    it wraps is still re-aggregated rather than read as a per-group value.
     """
-    if isinstance(expr, ColumnRef) and expr.table is None:
-        comp = resolved.metric_components.get(expr.name)
-        if comp:
-            if _needs_window_wrap(comp, resolved.dedup_measures):
-                return _build_total_window(comp, resolved.dedup_measures)
-            return ColumnRef(name=comp.name)
-    if isinstance(expr, BinaryOp):
-        new_left = _substitute_metric_refs(expr.left, resolved, total_names)
-        new_right = _substitute_metric_refs(expr.right, resolved, total_names)
-        if new_left is not expr.left or new_right is not expr.right:
-            return BinaryOp(left=new_left, op=expr.op, right=new_right)
-    return expr
+
+    def value_of(comp: ResolvedMeasure) -> Expr:
+        if _needs_window_wrap(comp, resolved.dedup_measures):
+            return _build_total_window(comp, resolved.dedup_measures)
+        return ColumnRef(name=comp.name)
+
+    return expand_metric_expression(expr, resolved.metric_components, value_of)
 
 
 def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
@@ -208,17 +205,15 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
         if alias and alias in decompose_metrics:
             # Replace metric column with its individual component columns
             metric = next(m for m in resolved.measures if m.name == alias)
-            for comp_name in metric.component_measures:
-                if comp_name in direct_measure_names:
+            for comp in metric_leaf_components(metric, resolved.metric_components):
+                if comp.name in direct_measure_names:
                     continue  # Already present as a direct measure
-                comp = resolved.metric_components.get(comp_name)
-                if comp:
-                    if _is_avg_total(comp, resolved.dedup_measures):
-                        # AVG total needs sum + count helper columns
-                        base_columns.append(_build_avg_helpers_base_col(comp, "sum"))
-                        base_columns.append(_build_avg_helpers_base_col(comp, "count"))
-                    else:
-                        base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
+                if _is_avg_total(comp, resolved.dedup_measures):
+                    # AVG total needs sum + count helper columns
+                    base_columns.append(_build_avg_helpers_base_col(comp, "sum"))
+                    base_columns.append(_build_avg_helpers_base_col(comp, "count"))
+                else:
+                    base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)

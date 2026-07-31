@@ -180,6 +180,21 @@ class ResolvedMeasure:
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
 
+    @property
+    def is_derived_metric(self) -> bool:
+        """A metric that is only an expression over other measures.
+
+        The boundary
+        :func:`~orionbelt.compiler.metric_expansion.expand_metric_expression`
+        recurses through: a derived metric has no wrapper of its own, so its
+        placeholders have to be expanded in place. Cumulative, window, and
+        period-over-period metrics are computed by their wrapper and referenced
+        by name instead.
+        """
+        return bool(self.component_measures) and not (
+            self.is_cumulative or self.is_pop or self.is_window
+        )
+
 
 @dataclass
 class ResolvedFilter:
@@ -225,6 +240,15 @@ class ResolvedQuery:
     the ``grain_dedup`` compiler pass. Empty for every query whose measures all
     sit at (or below) the base object's grain."""
 
+    dedup_components: dict[str, str] = field(default_factory=dict)
+    """Metric *component* measures that must aggregate over deduplicated rows.
+
+    Same mapping as :attr:`dedup_measures`, but for measures the query reaches
+    only through a metric's expression. The planner inlines a component's
+    aggregate into the metric column; the ``grain_dedup`` pass splits those back
+    out so the deduplicated ones can be computed in their own CTE and the metric
+    recomputed from the results."""
+
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
 
@@ -234,10 +258,25 @@ class ResolvedQuery:
     that the HAVING filter referenced an additional measure."""
 
     @property
+    def dedup_targets(self) -> dict[str, str]:
+        """Every measure the ``grain_dedup`` pass rewrites, component or not."""
+        return {**self.dedup_measures, **self.dedup_components}
+
+    @property
     def fact_tables(self) -> list[str]:
         if self.measure_source_objects:
             return sorted(self.measure_source_objects)
         return [self.base_object] if self.base_object else []
+
+    def _components_of(self, measure: ResolvedMeasure) -> list[ResolvedMeasure]:
+        """Components a measure reads, following nested derived metrics.
+
+        Imported lazily: ``metric_expansion`` needs ``ResolvedMeasure`` for its
+        annotations, so importing it at module scope here would be a cycle.
+        """
+        from orionbelt.compiler.metric_expansion import metric_leaf_components
+
+        return metric_leaf_components(measure, self.metric_components)
 
     @property
     def has_totals(self) -> bool:
@@ -245,9 +284,8 @@ class ResolvedQuery:
         for m in self.measures:
             if m.total or m.grain_override is not None:
                 return True
-            for comp_name in m.component_measures:
-                comp = self.metric_components.get(comp_name)
-                if comp and (comp.total or comp.grain_override is not None):
+            for comp in self._components_of(m):
+                if comp.total or comp.grain_override is not None:
                     return True
         return False
 
@@ -257,9 +295,8 @@ class ResolvedQuery:
         for m in self.measures:
             if m.grain_override is not None:
                 return True
-            for comp_name in m.component_measures:
-                comp = self.metric_components.get(comp_name)
-                if comp and comp.grain_override is not None:
+            for comp in self._components_of(m):
+                if comp.grain_override is not None:
                     return True
         return False
 

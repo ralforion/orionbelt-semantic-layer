@@ -38,8 +38,9 @@ from orionbelt.compiler.grain_dedup import (
     dedup_warning,
     wrap_with_grain_dedup,
 )
+from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
-from orionbelt.compiler.resolution import ResolvedQuery
+from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
 from orionbelt.compiler.total_wrap import wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
@@ -134,7 +135,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     return (
         CompilerPass(
             name=PASS_GRAIN_DEDUP,
-            applies=lambda r: bool(r.dedup_measures),
+            applies=lambda r: bool(r.dedup_targets),
             run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
             # Runs first: it rewrites the base projection into CTEs that every
             # later wrapper then wraps. The wrappers below restructure that same
@@ -241,11 +242,25 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     # which computes it in a CTE deduplicated at no grain. A ``grain`` override
     # is not: its target grain would need its own dedup CTE, which is not built
     # yet, so it still conflicts.
-    return any(
+    if any(
         measure.grain_override is not None
         for measure in resolved.measures
         if measure.name in resolved.dedup_measures
-    )
+    ):
+        return True
+    # Once a metric is split across dedup CTEs, a ``total`` or ``grain`` on *any*
+    # of its components conflicts — not just on the deduplicated ones. The totals
+    # wrapper decomposes such a metric back into its components and re-projects
+    # each one's raw aggregate into a base CTE whose FROM is the dedup output,
+    # where the fact tables are gone: ``SUM("Products"."stock_on_hand")`` over
+    # ``__ob_main`` binds to nothing.
+    for metric in resolved.measures:
+        components = metric_leaf_components(metric, resolved.metric_components)
+        if not any(comp.name in resolved.dedup_components for comp in components):
+            continue
+        if any(comp.total or comp.grain_override is not None for comp in components):
+            return True
+    return False
 
 
 def evaluate_compatibility(
@@ -328,6 +343,58 @@ def evaluate_compatibility(
                 )
             )
 
+    # Rule 2b (raising): a derived metric over a window metric is a placeholder
+    # until the window pass resolves it. The planner projects it with the window
+    # metric's *base measure* inlined — an expression that only becomes valid
+    # once the window pass drops that column, projects the base measure into
+    # ``window_base``, and rebuilds the derived expression around an inline
+    # window call in the outer SELECT.
+    #
+    # Any wrapper running before it materializes that placeholder into a CTE of
+    # its own, where the reference resolves to nothing (or, on engines with
+    # lateral column aliases, to a sibling alias, which is how the combination
+    # appeared to work on DuckDB while failing everywhere else). A direct window
+    # metric survives this because its column *is* the base measure's value, so
+    # the window pass can take it by alias; a derived one carries the whole
+    # expression instead, with no base value to lift out.
+    ddm_metrics = sorted(
+        m.name for m in resolved.measures if _ddm_window_components(m, resolved.metric_components)
+    )
+    if ddm_metrics:
+        blocking = sorted(
+            name
+            for name in (PASS_FILTER_CONTEXT, PASS_PERIOD_OVER_PERIOD, PASS_TOTALS, PASS_CUMULATIVE)
+            if name not in suppressed
+            and (p := by_name.get(name)) is not None
+            and p.applies(resolved)
+        )
+        # CFL is not a pass — the planner picks it before any of these run — but
+        # it lands the window pass on a ``composite_01`` CTE just the same.
+        if resolved.requires_cfl or resolved.dimensions_exclude:
+            blocking.append("a multi-fact (CFL) plan")
+        if blocking:
+            listed = ", ".join(f"'{m}'" for m in ddm_metrics)
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Metric(s) {listed} combine a window metric into a derived "
+                            f"expression, which is computed in the final projection. That "
+                            f"cannot be combined with {', '.join(blocking)}, whose own CTE "
+                            f"would have to materialize the expression before the window "
+                            f"function it contains exists."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the derived metric on its own, or drop the "
+                            "total / period-over-period / cumulative measure from this query."
+                        ),
+                        context={"metrics": ddm_metrics, "conflictsWith": blocking},
+                    )
+                ]
+            )
+
     # Rule 3 (raising): grain dedup splits the projection across CTEs keyed on
     # the query grain. Every wrapper in ``incompatible_with`` restructures that
     # same projection, and ROLLUP/CUBE changes the grain itself, so the join
@@ -345,8 +412,8 @@ def evaluate_compatibility(
         )
         if resolved.grouping is not None:
             blocking.append(f"grouping: {resolved.grouping.value}")
-        listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_measures))
         if blocking:
+            listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_targets))
             msg = (
                 f"Measure(s) {listed} are sourced from an object whose rows this "
                 f"query's joins replicate, so they must be aggregated over "
@@ -356,20 +423,7 @@ def evaluate_compatibility(
             )
             raise GrainDedupUnsupportedError(msg)
 
-        # HAVING is evaluated inside the main CTE, where a deduplicated measure
-        # does not exist yet.
-        referenced = {f for hf in resolved.having_filters for f in hf.referenced_fields}
-        clashing = sorted(referenced & set(resolved.dedup_measures))
-        if clashing:
-            msg = (
-                f"HAVING filters on {', '.join(repr(c) for c in clashing)}, which "
-                f"must be aggregated over deduplicated rows and so is not available "
-                f"at the point HAVING is applied. Filter it in the caller, or set "
-                f"allowFanOut: true to aggregate the duplicated rows as-is."
-            )
-            raise GrainDedupUnsupportedError(msg)
-
-        warnings.append(dedup_warning(resolved.dedup_measures))
+        warnings.append(dedup_warning(resolved.dedup_targets))
 
     return CompatibilityResult(warnings=warnings, suppressed=frozenset(suppressed))
 

@@ -176,7 +176,9 @@ class CompilationPipeline:
             # replicated object so the `grain_dedup` pass aggregates it over
             # deduplicated rows instead of the flattened join.
             if not resolved.is_raw:
-                resolved.dedup_measures = detect_dedup_measures(resolved, model)
+                dedup_plan = detect_dedup_measures(resolved, model)
+                resolved.dedup_measures = dedup_plan.measures
+                resolved.dedup_components = dedup_plan.components
 
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude

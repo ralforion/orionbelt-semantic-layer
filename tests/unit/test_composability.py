@@ -299,7 +299,8 @@ def test_acr_follows_join_requirements_through_nested_metrics() -> None:
     """A metric wrapping a metric must inherit its components' requirements.
 
     ``metric_measure_names`` returns whatever the expression references, which
-    may itself be a metric. Resolving one level only made a wrapper look like it
+    may itself be a metric - a derived metric over a window metric, the one
+    nesting OBML allows. Resolving one level only made the wrapper look like it
     had no sources and no join requirements at all, so it was advertised while
     compiling raised ``UNREACHABLE_REQUIRED_OBJECT``.
     """
@@ -307,9 +308,8 @@ def test_acr_follows_join_requirements_through_nested_metrics() -> None:
         DISCONNECTED_WITHIN_GROUP_YAML
         + """
 metrics:
-  Wrapped: {expression: "{[Sale List]}"}
-  Double Wrapped: {expression: "{[Wrapped]}"}
-  Triple Wrapped: {expression: "{[Double Wrapped]}"}
+  Ranked: {type: window, windowFunction: dense_rank, measure: Sale List}
+  Wrapped: {expression: "{[Ranked]}"}
 """
     )
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -323,8 +323,8 @@ metrics:
         else:
             composables = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
         advertised = set(composables.metrics) | set(composables.cfl_metrics)
-        # Every level, not just the one directly over the measure.
-        assert not advertised & {"Wrapped", "Double Wrapped", "Triple Wrapped"}
+        # Both levels, not just the one directly over the measure.
+        assert not advertised & {"Ranked", "Wrapped"}
 
 
 # --- ACR must not advertise what the grain-dedup pass would refuse ----------
@@ -472,13 +472,12 @@ def test_guard_holds_for_anchors_that_do_not_reach_the_measure() -> None:
         assert "Stock Filtered In Grain" in composable
 
 
-def test_acr_excludes_a_metric_over_a_deduplicated_component() -> None:
-    """Metrics inline their components, so one needing dedup refuses the whole metric.
+def test_acr_advertises_a_metric_over_a_deduplicated_component() -> None:
+    """A deduplicated component is rewritten, not refused - so is its metric.
 
-    A measure is only excluded when the rewrite *refuses* it; a metric is
-    excluded as soon as a component would merely be deduplicated. The component
-    here carries no filters at all - it is disqualifying just by sitting on the
-    replicated side.
+    The rewrite computes each component separately and rebuilds the metric over
+    the results, so a metric is excluded on the same terms as a measure: only
+    when the rewrite refuses it outright.
     """
     model = _dedup_guard_model()
     resolver = ComposabilityResolver(model)
@@ -488,6 +487,31 @@ def test_acr_excludes_a_metric_over_a_deduplicated_component() -> None:
             result = resolver.resolve(set(), set())
         else:
             result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
-        assert "Stock per Sale" not in set(result.metrics) | set(result.cfl_metrics)
-        # The plain component itself stays composable - it is rewritten, not refused.
+        assert "Stock per Sale" in set(result.metrics) | set(result.cfl_metrics)
         assert "Total Stock On Hand" in set(result.measures) | set(result.cfl_measures)
+
+
+def test_acr_excludes_a_metric_whose_deduplicated_component_is_nested() -> None:
+    """A deduplicated measure two metrics away cannot be split out.
+
+    The window wrapper rebuilds its base measure from the fact tables, which a
+    dedup CTE cannot serve, so the compiler refuses - and ACR must not
+    advertise what it refuses.
+    """
+    yaml_text = (
+        DEDUP_GUARD_YAML
+        + """  Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Total Stock On Hand
+  Doubled Stock Rank:
+    expression: '{[Stock Rank]} * 2'
+"""
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+
+    composables = ComposabilityResolver(model).resolve({"Sales"}, set())
+    assert "Stock per Sale" in composables.metrics
+    assert "Doubled Stock Rank" not in composables.metrics
