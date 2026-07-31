@@ -247,7 +247,7 @@ def _dedup_target(
     # columns are functionally determined by the key being deduplicated on)
     # while a reference to any other object splits one source row into one row
     # per distinct value of it.
-    for clause, referenced in _auxiliary_references(measure).items():
+    for clause, referenced in auxiliary_references(measure).items():
         outside = referenced - {target}
         if not outside:
             continue
@@ -266,11 +266,14 @@ def _dedup_target(
     return target
 
 
-def _auxiliary_references(measure: Measure) -> dict[str, set[str]]:
+def auxiliary_references(measure: Measure) -> dict[str, set[str]]:
     """Objects a measure reads outside its own value columns, keyed by clause.
 
     These are the references that get projected into the deduplicating inner
     SELECT alongside the value columns, and so end up inside its DISTINCT.
+
+    Public because ``compiler.composability`` needs the same answer: ACR must
+    not advertise a measure this pass would refuse.
     """
     references: dict[str, set[str]] = {}
 

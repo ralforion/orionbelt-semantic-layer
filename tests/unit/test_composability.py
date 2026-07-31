@@ -325,3 +325,169 @@ metrics:
         advertised = set(composables.metrics) | set(composables.cfl_metrics)
         # Every level, not just the one directly over the measure.
         assert not advertised & {"Wrapped", "Double Wrapped", "Triple Wrapped"}
+
+
+# --- ACR must not advertise what the grain-dedup pass would refuse ----------
+
+DEDUP_GUARD_YAML = """\
+version: 1.0
+
+dataObjects:
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Stock On Hand: {code: stock_on_hand, abstractType: int}
+      Category: {code: category, abstractType: string}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Product ID: {code: product_id, abstractType: string}
+      Region: {code: region, abstractType: string}
+      Quantity: {code: quantity, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+
+dimensions:
+  Region: {dataObject: Sales, column: Region, resultType: string}
+  Category: {dataObject: Products, column: Category, resultType: string}
+
+measures:
+  Sold Quantity:
+    resultType: int
+    aggregation: sum
+    expression: '{[Sales].[Quantity]}'
+  Total Stock On Hand:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+  Stock Filtered Off Grain:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    filters:
+      - column: {dataObject: Sales, column: Quantity}
+        operator: gt
+        values: [{dataType: int, valueInt: 1}]
+  Stock Filtered In Grain:
+    resultType: int
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+    filters:
+      - column: {dataObject: Products, column: Category}
+        operator: equals
+        values: [{dataType: string, valueString: tools}]
+
+metrics:
+  Stock per Sale:
+    expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
+"""
+
+
+def _dedup_guard_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(DEDUP_GUARD_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return model
+
+
+def test_acr_excludes_measures_the_dedup_pass_would_refuse() -> None:
+    """ACR promises that whatever it lists compiles.
+
+    A measure sourced from a replicated object whose ``filters:`` reach outside
+    that object is refused by ``compiler.grain_dedup`` - its predicate columns
+    would land in the rewrite's DISTINCT and split one source row per predicate
+    value. ACR classified purely on join reachability and so advertised it.
+    """
+    result = ComposabilityResolver(_dedup_guard_model()).resolve({"Sales"}, set())
+    composable = set(result.measures) | set(result.cfl_measures)
+
+    assert "Stock Filtered Off Grain" not in composable
+    # A predicate on the deduplicated object itself is fine - its columns are
+    # fixed by the key being deduplicated on.
+    assert "Stock Filtered In Grain" in composable
+    assert "Total Stock On Hand" in composable
+    assert "Sold Quantity" in composable
+
+
+def test_everything_acr_lists_actually_compiles() -> None:
+    """The contract itself, across every anchor rather than one.
+
+    Only the forward direction is asserted - everything ACR lists must compile.
+    The converse does not hold today for an unrelated reason: a ``withinGroup``
+    naming an object the query never joins compiles to SQL that fails at
+    execution (``Referenced table ... not found``), so "did not raise" is not a
+    sound oracle for the other direction.
+    """
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+
+    anchors: list[tuple[list[str], set[str], set[str]]] = [([], set(), set())]
+    for dim in model.dimensions:
+        dim_objects, measure_objects = resolver.objects_from_anchor_name(dim)
+        anchors.append(([dim], dim_objects, measure_objects))
+
+    for dims, dim_objects, measure_objects in anchors:
+        result = resolver.resolve(dim_objects, measure_objects)
+        # Metrics too: checking only measures is how a metric over a
+        # deduplicated component slipped through this test once already.
+        advertised = (
+            set(result.measures)
+            | set(result.cfl_measures)
+            | set(result.metrics)
+            | set(result.cfl_metrics)
+        )
+        for name in advertised:
+            query = QueryObject(**{"select": {"dimensions": dims, "measures": [name]}})
+            CompilationPipeline().compile(query, model, "duckdb")
+
+
+def test_guard_holds_for_anchors_that_do_not_reach_the_measure() -> None:
+    """Replication is forced by the measure's own clauses, not just the anchor.
+
+    Anchored on ``Category`` - a dimension on the deduplicated object itself -
+    nothing in the anchor reaches ``Sales``. The compiler still joins it, to
+    evaluate the measure's filter, which replicates ``Products``. Judging
+    replication from the anchor alone missed this, and missed the empty anchor
+    entirely.
+    """
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+
+    for anchor in ("Category", None):
+        if anchor is None:
+            result = resolver.resolve(set(), set())
+        else:
+            result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        composable = set(result.measures) | set(result.cfl_measures)
+        assert "Stock Filtered Off Grain" not in composable
+        assert "Stock Filtered In Grain" in composable
+
+
+def test_acr_excludes_a_metric_over_a_deduplicated_component() -> None:
+    """Metrics inline their components, so one needing dedup refuses the whole metric.
+
+    A measure is only excluded when the rewrite *refuses* it; a metric is
+    excluded as soon as a component would merely be deduplicated. The component
+    here carries no filters at all - it is disqualifying just by sitting on the
+    replicated side.
+    """
+    model = _dedup_guard_model()
+    resolver = ComposabilityResolver(model)
+
+    for anchor in (None, "Region", "Category"):
+        if anchor is None:
+            result = resolver.resolve(set(), set())
+        else:
+            result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
+        assert "Stock per Sale" not in set(result.metrics) | set(result.cfl_metrics)
+        # The plain component itself stays composable - it is rewritten, not refused.
+        assert "Total Stock On Hand" in set(result.measures) | set(result.cfl_measures)
