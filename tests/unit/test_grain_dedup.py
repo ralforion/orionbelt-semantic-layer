@@ -164,10 +164,15 @@ metrics:
     expression: '{[Sold Quantity]} / {[Product Count]}'
   Stock per List Price:
     expression: '{[Total Stock On Hand]} / {[Total List Price]}'
-  Doubled Price per Unit:
-    expression: '{[Price per Unit]} * 2'
   Stock Share:
     expression: '{[Total Stock On Hand]} / {[Grand Total Stock]}'
+  Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Total Stock On Hand
+    orderDirection: desc
+  Doubled Stock Rank:
+    expression: '{[Stock Rank]} * 2'
 """
 
 
@@ -559,14 +564,16 @@ def test_order_by_a_metric_over_a_deduplicated_component() -> None:
     assert rows == ["south", "north"]
 
 
-def test_metric_over_a_component_nested_in_another_metric_is_refused() -> None:
-    """The planner never expands a metric-inside-a-metric reference.
+def test_metric_reaching_a_deduplicated_measure_through_a_metric_is_refused() -> None:
+    """A derived metric over a window metric over a deduplicated measure.
 
-    There is no inlined aggregate for the rewrite to split back out, so it
-    refuses rather than build on SQL that already does not resolve.
+    The one metric-over-metric composition OBML allows. The window wrapper
+    projects the window metric's base measure as a column of its base CTE,
+    which the split cannot supply from a dedup CTE, so the query is refused
+    rather than answered from the inflated value.
     """
-    with pytest.raises(GrainDedupUnsupportedError, match="nested inside another metric"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Price per Unit"]}})
+    with pytest.raises(GrainDedupUnsupportedError, match="Stock Rank"):
+        _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Stock Rank"]}})
 
 
 def test_total_on_a_deduplicated_metric_component_is_refused() -> None:
@@ -1712,12 +1719,16 @@ CFL_WRAPPED_YAML = (
     + """
 metrics:
   Wrapped Return List: {dataType: string, expression: '{[Return List]}'}
-  Double Wrapped: {dataType: string, expression: '{[Wrapped Return List]}'}
+  Return List Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Return List
+  Wrapped Rank: {dataType: string, expression: '{[Return List Rank]}'}
 """
 )
 
 
-@pytest.mark.parametrize("measure", ["Wrapped Return List", "Double Wrapped"])
+@pytest.mark.parametrize("measure", ["Wrapped Return List", "Wrapped Rank"])
 def test_cfl_refusal_is_not_bypassed_by_wrapping_the_measure_in_a_metric(
     measure: str,
 ) -> None:
@@ -1725,7 +1736,8 @@ def test_cfl_refusal_is_not_bypassed_by_wrapping_the_measure_in_a_metric(
 
     CFL then expanded the component and rebuilt it unordered, so the wrapper
     returned the reversed sequence while the measure itself was refused.
-    ``metric_components`` is the transitive closure, so the second level is
+    ``metric_components`` is the transitive closure, so the second level - a
+    derived metric over a window metric, the one nesting OBML allows - is
     covered by the same check.
     """
     from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError

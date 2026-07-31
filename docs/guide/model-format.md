@@ -759,6 +759,19 @@ Window metrics compose freely with derived metrics — `expression: '{[Revenue]}
 |-------------|-------------|
 | `{[Measure Name]}` | Named reference to any defined measure (derived metrics only) |
 
+!!! warning "Metrics do not nest"
+    A metric expression references **measures**. Referencing another derived,
+    cumulative, or period-over-period metric is rejected at model load with
+    `UNSUPPORTED_METRIC_REF`: the planner substitutes a metric's components one
+    level only, so the inner metric's own placeholders would survive into the
+    generated SQL as bare column names no engine can bind. Reference the
+    measures the inner metric is built from, or inline its expression.
+
+    The one exception is the composition documented above: a **derived metric
+    over a window metric** (`'{[Revenue]} - {[Revenue Prior Month]}'`), which
+    the window wrapper expands by projecting the window metric's base measure
+    as a column of its base CTE.
+
 ## Data Types & Numerical Precision
 
 OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consistent numerical precision across dialects. Each measure and metric resolves to an **OBML data type** that maps to the appropriate SQL type per dialect.

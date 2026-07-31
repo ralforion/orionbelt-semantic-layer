@@ -872,7 +872,9 @@ class ReferenceResolver:
                         custom_extensions=_parse_extensions(raw_metric),
                     )
                 elif metric_type == MetricType.PERIOD_OVER_PERIOD:
-                    # Period-over-period metric: validate expression + PoP config
+                    # Period-over-period metric: validate expression + PoP config.
+                    # Its base has to be re-aggregated per period from the fact
+                    # tables, so the reference must be a measure.
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
                         name,
@@ -999,7 +1001,10 @@ class ReferenceResolver:
                         custom_extensions=_parse_extensions(raw_metric),
                     )
                 else:
-                    # Derived metric (default)
+                    # Derived metric (default). A window metric is the one
+                    # metric a derived expression may reference: the window
+                    # wrapper projects it as a column of its base CTE, which is
+                    # what makes ``{[Revenue]} - {[Revenue Prior Month]}`` work.
                     expression = raw_metric.get("expression", "")
                     self._validate_metric_expression_refs(
                         name,
@@ -1009,6 +1014,7 @@ class ReferenceResolver:
                         source_map,
                         metrics,
                         synthesized_measure_names,
+                        composable_metric_types=(MetricType.WINDOW,),
                     )
 
                     metrics[name] = Metric(
@@ -1340,16 +1346,26 @@ class ReferenceResolver:
         source_map: SourceMap | None,
         metrics: dict[str, Metric] | None = None,
         synthesized_measures: set[str] | None = None,
+        composable_metric_types: tuple[MetricType, ...] = (),
     ) -> None:
         """Validate {[Measure Name]} references in a metric expression.
 
-        References can resolve to either measures or already-defined metrics
-        (typically cumulative or window metrics that have been parsed earlier
-        in the same model). ``metrics`` defaults to ``None`` so existing
-        callers continue to work; the caller passes the in-progress metrics
-        dict to enable cross-metric composition. ``synthesized_measures`` names
-        the auto-generated ``<object>.count`` measures, which are valid
-        references even though they are not in ``measures``.
+        References resolve to measures. ``synthesized_measures`` names the
+        auto-generated ``<object> Count`` measures, which are valid references
+        even though they are not in ``measures``.
+
+        A reference to another *metric* is only valid for the compositions the
+        compiler actually expands, named by *composable_metric_types*: a derived
+        metric over a **window** metric, which the window wrapper substitutes as
+        a column of its base CTE. Every other metric-over-metric reference is
+        refused here rather than compiled: the planner substitutes a metric's
+        components one level only, so the inner metric's own placeholders
+        survive into the SQL as bare column names that no engine can bind
+        (``Referenced column "Revenue" not found in FROM clause``).
+
+        ``metrics`` defaults to ``None`` so existing callers continue to work;
+        the caller passes the in-progress metrics dict so a reference can be
+        classified.
         """
         span = source_map.get(f"metrics.{metric_name}.expression") if source_map else None
 
@@ -1431,11 +1447,11 @@ class ReferenceResolver:
         known_metrics = metrics or {}
         known_counts = synthesized_measures or set()
         for ref_name in valid_refs:
-            if (
-                ref_name not in measures
-                and ref_name not in known_metrics
-                and ref_name not in known_counts
-            ):
+            if ref_name in measures or ref_name in known_counts:
+                continue
+
+            referenced = known_metrics.get(ref_name)
+            if referenced is None:
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_MEASURE_REF",
@@ -1448,6 +1464,30 @@ class ReferenceResolver:
                             + list(known_metrics.keys())
                             + sorted(known_counts),
                         ),
+                    )
+                )
+                continue
+
+            if referenced.type not in composable_metric_types:
+                allowed = ", ".join(sorted(t.value for t in composable_metric_types))
+                permitted = f" or a {allowed} metric" if allowed else ""
+                errors.append(
+                    SemanticError(
+                        code="UNSUPPORTED_METRIC_REF",
+                        message=(
+                            f"Metric '{metric_name}' references metric '{ref_name}', which is a "
+                            f"{referenced.type.value} metric. A metric expression can reference "
+                            f"measures{permitted} — nesting one metric inside another is not "
+                            f"supported, and the query would compile to a column reference no "
+                            f"engine can resolve."
+                        ),
+                        path=f"metrics.{metric_name}.expression",
+                        span=span,
+                        hint=(
+                            f"Reference the measures '{ref_name}' is built from, or inline its "
+                            f"expression into '{metric_name}'."
+                        ),
+                        context={"metric": metric_name, "references": ref_name},
                     )
                 )
 

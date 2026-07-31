@@ -231,9 +231,11 @@ def _metric_component_targets(
     separately and rebuilds the metric expression over the results, so the
     inlined aggregate never reaches the replicated join.
 
-    A component that is *itself* a metric is refused: the planner does not
-    expand a nested metric reference either (it emits the inner metric's name as
-    a bare column), so splitting one would build on broken SQL.
+    A component that is *itself* a metric is refused. OBML allows exactly one
+    such nesting — a derived metric over a window metric — and the window
+    wrapper serves it by projecting the window metric's base measure as a column
+    of its own base CTE, rebuilt from the fact tables. A deduplicated base lives
+    in a dedup CTE instead, which that projection cannot reach.
     """
     targets: dict[str, str] = {}
     for component in metric.component_measures:
@@ -244,13 +246,12 @@ def _metric_component_targets(
                 continue
             inner, inner_target = found
             msg = (
-                f"Metric '{metric.name}' references metric '{component}', which in turn "
-                f"references measure '{inner}' — sourced from '{inner_target}', an object "
-                f"whose rows this query's joins replicate. Deduplicating a measure "
-                f"nested inside another metric is not supported, and the result would "
-                f"otherwise be overcounted. Reference '{inner}' from '{metric.name}' "
-                f"directly, or set allowFanOut: true on it if the duplication is "
-                f"intended."
+                f"Metric '{metric.name}' references metric '{component}', whose measure "
+                f"'{inner}' is sourced from '{inner_target}' — an object whose rows this "
+                f"query's joins replicate. A measure this query reaches through two "
+                f"metrics cannot be deduplicated, and the result would otherwise be "
+                f"overcounted. Query '{component}' on its own, or set allowFanOut: true "
+                f"on '{inner}' if the duplication is intended."
             )
             raise GrainDedupUnsupportedError(msg)
 

@@ -299,7 +299,8 @@ def test_acr_follows_join_requirements_through_nested_metrics() -> None:
     """A metric wrapping a metric must inherit its components' requirements.
 
     ``metric_measure_names`` returns whatever the expression references, which
-    may itself be a metric. Resolving one level only made a wrapper look like it
+    may itself be a metric - a derived metric over a window metric, the one
+    nesting OBML allows. Resolving one level only made the wrapper look like it
     had no sources and no join requirements at all, so it was advertised while
     compiling raised ``UNREACHABLE_REQUIRED_OBJECT``.
     """
@@ -307,9 +308,8 @@ def test_acr_follows_join_requirements_through_nested_metrics() -> None:
         DISCONNECTED_WITHIN_GROUP_YAML
         + """
 metrics:
-  Wrapped: {expression: "{[Sale List]}"}
-  Double Wrapped: {expression: "{[Wrapped]}"}
-  Triple Wrapped: {expression: "{[Double Wrapped]}"}
+  Ranked: {type: window, windowFunction: dense_rank, measure: Sale List}
+  Wrapped: {expression: "{[Ranked]}"}
 """
     )
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -323,8 +323,8 @@ metrics:
         else:
             composables = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
         advertised = set(composables.metrics) | set(composables.cfl_metrics)
-        # Every level, not just the one directly over the measure.
-        assert not advertised & {"Wrapped", "Double Wrapped", "Triple Wrapped"}
+        # Both levels, not just the one directly over the measure.
+        assert not advertised & {"Ranked", "Wrapped"}
 
 
 # --- ACR must not advertise what the grain-dedup pass would refuse ----------
@@ -492,15 +492,20 @@ def test_acr_advertises_a_metric_over_a_deduplicated_component() -> None:
 
 
 def test_acr_excludes_a_metric_whose_deduplicated_component_is_nested() -> None:
-    """The planner never expands a metric-inside-a-metric reference.
+    """A deduplicated measure two metrics away cannot be split out.
 
-    There is no inlined aggregate for the rewrite to split back out, so it
-    refuses - and ACR must not advertise what it refuses.
+    The window wrapper rebuilds its base measure from the fact tables, which a
+    dedup CTE cannot serve, so the compiler refuses - and ACR must not
+    advertise what it refuses.
     """
     yaml_text = (
         DEDUP_GUARD_YAML
-        + """  Stock per Sale Squared:
-    expression: '{[Stock per Sale]} * {[Stock per Sale]}'
+        + """  Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Total Stock On Hand
+  Doubled Stock Rank:
+    expression: '{[Stock Rank]} * 2'
 """
     )
     raw, source_map = TrackedLoader().load_string(yaml_text)
@@ -509,4 +514,4 @@ def test_acr_excludes_a_metric_whose_deduplicated_component_is_nested() -> None:
 
     composables = ComposabilityResolver(model).resolve({"Sales"}, set())
     assert "Stock per Sale" in composables.metrics
-    assert "Stock per Sale Squared" not in composables.metrics
+    assert "Doubled Stock Rank" not in composables.metrics
