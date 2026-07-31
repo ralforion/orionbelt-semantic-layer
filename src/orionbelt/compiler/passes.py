@@ -193,6 +193,47 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     )
 
 
+def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
+    """Whether *pass_name* genuinely conflicts with the grain-dedup rewrite.
+
+    The wrappers run *after* dedup, on the CTEs it produced. Whether that is a
+    conflict depends on which measure carries the feature, not on whether the
+    query contains one anywhere.
+
+    ``totals`` composes, because it selects the base measure *by alias* from the
+    CTE beneath it: it wraps the dedup output in a ``base`` CTE and adds
+    ``AGG(x) OVER ()`` around a column the dedup CTEs already finished. So a
+    total on a base-grain measure never touches the deduplicated one. Only a
+    total on a measure that is *itself* deduplicated conflicts — that value
+    lives in a dedup CTE the totals wrapper does not reach into.
+
+    The rest stay blocked whenever they apply at all. Each was checked by
+    letting it through and executing the result:
+
+    * ``cumulative`` and ``window`` re-project the measure's *raw aggregate*
+      rather than selecting it by alias, emitting ``SUM("Sales"."quantity")``
+      into a CTE whose FROM is only ``main``/``dedup_0`` —
+      ``Referenced table "Sales" not found``. This is the dividing line against
+      ``totals``: alias reference composes, expression re-projection does not.
+    * ``filter_context`` emits its own CTE named ``main``, colliding with the
+      one dedup emits — ``Duplicate CTE name "main"``.
+    * ``period_over_period`` rebuilds the FROM from a date spine and re-joins
+      the tables the dedup CTEs already joined —
+      ``Ambiguous reference to table ... duplicate alias``.
+
+    Cumulative and window could be made to compose by selecting from the dedup
+    output by alias, the same repointing ``grain_dedup`` already does for
+    ORDER BY. That is a change inside those wrappers, not a predicate here.
+    """
+    if pass_name != PASS_TOTALS:
+        return True
+    return any(
+        measure.total or measure.grain_override is not None
+        for measure in resolved.measures
+        if measure.name in resolved.dedup_measures
+    )
+
+
 def evaluate_compatibility(
     resolved: ResolvedQuery, passes: tuple[CompilerPass, ...]
 ) -> CompatibilityResult:
@@ -284,7 +325,9 @@ def evaluate_compatibility(
         blocking = sorted(
             name
             for name in dedup.incompatible_with
-            if (p := by_name.get(name)) is not None and p.applies(resolved)
+            if (p := by_name.get(name)) is not None
+            and p.applies(resolved)
+            and _conflicts_with_dedup(name, resolved)
         )
         if resolved.grouping is not None:
             blocking.append(f"grouping: {resolved.grouping.value}")
