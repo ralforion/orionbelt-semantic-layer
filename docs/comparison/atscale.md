@@ -1,6 +1,6 @@
 # OBSL vs AtScale
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale** — the enterprise "universal semantic layer" with deep OLAP heritage and native MDX/DAX support. Captured 2026-05-23.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **AtScale** — the enterprise "universal semantic layer" with deep OLAP heritage and native MDX/DAX support. Captured 2026-05-23, refreshed 2026-07-31.
 
 ---
 
@@ -177,7 +177,7 @@ AtScale wins on legacy and enterprise (Synapse, Hive, Iceberg lakehouse). OBSL i
 | | OBSL | AtScale |
 |---|---|---|
 | REST API | Yes — first-party FastAPI service | Yes — REST API for model management and queries |
-| MCP | Yes — first-party server | Limited (via AI-Link integrations) |
+| MCP | Yes — first-party server | Yes — first-party AtScale MCP Server (containerized service; exposes models, hierarchies, metrics, and enforces role-based access) |
 | GraphQL | No | No |
 | Native SQL endpoint | Apache Arrow Flight SQL (gRPC, columnar) | JDBC / ODBC SQL endpoint |
 | MDX (XMLA) | ❌ | ✅ — primary protocol for Excel/SSAS clients |
@@ -235,7 +235,7 @@ The free **Developer Community Edition** lowers AtScale's barrier for evaluation
 | RDF/SPARQL graph view | ✅ | ❌ |
 | Interactive ontology-graph playground | ✅ Gradio | ❌ |
 | OSI interoperability | ✅ converter shipped | ✅ founding contributor |
-| MCP server (LLM/agent) | ✅ first-party | Limited |
+| MCP server (LLM/agent) | ✅ first-party | ✅ first-party (AtScale MCP Server) |
 | Built-in caching | ✅ file cache based on freshness inheritance (TTL derived from per-`dataObject` `refresh:` contracts; ETL heartbeat invalidation) | ✅ result cache + autonomous aggregates (warehouse-side) |
 | Visual model designer | ❌ | ✅ Design Center (polished) |
 | Open source / self-host without license | ✅ | ❌ |
@@ -294,7 +294,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 4. **RDF/SPARQL graph surface** for governance/lineage tooling outside the proprietary platform.
 5. **A modern OSS SQL wire protocol surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
 6. **First-class DB-API 2.0 drivers** for direct programmatic access from Python.
-7. **MCP server (first-party)** for LLM/agent integration.
+7. ~~MCP server (first-party)~~ — **closed**: AtScale ships its own containerized MCP Server exposing models, hierarchies, and metrics under role-based access.
 8. **Plain-text portable model format** — OBML is a static YAML file that diffs in Git; AtScale models are richer but harder to version-control as plain text.
 
 ---

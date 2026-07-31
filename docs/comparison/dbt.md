@@ -1,6 +1,6 @@
 # OBSL vs dbt Semantic Layer (MetricFlow)
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt Semantic Layer** (powered by MetricFlow). Captured 2026-05-23.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt Semantic Layer** (powered by MetricFlow). Captured 2026-05-23, refreshed 2026-07-31.
 
 ---
 
@@ -31,7 +31,7 @@ OBSL `MetricType` enum (`src/orionbelt/models/semantic.py`):
 | OBSL | dbt SL | Notes |
 |---|---|---|
 | `Measure` (sum/avg/count/min/max + `any_value` / `median` / `mode` / `listagg` + 9 statistical aggs, `total: bool` for grand totals) | `simple` metric over a `measure` (no statistical aggs) | OBSL wins on aggregate surface — see §6 |
-| `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression | `ratio`, `derived` | Both first-class |
+| `Metric` `type: derived` with `{[Measure A]}/{[Measure B]}` expression — nests other derived metrics at any depth (v2.23.2) | `ratio`, `derived` (both may reference other metrics) | Both first-class and both composable |
 | `Metric` `type: cumulative` (running total, rolling window, grain-to-date, **per-dimension partition**) | `cumulative` (running, period-to-date, rolling — no partition-by) | Both first-class — see §3 |
 | `Metric` `type: period_over_period` with 4 comparison modes | Approximated via `offset_window` and `metric_time` | OBSL has a dedicated metric type — see §4 |
 | `Metric` `type: window` (rank / dense_rank / row_number / ntile / lag / lead / first_value / last_value) | — | **Gap in dbt** — no equivalent surface; users would compose raw SQL |
@@ -170,7 +170,7 @@ OBSL's single-declaration approach is more ergonomic for the common case.
 
 | | OBSL | dbt SL |
 |---|---|---|
-| Fanout detection | Explicit `compiler/fanout.py` raises `FanoutError`; measures on the *one* side of a join are deduplicated on that object's key | Avoided implicitly via entity types |
+| Fanout detection | Explicit `compiler/fanout.py` raises `FanoutError`; measures on the *one* side of a join are deduplicated on that object's key, in a rewrite that composes with `total`, cumulative / window metrics, derived metrics (components split per CTE and rebuilt in the outer projection), and `HAVING` — and refuses, with a named reason, what it cannot express | Avoided implicitly via entity types |
 | Multi-fact strategy | Dedicated **CFL (Composite Fact Layer)** planner — `compiler/cfl.py` — emits `UNION ALL` legs with per-leg common-root resolution via `JoinGraph.find_common_root()` | MetricFlow join planner traverses entity graph; strategy is internal/opaque |
 | User control | Explicit star-vs-CFL switch surfaces in compilation | Not exposed |
 | Snowflake optimization | Uses `UNION ALL BY NAME` | n/a |
@@ -267,7 +267,8 @@ To match dbt SL feature-for-feature, OBSL would need:
 
 1. **`conversion` metric type** — funnel-style metric: count of base events that converted to a target event within a window.
 2. **`metric_time` virtual dimension** — a unified time axis across heterogeneous fact tables, abstracting per-table date columns. (Partially achievable today via dimensions on each data object, but not as a single canonical handle.)
-3. **(Nice to have) GraphQL or JDBC surface** — for BI tool integration parity.
+3. **Custom granularities / custom calendars** — dbt lets you register an extra time spine and map columns to named granularities (`fiscal_year`, `fiscal_week`, retail weeks) via `custom_granularities`, available since dbt Core 1.9. OBSL's `TimeGrain` set is fixed, so a fiscal calendar has to be modeled as ordinary dimensions.
+4. **(Nice to have) GraphQL or JDBC surface** — for BI tool integration parity.
 
 Conversely, dbt SL would need to add to match OBSL's strengths:
 

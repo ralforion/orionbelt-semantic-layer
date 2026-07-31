@@ -1,13 +1,14 @@
 # OBSL vs Cube
 
-A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (formerly Cube.js — the open-source semantic layer from Cube Dev). Captured 2026-05-23.
+A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (formerly Cube.js — the open-source semantic layer from Cube Dev). Captured 2026-05-23, refreshed 2026-07-31 against **Cube Core v1.7** (Tesseract GA, 2026-07-08).
 
 ---
 
 ## TL;DR
 
-- **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts, Twig templating for dynamic models, and the broadest data-source portfolio of the OSS semantic layers.
-- **OBSL wins on**: **richer modeling topologies** (multi-rooted DAG with named secondary join paths) where Cube assumes single-rooted cubes plus combining `views`; **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Cube has `rolling_window` and `time_shift` but they're query/measure patterns, not metric *types*, and no native rank/lag surface; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*); an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; an explicit **CFL multi-fact planner**; **OSI v0.2 ↔ OBML format conversion**; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
+- **Cube wins on**: **pre-aggregations** (its flagship feature — materialized rollups with refresh, partitioning, and lambda strategies), GraphQL alongside REST, first-class multi-tenancy and row-level security via `query_rewrite` + JWT security contexts + **data access policies with conditional masking**, Twig templating for dynamic models, a **curated-view surface** (folders, view groups, hierarchies, AI context), **custom granularities and calendar cubes** (fiscal / 4-5-4), **multi-stage calculations**, and the broadest data-source portfolio of the OSS semantic layers.
+- **OBSL wins on**: **first-class declarative metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where Cube has `rolling_window`, `time_shift`, and multi-stage measures but no declarative rank/lag metric *type*; **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*); **named secondary join paths with per-query selection** (`pathName` + `usePathNames`), which Cube has no primitive for; an **RDF/SPARQL graph view** of the model and a matching **interactive ontology-graph playground**; **two SQL wire protocols** — PostgreSQL wire AND Arrow Flight SQL (v2.5.0+) — where Cube ships Postgres wire only; 8 first-class **DB-API 2.0 drivers**; a **`UNION ALL` CFL multi-fact planner** that needs no per-fact-to-shared-dimension direct join; **OSI ↔ OBML format conversion**; and a simpler operational footprint (no Redis, no scheduler, no separate query orchestrator).
+- **Changed since the 2026-05 capture**: multi-fact modeling is **no longer an OBSL-only capability**. Cube Core v1.7 made **Tesseract** the default planner and graduated **multi-fact views** to GA — a view spanning several fact tables now compiles to one aggregating subquery per fact, `FULL JOIN`ed on the shared dimensions. The remaining topology difference is narrower and more specific (see [§6](#6-data-modeling-topology-still-a-differentiator-but-a-narrower-one)).
 - **Different niches**: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.
 
 Cube is the closest peer to OBSL in the OSS space — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.
@@ -23,7 +24,8 @@ Cube is the closest peer to OBSL in the OSS space — both are self-hostable, bo
 | Top-level constructs | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `cubes` (with `measures`, `dimensions`, `segments`, `joins`, `pre_aggregations`), `views` (combining cubes), `pre_aggregations` |
 | Object scoping | Each `DataObject` has `columns:`; dimensions/measures/metrics live at model scope | Measures and dimensions live *inside* each `cube`; `view`s expose a curated subset for end users |
 | Templating | None (static YAML) | Twig (Jinja2-like) — `COMPILE_CONTEXT` for compile-time multi-tenancy, dynamic SQL, masking |
-| Runtime | OSS, self-hosted (single Python service) | OSS Cube Core (Node.js + Cube Store + optional Redis) **or** Cube Cloud (managed, paid) |
+| Runtime | OSS, self-hosted (single Python service) | OSS Cube Core (Node.js + Cube Store + optional Redis) **or** Cube Cloud (managed, paid). Since v1.7 the **Tesseract** planner and the native query orchestrator are on by default |
+| Curation layer | None — one global namespace of dimensions / measures / metrics / filters | `views` are the primary consumer-facing surface: curated members, folders, view groups, hierarchies, access policies, AI context |
 
 ---
 
@@ -156,13 +158,15 @@ OBSL ships `static | scheduled | heartbeat | unknown` modes and exposes `GET /v1
 
 | OBSL | Cube | Notes |
 |---|---|---|
-| `Metric` `type: derived` | <pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre> | Both first-class |
+| `Metric` `type: derived` — references measures **and other derived metrics, at any depth** (v2.23.2) | <pre><code>measure:<br> type: number<br> sql: "{revenue} / {orders}"</code></pre>, plus `multi_stage:` measures for staged aggregation (Tesseract) | Both first-class and both composable; Cube's `multi_stage` reaches staged shapes (`group_by`, `reduce_by`, `add_group_by`) OBSL has no answer for |
 | `Metric` `type: cumulative` (running, rolling, grain-to-date, **per-dimension `partitionBy`**) | <pre><code>measure:<br> type: sum<br> rolling_window:<br> trailing: 7 day<br> offset: end</code></pre> rolling only | Cube has rolling windows but no grain-to-date, no unbounded cumulative, and no `partitionBy` as declarative types |
 | `Metric` `type: period_over_period` (4 comparison modes) | Query-side: `compareDateRange` parameter, or <pre><code>time_shift:<br> interval: 1 year<br> type: prior</code></pre> | Cube does PoP at query time, not as a model-defined metric |
 | `Metric` `type: window` — <br>`rank`, `dense_rank`, `row_number`, `ntile`,<br>`lag`, `lead`, `first_value`, `last_value` | Via `type: number` + raw window-function SQL | OBSL ships these as declarative metric types; Cube reaches them via the same `type: number` escape hatch |
 | Reusable filter context / filtered measures | `segments` + per-measure `filters` | Comparable |
 
 **Different philosophies**: OBSL bakes time-aware metrics into the model (write once, every query gets the comparison). Cube treats time comparisons as query-time concerns (more flexible, but the consumer has to know how to ask). Either fits depending on whether you're publishing a metrics catalog or empowering query authors.
+
+**Cube's multi-stage measures** (GA with Tesseract in v1.7) are the generic version of this axis: `multi_stage: true` with `group_by` / `reduce_by` / `add_group_by` directives expresses staged aggregations — ratios against a partition total, rankings, nested aggregates — that OBSL would need a new typed metric for. v1.7 added grain directives and filter directives on top. OBSL is cleaner and more portable where it has a first-class type; Cube is more flexible for shapes the type system didn't anticipate.
 
 See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (window functions, statistical aggregates, dialect coverage matrix).
 
@@ -182,20 +186,43 @@ See [Trend Analysis](../guide/trend-analysis.md) for OBSL's full v2.6 surface (w
 
 Cube's `relationship:` keyword drives symmetric aggregate logic (similar to LookML and Malloy). OBSL takes the static-fanout-detection + CFL approach instead, with a [grain-dedup CTE](../guide/compilation.md#phase-22-grain-deduplication-wrap) for the case a purely structural approach cannot cover: a measure sourced from the *one* side of a join, which the join replicates.
 
+The dedup envelope has widened since it shipped. A deduplicated measure now composes with `total: true`, with cumulative and window metrics, and — as of v2.23.2 — with **derived metrics** (each component is computed on its own, the deduplicated ones in their own CTE, and the formula is rebuilt in the outer projection) and with **`HAVING`** (predicates naming a deduplicated measure move to the wrapper's outer `WHERE`, while base-grain predicates stay in `HAVING`). What the rewrite still cannot express — `filterContext`, period-over-period, `ROLLUP`/`CUBE`, a `grain` override on a deduplicated measure — raises a fanout-class error rather than returning an inflated number.
+
+This is the structural trade against symmetric aggregates: Cube corrects fanout during aggregation for a broad class of queries and is quiet when it does; OBSL rewrites the query for the cases it can express and **refuses** the rest with a named reason. Neither is strictly better — a refusal is a worse experience than an answer, and a silently wrong number is worse than both.
+
 ---
 
-## 6. Data modeling topology (a major differentiator)
+## 6. Data modeling topology (still a differentiator, but a narrower one)
 
-Cube is fundamentally **single-rooted per cube**: each cube has its own measures and dimensions, joins fan out from there. To combine multiple cubes into a unified end-user surface, Cube uses **views** — a separate entity that selectively re-exposes measures/dimensions from joined cubes. Views are good, but they don't escape the underlying single-rooted-per-cube topology, and multi-path scenarios (two valid joins between the same pair of cubes) aren't a first-class primitive.
+**This section changed materially in Cube Core v1.7 (2026-07-08).** The older framing — "Cube is single-rooted, OBSL is the only one that can span independent facts" — is no longer accurate and is corrected here.
 
-OBSL is built on a **directed join graph (DAG)** with explicit support for richer topologies:
+Cube now ships **multi-fact views**, powered by the **Tesseract** planner (GA and default-on as of v1.7; before that it was behind `CUBEJS_TESSERACT_SQL_PLANNER`). When a view includes measures from several fact tables, Cube picks the root dynamically per query and compiles:
+
+1. one **independent aggregating subquery per fact**, joining only the tables that fact needs, filtering, and grouping by the shared dimensions;
+2. a **`FULL JOIN` across those subqueries** on all common dimension columns, so rows present in only one fact survive;
+3. a side-by-side projection, `NULL` where a fact has no matching row.
+
+A dedicated view isn't even required: through the SQL API, joining two views on shared dimensions and grouping by them is recognised and rewritten into the same multi-fact execution.
+
+That is a genuine peer of OBSL's CFL, reached by a different SQL shape — and it is the same shape dbt MetricFlow uses (`FULL OUTER JOIN` on the shared entity), not the `UNION ALL` shape CFL uses.
 
 | Topology | Star (single fact + dims) | Snowflake (chained dims) | Multi-rooted (multiple facts) | Multi-path (alt. joins between same pair) | Cycles |
 |---|---|---|---|---|---|
 | **OBSL** | ✅ | ✅ | ✅ via CFL `UNION ALL` legs with per-leg common root | ✅ first-class via `secondary: true` + `pathName` + per-query `usePathNames` | Detected and rejected |
-| **Cube** | ✅ | ✅ | Via `view`s combining cubes (workable but indirect) | Workaround via duplicate cubes or views | Implicit |
+| **Cube** | ✅ | ✅ | ✅ via multi-fact views — per-fact subqueries `FULL JOIN`ed on shared dimensions (Tesseract) | Workaround via duplicate cubes or a `view` pinning a `join_path` | Implicit |
 
-**Why this matters**: When you need a single semantic surface that exposes revenue + support tickets by customer, or to choose between `ship_address_id` and `billing_address_id` joins to the same address dimension per query, Cube wants you to design `view`s upstream and pick the right one. OBSL lets you model the messy graph as-is and resolve at query time.
+**What still differs**, now that "can you query two facts at once" is answered yes on both sides:
+
+| | OBSL (CFL) | Cube (multi-fact views) |
+|---|---|---|
+| Plan shape | `UNION ALL` legs, NULL-padded, re-aggregated in an outer query | Per-fact subqueries `FULL JOIN`ed on the shared dimension columns |
+| Facts in one `FROM` | Never — the chasm trap is impossible by construction | Never in the *inner* subqueries either; the `FULL JOIN` is over pre-aggregated results |
+| Requires a curated view | No — resolved from the join graph per query | Optional, but the modeling is view-shaped; the SQL API can infer it from a join of two views |
+| Shared-dimension requirement | Each leg anchors on its own common root, found by graph search; intermediate hops are fine | Every fact cube must declare a **direct** join to each shared dimension, at a root-level join path |
+| Time dimensions | Grain handled per leg | Join-key granularity must match the `GROUP BY` granularity |
+| Path ambiguity | Per-query `usePathNames` selects the named path | Dijkstra + member-type heuristic; pin with a view's `join_path` at model-design time |
+
+So the honest summary is: **Cube closed the multi-fact gap; it did not close the multi-path gap.** Choosing between `ship_address_id` and `billing_address_id` joins to the same address dimension is still a model-design decision in Cube (pin it in a view) and still a per-query one in OBSL. And Cube's multi-fact requirement that every fact join each conformed dimension *directly* is a real modeling constraint that CFL's common-root search does not impose.
 
 ---
 
@@ -268,14 +295,18 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 | GraphQL API | ❌ | ✅ |
 | Twig/Jinja templating | ❌ | ✅ |
 | Multi-tenancy primitives | Session-scoped only | ✅ first-class (compile-time + runtime) |
-| Row-level security in model | ❌ | ✅ via `query_rewrite` |
-| Field-level masking | ❌ | ✅ via Twig conditionals |
+| Row-level security in model | ❌ | ✅ via `query_rewrite` **and** declarative data access policies |
+| Field-level masking | ❌ | ✅ via Twig conditionals **and** conditional masking in access policies (v1.7) |
+| Curated business-facing surface | Global namespace + `examples` | ✅ views with folders, view groups, hierarchies, AI context |
+| Dimension hierarchies / drill paths | ❌ | ✅ `hierarchies` on cubes, surfaced through views |
+| Custom granularities / fiscal calendars | ❌ (fixed `TimeGrain` set) | ✅ custom granularities + calendar cubes (4-5-4, fiscal) |
+| Multi-stage / staged calculations | ❌ (typed metrics only) | ✅ `multi_stage` measures (Tesseract) |
 | First-class PoP metric type | ✅ (4 comparison modes) | ❌ (`time_shift` at query time) |
 | First-class cumulative metric type | ✅ (running, rolling, grain-to-date, `partitionBy`) | Partial (`rolling_window` only) |
 | First-class window metric type (rank / lag / lead / ntile / first_value / last_value) | ✅ | Via `type: number` + raw SQL |
 | Statistical aggregates (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) as first-class measure types | ✅ 9 declarative aggregations | Via `type: number` + raw SQL |
-| Multi-rooted DAG modeling | ✅ via CFL | ❌ (single-rooted cubes + views) |
-| Named secondary join paths | ✅ | ❌ |
+| Multi-rooted DAG modeling | ✅ via CFL (`UNION ALL` legs, common root per leg) | ✅ via multi-fact views (per-fact subqueries `FULL JOIN`ed on shared dims) — **new in v1.7** |
+| Named secondary join paths, selectable per query | ✅ | ❌ (pin a path in a view at design time) |
 | Symmetric aggregates | ❌ (uses CFL) | ✅ |
 | RDF/SPARQL graph view | ✅ | ❌ |
 | OSI ↔ OBML conversion | ✅ | ❌ |
@@ -295,10 +326,13 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 - Your model needs **dynamic SQL via templating** (Twig/Jinja) — per-tenant table names, masking, conditional logic.
 - You're building **high-throughput embedded analytics** with thousands of concurrent dashboard requests.
 - You're willing to operate Node.js + Cube Store + Redis, or pay for Cube Cloud.
+- Your model needs **hierarchies, folders, custom granularities, or a fiscal / 4-5-4 calendar** — all first-class in Cube, none present in OBSL.
+- You need **staged calculations** (`multi_stage`) beyond what a typed metric system anticipates.
 
 ### Pick **OBSL** when:
 
-- You need **richer modeling topologies** — multi-rooted facts, named alternative join paths — and don't want to design around them via views.
+- You need **per-query join-path selection** — two valid joins between the same pair of objects, chosen by the consumer rather than pinned in a view at design time. (Multi-fact alone is no longer a reason: Cube v1.7 does that too.)
+- Your facts reach shared dimensions **through intermediate hops** — Cube's multi-fact views require each fact to join every shared dimension directly.
 - You want **first-class declarative cumulative and period-over-period metric types** instead of expressing them via query-time `time_shift` or per-measure `rolling_window`.
 - You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
 - You need **OSI interoperability** for moving models between semantic layer formats.
@@ -323,14 +357,18 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 5. **Field-level masking and access grants** — analogous to LookML's `required_access_grants`.
 6. **More dialects** — Trino/Presto, Redshift, MSSQL, Oracle if those markets matter.
 7. **Shared cache backend** for multi-replica deployments — current file backend is per-replica; Cube's Redis/Cube-Store layer is shared across the cluster.
+8. **A curated view / perspective construct** — Cube's `views` are now the primary user-facing surface, carrying folders, view groups, hidden members, access policy, and AI context. OBSL exposes one global namespace, so consumers see every member unless the host filters them.
+9. **Dimension hierarchies and drill paths** — `hierarchies` on cubes, surfaced through views for BI drill-down.
+10. **Custom granularities and calendar cubes** — fiscal years, retail 4-5-4, weeks starting Sunday. OBSL's `TimeGrain` set is fixed.
+11. **Multi-stage calculations** — a generic staged-aggregation surface (`group_by` / `reduce_by` / `add_group_by`) alongside the existing typed metrics.
 
 ### To match OBSL, Cube would need:
 
 1. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently `rolling_window` and query-side `time_shift`, including per-dimension `partitionBy` on cumulative.
 2. **First-class window metric type** — `rank`, `dense_rank`, `row_number`, `ntile`, `lag`, `lead`, `first_value`, `last_value` as declarative metric types rather than reaching them through `type: number` + raw window-function SQL.
 3. **First-class statistical / regression aggregations** — `stddev`, `variance`, `corr`, `covar_*`, `regr_slope`, `regr_intercept` as declarative measure types with arity validation and per-dialect gating, rather than via `type: number` + raw SQL.
-4. **Multi-rooted DAG modeling** — the ability to query across genuinely independent fact tables in one go without the consumer needing to pre-design a `view`.
-5. **Named secondary join paths** with per-query selection.
+4. ~~Multi-rooted DAG modeling~~ — **closed by Cube v1.7's multi-fact views.** What remains is narrower: multi-fact views require every fact cube to declare a *direct* join to each shared dimension at a root-level join path, where CFL anchors each leg on a common root found by graph search, so intermediate hops are fine and no view has to be authored up front.
+5. **Named secondary join paths** with per-query selection — still no Cube primitive; the planner resolves by Dijkstra + a member-type heuristic, and a `view`'s `join_path` pins the choice at model-design time rather than per query.
 6. **RDF/SPARQL graph surface** for governance/lineage.
 7. **Apache Arrow Flight SQL** as a columnar wire protocol option alongside Postgres wire — modern analytical payloads transfer more efficiently in Arrow.
 8. **First-class DB-API 2.0 drivers** for direct programmatic access from Python (PEP 249).
@@ -345,7 +383,13 @@ A workable hybrid: use Cube as the production query gateway with pre-aggregation
 - OBSL CFL planner: `src/orionbelt/compiler/cfl.py`
 - OBSL fanout detection: `src/orionbelt/compiler/fanout.py`
 - OBSL docs: [Model Format](../guide/model-format.md), [Period-over-Period Metrics](../guide/period-over-period.md), [Compilation Pipeline](../guide/compilation.md)
+- OBSL grain dedup: `src/orionbelt/compiler/grain_dedup.py`, `src/orionbelt/compiler/metric_expansion.py`
 - Cube docs: https://cube.dev/docs
 - Cube data modeling reference: https://cube.dev/docs/product/data-modeling/reference
+- Cube multi-fact views: https://docs.cube.dev/docs/data-modeling/multi-fact-views
+- Cube hierarchies: https://cube.dev/docs/product/data-modeling/reference/hierarchies
+- Cube calendar cubes: https://cube.dev/docs/product/data-modeling/concepts/calendar-cubes
+- Cube data access policies: https://cube.dev/docs/reference/data-modeling/data-access-policies
 - Cube pre-aggregations: https://cube.dev/docs/product/caching/using-pre-aggregations
 - Cube SQL API: https://cube.dev/docs/product/apis-integrations/sql-api
+- Cube Core v1.7 (Tesseract GA, 2026-07-08): https://cube.dev/blog/cube-core-v1-7-tesseract-ga-data-modeling-performance
