@@ -147,12 +147,27 @@ measures:
     aggregation: sum
     expression: '{[Products].[Stock On Hand]}'
     allowFanOut: true
+  Total List Price:
+    resultType: float
+    aggregation: sum
+    expression: '{[Products].[List Price]}'
+  Grand Total Stock:
+    resultType: int
+    aggregation: sum
+    total: true
+    expression: '{[Products].[Stock On Hand]}'
 
 metrics:
   Price per Unit:
     expression: '{[Total Stock On Hand]} / {[Sold Quantity]}'
   Quantity per Product:
     expression: '{[Sold Quantity]} / {[Product Count]}'
+  Stock per List Price:
+    expression: '{[Total Stock On Hand]} / {[Total List Price]}'
+  Doubled Price per Unit:
+    expression: '{[Price per Unit]} * 2'
+  Stock Share:
+    expression: '{[Total Stock On Hand]} / {[Grand Total Stock]}'
 """
 
 
@@ -368,10 +383,29 @@ def test_order_by_a_dimension_targets_main() -> None:
     assert '"__ob_main"."Region" ASC' in result.sql
 
 
-def test_generated_sql_is_valid_for_every_dialect() -> None:
-    query = {
-        "select": {"dimensions": ["Region"], "measures": ["Sold Quantity", "Total Stock On Hand"]}
-    }
+@pytest.mark.parametrize(
+    "query",
+    [
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            }
+        },
+        # A metric rebuilt over its deduplicated component.
+        {"select": {"dimensions": ["Region"], "measures": ["Price per Unit"]}},
+        # A HAVING predicate moved out to the wrapper's WHERE.
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "having": [{"field": "Total Stock On Hand", "op": "gt", "value": 250}],
+        },
+    ],
+    ids=["measure", "metric", "having"],
+)
+def test_generated_sql_is_valid_for_every_dialect(query: dict) -> None:
     for dialect in (
         "bigquery",
         "clickhouse",
@@ -389,12 +423,6 @@ def test_generated_sql_is_valid_for_every_dialect() -> None:
 # --- Combinations the rewrite refuses rather than getting wrong ---------
 
 
-def test_metric_over_a_deduplicated_component_is_refused() -> None:
-    """A metric inlines its components, so it would read the inflated value."""
-    with pytest.raises(GrainDedupUnsupportedError, match="Price per Unit"):
-        _compile({"select": {"dimensions": ["Region"], "measures": ["Price per Unit"]}})
-
-
 def test_rollup_combined_with_dedup_is_refused() -> None:
     with pytest.raises(GrainDedupUnsupportedError, match="grouping"):
         _compile(
@@ -408,22 +436,257 @@ def test_rollup_combined_with_dedup_is_refused() -> None:
         )
 
 
-def test_having_on_a_deduplicated_measure_is_refused() -> None:
-    with pytest.raises(GrainDedupUnsupportedError, match="HAVING"):
+def test_refusals_are_catchable_as_fanout_errors() -> None:
+    """Existing API handlers catch ``FanoutError``; the subclass keeps them working."""
+    assert issubclass(GrainDedupUnsupportedError, FanoutError)
+
+
+# --- Metrics over deduplicated components --------------------------------
+
+
+def _sales_db() -> duckdb.DuckDBPyConnection:
+    """Three products, four sales — p1 sells twice in the north region.
+
+    The flattened join reads 310 stock in the north; deduplicated it reads 210.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE products (id VARCHAR, list_price DOUBLE,"
+        " stock_on_hand INTEGER, category VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO products VALUES ('p1', 10.0, 100, 'tools'),"
+        " ('p2', 20.0, 110, 'tools'), ('p3', 5.0, 300, 'parts')"
+    )
+    con.execute(
+        "CREATE TABLE sales (id VARCHAR, product_id VARCHAR, customer_id VARCHAR,"
+        " region VARCHAR, quantity INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES ('s1','p1','c1','north',1), ('s2','p1','c1','north',2),"
+        " ('s3','p2','c2','north',4), ('s4','p3','c2','south',8)"
+    )
+    return con
+
+
+def test_metric_component_is_computed_from_the_deduplicated_value() -> None:
+    """The component moves into a dedup CTE; the metric is rebuilt over the results."""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Price per Unit"]},
+            "orderBy": [{"field": "Region"}],
+        }
+    )
+    # The component's aggregate is no longer inlined into the metric column.
+    assert 'SUM("Products"."stock_on_hand") / SUM' not in result.sql
+    assert '"__ob_dedup_0"."Total Stock On Hand" / "__ob_main"."Sold Quantity"' in result.sql
+
+    rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
+    # north: 210 / 7, not the flattened 310 / 7. south: 300 / 8.
+    assert rows == [("north", 30.0), ("south", 37.5)]
+
+
+def test_metric_over_a_deduplicated_component_keeps_its_declared_cast() -> None:
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Price per Unit"]}})
+    assert 'AS DECIMAL(18, 6)) AS "Price per Unit"' in result.sql
+
+
+def test_a_component_also_selected_on_its_own_is_computed_once() -> None:
+    """The metric reads the column the selected measure already put in the CTE."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand", "Price per Unit"],
+            },
+            "orderBy": [{"field": "Region"}],
+        }
+    )
+    # One aggregate each, read twice: once for the measure, once by the metric.
+    assert result.sql.count('SUM("__ob_dedup_src_0"."__ob_c0")') == 1
+    assert result.sql.count('SUM("Sales"."quantity")') == 1
+
+    rows = [
+        (r[0], int(r[1]), int(r[2]), float(r[3]))
+        for r in _sales_db().execute(result.sql).fetchall()
+    ]
+    assert rows == [("north", 7, 210, 30.0), ("south", 8, 300, 37.5)]
+
+
+def test_total_on_another_measure_composes_with_a_split_metric() -> None:
+    """The totals wrapper reads the rebuilt metric column by alias, like any other."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Grand Total Quantity", "Price per Unit"],
+            },
+            "orderBy": [{"field": "Region"}],
+        }
+    )
+    assert 'SUM("Grand Total Quantity") OVER ()' in result.sql
+
+    rows = [(r[0], int(r[1]), float(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
+    # The grand total spans both regions; the metric stays per-region.
+    assert rows == [("north", 15, 30.0), ("south", 15, 37.5)]
+
+
+def test_two_deduplicated_components_share_one_dedup_cte() -> None:
+    """Both components are sourced from the same replicated object."""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Stock per List Price"]},
+            "orderBy": [{"field": "Region"}],
+        }
+    )
+    assert "__ob_dedup_1" not in result.sql
+
+    rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
+    # north: 210 stock / 30.0 list price (p1 and p2 counted once each), south: 300 / 5.
+    assert rows == [("north", 7.0), ("south", 60.0)]
+
+
+def test_order_by_a_metric_over_a_deduplicated_component() -> None:
+    """The metric is computed in the outer projection, so it sorts by its alias."""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Price per Unit"]},
+            "orderBy": [{"field": "Price per Unit", "direction": "desc"}],
+        }
+    )
+    assert 'ORDER BY "Price per Unit" DESC' in result.sql
+    rows = [r[0] for r in _sales_db().execute(result.sql).fetchall()]
+    assert rows == ["south", "north"]
+
+
+def test_metric_over_a_component_nested_in_another_metric_is_refused() -> None:
+    """The planner never expands a metric-inside-a-metric reference.
+
+    There is no inlined aggregate for the rewrite to split back out, so it
+    refuses rather than build on SQL that already does not resolve.
+    """
+    with pytest.raises(GrainDedupUnsupportedError, match="nested inside another metric"):
+        _compile({"select": {"dimensions": ["Region"], "measures": ["Doubled Price per Unit"]}})
+
+
+def test_total_on_a_deduplicated_metric_component_is_refused() -> None:
+    """The totals wrapper re-projects the component's raw aggregate.
+
+    Its base CTE reads from the dedup output, where the fact tables are gone —
+    so the combination is refused rather than emitted.
+    """
+    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
+        _compile({"select": {"dimensions": ["Region"], "measures": ["Stock Share"]}})
+
+
+def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:
+    yaml_text = (
+        CUMULATIVE_YAML
+        + """  Stock Growth:
+    type: period_over_period
+    expression: '{[Total Stock On Hand]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+    )
+    with pytest.raises(GrainDedupUnsupportedError, match="period_over_period"):
+        _compile(
+            {"select": {"dimensions": ["Sale Month"], "measures": ["Stock Growth"]}},
+            yaml_text,
+        )
+
+
+# --- HAVING on deduplicated measures -------------------------------------
+
+
+def test_having_on_a_deduplicated_measure_filters_the_outer_query() -> None:
+    """The wrapper's own query is one row per query grain, so HAVING moves there."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "having": [{"field": "Total Stock On Hand", "op": "gt", "value": 250}],
+        }
+    )
+    assert 'WHERE "__ob_dedup_0"."Total Stock On Hand" > 250' in result.sql
+    assert "HAVING" not in result.sql
+
+    rows = [(r[0], int(r[1]), int(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
+    # north's deduplicated stock is 210 — the flattened 310 would have passed.
+    assert rows == [("south", 8, 300)]
+
+
+def test_having_only_deduplicated_measure_stays_out_of_the_projection() -> None:
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Sold Quantity"]},
+            "having": [{"field": "Total Stock On Hand", "op": "gt", "value": 250}],
+        }
+    )
+    rows = _sales_db().execute(result.sql).fetchall()
+    assert [(r[0], int(r[1])) for r in rows] == [("south", 8)]
+    assert all(len(r) == 2 for r in rows)
+
+
+def test_having_splits_between_the_grouped_query_and_the_wrapper() -> None:
+    """A base-grain predicate stays a HAVING; the deduplicated one moves out."""
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Region"],
+                "measures": ["Sold Quantity", "Total Stock On Hand"],
+            },
+            "having": [
+                {"field": "Sold Quantity", "op": "gt", "value": 5},
+                {"field": "Total Stock On Hand", "op": "gt", "value": 250},
+            ],
+        }
+    )
+    assert 'HAVING CAST(SUM("Sales"."quantity") AS DECIMAL(18, 2)) > 5' in result.sql
+    assert 'WHERE "__ob_dedup_0"."Total Stock On Hand" > 250' in result.sql
+
+    rows = [(r[0], int(r[1]), int(r[2])) for r in _sales_db().execute(result.sql).fetchall()]
+    assert rows == [("south", 8, 300)]
+
+
+def test_having_on_a_metric_over_a_deduplicated_component() -> None:
+    """The metric only exists in the outer projection, so its predicate goes there too."""
+    result = _compile(
+        {
+            "select": {"dimensions": ["Region"], "measures": ["Price per Unit"]},
+            "having": [{"field": "Price per Unit", "op": "gt", "value": 31}],
+        }
+    )
+    rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
+    assert rows == [("south", 37.5)]
+
+
+def test_having_mixing_a_dimension_with_a_deduplicated_measure_is_refused() -> None:
+    """The moved predicate would carry a physical column with nothing to bind to."""
+    with pytest.raises(GrainDedupUnsupportedError, match="'Region'"):
         _compile(
             {
                 "select": {
                     "dimensions": ["Region"],
                     "measures": ["Sold Quantity", "Total Stock On Hand"],
                 },
-                "having": [{"field": "Total Stock On Hand", "op": "gt", "value": 1}],
+                "having": [
+                    {
+                        "logic": "or",
+                        "filters": [
+                            {"field": "Region", "op": "equals", "value": "north"},
+                            {"field": "Total Stock On Hand", "op": "gt", "value": 250},
+                        ],
+                    }
+                ],
             }
         )
-
-
-def test_refusals_are_catchable_as_fanout_errors() -> None:
-    """Existing API handlers catch ``FanoutError``; the subclass keeps them working."""
-    assert issubclass(GrainDedupUnsupportedError, FanoutError)
 
 
 # --- Detection unit-level ------------------------------------------------
@@ -1283,6 +1546,48 @@ def test_window_metric_composes_with_a_deduplicated_measure() -> None:
     rows = _cumulative_db().execute(result.sql).fetchall()
     # February (qty 4) outranks January (qty 3); stock stays deduplicated.
     assert sorted((int(r[1]), int(r[2])) for r in rows) == [(1, 110), (2, 100)]
+
+
+_DEDUPLICATED_BASE_YAML = (
+    CUMULATIVE_YAML
+    + """  Running Stock:
+    type: cumulative
+    measure: Total Stock On Hand
+    timeDimension: Sale Month
+  Stock Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Total Stock On Hand
+    orderDirection: desc
+"""
+)
+
+
+def test_cumulative_over_a_deduplicated_base_measure() -> None:
+    """The base measure is the deduplicated one, so it is split into its own CTE.
+
+    The wrapper then windows over that column by alias, exactly as it does for a
+    base measure the planner left in place.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Running Stock"]}},
+        _DEDUPLICATED_BASE_YAML,
+    )
+    assert '"__ob_dedup_0"."Total Stock On Hand"' in result.sql
+
+    rows = [(int(r[1])) for r in _cumulative_db().execute(result.sql).fetchall()]
+    # January counts p1's stock once despite two sales: 100, then +110.
+    assert rows == [100, 210]
+
+
+def test_window_over_a_deduplicated_base_measure() -> None:
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Stock Rank"]}},
+        _DEDUPLICATED_BASE_YAML,
+    )
+    rows = sorted(int(r[1]) for r in _cumulative_db().execute(result.sql).fetchall())
+    # February's 110 outranks January's deduplicated 100.
+    assert rows == [1, 2]
 
 
 def test_filter_context_with_a_deduplicated_measure_is_still_refused() -> None:

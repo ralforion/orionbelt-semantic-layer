@@ -225,6 +225,15 @@ class ResolvedQuery:
     the ``grain_dedup`` compiler pass. Empty for every query whose measures all
     sit at (or below) the base object's grain."""
 
+    dedup_components: dict[str, str] = field(default_factory=dict)
+    """Metric *component* measures that must aggregate over deduplicated rows.
+
+    Same mapping as :attr:`dedup_measures`, but for measures the query reaches
+    only through a metric's expression. The planner inlines a component's
+    aggregate into the metric column; the ``grain_dedup`` pass splits those back
+    out so the deduplicated ones can be computed in their own CTE and the metric
+    recomputed from the results."""
+
     having_only_measures: set[str] = field(default_factory=set)
     """Measures auto-included by HAVING (not in ``select.measures``).
 
@@ -232,6 +241,11 @@ class ResolvedQuery:
     final SELECT projection. Today they appear in output as an extra
     column, which keeps the SQL valid and the user gets a visual hint
     that the HAVING filter referenced an additional measure."""
+
+    @property
+    def dedup_targets(self) -> dict[str, str]:
+        """Every measure the ``grain_dedup`` pass rewrites, component or not."""
+        return {**self.dedup_measures, **self.dedup_components}
 
     @property
     def fact_tables(self) -> list[str]:

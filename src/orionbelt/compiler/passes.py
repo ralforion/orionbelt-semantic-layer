@@ -134,7 +134,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
     return (
         CompilerPass(
             name=PASS_GRAIN_DEDUP,
-            applies=lambda r: bool(r.dedup_measures),
+            applies=lambda r: bool(r.dedup_targets),
             run=lambda ast, ctx: wrap_with_grain_dedup(ast, ctx.resolved, ctx.model, ctx.dialect),
             # Runs first: it rewrites the base projection into CTEs that every
             # later wrapper then wraps. The wrappers below restructure that same
@@ -241,10 +241,19 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     # which computes it in a CTE deduplicated at no grain. A ``grain`` override
     # is not: its target grain would need its own dedup CTE, which is not built
     # yet, so it still conflicts.
-    return any(
+    if any(
         measure.grain_override is not None
         for measure in resolved.measures
         if measure.name in resolved.dedup_measures
+    ):
+        return True
+    # A deduplicated metric *component* carrying either one does conflict: the
+    # totals wrapper re-projects that component's raw aggregate into its base
+    # CTE, whose FROM is the dedup output — the fact tables are gone by then.
+    return any(
+        (component.total or component.grain_override is not None)
+        for name, component in resolved.metric_components.items()
+        if name in resolved.dedup_components
     )
 
 
@@ -345,8 +354,8 @@ def evaluate_compatibility(
         )
         if resolved.grouping is not None:
             blocking.append(f"grouping: {resolved.grouping.value}")
-        listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_measures))
         if blocking:
+            listed = ", ".join(f"'{m}'" for m in sorted(resolved.dedup_targets))
             msg = (
                 f"Measure(s) {listed} are sourced from an object whose rows this "
                 f"query's joins replicate, so they must be aggregated over "
@@ -356,20 +365,7 @@ def evaluate_compatibility(
             )
             raise GrainDedupUnsupportedError(msg)
 
-        # HAVING is evaluated inside the main CTE, where a deduplicated measure
-        # does not exist yet.
-        referenced = {f for hf in resolved.having_filters for f in hf.referenced_fields}
-        clashing = sorted(referenced & set(resolved.dedup_measures))
-        if clashing:
-            msg = (
-                f"HAVING filters on {', '.join(repr(c) for c in clashing)}, which "
-                f"must be aggregated over deduplicated rows and so is not available "
-                f"at the point HAVING is applied. Filter it in the caller, or set "
-                f"allowFanOut: true to aggregate the duplicated rows as-is."
-            )
-            raise GrainDedupUnsupportedError(msg)
-
-        warnings.append(dedup_warning(resolved.dedup_measures))
+        warnings.append(dedup_warning(resolved.dedup_targets))
 
     return CompatibilityResult(warnings=warnings, suppressed=frozenset(suppressed))
 

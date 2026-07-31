@@ -372,24 +372,32 @@ class ComposabilityResolver:
         return self._dedup_disposition(name, anchor) == "refused"
 
     def _metric_blocked(self, name: str, anchor: set[str]) -> bool:
-        """A metric is excluded as soon as any component would be deduplicated.
+        """A metric is excluded when the rewrite would refuse it.
 
-        Metrics inline their components into one expression, so the rewrite
-        cannot split a deduplicated component into its own CTE — it refuses the
-        whole metric. Unlike a measure, then, ``"dedup"`` is disqualifying here
-        and not just ``"refused"``.
+        The planner inlines a metric's components into one expression, but the
+        rewrite splits the deduplicated ones back out into their own CTE and
+        recomputes the expression over the results — so ``"dedup"`` is no longer
+        disqualifying on its own, exactly as for a plain measure.
 
-        Every component's sources count as drivers for every other: they all
+        A component reached only *through another metric* still is. The planner
+        does not expand a nested metric reference at all, so there is no inlined
+        aggregate for the rewrite to split, and it refuses rather than build on
+        that.
+
+        Every leaf measure's sources count as drivers for every other: they all
         land in one query, so a component on the *one* side is replicated by a
         sibling on the many side even when the anchor reaches neither.
         """
-        components = metric_measure_names(self.model, name)
+        leaves = metric_leaf_measures(self.model, name)
+        nested = leaves - metric_measure_names(self.model, name)
         drivers = set(anchor)
-        for component in components:
-            drivers |= measure_source_objects(self.model, component)
-        return any(
-            self._dedup_disposition(component, drivers) is not None for component in components
-        )
+        for leaf in leaves:
+            drivers |= measure_source_objects(self.model, leaf)
+        for leaf in leaves:
+            disposition = self._dedup_disposition(leaf, drivers)
+            if disposition == "refused" or (disposition == "dedup" and leaf in nested):
+                return True
+        return False
 
     def _dimension_composable(self, obj: str, spine: set[str], leg_facts: set[str]) -> bool:
         if leg_facts:

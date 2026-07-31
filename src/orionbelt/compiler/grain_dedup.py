@@ -40,12 +40,21 @@ does not sum to the product catalogue's grand total. That is inherent to the
 question, not to the rewrite — it is the same caveat
 :data:`~orionbelt.models.warnings.WarningCode.FAN_TRAP_RISK` already carries for
 the junction-table case, and a warning says so.
+
+Two things ride on that shape. A **metric** whose component needs dedup cannot
+keep the planner's single inlined expression, so the pass computes every
+component separately — each in whichever CTE suits it — and rebuilds the
+metric's formula over those columns in the outer projection. And a **HAVING**
+predicate on a deduplicated measure moves out to the outer query's ``WHERE``:
+inside ``__ob_main`` the value does not exist yet, but the outer query is
+already one row per query grain, so filtering it there means the same thing.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -73,7 +82,13 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import collect_measure_filter_objects
-from orionbelt.compiler.resolution import ResolvedQuery, make_column_expr
+from orionbelt.compiler.resolution import (
+    ResolvedFilter,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
+from orionbelt.compiler.type_resolver import resolve_metric_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
@@ -153,7 +168,21 @@ def replicated_objects(resolved: ResolvedQuery) -> set[str]:
     return replicated
 
 
-def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> dict[str, str]:
+@dataclass(frozen=True)
+class DedupPlan:
+    """Which measures the pass must aggregate over deduplicated rows.
+
+    ``measures`` are named in ``select.measures``; ``components`` are reached
+    only through a metric's expression. The two are kept apart because they are
+    projected differently — a selected measure keeps the planner's own column,
+    a component has to be split back out of the metric that inlined it.
+    """
+
+    measures: dict[str, str] = field(default_factory=dict)
+    components: dict[str, str] = field(default_factory=dict)
+
+
+def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> DedupPlan:
     """Map each measure needing dedup to the replicated object it is sourced from.
 
     A measure qualifies when **every** column it reads comes from a single
@@ -165,40 +194,90 @@ def detect_dedup_measures(resolved: ResolvedQuery, model: SemanticModel) -> dict
     intentional.
     """
     if not resolved.join_steps:
-        return {}
+        return DedupPlan()
 
     replicated = replicated_objects(resolved)
     if not replicated:
-        return {}
+        return DedupPlan()
 
     effective = model.effective_measures
-    dedup: dict[str, str] = {}
+    measures: dict[str, str] = {}
+    components: dict[str, str] = {}
 
     for resolved_measure in resolved.measures:
-        # Metrics inline their components' aggregates into one expression;
-        # dedup would have to split that across CTEs. Reject instead of
-        # silently returning the inflated number.
         if resolved_measure.component_measures:
-            for component in resolved_measure.component_measures:
-                target = _dedup_target(component, effective, replicated)
-                if target is not None:
-                    msg = (
-                        f"Metric '{resolved_measure.name}' references measure "
-                        f"'{component}', which is sourced from '{target}' — an object "
-                        f"whose rows this query's joins replicate. Deduplicating a "
-                        f"metric component is not supported yet, and the metric would "
-                        f"otherwise be computed from an inflated value. Query "
-                        f"'{component}' on its own, or set allowFanOut: true on it if "
-                        f"the duplication is intended."
-                    )
-                    raise GrainDedupUnsupportedError(msg)
+            components.update(
+                _metric_component_targets(resolved_measure, resolved, effective, replicated)
+            )
             continue
 
         target = _dedup_target(resolved_measure.name, effective, replicated)
         if target is not None:
-            dedup[resolved_measure.name] = target
+            measures[resolved_measure.name] = target
 
-    return dedup
+    return DedupPlan(measures=measures, components=components)
+
+
+def _metric_component_targets(
+    metric: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    effective: dict[str, Measure],
+    replicated: set[str],
+) -> dict[str, str]:
+    """Components of *metric* that must be deduplicated, keyed by source object.
+
+    A metric whose components all sit at the query grain is left whole. As soon
+    as one needs dedup, :func:`wrap_with_grain_dedup` computes every component
+    separately and rebuilds the metric expression over the results, so the
+    inlined aggregate never reaches the replicated join.
+
+    A component that is *itself* a metric is refused: the planner does not
+    expand a nested metric reference either (it emits the inner metric's name as
+    a bare column), so splitting one would build on broken SQL.
+    """
+    targets: dict[str, str] = {}
+    for component in metric.component_measures:
+        nested = resolved.metric_components.get(component)
+        if nested is not None and nested.component_measures:
+            found = _nested_dedup_target(nested, resolved, effective, replicated)
+            if found is None:
+                continue
+            inner, inner_target = found
+            msg = (
+                f"Metric '{metric.name}' references metric '{component}', which in turn "
+                f"references measure '{inner}' — sourced from '{inner_target}', an object "
+                f"whose rows this query's joins replicate. Deduplicating a measure "
+                f"nested inside another metric is not supported, and the result would "
+                f"otherwise be overcounted. Reference '{inner}' from '{metric.name}' "
+                f"directly, or set allowFanOut: true on it if the duplication is "
+                f"intended."
+            )
+            raise GrainDedupUnsupportedError(msg)
+
+        target = _dedup_target(component, effective, replicated)
+        if target is not None:
+            targets[component] = target
+    return targets
+
+
+def _nested_dedup_target(
+    metric: ResolvedMeasure,
+    resolved: ResolvedQuery,
+    effective: dict[str, Measure],
+    replicated: set[str],
+) -> tuple[str, str] | None:
+    """First ``(measure, object)`` below *metric* that would need dedup, if any."""
+    for component in metric.component_measures:
+        nested = resolved.metric_components.get(component)
+        if nested is not None and nested.component_measures:
+            found = _nested_dedup_target(nested, resolved, effective, replicated)
+            if found is not None:
+                return found
+            continue
+        target = _dedup_target(component, effective, replicated)
+        if target is not None:
+            return component, target
+    return None
 
 
 def _dedup_target(
@@ -427,6 +506,80 @@ def _collect_column_refs(expr: Expr, found: list[ColumnRef]) -> None:
     _map_column_refs(expr, visit)
 
 
+def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
+    """Replace every bare (unqualified) ``ColumnRef`` that names a mapped alias.
+
+    Both a metric formula and a HAVING predicate reference measures this way —
+    as a table-less ``ColumnRef`` carrying the measure's name — so one
+    substitution serves both.
+    """
+    return _map_column_refs(
+        expr,
+        lambda ref: by_alias.get(ref.name, ref) if ref.table is None else ref,
+    )
+
+
+def _combine(exprs: Iterable[Expr]) -> Expr | None:
+    """AND a sequence of predicates together, or ``None`` when it is empty."""
+    combined: Expr | None = None
+    for expr in exprs:
+        combined = expr if combined is None else BinaryOp(combined, "AND", expr)
+    return combined
+
+
+def _metric_over_components(
+    metric: ResolvedMeasure,
+    measure_ref: Callable[[str], Expr],
+    model: SemanticModel,
+    dialect: Dialect,
+) -> Expr:
+    """Rebuild a metric's expression from its components' finished values.
+
+    The planner inlines each component's aggregate into the metric's column,
+    which over a replicating join reads the inflated value. Here the formula is
+    re-expanded against *measure_ref* instead, so every component is read from
+    whichever CTE computed it — deduplicated or not. The declared ``dataType``
+    cast is reapplied exactly as ``star.py`` applies it, since the column it
+    wrapped no longer exists.
+    """
+    expr = _substitute_aliases(
+        metric.expression, {name: measure_ref(name) for name in metric.component_measures}
+    )
+    metric_def = model.metrics.get(metric.name)
+    if metric_def is None:
+        return expr
+    result_type = resolve_metric_data_type(metric_def, model.settings)
+    return dialect.cast_to_obml_type(expr, result_type) if result_type else expr
+
+
+def _reject_unmovable_having(
+    outer_having: list[ResolvedFilter],
+    available: dict[str, Expr],
+) -> None:
+    """Refuse a moved HAVING predicate that also references something else.
+
+    A predicate leaving ``__ob_main`` is re-expressed against the outer query,
+    where only the measures survive as columns. One that also constrains a
+    dimension still carries that dimension's *physical* column reference, which
+    has nothing to bind to out there — so it is refused rather than emitted as
+    SQL that cannot resolve.
+    """
+    unavailable = sorted(
+        {f for hf in outer_having for f in hf.referenced_fields if f not in available}
+    )
+    if not unavailable:
+        return
+    listed = ", ".join(repr(name) for name in unavailable)
+    msg = (
+        f"A HAVING filter combines {listed} with a measure that must be aggregated "
+        f"over deduplicated rows. The deduplicated measure is only available "
+        f"outside the grouped query, where {listed} is not. Split the filter so "
+        f"the deduplicated measure is constrained on its own, move the rest to "
+        f"'where', or set allowFanOut: true to aggregate the duplicated rows as-is."
+    )
+    raise GrainDedupUnsupportedError(msg)
+
+
 def _measure_alias(column: Expr) -> str | None:
     return column.alias if isinstance(column, AliasedExpr) else None
 
@@ -446,26 +599,72 @@ def wrap_with_grain_dedup(
 
     Returns *ast* unchanged when no measure needs dedup.
     """
-    dedup_measures = resolved.dedup_measures
-    if not dedup_measures:
+    dedup_targets = resolved.dedup_targets
+    if not dedup_targets:
         return ast
 
     dim_names = [d.name for d in resolved.dimensions]
 
+    # A metric whose components the planner inlined into one expression is
+    # rebuilt in the outer projection instead, over one column per component.
+    split_metrics = {
+        m.name: m
+        for m in resolved.measures
+        if any(c in resolved.dedup_components for c in m.component_measures)
+    }
+
+    # What each deduplicated measure aggregates, keyed by the alias it lands
+    # under: the planner's own column for a selected measure (casts included),
+    # the component's aggregate for one the planner inlined into a metric.
     measure_columns: dict[str, Expr] = {}
     for col in ast.columns:
         alias = _measure_alias(col)
-        if alias is not None and alias in dedup_measures:
+        if alias is not None and alias in dedup_targets:
             measure_columns[alias] = col
+    for name in resolved.dedup_components:
+        if name in measure_columns:
+            continue
+        component = resolved.metric_components[name]
+        measure_columns[name] = AliasedExpr(expr=component.expression, alias=name)
 
     # --- main CTE: the query as planned, minus the measures being deduplicated ---
-    main_columns = [c for c in ast.columns if _measure_alias(c) not in dedup_measures]
+    hoisted = set(dedup_targets) | set(split_metrics)
+    main_columns = [c for c in ast.columns if _measure_alias(c) not in hoisted]
+    # A split metric's non-deduplicated components have to be projected in their
+    # own right: the metric column that carried them is gone.
+    main_aliases = {_measure_alias(c) for c in main_columns}
+    for metric in split_metrics.values():
+        for name in metric.component_measures:
+            if name in dedup_targets or name in main_aliases:
+                continue
+            main_columns.append(
+                AliasedExpr(expr=resolved.metric_components[name].expression, alias=name)
+            )
+            main_aliases.add(name)
 
     # With no dimensions and every measure deduplicated, ``main`` would project
     # nothing and degenerate to one row per base row — multiplying the single
     # scalar result. Drop it and let the dedup CTEs stand alone; each already
     # yields exactly one row at this grain.
     keep_main = bool(main_columns)
+
+    # HAVING is evaluated inside ``main``, where a deduplicated measure does not
+    # exist yet. Those predicates move to the outer query instead, where every
+    # measure is one column of a CTE — the rest stay where the planner put them.
+    outer_having = [hf for hf in resolved.having_filters if hf.referenced_fields & hoisted]
+    main_having = ast.having
+    if outer_having:
+        planner_measures = {m.name for m in resolved.measures}
+        planner_exprs = {
+            alias: col.expr
+            for col in ast.columns
+            if (alias := _measure_alias(col)) in planner_measures and isinstance(col, AliasedExpr)
+        }
+        main_having = _combine(
+            _substitute_aliases(hf.expression, planner_exprs)
+            for hf in resolved.having_filters
+            if not hf.referenced_fields & hoisted
+        )
 
     all_ctes = list(ast.ctes)
     if keep_main:
@@ -478,7 +677,7 @@ def wrap_with_grain_dedup(
                     joins=ast.joins,
                     where=ast.where,
                     group_by=ast.group_by,
-                    having=ast.having,
+                    having=main_having,
                     grouping=ast.grouping,
                 ),
             )
@@ -493,12 +692,12 @@ def wrap_with_grain_dedup(
     effective_measures = model.effective_measures
     totals = {
         name
-        for name in dedup_measures
+        for name in dedup_targets
         if (m := effective_measures.get(name)) is not None and m.total
     }
 
     by_group: dict[tuple[str, bool], list[str]] = {}
-    for measure_name, object_name in dedup_measures.items():
+    for measure_name, object_name in dedup_targets.items():
         by_group.setdefault((object_name, measure_name in totals), []).append(measure_name)
 
     cte_for_measure: dict[str, str] = {}
@@ -605,26 +804,49 @@ def wrap_with_grain_dedup(
         )
 
     # --- outer SELECT: main plus each dedup CTE, joined on the query grain ---
+    def measure_ref(name: str) -> Expr:
+        """One measure's value in the outer query, wherever it was computed."""
+        ref: Expr = ColumnRef(name=name, table=cte_for_measure.get(name, _MAIN_CTE))
+        # A group whose rows all miss the joined object contributes no row to the
+        # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
+        # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
+        # NULL, which is what SQL returns for an empty input.
+        if name in cte_for_measure and _counts_rows(effective_measures.get(name)):
+            return FunctionCall(name="COALESCE", args=[ref, Literal.number(0)])
+        return ref
+
     outer_columns: list[Expr] = []
     for col in ast.columns:
         alias = _measure_alias(col)
         if alias is None:
             outer_columns.append(col)
             continue
-        if alias not in dedup_measures:
+        if alias in split_metrics:
+            outer_columns.append(
+                AliasedExpr(
+                    expr=_metric_over_components(split_metrics[alias], measure_ref, model, dialect),
+                    alias=alias,
+                )
+            )
+            continue
+        if alias not in dedup_targets:
             outer_columns.append(
                 AliasedExpr(expr=ColumnRef(name=alias, table=_MAIN_CTE), alias=alias)
             )
             continue
-        source = cte_for_measure[alias]
-        measure_col: Expr = ColumnRef(name=alias, table=source)
-        # A group whose rows all miss the joined object contributes no row to the
-        # dedup CTE, so the LEFT JOIN yields NULL. For a count that must read
-        # zero, not "unknown" — COUNT over no rows is 0. Other aggregations keep
-        # NULL, which is what SQL returns for an empty input.
-        if _counts_rows(effective_measures.get(alias)):
-            measure_col = FunctionCall(name="COALESCE", args=[measure_col, Literal.number(0)])
-        outer_columns.append(AliasedExpr(expr=measure_col, alias=alias))
+        outer_columns.append(AliasedExpr(expr=measure_ref(alias), alias=alias))
+
+    # HAVING predicates on a deduplicated measure become an outer WHERE: the
+    # wrapper's own query is one row per query grain, so filtering it there is
+    # exactly what HAVING would have done had the value been available.
+    selected = {m.name for m in resolved.measures}
+    outer_exprs = {
+        alias: col.expr
+        for col in outer_columns
+        if (alias := _measure_alias(col)) in selected and isinstance(col, AliasedExpr)
+    }
+    _reject_unmovable_having(outer_having, outer_exprs)
+    outer_where = _combine(_substitute_aliases(hf.expression, outer_exprs) for hf in outer_having)
 
     # Without ``main`` the first dedup CTE becomes the FROM and the rest join to
     # it; every one yields a single row at this grain, so a CROSS JOIN is exact.
@@ -673,9 +895,16 @@ def wrap_with_grain_dedup(
             projected_exprs.append((ColumnRef(name=dim.name), dim.name))
     projected_exprs.extend((m.expression, m.name) for m in resolved.measures)
 
+    def order_source(name: str) -> str | None:
+        # A split metric is computed in this very SELECT, so it sorts by its
+        # output alias — there is no CTE holding the finished value.
+        if name in split_metrics:
+            return None
+        return cte_for_measure.get(name, _MAIN_CTE)
+
     outer_order_by = [
         OrderByItem(
-            expr=_order_expr_to_outer(item.expr, projected_exprs, cte_for_measure),
+            expr=_order_expr_to_outer(item.expr, projected_exprs, order_source),
             desc=item.desc,
             nulls_last=item.nulls_last,
         )
@@ -686,6 +915,7 @@ def wrap_with_grain_dedup(
         columns=outer_columns,
         from_=From(source=outer_from, alias=outer_from),
         joins=outer_joins,
+        where=outer_where,
         order_by=outer_order_by,
         limit=ast.limit,
         offset=ast.offset,
@@ -710,7 +940,7 @@ def _null_safe_eq(left: Expr, right: Expr) -> Expr:
 def _order_expr_to_outer(
     expr: Expr,
     projected: list[tuple[Expr, str]],
-    cte_for_measure: dict[str, str],
+    source_of: Callable[[str], str | None],
 ) -> Expr:
     """Repoint one ORDER BY expression at the wrapper's CTE aliases.
 
@@ -720,12 +950,10 @@ def _order_expr_to_outer(
     arithmetic tree as readily as a plain column reference.
 
     A deduplicated measure sorts against the CTE that computes it; everything
-    else against ``main``, which carries the full grain.
+    else against ``main``, which carries the full grain. *source_of* answers
+    which, and returns ``None`` for a metric this query rebuilds in its own
+    projection — that one sorts by its output alias.
     """
-
-    def source_of(name: str) -> str:
-        return cte_for_measure.get(name, _MAIN_CTE)
-
     for candidate, name in projected:
         if expr == candidate:
             return ColumnRef(name=name, table=source_of(name))

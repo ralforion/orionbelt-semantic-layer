@@ -472,13 +472,12 @@ def test_guard_holds_for_anchors_that_do_not_reach_the_measure() -> None:
         assert "Stock Filtered In Grain" in composable
 
 
-def test_acr_excludes_a_metric_over_a_deduplicated_component() -> None:
-    """Metrics inline their components, so one needing dedup refuses the whole metric.
+def test_acr_advertises_a_metric_over_a_deduplicated_component() -> None:
+    """A deduplicated component is rewritten, not refused - so is its metric.
 
-    A measure is only excluded when the rewrite *refuses* it; a metric is
-    excluded as soon as a component would merely be deduplicated. The component
-    here carries no filters at all - it is disqualifying just by sitting on the
-    replicated side.
+    The rewrite computes each component separately and rebuilds the metric over
+    the results, so a metric is excluded on the same terms as a measure: only
+    when the rewrite refuses it outright.
     """
     model = _dedup_guard_model()
     resolver = ComposabilityResolver(model)
@@ -488,6 +487,26 @@ def test_acr_excludes_a_metric_over_a_deduplicated_component() -> None:
             result = resolver.resolve(set(), set())
         else:
             result = resolver.resolve(*resolver.objects_from_anchor_name(anchor))
-        assert "Stock per Sale" not in set(result.metrics) | set(result.cfl_metrics)
-        # The plain component itself stays composable - it is rewritten, not refused.
+        assert "Stock per Sale" in set(result.metrics) | set(result.cfl_metrics)
         assert "Total Stock On Hand" in set(result.measures) | set(result.cfl_measures)
+
+
+def test_acr_excludes_a_metric_whose_deduplicated_component_is_nested() -> None:
+    """The planner never expands a metric-inside-a-metric reference.
+
+    There is no inlined aggregate for the rewrite to split back out, so it
+    refuses - and ACR must not advertise what it refuses.
+    """
+    yaml_text = (
+        DEDUP_GUARD_YAML
+        + """  Stock per Sale Squared:
+    expression: '{[Stock per Sale]} * {[Stock per Sale]}'
+"""
+    )
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+
+    composables = ComposabilityResolver(model).resolve({"Sales"}, set())
+    assert "Stock per Sale" in composables.metrics
+    assert "Stock per Sale Squared" not in composables.metrics

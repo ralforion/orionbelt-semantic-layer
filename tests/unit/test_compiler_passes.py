@@ -36,8 +36,10 @@ def _resolved(**attrs: object) -> ResolvedQuery:
     """Build a stub with just the attributes the passes read.
 
     Accepts ``grouping`` (str or None), ``having_only_measures`` (set),
-    ``dedup_measures`` (dict), ``having_filters`` (list), and the ``has_*``
-    feature flags (bool). Anything unset defaults to off.
+    ``dedup_measures`` / ``dedup_components`` (dicts, merged into the
+    ``dedup_targets`` the real ``ResolvedQuery`` derives), ``having_filters``
+    (list), and the ``has_*`` feature flags (bool). Anything unset defaults
+    to off.
 
     ``has_window=True`` also seeds a window measure so the window pass's
     predicate (``window_pass_applies``, which inspects ``measures`` /
@@ -55,6 +57,11 @@ def _resolved(**attrs: object) -> ResolvedQuery:
         has_filter_context=attrs.get("has_filter_context", False),
         having_only_measures=attrs.get("having_only_measures") or set(),
         dedup_measures=attrs.get("dedup_measures") or {},
+        dedup_components=attrs.get("dedup_components") or {},
+        dedup_targets={
+            **(attrs.get("dedup_measures") or {}),  # type: ignore[dict-item]
+            **(attrs.get("dedup_components") or {}),  # type: ignore[dict-item]
+        },
         having_filters=attrs.get("having_filters") or [],
         measures=measures,
         metric_components={},
