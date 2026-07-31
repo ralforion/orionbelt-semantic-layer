@@ -367,7 +367,7 @@ than return an inflated number:
 | Period-over-period | Rebuilds the FROM from a date spine and re-joins tables the dedup CTEs already joined: `Ambiguous reference to table ... duplicate alias` |
 | `ROLLUP` / `CUBE` | Changes the grain the CTEs are joined back on |
 | A deduplicated measure reached through a **window** metric (a derived metric over one) | That wrapper rebuilds its base measure from the fact tables, which a dedup CTE cannot serve. Nested *derived* metrics are followed and split normally |
-| `total: true` on a deduplicated metric *component* | The totals wrapper re-projects the component's raw aggregate into a CTE whose FROM is the dedup output |
+| `total: true` or a `grain` override on *any* component of a split metric | The totals wrapper decomposes the metric again and re-projects every component's raw aggregate into a CTE whose FROM is the dedup output, so a total on a non-deduplicated sibling breaks it just as badly |
 | A measure `filters:` or `withinGroup:` clause reaching outside the dedup object | See below |
 
 Anything an aggregate reads beyond its own value columns has to be projected

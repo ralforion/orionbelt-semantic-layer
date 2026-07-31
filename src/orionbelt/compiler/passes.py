@@ -38,6 +38,7 @@ from orionbelt.compiler.grain_dedup import (
     dedup_warning,
     wrap_with_grain_dedup,
 )
+from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import ResolvedQuery
 from orionbelt.compiler.total_wrap import wrap_with_totals
@@ -247,14 +248,19 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
         if measure.name in resolved.dedup_measures
     ):
         return True
-    # A deduplicated metric *component* carrying either one does conflict: the
-    # totals wrapper re-projects that component's raw aggregate into its base
-    # CTE, whose FROM is the dedup output — the fact tables are gone by then.
-    return any(
-        (component.total or component.grain_override is not None)
-        for name, component in resolved.metric_components.items()
-        if name in resolved.dedup_components
-    )
+    # Once a metric is split across dedup CTEs, a ``total`` or ``grain`` on *any*
+    # of its components conflicts — not just on the deduplicated ones. The totals
+    # wrapper decomposes such a metric back into its components and re-projects
+    # each one's raw aggregate into a base CTE whose FROM is the dedup output,
+    # where the fact tables are gone: ``SUM("Products"."stock_on_hand")`` over
+    # ``__ob_main`` binds to nothing.
+    for metric in resolved.measures:
+        components = metric_leaf_components(metric, resolved.metric_components)
+        if not any(comp.name in resolved.dedup_components for comp in components):
+            continue
+        if any(comp.total or comp.grain_override is not None for comp in components):
+            return True
+    return False
 
 
 def evaluate_compatibility(

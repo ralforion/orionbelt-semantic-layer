@@ -175,6 +175,8 @@ metrics:
     expression: '{[Stock Rank]} * 2'
   Doubled Price per Unit:
     expression: '{[Price per Unit]} * 2'
+  Stock per Grand Total:
+    expression: '{[Total Stock On Hand]} / {[Grand Total Quantity]}'
 """
 
 
@@ -605,6 +607,18 @@ def test_total_on_a_deduplicated_metric_component_is_refused() -> None:
     """
     with pytest.raises(GrainDedupUnsupportedError, match="totals"):
         _compile({"select": {"dimensions": ["Region"], "measures": ["Stock Share"]}})
+
+
+def test_total_on_any_component_of_a_split_metric_is_refused() -> None:
+    """The total need not be on the deduplicated component to conflict.
+
+    Once a metric is split across dedup CTEs, the totals wrapper decomposes it
+    again and re-projects *every* component's raw aggregate into a base CTE
+    whose FROM is the dedup output - so a ``total: true`` sibling of a
+    deduplicated component breaks it just as badly.
+    """
+    with pytest.raises(GrainDedupUnsupportedError, match="totals"):
+        _compile({"select": {"dimensions": ["Region"], "measures": ["Stock per Grand Total"]}})
 
 
 def test_period_over_period_over_a_deduplicated_component_is_refused() -> None:

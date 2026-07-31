@@ -727,3 +727,37 @@ class TestPipelineFanout:
         with pytest.raises(ResolutionError) as exc_info:
             CompilationPipeline().compile(query, model, "postgres")
         assert "UNREACHABLE_REQUIRED_OBJECT" in {e.code for e in exc_info.value.errors}
+
+
+def test_fanout_through_a_window_metric_component() -> None:
+    """A metric's window component stands for the measure it windows over.
+
+    ``metric_components`` holds the window metric, whose *name* is not in the
+    model's measures - so stopping the walk there skipped the base measure and
+    the query's row multiplication went unreported.
+    """
+    from orionbelt.ast.nodes import ColumnRef
+    from orionbelt.compiler.resolution import ResolvedMeasure
+
+    model = _make_model(
+        cardinality=Cardinality.MANY_TO_ONE, add_metric=True, measure_on_customers=True
+    )
+    resolved = _make_resolved(
+        model,
+        reversed_step=True,
+        cardinality=Cardinality.MANY_TO_ONE,
+        measure_names=["Revenue per Order"],
+        component_measures=["Ranked"],
+    )
+    resolved.metric_components["Ranked"] = ResolvedMeasure(
+        name="Ranked",
+        aggregation="",
+        expression=ColumnRef(name="Total Revenue"),
+        component_measures=["Total Revenue"],
+        is_expression=True,
+        is_window=True,
+        window_base_measure="Total Revenue",
+    )
+
+    with pytest.raises(FanoutError, match="inflated"):
+        detect_fanout(resolved, model)

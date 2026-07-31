@@ -64,15 +64,21 @@ def expand_metric_expression(
     return map_column_refs(expr, visit)
 
 
-def metric_leaf_names(
+def metric_leaf_measure_names(
     measure: ResolvedMeasure,
     components: Mapping[str, ResolvedMeasure],
 ) -> list[str]:
-    """Names of the components *measure* reads, following nested derived metrics.
+    """Names of the *measures* a metric ultimately reads.
 
-    Unlike :func:`metric_leaf_components` this keeps a name the resolver did not
-    put in *components*, so a caller checking every component against the model
-    — ``fanout`` — never skips one because the map is incomplete.
+    Goes one step further than :func:`metric_leaf_components`: a cumulative,
+    window, or period-over-period component resolves to the base measure it is
+    computed over, since that is the measure a caller checking against the model
+    cares about. ``fanout`` is that caller — a metric's window component is not
+    in ``effective_measures``, so stopping at its name skipped the base measure
+    entirely and the query's row multiplication went unreported.
+
+    A name the resolver never put in *components* is kept as-is rather than
+    dropped, so an incomplete map cannot silently shrink the checked set.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -83,7 +89,12 @@ def metric_leaf_names(
                 continue
             seen.add(name)
             component = components.get(name)
-            if component is not None and component.is_derived_metric:
+            if component is None:
+                out.append(name)
+            elif component.is_derived_metric:
+                walk(component)
+            elif component.component_measures:
+                # Wrapper-computed: recurse into whichever measure it wraps.
                 walk(component)
             else:
                 out.append(name)

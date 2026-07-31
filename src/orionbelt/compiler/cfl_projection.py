@@ -313,6 +313,29 @@ def build_outer_concat_count(
     return FunctionCall(name=agg, args=[concat], distinct=distinct)
 
 
+def _single_leg_root(
+    objects: set[str],
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+) -> str | None:
+    """The object one leg can be rooted at to cover *objects*, if there is one.
+
+    A measure reading several objects is not automatically cross-fact: when the
+    objects are joined — ``{[Sales].[Qty]} * {[Products].[Price]}`` over a
+    many-to-one — one leg rooted at the common ancestor reaches them all and
+    projects the expression exactly as the star planner would. Only when no
+    single root reaches every object are they genuinely independent facts, which
+    is the case the caller hands to ``cross_fact``.
+    """
+    if len(objects) <= 1:
+        return next(iter(objects), None)
+    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    root = graph.find_common_root(objects)
+    if root and objects <= (graph.descendants(root) | {root}):
+        return root
+    return None
+
+
 def group_measures_by_object(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -343,19 +366,25 @@ def group_measures_by_object(
                 seen.add(comp.name)
                 model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:
-                    obj_name = model_measure.columns[0].view or resolved.base_object
+                    comp_objects = {f.view for f in model_measure.columns if f.view}
                 else:
                     # Declared as an expression rather than ``columns:`` — the
-                    # source object is in the aggregate's own table references.
+                    # source objects are in the aggregate's own table references.
                     # Falling back to the base object put the component in the
                     # wrong leg, which then projected a column its FROM has not
                     # joined.
-                    comp_objects: set[str] = set()
+                    comp_objects = set()
                     planner._collect_table_refs(comp.expression, comp_objects)
-                    obj_name = (
-                        next(iter(sorted(comp_objects))) if comp_objects else resolved.base_object
-                    )
-                groups.setdefault(obj_name, []).append(comp)
+                root = _single_leg_root(comp_objects, resolved, model)
+                if root is None:
+                    # Reads facts no single leg reaches — same treatment as a
+                    # cross-fact direct measure: give every object a leg and let
+                    # ``_plan_union_all`` distribute the fields.
+                    cross_fact.append(comp)
+                    for obj in comp_objects:
+                        groups.setdefault(obj, [])
+                    continue
+                groups.setdefault(root or resolved.base_object, []).append(comp)
         else:
             if measure.name in seen:
                 continue
@@ -373,17 +402,15 @@ def group_measures_by_object(
                 # Expression-based measure: extract table refs from the AST
                 field_objects = set()
                 planner._collect_table_refs(measure.expression, field_objects)
-            if len(field_objects) > 1:
+            root = _single_leg_root(field_objects, resolved, model) if field_objects else None
+            if field_objects and root is None:
                 # Cross-fact multi-field measure: ensure each
                 # involved object has a leg, but don't assign
                 # the measure to any single group.
                 cross_fact.append(measure)
                 for obj in field_objects:
                     groups.setdefault(obj, [])
-            elif field_objects:
-                obj_name = next(iter(field_objects))
-                groups.setdefault(obj_name, []).append(measure)
             else:
-                groups.setdefault(resolved.base_object, []).append(measure)
+                groups.setdefault(root or resolved.base_object, []).append(measure)
 
     return groups, cross_fact

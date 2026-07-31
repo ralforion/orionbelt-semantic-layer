@@ -247,7 +247,20 @@ dataObjects:
     schema: main
     columns:
       Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Product ID: {code: product_id, abstractType: string}
       Amount: {code: amount, abstractType: float}
+      Qty: {code: qty, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Price: {code: price, abstractType: float}
   Returns:
     code: returns
     schema: main
@@ -260,6 +273,10 @@ measures:
     resultType: float
     aggregation: sum
     expression: '{[Sales].[Amount]}'
+  Sales Value:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Qty]} * {[Products].[Price]}'
   Refund Amount:
     resultType: float
     aggregation: sum
@@ -268,13 +285,16 @@ measures:
 metrics:
   Net: {expression: '{[Sales Amount]} - {[Refund Amount]}'}
   Net Doubled: {expression: '{[Net]} * 2'}
+  Net Value: {expression: '{[Sales Value]} - {[Refund Amount]}'}
 """
 
 
 def _cfl_db() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
-    con.execute("CREATE TABLE sales (id VARCHAR, amount DOUBLE)")
-    con.execute("INSERT INTO sales VALUES ('s1',100), ('s2',50)")
+    con.execute("CREATE TABLE sales (id VARCHAR, product_id VARCHAR, amount DOUBLE, qty INTEGER)")
+    con.execute("INSERT INTO sales VALUES ('s1','p1',100,5), ('s2','p1',50,2)")
+    con.execute("CREATE TABLE products (id VARCHAR, price DOUBLE)")
+    con.execute("INSERT INTO products VALUES ('p1',10.0)")
     con.execute("CREATE TABLE returns (id VARCHAR, refund DOUBLE)")
     con.execute("INSERT INTO returns VALUES ('r1',30)")
     return con
@@ -300,3 +320,23 @@ def test_nested_metric_across_two_facts(measures: list[str], expected: tuple[flo
 
     rows = _cfl_db().execute(result.sql).fetchall()
     assert tuple(float(v) for v in rows[0]) == expected
+
+
+def test_a_component_spanning_joined_objects_gets_one_leg() -> None:
+    """``{[Sales].[Qty]} * {[Products].[Price]}`` is not cross-fact.
+
+    Its objects are joined, so one leg rooted at the common ancestor reaches
+    both and projects the expression as the star planner would. Picking the
+    first object alphabetically rooted the leg at ``Products`` and then
+    projected ``"Sales"."qty"`` there, which the leg's FROM never joined.
+    """
+    result = _compile(
+        {"select": {"dimensions": [], "measures": ["Net Value"]}},
+        CFL_YAML,
+    )
+    assert 'FROM "main"."sales" AS "Sales"' in result.sql
+    assert 'JOIN "main"."products"' in result.sql
+
+    rows = _cfl_db().execute(result.sql).fetchall()
+    # (5 * 10) + (2 * 10) sold, less the 30 refunded.
+    assert float(rows[0][0]) == 40.0
