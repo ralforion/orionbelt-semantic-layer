@@ -30,7 +30,6 @@ from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias,
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
 from orionbelt.models.semantic import (
-    TWO_COLUMN_AGGREGATIONS,
     DataObject,
     SemanticModel,
 )
@@ -69,17 +68,21 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
 
 
 class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
-    """Raised when a two-column statistical aggregate straddles independent facts.
+    """Raised when a multi-column aggregate straddles independent facts.
 
-    ``corr`` / ``covar_*`` / ``regr_*`` read two values per row. In a multi-fact
-    plan that is fine as long as one leg owns both arguments: it projects them as
-    two columns and the outer query re-applies the aggregate over the pair.
+    Some aggregates read several columns *of one row*: ``corr`` / ``covar_*`` /
+    ``regr_*`` correlate a pair, and a multi-column ``count_distinct`` counts
+    observed tuples. In a multi-fact plan that is fine as long as one leg owns
+    every argument: it projects them as separate columns and the outer query
+    rebuilds the aggregate over them.
 
-    It is not fine when the two arguments sit on data objects no single leg
-    reaches. UNION ALL stacks the facts rather than joining them, so each leg
-    supplies one of the columns and NULL-pads the other, and no row ever carries
-    a complete pair — the aggregate would come back NULL having seen none. No
-    outer expression can recover the pairing the union destroyed.
+    It is not fine when the arguments sit on data objects no single leg reaches.
+    UNION ALL stacks the facts rather than joining them, so each leg supplies one
+    column and NULL-pads the rest, and no row ever carries a complete set. The
+    statistics come back NULL having seen no pairs; the tuple count concatenates
+    a NULL into every row and returns 0. No outer expression can recover the
+    pairing the union destroyed, and a confidently wrong 0 is worse than an
+    error, so this refuses.
 
     Inherits ``UnsupportedAggregationError`` so existing router catch
     sites surface the same 422 response shape. The ``dialect`` slot
@@ -97,12 +100,13 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
         self.aggregation = aggregation
         Exception.__init__(
             self,
-            f"Measure '{measure_name}' uses a two-column statistical aggregate "
-            f"({aggregation.upper()}), whose two arguments must be read from the "
-            "same row. They sit on data objects that no single fact table can "
-            "reach together, and this query stacks independent facts, so each "
-            "row can only ever carry one of the two values. Point both arguments "
-            "at columns one fact table can reach.",
+            f"Measure '{measure_name}' aggregates columns that must be read from "
+            f"the same row ({aggregation.upper()}). They sit on data objects that "
+            "no single fact table can reach together, and this query stacks "
+            "independent facts, so each row can only ever carry one of the "
+            "values. Point every argument at columns one fact table can reach, "
+            "or combine the facts with a metric over per-fact measures instead "
+            "of pairing their rows.",
         )
 
 
@@ -162,24 +166,29 @@ class CFLPlanner:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
-        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) read two
-        # values per row. A leg that owns both arguments carries them as two
-        # columns and the outer query re-applies the aggregate over the pair,
-        # so being in a multi-fact query costs them nothing.
+        # Every multi-column aggregate reads its arguments from one row: a
+        # two-column statistic (CORR/COVAR_*/REGR_*) correlates a pair, a
+        # multi-column COUNT DISTINCT counts observed tuples. A leg that owns
+        # all the arguments carries them as separate columns and the outer
+        # query rebuilds the aggregate over them, so a multi-fact query costs
+        # such a measure nothing.
         #
-        # What they cannot survive is having their two arguments on data
-        # objects no single leg reaches — the definition of ``cross_fact``.
-        # UNION ALL stacks facts rather than joining them, so each leg supplies
-        # one column and NULL-pads the other, and no row ever carries a
-        # complete pair. The aggregate would return NULL over zero pairs.
+        # What none of them survives is having their arguments on data objects
+        # no single leg reaches — the definition of ``cross_fact``. UNION ALL
+        # stacks facts rather than joining them, so each leg supplies one
+        # column and NULL-pads the rest, and no row ever carries a complete
+        # set. The statistics then return NULL over zero pairs, and the tuple
+        # count concatenates a NULL into every row and returns 0 — a wrong
+        # answer rather than a failure, which is the reason to refuse here
+        # rather than let it compile.
         #
         # Metric components count: a metric is planned by inlining its
         # components' aggregates, so ``{[Cross Corr]}`` reaches the same
         # rebuild — it just used to arrive there without passing the guard.
         cross_fact_names = {m.name for m in cross_fact} if cross_fact else set()
         for measure in (*resolved.measures, *resolved.metric_components.values()):
-            agg = measure.aggregation.lower() if measure.aggregation else ""
-            if agg in TWO_COLUMN_AGGREGATIONS and measure.name in cross_fact_names:
+            if measure.name in cross_fact_names and self._is_multi_field(measure):
+                agg = measure.aggregation.lower() if measure.aggregation else ""
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
 
         # Ordered aggregates now carry their sort key through the union as a

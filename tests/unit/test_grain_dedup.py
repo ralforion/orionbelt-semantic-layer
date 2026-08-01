@@ -1922,12 +1922,20 @@ CFL_WRAPPED_MULTI_FIELD_YAML = (
     columns:
       - {dataObject: Returns, column: Qty}
       - {dataObject: Sales, column: Amount}
+  Cross Pairs:
+    resultType: int
+    aggregation: count_distinct
+    columns:
+      - {dataObject: Returns, column: Return ID}
+      - {dataObject: Sales, column: Sale ID}
 """,
     )
     + """metrics:
   Wrapped Pairs: {dataType: integer, expression: '{[Return Pairs]}'}
   Wrapped Corr: {dataType: double, expression: '{[Return Corr]}'}
   Wrapped Cross Corr: {dataType: double, expression: '{[Cross Corr]}'}
+  Wrapped Cross Pairs: {dataType: integer, expression: '{[Cross Pairs]}'}
+  Count Product: {dataType: integer, expression: '{[Sales Count]} * {[Returns Count]}'}
 """
 )
 
@@ -2242,13 +2250,25 @@ def test_a_tuple_count_also_reads_an_argument_on_a_joined_object(dialect: str) -
     assert con.execute(multi.sql).fetchall()[0][2] == con.execute(single.sql).fetchall()[0][1]
 
 
-@pytest.mark.parametrize("measure", ["Cross Corr", "Wrapped Cross Corr"])
-def test_a_two_column_statistic_straddling_two_facts_is_still_refused(measure: str) -> None:
+@pytest.mark.parametrize(
+    ("measure", "carrier", "aggregation"),
+    [
+        ("Cross Corr", "Cross Corr", "corr"),
+        ("Wrapped Cross Corr", "Cross Corr", "corr"),
+        ("Cross Pairs", "Cross Pairs", "count_distinct"),
+        ("Wrapped Cross Pairs", "Cross Pairs", "count_distinct"),
+    ],
+)
+def test_a_multi_column_aggregate_straddling_two_facts_is_refused(
+    measure: str, carrier: str, aggregation: str
+) -> None:
     """The one case no outer expression can rescue, reachable directly or via a metric.
 
-    UNION ALL stacks the facts, so a leg can supply only one of the two columns
-    and NULL-pads the other: no row ever carries a complete pair and the
-    aggregate would return NULL having seen none. Refusing beats that silently.
+    UNION ALL stacks the facts, so a leg supplies one column and NULL-pads the
+    rest: no row ever carries a complete set. A statistic then returns NULL
+    having seen no pairs, and a tuple count concatenates a NULL into every row
+    and returns 0 - a confidently wrong answer, which is worse than an error and
+    is why the count is refused rather than left to compile.
 
     The metric form used to walk straight past this guard, which only looked at
     directly selected measures.
@@ -2259,8 +2279,25 @@ def test_a_two_column_statistic_straddling_two_facts_is_still_refused(measure: s
             CFL_WRAPPED_MULTI_FIELD_YAML,
         )
     # Names the measure that actually carries the aggregate, not the wrapper.
-    assert excinfo.value.measure_name == "Cross Corr"
-    assert excinfo.value.aggregation == "corr"
+    assert excinfo.value.measure_name == carrier
+    assert excinfo.value.aggregation == aggregation
+
+
+def test_a_metric_over_per_fact_measures_is_the_cross_fact_route_that_works() -> None:
+    """What the refusal points users at, and why it is not the same question.
+
+    A metric never needs the two facts in one row: each component aggregates
+    inside its own leg and only the scalars meet, in the outer query. So
+    combining facts at the *aggregate* level works where pairing their rows
+    cannot. (This is the Cartesian count, not a count of observed pairs - a
+    different question, which is the honest answer to that one.)
+    """
+    con = _corr_db()  # 3 sales rows, 5 returns rows
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Count Product"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert con.execute(result.sql).fetchall() == [(2024, 15)]
 
 
 def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
