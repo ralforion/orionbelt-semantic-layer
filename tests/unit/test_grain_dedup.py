@@ -1903,7 +1903,10 @@ CFL_WRAPPED_MULTI_FIELD_YAML = (
         "      Cost: {code: cost, abstractType: float}\n"
         "      Double Qty:\n"
         "        abstractType: float\n"
-        "        expression: '{[Returns].[Qty]} * 2'",
+        "        expression: '{[Returns].[Qty]} * 2'\n"
+        "      One:\n"
+        "        abstractType: int\n"
+        "        expression: '1'",
     ).replace(
         """  Return Pairs__f0:
     resultType: float
@@ -2227,16 +2230,29 @@ def test_a_leg_projects_every_argument_of_the_measure_it_owns(
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
-def test_a_tuple_count_also_reads_an_argument_on_a_joined_object(dialect: str) -> None:
+@pytest.mark.parametrize(
+    "second_argument",
+    [
+        pytest.param("{dataObject: Calendar, column: Month}", id="joined-column"),
+        # A computed column that reads no column at all: its resolved expression
+        # is a literal, so it has no table references to test reachability with.
+        # Requiring at least one reference dropped it from the owning leg just as
+        # surely as the own-object rule dropped a joined one.
+        pytest.param("{dataObject: Returns, column: One}", id="constant-column"),
+    ],
+)
+def test_a_tuple_count_also_reads_an_argument_its_leg_owns(
+    second_argument: str, dialect: str
+) -> None:
     """The same defect, on the path that predates two-column statistics.
 
     ``count_distinct(Returns.[Return ID], Calendar.Month)`` had its second
     argument padded away by its own leg, so the outer concat counted tuples with
-    a NULL half.
+    a NULL half and the count came back 0.
     """
     yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
         "      - {dataObject: Returns, column: Return Date Key}",
-        "      - {dataObject: Calendar, column: Month}",
+        f"      - {second_argument}",
     )
     con = _corr_db()
     multi = _compile(
