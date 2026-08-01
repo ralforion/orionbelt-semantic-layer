@@ -13,6 +13,8 @@ data where the two answers differ.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 import pytest
 from ruamel.yaml import YAML
@@ -1890,10 +1892,16 @@ CFL_FIELD_CLASH_YAML = CFL_WITHIN_GROUP_YAML.replace(
 )
 
 
-# A metric wrapping a two-column aggregate, and one wrapping a two-column
-# *statistical* aggregate that CFL cannot express at all.
+# Two-column measures under CFL: a tuple count, a statistical aggregate whose
+# arguments share one fact (plannable), and one whose arguments straddle two
+# facts (not plannable) - each also wrapped in a metric.
 CFL_WRAPPED_MULTI_FIELD_YAML = (
     CFL_FIELD_CLASH_YAML.replace(
+        "      Return Date Key: {code: datekey, abstractType: string}",
+        "      Return Date Key: {code: datekey, abstractType: string}\n"
+        "      Qty: {code: qty, abstractType: float}\n"
+        "      Cost: {code: cost, abstractType: float}",
+    ).replace(
         """  Return Pairs__f0:
     resultType: float
     aggregation: sum
@@ -1903,15 +1911,37 @@ CFL_WRAPPED_MULTI_FIELD_YAML = (
     resultType: float
     aggregation: corr
     columns:
-      - {dataObject: Returns, column: Return ID}
-      - {dataObject: Returns, column: Return Date Key}
+      - {dataObject: Returns, column: Qty}
+      - {dataObject: Returns, column: Cost}
+  Cross Corr:
+    resultType: float
+    aggregation: corr
+    columns:
+      - {dataObject: Returns, column: Qty}
+      - {dataObject: Sales, column: Amount}
 """,
     )
     + """metrics:
   Wrapped Pairs: {dataType: integer, expression: '{[Return Pairs]}'}
   Wrapped Corr: {dataType: double, expression: '{[Return Corr]}'}
+  Wrapped Cross Corr: {dataType: double, expression: '{[Cross Corr]}'}
 """
 )
+
+
+def _corr_db() -> duckdb.DuckDBPyConnection:
+    """Sales and Returns hanging off a shared calendar, with correlated columns."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, month INT, year INT)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',3,2024),('d2',1,2024),('d3',5,2024)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO main.sales VALUES ('s1','d1',10),('s2','d2',6),('s3','d3',4)")
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE, cost DOUBLE)")
+    con.execute(
+        "INSERT INTO main.returns VALUES "
+        "('rB','d1',1,2),('rA','d2',3,7),('rC','d1',5,9),('rD','d3',2,3),('rE','d3',8,11)"
+    )
+    return con
 
 
 def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
@@ -2073,20 +2103,77 @@ def test_a_metric_wrapping_a_multi_field_measure_reads_the_columns_its_legs_proj
     assert '"composite_01"."Return Pairs"' not in result.sql
 
 
-def test_a_metric_cannot_smuggle_a_two_column_statistical_aggregate_into_cfl() -> None:
-    """The CFL refusal has to cover components, not just directly selected measures.
+@pytest.mark.parametrize("measure", ["Return Corr", "Wrapped Corr"])
+def test_a_two_column_statistic_matches_its_single_fact_value_under_cfl(measure: str) -> None:
+    """CORR rides the union as a *pair* of columns, not a concatenated string.
 
-    Selecting ``Return Corr`` refuses; wrapping it in a metric used to walk
-    straight past the guard and emit a one-argument ``CORR`` over a concatenated
-    string - exactly the SQL the guard exists to prevent.
+    The legs already project one column per argument, so the outer query
+    re-applies the aggregate over the pair. Rows the sibling leg contributes are
+    NULL in both columns and these aggregates skip any row with a NULL argument,
+    leaving exactly the row set the single-fact plan aggregates. Multi-fact
+    therefore has to *equal* single-fact, not approximate it.
+    """
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert '"composite_01"."Return Corr__f0", "composite_01"."Return Corr__f1"' in multi.sql
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Corr"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    # Year, Sales Amount, <statistic> vs Year, <statistic>
+    assert con.execute(multi.sql).fetchall()[0][2] == con.execute(single.sql).fetchall()[0][1]
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "expected"),
+    [
+        ("corr", 0.9461176698163105),
+        ("covar_pop", 8.08),
+        ("covar_samp", 10.1),
+        ("regr_slope", 0.6824324324324325),
+        ("regr_intercept", -0.5675675675675681),
+    ],
+)
+def test_every_two_column_statistic_survives_the_multi_fact_union(
+    aggregation: str, expected: float
+) -> None:
+    """Not just CORR: the whole ``TWO_COLUMN_AGGREGATIONS`` family shares the path."""
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        """  Return Corr:
+    resultType: float
+    aggregation: corr""",
+        f"""  Return Corr:
+    resultType: float
+    aggregation: {aggregation}""",
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Corr"]}},
+        yaml_text,
+    )
+    assert _corr_db().execute(result.sql).fetchall() == [(2024, Decimal("20.00"), expected)]
+
+
+@pytest.mark.parametrize("measure", ["Cross Corr", "Wrapped Cross Corr"])
+def test_a_two_column_statistic_straddling_two_facts_is_still_refused(measure: str) -> None:
+    """The one case no outer expression can rescue, reachable directly or via a metric.
+
+    UNION ALL stacks the facts, so a leg can supply only one of the two columns
+    and NULL-pads the other: no row ever carries a complete pair and the
+    aggregate would return NULL having seen none. Refusing beats that silently.
+
+    The metric form used to walk straight past this guard, which only looked at
+    directly selected measures.
     """
     with pytest.raises(UnsupportedAggregationForCFLError) as excinfo:
         _compile(
-            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Corr"]}},
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
             CFL_WRAPPED_MULTI_FIELD_YAML,
         )
     # Names the measure that actually carries the aggregate, not the wrapper.
-    assert excinfo.value.measure_name == "Return Corr"
+    assert excinfo.value.measure_name == "Cross Corr"
     assert excinfo.value.aggregation == "corr"
 
 

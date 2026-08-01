@@ -35,6 +35,7 @@ from orionbelt.compiler.resolution import (
 from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import (
+    TWO_COLUMN_AGGREGATIONS,
     SemanticModel,
 )
 
@@ -450,6 +451,35 @@ def build_outer_concat_count(
     return FunctionCall(name=agg, args=[concat], distinct=distinct)
 
 
+def build_outer_paired_aggregate(
+    measure: ResolvedMeasure,
+    field_aliases: Sequence[str],
+    cte_name: str,
+) -> Expr:
+    """Rebuild a two-column statistical aggregate over the composite CTE.
+
+    ``CORR`` / ``COVAR_*`` / ``REGR_*`` read two values *per row*, so unlike a
+    tuple count they cannot be folded into one concatenated argument. They do
+    not need to be: the legs already project each argument as a column of its
+    own, so the outer query re-applies the aggregate over the pair directly.
+
+    Rows the sibling legs contribute carry NULL in both columns, and these
+    aggregates ignore any row where an argument is NULL. What is left is exactly
+    the row set the single-fact plan aggregates, so the multi-fact result equals
+    the single-fact one rather than approximating it.
+
+    Valid only where one leg owns both arguments; :class:`~orionbelt.compiler
+    .cfl.UnsupportedAggregationForCFLError` refuses the rest before they get
+    here, since no row would carry a complete pair.
+    """
+    agg, distinct = outer_aggregation(measure)
+    return FunctionCall(
+        name=agg,
+        args=[ColumnRef(name=alias, table=cte_name) for alias in field_aliases],
+        distinct=distinct,
+    )
+
+
 def build_outer_measure_expr(
     measure: ResolvedMeasure,
     cte_name: str,
@@ -471,8 +501,13 @@ def build_outer_measure_expr(
     database rejected outright.
     """
     if is_multi_field(measure):
+        field_aliases = aliases.multi_field[measure.name]
+        # Two-column statistics keep their arguments apart; a tuple count folds
+        # them into one string. Both read the same per-argument columns.
+        if measure.aggregation.lower() in TWO_COLUMN_AGGREGATIONS:
+            return build_outer_paired_aggregate(measure, field_aliases, cte_name)
         agg, distinct = outer_aggregation(measure)
-        return build_outer_concat_count(aliases.multi_field[measure.name], agg, distinct, cte_name)
+        return build_outer_concat_count(field_aliases, agg, distinct, cte_name)
     return build_outer_aggregate(measure, cte_name, aliases.within_group)
 
 

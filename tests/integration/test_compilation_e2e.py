@@ -526,9 +526,14 @@ class TestCFLWithFilters:
 
 
 class TestCFLUnsupportedAggregations:
-    """Regression: two-column statistical aggregates must be rejected in
-    CFL with a clear domain error, not silently mangled into
-    ``CORR(CAST(f0 AS VARCHAR) || ... )`` by the concat-count path."""
+    """Regression: a two-column statistical aggregate whose arguments straddle
+    two independent facts must be rejected in CFL with a clear domain error, not
+    silently mangled into ``CORR(CAST(f0 AS VARCHAR) || ... )`` by the
+    concat-count path.
+
+    Scoped to *straddling* arguments. Where one leg owns both, CFL carries them
+    as a pair of columns and re-applies the aggregate outside the union; see
+    ``test_grain_dedup.py`` for that path and its equality with single-fact."""
 
     def test_corr_measure_in_cfl_query_raises_unsupported(self) -> None:
         from orionbelt.compiler.cfl import UnsupportedAggregationForCFLError
@@ -548,11 +553,11 @@ class TestCFLUnsupportedAggregations:
             pipeline.compile(query, model, "postgres")
         assert exc.value.measure_name == "Revenue Refund Corr"
         assert exc.value.aggregation == "corr"
-        # Error should explain WHY (paired rows from one fact) and HOW to
-        # recover (query alone or only with same-fact artefacts).
+        # Error should explain WHY (the two values can never share a row) and
+        # HOW to recover (point both arguments at one fact's columns).
         msg = str(exc.value)
-        assert "paired rows" in msg
-        assert "more than one fact" in msg
+        assert "must be read from the same row" in msg
+        assert "one fact table can reach" in msg
 
     def test_corr_measure_in_single_fact_query_still_compiles(self) -> None:
         """The rejection is scoped to CFL only — a single-fact query that

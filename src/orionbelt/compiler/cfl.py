@@ -69,12 +69,17 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
 
 
 class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
-    """Raised when a measure's aggregation cannot be planned in CFL.
+    """Raised when a two-column statistical aggregate straddles independent facts.
 
-    Two-column statistical aggregates (``corr``, ``covar_*``, ``regr_*``)
-    need paired-row semantics that the current UNION ALL + concat-count
-    CFL strategy cannot express. The single-fact path (star planner)
-    handles them correctly; only multi-fact CFL trips this guard.
+    ``corr`` / ``covar_*`` / ``regr_*`` read two values per row. In a multi-fact
+    plan that is fine as long as one leg owns both arguments: it projects them as
+    two columns and the outer query re-applies the aggregate over the pair.
+
+    It is not fine when the two arguments sit on data objects no single leg
+    reaches. UNION ALL stacks the facts rather than joining them, so each leg
+    supplies one of the columns and NULL-pads the other, and no row ever carries
+    a complete pair — the aggregate would come back NULL having seen none. No
+    outer expression can recover the pairing the union destroyed.
 
     Inherits ``UnsupportedAggregationError`` so existing router catch
     sites surface the same 422 response shape. The ``dialect`` slot
@@ -93,10 +98,11 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
         Exception.__init__(
             self,
             f"Measure '{measure_name}' uses a two-column statistical aggregate "
-            f"({aggregation.upper()}) that needs paired rows from one fact table, "
-            "but this query combines measures from more than one fact, so the rows "
-            f"can't be paired. Query '{measure_name}' on its own, or only alongside "
-            "measures and dimensions from its own fact table.",
+            f"({aggregation.upper()}), whose two arguments must be read from the "
+            "same row. They sit on data objects that no single fact table can "
+            "reach together, and this query stacks independent facts, so each "
+            "row can only ever carry one of the two values. Point both arguments "
+            "at columns one fact table can reach.",
         )
 
 
@@ -156,21 +162,24 @@ class CFLPlanner:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
-        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) need
-        # paired-row semantics that the UNION ALL + concat-count multi-fact
-        # path cannot express. Without this guard the planner emits
-        # ``CORR(CAST(f0 AS VARCHAR) || '|' || CAST(f1 AS VARCHAR))`` — one
-        # argument, wrong type. Fail fast with a clear error so the caller
-        # can restructure their model or restrict the query to a single
-        # fact source instead of getting an opaque execution-time error.
+        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) read two
+        # values per row. A leg that owns both arguments carries them as two
+        # columns and the outer query re-applies the aggregate over the pair,
+        # so being in a multi-fact query costs them nothing.
+        #
+        # What they cannot survive is having their two arguments on data
+        # objects no single leg reaches — the definition of ``cross_fact``.
+        # UNION ALL stacks facts rather than joining them, so each leg supplies
+        # one column and NULL-pads the other, and no row ever carries a
+        # complete pair. The aggregate would return NULL over zero pairs.
         #
         # Metric components count: a metric is planned by inlining its
-        # components' aggregates, so ``{[Return Corr]}`` reaches the same
-        # concat-count rebuild the guard rejects — it just used to arrive there
-        # without passing the guard, and emitted the bogus SQL anyway.
+        # components' aggregates, so ``{[Cross Corr]}`` reaches the same
+        # rebuild — it just used to arrive there without passing the guard.
+        cross_fact_names = {m.name for m in cross_fact} if cross_fact else set()
         for measure in (*resolved.measures, *resolved.metric_components.values()):
             agg = measure.aggregation.lower() if measure.aggregation else ""
-            if agg in TWO_COLUMN_AGGREGATIONS:
+            if agg in TWO_COLUMN_AGGREGATIONS and measure.name in cross_fact_names:
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
 
         # Ordered aggregates now carry their sort key through the union as a
