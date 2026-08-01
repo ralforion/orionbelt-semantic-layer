@@ -13,6 +13,7 @@ from orionbelt.ast.nodes import (
     Expr,
     FunctionCall,
     Literal,
+    OrderByItem,
     Select,
     UnionAll,
 )
@@ -29,27 +30,25 @@ from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias,
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
 from orionbelt.models.semantic import (
-    TWO_COLUMN_AGGREGATIONS,
     DataObject,
     SemanticModel,
 )
 
 
 class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
-    """Raised when an ordered aggregate cannot keep its ordering under CFL.
+    """Raised when an ordered aggregate's sort key is out of its leg's reach.
 
-    A ``withinGroup`` clause is the aggregate's ``ORDER BY``. The CFL outer
-    query re-aggregates over ``composite_01``, where the ordering column does
-    not exist: the legs project measure values and conformed dimensions, not an
-    arbitrary sort key. The rebuilt aggregate therefore came out unordered and
-    the result was silently in the wrong order - values right, sequence wrong,
-    which is worse than a failure for a measure whose whole point is its
-    sequence.
+    A ``withinGroup`` clause is the aggregate's ``ORDER BY``, and the CFL outer
+    query re-aggregates over ``composite_01``. The ordering survives because the
+    leg owning the measure projects the sort column as a column of its own
+    (:func:`cfl_projection.composite_aliases`), sibling legs NULL-pad it,
+    and the rebuilt aggregate orders by that alias.
 
-    Ordering it properly means projecting the sort column into the leg that
-    owns the measure, NULL-padding it across the others, and pointing the outer
-    ``ORDER BY`` at that alias. Until that exists this refuses rather than
-    reorders. The single-fact star path is unaffected and keeps the ordering.
+    That only works where the sort column's object is reachable from the leg's
+    own fact. Where it is not - typically a sort key sitting on a *different*
+    fact - the leg has nothing to project, and the aggregate would come back in
+    an arbitrary order: values right, sequence wrong, which is worse than a
+    failure for a measure whose whole point is its sequence. Those refuse.
     """
 
     def __init__(self, measure_name: str, object_name: str) -> None:
@@ -60,20 +59,30 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
             self,
             f"Measure '{measure_name}' is ordered by a column on '{object_name}' "
             f"(withinGroup), but this query combines measures from more than one "
-            f"fact table. The multi-fact plan re-aggregates over a UNION ALL where "
-            f"that ordering column is not carried, so the result would come back in "
-            f"an arbitrary order. Query '{measure_name}' on its own, or only "
-            f"alongside measures from its own fact table.",
+            f"fact table and '{object_name}' is not reachable from the fact that "
+            f"owns '{measure_name}', so the multi-fact plan cannot carry the "
+            f"ordering column. The result would come back in an arbitrary order. "
+            f"Order '{measure_name}' by a column its own fact can reach, or query "
+            f"it on its own.",
         )
 
 
 class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
-    """Raised when a measure's aggregation cannot be planned in CFL.
+    """Raised when a multi-column aggregate straddles independent facts.
 
-    Two-column statistical aggregates (``corr``, ``covar_*``, ``regr_*``)
-    need paired-row semantics that the current UNION ALL + concat-count
-    CFL strategy cannot express. The single-fact path (star planner)
-    handles them correctly; only multi-fact CFL trips this guard.
+    Some aggregates read several columns *of one row*: ``corr`` / ``covar_*`` /
+    ``regr_*`` correlate a pair, and a multi-column ``count_distinct`` counts
+    observed tuples. In a multi-fact plan that is fine as long as one leg owns
+    every argument: it projects them as separate columns and the outer query
+    rebuilds the aggregate over them.
+
+    It is not fine when the arguments sit on data objects no single leg reaches.
+    UNION ALL stacks the facts rather than joining them, so each leg supplies one
+    column and NULL-pads the rest, and no row ever carries a complete set. The
+    statistics come back NULL having seen no pairs; the tuple count concatenates
+    a NULL into every row and returns 0. No outer expression can recover the
+    pairing the union destroyed, and a confidently wrong 0 is worse than an
+    error, so this refuses.
 
     Inherits ``UnsupportedAggregationError`` so existing router catch
     sites surface the same 422 response shape. The ``dialect`` slot
@@ -91,11 +100,13 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
         self.aggregation = aggregation
         Exception.__init__(
             self,
-            f"Measure '{measure_name}' uses a two-column statistical aggregate "
-            f"({aggregation.upper()}) that needs paired rows from one fact table, "
-            "but this query combines measures from more than one fact, so the rows "
-            f"can't be paired. Query '{measure_name}' on its own, or only alongside "
-            "measures and dimensions from its own fact table.",
+            f"Measure '{measure_name}' aggregates columns that must be read from "
+            f"the same row ({aggregation.upper()}). They sit on data objects that "
+            "no single fact table can reach together, and this query stacks "
+            "independent facts, so each row can only ever carry one of the "
+            "values. Point every argument at columns one fact table can reach, "
+            "or combine the facts with a metric over per-fact measures instead "
+            "of pairing their rows.",
         )
 
 
@@ -155,30 +166,41 @@ class CFLPlanner:
                 resolved, model, qualify_table=qualify_table, dialect=dialect
             )
 
-        # Two-column statistical aggregates (CORR/COVAR_*/REGR_*) need
-        # paired-row semantics that the UNION ALL + concat-count multi-fact
-        # path cannot express. Without this guard the planner emits
-        # ``CORR(CAST(f0 AS VARCHAR) || '|' || CAST(f1 AS VARCHAR))`` — one
-        # argument, wrong type. Fail fast with a clear error so the caller
-        # can restructure their model or restrict the query to a single
-        # fact source instead of getting an opaque execution-time error.
-        for measure in resolved.measures:
-            agg = measure.aggregation.lower() if measure.aggregation else ""
-            if agg in TWO_COLUMN_AGGREGATIONS:
+        # Every multi-column aggregate reads its arguments from one row: a
+        # two-column statistic (CORR/COVAR_*/REGR_*) correlates a pair, a
+        # multi-column COUNT DISTINCT counts observed tuples. A leg that owns
+        # all the arguments carries them as separate columns and the outer
+        # query rebuilds the aggregate over them, so a multi-fact query costs
+        # such a measure nothing.
+        #
+        # What none of them survives is having their arguments on data objects
+        # no single leg reaches — the definition of ``cross_fact``. UNION ALL
+        # stacks facts rather than joining them, so each leg supplies one
+        # column and NULL-pads the rest, and no row ever carries a complete
+        # set. The statistics then return NULL over zero pairs, and the tuple
+        # count concatenates a NULL into every row and returns 0 — a wrong
+        # answer rather than a failure, which is the reason to refuse here
+        # rather than let it compile.
+        #
+        # Metric components count: a metric is planned by inlining its
+        # components' aggregates, so ``{[Cross Corr]}`` reaches the same
+        # rebuild — it just used to arrive there without passing the guard.
+        cross_fact_names = {m.name for m in cross_fact} if cross_fact else set()
+        for measure in (*resolved.measures, *resolved.metric_components.values()):
+            if measure.name in cross_fact_names and self._is_multi_field(measure):
+                agg = measure.aggregation.lower() if measure.aggregation else ""
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
 
-        # Ordered aggregates, including any reached through a metric. Checking
-        # only the selected names let a metric wrapping an ordered measure
-        # through, and CFL then expanded the component and rebuilt it unordered.
-        # ``metric_components`` is already the transitive closure, so a metric
-        # wrapping a metric is covered without walking the model again.
-        for name in [m.name for m in resolved.measures] + list(resolved.metric_components):
-            model_measure = model.effective_measures.get(name)
-            within_group = model_measure.within_group if model_measure else None
-            if within_group is not None:
-                raise WithinGroupNotSupportedInCFLError(
-                    name, within_group.column.view or "another data object"
-                )
+        # Ordered aggregates now carry their sort key through the union as a
+        # column of its own, so the outer re-aggregation can order by it. That
+        # only works where the leg owning the measure can actually reach the
+        # sort column's object — otherwise the leg has nothing to project, and
+        # the aggregate would come back in an arbitrary order. Refuse those.
+        #
+        # A cross-fact measure has no single owning leg, so an ordering on one
+        # is refused outright. Metric components are covered because they are
+        # planned into legs like any other measure.
+        self._validate_ordered_aggregates(resolved, model, measures_by_object, cross_fact)
 
         # Multi-fact: UNION ALL strategy
         return self._plan_union_all(
@@ -190,6 +212,42 @@ class CFLPlanner:
             union_by_name=union_by_name,
             dialect=dialect,
         )
+
+    def _validate_ordered_aggregates(
+        self,
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+        measures_by_object: dict[str, list[ResolvedMeasure]],
+        cross_fact: list[ResolvedMeasure] | None,
+    ) -> None:
+        """Refuse ordered aggregates whose sort key their own leg cannot reach."""
+        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        owner: dict[str, str] = {}
+        for obj_name, measures in measures_by_object.items():
+            for measure in measures:
+                owner[measure.name] = obj_name
+
+        candidates = list(measures_by_object.values())
+        if cross_fact:
+            candidates.append(cross_fact)
+        for measures in candidates:
+            for measure in measures:
+                item = self._within_group_item(measure)
+                if item is None:
+                    continue
+                sort_objects: set[str] = set()
+                cfl_projection.collect_table_refs(item.expr, sort_objects)
+                if not sort_objects:
+                    continue
+                leg_object = owner.get(measure.name)
+                reachable: set[str] = (
+                    graph.descendants(leg_object) | {leg_object}
+                    if leg_object is not None
+                    else set()
+                )
+                unreachable = sort_objects - reachable
+                if unreachable:
+                    raise WithinGroupNotSupportedInCFLError(measure.name, sorted(unreachable)[0])
 
     def _validate_fanout(self, resolved: ResolvedQuery, model: SemanticModel) -> None:
         """Validate that grain is compatible and no fanout will occur."""
@@ -236,11 +294,6 @@ class CFLPlanner:
         return cfl_projection.resolve_null_type_for_field(measure, field_idx, model, dialect)
 
     @staticmethod
-    def _multi_field_cte_alias(measure_name: str, idx: int) -> str:
-        """CTE column name for the *idx*-th field of a multi-field measure."""
-        return cfl_projection.multi_field_cte_alias(measure_name, idx)
-
-    @staticmethod
     def _unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
         """Extract the inner expression from an aggregated measure."""
         return cfl_projection.unwrap_aggregation(measure)
@@ -264,22 +317,52 @@ class CFLPlanner:
         cfl_projection.collect_table_refs(expr, tables)
 
     @staticmethod
+    def _leg_projects_argument(
+        measure: ResolvedMeasure,
+        arg: Expr,
+        obj_name: str,
+        this_measure_names: set[str],
+    ) -> bool:
+        """Whether this leg supplies *arg* of a multi-field measure, or NULL-pads it.
+
+        A leg that **owns** the measure projects every argument, full stop.
+        Grouping already put the measure here because one root reaches all the
+        objects its arguments read (``_single_leg_root``), and this leg is that
+        root, so a joined column (``corr(Returns.Qty, Calendar.Month)``), a
+        computed column expanding to one, and a computed column that reads no
+        column at all (``One: {expression: '1'}``) are each as projectable here
+        as a bare own-table reference. Nothing else projects them, so any test
+        this applies can only take an argument away from the one leg that could
+        have supplied it.
+
+        Two narrower rules were tried and both lost arguments this way. Matching
+        a bare ``ColumnRef`` on this exact object dropped joined and computed
+        columns; also demanding the argument reference *some* table dropped
+        constant expressions, whose reference set is empty. In both cases the
+        owning leg NULL-padded its own measure's argument, so the tuple count
+        counted a column of NULLs and returned 0, and a two-column statistic -
+        NULL unless every argument is present - returned NULL, on the dialects
+        that pad explicitly; the ones using ``UNION ALL BY NAME`` failed to bind
+        instead. A wrong number is the worse half of that.
+
+        A **cross-fact** measure is the other case: no single leg reaches all its
+        arguments, so each leg takes the ones rooted in its own fact and the rest
+        are padded. A conformed dimension is reachable from every leg, so the
+        stricter own-object rule is what keeps two legs from both claiming it.
+        """
+        if measure.name in this_measure_names:
+            return True
+        return isinstance(arg, ColumnRef) and arg.table == obj_name
+
+    @staticmethod
+    def _within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
+        """The sort key a leg must carry, or ``None`` if it need not carry one."""
+        return cfl_projection.within_group_item(measure)
+
+    @staticmethod
     def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
         """Remap ORDER BY expressions to use CTE aliases for the outer query."""
         return cfl_projection.remap_cfl_order_by(expr, resolved, model)
-
-    def _build_outer_concat_count(
-        self,
-        measure_name: str,
-        n_fields: int,
-        agg: str,
-        distinct: bool,
-        cte_name: str,
-    ) -> Expr:
-        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query."""
-        return cfl_projection.build_outer_concat_count(
-            self, measure_name, n_fields, agg, distinct, cte_name
-        )
 
     def _plan_union_all(
         self,
@@ -301,6 +384,13 @@ class CFLPlanner:
 
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code
+
+        # Internal composite columns (multi-field arguments, ordered-aggregate
+        # sort keys), allocated once so the legs that project them, the legs
+        # that NULL-pad them and the outer re-aggregation all agree — and so
+        # none of them shadows a column the composite already carries under a
+        # user-facing name.
+        aliases = cfl_projection.composite_aliases(resolved)
 
         # Collect all measures across all objects + cross-fact measures
         all_measures: list[ResolvedMeasure] = []
@@ -371,9 +461,8 @@ class CFLPlanner:
                 if self._is_multi_field(m):
                     assert isinstance(m.expression, FunctionCall)
                     for i, arg in enumerate(m.expression.args):
-                        alias = self._multi_field_cte_alias(m.name, i)
-                        arg_table = arg.table if isinstance(arg, ColumnRef) else None
-                        if arg_table == obj_name:
+                        alias = aliases.multi_field[m.name][i]
+                        if self._leg_projects_argument(m, arg, obj_name, this_measure_names):
                             leg_builder.select(AliasedExpr(expr=arg, alias=alias))
                         elif not union_by_name:
                             null_type = self._resolve_null_type_for_field(m, i, model)
@@ -395,6 +484,13 @@ class CFLPlanner:
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
                     leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))
+                    # An ordered aggregate's sort key rides along as its own
+                    # column so the outer re-aggregation can order by it.
+                    wg_item = self._within_group_item(m)
+                    if wg_item is not None:
+                        leg_builder.select(
+                            AliasedExpr(expr=wg_item.expr, alias=aliases.within_group[m.name])
+                        )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
                     null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
@@ -406,6 +502,12 @@ class CFLPlanner:
                         else Literal.null()
                     )
                     leg_builder.select(AliasedExpr(expr=null_expr, alias=m.name))
+                    # Pad the sort-key column too, so every leg agrees on the
+                    # union's column list.
+                    if self._within_group_item(m) is not None:
+                        leg_builder.select(
+                            AliasedExpr(expr=Literal.null(), alias=aliases.within_group[m.name])
+                        )
 
             # Determine the common root for this leg:
             # the deepest directed ancestor that can reach all dimension
@@ -548,27 +650,12 @@ class CFLPlanner:
         outer_measure_exprs: dict[str, Expr] = {}
         for m in all_measures:
             seen_measure_names.add(m.name)
-            agg = m.aggregation.upper()
-            distinct = False
-            if agg == "COUNT_DISTINCT":
-                agg = "COUNT"
-                distinct = True
-            if isinstance(m.expression, FunctionCall) and m.expression.distinct:
-                distinct = True
-
-            if self._is_multi_field(m):
-                # Multi-field: concat CTE columns in outer query
-                assert isinstance(m.expression, FunctionCall)
-                n_fields = len(m.expression.args)
-                agg_expr: Expr = self._build_outer_concat_count(
-                    m.name, n_fields, agg, distinct, cte_name
-                )
-            else:
-                agg_expr = FunctionCall(
-                    name=agg,
-                    args=[ColumnRef(name=m.name, table=cte_name)],
-                    distinct=distinct,
-                )
+            # Shared with the metric projection so the two cannot drift: this
+            # picks the rebuild that matches how the legs projected the measure
+            # (concatenated argument columns, or its own single column) and
+            # reapplies DISTINCT, the LISTAGG separator and any withinGroup
+            # ordering over the sort key the legs carried.
+            agg_expr: Expr = cfl_projection.build_outer_measure_expr(m, cte_name, aliases)
             # Apply CAST for resolved data_type (effective_measures so
             # multi-fact synthesized counts get the same integer CAST as
             # declared count measures).

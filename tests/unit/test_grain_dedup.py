@@ -13,13 +13,17 @@ data where the two answers differ.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 import pytest
 from ruamel.yaml import YAML
 
+from orionbelt.compiler.cfl import UnsupportedAggregationForCFLError
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
@@ -1763,46 +1767,619 @@ metrics:
 )
 
 
-@pytest.mark.parametrize("measure", ["Wrapped Return List", "Wrapped Rank"])
-def test_cfl_refusal_is_not_bypassed_by_wrapping_the_measure_in_a_metric(
-    measure: str,
-) -> None:
-    """Checking only the selected names let a metric through.
+# A sort key that is a *computed* column on an object nothing else in the query
+# requires: the leg has to join it purely to project the ordering.
+CFL_COMPUTED_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+""",
+    """  Reason:
+    code: reason
+    schema: main
+    columns:
+      Reason ID: {code: id, abstractType: string, primaryKey: true}
+      Severity: {code: severity, abstractType: int}
+      Sort Case:
+        abstractType: int
+        expression: 'CASE WHEN {[Reason].[Severity]} > 2 THEN 1 ELSE 0 END'
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Date Key: {code: datekey, abstractType: string}
+      Reason Key: {code: reason_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Reason
+        columnsFrom: [Reason Key]
+        columnsTo: [Reason ID]
+""",
+).replace(
+    """      column: {dataObject: Calendar, column: Month}""",
+    """      column: {dataObject: Reason, column: Sort Case}""",
+)
 
-    CFL then expanded the component and rebuilt it unordered, so the wrapper
-    returned the reversed sequence while the measure itself was refused.
-    ``metric_components`` is the transitive closure, so the second level - a
-    derived metric over a window metric, the one nesting OBML allows - is
-    covered by the same check.
+
+# LISTAGG ordered by the very column it aggregates.
+CFL_SELF_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """      column: {dataObject: Calendar, column: Month}""",
+    """      column: {dataObject: Returns, column: Return ID}""",
+)
+
+
+# Same shape, but the LISTAGG declares a non-default delimiter.
+CFL_DELIMITER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Return List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """  Piped Returns:
+    resultType: string
+    aggregation: listagg
+    delimiter: " | "
+    columns: [{dataObject: Returns, column: Return ID}]
+""",
+)
+
+
+# The sort column sits on Sales, which is not reachable from Returns: both are
+# facts hanging off Calendar, so the leg owning the measure cannot project it.
+CFL_UNREACHABLE_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """    withinGroup:
+      column: {dataObject: Sales, column: Amount}
+      order: ASC
+""",
+).replace("  Return List:", "  Cross Ordered:")
+
+
+# A model that declares the very name the sort-key column would like to use.
+CFL_ALIAS_CLASH_YAML = (
+    CFL_WITHIN_GROUP_YAML
+    + """  Return List__wg:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+"""
+)
+
+
+# The same clash for the *other* internal alias: a multi-field measure's
+# per-argument columns, whose first slot a declared measure has claimed.
+CFL_FIELD_CLASH_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Return List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """  Return Pairs:
+    resultType: int
+    aggregation: count_distinct
+    columns:
+      - {dataObject: Returns, column: Return ID}
+      - {dataObject: Returns, column: Return Date Key}
+  Return Pairs__f0:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+""",
+)
+
+
+# Two-column measures under CFL: a tuple count, a statistical aggregate whose
+# arguments share one fact (plannable), and one whose arguments straddle two
+# facts (not plannable) - each also wrapped in a metric.
+CFL_WRAPPED_MULTI_FIELD_YAML = (
+    CFL_FIELD_CLASH_YAML.replace(
+        "      Return Date Key: {code: datekey, abstractType: string}",
+        "      Return Date Key: {code: datekey, abstractType: string}\n"
+        "      Qty: {code: qty, abstractType: float}\n"
+        "      Cost: {code: cost, abstractType: float}\n"
+        "      Double Qty:\n"
+        "        abstractType: float\n"
+        "        expression: '{[Returns].[Qty]} * 2'\n"
+        "      One:\n"
+        "        abstractType: int\n"
+        "        expression: '1'",
+    ).replace(
+        """  Return Pairs__f0:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+""",
+        """  Return Corr:
+    resultType: float
+    aggregation: corr
+    columns:
+      - {dataObject: Returns, column: Qty}
+      - {dataObject: Returns, column: Cost}
+  Cross Corr:
+    resultType: float
+    aggregation: corr
+    columns:
+      - {dataObject: Returns, column: Qty}
+      - {dataObject: Sales, column: Amount}
+  Cross Pairs:
+    resultType: int
+    aggregation: count_distinct
+    columns:
+      - {dataObject: Returns, column: Return ID}
+      - {dataObject: Sales, column: Sale ID}
+""",
+    )
+    + """metrics:
+  Wrapped Pairs: {dataType: integer, expression: '{[Return Pairs]}'}
+  Wrapped Corr: {dataType: double, expression: '{[Return Corr]}'}
+  Wrapped Cross Corr: {dataType: double, expression: '{[Cross Corr]}'}
+  Wrapped Cross Pairs: {dataType: integer, expression: '{[Cross Pairs]}'}
+  Count Product: {dataType: integer, expression: '{[Sales Count]} * {[Returns Count]}'}
+"""
+)
+
+
+def _corr_db() -> duckdb.DuckDBPyConnection:
+    """Sales and Returns hanging off a shared calendar, with correlated columns."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, month INT, year INT)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',3,2024),('d2',1,2024),('d3',5,2024)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO main.sales VALUES ('s1','d1',10),('s2','d2',6),('s3','d3',4)")
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE, cost DOUBLE)")
+    con.execute(
+        "INSERT INTO main.returns VALUES "
+        "('rB','d1',1,2),('rA','d2',3,7),('rC','d1',5,9),('rD','d3',2,3),('rE','d3',8,11)"
+    )
+    return con
+
+
+def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
+    """A derived metric over an ordered measure is planned like the measure.
+
+    The component is projected into the leg that owns it, sort key included, so
+    the wrapper reads an ordered value rather than a rebuilt-unordered one.
     """
-    from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Return List"]}},
+        CFL_WRAPPED_YAML,
+    )
+    assert '"Return List__wg"' in result.sql
+    assert "ORDER BY" in result.sql
 
-    with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
+
+def test_a_derived_metric_over_a_window_metric_is_still_refused_under_cfl() -> None:
+    """Unrelated to ordering: that combination has its own guard.
+
+    Kept here because this shape used to be caught by the withinGroup refusal;
+    it must keep failing now that the ordering itself is supported.
+    """
+    with pytest.raises(ResolutionError, match="window metric"):
         _compile(
-            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Rank"]}},
             CFL_WRAPPED_YAML,
         )
 
 
-def test_cfl_refuses_an_ordered_aggregate_rather_than_reordering_it() -> None:
-    """The CFL outer query re-aggregates over a UNION ALL with no sort key.
+def test_cfl_carries_an_ordered_aggregates_sort_key_through_the_union() -> None:
+    """The leg owning the measure projects the sort key as a column of its own.
 
-    The legs project measure values and conformed dimensions, not an arbitrary
-    ordering column, so the rebuilt aggregate came out unordered - right values
-    in the wrong sequence, for a measure whose whole point is its sequence.
+    The outer re-aggregation then orders by that column, so the multi-fact plan
+    returns the same sequence as the single-fact one instead of an arbitrary
+    order (which is what it did before, and why it used to refuse).
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    # The sort key rides through the union under its own alias...
+    assert '"Calendar"."month" AS "Return List__wg"' in result.sql
+    # ...and the outer aggregate orders by it, not by the value column.
+    assert '"composite_01"."Return List__wg"' in result.sql
+
+
+def test_cfl_keeps_the_declared_listagg_delimiter() -> None:
+    """The outer rebuild dropped ``separator``, silently falling back to ",".
+
+    A measure declaring ``delimiter: " | "`` came back comma-separated as soon
+    as another fact's measure joined the query.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Piped Returns"]}},
+        CFL_DELIMITER_YAML,
+    )
+    assert "' | '" in result.sql
+
+
+def test_cfl_projects_a_listagg_source_column_with_its_own_type() -> None:
+    """LISTAGG's declared result type resolved to the numeric default.
+
+    Treating it as a numeric aggregate cast the *source* column to that type,
+    emitting ``CAST("Returns"."id" AS FLOAT)`` over a text column - SQL every
+    engine rejects at execution. Any LISTAGG in a multi-fact query was broken.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    assert "AS FLOAT" not in result.sql.upper()
+    assert 'CAST("Returns"."id" AS VARCHAR) AS "Return List"' in result.sql
+
+
+def test_cfl_refuses_an_ordering_its_own_leg_cannot_reach() -> None:
+    """The residual case: the sort column sits on an unreachable object.
+
+    The leg owning the measure has nothing to project, so the aggregate would
+    come back arbitrarily ordered. That still refuses rather than reorders.
     """
     from orionbelt.compiler.cfl import WithinGroupNotSupportedInCFLError
 
     with pytest.raises(WithinGroupNotSupportedInCFLError, match="withinGroup"):
         _compile(
-            {
-                "select": {
-                    "dimensions": ["Year"],
-                    "measures": ["Sales Amount", "Return List"],
-                }
-            },
-            CFL_WITHIN_GROUP_YAML,
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Cross Ordered"]}},
+            CFL_UNREACHABLE_ORDER_YAML,
         )
+
+
+def test_cfl_joins_the_object_behind_a_computed_sort_key() -> None:
+    """The sort key can be a computed column, whose object still needs joining.
+
+    ``collect_table_refs`` walked only a handful of node types, so an expression
+    expanding to ``CASE`` contributed no tables: the leg projected
+    ``CASE WHEN "Reason"."severity" > 2 ...`` over a FROM that never joined
+    ``Reason``, and the query failed at execution with
+    ``Referenced table "Reason" not found``.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_COMPUTED_ORDER_YAML,
+    )
+    assert '"Reason"."severity"' in result.sql
+    assert '"main"."reason" AS "Reason"' in result.sql
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "clickhouse", "databricks"])
+def test_cfl_self_ordering_listagg_compiles_on_array_sorting_dialects(dialect: str) -> None:
+    """A self-ordering LISTAGG orders by the measure's own column, not a sort key.
+
+    ClickHouse (``arraySort``) and Databricks (``sort_array``) can only order by
+    the aggregated column and compare the two renderings textually, so pointing
+    the outer ORDER BY at a separate ``__wg`` alias made them reject an aggregate
+    their single-fact path supports.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_SELF_ORDER_YAML,
+        dialect,
+    )
+    # No redundant sort-key column: the value column is the sort key.
+    assert "__wg" not in result.sql
+
+
+def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
+    """``<measure>__wg`` is a legal measure name, so the sort key cannot assume it.
+
+    Declaring ``Return List__wg`` alongside the ordered ``Return List`` used to
+    put both in the same composite column - the user's ``SUM`` input in one leg,
+    the sort key in the other - so the outer aggregate summed the sort key too
+    and the ordering read whatever the sales leg happened to contribute.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return List__wg", "Return List"]}},
+        CFL_ALIAS_CLASH_YAML,
+    )
+    # The declared measure keeps the name it asked for...
+    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return List__wg"' in result.sql
+    # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
+    assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
+    assert 'ORDER BY "composite_01"."Return List__wg_"' in result.sql
+
+
+def test_a_metric_wrapping_a_multi_field_measure_reads_the_columns_its_legs_projected() -> None:
+    """The metric path must rebuild a multi-field aggregate the way the legs wrote it.
+
+    A metric is planned by inlining its components' aggregates, and that inlining
+    always took the single-column route: ``COUNT(DISTINCT "composite_01"."Return
+    Pairs")``, over a column no leg projects, since a two-column measure is
+    spread across one column per argument. DuckDB rejected it outright.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Pairs"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert '"composite_01"."Return Pairs__f0"' in result.sql
+    assert '"composite_01"."Return Pairs__f1"' in result.sql
+    # The column that never existed must not be referenced at all.
+    assert '"composite_01"."Return Pairs"' not in result.sql
+
+
+@pytest.mark.parametrize("measure", ["Return Corr", "Wrapped Corr"])
+def test_a_two_column_statistic_matches_its_single_fact_value_under_cfl(measure: str) -> None:
+    """CORR rides the union as a *pair* of columns, not a concatenated string.
+
+    The legs already project one column per argument, so the outer query
+    re-applies the aggregate over the pair. Rows the sibling leg contributes are
+    NULL in both columns and these aggregates skip any row with a NULL argument,
+    leaving exactly the row set the single-fact plan aggregates.
+
+    Compared with a tolerance rather than bit-for-bit: the row *set* is identical
+    but the union interleaves the padded rows, and floating-point summation is
+    order-dependent, so the last couple of bits legitimately differ. A plan that
+    read the wrong rows would be off by far more than this.
+    """
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert '"composite_01"."Return Corr__f0", "composite_01"."Return Corr__f1"' in multi.sql
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Corr"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    # Year, Sales Amount, <statistic> vs Year, <statistic>
+    assert con.execute(multi.sql).fetchall()[0][2] == pytest.approx(
+        con.execute(single.sql).fetchall()[0][1], rel=1e-9
+    )
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "expected"),
+    [
+        ("corr", 0.9461176698163105),
+        ("covar_pop", 8.08),
+        ("covar_samp", 10.1),
+        ("regr_slope", 0.6824324324324325),
+        ("regr_intercept", -0.5675675675675681),
+    ],
+)
+def test_every_two_column_statistic_survives_the_multi_fact_union(
+    aggregation: str, expected: float
+) -> None:
+    """Not just CORR: the whole ``TWO_COLUMN_AGGREGATIONS`` family shares the path.
+
+    The statistic is compared with a tolerance - see the sibling test for why the
+    last bits are not reproducible - while the row shape and the plain ``SUM``
+    riding alongside it are exact.
+    """
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        """  Return Corr:
+    resultType: float
+    aggregation: corr""",
+        f"""  Return Corr:
+    resultType: float
+    aggregation: {aggregation}""",
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Corr"]}},
+        yaml_text,
+    )
+    rows = _corr_db().execute(result.sql).fetchall()
+    assert len(rows) == 1
+    year, sales_amount, statistic = rows[0]
+    assert (year, sales_amount) == (2024, Decimal("20.00"))
+    assert statistic == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "second_argument",
+    [
+        pytest.param("{dataObject: Calendar, column: Month}", id="joined-column"),
+        pytest.param("{dataObject: Returns, column: Double Qty}", id="computed-column"),
+    ],
+)
+def test_a_leg_projects_every_argument_of_the_measure_it_owns(
+    second_argument: str, dialect: str
+) -> None:
+    """Owning the measure means supplying all its arguments, not just own-table ones.
+
+    The leg used to project an argument only when it was a bare column of the
+    leg's own object, so ``corr(Returns.Qty, Calendar.Month)`` had its second
+    argument NULL-padded *by the very leg that owns the measure*. A two-column
+    statistic is NULL unless both arguments are present, so dialects that pad
+    explicitly returned NULL silently and ``UNION ALL BY NAME`` ones failed to
+    bind. The computed-column form is what ``Measure`` documents for
+    per-argument transformations, so it has to work too.
+
+    Both dialects run: they differ in exactly the mechanism at fault (explicit
+    NULL padding vs ``UNION ALL BY NAME``).
+    """
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        "      - {dataObject: Returns, column: Cost}", f"      - {second_argument}"
+    )
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Corr"]}},
+        yaml_text,
+        dialect,
+    )
+    # The owning leg supplies the argument rather than padding it away.
+    assert '"Return Corr__f1"' in multi.sql
+    assert 'NULL AS "Return Corr__f1"' not in multi.sql.replace("CAST(", "")
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Corr"]}}, yaml_text, dialect
+    )
+    statistic = con.execute(multi.sql).fetchall()[0][2]
+    assert statistic is not None
+    assert statistic == pytest.approx(con.execute(single.sql).fetchall()[0][1], rel=1e-9)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "second_argument",
+    [
+        pytest.param("{dataObject: Calendar, column: Month}", id="joined-column"),
+        # A computed column that reads no column at all: its resolved expression
+        # is a literal, so it has no table references to test reachability with.
+        # Requiring at least one reference dropped it from the owning leg just as
+        # surely as the own-object rule dropped a joined one.
+        pytest.param("{dataObject: Returns, column: One}", id="constant-column"),
+    ],
+)
+def test_a_tuple_count_also_reads_an_argument_its_leg_owns(
+    second_argument: str, dialect: str
+) -> None:
+    """The same defect, on the path that predates two-column statistics.
+
+    ``count_distinct(Returns.[Return ID], Calendar.Month)`` had its second
+    argument padded away by its own leg, so the outer concat counted tuples with
+    a NULL half and the count came back 0.
+    """
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        "      - {dataObject: Returns, column: Return Date Key}",
+        f"      - {second_argument}",
+    )
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Pairs"]}},
+        yaml_text,
+        dialect,
+    )
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Pairs"]}}, yaml_text, dialect
+    )
+    assert con.execute(multi.sql).fetchall()[0][2] == con.execute(single.sql).fetchall()[0][1]
+
+
+@pytest.mark.parametrize(
+    ("measure", "carrier", "aggregation"),
+    [
+        ("Cross Corr", "Cross Corr", "corr"),
+        ("Wrapped Cross Corr", "Cross Corr", "corr"),
+        ("Cross Pairs", "Cross Pairs", "count_distinct"),
+        ("Wrapped Cross Pairs", "Cross Pairs", "count_distinct"),
+    ],
+)
+def test_a_multi_column_aggregate_straddling_two_facts_is_refused(
+    measure: str, carrier: str, aggregation: str
+) -> None:
+    """The one case no outer expression can rescue, reachable directly or via a metric.
+
+    UNION ALL stacks the facts, so a leg supplies one column and NULL-pads the
+    rest: no row ever carries a complete set. A statistic then returns NULL
+    having seen no pairs, and a tuple count concatenates a NULL into every row
+    and returns 0 - a confidently wrong answer, which is worse than an error and
+    is why the count is refused rather than left to compile.
+
+    The metric form used to walk straight past this guard, which only looked at
+    directly selected measures.
+    """
+    with pytest.raises(UnsupportedAggregationForCFLError) as excinfo:
+        _compile(
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", measure]}},
+            CFL_WRAPPED_MULTI_FIELD_YAML,
+        )
+    # Names the measure that actually carries the aggregate, not the wrapper.
+    assert excinfo.value.measure_name == carrier
+    assert excinfo.value.aggregation == aggregation
+
+
+def test_a_metric_over_per_fact_measures_is_the_cross_fact_route_that_works() -> None:
+    """What the refusal points users at, and why it is not the same question.
+
+    A metric never needs the two facts in one row: each component aggregates
+    inside its own leg and only the scalars meet, in the outer query. So
+    combining facts at the *aggregate* level works where pairing their rows
+    cannot. (This is the Cartesian count, not a count of observed pairs - a
+    different question, which is the honest answer to that one.)
+    """
+    con = _corr_db()  # 3 sales rows, 5 returns rows
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Count Product"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert con.execute(result.sql).fetchall() == [(2024, 15)]
+
+
+def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
+    """Same clash, other internal alias: a multi-field measure's ``__f`` columns.
+
+    ``Return Pairs__f0`` declared next to the two-column ``Return Pairs`` used to
+    land in the same composite column as the count's first argument, so DuckDB
+    rejected the query outright (``SUM(VARCHAR)``) - the sales leg contributed a
+    decimal and the returns leg a text ID.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Pairs__f0", "Return Pairs"]}},
+        CFL_FIELD_CLASH_YAML,
+    )
+    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return Pairs__f0"' in result.sql
+    assert '"Returns"."id" AS "Return Pairs__f0_"' in result.sql
+    assert '"composite_01"."Return Pairs__f0_"' in result.sql
+
+
+def test_cross_column_listagg_order_raises_a_domain_error_not_a_value_error() -> None:
+    """Dialects that cannot express it must surface a 422-shaped domain error.
+
+    A bare ``ValueError`` out of codegen would surface as a 500.
+    """
+    from orionbelt.dialect.base import CrossColumnOrderNotSupportedError
+
+    with pytest.raises(CrossColumnOrderNotSupportedError) as excinfo:
+        _compile(
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+            CFL_WITHIN_GROUP_YAML,
+            "clickhouse",
+        )
+    assert excinfo.value.dialect == "clickhouse"
+    assert excinfo.value.aggregation == "listagg"
+
+
+def test_cfl_ordered_aggregate_matches_the_single_fact_result() -> None:
+    """Execute both plans: the sequence must be identical.
+
+    This is the assertion the refusal existed to avoid getting wrong - right
+    values, wrong sequence - so it is checked against a real engine.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE calendar (datekey VARCHAR, month INTEGER, year INTEGER)")
+    con.execute("INSERT INTO calendar VALUES ('d1', 3, 2024), ('d2', 1, 2024), ('d3', 2, 2024)")
+    con.execute("CREATE TABLE sales (id VARCHAR, datekey VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO sales VALUES ('s1','d1',10.0)")
+    con.execute("CREATE TABLE returns (id VARCHAR, datekey VARCHAR)")
+    # Insertion order deliberately disagrees with month order, so an unordered
+    # rebuild returns r1,r2,r3 while the declared ASC ordering is r2,r3,r1.
+    con.execute("INSERT INTO returns VALUES ('r1','d1'), ('r2','d2'), ('r3','d3')")
+
+    star = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    cfl = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return List"]}},
+        CFL_WITHIN_GROUP_YAML,
+    )
+    star_rows = con.execute(star.sql).fetchall()
+    cfl_rows = con.execute(cfl.sql).fetchall()
+
+    assert star_rows == [(2024, "r2,r3,r1")]
+    # Same sequence out of the multi-fact plan, alongside the other fact's measure.
+    assert [(row[0], row[2]) for row in cfl_rows] == star_rows
 
 
 def test_the_same_measure_keeps_its_ordering_on_the_single_fact_path() -> None:

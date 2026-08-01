@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import CrossColumnOrderNotSupportedError, Dialect, DialectCapabilities
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -100,10 +100,7 @@ class DatabricksDialect(Dialect):
             ob_expr = order_by[0]
             ob_sql = self.compile_expr(ob_expr.expr)
             if ob_sql != col_sql:
-                raise ValueError(
-                    f"Databricks LISTAGG does not support ORDER BY on a different column "
-                    f"(aggregated: {col_sql}, order by: {ob_sql})"
-                )
+                raise CrossColumnOrderNotSupportedError("databricks", col_sql, ob_sql)
             inner = f"SORT_ARRAY({inner}, false)" if ob_expr.desc else f"SORT_ARRAY({inner})"
         return f"ARRAY_JOIN({inner}, '{escaped_sep}')"
 

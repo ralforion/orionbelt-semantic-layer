@@ -8,21 +8,20 @@ its public surface is unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
-    Between,
     BinaryOp,
     Cast,
     ColumnRef,
     Expr,
     FunctionCall,
-    InList,
-    IsNull,
     Literal,
-    RelativeDateRange,
-    UnaryOp,
+    OrderByItem,
 )
+from orionbelt.compiler.expr_rewrite import collect_column_refs
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
@@ -36,6 +35,7 @@ from orionbelt.compiler.resolution import (
 from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import (
+    TWO_COLUMN_AGGREGATIONS,
     SemanticModel,
 )
 
@@ -130,14 +130,21 @@ def resolve_null_type_for_field(
       declared OBML ``abstractType: float`` mismatches storage as
       ``Decimal`` and produces ``ILLEGAL_TYPE_OF_ARGUMENT``).
 
-    * **Count-style aggregates** (COUNT / COUNT_DISTINCT) — the inner
-      column projection is the *raw column itself* (e.g. ``complid``,
+    * **Passthrough aggregates** (COUNT / COUNT_DISTINCT / LISTAGG) — the
+      inner column projection is the *raw column itself* (e.g. ``complid``,
       a text ID). The outer ``COUNT(DISTINCT ...)`` happily counts any
       type, but each CFL leg's column must agree on a type for
       ``UNION ALL``. Padding with the declared aggregate output type
       (BIGINT) trips strict-typed engines (Postgres / MySQL / strict
       ClickHouse) when the source column is text. Pad with the
       source column's abstract type instead.
+
+      LISTAGG belongs here for a sharper reason than type-strictness: its
+      declared result type resolves to the numeric default, so treating it
+      as a numeric aggregate cast the *source* column to it and emitted
+      ``CAST("Sales"."product" AS FLOAT)`` over a text column — SQL that
+      every engine rejects at execution ("Could not convert string 'widget'
+      to FLOAT"). Any LISTAGG in a multi-fact query was broken this way.
 
     For multi-field measures (e.g. ``COUNT(a, b)``), per-column
     abstract types are used regardless of aggregation kind.
@@ -146,7 +153,7 @@ def resolve_null_type_for_field(
     if not model_measure:
         return None
     agg = (model_measure.aggregation or "").lower()
-    is_count_style = agg in ("count", "count_distinct")
+    is_passthrough_style = agg in ("count", "count_distinct", "listagg")
     # Multi-field measures: per-column abstract_type for each slot.
     if len(model_measure.columns) > 1:
         if field_idx < len(model_measure.columns):
@@ -155,9 +162,9 @@ def resolve_null_type_for_field(
             if obj and ref.column in obj.columns:
                 return obj.columns[ref.column].abstract_type.value
         return model_measure.result_type.value
-    # Single-/zero-column COUNT-style: pad with the source column's
+    # Single-/zero-column passthrough: pad with the source column's
     # native type so UNION ALL legs agree (raw column, not aggregate).
-    if is_count_style and len(model_measure.columns) == 1:
+    if is_passthrough_style and len(model_measure.columns) == 1:
         ref = model_measure.columns[0]
         obj = model.data_objects.get(ref.view) if ref.view else None
         if obj and ref.column in obj.columns:
@@ -171,9 +178,157 @@ def resolve_null_type_for_field(
     return model_measure.result_type.value
 
 
-def multi_field_cte_alias(measure_name: str, idx: int) -> str:
-    """CTE column name for the *idx*-th field of a multi-field measure."""
-    return f"{measure_name}__f{idx}"
+def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
+    """The SQL aggregate name and ``DISTINCT`` flag to re-apply outside the union.
+
+    ``COUNT_DISTINCT`` is one OBML aggregation but two SQL knobs, and a measure
+    can also carry ``DISTINCT`` on the resolved call itself.
+    """
+    agg = measure.aggregation.upper()
+    distinct = False
+    if agg == "COUNT_DISTINCT":
+        agg = "COUNT"
+        distinct = True
+    if isinstance(measure.expression, FunctionCall) and measure.expression.distinct:
+        distinct = True
+    return agg, distinct
+
+
+def build_outer_aggregate(
+    measure: ResolvedMeasure,
+    cte_name: str,
+    wg_aliases: Mapping[str, str],
+) -> FunctionCall:
+    """Rebuild a single-column measure's aggregate over the composite CTE.
+
+    The legs project the aggregate's *input*, so the outer query re-applies the
+    aggregation. Everything the aggregate carries besides its argument has to be
+    reapplied here too, or it is silently lost: ``DISTINCT``, the LISTAGG
+    ``separator`` (which otherwise falls back to ``","``, dropping a declared
+    ``delimiter``), and a ``withinGroup`` ordering, which reads the sort key the
+    legs carried through the union under the alias *wg_aliases* assigned it (see
+    :func:`composite_aliases`).
+
+    Reached through :func:`build_outer_measure_expr`, which routes multi-field
+    measures elsewhere — the single ``args`` entry below is the measure's own
+    composite column, which only a single-column measure has.
+    """
+    agg, distinct = outer_aggregation(measure)
+    source = measure.expression if isinstance(measure.expression, FunctionCall) else None
+    order_by: list[OrderByItem] = []
+    if source is not None and source.order_by:
+        # A self-ordering aggregate orders by the very column it aggregates.
+        # Point the outer ORDER BY at the measure's own column rather than a
+        # separate sort-key column: ClickHouse and Databricks cannot express
+        # cross-column ordering and compare the two renderings textually, so a
+        # distinct sort-key alias would make them reject an aggregate they
+        # support perfectly well on the single-fact path.
+        order_by = [
+            OrderByItem(
+                expr=ColumnRef(
+                    name=(measure.name if is_self_ordered(measure) else wg_aliases[measure.name]),
+                    table=cte_name,
+                ),
+                desc=source.order_by[0].desc,
+            )
+        ]
+    return FunctionCall(
+        name=agg,
+        args=[ColumnRef(name=measure.name, table=cte_name)],
+        distinct=distinct,
+        order_by=order_by,
+        separator=source.separator if source is not None else None,
+    )
+
+
+def is_self_ordered(measure: ResolvedMeasure) -> bool:
+    """Whether an ordered aggregate sorts by the same column it aggregates.
+
+    ``LISTAGG(x) WITHIN GROUP (ORDER BY x)`` needs no separate sort-key column
+    in the union: the value column already carries it. Dialects that can only
+    express self-ordering (ClickHouse's ``arraySort``, Databricks' ``sort_array``)
+    depend on this, since they compare the aggregate's argument and its order
+    key by rendered SQL.
+    """
+    source = measure.expression
+    if not isinstance(source, FunctionCall) or not source.order_by or not source.args:
+        return False
+    return source.order_by[0].expr == source.args[0]
+
+
+def within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
+    """The sort key a leg must carry for *measure*, or ``None`` if it need not.
+
+    Read off the resolved expression rather than the model, so the sort column
+    arrives already resolved to a column expression.
+
+    A self-ordering aggregate returns ``None``: it sorts by the column it
+    already projects as the measure's value, so a separate column would be
+    redundant — and on ClickHouse / Databricks actively harmful, since they can
+    only express ordering by the aggregated column itself.
+    """
+    expr = measure.expression
+    if isinstance(expr, FunctionCall) and expr.order_by and not is_self_ordered(measure):
+        return expr.order_by[0]
+    return None
+
+
+@dataclass(frozen=True)
+class CompositeAliases:
+    """Names for the composite CTE's *internal* columns, none of them user-facing.
+
+    ``multi_field`` maps a multi-field measure to one column name per argument
+    (the legs project the arguments separately; the outer query concatenates
+    them). ``within_group`` maps an ordered aggregate to the column carrying its
+    sort key.
+    """
+
+    multi_field: dict[str, list[str]]
+    within_group: dict[str, str]
+
+
+def composite_aliases(resolved: ResolvedQuery) -> CompositeAliases:
+    """Allocate the composite CTE's internal column names, collision-free.
+
+    ``<measure>__f0`` and ``<measure>__wg`` are the natural names, but neither is
+    a safe one: both are legal measure / dimension / metric names in their own
+    right, and a model that declares one has it share a composite column with the
+    planner's internal one — the user's values in one leg, an aggregate argument
+    or a sort key in another. The outer query then aggregates the two together,
+    so a ``SUM`` returns a number nobody asked for and an ordering reads garbage.
+
+    Each name is therefore allocated against the ones the composite already
+    carries — dimensions, coalesce aliases, measure names, and every internal
+    name handed out before it — growing a trailing ``_`` until it is free.
+
+    Pure in *resolved*, and allocating in sorted-name order, so every call site
+    (leg projection, sibling NULL-padding, outer re-aggregation) derives the same
+    names without threading state between them.
+    """
+    by_name: dict[str, ResolvedMeasure] = {}
+    for measure in (*resolved.measures, *resolved.metric_components.values()):
+        by_name.setdefault(measure.name, measure)
+    taken = {dim.name for dim in resolved.dimensions} | set(resolved.coalesce_aliases)
+    taken.update(by_name)
+
+    def allocate(candidate: str) -> str:
+        while candidate in taken:
+            candidate += "_"
+        taken.add(candidate)
+        return candidate
+
+    multi_field: dict[str, list[str]] = {}
+    within_group: dict[str, str] = {}
+    for name in sorted(by_name):
+        measure = by_name[name]
+        if is_multi_field(measure):
+            assert isinstance(measure.expression, FunctionCall)
+            multi_field[name] = [
+                allocate(f"{name}__f{i}") for i in range(len(measure.expression.args))
+            ]
+        if within_group_item(measure) is not None:
+            within_group[name] = allocate(f"{name}__wg")
+    return CompositeAliases(multi_field=multi_field, within_group=within_group)
 
 
 def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
@@ -219,39 +374,28 @@ def substitute_outer_refs(
     would bind against a column no leg projects.
     """
 
+    aliases = composite_aliases(resolved)
+
     def value_of(comp: ResolvedMeasure) -> Expr:
-        agg = comp.aggregation.upper()
-        distinct = False
-        if agg == "COUNT_DISTINCT":
-            agg = "COUNT"
-            distinct = True
-        if isinstance(comp.expression, FunctionCall) and comp.expression.distinct:
-            distinct = True
-        return FunctionCall(
-            name=agg,
-            args=[ColumnRef(name=comp.name, table=cte_name)],
-            distinct=distinct,
-        )
+        return build_outer_measure_expr(comp, cte_name, aliases)
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
-    """Recursively collect table names from ColumnRef nodes."""
-    if isinstance(expr, ColumnRef) and expr.table:
-        tables.add(expr.table)
-    elif isinstance(expr, BinaryOp):
-        collect_table_refs(expr.left, tables)
-        collect_table_refs(expr.right, tables)
-    elif isinstance(expr, UnaryOp):
-        collect_table_refs(expr.operand, tables)
-    elif isinstance(expr, (InList, IsNull, Between)):
-        collect_table_refs(expr.expr, tables)
-    elif isinstance(expr, RelativeDateRange):
-        collect_table_refs(expr.column, tables)
-    elif isinstance(expr, FunctionCall):
-        for arg in expr.args:
-            collect_table_refs(arg, tables)
+    """Collect the table name of every ``ColumnRef`` anywhere in *expr*.
+
+    Delegates to the complete AST walk in :mod:`expr_rewrite` rather than
+    enumerating node types here. The hand-rolled version this replaces covered
+    only a handful of nodes and silently returned nothing for the rest, so a
+    computed column expanding to ``CASE`` or ``CAST`` contributed no tables:
+    the leg then projected ``CASE WHEN "Reason"."severity" > 2 ...`` over a
+    FROM that never joined ``Reason``. It also skipped an aggregate's
+    ``order_by``, which a ``withinGroup`` sort key lives in.
+    """
+    refs: list[ColumnRef] = []
+    collect_column_refs(expr, refs)
+    tables.update(ref.table for ref in refs if ref.table)
 
 
 def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
@@ -276,28 +420,22 @@ def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel
 
 
 def build_outer_concat_count(
-    planner: CFLPlanner,
-    measure_name: str,
-    n_fields: int,
+    field_aliases: Sequence[str],
     agg: str,
     distinct: bool,
     cte_name: str,
 ) -> Expr:
     """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query.
 
-    Each field reference is qualified with *cte_name* so it resolves to
-    the raw CTE column rather than any sibling SELECT alias (see
-    ``_substitute_outer_refs`` for the alias-shadowing rationale).
+    *field_aliases* are the composite columns the legs projected the measure's
+    arguments into, in argument order, as allocated by :func:`composite_aliases`.
+    Each is qualified with *cte_name* so it resolves to the raw CTE column rather
+    than any sibling SELECT alias (see ``_substitute_outer_refs`` for the
+    alias-shadowing rationale).
     """
     parts: list[Expr] = [
-        Cast(
-            expr=ColumnRef(
-                name=planner._multi_field_cte_alias(measure_name, i),
-                table=cte_name,
-            ),
-            type_name="VARCHAR",
-        )
-        for i in range(n_fields)
+        Cast(expr=ColumnRef(name=alias, table=cte_name), type_name="VARCHAR")
+        for alias in field_aliases
     ]
     concat: Expr = parts[0]
     for part in parts[1:]:
@@ -311,6 +449,66 @@ def build_outer_concat_count(
             ),
         )
     return FunctionCall(name=agg, args=[concat], distinct=distinct)
+
+
+def build_outer_paired_aggregate(
+    measure: ResolvedMeasure,
+    field_aliases: Sequence[str],
+    cte_name: str,
+) -> Expr:
+    """Rebuild a two-column statistical aggregate over the composite CTE.
+
+    ``CORR`` / ``COVAR_*`` / ``REGR_*`` read two values *per row*, so unlike a
+    tuple count they cannot be folded into one concatenated argument. They do
+    not need to be: the legs already project each argument as a column of its
+    own, so the outer query re-applies the aggregate over the pair directly.
+
+    Rows the sibling legs contribute carry NULL in both columns, and these
+    aggregates ignore any row where an argument is NULL. What is left is exactly
+    the row set the single-fact plan aggregates, so the multi-fact result equals
+    the single-fact one rather than approximating it.
+
+    Valid only where one leg owns both arguments; :class:`~orionbelt.compiler
+    .cfl.UnsupportedAggregationForCFLError` refuses the rest before they get
+    here, since no row would carry a complete pair.
+    """
+    agg, distinct = outer_aggregation(measure)
+    return FunctionCall(
+        name=agg,
+        args=[ColumnRef(name=alias, table=cte_name) for alias in field_aliases],
+        distinct=distinct,
+    )
+
+
+def build_outer_measure_expr(
+    measure: ResolvedMeasure,
+    cte_name: str,
+    aliases: CompositeAliases,
+) -> Expr:
+    """Re-aggregate *measure* over the composite CTE, however its legs projected it.
+
+    Which composite columns a measure occupies depends on its shape: a
+    multi-field aggregate is spread over one column per argument and has to be
+    rebuilt by concatenating them, while everything else re-aggregates its single
+    column. Only :func:`composite_aliases` knows the column names, so the choice
+    belongs here rather than at each call site.
+
+    The direct-measure projection and the metric substitution both come through
+    here. The metric path used to call :func:`build_outer_aggregate`
+    unconditionally, which reads ``"composite_01"."<measure>"`` — a column no leg
+    projects for a multi-field measure, so a metric as ordinary as
+    ``{[Return Pairs]}`` over a two-column ``count_distinct`` compiled to SQL the
+    database rejected outright.
+    """
+    if is_multi_field(measure):
+        field_aliases = aliases.multi_field[measure.name]
+        # Two-column statistics keep their arguments apart; a tuple count folds
+        # them into one string. Both read the same per-argument columns.
+        if measure.aggregation.lower() in TWO_COLUMN_AGGREGATIONS:
+            return build_outer_paired_aggregate(measure, field_aliases, cte_name)
+        agg, distinct = outer_aggregation(measure)
+        return build_outer_concat_count(field_aliases, agg, distinct, cte_name)
+    return build_outer_aggregate(measure, cte_name, aliases.within_group)
 
 
 def _single_leg_root(
