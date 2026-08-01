@@ -163,7 +163,12 @@ class CFLPlanner:
         # argument, wrong type. Fail fast with a clear error so the caller
         # can restructure their model or restrict the query to a single
         # fact source instead of getting an opaque execution-time error.
-        for measure in resolved.measures:
+        #
+        # Metric components count: a metric is planned by inlining its
+        # components' aggregates, so ``{[Return Corr]}`` reaches the same
+        # concat-count rebuild the guard rejects — it just used to arrive there
+        # without passing the guard, and emitted the bogus SQL anyway.
+        for measure in (*resolved.measures, *resolved.metric_components.values()):
             agg = measure.aggregation.lower() if measure.aggregation else ""
             if agg in TWO_COLUMN_AGGREGATIONS:
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
@@ -590,24 +595,12 @@ class CFLPlanner:
         outer_measure_exprs: dict[str, Expr] = {}
         for m in all_measures:
             seen_measure_names.add(m.name)
-            agg = m.aggregation.upper()
-            distinct = False
-            if agg == "COUNT_DISTINCT":
-                agg = "COUNT"
-                distinct = True
-            if isinstance(m.expression, FunctionCall) and m.expression.distinct:
-                distinct = True
-
-            if self._is_multi_field(m):
-                # Multi-field: concat CTE columns in outer query
-                agg_expr: Expr = cfl_projection.build_outer_concat_count(
-                    aliases.multi_field[m.name], agg, distinct, cte_name
-                )
-            else:
-                # Shared with the metric projection so the two cannot drift:
-                # this reapplies DISTINCT, the LISTAGG separator, and any
-                # withinGroup ordering over the sort key the legs carried.
-                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name, aliases.within_group)
+            # Shared with the metric projection so the two cannot drift: this
+            # picks the rebuild that matches how the legs projected the measure
+            # (concatenated argument columns, or its own single column) and
+            # reapplies DISTINCT, the LISTAGG separator and any withinGroup
+            # ordering over the sort key the legs carried.
+            agg_expr: Expr = cfl_projection.build_outer_measure_expr(m, cte_name, aliases)
             # Apply CAST for resolved data_type (effective_measures so
             # multi-fact synthesized counts get the same integer CAST as
             # declared count measures).

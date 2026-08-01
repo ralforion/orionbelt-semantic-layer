@@ -177,12 +177,28 @@ def resolve_null_type_for_field(
     return model_measure.result_type.value
 
 
+def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
+    """The SQL aggregate name and ``DISTINCT`` flag to re-apply outside the union.
+
+    ``COUNT_DISTINCT`` is one OBML aggregation but two SQL knobs, and a measure
+    can also carry ``DISTINCT`` on the resolved call itself.
+    """
+    agg = measure.aggregation.upper()
+    distinct = False
+    if agg == "COUNT_DISTINCT":
+        agg = "COUNT"
+        distinct = True
+    if isinstance(measure.expression, FunctionCall) and measure.expression.distinct:
+        distinct = True
+    return agg, distinct
+
+
 def build_outer_aggregate(
     measure: ResolvedMeasure,
     cte_name: str,
     wg_aliases: Mapping[str, str],
 ) -> FunctionCall:
-    """Rebuild a measure's aggregate over the composite CTE.
+    """Rebuild a single-column measure's aggregate over the composite CTE.
 
     The legs project the aggregate's *input*, so the outer query re-applies the
     aggregation. Everything the aggregate carries besides its argument has to be
@@ -192,18 +208,12 @@ def build_outer_aggregate(
     legs carried through the union under the alias *wg_aliases* assigned it (see
     :func:`composite_aliases`).
 
-    Shared by the measure and metric projections. They each rebuilt this
-    independently before, and the metric copy silently lacked the ordering and
-    separator handling.
+    Reached through :func:`build_outer_measure_expr`, which routes multi-field
+    measures elsewhere — the single ``args`` entry below is the measure's own
+    composite column, which only a single-column measure has.
     """
-    agg = measure.aggregation.upper()
-    distinct = False
-    if agg == "COUNT_DISTINCT":
-        agg = "COUNT"
-        distinct = True
+    agg, distinct = outer_aggregation(measure)
     source = measure.expression if isinstance(measure.expression, FunctionCall) else None
-    if source is not None and source.distinct:
-        distinct = True
     order_by: list[OrderByItem] = []
     if source is not None and source.order_by:
         # A self-ordering aggregate orders by the very column it aggregates.
@@ -363,10 +373,10 @@ def substitute_outer_refs(
     would bind against a column no leg projects.
     """
 
-    wg_aliases = composite_aliases(resolved).within_group
+    aliases = composite_aliases(resolved)
 
     def value_of(comp: ResolvedMeasure) -> Expr:
-        return build_outer_aggregate(comp, cte_name, wg_aliases)
+        return build_outer_measure_expr(comp, cte_name, aliases)
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 
@@ -438,6 +448,32 @@ def build_outer_concat_count(
             ),
         )
     return FunctionCall(name=agg, args=[concat], distinct=distinct)
+
+
+def build_outer_measure_expr(
+    measure: ResolvedMeasure,
+    cte_name: str,
+    aliases: CompositeAliases,
+) -> Expr:
+    """Re-aggregate *measure* over the composite CTE, however its legs projected it.
+
+    Which composite columns a measure occupies depends on its shape: a
+    multi-field aggregate is spread over one column per argument and has to be
+    rebuilt by concatenating them, while everything else re-aggregates its single
+    column. Only :func:`composite_aliases` knows the column names, so the choice
+    belongs here rather than at each call site.
+
+    The direct-measure projection and the metric substitution both come through
+    here. The metric path used to call :func:`build_outer_aggregate`
+    unconditionally, which reads ``"composite_01"."<measure>"`` — a column no leg
+    projects for a multi-field measure, so a metric as ordinary as
+    ``{[Return Pairs]}`` over a two-column ``count_distinct`` compiled to SQL the
+    database rejected outright.
+    """
+    if is_multi_field(measure):
+        agg, distinct = outer_aggregation(measure)
+        return build_outer_concat_count(aliases.multi_field[measure.name], agg, distinct, cte_name)
+    return build_outer_aggregate(measure, cte_name, aliases.within_group)
 
 
 def _single_leg_root(

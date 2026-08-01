@@ -17,6 +17,7 @@ import duckdb
 import pytest
 from ruamel.yaml import YAML
 
+from orionbelt.compiler.cfl import UnsupportedAggregationForCFLError
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
@@ -1889,6 +1890,30 @@ CFL_FIELD_CLASH_YAML = CFL_WITHIN_GROUP_YAML.replace(
 )
 
 
+# A metric wrapping a two-column aggregate, and one wrapping a two-column
+# *statistical* aggregate that CFL cannot express at all.
+CFL_WRAPPED_MULTI_FIELD_YAML = (
+    CFL_FIELD_CLASH_YAML.replace(
+        """  Return Pairs__f0:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+""",
+        """  Return Corr:
+    resultType: float
+    aggregation: corr
+    columns:
+      - {dataObject: Returns, column: Return ID}
+      - {dataObject: Returns, column: Return Date Key}
+""",
+    )
+    + """metrics:
+  Wrapped Pairs: {dataType: integer, expression: '{[Return Pairs]}'}
+  Wrapped Corr: {dataType: double, expression: '{[Return Corr]}'}
+"""
+)
+
+
 def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
     """A derived metric over an ordered measure is planned like the measure.
 
@@ -2028,6 +2053,41 @@ def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> No
     # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
     assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
     assert 'ORDER BY "composite_01"."Return List__wg_"' in result.sql
+
+
+def test_a_metric_wrapping_a_multi_field_measure_reads_the_columns_its_legs_projected() -> None:
+    """The metric path must rebuild a multi-field aggregate the way the legs wrote it.
+
+    A metric is planned by inlining its components' aggregates, and that inlining
+    always took the single-column route: ``COUNT(DISTINCT "composite_01"."Return
+    Pairs")``, over a column no leg projects, since a two-column measure is
+    spread across one column per argument. DuckDB rejected it outright.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Pairs"]}},
+        CFL_WRAPPED_MULTI_FIELD_YAML,
+    )
+    assert '"composite_01"."Return Pairs__f0"' in result.sql
+    assert '"composite_01"."Return Pairs__f1"' in result.sql
+    # The column that never existed must not be referenced at all.
+    assert '"composite_01"."Return Pairs"' not in result.sql
+
+
+def test_a_metric_cannot_smuggle_a_two_column_statistical_aggregate_into_cfl() -> None:
+    """The CFL refusal has to cover components, not just directly selected measures.
+
+    Selecting ``Return Corr`` refuses; wrapping it in a metric used to walk
+    straight past the guard and emit a one-argument ``CORR`` over a concatenated
+    string - exactly the SQL the guard exists to prevent.
+    """
+    with pytest.raises(UnsupportedAggregationForCFLError) as excinfo:
+        _compile(
+            {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Wrapped Corr"]}},
+            CFL_WRAPPED_MULTI_FIELD_YAML,
+        )
+    # Names the measure that actually carries the aggregate, not the wrapper.
+    assert excinfo.value.measure_name == "Return Corr"
+    assert excinfo.value.aggregation == "corr"
 
 
 def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
