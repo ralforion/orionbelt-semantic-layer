@@ -2110,8 +2110,12 @@ def test_a_two_column_statistic_matches_its_single_fact_value_under_cfl(measure:
     The legs already project one column per argument, so the outer query
     re-applies the aggregate over the pair. Rows the sibling leg contributes are
     NULL in both columns and these aggregates skip any row with a NULL argument,
-    leaving exactly the row set the single-fact plan aggregates. Multi-fact
-    therefore has to *equal* single-fact, not approximate it.
+    leaving exactly the row set the single-fact plan aggregates.
+
+    Compared with a tolerance rather than bit-for-bit: the row *set* is identical
+    but the union interleaves the padded rows, and floating-point summation is
+    order-dependent, so the last couple of bits legitimately differ. A plan that
+    read the wrong rows would be off by far more than this.
     """
     con = _corr_db()
     multi = _compile(
@@ -2124,7 +2128,9 @@ def test_a_two_column_statistic_matches_its_single_fact_value_under_cfl(measure:
         CFL_WRAPPED_MULTI_FIELD_YAML,
     )
     # Year, Sales Amount, <statistic> vs Year, <statistic>
-    assert con.execute(multi.sql).fetchall()[0][2] == con.execute(single.sql).fetchall()[0][1]
+    assert con.execute(multi.sql).fetchall()[0][2] == pytest.approx(
+        con.execute(single.sql).fetchall()[0][1], rel=1e-9
+    )
 
 
 @pytest.mark.parametrize(
@@ -2140,7 +2146,12 @@ def test_a_two_column_statistic_matches_its_single_fact_value_under_cfl(measure:
 def test_every_two_column_statistic_survives_the_multi_fact_union(
     aggregation: str, expected: float
 ) -> None:
-    """Not just CORR: the whole ``TWO_COLUMN_AGGREGATIONS`` family shares the path."""
+    """Not just CORR: the whole ``TWO_COLUMN_AGGREGATIONS`` family shares the path.
+
+    The statistic is compared with a tolerance - see the sibling test for why the
+    last bits are not reproducible - while the row shape and the plain ``SUM``
+    riding alongside it are exact.
+    """
     yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
         """  Return Corr:
     resultType: float
@@ -2153,7 +2164,11 @@ def test_every_two_column_statistic_survives_the_multi_fact_union(
         {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Corr"]}},
         yaml_text,
     )
-    assert _corr_db().execute(result.sql).fetchall() == [(2024, Decimal("20.00"), expected)]
+    rows = _corr_db().execute(result.sql).fetchall()
+    assert len(rows) == 1
+    year, sales_amount, statistic = rows[0]
+    assert (year, sales_amount) == (2024, Decimal("20.00"))
+    assert statistic == pytest.approx(expected, rel=1e-9)
 
 
 @pytest.mark.parametrize("measure", ["Cross Corr", "Wrapped Cross Corr"])
