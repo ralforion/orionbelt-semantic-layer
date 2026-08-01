@@ -42,7 +42,7 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
     A ``withinGroup`` clause is the aggregate's ``ORDER BY``, and the CFL outer
     query re-aggregates over ``composite_01``. The ordering survives because the
     leg owning the measure projects the sort column as a column of its own
-    (:func:`cfl_projection.within_group_cte_aliases`), sibling legs NULL-pad it,
+    (:func:`cfl_projection.composite_aliases`), sibling legs NULL-pad it,
     and the rebuilt aggregate orders by that alias.
 
     That only works where the sort column's object is reachable from the leg's
@@ -271,11 +271,6 @@ class CFLPlanner:
         return cfl_projection.resolve_null_type_for_field(measure, field_idx, model, dialect)
 
     @staticmethod
-    def _multi_field_cte_alias(measure_name: str, idx: int) -> str:
-        """CTE column name for the *idx*-th field of a multi-field measure."""
-        return cfl_projection.multi_field_cte_alias(measure_name, idx)
-
-    @staticmethod
     def _unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
         """Extract the inner expression from an aggregated measure."""
         return cfl_projection.unwrap_aggregation(measure)
@@ -308,19 +303,6 @@ class CFLPlanner:
         """Remap ORDER BY expressions to use CTE aliases for the outer query."""
         return cfl_projection.remap_cfl_order_by(expr, resolved, model)
 
-    def _build_outer_concat_count(
-        self,
-        measure_name: str,
-        n_fields: int,
-        agg: str,
-        distinct: bool,
-        cte_name: str,
-    ) -> Expr:
-        """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query."""
-        return cfl_projection.build_outer_concat_count(
-            self, measure_name, n_fields, agg, distinct, cte_name
-        )
-
     def _plan_union_all(
         self,
         resolved: ResolvedQuery,
@@ -342,11 +324,12 @@ class CFLPlanner:
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code
 
-        # Sort-key columns for ordered aggregates, allocated once so the legs
-        # that project them, the legs that NULL-pad them and the outer
-        # re-aggregation all agree — and so none of them shadows a column the
-        # composite already carries under a user-facing name.
-        wg_aliases = cfl_projection.within_group_cte_aliases(resolved)
+        # Internal composite columns (multi-field arguments, ordered-aggregate
+        # sort keys), allocated once so the legs that project them, the legs
+        # that NULL-pad them and the outer re-aggregation all agree — and so
+        # none of them shadows a column the composite already carries under a
+        # user-facing name.
+        aliases = cfl_projection.composite_aliases(resolved)
 
         # Collect all measures across all objects + cross-fact measures
         all_measures: list[ResolvedMeasure] = []
@@ -417,7 +400,7 @@ class CFLPlanner:
                 if self._is_multi_field(m):
                     assert isinstance(m.expression, FunctionCall)
                     for i, arg in enumerate(m.expression.args):
-                        alias = self._multi_field_cte_alias(m.name, i)
+                        alias = aliases.multi_field[m.name][i]
                         arg_table = arg.table if isinstance(arg, ColumnRef) else None
                         if arg_table == obj_name:
                             leg_builder.select(AliasedExpr(expr=arg, alias=alias))
@@ -445,7 +428,9 @@ class CFLPlanner:
                     # column so the outer re-aggregation can order by it.
                     wg_item = self._within_group_item(m)
                     if wg_item is not None:
-                        leg_builder.select(AliasedExpr(expr=wg_item.expr, alias=wg_aliases[m.name]))
+                        leg_builder.select(
+                            AliasedExpr(expr=wg_item.expr, alias=aliases.within_group[m.name])
+                        )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
                     null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
@@ -461,7 +446,7 @@ class CFLPlanner:
                     # union's column list.
                     if self._within_group_item(m) is not None:
                         leg_builder.select(
-                            AliasedExpr(expr=Literal.null(), alias=wg_aliases[m.name])
+                            AliasedExpr(expr=Literal.null(), alias=aliases.within_group[m.name])
                         )
 
             # Determine the common root for this leg:
@@ -615,16 +600,14 @@ class CFLPlanner:
 
             if self._is_multi_field(m):
                 # Multi-field: concat CTE columns in outer query
-                assert isinstance(m.expression, FunctionCall)
-                n_fields = len(m.expression.args)
-                agg_expr: Expr = self._build_outer_concat_count(
-                    m.name, n_fields, agg, distinct, cte_name
+                agg_expr: Expr = cfl_projection.build_outer_concat_count(
+                    aliases.multi_field[m.name], agg, distinct, cte_name
                 )
             else:
                 # Shared with the metric projection so the two cannot drift:
                 # this reapplies DISTINCT, the LISTAGG separator, and any
                 # withinGroup ordering over the sort key the legs carried.
-                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name, wg_aliases)
+                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name, aliases.within_group)
             # Apply CAST for resolved data_type (effective_measures so
             # multi-fact synthesized counts get the same integer CAST as
             # declared count measures).

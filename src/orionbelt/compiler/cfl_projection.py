@@ -8,7 +8,8 @@ its public surface is unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -176,11 +177,6 @@ def resolve_null_type_for_field(
     return model_measure.result_type.value
 
 
-def multi_field_cte_alias(measure_name: str, idx: int) -> str:
-    """CTE column name for the *idx*-th field of a multi-field measure."""
-    return f"{measure_name}__f{idx}"
-
-
 def build_outer_aggregate(
     measure: ResolvedMeasure,
     cte_name: str,
@@ -194,7 +190,7 @@ def build_outer_aggregate(
     ``separator`` (which otherwise falls back to ``","``, dropping a declared
     ``delimiter``), and a ``withinGroup`` ordering, which reads the sort key the
     legs carried through the union under the alias *wg_aliases* assigned it (see
-    :func:`within_group_cte_aliases`).
+    :func:`composite_aliases`).
 
     Shared by the measure and metric projections. They each rebuilt this
     independently before, and the metric copy silently lacked the ordering and
@@ -266,56 +262,62 @@ def within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
     return None
 
 
-def _composite_column_names(resolved: ResolvedQuery) -> set[str]:
-    """Every name the composite CTE already projects a column under.
+@dataclass(frozen=True)
+class CompositeAliases:
+    """Names for the composite CTE's *internal* columns, none of them user-facing.
 
-    Dimensions and measures land there under their model names, and a
-    multi-field measure under one ``__f`` alias per argument. Any internal
-    column the planner adds has to steer clear of all of them.
+    ``multi_field`` maps a multi-field measure to one column name per argument
+    (the legs project the arguments separately; the outer query concatenates
+    them). ``within_group`` maps an ordered aggregate to the column carrying its
+    sort key.
     """
-    names = {dim.name for dim in resolved.dimensions} | set(resolved.coalesce_aliases)
-    for measure in (*resolved.measures, *resolved.metric_components.values()):
-        names.add(measure.name)
-        if is_multi_field(measure):
-            assert isinstance(measure.expression, FunctionCall)
-            names.update(
-                multi_field_cte_alias(measure.name, i) for i in range(len(measure.expression.args))
-            )
-    return names
+
+    multi_field: dict[str, list[str]]
+    within_group: dict[str, str]
 
 
-def within_group_cte_aliases(resolved: ResolvedQuery) -> dict[str, str]:
-    """CTE column names carrying each ordered aggregate's sort key.
+def composite_aliases(resolved: ResolvedQuery) -> CompositeAliases:
+    """Allocate the composite CTE's internal column names, collision-free.
 
-    The CFL outer query re-aggregates over ``composite_01``, so a
-    ``withinGroup`` clause can only survive if its sort column is carried
-    through the union as a column of its own. The leg that owns the measure
-    projects it under this alias; sibling legs NULL-pad it.
+    ``<measure>__f0`` and ``<measure>__wg`` are the natural names, but neither is
+    a safe one: both are legal measure / dimension / metric names in their own
+    right, and a model that declares one has it share a composite column with the
+    planner's internal one — the user's values in one leg, an aggregate argument
+    or a sort key in another. The outer query then aggregates the two together,
+    so a ``SUM`` returns a number nobody asked for and an ordering reads garbage.
 
-    ``<measure>__wg`` is the natural name but not a safe one: it is also a legal
-    measure/dimension/metric name, and a model that declares one would have the
-    two share a composite column — the sort key in one leg, the user's own
-    values in another, so the outer aggregate sums the wrong numbers and the
-    ordering reads garbage. The alias is therefore allocated against the names
-    the composite already carries, growing a ``_`` at a time until it is free.
+    Each name is therefore allocated against the ones the composite already
+    carries — dimensions, coalesce aliases, measure names, and every internal
+    name handed out before it — growing a trailing ``_`` until it is free.
 
-    Pure in *resolved* so every call site (leg projection, sibling padding,
-    outer re-aggregation) derives the same names without threading state.
+    Pure in *resolved*, and allocating in sorted-name order, so every call site
+    (leg projection, sibling NULL-padding, outer re-aggregation) derives the same
+    names without threading state between them.
     """
     by_name: dict[str, ResolvedMeasure] = {}
     for measure in (*resolved.measures, *resolved.metric_components.values()):
         by_name.setdefault(measure.name, measure)
-    taken = _composite_column_names(resolved)
-    aliases: dict[str, str] = {}
+    taken = {dim.name for dim in resolved.dimensions} | set(resolved.coalesce_aliases)
+    taken.update(by_name)
+
+    def allocate(candidate: str) -> str:
+        while candidate in taken:
+            candidate += "_"
+        taken.add(candidate)
+        return candidate
+
+    multi_field: dict[str, list[str]] = {}
+    within_group: dict[str, str] = {}
     for name in sorted(by_name):
-        if within_group_item(by_name[name]) is None:
-            continue
-        alias = f"{name}__wg"
-        while alias in taken:
-            alias += "_"
-        taken.add(alias)
-        aliases[name] = alias
-    return aliases
+        measure = by_name[name]
+        if is_multi_field(measure):
+            assert isinstance(measure.expression, FunctionCall)
+            multi_field[name] = [
+                allocate(f"{name}__f{i}") for i in range(len(measure.expression.args))
+            ]
+        if within_group_item(measure) is not None:
+            within_group[name] = allocate(f"{name}__wg")
+    return CompositeAliases(multi_field=multi_field, within_group=within_group)
 
 
 def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
@@ -361,7 +363,7 @@ def substitute_outer_refs(
     would bind against a column no leg projects.
     """
 
-    wg_aliases = within_group_cte_aliases(resolved)
+    wg_aliases = composite_aliases(resolved).within_group
 
     def value_of(comp: ResolvedMeasure) -> Expr:
         return build_outer_aggregate(comp, cte_name, wg_aliases)
@@ -407,28 +409,22 @@ def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel
 
 
 def build_outer_concat_count(
-    planner: CFLPlanner,
-    measure_name: str,
-    n_fields: int,
+    field_aliases: Sequence[str],
     agg: str,
     distinct: bool,
     cte_name: str,
 ) -> Expr:
     """Build ``COUNT(DISTINCT CAST(f0 AS VARCHAR) || '|' || ...)`` for the outer query.
 
-    Each field reference is qualified with *cte_name* so it resolves to
-    the raw CTE column rather than any sibling SELECT alias (see
-    ``_substitute_outer_refs`` for the alias-shadowing rationale).
+    *field_aliases* are the composite columns the legs projected the measure's
+    arguments into, in argument order, as allocated by :func:`composite_aliases`.
+    Each is qualified with *cte_name* so it resolves to the raw CTE column rather
+    than any sibling SELECT alias (see ``_substitute_outer_refs`` for the
+    alias-shadowing rationale).
     """
     parts: list[Expr] = [
-        Cast(
-            expr=ColumnRef(
-                name=planner._multi_field_cte_alias(measure_name, i),
-                table=cte_name,
-            ),
-            type_name="VARCHAR",
-        )
-        for i in range(n_fields)
+        Cast(expr=ColumnRef(name=alias, table=cte_name), type_name="VARCHAR")
+        for alias in field_aliases
     ]
     concat: Expr = parts[0]
     for part in parts[1:]:

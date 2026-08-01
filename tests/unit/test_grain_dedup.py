@@ -1863,6 +1863,32 @@ CFL_ALIAS_CLASH_YAML = (
 )
 
 
+# The same clash for the *other* internal alias: a multi-field measure's
+# per-argument columns, whose first slot a declared measure has claimed.
+CFL_FIELD_CLASH_YAML = CFL_WITHIN_GROUP_YAML.replace(
+    """  Return List:
+    resultType: string
+    aggregation: listagg
+    delimiter: ","
+    columns: [{dataObject: Returns, column: Return ID}]
+    withinGroup:
+      column: {dataObject: Calendar, column: Month}
+      order: ASC
+""",
+    """  Return Pairs:
+    resultType: int
+    aggregation: count_distinct
+    columns:
+      - {dataObject: Returns, column: Return ID}
+      - {dataObject: Returns, column: Return Date Key}
+  Return Pairs__f0:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+""",
+)
+
+
 def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
     """A derived metric over an ordered measure is planned like the measure.
 
@@ -2002,6 +2028,23 @@ def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> No
     # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
     assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
     assert 'ORDER BY "composite_01"."Return List__wg_"' in result.sql
+
+
+def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
+    """Same clash, other internal alias: a multi-field measure's ``__f`` columns.
+
+    ``Return Pairs__f0`` declared next to the two-column ``Return Pairs`` used to
+    land in the same composite column as the count's first argument, so DuckDB
+    rejected the query outright (``SUM(VARCHAR)``) - the sales leg contributed a
+    decimal and the returns leg a text ID.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Pairs__f0", "Return Pairs"]}},
+        CFL_FIELD_CLASH_YAML,
+    )
+    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return Pairs__f0"' in result.sql
+    assert '"Returns"."id" AS "Return Pairs__f0_"' in result.sql
+    assert '"composite_01"."Return Pairs__f0_"' in result.sql
 
 
 def test_cross_column_listagg_order_raises_a_domain_error_not_a_value_error() -> None:
