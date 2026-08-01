@@ -308,6 +308,40 @@ class CFLPlanner:
         cfl_projection.collect_table_refs(expr, tables)
 
     @staticmethod
+    def _leg_projects_argument(
+        measure: ResolvedMeasure,
+        arg: Expr,
+        obj_name: str,
+        this_measure_names: set[str],
+        reachable: set[str],
+    ) -> bool:
+        """Whether this leg supplies *arg* of a multi-field measure, or NULL-pads it.
+
+        A leg that **owns** the measure projects every argument. Grouping already
+        guaranteed one root reaches all of them (``_single_leg_root``) and this
+        leg is that root, so a joined column (``corr(Returns.Qty,
+        Calendar.Month)``) or a computed column expanding to one is as
+        projectable here as a bare own-table reference. Testing for a bare
+        ``ColumnRef`` on this exact object instead made the owning leg NULL-pad
+        its own measure's argument: the tuple count then counted a column of
+        NULLs, and a two-column statistic - whose result is NULL unless *both*
+        arguments are present - came back NULL on every dialect that pads
+        explicitly, and failed to bind on the ones that ``UNION ALL BY NAME``.
+        The computed-column form is the workaround ``Measure`` documents for
+        per-argument transformations, so it has to work.
+
+        A **cross-fact** measure is the other case: no single leg reaches all its
+        arguments, so each leg takes the ones rooted in its own fact and the rest
+        are padded. A conformed dimension is reachable from every leg, so the
+        stricter own-object rule is what keeps two legs from both claiming it.
+        """
+        if measure.name in this_measure_names:
+            arg_objects: set[str] = set()
+            cfl_projection.collect_table_refs(arg, arg_objects)
+            return bool(arg_objects) and arg_objects <= reachable
+        return isinstance(arg, ColumnRef) and arg.table == obj_name
+
+    @staticmethod
     def _within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
         """The sort key a leg must carry, or ``None`` if it need not carry one."""
         return cfl_projection.within_group_item(measure)
@@ -415,8 +449,9 @@ class CFLPlanner:
                     assert isinstance(m.expression, FunctionCall)
                     for i, arg in enumerate(m.expression.args):
                         alias = aliases.multi_field[m.name][i]
-                        arg_table = arg.table if isinstance(arg, ColumnRef) else None
-                        if arg_table == obj_name:
+                        if self._leg_projects_argument(
+                            m, arg, obj_name, this_measure_names, reachable
+                        ):
                             leg_builder.select(AliasedExpr(expr=arg, alias=alias))
                         elif not union_by_name:
                             null_type = self._resolve_null_type_for_field(m, i, model)

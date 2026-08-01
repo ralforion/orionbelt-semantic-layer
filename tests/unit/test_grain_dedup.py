@@ -1900,7 +1900,10 @@ CFL_WRAPPED_MULTI_FIELD_YAML = (
         "      Return Date Key: {code: datekey, abstractType: string}",
         "      Return Date Key: {code: datekey, abstractType: string}\n"
         "      Qty: {code: qty, abstractType: float}\n"
-        "      Cost: {code: cost, abstractType: float}",
+        "      Cost: {code: cost, abstractType: float}\n"
+        "      Double Qty:\n"
+        "        abstractType: float\n"
+        "        expression: '{[Returns].[Qty]} * 2'",
     ).replace(
         """  Return Pairs__f0:
     resultType: float
@@ -2169,6 +2172,74 @@ def test_every_two_column_statistic_survives_the_multi_fact_union(
     year, sales_amount, statistic = rows[0]
     assert (year, sales_amount) == (2024, Decimal("20.00"))
     assert statistic == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "second_argument",
+    [
+        pytest.param("{dataObject: Calendar, column: Month}", id="joined-column"),
+        pytest.param("{dataObject: Returns, column: Double Qty}", id="computed-column"),
+    ],
+)
+def test_a_leg_projects_every_argument_of_the_measure_it_owns(
+    second_argument: str, dialect: str
+) -> None:
+    """Owning the measure means supplying all its arguments, not just own-table ones.
+
+    The leg used to project an argument only when it was a bare column of the
+    leg's own object, so ``corr(Returns.Qty, Calendar.Month)`` had its second
+    argument NULL-padded *by the very leg that owns the measure*. A two-column
+    statistic is NULL unless both arguments are present, so dialects that pad
+    explicitly returned NULL silently and ``UNION ALL BY NAME`` ones failed to
+    bind. The computed-column form is what ``Measure`` documents for
+    per-argument transformations, so it has to work too.
+
+    Both dialects run: they differ in exactly the mechanism at fault (explicit
+    NULL padding vs ``UNION ALL BY NAME``).
+    """
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        "      - {dataObject: Returns, column: Cost}", f"      - {second_argument}"
+    )
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Corr"]}},
+        yaml_text,
+        dialect,
+    )
+    # The owning leg supplies the argument rather than padding it away.
+    assert '"Return Corr__f1"' in multi.sql
+    assert 'NULL AS "Return Corr__f1"' not in multi.sql.replace("CAST(", "")
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Corr"]}}, yaml_text, dialect
+    )
+    statistic = con.execute(multi.sql).fetchall()[0][2]
+    assert statistic is not None
+    assert statistic == pytest.approx(con.execute(single.sql).fetchall()[0][1], rel=1e-9)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
+def test_a_tuple_count_also_reads_an_argument_on_a_joined_object(dialect: str) -> None:
+    """The same defect, on the path that predates two-column statistics.
+
+    ``count_distinct(Returns.[Return ID], Calendar.Month)`` had its second
+    argument padded away by its own leg, so the outer concat counted tuples with
+    a NULL half.
+    """
+    yaml_text = CFL_WRAPPED_MULTI_FIELD_YAML.replace(
+        "      - {dataObject: Returns, column: Return Date Key}",
+        "      - {dataObject: Calendar, column: Month}",
+    )
+    con = _corr_db()
+    multi = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Sales Amount", "Return Pairs"]}},
+        yaml_text,
+        dialect,
+    )
+    single = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return Pairs"]}}, yaml_text, dialect
+    )
+    assert con.execute(multi.sql).fetchall()[0][2] == con.execute(single.sql).fetchall()[0][1]
 
 
 @pytest.mark.parametrize("measure", ["Cross Corr", "Wrapped Cross Corr"])
