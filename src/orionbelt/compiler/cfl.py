@@ -42,7 +42,7 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
     A ``withinGroup`` clause is the aggregate's ``ORDER BY``, and the CFL outer
     query re-aggregates over ``composite_01``. The ordering survives because the
     leg owning the measure projects the sort column as a column of its own
-    (:func:`cfl_projection.within_group_cte_alias`), sibling legs NULL-pad it,
+    (:func:`cfl_projection.within_group_cte_aliases`), sibling legs NULL-pad it,
     and the rebuilt aggregate orders by that alias.
 
     That only works where the sort column's object is reachable from the leg's
@@ -300,22 +300,8 @@ class CFLPlanner:
 
     @staticmethod
     def _within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
-        """The sort key a leg must carry, or ``None`` if it need not carry one.
-
-        Read off the resolved expression rather than the model, so the sort
-        column arrives already resolved to a column expression.
-
-        A self-ordering aggregate returns ``None``: it sorts by the column it
-        already projects as the measure's value, so a separate column would be
-        redundant — and on ClickHouse / Databricks actively harmful, since they
-        can only express ordering by the aggregated column itself.
-        """
-        expr = measure.expression
-        if isinstance(expr, FunctionCall) and expr.order_by:
-            if cfl_projection.is_self_ordered(measure):
-                return None
-            return expr.order_by[0]
-        return None
+        """The sort key a leg must carry, or ``None`` if it need not carry one."""
+        return cfl_projection.within_group_item(measure)
 
     @staticmethod
     def _remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:
@@ -355,6 +341,12 @@ class CFLPlanner:
 
         def qualify(obj: DataObject) -> str:
             return qualify_table(obj) if qualify_table else obj.qualified_code
+
+        # Sort-key columns for ordered aggregates, allocated once so the legs
+        # that project them, the legs that NULL-pad them and the outer
+        # re-aggregation all agree — and so none of them shadows a column the
+        # composite already carries under a user-facing name.
+        wg_aliases = cfl_projection.within_group_cte_aliases(resolved)
 
         # Collect all measures across all objects + cross-fact measures
         all_measures: list[ResolvedMeasure] = []
@@ -453,12 +445,7 @@ class CFLPlanner:
                     # column so the outer re-aggregation can order by it.
                     wg_item = self._within_group_item(m)
                     if wg_item is not None:
-                        leg_builder.select(
-                            AliasedExpr(
-                                expr=wg_item.expr,
-                                alias=cfl_projection.within_group_cte_alias(m.name),
-                            )
-                        )
+                        leg_builder.select(AliasedExpr(expr=wg_item.expr, alias=wg_aliases[m.name]))
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
                     null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
@@ -474,10 +461,7 @@ class CFLPlanner:
                     # union's column list.
                     if self._within_group_item(m) is not None:
                         leg_builder.select(
-                            AliasedExpr(
-                                expr=Literal.null(),
-                                alias=cfl_projection.within_group_cte_alias(m.name),
-                            )
+                            AliasedExpr(expr=Literal.null(), alias=wg_aliases[m.name])
                         )
 
             # Determine the common root for this leg:
@@ -640,7 +624,7 @@ class CFLPlanner:
                 # Shared with the metric projection so the two cannot drift:
                 # this reapplies DISTINCT, the LISTAGG separator, and any
                 # withinGroup ordering over the sort key the legs carried.
-                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name)
+                agg_expr = cfl_projection.build_outer_aggregate(m, cte_name, wg_aliases)
             # Apply CAST for resolved data_type (effective_measures so
             # multi-fact synthesized counts get the same integer CAST as
             # declared count measures).

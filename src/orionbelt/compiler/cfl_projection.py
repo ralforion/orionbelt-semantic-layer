@@ -8,6 +8,7 @@ its public surface is unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -180,7 +181,11 @@ def multi_field_cte_alias(measure_name: str, idx: int) -> str:
     return f"{measure_name}__f{idx}"
 
 
-def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCall:
+def build_outer_aggregate(
+    measure: ResolvedMeasure,
+    cte_name: str,
+    wg_aliases: Mapping[str, str],
+) -> FunctionCall:
     """Rebuild a measure's aggregate over the composite CTE.
 
     The legs project the aggregate's *input*, so the outer query re-applies the
@@ -188,7 +193,8 @@ def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCa
     reapplied here too, or it is silently lost: ``DISTINCT``, the LISTAGG
     ``separator`` (which otherwise falls back to ``","``, dropping a declared
     ``delimiter``), and a ``withinGroup`` ordering, which reads the sort key the
-    legs carried through the union under :func:`within_group_cte_alias`.
+    legs carried through the union under the alias *wg_aliases* assigned it (see
+    :func:`within_group_cte_aliases`).
 
     Shared by the measure and metric projections. They each rebuilt this
     independently before, and the metric copy silently lacked the ordering and
@@ -208,16 +214,12 @@ def build_outer_aggregate(measure: ResolvedMeasure, cte_name: str) -> FunctionCa
         # Point the outer ORDER BY at the measure's own column rather than a
         # separate sort-key column: ClickHouse and Databricks cannot express
         # cross-column ordering and compare the two renderings textually, so a
-        # distinct ``__wg`` alias would make them reject an aggregate they
+        # distinct sort-key alias would make them reject an aggregate they
         # support perfectly well on the single-fact path.
         order_by = [
             OrderByItem(
                 expr=ColumnRef(
-                    name=(
-                        measure.name
-                        if is_self_ordered(measure)
-                        else within_group_cte_alias(measure.name)
-                    ),
+                    name=(measure.name if is_self_ordered(measure) else wg_aliases[measure.name]),
                     table=cte_name,
                 ),
                 desc=source.order_by[0].desc,
@@ -247,15 +249,73 @@ def is_self_ordered(measure: ResolvedMeasure) -> bool:
     return source.order_by[0].expr == source.args[0]
 
 
-def within_group_cte_alias(measure_name: str) -> str:
-    """CTE column name carrying an ordered aggregate's sort key.
+def within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
+    """The sort key a leg must carry for *measure*, or ``None`` if it need not.
+
+    Read off the resolved expression rather than the model, so the sort column
+    arrives already resolved to a column expression.
+
+    A self-ordering aggregate returns ``None``: it sorts by the column it
+    already projects as the measure's value, so a separate column would be
+    redundant — and on ClickHouse / Databricks actively harmful, since they can
+    only express ordering by the aggregated column itself.
+    """
+    expr = measure.expression
+    if isinstance(expr, FunctionCall) and expr.order_by and not is_self_ordered(measure):
+        return expr.order_by[0]
+    return None
+
+
+def _composite_column_names(resolved: ResolvedQuery) -> set[str]:
+    """Every name the composite CTE already projects a column under.
+
+    Dimensions and measures land there under their model names, and a
+    multi-field measure under one ``__f`` alias per argument. Any internal
+    column the planner adds has to steer clear of all of them.
+    """
+    names = {dim.name for dim in resolved.dimensions} | set(resolved.coalesce_aliases)
+    for measure in (*resolved.measures, *resolved.metric_components.values()):
+        names.add(measure.name)
+        if is_multi_field(measure):
+            assert isinstance(measure.expression, FunctionCall)
+            names.update(
+                multi_field_cte_alias(measure.name, i) for i in range(len(measure.expression.args))
+            )
+    return names
+
+
+def within_group_cte_aliases(resolved: ResolvedQuery) -> dict[str, str]:
+    """CTE column names carrying each ordered aggregate's sort key.
 
     The CFL outer query re-aggregates over ``composite_01``, so a
     ``withinGroup`` clause can only survive if its sort column is carried
     through the union as a column of its own. The leg that owns the measure
     projects it under this alias; sibling legs NULL-pad it.
+
+    ``<measure>__wg`` is the natural name but not a safe one: it is also a legal
+    measure/dimension/metric name, and a model that declares one would have the
+    two share a composite column — the sort key in one leg, the user's own
+    values in another, so the outer aggregate sums the wrong numbers and the
+    ordering reads garbage. The alias is therefore allocated against the names
+    the composite already carries, growing a ``_`` at a time until it is free.
+
+    Pure in *resolved* so every call site (leg projection, sibling padding,
+    outer re-aggregation) derives the same names without threading state.
     """
-    return f"{measure_name}__wg"
+    by_name: dict[str, ResolvedMeasure] = {}
+    for measure in (*resolved.measures, *resolved.metric_components.values()):
+        by_name.setdefault(measure.name, measure)
+    taken = _composite_column_names(resolved)
+    aliases: dict[str, str] = {}
+    for name in sorted(by_name):
+        if within_group_item(by_name[name]) is None:
+            continue
+        alias = f"{name}__wg"
+        while alias in taken:
+            alias += "_"
+        taken.add(alias)
+        aliases[name] = alias
+    return aliases
 
 
 def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
@@ -301,8 +361,10 @@ def substitute_outer_refs(
     would bind against a column no leg projects.
     """
 
+    wg_aliases = within_group_cte_aliases(resolved)
+
     def value_of(comp: ResolvedMeasure) -> Expr:
-        return build_outer_aggregate(comp, cte_name)
+        return build_outer_aggregate(comp, cte_name, wg_aliases)
 
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 

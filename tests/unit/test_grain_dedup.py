@@ -1852,6 +1852,17 @@ CFL_UNREACHABLE_ORDER_YAML = CFL_WITHIN_GROUP_YAML.replace(
 ).replace("  Return List:", "  Cross Ordered:")
 
 
+# A model that declares the very name the sort-key column would like to use.
+CFL_ALIAS_CLASH_YAML = (
+    CFL_WITHIN_GROUP_YAML
+    + """  Return List__wg:
+    resultType: float
+    aggregation: sum
+    expression: '{[Sales].[Amount]}'
+"""
+)
+
+
 def test_a_metric_wrapping_an_ordered_measure_keeps_the_ordering_under_cfl() -> None:
     """A derived metric over an ordered measure is planned like the measure.
 
@@ -1972,6 +1983,25 @@ def test_cfl_self_ordering_listagg_compiles_on_array_sorting_dialects(dialect: s
     )
     # No redundant sort-key column: the value column is the sort key.
     assert "__wg" not in result.sql
+
+
+def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> None:
+    """``<measure>__wg`` is a legal measure name, so the sort key cannot assume it.
+
+    Declaring ``Return List__wg`` alongside the ordered ``Return List`` used to
+    put both in the same composite column - the user's ``SUM`` input in one leg,
+    the sort key in the other - so the outer aggregate summed the sort key too
+    and the ordering read whatever the sales leg happened to contribute.
+    """
+    result = _compile(
+        {"select": {"dimensions": ["Year"], "measures": ["Return List__wg", "Return List"]}},
+        CFL_ALIAS_CLASH_YAML,
+    )
+    # The declared measure keeps the name it asked for...
+    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return List__wg"' in result.sql
+    # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
+    assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
+    assert 'ORDER BY "composite_01"."Return List__wg_"' in result.sql
 
 
 def test_cross_column_listagg_order_raises_a_domain_error_not_a_value_error() -> None:
