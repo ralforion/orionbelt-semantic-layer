@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orionbelt.models.types import parse_data_type
+
+_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+"""``{[DataObject].[Column]}`` as it appears inside a measure ``expression:``."""
 
 
 class DataType(StrEnum):
@@ -495,6 +499,24 @@ class Measure(BaseModel):
     expression: str | None = None
     distinct: bool = False
     total: bool = False
+    anchor: str | None = None
+    """Data object whose grain this measure's expression is evaluated at.
+
+    Only meaningful for an expression reading columns from *independent facts*
+    — objects no single join path reaches together. Without it such a measure
+    has no defined value: ``UNION ALL`` stacks the facts rather than joining
+    them, so no row carries both columns. Naming an anchor says which fact's
+    rows the expression runs over; the other facts are aggregated to the key
+    they share with it and joined on many-to-one, so nothing fans out.
+
+    It cannot be inferred. ``{[Returns].[Qty]} / {[Sales].[Qty]}`` is symmetric,
+    and anchoring it on Returns rather than the shared calendar key changes
+    ``AVG`` from 0.5 to 0.3333 (different row populations), so a wrong guess is
+    a wrong number rather than an error.
+
+    A bare data-object name, like :attr:`Dimension.via`.
+    """
+
     grain: GrainOverride | None = None
     filter_context: FilterContext | None = Field(None, alias="filterContext")
     filters: list[MeasureFilterItem] = []
@@ -538,6 +560,35 @@ class Measure(BaseModel):
         if v is not None:
             parse_data_type(v)
         return v
+
+    @property
+    def source_objects(self) -> set[str]:
+        """Data objects whose columns this measure reads.
+
+        Covers both declaration forms: the structured ``columns:`` list and
+        ``{[Object].[Column]}`` references inside ``expression:``.
+        """
+        return set(self.referenced_objects)
+
+    @property
+    def referenced_objects(self) -> list[str]:
+        """:attr:`source_objects`, in the order the declaration mentions them.
+
+        Order is load-bearing: it supplies the default :attr:`anchor` for an
+        expression spanning independent facts, which is the leftmost one. Reading
+        left to right is how the expression is written, and it is the only
+        reading that does not require the modeller to know which fact the planner
+        happens to prefer.
+        """
+        ordered: list[str] = []
+        for cref in self.columns:
+            if cref.view and cref.view not in ordered:
+                ordered.append(cref.view)
+        if self.expression:
+            for obj, _col in _MEASURE_COLUMN_REF.findall(self.expression):
+                if obj not in ordered:
+                    ordered.append(obj)
+        return ordered
 
     @model_validator(mode="after")
     def _validate_total_grain_exclusion(self) -> Measure:

@@ -710,6 +710,10 @@
           "type": "boolean",
           "description": "will use the total value of the measure"
         },
+        "anchor": {
+          "type": "string",
+          "description": "data object whose grain the expression is evaluated at, for an expression reading independent facts. The other facts are aggregated to the key they share with the anchor and joined many-to-one, so nothing fans out. Defaults to the leftmost data object the expression names; declare it to choose a different one (which changes AVG/MIN/MAX, though not SUM)"
+        },
         "grain": {
           "$ref": "#/definitions/grainOverride",
           "description": "Grain override — controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."

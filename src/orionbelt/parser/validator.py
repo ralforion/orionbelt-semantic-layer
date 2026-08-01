@@ -41,6 +41,7 @@ class SemanticValidator:
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
+        errors.extend(self._check_measure_anchors(model))
         return errors
 
     def _check_unique_identifiers(self, model: SemanticModel) -> list[SemanticError]:
@@ -646,6 +647,46 @@ class SemanticValidator:
                             f"reachable from via data object '{dim.via}'"
                         ),
                         path=f"dimensions.{name}",
+                    )
+                )
+        return errors
+
+    def _check_measure_anchors(self, model: SemanticModel) -> list[SemanticError]:
+        """Validate each measure's ``anchor``: it must exist and be one it reads.
+
+        The anchor names the data object whose rows the expression is evaluated
+        over, so an anchor the expression never reads would leave every column
+        conformed in and the anchor acting as a bare row multiplier. That is
+        never what was meant, and it is what a typo looks like.
+        """
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if not measure.anchor:
+                continue
+            if measure.anchor not in model.data_objects:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_ANCHOR_DATA_OBJECT",
+                        message=(
+                            f"Measure '{name}': anchor references unknown data object "
+                            f"'{measure.anchor}'"
+                        ),
+                        path=f"measures.{name}",
+                    )
+                )
+                continue
+            sources = measure.source_objects
+            if sources and measure.anchor not in sources:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_ANCHOR_DATA_OBJECT",
+                        message=(
+                            f"Measure '{name}': anchor '{measure.anchor}' is not one of the "
+                            f"data objects it reads ({', '.join(sorted(sources))}). The anchor "
+                            "sets the grain the expression is evaluated at, so it has to be a "
+                            "data object the expression actually reads."
+                        ),
+                        path=f"measures.{name}",
                     )
                 )
         return errors

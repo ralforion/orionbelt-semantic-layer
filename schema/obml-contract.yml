@@ -559,6 +559,12 @@ classes:
         json_schema: true
         ontology_property: total
         osi_roundtrip: true
+      anchor:
+        alias: anchor
+        type: "str | None"
+        json_schema: true
+        ontology_property: anchoredTo
+        osi_roundtrip: true
       grain:
         alias: grain
         type: "GrainOverride | None"

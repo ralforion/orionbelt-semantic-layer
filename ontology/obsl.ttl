@@ -187,6 +187,12 @@ obsl:anchoredTo a owl:ObjectProperty ;
     rdfs:domain obsl:Measure ;
     rdfs:range obsl:DataObject .
 
+obsl:anchorGrain a owl:ObjectProperty ;
+    rdfs:label "anchor grain" ;
+    rdfs:comment "Data object whose grain a measure's expression is evaluated at, when that expression reads independent facts no join path reaches together. The other facts are aggregated to the key they share with this one and joined many-to-one, so the expression is evaluated exactly once per row of this object. Distinct from obsl:anchoredTo, which marks a column-less measure that counts an object's rows: an anchor-grain measure reads columns and simply says which object sets the row population." ;
+    rdfs:domain obsl:Measure ;
+    rdfs:range obsl:DataObject .
+
 obsl:baseMeasure a owl:ObjectProperty ;
     rdfs:label "base measure" ;
     rdfs:comment "Measure that a cumulative metric is computed from (used when metricType is cumulative)." ;

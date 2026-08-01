@@ -52,7 +52,6 @@ already one row per query grain, so filtering it there means the same thing.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -97,8 +96,6 @@ from orionbelt.models.warnings import WarningCode, warning
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
-_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
-
 # Aggregations whose result is unchanged when every input row is duplicated.
 # Everything else — SUM, COUNT, AVG, the distribution/regression family,
 # LISTAGG — reads row multiplicity and is wrong over replicated rows.
@@ -137,13 +134,10 @@ class GrainDedupUnsupportedError(FanoutError):
 def measure_source_objects(measure: Measure) -> set[str]:
     """Data objects whose columns a measure reads.
 
-    Covers both declaration forms: the structured ``columns:`` list and
-    ``{[Object].[Column]}`` references inside ``expression:``.
+    Thin delegator to :attr:`Measure.source_objects`, which is where this lives
+    now that the parser needs it too and cannot import the compiler.
     """
-    objects = {cref.view for cref in measure.columns if cref.view}
-    if measure.expression:
-        objects.update(obj for obj, _col in _MEASURE_COLUMN_REF.findall(measure.expression))
-    return objects
+    return measure.source_objects
 
 
 def replicated_objects(resolved: ResolvedQuery) -> set[str]:
