@@ -979,7 +979,41 @@ class SemanticModel(BaseModel):
             raise ValueError(msg)
         return v
 
-    def common_join_targets(self, objects: list[str]) -> list[str]:
+    def effective_joins(
+        self,
+        object_name: str,
+        path_overrides: dict[tuple[str, str], str] | None = None,
+    ) -> list[DataObjectJoin]:
+        """The joins of *object_name* that are active under *path_overrides*.
+
+        One named secondary path per ``(source, target)`` pair replaces that
+        pair's primary join; every other pair keeps its primary. This is the
+        rule :class:`~orionbelt.compiler.graph.JoinGraph` traverses by, and
+        anything deriving join columns has to use the same one. Filtering
+        secondary joins out unconditionally instead read a conformed subquery's
+        key off the primary join even when the query had asked for the secondary
+        path, which silently answered at the wrong grain.
+
+        Takes a plain mapping rather than the query's ``usePathNames`` because
+        ``models.query`` imports this module, not the other way round.
+        """
+        overrides = path_overrides or {}
+        active: list[DataObjectJoin] = []
+        obj = self.data_objects.get(object_name)
+        for join in obj.joins if obj else []:
+            pair = (object_name, join.join_to)
+            if join.secondary:
+                if overrides.get(pair) == join.path_name:
+                    active.append(join)
+            elif pair not in overrides:
+                active.append(join)
+        return active
+
+    def common_join_targets(
+        self,
+        objects: list[str],
+        path_overrides: dict[tuple[str, str], str] | None = None,
+    ) -> list[str]:
         """Every data object all of *objects* join to directly, in name order.
 
         The candidates for conforming independent facts to a shared grain. More
@@ -987,14 +1021,12 @@ class SemanticModel(BaseModel):
         both a calendar and a store conform to different numbers depending which
         is used, so callers refuse rather than pick.
 
-        Secondary joins are excluded - those are alternate paths selected by
-        ``pathName``, and using one here would silently take a route the query
-        never asked for.
+        Which joins count depends on the query's active ``usePathNames``: see
+        :meth:`effective_joins`.
         """
         candidates: set[str] | None = None
         for name in objects:
-            obj = self.data_objects.get(name)
-            targets = {join.join_to for join in (obj.joins if obj else []) if not join.secondary}
+            targets = {join.join_to for join in self.effective_joins(name, path_overrides)}
             candidates = targets if candidates is None else (candidates & targets)
         return sorted(candidates or ())
 

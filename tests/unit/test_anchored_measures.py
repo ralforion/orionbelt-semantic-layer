@@ -535,3 +535,54 @@ def test_the_published_schema_describes_the_default_that_is_implemented() -> Non
         assert "leftmost" not in described, path
         assert "CONFORMED_GRAIN_ASSUMED" in described, path
         assert "ANCHOR_REQUIRED_AMBIGUOUS_KEY" in described, path
+
+
+SECONDARY_PATHS_YAML = TWO_FACT_YAML.replace(
+    """      Sale Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]""",
+    """      Sale Date Key: {code: datekey, abstractType: string}
+      Ship Date Key: {code: ship_datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Ship Date Key]
+        columnsTo: [Date Key]
+        secondary: true
+        pathName: ship""",
+)
+
+
+def test_conforming_follows_the_join_path_the_query_selected() -> None:
+    """``usePathNames`` picks the join, so it has to pick the conform key too.
+
+    A secondary path replaces its pair's primary join, and the conformed
+    subquery groups by that join's column. Reading the primary's column instead
+    answers at a different date entirely, with nothing to indicate it: the SQL
+    is valid, the number is just from the wrong grain.
+    """
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Year"], "measures": ["Cross"]},
+            "usePathNames": [{"source": "Sales", "target": "Calendar", "pathName": "ship"}],
+        }
+    )
+    sql = CompilationPipeline().compile(query, _model(SECONDARY_PATHS_YAML), "duckdb").sql
+    assert '"Sales"."ship_datekey" AS "__ob_ak0"' in sql
+    assert '"Sales"."datekey" AS "__ob_ak0"' not in sql
+
+
+def test_conforming_uses_the_primary_join_when_no_path_is_selected() -> None:
+    """The override is opt-in: without it the primary join still wins."""
+    sql = _sql(SECONDARY_PATHS_YAML, ["Cross"])
+    assert '"Sales"."datekey" AS "__ob_ak0"' in sql
+    assert "ship_datekey" not in sql

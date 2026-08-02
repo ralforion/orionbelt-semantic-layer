@@ -49,12 +49,13 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.graph import path_overrides
 from orionbelt.compiler.resolution import (
     ResolvedQuery,
     anchored_conformed_objects,
     make_column_expr,
 )
-from orionbelt.models.semantic import DataObject, DataObjectJoin, SemanticModel
+from orionbelt.models.semantic import DataObject, SemanticModel
 
 _CONFORM_ALIAS = "__ob_conf_"
 _KEY_ALIAS = "__ob_ak"
@@ -100,17 +101,11 @@ class ConformedFact:
     object_name: str
 
 
-def _direct_joins(obj: DataObject | None) -> list[DataObjectJoin]:
-    """Primary joins declared on *obj*.
-
-    Secondary joins are alternate paths selected by ``pathName``; picking one
-    here would silently choose a route the query never asked for.
-    """
-    return [join for join in (obj.joins if obj else []) if not join.secondary]
-
-
 def _shared_key(
-    model: SemanticModel, anchor: str, foreign: str
+    model: SemanticModel,
+    anchor: str,
+    foreign: str,
+    overrides: dict[tuple[str, str], str],
 ) -> tuple[list[str], list[str]] | None:
     """Columns of (anchor, foreign) that address the same rows.
 
@@ -127,11 +122,11 @@ def _shared_key(
 
     Returns their respective columns, or ``None`` when neither shape holds.
     """
-    for foreign_join in _direct_joins(model.data_objects.get(foreign)):
+    for foreign_join in model.effective_joins(foreign, overrides):
         if foreign_join.join_to == anchor:
             return foreign_join.columns_to, foreign_join.columns_from
-    for anchor_join in _direct_joins(model.data_objects.get(anchor)):
-        for foreign_join in _direct_joins(model.data_objects.get(foreign)):
+    for anchor_join in model.effective_joins(anchor, overrides):
+        for foreign_join in model.effective_joins(foreign, overrides):
             if (
                 anchor_join.join_to == foreign_join.join_to
                 and anchor_join.columns_to == foreign_join.columns_to
@@ -148,9 +143,10 @@ def _conform_one(
     expression: Expr,
     alias: str,
     qualify: Callable[[DataObject], str] | None,
+    overrides: dict[tuple[str, str], str],
 ) -> ConformedFact:
     """Aggregate *foreign* to the key it shares with *anchor*."""
-    shared = _shared_key(model, anchor, foreign)
+    shared = _shared_key(model, anchor, foreign, overrides)
     if shared is None:
         raise AnchorNotConformableError(measure_name, anchor, foreign)
     anchor_columns, foreign_columns = shared
@@ -224,6 +220,11 @@ def plan_conformed_facts(
     if not resolved.anchored_measures:
         return conformed, rewritten
 
+    # The conform key has to come from the join the query is actually using: a
+    # secondary path selected by usePathNames replaces its pair's primary, and
+    # grouping by the primary's column instead answers at a different date.
+    overrides = path_overrides(resolved.use_path_names)
+
     # Metric components count. A metric is planned by inlining its components'
     # expressions, so a metric over an anchored measure reaches the projection
     # through ``metric_components`` and never through ``measures``. Walking only
@@ -252,6 +253,7 @@ def plan_conformed_facts(
                 expression,
                 f"{_CONFORM_ALIAS}{len(conformed)}",
                 qualify,
+                overrides,
             )
             conformed.append(fact)
             expression = _point_at_conformed(expression, fact)

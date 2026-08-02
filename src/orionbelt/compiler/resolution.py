@@ -27,7 +27,7 @@ from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
 )
-from orionbelt.compiler.graph import JoinGraph, JoinStep
+from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import (
     CoalesceDimension,
@@ -190,7 +190,7 @@ def conform_key_candidates(
     """
     if measure.anchor or not needs_conforming(model, measure, use_path_names):
         return []
-    return model.common_join_targets(measure.referenced_objects)
+    return model.common_join_targets(measure.referenced_objects, path_overrides(use_path_names))
 
 
 def anchored_conformed_objects(
