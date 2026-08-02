@@ -563,7 +563,10 @@ classes:
         alias: anchor
         type: "str | None"
         json_schema: true
-        ontology_property: anchoredTo
+        # Not anchoredTo: SHACL reserves that for column-less row counts and
+        # forbids it on a measure that reads columns, which an anchored
+        # expression measure does.
+        ontology_property: anchorGrain
         osi_roundtrip: true
       grain:
         alias: grain

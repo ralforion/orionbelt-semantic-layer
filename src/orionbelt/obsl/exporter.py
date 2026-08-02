@@ -473,6 +473,13 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             elif ref.view:
                 g.add((meas_uri, OBSL.anchoredTo, _data_object_uri(model_id, ref.view)))
 
+        # The grain an expression spanning independent facts is evaluated at.
+        # Distinct from obsl:anchoredTo above, which marks a column-less measure
+        # counting an object's rows: this one reads columns and simply says
+        # which object sets the row population.
+        if meas.anchor:
+            g.add((meas_uri, OBSL.anchorGrain, _data_object_uri(model_id, meas.anchor)))
+
         # Expression string + the columns it references. An expression measure
         # aggregates the formula, not a declared column, so its column
         # dependencies use the distinct obsl:referencesColumn predicate —

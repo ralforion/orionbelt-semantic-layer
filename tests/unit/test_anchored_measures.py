@@ -423,3 +423,60 @@ def test_choosing_the_only_shared_key_is_reported_as_an_assumption() -> None:
         .compile(query, _model(_with(TWO_FACT_YAML, anchor="Returns")), "duckdb")
         .warnings
     )
+
+
+# --- Reachability through the surfaces the measure is used from ---
+
+
+def test_a_metric_over_an_anchored_measure_is_conformed_too() -> None:
+    """A metric inlines its components, so it reaches the projection separately.
+
+    Walking only ``resolved.measures`` left ``{[Cross]} + 1`` projecting the raw
+    ``SUM("Sales"."qty" * "Returns"."qty")`` with no conformed subqueries under
+    it, over a FROM containing neither fact, so it failed to bind.
+    """
+    yaml_text = (
+        TWO_FACT_YAML
+        + """metrics:
+  Cross Plus One: {dataType: double, expression: '{[Cross]} + 1'}
+"""
+    )
+    sql = _sql(yaml_text, ["Cross Plus One"])
+    assert "__ob_conf_" in sql
+    assert '"Sales"."qty" * "Returns"."qty"' not in sql
+    # The measure alone is 88 on this data, so the metric is 89.
+    assert float(_db().execute(sql).fetchall()[0][1]) == pytest.approx(89.0)
+
+
+def test_query_level_allow_fan_out_is_accepted_by_the_published_query_schema() -> None:
+    """A field Pydantic accepts but the schema rejects is unusable over REST.
+
+    The guarded API paths validate the payload against ``query-schema.json``
+    before Pydantic sees it, so a flag missing there is refused as an
+    unexpected additional property however well the model handles it.
+    """
+    import json
+    from pathlib import Path
+
+    import jsonschema
+
+    schema = json.loads(Path("schema/query-schema.json").read_text())
+    payload = {"select": {"measures": ["Cross"]}, "allowFanOut": True}
+    jsonschema.validate(payload, schema)
+
+
+def test_the_anchor_is_exported_to_rdf_under_its_own_predicate() -> None:
+    """``obsl:anchorGrain``, not ``obsl:anchoredTo``.
+
+    SHACL reserves ``anchoredTo`` for column-less row counts and forbids it on a
+    measure that reads columns, which an anchored expression measure does. Two
+    concepts, two predicates.
+    """
+    from orionbelt.obsl.exporter import OBSL, export_obsl
+
+    graph = export_obsl(_model(_with(TWO_FACT_YAML, anchor="Returns")), "m")
+    anchored = {str(s) for s, _, _ in graph.triples((None, OBSL.anchorGrain, None))}
+    assert any(s.endswith("/measure/cross") for s in anchored), anchored
+    # The row-count predicate stays reserved for synthesized counts.
+    count_anchored = {str(s) for s, _, _ in graph.triples((None, OBSL.anchoredTo, None))}
+    assert not any(s.endswith("/measure/cross") for s in count_anchored), count_anchored

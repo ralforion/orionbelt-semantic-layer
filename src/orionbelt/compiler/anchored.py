@@ -224,7 +224,17 @@ def plan_conformed_facts(
     if not resolved.anchored_measures:
         return conformed, rewritten
 
-    for resolved_measure in resolved.measures:
+    # Metric components count. A metric is planned by inlining its components'
+    # expressions, so a metric over an anchored measure reaches the projection
+    # through ``metric_components`` and never through ``measures``. Walking only
+    # the latter left ``{[Cross]} + 1`` projecting the raw
+    # ``SUM("Sales"."qty" * "Returns"."qty")`` with no conformed subqueries
+    # under it, over a FROM that has neither fact.
+    seen: set[str] = set()
+    for resolved_measure in (*resolved.measures, *resolved.metric_components.values()):
+        if resolved_measure.name in seen:
+            continue
+        seen.add(resolved_measure.name)
         anchor = resolved.anchored_measures.get(resolved_measure.name)
         if not anchor:
             continue

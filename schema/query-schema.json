@@ -49,11 +49,11 @@
     },
     "querySubquery": {
       "type": "object",
-      "description": "Payload for the 'exists' / 'nonexists' filter operators. The join columns are not restated here — the planner resolves them by walking the model's declared joins from the subject's data object to 'dataObject'.",
+      "description": "Payload for the 'exists' / 'nonexists' filter operators. The join columns are not restated here \u2014 the planner resolves them by walking the model's declared joins from the subject's data object to 'dataObject'.",
       "properties": {
         "dataObject": {
           "type": "string",
-          "description": "Target data object — must be reachable from the subject via the model's join graph"
+          "description": "Target data object \u2014 must be reachable from the subject via the model's join graph"
         },
         "pathName": {
           "type": "string",
@@ -62,19 +62,29 @@
         "filter": {
           "type": "array",
           "description": "Optional predicates restricting which target rows count. Same operator vocabulary as the outer filter; nested 'exists' / 'nonexists' are rejected.",
-          "items": { "$ref": "#/definitions/queryFilter" }
+          "items": {
+            "$ref": "#/definitions/queryFilter"
+          }
         }
       },
-      "required": ["dataObject"],
+      "required": [
+        "dataObject"
+      ],
       "additionalProperties": false
     },
     "sortDirection": {
       "description": "Sort direction",
-      "enum": ["asc", "desc"]
+      "enum": [
+        "asc",
+        "desc"
+      ]
     },
     "nullsPosition": {
       "description": "Position of NULL values in an ORDER BY clause. Omit to use the dialect default (Postgres / Snowflake / DuckDB / Dremio: NULLs last on ASC, first on DESC; MySQL / ClickHouse / BigQuery / Databricks the opposite).",
-      "enum": ["first", "last"]
+      "enum": [
+        "first",
+        "last"
+      ]
     },
     "queryFilter": {
       "type": "object",
@@ -88,27 +98,49 @@
           "$ref": "#/definitions/filterOperator"
         },
         "value": {
-          "description": "Filter value (type depends on operator). Omit for 'exists' / 'nonexists' — use 'subquery' instead."
+          "description": "Filter value (type depends on operator). Omit for 'exists' / 'nonexists' \u2014 use 'subquery' instead."
         },
         "subquery": {
           "$ref": "#/definitions/querySubquery",
           "description": "Required when 'op' is 'exists' or 'nonexists'; rejected for all other operators."
         }
       },
-      "required": ["field", "op"],
+      "required": [
+        "field",
+        "op"
+      ],
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
-            "properties": { "op": { "enum": ["exists", "nonexists"] } },
-            "required": ["op"]
+            "properties": {
+              "op": {
+                "enum": [
+                  "exists",
+                  "nonexists"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
           },
           "then": {
-            "required": ["subquery"],
-            "not": { "required": ["value"] }
+            "required": [
+              "subquery"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
           },
           "else": {
-            "not": { "required": ["subquery"] }
+            "not": {
+              "required": [
+                "subquery"
+              ]
+            }
           }
         }
       ]
@@ -119,7 +151,10 @@
       "properties": {
         "logic": {
           "description": "Boolean combination logic for child filters",
-          "enum": ["and", "or"],
+          "enum": [
+            "and",
+            "or"
+          ],
           "default": "and"
         },
         "filters": {
@@ -127,8 +162,12 @@
           "description": "Child filters (leaf filters or nested filter groups)",
           "items": {
             "oneOf": [
-              { "$ref": "#/definitions/queryFilter" },
-              { "$ref": "#/definitions/queryFilterGroup" }
+              {
+                "$ref": "#/definitions/queryFilter"
+              },
+              {
+                "$ref": "#/definitions/queryFilterGroup"
+              }
             ]
           },
           "minItems": 1
@@ -139,7 +178,9 @@
           "default": false
         }
       },
-      "required": ["filters"],
+      "required": [
+        "filters"
+      ],
       "additionalProperties": false
     },
     "queryOrderBy": {
@@ -159,7 +200,9 @@
           "description": "Optional NULLS FIRST / NULLS LAST. Omit to use dialect default."
         }
       },
-      "required": ["field"],
+      "required": [
+        "field"
+      ],
       "additionalProperties": false
     },
     "querySelect": {
@@ -171,8 +214,12 @@
           "description": "Aggregate mode. List of dimension names (string) or coalesce groups. Use 'name:grain' notation for time grain (e.g. 'Order Date:month'). Mutually exclusive with 'fields'.",
           "items": {
             "oneOf": [
-              { "type": "string" },
-              { "$ref": "#/definitions/coalesceDimension" }
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/definitions/coalesceDimension"
+              }
             ]
           }
         },
@@ -206,7 +253,9 @@
         "coalesce": {
           "type": "array",
           "description": "Two or more dimension names to coalesce, in priority order (first non-null wins).",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "minItems": 2
         },
         "as": {
@@ -214,7 +263,10 @@
           "description": "Output column alias. Used in SELECT and GROUP BY of the outer wrapper."
         }
       },
-      "required": ["coalesce", "as"],
+      "required": [
+        "coalesce",
+        "as"
+      ],
       "additionalProperties": false
     },
     "usePathName": {
@@ -234,7 +286,11 @@
           "description": "Name of the secondary join path"
         }
       },
-      "required": ["source", "target", "pathName"],
+      "required": [
+        "source",
+        "target",
+        "pathName"
+      ],
       "additionalProperties": false
     }
   },
@@ -248,8 +304,12 @@
       "description": "Filters applied before aggregation (WHERE clause). Supports leaf filters and filter groups with AND/OR/NOT logic. Top-level items are combined with AND.",
       "items": {
         "oneOf": [
-          { "$ref": "#/definitions/queryFilter" },
-          { "$ref": "#/definitions/queryFilterGroup" }
+          {
+            "$ref": "#/definitions/queryFilter"
+          },
+          {
+            "$ref": "#/definitions/queryFilterGroup"
+          }
         ]
       }
     },
@@ -258,8 +318,12 @@
       "description": "Filters applied after aggregation (HAVING clause). Supports leaf filters and filter groups with AND/OR/NOT logic. Top-level items are combined with AND.",
       "items": {
         "oneOf": [
-          { "$ref": "#/definitions/queryFilter" },
-          { "$ref": "#/definitions/queryFilterGroup" }
+          {
+            "$ref": "#/definitions/queryFilter"
+          },
+          {
+            "$ref": "#/definitions/queryFilterGroup"
+          }
         ]
       }
     },
@@ -287,6 +351,10 @@
         "$ref": "#/definitions/usePathName"
       }
     },
+    "allowFanOut": {
+      "type": "boolean",
+      "description": "declare that row duplication from this query's joins is understood and intended, suppressing the fan-out warning for measures that read both a base-grain column and one from a replicated data object. Does not change the generated SQL"
+    },
     "dimensionsExclude": {
       "type": "boolean",
       "description": "When true, returns dimension value combinations that do NOT exist in the data (anti-join via EXCEPT). Requires 2+ dimensions on independent branches and no measures.",
@@ -295,9 +363,14 @@
     "grouping": {
       "type": "string",
       "description": "Hierarchical grouping modifier. 'rollup' emits GROUP BY ROLLUP(...) for hierarchical subtotals + grand total. 'cube' emits GROUP BY CUBE(...) for the full cross-tab. Adds one GROUPING(dim) AS _g_<dim> column per selected dimension so callers can distinguish subtotal/grand-total rows. v2.4.0+.",
-      "enum": ["rollup", "cube"]
+      "enum": [
+        "rollup",
+        "cube"
+      ]
     }
   },
-  "required": ["select"],
+  "required": [
+    "select"
+  ],
   "additionalProperties": false
 }

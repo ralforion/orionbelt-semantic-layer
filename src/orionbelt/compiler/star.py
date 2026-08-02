@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.builder import QueryBuilder
@@ -153,11 +153,20 @@ class StarSchemaPlanner:
         # SELECT: measures (aggregated) — for metrics, substitute component refs
         settings = model.settings
         measure_exprs: dict[str, Expr] = {}
+        # A metric inlines its components' expressions, so a conformed component
+        # has to be substituted in its rewritten form - the raw one still names
+        # the foreign fact's own table, which the conformed plan does not join.
+        metric_components = {
+            name: (
+                replace(component, expression=conformed_exprs[name])
+                if name in conformed_exprs
+                else component
+            )
+            for name, component in resolved.metric_components.items()
+        }
         for measure in resolved.measures:
             if measure.component_measures:
-                expr: Expr = _substitute_measure_refs(
-                    measure.expression, resolved.metric_components
-                )
+                expr: Expr = _substitute_measure_refs(measure.expression, metric_components)
                 metric = model.metrics.get(measure.name)
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)
