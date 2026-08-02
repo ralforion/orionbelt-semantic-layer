@@ -213,7 +213,15 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                     base_columns.append(_build_avg_helpers_base_col(comp, "sum"))
                     base_columns.append(_build_avg_helpers_base_col(comp, "count"))
                 else:
-                    base_columns.append(AliasedExpr(expr=comp.expression, alias=comp.name))
+                    # An anchored component's aggregate reads conformed subquery
+                    # columns. This CTE reuses the planner's FROM and joins, so
+                    # those subqueries are in scope and the foreign fact is not.
+                    base_columns.append(
+                        AliasedExpr(
+                            expr=resolved.conformed_expressions.get(comp.name, comp.expression),
+                            alias=comp.name,
+                        )
+                    )
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)

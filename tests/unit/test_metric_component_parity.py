@@ -25,7 +25,9 @@ import duckdb
 import pytest
 from ruamel.yaml import YAML
 
+from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.resolver import ReferenceResolver
@@ -229,3 +231,78 @@ def test_a_metric_over_a_measure_carries_the_same_warnings(
     direct_codes = {w.code for w in _compile(_BASE, measures).warnings}
     metric_codes = {w.code for w in _compile(yaml_text, metric_measures).warnings}
     assert direct_codes <= metric_codes, f"metric path lost {sorted(direct_codes - metric_codes)}"
+
+
+# The wrapper metrics. Each builds its own base CTE and re-derives the
+# component's aggregate into it, which is a second copy of the same hazard: the
+# re-derived expression names tables the wrapper's FROM does not have. Compared
+# by execution only, since a running total or a prior-period value is not equal
+# to the measure it is computed from.
+_WRAPPER_METRICS = {
+    "cumulative": (
+        "  Echo:\n    type: cumulative\n    measure: {measure}\n    timeDimension: Year\n"
+    ),
+    "window": (
+        "  Echo:\n    type: window\n    windowFunction: dense_rank\n    measure: {measure}\n"
+    ),
+    "period_over_period": (
+        "  Echo:\n    type: period_over_period\n    expression: '{{[{measure}]}}'\n"
+        "    periodOverPeriod:\n      timeDimension: Year\n      grain: year\n"
+        "      offset: -1\n      offsetGrain: year\n      comparison: difference\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_WRAPPER_METRICS))
+@pytest.mark.parametrize(
+    ("measures", "wrapped"),
+    [
+        pytest.param(["Anchored Cross"], "Anchored Cross", id="anchored-star"),
+        pytest.param(["Anchored Cross", "Visit Total"], "Anchored Cross", id="anchored-in-cfl"),
+    ],
+)
+def test_a_wrapper_metric_over_an_anchored_measure_never_emits_unbound_sql(
+    kind: str, measures: list[str], wrapped: str
+) -> None:
+    """Cumulative, window and period-over-period each re-project the component.
+
+    Whatever they re-project has to be the form the plan beneath them actually
+    produced: the conformed expression where the wrapper keeps the planner's
+    joins, and the measure's own column once the input is a CTE.
+
+    Refusing at compile time is an acceptable outcome - period-over-period
+    rebuilds its FROM from a date spine and genuinely cannot carry the conformed
+    subqueries, so it says so. What is never acceptable is SQL the database
+    rejects, which is what every one of these produced.
+    """
+    yaml_text = _BASE + "metrics:\n" + _WRAPPER_METRICS[kind].format(measure=wrapped)
+    metric_measures = [m for m in measures if m != wrapped] + ["Echo"]
+    try:
+        compiled = _compile(yaml_text, metric_measures)
+    except (ResolutionError, FanoutError):
+        return  # refused with a domain error, which callers surface as a 422
+    _db().execute(compiled.sql).fetchall()
+
+
+def test_a_metric_over_an_anchored_total_measure_executes() -> None:
+    """``total: true`` decomposes the metric into its components in a base CTE.
+
+    Same hazard from a fourth direction: the decomposition re-projects the
+    component's aggregate, and an anchored component's aggregate reads conformed
+    columns rather than the foreign fact's own.
+    """
+    yaml_text = (
+        _BASE.replace(
+            """  Anchored Cross:
+    resultType: float
+    aggregation: sum
+    anchor: Sales""",
+            """  Anchored Cross:
+    resultType: float
+    aggregation: sum
+    total: true
+    anchor: Sales""",
+        )
+        + "metrics:\n  Echo: {dataType: double, expression: '{[Anchored Cross]} + 1'}\n"
+    )
+    _db().execute(_compile(yaml_text, ["Echo"]).sql).fetchall()

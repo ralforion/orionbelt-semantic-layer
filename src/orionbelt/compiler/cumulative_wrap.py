@@ -36,6 +36,7 @@ from orionbelt.compiler.type_resolver import (
     resolve_measure_data_type,
     resolve_metric_data_type,
 )
+from orionbelt.compiler.window_wrap import wraps_a_cte
 from orionbelt.models.semantic import CumulativeAggType, GrainToDate, TimeGrain
 
 if TYPE_CHECKING:
@@ -140,6 +141,7 @@ def _component_base_column(
     resolved: ResolvedQuery,
     model: SemanticModel | None,
     dialect: Dialect | None,
+    over_cte: bool = False,
 ) -> AliasedExpr:
     """Project a cumulative metric's base measure into the base CTE.
 
@@ -158,8 +160,14 @@ def _component_base_column(
     # foreign fact's own, so re-deriving it here would name a table this CTE
     # joins a GROUP BY subquery in place of.
     rebuilt = resolved.conformed_expressions.get(comp.name, comp.expression)
+    # Taking the column by alias is required whenever the input is already a
+    # CTE, not only after grain dedup: a CFL composite holds the aggregate too,
+    # and neither the fact tables nor an anchored measure's conformed
+    # subqueries are in scope out there.
     source = (
-        col_node.expr if resolved.dedup_targets and isinstance(col_node, AliasedExpr) else rebuilt
+        col_node.expr
+        if (resolved.dedup_targets or over_cte) and isinstance(col_node, AliasedExpr)
+        else rebuilt
     )
     # The declared dataType cast belongs on whichever form is projected. Taking
     # the column by alias without it silently widened the result — a measure
@@ -218,7 +226,9 @@ def wrap_with_cumulative(
                     already_in_base = any(_get_alias(c) == comp_name for c in base_columns)
                     if not already_in_base:
                         base_columns.append(
-                            _component_base_column(col_node, comp, resolved, model, dialect)
+                            _component_base_column(
+                                col_node, comp, resolved, model, dialect, wraps_a_cte(ast)
+                            )
                         )
             # If the base measure is already a direct measure, it's already in the columns
         else:

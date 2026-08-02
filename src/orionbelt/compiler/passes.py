@@ -448,6 +448,34 @@ def apply_aggregate_passes(ast: Select, ctx: CompileContext) -> Select:
     # duplication is intended. Checked here rather than inside
     # ``evaluate_compatibility`` because it needs the model, which that
     # function (and its callers) deliberately do not carry.
+    # Period-over-period rebuilds its FROM from a date spine, joining the fact
+    # tables afresh. An anchored measure's aggregate reads conformed GROUP BY
+    # subqueries, which that FROM does not carry and cannot, so re-projecting it
+    # there names a table out of scope. Refused rather than emitted, the same
+    # treatment grain dedup already gives period-over-period for the same
+    # reason: the wrapper rebuilds a FROM the rewrite's output cannot serve.
+    if ctx.resolved.has_pop and ctx.resolved.anchored_measures:
+        anchored = sorted(ctx.resolved.anchored_measures)
+        listed = ", ".join(f"'{name}'" for name in anchored)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INCOMPATIBLE_COMBINATION",
+                    message=(
+                        f"Measure(s) {listed} are anchored, so their expression reads "
+                        f"columns conformed into subqueries. A period-over-period metric "
+                        f"rebuilds the query's FROM from a date spine, which cannot carry "
+                        f"those subqueries."
+                    ),
+                    path="select.measures",
+                    hint=(
+                        "Query the period-over-period metric without the anchored "
+                        "measure, or compare periods on a measure its own fact reaches."
+                    ),
+                )
+            ]
+        )
+
     if not ctx.resolved.allow_fan_out:
         flagged = mixed_grain_measures(ctx.resolved, ctx.model)
         if flagged:
