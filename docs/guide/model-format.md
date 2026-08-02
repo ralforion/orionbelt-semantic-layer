@@ -420,6 +420,7 @@ measures:
 | `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |
 | `total` | bool | No | Grand total shorthand (equivalent to `grain: { mode: FIXED }`) |
+| `anchor` | string | No | [Data object whose grain a cross-fact expression is evaluated at](compilation.md#cross-fact-measure-expressions). Only meaningful when the expression reads facts no join path reaches together |
 | `grain` | object | No | [Grain override](grain-filter-context.md#grain-override) -- controls aggregation grain independently from query dimensions |
 | `filterContext` | object | No | [Filter context override](grain-filter-context.md#filter-context) -- controls which query WHERE filters apply |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
