@@ -58,6 +58,7 @@ from orionbelt.models.semantic import (
     TimeGrain,
     WindowFunctionKind,
 )
+from orionbelt.models.warnings import WarningCode, warning
 
 _COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
 
@@ -149,33 +150,47 @@ def shared_key_anchor(
     refuses those with a message about pairing rather than quietly answering a
     different question.
     """
-    if measure.anchor or measure.expression is None or len(measure.columns) > 1:
-        return None
+    candidates = conform_key_candidates(model, measure, use_path_names)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def needs_conforming(
+    model: SemanticModel,
+    measure: Measure,
+    use_path_names: list[UsePathName] | None = None,
+) -> bool:
+    """Whether *measure* reads facts that no join path reaches together.
+
+    True regardless of whether an ``anchor:`` is declared or a shared key can be
+    found, so the caller can tell "does not need a grain" from "needs one and
+    cannot have one" - the second has to be refused, and reporting it as the
+    first is what let these compile into unbound SQL.
+    """
+    if measure.expression is None or len(measure.columns) > 1:
+        return False
     referenced = measure.referenced_objects
     if len(referenced) < 2:
-        return None
+        return False
     graph = JoinGraph(model, use_path_names=use_path_names or None)
     root = graph.find_common_root(set(referenced))
-    if root and set(referenced) <= (graph.descendants(root) | {root}):
-        return None
-    return _common_join_target(model, referenced)
+    return not (root and set(referenced) <= (graph.descendants(root) | {root}))
 
 
-def _common_join_target(model: SemanticModel, objects: list[str]) -> str | None:
-    """The object every one of *objects* joins to directly, if exactly one does.
+def conform_key_candidates(
+    model: SemanticModel,
+    measure: Measure,
+    use_path_names: list[UsePathName] | None = None,
+) -> list[str]:
+    """Objects that could serve as *measure*'s conform key, in name order.
 
-    Ambiguity is left unresolved rather than guessed at: two facts sharing both a
-    calendar and a store would give two different, equally defensible groupings,
-    and picking one silently is the failure mode this whole design avoids.
+    Empty when the measure does not need one. Exactly one is the case
+    :func:`shared_key_anchor` uses. More than one means the model offers several
+    equally valid groupings and the measure has to say which
+    (``ANCHOR_REQUIRED_AMBIGUOUS_KEY``).
     """
-    candidates: set[str] | None = None
-    for name in objects:
-        obj = model.data_objects.get(name)
-        targets = {join.join_to for join in (obj.joins if obj else []) if not join.secondary}
-        candidates = targets if candidates is None else (candidates & targets)
-    if not candidates or len(candidates) != 1:
-        return None
-    return next(iter(candidates))
+    if measure.anchor or not needs_conforming(model, measure, use_path_names):
+        return []
+    return model.common_join_targets(measure.referenced_objects)
 
 
 def anchored_conformed_objects(
@@ -1160,6 +1175,72 @@ class QueryResolver:
                     result.update(self._get_measure_join_objects(ctx, ref_name))
         return result
 
+    def _record_anchor(
+        self,
+        ctx: _ResolutionContext,
+        name: str,
+        measure: Measure,
+        result: set[str],
+    ) -> None:
+        """Settle the grain a cross-fact measure is evaluated at, or refuse.
+
+        A declared ``anchor:`` settles it. Otherwise the facts must share
+        exactly one directly-joined object: several are several different
+        answers, and the measure has to say which it means.
+        """
+        conformed = measure.source_objects
+        anchor = effective_anchor(ctx.model, measure, ctx.result.use_path_names)
+        if anchor is None:
+            candidates = conform_key_candidates(ctx.model, measure, ctx.result.use_path_names)
+            if len(candidates) != 1:
+                ctx.errors.append(
+                    SemanticError(
+                        code="ANCHOR_REQUIRED_AMBIGUOUS_KEY",
+                        message=(
+                            f"Measure '{name}' reads {', '.join(sorted(conformed))}, which no "
+                            f"join path reaches together, so each has to be aggregated to a key "
+                            f"they share. "
+                            + (
+                                f"They share {', '.join(candidates)}, and conforming at each "
+                                f"gives a different answer."
+                                if candidates
+                                else "They share no directly joined data object."
+                            )
+                        ),
+                        path=f"measures.{name}",
+                        hint=(
+                            "Set anchor: on the measure to the data object whose grain the "
+                            "expression should be evaluated at - one of the facts it reads, or "
+                            "a data object all of them join to."
+                            if candidates
+                            else "Join the data objects to a common one, or read them in "
+                            "separate measures and combine those with a metric."
+                        ),
+                    )
+                )
+                return
+            anchor = candidates[0]
+            ctx.result.warnings.append(
+                warning(
+                    code=WarningCode.CONFORMED_GRAIN_ASSUMED,
+                    message=(
+                        f"Measure '{name}' reads {', '.join(sorted(conformed))}, which no join "
+                        f"path reaches together. Each was aggregated to '{anchor}', the only "
+                        f"data object they both join to, and the expression evaluated once per "
+                        f"'{anchor}' row."
+                    ),
+                    hint=(
+                        "Set anchor: to evaluate per row of one of the facts instead, which "
+                        "changes AVG / MIN / MAX (though not SUM)."
+                    ),
+                    context={"measure": name, "conformedAt": anchor},
+                )
+            )
+
+        ctx.result.anchored_measures[name] = anchor
+        result -= conformed
+        result.add(anchor)
+
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:
         """Extract all source data objects for a measure or metric."""
         result: set[str] = set()
@@ -1181,15 +1262,12 @@ class QueryResolver:
             # check below flip the query into a CFL plan - whose UNION ALL puts
             # the two facts' columns on different rows, which is the exact
             # arrangement the anchor exists to avoid.
-            conformed = anchored_conformed_objects(ctx.model, measure, ctx.result.use_path_names)
-            if conformed:
-                anchor = effective_anchor(
-                    ctx.model, measure, ctx.result.use_path_names
-                ) or shared_key_anchor(ctx.model, measure, ctx.result.use_path_names)
-                if anchor:
-                    ctx.result.anchored_measures[name] = anchor
-                    result -= conformed
-                    result.add(anchor)
+            # Gated on "needs a grain" rather than "has one": a measure that
+            # needs one and cannot be given one has to be refused, and treating
+            # that as "needs nothing" is what let it through to a CFL leg that
+            # projected no such column.
+            if needs_conforming(ctx.model, measure, ctx.result.use_path_names):
+                self._record_anchor(ctx, name, measure, result)
             return result
 
         metric = ctx.model.metrics.get(name)
@@ -1314,6 +1392,16 @@ class QueryResolver:
         self, ctx: _ResolutionContext, filter_objects: set[str] | None = None
     ) -> str:
         """Select the base (fact) object — prefer measure source objects with most joins."""
+        # An anchored measure has already been told which grain to run at, and
+        # the planner joins its conformed subqueries against that object. Moving
+        # the base elsewhere leaves those joins referencing a table no longer in
+        # the FROM. Where the anchor cannot reach the query's other objects the
+        # query is genuinely unanswerable at that grain, and the reachability
+        # check below says so - which is more use than a binder error.
+        anchors = set(ctx.result.anchored_measures.values())
+        if len(anchors) == 1:
+            return next(iter(anchors))
+
         if ctx.result.measure_source_objects:
             # Among the measure sources, prefer one that can actually reach the
             # others. "Most joins" alone picks the busiest fact, which is not

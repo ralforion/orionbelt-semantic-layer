@@ -676,19 +676,28 @@ class SemanticValidator:
                 )
                 continue
             sources = measure.source_objects
-            if sources and measure.anchor not in sources:
-                errors.append(
-                    SemanticError(
-                        code="INVALID_ANCHOR_DATA_OBJECT",
-                        message=(
-                            f"Measure '{name}': anchor '{measure.anchor}' is not one of the "
-                            f"data objects it reads ({', '.join(sorted(sources))}). The anchor "
-                            "sets the grain the expression is evaluated at, so it has to be a "
-                            "data object the expression actually reads."
-                        ),
-                        path=f"measures.{name}",
-                    )
+            if not sources or measure.anchor in sources:
+                continue
+            # An anchor may also name a data object every source joins to: that
+            # conforms all of them to its grain, which is the reading a model
+            # picks when the facts share several dimensions and no single one
+            # can be assumed.
+            shared = model.common_join_targets(sorted(sources))
+            if measure.anchor in shared:
+                continue
+            options = sorted(sources) + shared
+            errors.append(
+                SemanticError(
+                    code="INVALID_ANCHOR_DATA_OBJECT",
+                    message=(
+                        f"Measure '{name}': anchor '{measure.anchor}' is neither a data object "
+                        f"it reads nor one they all join to. The anchor sets the grain the "
+                        f"expression is evaluated at, so it has to be one of: "
+                        f"{', '.join(options)}."
+                    ),
+                    path=f"measures.{name}",
                 )
+            )
         return errors
 
     def _check_missing_via(self, model: SemanticModel) -> list[SemanticError]:

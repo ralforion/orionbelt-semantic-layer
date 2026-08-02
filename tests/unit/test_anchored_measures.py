@@ -268,11 +268,158 @@ def test_an_anchor_naming_an_unknown_data_object_is_rejected() -> None:
     assert any(e.code == "INVALID_ANCHOR_DATA_OBJECT" for e in errors), errors
 
 
-def test_an_anchor_the_expression_never_reads_is_rejected() -> None:
+def test_an_anchor_may_name_a_data_object_the_facts_share() -> None:
+    """``anchor: Calendar`` is the shared-key reading, stated rather than assumed.
+
+    It is not one of the objects the expression reads, but every fact it reads
+    joins to it, so conforming them all to its grain is well defined - and it is
+    the only way to say which grain when the facts share more than one.
+    """
+    yaml_text = _with(TWO_FACT_YAML, anchor="Calendar")
+    assert not SemanticValidator().validate(_model(yaml_text))
+    sql = _sql(yaml_text, ["Cross"])
+    assert 'FROM "main"."calendar" AS "Calendar"' in sql
+    assert float(_db().execute(sql).fetchall()[0][1]) == pytest.approx(88.0)
+
+
+def test_an_anchor_that_is_neither_read_nor_shared_is_rejected() -> None:
     """A typo looks exactly like this, and the result would be silently wrong.
 
-    Anchoring on an object the expression does not read leaves every column
-    conformed in and the anchor acting as a bare row multiplier.
+    Anchoring on an unrelated object leaves every column conformed in with
+    nothing to conform against.
     """
-    errors = SemanticValidator().validate(_model(_with(TWO_FACT_YAML, anchor="Calendar")))
+    isolated = TWO_FACT_YAML.replace(
+        "dimensions:\n",
+        """  Warehouse:
+    code: warehouse
+    schema: main
+    columns:
+      Warehouse ID: {code: wid, abstractType: string, primaryKey: true}
+dimensions:
+""",
+        1,
+    )
+    errors = SemanticValidator().validate(_model(_with(isolated, anchor="Warehouse")))
     assert any(e.code == "INVALID_ANCHOR_DATA_OBJECT" for e in errors), errors
+
+
+# --- Rule 3 hardening: ambiguity, dimension anchors, the auto-pick warning ---
+
+TWO_SHARED_DIMS_YAML = (
+    TWO_FACT_YAML.replace(
+        "dimensions:\n",
+        """  Store:
+    code: store
+    schema: main
+    columns:
+      Store ID: {code: sid, abstractType: string, primaryKey: true}
+      Region: {code: region, abstractType: string}
+dimensions:
+""",
+        1,
+    )
+    .replace(
+        """      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]""",
+        """      Qty: {code: qty, abstractType: float}
+      Sale Store ID: {code: sid, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Sale Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Store
+        columnsFrom: [Sale Store ID]
+        columnsTo: [Store ID]""",
+    )
+    .replace(
+        """      Qty: {code: qty, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]""",
+        """      Qty: {code: qty, abstractType: float}
+      Return Store ID: {code: sid, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Return Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Store
+        columnsFrom: [Return Store ID]
+        columnsTo: [Store ID]""",
+    )
+)
+
+
+def test_two_shared_dimensions_are_refused_rather_than_picked_between() -> None:
+    """Conforming at each shared dimension gives a different number.
+
+    Measured on the same rows: at the calendar 42, at the store 30. Picking one
+    silently is the failure this whole design exists to avoid, so the measure is
+    told to say which it means.
+    """
+    from orionbelt.compiler.resolution import ResolutionError
+
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(TWO_SHARED_DIMS_YAML, ["Cross"])
+    error = next(e for e in excinfo.value.errors if e.code == "ANCHOR_REQUIRED_AMBIGUOUS_KEY")
+    # Names both candidates, so the reader knows what the choice is between...
+    assert "Calendar" in error.message and "Store" in error.message
+    # ...and says how to make it.
+    assert "anchor:" in (error.hint or "")
+
+
+def test_naming_the_shared_dimension_resolves_the_ambiguity() -> None:
+    """``anchor:`` is what makes the refusal actionable, and each choice is distinct."""
+    for anchor, expected in (("Calendar", 42.0), ("Store", 30.0)):
+        yaml_text = _with(TWO_SHARED_DIMS_YAML, anchor=anchor)
+        assert not SemanticValidator().validate(_model(yaml_text))
+        con = duckdb.connect()
+        con.execute("CREATE TABLE main.calendar(datekey VARCHAR, year INT)")
+        con.execute("INSERT INTO main.calendar VALUES ('d1',2024)")
+        con.execute("CREATE TABLE main.store(sid VARCHAR, region VARCHAR)")
+        con.execute("INSERT INTO main.store VALUES ('st1','N'),('st2','S')")
+        con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, qty DOUBLE, sid VARCHAR)")
+        con.execute("INSERT INTO main.sales VALUES ('s1','d1',10,'st1'),('s2','d1',4,'st2')")
+        con.execute(
+            "CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE, sid VARCHAR)"
+        )
+        con.execute("INSERT INTO main.returns VALUES ('r1','d1',3,'st1')")
+        query = QueryObject(**{"select": {"dimensions": [], "measures": ["Cross"]}})
+        sql = CompilationPipeline().compile(query, _model(yaml_text), "duckdb").sql
+        assert float(con.execute(sql).fetchall()[0][0]) == pytest.approx(expected), anchor
+
+
+def test_an_unreachable_anchor_grain_is_reported_not_left_to_the_database() -> None:
+    """Anchoring at a grain the query's dimensions cannot be reached from.
+
+    ``anchor: Store`` with a calendar dimension is unanswerable - Store has no
+    path to Calendar - and used to leave the conformed joins referencing a table
+    base selection had already moved away from, so the database saw the problem
+    first.
+    """
+    from orionbelt.compiler.resolution import ResolutionError
+
+    with pytest.raises(ResolutionError, match="Calendar"):
+        _sql(_with(TWO_SHARED_DIMS_YAML, anchor="Store"), ["Cross"])
+
+
+def test_choosing_the_only_shared_key_is_reported_as_an_assumption() -> None:
+    """One candidate is still a choice made for the model, so it is stated."""
+    query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": ["Cross"]}})
+    result = CompilationPipeline().compile(query, _model(TWO_FACT_YAML), "duckdb")
+    codes = [w.code for w in result.warnings]
+    assert "CONFORMED_GRAIN_ASSUMED" in codes, result.warnings
+    assert (
+        not CompilationPipeline()
+        .compile(query, _model(_with(TWO_FACT_YAML, anchor="Returns")), "duckdb")
+        .warnings
+    )

@@ -978,6 +978,25 @@ class SemanticModel(BaseModel):
             raise ValueError(msg)
         return v
 
+    def common_join_targets(self, objects: list[str]) -> list[str]:
+        """Every data object all of *objects* join to directly, in name order.
+
+        The candidates for conforming independent facts to a shared grain. More
+        than one is an ambiguity rather than a tie to break: two facts sharing
+        both a calendar and a store conform to different numbers depending which
+        is used, so callers refuse rather than pick.
+
+        Secondary joins are excluded - those are alternate paths selected by
+        ``pathName``, and using one here would silently take a route the query
+        never asked for.
+        """
+        candidates: set[str] | None = None
+        for name in objects:
+            obj = self.data_objects.get(name)
+            targets = {join.join_to for join in (obj.joins if obj else []) if not join.secondary}
+            candidates = targets if candidates is None else (candidates & targets)
+        return sorted(candidates or ())
+
     @property
     def effective_measures(self) -> dict[str, Measure]:
         """Declared measures plus synthesized row-count measures (declared win).
