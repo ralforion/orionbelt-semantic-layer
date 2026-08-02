@@ -873,7 +873,14 @@ def mixed_grain_measures(resolved: ResolvedQuery, model: SemanticModel) -> dict[
 
     effective = model.effective_measures
     flagged: dict[str, list[str]] = {}
-    for resolved_measure in resolved.measures:
+    # Metric components count: a metric inlines its components, so selecting
+    # ``{[Mixed]} + 1`` compiles the same duplicated expression as selecting
+    # ``Mixed`` and deserves the same warning.
+    seen: set[str] = set()
+    for resolved_measure in (*resolved.measures, *resolved.metric_components.values()):
+        if resolved_measure.name in seen:
+            continue
+        seen.add(resolved_measure.name)
         measure = effective.get(resolved_measure.name)
         if measure is None or measure.allow_fan_out:
             continue

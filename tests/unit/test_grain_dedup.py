@@ -2526,3 +2526,19 @@ def test_a_wholly_replicated_measure_is_left_to_the_dedup_pass() -> None:
     messages = [w.message for w in result.warnings if w.code == "FAN_TRAP_RISK"]
     assert messages, result.warnings
     assert all("read both a base-grain column" not in m for m in messages)
+
+
+def test_the_mixed_grain_warning_covers_metric_components() -> None:
+    """A metric inlines its components, so it compiles the same duplicated rows.
+
+    Selecting the measure warned; selecting a metric over it did not, while
+    emitting the identical expression.
+    """
+    yaml_text = (
+        MODEL_YAML.rstrip()
+        + "\n  Sales Value Plus One: {dataType: double, expression: '{[Sales Value]} + 1'}\n"
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Region"], "measures": ["Sales Value Plus One"]}}, yaml_text
+    )
+    assert "FAN_TRAP_RISK" in _warning_codes(result)

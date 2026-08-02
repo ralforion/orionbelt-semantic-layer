@@ -1247,7 +1247,12 @@ class QueryResolver:
             )
 
         ctx.result.anchored_measures[name] = anchor
-        result -= conformed
+        # Only the objects actually conformed leave the join requirements. An
+        # object the anchor *can* reach is read directly, by an ordinary join,
+        # so dropping it here left the expression naming a table the plan no
+        # longer joined - visible only when nothing else in the query happened
+        # to require it.
+        result -= anchored_conformed_objects(ctx.model, measure, ctx.result.use_path_names)
         result.add(anchor)
 
     def _get_measure_source_objects(self, ctx: _ResolutionContext, name: str) -> set[str]:

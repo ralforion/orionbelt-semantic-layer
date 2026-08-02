@@ -586,3 +586,77 @@ def test_conforming_uses_the_primary_join_when_no_path_is_selected() -> None:
     sql = _sql(SECONDARY_PATHS_YAML, ["Cross"])
     assert '"Sales"."datekey" AS "__ob_ak0"' in sql
     assert "ship_datekey" not in sql
+
+
+LOOKUP_YAML = TWO_FACT_YAML.replace(
+    "      Year: {code: year, abstractType: int}",
+    "      Year: {code: year, abstractType: int}\n"
+    "      Factor: {code: factor, abstractType: float}",
+).replace(
+    "    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+    "    anchor: Sales\n"
+    "    expression: '{[Sales].[Qty]} * {[Calendar].[Factor]} * {[Returns].[Qty]}'",
+)
+
+
+def test_an_object_the_anchor_can_reach_is_joined_not_conformed_away() -> None:
+    """Only the independent facts are conformed; the rest are ordinary joins.
+
+    Dropping every object the expression reads from the join requirements took
+    reachable lookups with it, so the expression named a table the plan no
+    longer joined. It stayed hidden while any dimension happened to require that
+    object anyway, which is why the query here selects no dimension at all.
+    """
+    query = QueryObject(**{"select": {"dimensions": [], "measures": ["Cross"]}})
+    sql = CompilationPipeline().compile(query, _model(LOOKUP_YAML), "duckdb").sql
+    assert '"Calendar"."factor"' in sql
+    assert 'AS "Calendar"' in sql, sql  # actually joined, not just referenced
+    assert "__ob_conf_" in sql  # Returns still conformed
+
+
+THIRD_FACT_YAML = TWO_FACT_YAML.replace(
+    "dimensions:",
+    """  Visits:
+    code: visits
+    schema: main
+    columns:
+      Visit ID: {code: id, abstractType: string, primaryKey: true}
+      Visit Date Key: {code: datekey, abstractType: string}
+      Count: {code: cnt, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Calendar
+        columnsFrom: [Visit Date Key]
+        columnsTo: [Date Key]
+dimensions:""",
+).replace(
+    "    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+    "    anchor: Sales\n"
+    "    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'\n"
+    "  Visit Total:\n    resultType: float\n    aggregation: sum\n"
+    "    expression: '{[Visits].[Count]}'",
+)
+
+
+def test_an_anchored_measure_in_a_multi_fact_plan_is_refused() -> None:
+    """CFL has no conforming step, so it would project the measure from no leg.
+
+    Pairing an anchored measure with one from a third independent fact flips the
+    query to CFL, whose leg projection only emits measures assigned to a leg.
+    The outer query still selected the anchored measure, so the composite CTE
+    had no such column.
+    """
+    from orionbelt.compiler.cfl import AnchoredMeasureNotSupportedInCFLError
+
+    query = QueryObject(
+        **{"select": {"dimensions": ["Year"], "measures": ["Cross", "Visit Total"]}}
+    )
+    with pytest.raises(AnchoredMeasureNotSupportedInCFLError, match="Cross"):
+        CompilationPipeline().compile(query, _model(THIRD_FACT_YAML), "duckdb")
+
+
+def test_the_anchored_measure_still_compiles_on_its_own() -> None:
+    """The refusal is scoped to the multi-fact combination, not the measure."""
+    query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": ["Cross"]}})
+    sql = CompilationPipeline().compile(query, _model(THIRD_FACT_YAML), "duckdb").sql
+    assert "__ob_conf_" in sql

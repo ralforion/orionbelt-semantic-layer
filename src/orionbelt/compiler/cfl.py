@@ -67,6 +67,36 @@ class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
         )
 
 
+class AnchoredMeasureNotSupportedInCFLError(FanoutError):
+    """An anchored measure landed in a multi-fact plan, which cannot conform.
+
+    ``anchor:`` is served by a star plan: each independent fact the expression
+    reads is aggregated to a key it shares with the anchor and joined
+    many-to-one, so the expression is evaluated once per anchor row. CFL has no
+    conforming step - it stacks facts with ``UNION ALL`` - and projects only the
+    measures it assigned to a leg, so an anchored measure arriving here would be
+    projected by no leg while the outer query still selected it.
+
+    Reached by pairing an anchored measure with a measure from a third,
+    independent fact, which is what flips the query to CFL. Conforming inside a
+    CFL leg is a coherent extension and simply is not built.
+
+    Subclasses :class:`~orionbelt.compiler.fanout.FanoutError` so callers that
+    already surface fanout as a 422 surface this the same way.
+    """
+
+    def __init__(self, measure_names: list[str]) -> None:
+        listed = ", ".join(f"'{name}'" for name in measure_names)
+        super().__init__(
+            f"Measure(s) {listed} are anchored, which is planned by conforming the "
+            f"facts they read to a shared key and joining them many-to-one. This "
+            f"query also selects a measure from another independent fact, so it is "
+            f"planned as a multi-fact UNION ALL, which has no conforming step. "
+            f"Query the anchored measure separately, or alongside measures its own "
+            f"plan already reaches."
+        )
+
+
 class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
     """Raised when a multi-column aggregate straddles independent facts.
 
@@ -111,6 +141,7 @@ class UnsupportedAggregationForCFLError(UnsupportedAggregationError):
 
 
 __all__ = [
+    "AnchoredMeasureNotSupportedInCFLError",
     "CFLPlanner",
     "FanoutError",
     "UnsupportedAggregationForCFLError",
@@ -186,10 +217,25 @@ class CFLPlanner:
         # components' aggregates, so ``{[Cross Corr]}`` reaches the same
         # rebuild — it just used to arrive there without passing the guard.
         cross_fact_names = {m.name for m in cross_fact} if cross_fact else set()
+        requested_or_component = {
+            m.name for m in (*resolved.measures, *resolved.metric_components.values())
+        }
         for measure in (*resolved.measures, *resolved.metric_components.values()):
             if measure.name in cross_fact_names and self._is_multi_field(measure):
                 agg = measure.aggregation.lower() if measure.aggregation else ""
                 raise UnsupportedAggregationForCFLError(measure.name, agg)
+
+        # An anchored measure is planned as a star: its independent facts are
+        # conformed to a shared key and joined many-to-one. CFL has no such
+        # step, and its leg projection only emits measures assigned to a leg, so
+        # an anchored measure reaching this planner is projected by no leg while
+        # the outer query still selects it - a composite column that does not
+        # exist. Refuse rather than emit that.
+        anchored = sorted(
+            name for name in resolved.anchored_measures if name in requested_or_component
+        )
+        if anchored:
+            raise AnchoredMeasureNotSupportedInCFLError(anchored)
 
         # Ordered aggregates now carry their sort key through the union as a
         # column of its own, so the outer re-aggregation can order by it. That
