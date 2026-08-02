@@ -480,3 +480,58 @@ def test_the_anchor_is_exported_to_rdf_under_its_own_predicate() -> None:
     # The row-count predicate stays reserved for synthesized counts.
     count_anchored = {str(s) for s, _, _ in graph.triples((None, OBSL.anchoredTo, None))}
     assert not any(s.endswith("/measure/cross") for s in count_anchored), count_anchored
+
+
+WRAPPED_YAML = (
+    TWO_FACT_YAML
+    + """metrics:
+  Running Cross:
+    type: cumulative
+    measure: Cross
+    timeDimension: Year
+  Cross Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Cross
+"""
+)
+
+
+@pytest.mark.parametrize("metric", ["Running Cross", "Cross Rank"])
+def test_a_wrapper_reprojecting_an_anchored_measure_reads_the_conformed_columns(
+    metric: str,
+) -> None:
+    """Cumulative and window metrics build their own base CTE from the measure.
+
+    Each re-derives the component's aggregate rather than taking the planner's
+    column, so both projected the raw ``SUM("Sales"."qty" * "Returns"."qty")``
+    into a CTE whose FROM joins conformed subqueries in place of those tables.
+    The expression they re-project now comes from
+    ``ResolvedQuery.conformed_expressions``.
+    """
+    sql = _sql(WRAPPED_YAML, [metric])
+    assert '"Sales"."qty" * "Returns"."qty"' not in sql
+    assert "__ob_conf_" in sql
+    # Binds and runs, which is what the raw expression could not do.
+    assert _db().execute(sql).fetchall()
+
+
+def test_the_published_schema_describes_the_default_that_is_implemented() -> None:
+    """The contract is public, so a stale rule in it is a wrong answer to users.
+
+    An earlier design defaulted to the leftmost data object the expression
+    named. That was removed for making a commutative rewrite change the result,
+    but the description outlived it.
+    """
+    import json
+    from pathlib import Path
+
+    for path in (
+        "schema/obml-schema.json",
+        "packages/osi-orionbelt/src/osi_orionbelt/schemas/obml-schema.json",
+    ):
+        schema = json.loads(Path(path).read_text())
+        described = schema["definitions"]["measure"]["properties"]["anchor"]["description"]
+        assert "leftmost" not in described, path
+        assert "CONFORMED_GRAIN_ASSUMED" in described, path
+        assert "ANCHOR_REQUIRED_AMBIGUOUS_KEY" in described, path

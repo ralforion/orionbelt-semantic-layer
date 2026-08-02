@@ -574,11 +574,12 @@ class Measure(BaseModel):
     def referenced_objects(self) -> list[str]:
         """:attr:`source_objects`, in the order the declaration mentions them.
 
-        Order is load-bearing: it supplies the default :attr:`anchor` for an
-        expression spanning independent facts, which is the leftmost one. Reading
-        left to right is how the expression is written, and it is the only
-        reading that does not require the modeller to know which fact the planner
-        happens to prefer.
+        Ordered for determinism, not for meaning. An earlier design used the
+        first entry as the default :attr:`anchor` and was removed: it made a
+        commutative rewrite change the answer, since
+        ``{[Sales].[Qty]} * {[Returns].[Qty]}`` and the operands swapped would
+        anchor on different facts and return different averages. Nothing reads
+        position now, and nothing should.
         """
         ordered: list[str] = []
         for cref in self.columns:

@@ -139,6 +139,10 @@ class StarSchemaPlanner:
         # measure projection below has to read the conformed columns rather than
         # the foreign fact's own, which this plan is what renames.
         conformed_facts, conformed_exprs = plan_conformed_facts(resolved, model, qualify)
+        # Recorded for the wrappers that run after planning: each re-projects a
+        # measure's aggregate into its own CTE, and the resolved expression they
+        # would otherwise use still names the foreign fact's table.
+        resolved.conformed_expressions = conformed_exprs
 
         # SELECT: dimensions (apply time grain truncation if specified)
         grouping_dim_aliases: list[str] = []

@@ -154,10 +154,12 @@ def _component_base_column(
     instead of rebuilt — the same alias-not-expression rule that lets
     ``total_wrap`` compose.
     """
+    # An anchored measure's aggregate reads conformed subquery columns, not the
+    # foreign fact's own, so re-deriving it here would name a table this CTE
+    # joins a GROUP BY subquery in place of.
+    rebuilt = resolved.conformed_expressions.get(comp.name, comp.expression)
     source = (
-        col_node.expr
-        if resolved.dedup_targets and isinstance(col_node, AliasedExpr)
-        else comp.expression
+        col_node.expr if resolved.dedup_targets and isinstance(col_node, AliasedExpr) else rebuilt
     )
     # The declared dataType cast belongs on whichever form is projected. Taking
     # the column by alias without it silently widened the result — a measure

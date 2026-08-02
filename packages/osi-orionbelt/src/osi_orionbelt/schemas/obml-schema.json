@@ -6,7 +6,7 @@
   "definitions": {
     "customExtension": {
       "type": "object",
-      "description": "Vendor-keyed extension data — opaque to OrionBelt",
+      "description": "Vendor-keyed extension data \u2014 opaque to OrionBelt",
       "properties": {
         "vendor": {
           "type": "string",
@@ -94,7 +94,7 @@
         },
         "refresh": {
           "type": "object",
-          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md §5.",
+          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md \u00a75.",
           "properties": {
             "mode": {
               "type": "string",
@@ -163,7 +163,7 @@
       ]
     },
     "numClass": {
-      "description": "Numeric classification hint for LLMs: categorical (IDs/codes — group/filter only), additive (sum-safe — amounts, quantities), non_additive (rates, %, ratios — don't assume SUM)",
+      "description": "Numeric classification hint for LLMs: categorical (IDs/codes \u2014 group/filter only), additive (sum-safe \u2014 amounts, quantities), non_additive (rates, %, ratios \u2014 don't assume SUM)",
       "enum": [
         "categorical",
         "additive",
@@ -216,7 +216,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky — pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
+          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky \u2014 pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
         },
         "synonyms": {
           "type": "array",
@@ -350,7 +350,7 @@
       ]
     },
     "staticFilterOperator": {
-      "description": "Filter operator for static model filters — supports both OBML and SQL-style naming",
+      "description": "Filter operator for static model filters \u2014 supports both OBML and SQL-style naming",
       "enum": [
         "equals",
         "notequals",
@@ -540,7 +540,7 @@
     },
     "grainOverride": {
       "type": "object",
-      "description": "Grain override — controls aggregation grain independently from query dimensions",
+      "description": "Grain override \u2014 controls aggregation grain independently from query dimensions",
       "properties": {
         "mode": {
           "$ref": "#/definitions/grainMode",
@@ -563,7 +563,7 @@
         },
         "keepOnly": {
           "type": "array",
-          "description": "With FIXED: adaptive grain = keepOnly ∩ query_dims. Dimensions from this list present in the query.",
+          "description": "With FIXED: adaptive grain = keepOnly \u2229 query_dims. Dimensions from this list present in the query.",
           "items": {
             "type": "string"
           }
@@ -602,7 +602,7 @@
     },
     "filterContext": {
       "type": "object",
-      "description": "Filter context override — controls which query WHERE filters apply to this measure",
+      "description": "Filter context override \u2014 controls which query WHERE filters apply to this measure",
       "properties": {
         "mode": {
           "$ref": "#/definitions/filterContextMode",
@@ -611,7 +611,7 @@
         },
         "exclude": {
           "type": "array",
-          "description": "Field names — query filters referencing these fields are removed (RELATIVE mode only)",
+          "description": "Field names \u2014 query filters referencing these fields are removed (RELATIVE mode only)",
           "items": {
             "type": "string"
           }
@@ -712,15 +712,15 @@
         },
         "anchor": {
           "type": "string",
-          "description": "data object whose grain the expression is evaluated at, for an expression reading independent facts. The other facts are aggregated to the key they share with the anchor and joined many-to-one, so nothing fans out. Defaults to the leftmost data object the expression names; declare it to choose a different one (which changes AVG/MIN/MAX, though not SUM)"
+          "description": "data object whose grain the expression is evaluated at, for an expression reading independent facts. The other facts are aggregated to the key they share with the anchor and joined many-to-one, so nothing fans out. May name one of the facts the expression reads, or a data object all of them join to. Optional: with no anchor the facts are conformed to the single data object they all join to (reported as CONFORMED_GRAIN_ASSUMED), and sharing several raises ANCHOR_REQUIRED_AMBIGUOUS_KEY, since conforming at each gives a different answer. The choice changes AVG/MIN/MAX, though not SUM"
         },
         "grain": {
           "$ref": "#/definitions/grainOverride",
-          "description": "Grain override — controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
+          "description": "Grain override \u2014 controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
         },
         "filterContext": {
           "$ref": "#/definitions/filterContext",
-          "description": "Filter context override — controls which query WHERE filters apply to this measure. Requires CTE isolation."
+          "description": "Filter context override \u2014 controls which query WHERE filters apply to this measure. Requires CTE isolation."
         },
         "expression": {
           "type": "string",
@@ -819,7 +819,7 @@
     },
     "periodOverPeriod": {
       "type": "object",
-      "description": "Period-over-period configuration — compares a measure against a prior time period",
+      "description": "Period-over-period configuration \u2014 compares a measure against a prior time period",
       "properties": {
         "timeDimension": {
           "type": "string",
@@ -1177,7 +1177,7 @@
     },
     "examples": {
       "type": "array",
-      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md §5.",
+      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md \u00a75.",
       "items": {
         "type": "object",
         "properties": {
@@ -1240,7 +1240,7 @@
         },
         "defaultDialect": {
           "type": "string",
-          "description": "Default SQL dialect for queries that omit the 'dialect' field. Resolution order at request time: explicit dialect → model.settings.defaultDialect → DB_VENDOR env. Must be one of the registered OrionBelt dialects.",
+          "description": "Default SQL dialect for queries that omit the 'dialect' field. Resolution order at request time: explicit dialect \u2192 model.settings.defaultDialect \u2192 DB_VENDOR env. Must be one of the registered OrionBelt dialects.",
           "enum": [
             "bigquery",
             "clickhouse",

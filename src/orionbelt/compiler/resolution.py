@@ -393,6 +393,15 @@ class ResolvedQuery:
     out so the deduplicated ones can be computed in their own CTE and the metric
     recomputed from the results."""
 
+    conformed_expressions: dict[str, Expr] = field(default_factory=dict)
+    """Anchored measures, mapped to the expression that reads their conformed columns.
+
+    Set by the star planner once it has built the conformed subqueries. Any pass
+    that re-projects a measure's aggregate must read it from here: the resolved
+    expression still names the foreign fact's own table, which the conformed
+    plan joins a ``GROUP BY`` subquery in place of. Empty for every query with
+    no anchored measure."""
+
     anchored_measures: dict[str, str] = field(default_factory=dict)
     """Measures whose expression is evaluated at a declared object's grain,
     mapped to that anchor object.
