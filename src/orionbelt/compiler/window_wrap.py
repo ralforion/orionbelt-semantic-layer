@@ -370,7 +370,10 @@ def wrap_with_window(
                 if already_in_base:
                     continue
                 comp_expr = _apply_measure_cast(
-                    base_comp.expression, base_comp.name, model, dialect
+                    resolved.conformed_expressions.get(base_comp.name, base_comp.expression),
+                    base_comp.name,
+                    model,
+                    dialect,
                 )
                 base_columns.append(AliasedExpr(expr=comp_expr, alias=base_comp.name))
         else:

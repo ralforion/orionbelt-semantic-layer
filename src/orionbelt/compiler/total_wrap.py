@@ -210,8 +210,12 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                     continue  # Already present as a direct measure
                 if _is_avg_total(comp, resolved.dedup_measures):
                     # AVG total needs sum + count helper columns
-                    base_columns.append(_build_avg_helpers_base_col(comp, "sum"))
-                    base_columns.append(_build_avg_helpers_base_col(comp, "count"))
+                    base_columns.append(
+                        _build_avg_helpers_base_col(comp, "sum", resolved.conformed_expressions)
+                    )
+                    base_columns.append(
+                        _build_avg_helpers_base_col(comp, "count", resolved.conformed_expressions)
+                    )
                 else:
                     # An anchored component's aggregate reads conformed subquery
                     # columns. This CTE reuses the planner's FROM and joins, so
@@ -225,8 +229,12 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
-            base_columns.append(_build_avg_helpers_base_col(measure, "sum"))
-            base_columns.append(_build_avg_helpers_base_col(measure, "count"))
+            base_columns.append(
+                _build_avg_helpers_base_col(measure, "sum", resolved.conformed_expressions)
+            )
+            base_columns.append(
+                _build_avg_helpers_base_col(measure, "count", resolved.conformed_expressions)
+            )
         else:
             base_columns.append(col_node)
 
@@ -355,15 +363,25 @@ def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:
     return False
 
 
-def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str) -> AliasedExpr:
+def _build_avg_helpers_base_col(
+    measure: ResolvedMeasure,
+    kind: str,
+    conformed: dict[str, Expr] | None = None,
+) -> AliasedExpr:
     """Build a SUM or COUNT base CTE column for an AVG total measure.
 
     For AVG(expr), we need:
     - SUM(expr) AS "name__sum"
     - COUNT(expr) AS "name__count"
+
+    The aggregate is taken from *conformed* when the measure is anchored: its
+    argument then reads a conformed subquery's column, and the measure's own
+    resolved expression still names the foreign fact, which this CTE's FROM
+    joins that subquery in place of.
     """
-    if isinstance(measure.expression, FunctionCall) and measure.expression.args:
-        inner_args = list(measure.expression.args)
+    aggregate = (conformed or {}).get(measure.name, measure.expression)
+    if isinstance(aggregate, FunctionCall) and aggregate.args:
+        inner_args = list(aggregate.args)
     else:
         # Fallback: use Literal(1) — an AVG measure with no args is unusual
         # but using the measure alias as a column ref would be invalid SQL.

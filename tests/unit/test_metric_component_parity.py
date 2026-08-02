@@ -306,3 +306,55 @@ def test_a_metric_over_an_anchored_total_measure_executes() -> None:
         + "metrics:\n  Echo: {dataType: double, expression: '{[Anchored Cross]} + 1'}\n"
     )
     _db().execute(_compile(yaml_text, ["Echo"]).sql).fetchall()
+
+
+def test_an_avg_total_over_an_anchored_measure_never_emits_unbound_sql() -> None:
+    """``AVG`` + ``total`` decomposes into sum and count helper columns.
+
+    A separate re-projection from the non-AVG path beside it, because an average
+    cannot be windowed directly and is computed as ``SUM(s)/SUM(c)``. The helper
+    columns are built from the measure's expression, so an anchored measure's
+    helpers named the foreign fact.
+    """
+    yaml_text = _BASE.replace(
+        """  Anchored Cross:
+    resultType: float
+    aggregation: sum
+    anchor: Sales""",
+        """  Anchored Cross:
+    resultType: float
+    aggregation: avg
+    total: true
+    anchor: Sales""",
+    )
+    _db().execute(_compile(yaml_text, ["Anchored Cross"]).sql).fetchall()
+
+    metric = (
+        yaml_text + "metrics:\n  Echo: {dataType: double, expression: '{[Anchored Cross]} + 1'}\n"
+    )
+    _db().execute(_compile(metric, ["Echo"]).sql).fetchall()
+
+
+def test_a_derived_metric_over_a_window_metric_over_an_anchored_measure() -> None:
+    """One more level of nesting, and a branch of its own.
+
+    A derived metric referencing a window metric lifts the window's *base*
+    measure into ``window_base``. That lift is a different code path from the
+    direct window projection, so fixing the direct one left this reading the
+    resolved expression and naming the foreign fact.
+    """
+    yaml_text = (
+        _BASE
+        + """metrics:
+  Cross Rank:
+    type: window
+    windowFunction: dense_rank
+    measure: Anchored Cross
+  Echo: {dataType: double, expression: '{[Cross Rank]} + 1'}
+"""
+    )
+    try:
+        compiled = _compile(yaml_text, ["Echo"])
+    except (ResolutionError, FanoutError):
+        return  # a documented refusal is acceptable; unbound SQL is not
+    _db().execute(compiled.sql).fetchall()
