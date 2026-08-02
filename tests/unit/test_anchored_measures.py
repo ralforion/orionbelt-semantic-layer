@@ -686,3 +686,74 @@ def test_the_anchored_measure_still_compiles_on_its_own() -> None:
     query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": ["Cross"]}})
     sql = CompilationPipeline().compile(query, _model(THIRD_FACT_YAML), "duckdb").sql
     assert "__ob_conf_" in sql
+
+
+def test_a_metric_over_an_anchored_measure_survives_a_multi_fact_plan() -> None:
+    """A metric reaches the planner only through its components.
+
+    Routing the direct-measure branch to the anchor's leg left a component
+    classified cross-fact and projected by no leg, so the composite had no such
+    column while the outer query still selected it.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, year INT)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',2024),('d2',2024)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute(
+        "INSERT INTO main.sales VALUES ('s1','d1',2),('s2','d1',3),('s3','d1',5),('s4','d2',6)"
+    )
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute("INSERT INTO main.returns VALUES ('r1','d1',4),('r2','d2',1),('r3','d2',7)")
+    con.execute("CREATE TABLE main.visits(id VARCHAR, datekey VARCHAR, cnt DOUBLE)")
+    con.execute("INSERT INTO main.visits VALUES ('v1','d1',11),('v2','d2',9)")
+
+    yaml_text = (
+        THIRD_FACT_YAML
+        + """metrics:
+  Cross Plus One: {dataType: double, expression: '{[Cross]} + 1'}
+"""
+    )
+    model = _model(yaml_text)
+
+    def run(measures: list[str]) -> list[tuple]:
+        query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": measures}})
+        return con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+
+    cross = float(run(["Cross"])[0][1])
+    combined = run(["Cross Plus One", "Visit Total"])
+    assert float(combined[0][2]) == pytest.approx(cross + 1)
+
+
+KEY_IN_EXPRESSION_YAML = TWO_FACT_YAML.replace(
+    "      Year: {code: year, abstractType: int}",
+    "      Year: {code: year, abstractType: int}\n"
+    "      Factor: {code: factor, abstractType: float}",
+).replace(
+    "    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+    "    expression: '{[Sales].[Qty]} * {[Returns].[Qty]} * {[Calendar].[Factor]}'",
+)
+
+
+def test_the_shared_key_may_itself_be_read_by_the_expression() -> None:
+    """Conforming to Calendar while also reading a Calendar column.
+
+    Candidate discovery intersected the join targets of *every* referenced
+    object, so reading ``Calendar.Factor`` brought Calendar's own targets into
+    the intersection. A conformed dimension typically joins to nothing, so the
+    intersection emptied and the measure was refused for sharing no join target
+    with itself.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, year INT, factor DOUBLE)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',2024,2),('d2',2024,3)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute(
+        "INSERT INTO main.sales VALUES ('s1','d1',2),('s2','d1',3),('s3','d1',5),('s4','d2',6)"
+    )
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute("INSERT INTO main.returns VALUES ('r1','d1',4),('r2','d2',1),('r3','d2',7)")
+
+    sql = _sql(KEY_IN_EXPRESSION_YAML, ["Cross"])
+    assert "__ob_conf_" in sql
+    # Conformed at Calendar: d1 -> 10*4*2 = 80, d2 -> 6*8*3 = 144.
+    assert float(con.execute(sql).fetchall()[0][1]) == pytest.approx(224.0)

@@ -1024,11 +1024,23 @@ class SemanticModel(BaseModel):
         Which joins count depends on the query's active ``usePathNames``: see
         :meth:`effective_joins`.
         """
-        candidates: set[str] | None = None
-        for name in objects:
-            targets = {join.join_to for join in self.effective_joins(name, path_overrides)}
-            candidates = targets if candidates is None else (candidates & targets)
-        return sorted(candidates or ())
+        reachable_targets = {
+            name: {join.join_to for join in self.effective_joins(name, path_overrides)}
+            for name in objects
+        }
+        # A candidate has to be reached by every object, and counts as reaching
+        # itself: an expression may read a column of the very object the facts
+        # conform to (``Sales.Qty * Returns.Qty * Calendar.Factor``), and
+        # intersecting Calendar's own join targets in would leave nothing, since
+        # a conformed dimension typically joins to nothing.
+        pool = set(objects) | {
+            target for targets in reachable_targets.values() for target in targets
+        }
+        return sorted(
+            candidate
+            for candidate in pool
+            if all(name == candidate or candidate in reachable_targets[name] for name in objects)
+        )
 
     @property
     def effective_measures(self) -> dict[str, Measure]:
