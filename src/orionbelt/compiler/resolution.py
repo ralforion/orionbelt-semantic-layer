@@ -353,6 +353,11 @@ class ResolvedQuery:
     use_path_names: list[UsePathName] = field(default_factory=list)
     via_constraints: dict[str, str] = field(default_factory=dict)
     dimensions_exclude: bool = False
+    allow_fan_out: bool = False
+    """The query said its joins' row duplication is understood and intended.
+
+    Carried from ``QueryObject.allowFanOut``; silences the fan-out warning for
+    a measure mixing base-grain and replicated columns."""
     coalesce_aliases: set[str] = field(default_factory=set)
     grouping: Grouping | None = None
     dedup_measures: dict[str, str] = field(default_factory=dict)
@@ -504,6 +509,7 @@ class QueryResolver:
                 limit=query.limit,
                 offset=query.offset,
                 use_path_names=list(query.use_path_names),
+                allow_fan_out=query.allow_fan_out,
                 is_raw=query.select.is_raw,
                 distinct=query.select.distinct,
                 grouping=query.grouping,

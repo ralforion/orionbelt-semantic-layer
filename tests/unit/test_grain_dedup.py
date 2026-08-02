@@ -2461,3 +2461,68 @@ def test_within_group_object_does_not_become_a_fact_table() -> None:
     assert result.resolved.fact_tables == ["Sales"]
     assert result.explain is not None
     assert result.explain.planner == "Star Schema"
+
+
+# --- Mixed-grain fan-out warning ---------------------------------------
+
+
+def _warning_codes(result: CompilationResult) -> list[str]:
+    return [w.code for w in result.warnings]
+
+
+def test_a_measure_mixing_base_grain_and_replicated_columns_warns() -> None:
+    """The extended-price shape is legal and stays legal, but it is flagged.
+
+    ``{[Sales].[Quantity]} * {[Products].[List Price]}`` reads a base-grain
+    column and one from an object the join replicates. Evaluated per base row
+    that is exactly right for a per-unit rate, and exactly wrong for a column
+    carrying the replicated row's own magnitude. The declarations do not say
+    which, so this warns instead of refusing - refusing would forbid extended
+    price, which is the pattern the shape exists for.
+    """
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Sales Value"]}})
+    assert "FAN_TRAP_RISK" in _warning_codes(result)
+
+
+def test_the_query_can_declare_the_duplication_intended() -> None:
+    """``allowFanOut`` on the query silences it, and changes nothing else.
+
+    There is no rewrite to opt out of here - unlike the dedup pass, where the
+    same flag skips a real transformation - so the SQL has to be identical.
+    """
+    query = {"select": {"dimensions": ["Region"], "measures": ["Sales Value"]}}
+    warned = _compile(query)
+    silenced = _compile({**query, "allowFanOut": True})
+    assert "FAN_TRAP_RISK" in _warning_codes(warned)
+    assert "FAN_TRAP_RISK" not in _warning_codes(silenced)
+    assert warned.sql == silenced.sql
+
+
+def test_a_multiplicity_safe_aggregation_is_not_flagged() -> None:
+    """``MIN`` / ``MAX`` read the same answer off duplicated rows, so they are silent.
+
+    ``AVG`` is deliberately not in that set: an average over replicated rows is
+    weighted by the replication, so it is as exposed as ``SUM``.
+    """
+    safe = MODEL_YAML.replace(
+        """  Sales Value:
+    resultType: float
+    aggregation: sum""",
+        """  Sales Value:
+    resultType: float
+    aggregation: max""",
+    )
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Sales Value"]}}, safe)
+    assert "FAN_TRAP_RISK" not in _warning_codes(result)
+
+
+def test_a_wholly_replicated_measure_is_left_to_the_dedup_pass() -> None:
+    """One warning per problem: a fully replicated measure is dedup's to report.
+
+    It gets the rewrite and its own message about overlapping groups; adding
+    this one on top would describe the same rows twice.
+    """
+    result = _compile({"select": {"dimensions": ["Region"], "measures": ["Total Stock On Hand"]}})
+    messages = [w.message for w in result.warnings if w.code == "FAN_TRAP_RISK"]
+    assert messages, result.warnings
+    assert all("read both a base-grain column" not in m for m in messages)

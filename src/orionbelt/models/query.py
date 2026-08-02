@@ -280,6 +280,18 @@ class QueryObject(BaseModel):
     limit: int | None = None
     offset: int | None = None
     use_path_names: list[UsePathName] = Field([], alias="usePathNames")
+    allow_fan_out: bool = Field(False, alias="allowFanOut")
+    """Silence fan-out warnings for this query.
+
+    The query-level counterpart of ``Measure.allowFanOut``. A measure reading
+    both a base-grain column and one from an object the joins replicate is
+    evaluated per base row: right for an extended price
+    (``quantity * list price``), wrong for anything that reads the replicated
+    row's own magnitude. Nothing in the declarations separates the two, so the
+    compiler warns rather than refusing, and this says the duplication is
+    understood and intended for this query.
+    """
+
     dimensions_exclude: bool = Field(False, alias="dimensionsExclude")
     grouping: Grouping | None = Field(
         default=None,

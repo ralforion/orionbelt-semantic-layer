@@ -844,6 +844,72 @@ def _order_expr_to_outer(
     return expr
 
 
+def mixed_grain_measures(resolved: ResolvedQuery, model: SemanticModel) -> dict[str, list[str]]:
+    """Measures reading a replicated object *and* a base-grain one, unsafely aggregated.
+
+    :func:`detect_dedup_measures` deliberately leaves these alone: evaluated per
+    base row they are correct for the pattern they were designed for, an
+    extended price like ``{[Sales].[Quantity]} * {[Products].[List Price]}``,
+    where the replicated column is a per-unit rate and multiplying it by a
+    base-grain quantity is the whole point.
+
+    The same shape is wrong when the replicated column carries the replicated
+    row's own magnitude - ``{[Sales].[Amount]} * {[Returns].[Quantity]}`` counts
+    a sale's amount once per return of it. Nothing in the declarations tells the
+    two apart, which is why this warns rather than refuses.
+
+    Only multiplicity-sensitive aggregations qualify. ``MIN`` / ``MAX`` /
+    ``COUNT DISTINCT`` read the same answer off duplicated rows, so they are
+    silent. ``AVG`` is *not* among them: an average over replicated rows is
+    weighted by the replication, so it is as exposed as ``SUM``.
+
+    Returns each measure mapped to the replicated objects it reads.
+    """
+    if not resolved.join_steps:
+        return {}
+    replicated = replicated_objects(resolved)
+    if not replicated:
+        return {}
+
+    effective = model.effective_measures
+    flagged: dict[str, list[str]] = {}
+    for resolved_measure in resolved.measures:
+        measure = effective.get(resolved_measure.name)
+        if measure is None or measure.allow_fan_out:
+            continue
+        aggregation = measure.aggregation.lower()
+        if aggregation in MULTIPLICITY_SAFE_AGGREGATIONS or aggregation == _DELEGATED_AGGREGATION:
+            continue
+        objects = measure.source_objects
+        hit = objects & replicated
+        # Wholly-replicated measures are the dedup pass's job, not this one.
+        if hit and objects - replicated:
+            flagged[resolved_measure.name] = sorted(hit)
+    return flagged
+
+
+def mixed_grain_warning(flagged: dict[str, list[str]]) -> SemanticError:
+    """Warn that a measure reads a replicated object's rows more than once."""
+    listed = ", ".join(f"'{m}'" for m in sorted(flagged))
+    objects = sorted({obj for objs in flagged.values() for obj in objs})
+    return warning(
+        code=WarningCode.FAN_TRAP_RISK,
+        message=(
+            f"Measure(s) {listed} read both a base-grain column and one from "
+            f"{', '.join(repr(o) for o in objects)}, whose rows this query's joins "
+            f"replicate. The expression is evaluated once per base row, so the "
+            f"replicated column contributes once per duplicate. That is intended for a "
+            f"per-unit rate (quantity x list price) and wrong for a column carrying the "
+            f"replicated row's own magnitude."
+        ),
+        hint=(
+            "Check the replicated column is a rate rather than a total. Set "
+            "allowFanOut: true on the query or the measure once it is understood."
+        ),
+        context={"measures": sorted(flagged), "replicated": objects},
+    )
+
+
 def dedup_warning(dedup_measures: dict[str, str]) -> SemanticError:
     """Warn that deduplicated groups overlap, so the column will not sum to a total."""
     listed = ", ".join(f"'{m}'" for m in sorted(dedup_measures))
