@@ -600,6 +600,14 @@ def group_measures_by_object(
                 # Expression-based measure: extract table refs from the AST
                 field_objects = set()
                 planner._collect_table_refs(measure.expression, field_objects)
+            # An anchored measure belongs to its anchor's leg. Its other facts
+            # are conformed into subqueries joined inside that leg, so they are
+            # not legs of their own and the measure is not cross-fact: one leg
+            # projects the whole expression.
+            anchor = resolved.anchored_measures.get(measure.name)
+            if anchor:
+                groups.setdefault(anchor, []).append(measure)
+                continue
             root = _single_leg_root(field_objects, resolved, model) if field_objects else None
             if field_objects and root is None:
                 # Cross-fact multi-field measure: ensure each

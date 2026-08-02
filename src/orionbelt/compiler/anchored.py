@@ -99,6 +99,12 @@ class ConformedFact:
     """Physical column of the foreign fact, mapped to its subquery alias."""
 
     object_name: str
+    measure_name: str
+    """The anchored measure this conformed fact was built for.
+
+    The star planner joins every conformed fact into one FROM, but a CFL leg
+    joins only the ones belonging to the measures it owns, so the association
+    has to survive planning."""
 
 
 def _shared_key(
@@ -200,6 +206,7 @@ def _conform_one(
         on=on,
         column_aliases=column_aliases,
         object_name=foreign,
+        measure_name=measure_name,
     )
 
 

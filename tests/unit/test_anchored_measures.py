@@ -638,21 +638,47 @@ dimensions:""",
 )
 
 
-def test_an_anchored_measure_in_a_multi_fact_plan_is_refused() -> None:
-    """CFL has no conforming step, so it would project the measure from no leg.
+def test_an_anchored_measure_survives_a_multi_fact_plan() -> None:
+    """CFL conforms inside the leg that owns the measure.
 
     Pairing an anchored measure with one from a third independent fact flips the
-    query to CFL, whose leg projection only emits measures assigned to a leg.
-    The outer query still selected the anchored measure, so the composite CTE
-    had no such column.
+    query to CFL. The anchored measure goes to its anchor's leg, its conformed
+    subqueries are joined inside that leg, and the sibling legs NULL-pad it, so
+    the outer query re-aggregates a column that exists. Both measures keep the
+    value they have on their own.
     """
-    from orionbelt.compiler.cfl import AnchoredMeasureNotSupportedInCFLError
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, year INT)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',2024),('d2',2024)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute(
+        "INSERT INTO main.sales VALUES ('s1','d1',2),('s2','d1',3),('s3','d1',5),('s4','d2',6)"
+    )
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE)")
+    con.execute("INSERT INTO main.returns VALUES ('r1','d1',4),('r2','d2',1),('r3','d2',7)")
+    con.execute("CREATE TABLE main.visits(id VARCHAR, datekey VARCHAR, cnt DOUBLE)")
+    con.execute("INSERT INTO main.visits VALUES ('v1','d1',11),('v2','d2',9)")
 
+    model = _model(THIRD_FACT_YAML)
+
+    def run(measures: list[str]) -> list[tuple]:
+        query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": measures}})
+        return con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+
+    combined = run(["Cross", "Visit Total"])
+    assert float(combined[0][1]) == float(run(["Cross"])[0][1])
+    assert float(combined[0][2]) == float(run(["Visit Total"])[0][1])
+
+
+def test_the_conformed_subquery_is_joined_inside_the_leg_that_owns_the_measure() -> None:
+    """Not into the composite's outer query, where the leg's key is out of scope."""
     query = QueryObject(
         **{"select": {"dimensions": ["Year"], "measures": ["Cross", "Visit Total"]}}
     )
-    with pytest.raises(AnchoredMeasureNotSupportedInCFLError, match="Cross"):
-        CompilationPipeline().compile(query, _model(THIRD_FACT_YAML), "duckdb")
+    sql = CompilationPipeline().compile(query, _model(THIRD_FACT_YAML), "duckdb").sql
+    leg = sql.split("UNION ALL")[0]
+    assert "__ob_conf_0" in leg
+    assert '"Sales"."datekey" = "__ob_conf_0"."__ob_ak0"' in leg
 
 
 def test_the_anchored_measure_still_compiles_on_its_own() -> None:
