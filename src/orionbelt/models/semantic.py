@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orionbelt.models.types import parse_data_type
+
+_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+"""``{[DataObject].[Column]}`` as it appears inside a measure ``expression:``."""
 
 
 class DataType(StrEnum):
@@ -495,6 +499,24 @@ class Measure(BaseModel):
     expression: str | None = None
     distinct: bool = False
     total: bool = False
+    anchor: str | None = None
+    """Data object whose grain this measure's expression is evaluated at.
+
+    Only meaningful for an expression reading columns from *independent facts*
+    — objects no single join path reaches together. Without it such a measure
+    has no defined value: ``UNION ALL`` stacks the facts rather than joining
+    them, so no row carries both columns. Naming an anchor says which fact's
+    rows the expression runs over; the other facts are aggregated to the key
+    they share with it and joined on many-to-one, so nothing fans out.
+
+    It cannot be inferred. ``{[Returns].[Qty]} / {[Sales].[Qty]}`` is symmetric,
+    and anchoring it on Returns rather than the shared calendar key changes
+    ``AVG`` from 0.5 to 0.3333 (different row populations), so a wrong guess is
+    a wrong number rather than an error.
+
+    A bare data-object name, like :attr:`Dimension.via`.
+    """
+
     grain: GrainOverride | None = None
     filter_context: FilterContext | None = Field(None, alias="filterContext")
     filters: list[MeasureFilterItem] = []
@@ -538,6 +560,36 @@ class Measure(BaseModel):
         if v is not None:
             parse_data_type(v)
         return v
+
+    @property
+    def source_objects(self) -> set[str]:
+        """Data objects whose columns this measure reads.
+
+        Covers both declaration forms: the structured ``columns:`` list and
+        ``{[Object].[Column]}`` references inside ``expression:``.
+        """
+        return set(self.referenced_objects)
+
+    @property
+    def referenced_objects(self) -> list[str]:
+        """:attr:`source_objects`, in the order the declaration mentions them.
+
+        Ordered for determinism, not for meaning. An earlier design used the
+        first entry as the default :attr:`anchor` and was removed: it made a
+        commutative rewrite change the answer, since
+        ``{[Sales].[Qty]} * {[Returns].[Qty]}`` and the operands swapped would
+        anchor on different facts and return different averages. Nothing reads
+        position now, and nothing should.
+        """
+        ordered: list[str] = []
+        for cref in self.columns:
+            if cref.view and cref.view not in ordered:
+                ordered.append(cref.view)
+        if self.expression:
+            for obj, _col in _MEASURE_COLUMN_REF.findall(self.expression):
+                if obj not in ordered:
+                    ordered.append(obj)
+        return ordered
 
     @model_validator(mode="after")
     def _validate_total_grain_exclusion(self) -> Measure:
@@ -926,6 +978,69 @@ class SemanticModel(BaseModel):
         if msg is not None:
             raise ValueError(msg)
         return v
+
+    def effective_joins(
+        self,
+        object_name: str,
+        path_overrides: dict[tuple[str, str], str] | None = None,
+    ) -> list[DataObjectJoin]:
+        """The joins of *object_name* that are active under *path_overrides*.
+
+        One named secondary path per ``(source, target)`` pair replaces that
+        pair's primary join; every other pair keeps its primary. This is the
+        rule :class:`~orionbelt.compiler.graph.JoinGraph` traverses by, and
+        anything deriving join columns has to use the same one. Filtering
+        secondary joins out unconditionally instead read a conformed subquery's
+        key off the primary join even when the query had asked for the secondary
+        path, which silently answered at the wrong grain.
+
+        Takes a plain mapping rather than the query's ``usePathNames`` because
+        ``models.query`` imports this module, not the other way round.
+        """
+        overrides = path_overrides or {}
+        active: list[DataObjectJoin] = []
+        obj = self.data_objects.get(object_name)
+        for join in obj.joins if obj else []:
+            pair = (object_name, join.join_to)
+            if join.secondary:
+                if overrides.get(pair) == join.path_name:
+                    active.append(join)
+            elif pair not in overrides:
+                active.append(join)
+        return active
+
+    def common_join_targets(
+        self,
+        objects: list[str],
+        path_overrides: dict[tuple[str, str], str] | None = None,
+    ) -> list[str]:
+        """Every data object all of *objects* join to directly, in name order.
+
+        The candidates for conforming independent facts to a shared grain. More
+        than one is an ambiguity rather than a tie to break: two facts sharing
+        both a calendar and a store conform to different numbers depending which
+        is used, so callers refuse rather than pick.
+
+        Which joins count depends on the query's active ``usePathNames``: see
+        :meth:`effective_joins`.
+        """
+        reachable_targets = {
+            name: {join.join_to for join in self.effective_joins(name, path_overrides)}
+            for name in objects
+        }
+        # A candidate has to be reached by every object, and counts as reaching
+        # itself: an expression may read a column of the very object the facts
+        # conform to (``Sales.Qty * Returns.Qty * Calendar.Factor``), and
+        # intersecting Calendar's own join targets in would leave nothing, since
+        # a conformed dimension typically joins to nothing.
+        pool = set(objects) | {
+            target for targets in reachable_targets.values() for target in targets
+        }
+        return sorted(
+            candidate
+            for candidate in pool
+            if all(name == candidate or candidate in reachable_targets[name] for name in objects)
+        )
 
     @property
     def effective_measures(self) -> dict[str, Measure]:

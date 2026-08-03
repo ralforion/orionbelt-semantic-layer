@@ -58,7 +58,7 @@ class QueryBuilder:
 
     def join(
         self,
-        table: str,
+        table: str | Select,
         on: Expr,
         join_type: JoinType = JoinType.LEFT,
         alias: str | None = None,

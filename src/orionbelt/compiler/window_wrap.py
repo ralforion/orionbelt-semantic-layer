@@ -209,6 +209,7 @@ def _base_measure_column(
     over_cte: bool,
     model: SemanticModel | None,
     dialect: Dialect | None,
+    conformed: dict[str, Expr] | None = None,
 ) -> AliasedExpr:
     """Project a window metric's base measure into ``window_base``.
 
@@ -228,7 +229,11 @@ def _base_measure_column(
     there is no base value to lift out; ``evaluate_compatibility`` keeps that
     combination blocked.
     """
-    source = col_node.expr if over_cte and isinstance(col_node, AliasedExpr) else comp.expression
+    # An anchored measure's aggregate reads conformed subquery columns, not the
+    # foreign fact's own, so re-deriving it here would name a table this CTE
+    # joins a GROUP BY subquery in place of.
+    rebuilt = (conformed or {}).get(comp.name, comp.expression)
+    source = col_node.expr if over_cte and isinstance(col_node, AliasedExpr) else rebuilt
     # The declared dataType cast belongs on whichever form is projected. Taking
     # the column by alias without it silently widened the result — a measure
     # declared decimal(18, 2) came back HUGEINT once a deduplicated measure
@@ -341,7 +346,14 @@ def wrap_with_window(
                     already_in_base = any(_get_alias(c) == base_name for c in base_columns)
                     if not already_in_base:
                         base_columns.append(
-                            _base_measure_column(col_node, comp, over_cte, model, dialect)
+                            _base_measure_column(
+                                col_node,
+                                comp,
+                                over_cte,
+                                model,
+                                dialect,
+                                resolved.conformed_expressions,
+                            )
                         )
         elif alias and alias in ddm_names:
             # DDM: drop the (incorrectly-pre-substituted) column; compute
@@ -358,7 +370,10 @@ def wrap_with_window(
                 if already_in_base:
                     continue
                 comp_expr = _apply_measure_cast(
-                    base_comp.expression, base_comp.name, model, dialect
+                    resolved.conformed_expressions.get(base_comp.name, base_comp.expression),
+                    base_comp.name,
+                    model,
+                    dialect,
                 )
                 base_columns.append(AliasedExpr(expr=comp_expr, alias=base_comp.name))
         else:

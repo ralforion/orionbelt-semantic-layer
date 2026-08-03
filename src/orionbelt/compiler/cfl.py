@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
@@ -18,6 +19,11 @@ from orionbelt.ast.nodes import (
     UnionAll,
 )
 from orionbelt.compiler import cfl_exclude, cfl_projection
+from orionbelt.compiler.anchored import (
+    ConformedFact,
+    conformed_join_type,
+    plan_conformed_facts,
+)
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
@@ -392,6 +398,14 @@ class CFLPlanner:
         # user-facing name.
         aliases = cfl_projection.composite_aliases(resolved)
 
+        # Anchored measures are conformed the same way the star planner does
+        # it, but the subqueries are joined inside the leg that owns the
+        # measure rather than into one shared FROM.
+        conformed_facts, conformed_exprs = plan_conformed_facts(resolved, model, qualify)
+        facts_by_measure: dict[str, list[ConformedFact]] = {}
+        for fact in conformed_facts:
+            facts_by_measure.setdefault(fact.measure_name, []).append(fact)
+
         # Collect all measures across all objects + cross-fact measures
         all_measures: list[ResolvedMeasure] = []
         for measures in measures_by_object.values():
@@ -430,6 +444,12 @@ class CFLPlanner:
             measure_expr_objects: set[str] = set()
             for m in measures:
                 self._collect_table_refs(m.expression, measure_expr_objects)
+            # A conformed fact is reached by a GROUP BY subquery joined below,
+            # not by a join from this leg's lead, so it must not become a join
+            # requirement: doing so would join the raw fact and fan the leg out.
+            for m in measures:
+                for fact in facts_by_measure.get(m.name, ()):
+                    measure_expr_objects.discard(fact.object_name)
             if cross_fact:
                 for m in cross_fact:
                     if m.name in this_measure_names:
@@ -479,7 +499,11 @@ class CFLPlanner:
                     # engines (ClickHouse with UNION ALL) produce a Variant
                     # type that SUM can't aggregate ("ILLEGAL_TYPE_OF_ARGUMENT
                     # Variant(Decimal, Float64)").
-                    own_expr: Expr = self._unwrap_aggregation(m)
+                    own_expr: Expr = self._unwrap_aggregation(
+                        replace(m, expression=conformed_exprs[m.name])
+                        if m.name in conformed_exprs
+                        else m
+                    )
                     own_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
@@ -529,6 +553,17 @@ class CFLPlanner:
             # FROM: the lead (LCA) table
             if lead_obj:
                 leg_builder.from_(qualify(lead_obj), alias=lead)
+
+            # Conformed facts for the anchored measures this leg owns: one row
+            # per shared key, so many-to-one and no fanout onto the leg's grain.
+            for m in measures:
+                for fact in facts_by_measure.get(m.name, ()):
+                    leg_builder.join(
+                        table=fact.select,
+                        on=fact.on,
+                        join_type=conformed_join_type(),
+                        alias=fact.alias,
+                    )
 
             # JOINs: all required objects reachable from the lead
             join_targets = leg_required - {lead}

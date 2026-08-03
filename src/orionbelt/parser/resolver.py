@@ -718,6 +718,7 @@ class ReferenceResolver:
                     expression=expression,
                     distinct=raw_meas.get("distinct", False),
                     total=raw_meas.get("total", False),
+                    anchor=raw_meas.get("anchor"),
                     grain=grain_override,
                     filter_context=filter_ctx,
                     filters=measure_filters,

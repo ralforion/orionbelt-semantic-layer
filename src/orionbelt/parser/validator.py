@@ -41,6 +41,7 @@ class SemanticValidator:
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
+        errors.extend(self._check_measure_anchors(model))
         return errors
 
     def _check_unique_identifiers(self, model: SemanticModel) -> list[SemanticError]:
@@ -648,6 +649,55 @@ class SemanticValidator:
                         path=f"dimensions.{name}",
                     )
                 )
+        return errors
+
+    def _check_measure_anchors(self, model: SemanticModel) -> list[SemanticError]:
+        """Validate each measure's ``anchor``: it must exist and be one it reads.
+
+        The anchor names the data object whose rows the expression is evaluated
+        over, so an anchor the expression never reads would leave every column
+        conformed in and the anchor acting as a bare row multiplier. That is
+        never what was meant, and it is what a typo looks like.
+        """
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if not measure.anchor:
+                continue
+            if measure.anchor not in model.data_objects:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_ANCHOR_DATA_OBJECT",
+                        message=(
+                            f"Measure '{name}': anchor references unknown data object "
+                            f"'{measure.anchor}'"
+                        ),
+                        path=f"measures.{name}",
+                    )
+                )
+                continue
+            sources = measure.source_objects
+            if not sources or measure.anchor in sources:
+                continue
+            # An anchor may also name a data object every source joins to: that
+            # conforms all of them to its grain, which is the reading a model
+            # picks when the facts share several dimensions and no single one
+            # can be assumed.
+            shared = model.common_join_targets(sorted(sources))
+            if measure.anchor in shared:
+                continue
+            options = sorted(sources) + shared
+            errors.append(
+                SemanticError(
+                    code="INVALID_ANCHOR_DATA_OBJECT",
+                    message=(
+                        f"Measure '{name}': anchor '{measure.anchor}' is neither a data object "
+                        f"it reads nor one they all join to. The anchor sets the grain the "
+                        f"expression is evaluated at, so it has to be one of: "
+                        f"{', '.join(options)}."
+                    ),
+                    path=f"measures.{name}",
+                )
+            )
         return errors
 
     def _check_missing_via(self, model: SemanticModel) -> list[SemanticError]:

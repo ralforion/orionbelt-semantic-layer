@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.builder import QueryBuilder
@@ -15,6 +15,7 @@ from orionbelt.ast.nodes import (
     FunctionCall,
     Select,
 )
+from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_facts
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
@@ -132,6 +133,17 @@ class StarSchemaPlanner:
 
         base_alias = resolved.base_object
 
+        # Anchored measures: aggregate each independent fact they read to the
+        # key it shares with the anchor, so it joins back many-to-one instead of
+        # pairing rows that do not correspond. Planned up front because the
+        # measure projection below has to read the conformed columns rather than
+        # the foreign fact's own, which this plan is what renames.
+        conformed_facts, conformed_exprs = plan_conformed_facts(resolved, model, qualify)
+        # Recorded for the wrappers that run after planning: each re-projects a
+        # measure's aggregate into its own CTE, and the resolved expression they
+        # would otherwise use still names the foreign fact's table.
+        resolved.conformed_expressions = conformed_exprs
+
         # SELECT: dimensions (apply time grain truncation if specified)
         grouping_dim_aliases: list[str] = []
         for dim in resolved.dimensions:
@@ -145,11 +157,20 @@ class StarSchemaPlanner:
         # SELECT: measures (aggregated) — for metrics, substitute component refs
         settings = model.settings
         measure_exprs: dict[str, Expr] = {}
+        # A metric inlines its components' expressions, so a conformed component
+        # has to be substituted in its rewritten form - the raw one still names
+        # the foreign fact's own table, which the conformed plan does not join.
+        metric_components = {
+            name: (
+                replace(component, expression=conformed_exprs[name])
+                if name in conformed_exprs
+                else component
+            )
+            for name, component in resolved.metric_components.items()
+        }
         for measure in resolved.measures:
             if measure.component_measures:
-                expr: Expr = _substitute_measure_refs(
-                    measure.expression, resolved.metric_components
-                )
+                expr: Expr = _substitute_measure_refs(measure.expression, metric_components)
                 metric = model.metrics.get(measure.name)
                 if metric and dialect:
                     resolved_type = resolve_metric_data_type(metric, settings)
@@ -157,7 +178,7 @@ class StarSchemaPlanner:
                         expr = dialect.cast_to_obml_type(expr, resolved_type)
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             else:
-                expr = measure.expression
+                expr = conformed_exprs.get(measure.name, measure.expression)
                 model_measure = model.effective_measures.get(measure.name)
                 if model_measure and dialect:
                     resolved_type = resolve_measure_data_type(model_measure, settings)
@@ -168,6 +189,16 @@ class StarSchemaPlanner:
 
         # FROM: base fact table
         builder.from_(qualify(base_object), alias=base_alias)
+
+        # Conformed facts join first: one row per shared key, so many-to-one and
+        # no fanout onto the anchor's grain.
+        for fact in conformed_facts:
+            builder.join(
+                table=fact.select,
+                on=fact.on,
+                join_type=conformed_join_type(),
+                alias=fact.alias,
+            )
 
         # JOINs: dimension and intermediate tables
         joined = {base_alias}

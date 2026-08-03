@@ -26,6 +26,16 @@ class JoinStep:
     reversed: bool = False
 
 
+def path_overrides(use_path_names: list[UsePathName] | None) -> dict[tuple[str, str], str]:
+    """``(source, target)`` to the secondary ``pathName`` the query selected.
+
+    Shared with :meth:`~orionbelt.models.semantic.SemanticModel.effective_joins`
+    so graph traversal and anything else reading join columns agree on which
+    joins a query is actually using.
+    """
+    return {(upn.source, upn.target): upn.path_name for upn in use_path_names or ()}
+
+
 class JoinGraph:
     """Graph of data objects (nodes) and relationships (edges) for join path resolution."""
 
@@ -58,11 +68,7 @@ class JoinGraph:
             self._directed.add_node(name)
             self._traversable.add_node(name)
 
-        # Build a lookup: (source, target) → pathName for active overrides
-        active_overrides: dict[tuple[str, str], str] = {}
-        if use_path_names:
-            for upn in use_path_names:
-                active_overrides[(upn.source, upn.target)] = upn.path_name
+        active_overrides = path_overrides(use_path_names)
 
         for obj_name, obj in model.data_objects.items():
             for join in obj.joins:

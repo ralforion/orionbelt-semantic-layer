@@ -384,6 +384,122 @@ would be counted twice by a `filters:` predicate on `Sales.Quantity`, or listed
 twice by a `LISTAGG` ordered by it. Reference the deduplicated object instead, or
 query the measure at its own grain.
 
+## Cross-fact measure expressions
+
+**Module:** `orionbelt.compiler.anchored`
+
+A measure whose `expression` reads columns from two facts has to say which rows
+it runs over. `SUM({[Sales].[Qty]} * {[Returns].[Qty]})` is not a quantity until
+something decides whether it is summed per sale, per return, or per shared key:
+the three give different answers on the same data.
+
+Three rules settle it, checked in order.
+
+### 1. A declared join path wins
+
+If the model already joins the two objects, that join is used and nothing is
+conformed. The query bases at the object that can reach the others, which is not
+necessarily the one with the most joins:
+
+```sql
+-- Returns -> Sales is declared many-to-one, so Returns is the base
+FROM "returns" AS "Returns"
+LEFT JOIN "sales" AS "Sales" ON "Returns"."returnsalesid" = "Sales"."salesid"
+```
+
+Only a measure that *by itself* reads several objects constrains the base. Two
+independent measures in one query stay on their own plans, so an ordinary
+multi-fact query is unaffected.
+
+### 2. Otherwise `anchor:` names the grain
+
+```yaml
+measures:
+  Return Rate:
+    aggregation: avg
+    resultType: float
+    anchor: Returns                                     # evaluate per Returns row
+    expression: '{[Returns].[Qty]} / {[Sales].[Qty]}'
+```
+
+Each fact the anchor cannot reach is aggregated to the key it shares with the
+anchor, then joined many-to-one, so the anchor keeps its own grain and nothing
+fans out:
+
+```sql
+SELECT AVG("Returns"."qty" / "__ob_conf_0"."__ob_av0") AS "Return Rate"
+FROM "returns" AS "Returns"
+LEFT JOIN (
+  SELECT "Sales"."datekey" AS "__ob_ak0", SUM("Sales"."qty") AS "__ob_av0"
+  FROM "sales" AS "Sales" GROUP BY "Sales"."datekey"
+) AS "__ob_conf_0" ON "Returns"."datekey" = "__ob_conf_0"."__ob_ak0"
+```
+
+The conformed side is one row per key, which is what makes the join safe. The
+foreign column is conformed with `SUM`, the aggregate that makes its value
+independent of how many rows the foreign fact happens to have per key.
+
+`anchor:` may name one of the facts the expression reads, or a data object all
+of them join to. Anchoring on a fact evaluates per row of that fact; anchoring
+on a shared dimension conforms every fact to it.
+
+### 3. Otherwise the shared key, with a warning
+
+With no `anchor:`, both facts are conformed to the one data object they both
+join to, and `CONFORMED_GRAIN_ASSUMED` records the choice.
+
+That reading is the default because it is the only symmetric one. `a * b` and
+`b * a` are the same product, so they must return the same number; anchoring on
+whichever operand is written first does not (`AVG` 22 against 29.33 on the same
+rows). Note that `SUM` is invariant across every reading, so a `SUM` example
+cannot tell you which rule is in effect.
+
+Facts sharing *several* dimensions raise `ANCHOR_REQUIRED_AMBIGUOUS_KEY` rather
+than picking one, because conforming at each gives a different answer.
+
+### Which aggregates the choice affects
+
+| Aggregate | Sensitive to the anchor? |
+|---|---|
+| `SUM` | No. Every reading totals to the same value |
+| `AVG`, `MIN`, `MAX` | Yes. They depend on the row population, which the anchor sets |
+
+## Fan-out warning for mixed-grain measures
+
+A measure reading both a base-grain column and one from an object the joins
+replicate is evaluated once per base row. That is right for a per-unit rate:
+
+```yaml
+Sales Value:
+  aggregation: sum
+  expression: '{[Sales].[Quantity]} * {[Products].[List Price]}'   # extended price
+```
+
+and wrong when the replicated column carries the replicated row's own magnitude,
+where it contributes once per duplicate. Nothing in the declarations separates
+the two, so such a measure compiles with a `FAN_TRAP_RISK` warning rather than
+being refused; refusing would forbid extended price.
+
+Only multiplicity-sensitive aggregations are flagged. `MIN`, `MAX` and
+`COUNT DISTINCT` read the same answer off duplicated rows and stay silent. `AVG`
+does not: an average over replicated rows is weighted by the replication, so it
+is flagged alongside `SUM`.
+
+Set `allowFanOut: true` to record that the duplication is intended, on the
+measure or on the query:
+
+```json
+{
+  "select": { "dimensions": ["Region"], "measures": ["Sales Value"] },
+  "allowFanOut": true
+}
+```
+
+The query-level flag only suppresses the warning. There is no rewrite to opt out
+of here, so the generated SQL is identical either way, unlike `allowFanOut` on a
+measure in the [grain deduplication](#phase-22-grain-deduplication-wrap) pass,
+which skips a real transformation.
+
 ## Phase 2.4: Period-over-Period Wrap
 
 **Module:** `orionbelt.compiler.pop_wrap`

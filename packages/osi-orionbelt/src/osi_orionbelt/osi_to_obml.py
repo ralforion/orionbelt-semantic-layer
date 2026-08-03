@@ -1158,6 +1158,8 @@ class OSItoOBML:
             measure_def["owner"] = extras["obml_owner"]
         if extras.get("obml_grain"):
             measure_def["grain"] = extras["obml_grain"]
+        if extras.get("obml_anchor"):
+            measure_def["anchor"] = extras["obml_anchor"]
         if extras.get("obml_filter_context"):
             measure_def["filterContext"] = extras["obml_filter_context"]
 

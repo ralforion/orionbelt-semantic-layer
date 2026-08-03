@@ -32,28 +32,34 @@ from orionbelt.ast.nodes import (
 )
 
 
-def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
-    """Rebuild *expr*, passing every ``ColumnRef`` through *fn*.
+def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
+    """Rebuild *expr*, offering every node to *fn* before its children.
+
+    *fn* returns a replacement, which stops the descent there, or ``None`` to
+    keep the node and recurse into it. Offering the parent first is what lets a
+    caller replace a whole *sub-expression* rather than its leaves: conforming a
+    foreign fact has to turn ``qty * price`` into one ``SUM(qty * price)``, not
+    into ``SUM(qty) * SUM(price)``, which is a different number.
 
     Recurses through every composite node in the ``Expr`` union so a measure
     body of any shape (``CASE``, ``CAST``, arithmetic, nested calls, window
-    frames) is visited completely. Both the rewrite and the collection pass are
-    built on this, so the two can never disagree about where column references
-    live.
+    frames) is visited completely. Every rewrite and collection pass is built on
+    this one walk, so they cannot disagree about where expressions live.
     """
+    replacement = fn(expr)
+    if replacement is not None:
+        return replacement
     match expr:
-        case ColumnRef():
-            return fn(expr)
         case AliasedExpr(expr=inner, alias=alias):
-            return AliasedExpr(expr=map_column_refs(inner, fn), alias=alias)
+            return AliasedExpr(expr=map_nodes(inner, fn), alias=alias)
         case FunctionCall(name=name, args=args):
             return FunctionCall(
                 name=name,
-                args=[map_column_refs(a, fn) for a in args],
+                args=[map_nodes(a, fn) for a in args],
                 distinct=expr.distinct,
                 order_by=[
                     OrderByItem(
-                        expr=map_column_refs(o.expr, fn),
+                        expr=map_nodes(o.expr, fn),
                         desc=o.desc,
                         nulls_last=o.nulls_last,
                     )
@@ -63,43 +69,43 @@ def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
             )
         case BinaryOp(left=left, op=op, right=right):
             return BinaryOp(
-                left=map_column_refs(left, fn),
+                left=map_nodes(left, fn),
                 op=op,
-                right=map_column_refs(right, fn),
+                right=map_nodes(right, fn),
             )
         case UnaryOp(op=op, operand=operand):
-            return UnaryOp(op=op, operand=map_column_refs(operand, fn))
+            return UnaryOp(op=op, operand=map_nodes(operand, fn))
         case IsNull(expr=inner, negated=negated):
-            return IsNull(expr=map_column_refs(inner, fn), negated=negated)
+            return IsNull(expr=map_nodes(inner, fn), negated=negated)
         case InList(expr=inner, values=values, negated=negated):
             return InList(
-                expr=map_column_refs(inner, fn),
-                values=[map_column_refs(v, fn) for v in values],
+                expr=map_nodes(inner, fn),
+                values=[map_nodes(v, fn) for v in values],
                 negated=negated,
             )
         case CaseExpr(when_clauses=whens, else_clause=else_clause):
             return CaseExpr(
-                when_clauses=[(map_column_refs(w, fn), map_column_refs(t, fn)) for w, t in whens],
-                else_clause=(None if else_clause is None else map_column_refs(else_clause, fn)),
+                when_clauses=[(map_nodes(w, fn), map_nodes(t, fn)) for w, t in whens],
+                else_clause=(None if else_clause is None else map_nodes(else_clause, fn)),
             )
         case Cast(expr=inner, type_name=type_name):
-            return Cast(expr=map_column_refs(inner, fn), type_name=type_name)
+            return Cast(expr=map_nodes(inner, fn), type_name=type_name)
         case Between(expr=inner, low=low, high=high, negated=negated):
             return Between(
-                expr=map_column_refs(inner, fn),
-                low=map_column_refs(low, fn),
-                high=map_column_refs(high, fn),
+                expr=map_nodes(inner, fn),
+                low=map_nodes(low, fn),
+                high=map_nodes(high, fn),
                 negated=negated,
             )
         case RegexMatch(column=column, pattern=pattern, negated=negated):
             return RegexMatch(
-                column=map_column_refs(column, fn),
+                column=map_nodes(column, fn),
                 pattern=pattern,
                 negated=negated,
             )
         case RelativeDateRange(column=column):
             return RelativeDateRange(
-                column=map_column_refs(column, fn),
+                column=map_nodes(column, fn),
                 unit=expr.unit,
                 count=expr.count,
                 direction=expr.direction,
@@ -108,11 +114,11 @@ def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
         case WindowFunction(func_name=func_name, args=args):
             return WindowFunction(
                 func_name=func_name,
-                args=[map_column_refs(a, fn) for a in args],
-                partition_by=[map_column_refs(p, fn) for p in expr.partition_by],
+                args=[map_nodes(a, fn) for a in args],
+                partition_by=[map_nodes(p, fn) for p in expr.partition_by],
                 order_by=[
                     OrderByItem(
-                        expr=map_column_refs(o.expr, fn),
+                        expr=map_nodes(o.expr, fn),
                         desc=o.desc,
                         nulls_last=o.nulls_last,
                     )
@@ -125,6 +131,14 @@ def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
             # Literal, Star, RawSQL, SubqueryExpr, Exists — no column refs to
             # rewrite at this level.
             return expr
+
+
+def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
+    """Rebuild *expr*, passing every ``ColumnRef`` through *fn*.
+
+    A specialisation of :func:`map_nodes` that only intercepts leaves.
+    """
+    return map_nodes(expr, lambda node: fn(node) if isinstance(node, ColumnRef) else None)
 
 
 def rewrite_column_refs(expr: Expr, mapping: dict[tuple[str, str | None], ColumnRef]) -> Expr:

@@ -339,6 +339,28 @@ query = QueryObject(
 | `DIMENSIONS_EXCLUDE_WITH_MEASURES` | Query includes measures — not allowed with `dimensionsExclude` |
 | `DIMENSIONS_EXCLUDE_INSUFFICIENT` | Fewer than 2 dimensions specified |
 
+## Accepting Fan-Out (`allowFanOut`)
+
+A measure that reads both a base-grain column and one from a data object the
+query's joins replicate is evaluated once per base row, so the replicated column
+contributes once per duplicate. That is intended for a per-unit rate
+(`quantity * list price`) and wrong for a column carrying the replicated row's
+own magnitude, and nothing in the model separates the two. Such a query compiles
+with a [`FAN_TRAP_RISK` warning](compilation.md#fan-out-warning-for-mixed-grain-measures).
+
+Set `allowFanOut` on the query to record that the duplication is intended:
+
+```json
+{
+  "select": { "dimensions": ["Region"], "measures": ["Sales Value"] },
+  "allowFanOut": true
+}
+```
+
+This only suppresses the warning; the generated SQL is unchanged. The
+measure-level `allowFanOut` is stronger: in the grain-deduplication pass it also
+skips the rewrite.
+
 ## Filters
 
 Filters restrict the result set. **Dimension filters** go in `where` (become SQL `WHERE`), and **measure filters** go in `having` (become SQL `HAVING`).

@@ -573,6 +573,15 @@ def group_measures_by_object(
                     # joined.
                     comp_objects = set()
                     planner._collect_table_refs(comp.expression, comp_objects)
+                # An anchored component belongs to its anchor's leg, exactly
+                # as a directly selected anchored measure does. A metric reaches
+                # the planner only through its components, so routing the direct
+                # branch alone left this one classified cross-fact and projected
+                # by no leg.
+                comp_anchor = resolved.anchored_measures.get(comp.name)
+                if comp_anchor:
+                    groups.setdefault(comp_anchor, []).append(comp)
+                    continue
                 root = _single_leg_root(comp_objects, resolved, model)
                 if root is None:
                     # Reads facts no single leg reaches — same treatment as a
@@ -600,6 +609,14 @@ def group_measures_by_object(
                 # Expression-based measure: extract table refs from the AST
                 field_objects = set()
                 planner._collect_table_refs(measure.expression, field_objects)
+            # An anchored measure belongs to its anchor's leg. Its other facts
+            # are conformed into subqueries joined inside that leg, so they are
+            # not legs of their own and the measure is not cross-fact: one leg
+            # projects the whole expression.
+            anchor = resolved.anchored_measures.get(measure.name)
+            if anchor:
+                groups.setdefault(anchor, []).append(measure)
+                continue
             root = _single_leg_root(field_objects, resolved, model) if field_objects else None
             if field_objects and root is None:
                 # Cross-fact multi-field measure: ensure each

@@ -36,6 +36,8 @@ from orionbelt.compiler.filter_wrap import wrap_with_filter_context
 from orionbelt.compiler.grain_dedup import (
     GrainDedupUnsupportedError,
     dedup_warning,
+    mixed_grain_measures,
+    mixed_grain_warning,
     wrap_with_grain_dedup,
 )
 from orionbelt.compiler.metric_expansion import metric_leaf_components
@@ -438,6 +440,46 @@ def apply_aggregate_passes(ast: Select, ctx: CompileContext) -> Select:
     passes = build_default_passes()
     compat = evaluate_compatibility(ctx.resolved, passes)
     ctx.resolved.warnings.extend(compat.warnings)
+
+    # A measure reading both a base-grain column and a replicated one is left
+    # to compile - it is the extended-price pattern - but the same shape is
+    # wrong when the replicated column is a magnitude rather than a rate, and
+    # the declarations do not say which. Warn unless the query has said the
+    # duplication is intended. Checked here rather than inside
+    # ``evaluate_compatibility`` because it needs the model, which that
+    # function (and its callers) deliberately do not carry.
+    # Period-over-period rebuilds its FROM from a date spine, joining the fact
+    # tables afresh. An anchored measure's aggregate reads conformed GROUP BY
+    # subqueries, which that FROM does not carry and cannot, so re-projecting it
+    # there names a table out of scope. Refused rather than emitted, the same
+    # treatment grain dedup already gives period-over-period for the same
+    # reason: the wrapper rebuilds a FROM the rewrite's output cannot serve.
+    if ctx.resolved.has_pop and ctx.resolved.anchored_measures:
+        anchored = sorted(ctx.resolved.anchored_measures)
+        listed = ", ".join(f"'{name}'" for name in anchored)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INCOMPATIBLE_COMBINATION",
+                    message=(
+                        f"Measure(s) {listed} are anchored, so their expression reads "
+                        f"columns conformed into subqueries. A period-over-period metric "
+                        f"rebuilds the query's FROM from a date spine, which cannot carry "
+                        f"those subqueries."
+                    ),
+                    path="select.measures",
+                    hint=(
+                        "Query the period-over-period metric without the anchored "
+                        "measure, or compare periods on a measure its own fact reaches."
+                    ),
+                )
+            ]
+        )
+
+    if not ctx.resolved.allow_fan_out:
+        flagged = mixed_grain_measures(ctx.resolved, ctx.model)
+        if flagged:
+            ctx.resolved.warnings.append(mixed_grain_warning(flagged))
 
     result = ast
     for compiler_pass in passes:

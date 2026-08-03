@@ -758,6 +758,8 @@ class OBMLtoOSI:
             extras["obml_owner"] = measure["owner"]
         if measure.get("grain"):
             extras["obml_grain"] = measure["grain"]
+        if measure.get("anchor"):
+            extras["obml_anchor"] = measure["anchor"]
         if measure.get("filterContext"):
             extras["obml_filter_context"] = measure["filterContext"]
         # Internal pass-through marker for callers that need to inject an

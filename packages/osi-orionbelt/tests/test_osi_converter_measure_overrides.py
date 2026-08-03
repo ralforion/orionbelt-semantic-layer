@@ -295,3 +295,29 @@ class TestMeasureAggregationRoundtrip:
         obml = self._delegated_obml()
         result = _roundtrip(obml)
         assert result["measures"]["Total Revenue"]["dataType"] == "decimal(18, 2)"
+
+
+class TestAnchorRoundtrip:
+    """``anchor`` names the grain a cross-fact expression is evaluated at.
+
+    OSI has no equivalent concept, so it rides in ``custom_extensions`` like the
+    other OBML-only measure properties. Losing it silently would change the
+    measure's meaning rather than just its annotation: the same expression
+    evaluated at a different grain returns a different number.
+    """
+
+    def test_anchor_survives_the_roundtrip(self):
+        obml = _with_measure({"anchor": "Orders"})
+        result = _roundtrip(obml)
+        assert result["measures"]["Revenue"]["anchor"] == "Orders"
+
+    def test_anchor_is_carried_as_a_vendor_extension(self):
+        osi = conv.OBMLtoOSI(_with_measure({"anchor": "Orders"})).convert()
+        import json
+
+        assert "obml_anchor" in json.dumps(osi)
+
+    def test_a_measure_without_an_anchor_gains_none(self):
+        """Absent stays absent, rather than roundtripping into an explicit null."""
+        result = _roundtrip(_with_measure({}))
+        assert "anchor" not in result["measures"]["Revenue"]

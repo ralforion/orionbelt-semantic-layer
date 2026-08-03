@@ -52,7 +52,6 @@ already one row per query grain, so filtering it there means the same thing.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -97,8 +96,6 @@ from orionbelt.models.warnings import WarningCode, warning
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
 
-_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
-
 # Aggregations whose result is unchanged when every input row is duplicated.
 # Everything else — SUM, COUNT, AVG, the distribution/regression family,
 # LISTAGG — reads row multiplicity and is wrong over replicated rows.
@@ -137,13 +134,10 @@ class GrainDedupUnsupportedError(FanoutError):
 def measure_source_objects(measure: Measure) -> set[str]:
     """Data objects whose columns a measure reads.
 
-    Covers both declaration forms: the structured ``columns:`` list and
-    ``{[Object].[Column]}`` references inside ``expression:``.
+    Thin delegator to :attr:`Measure.source_objects`, which is where this lives
+    now that the parser needs it too and cannot import the compiler.
     """
-    objects = {cref.view for cref in measure.columns if cref.view}
-    if measure.expression:
-        objects.update(obj for obj, _col in _MEASURE_COLUMN_REF.findall(measure.expression))
-    return objects
+    return measure.source_objects
 
 
 def replicated_objects(resolved: ResolvedQuery) -> set[str]:
@@ -848,6 +842,79 @@ def _order_expr_to_outer(
         return ColumnRef(name=expr.name, table=source_of(expr.name))
 
     return expr
+
+
+def mixed_grain_measures(resolved: ResolvedQuery, model: SemanticModel) -> dict[str, list[str]]:
+    """Measures reading a replicated object *and* a base-grain one, unsafely aggregated.
+
+    :func:`detect_dedup_measures` deliberately leaves these alone: evaluated per
+    base row they are correct for the pattern they were designed for, an
+    extended price like ``{[Sales].[Quantity]} * {[Products].[List Price]}``,
+    where the replicated column is a per-unit rate and multiplying it by a
+    base-grain quantity is the whole point.
+
+    The same shape is wrong when the replicated column carries the replicated
+    row's own magnitude - ``{[Sales].[Amount]} * {[Returns].[Quantity]}`` counts
+    a sale's amount once per return of it. Nothing in the declarations tells the
+    two apart, which is why this warns rather than refuses.
+
+    Only multiplicity-sensitive aggregations qualify. ``MIN`` / ``MAX`` /
+    ``COUNT DISTINCT`` read the same answer off duplicated rows, so they are
+    silent. ``AVG`` is *not* among them: an average over replicated rows is
+    weighted by the replication, so it is as exposed as ``SUM``.
+
+    Returns each measure mapped to the replicated objects it reads.
+    """
+    if not resolved.join_steps:
+        return {}
+    replicated = replicated_objects(resolved)
+    if not replicated:
+        return {}
+
+    effective = model.effective_measures
+    flagged: dict[str, list[str]] = {}
+    # Metric components count: a metric inlines its components, so selecting
+    # ``{[Mixed]} + 1`` compiles the same duplicated expression as selecting
+    # ``Mixed`` and deserves the same warning.
+    seen: set[str] = set()
+    for resolved_measure in (*resolved.measures, *resolved.metric_components.values()):
+        if resolved_measure.name in seen:
+            continue
+        seen.add(resolved_measure.name)
+        measure = effective.get(resolved_measure.name)
+        if measure is None or measure.allow_fan_out:
+            continue
+        aggregation = measure.aggregation.lower()
+        if aggregation in MULTIPLICITY_SAFE_AGGREGATIONS or aggregation == _DELEGATED_AGGREGATION:
+            continue
+        objects = measure.source_objects
+        hit = objects & replicated
+        # Wholly-replicated measures are the dedup pass's job, not this one.
+        if hit and objects - replicated:
+            flagged[resolved_measure.name] = sorted(hit)
+    return flagged
+
+
+def mixed_grain_warning(flagged: dict[str, list[str]]) -> SemanticError:
+    """Warn that a measure reads a replicated object's rows more than once."""
+    listed = ", ".join(f"'{m}'" for m in sorted(flagged))
+    objects = sorted({obj for objs in flagged.values() for obj in objs})
+    return warning(
+        code=WarningCode.FAN_TRAP_RISK,
+        message=(
+            f"Measure(s) {listed} read both a base-grain column and one from "
+            f"{', '.join(repr(o) for o in objects)}, whose rows this query's joins "
+            f"replicate. The expression is evaluated once per base row, so the "
+            f"replicated column contributes once per duplicate. That is intended for a "
+            f"per-unit rate (quantity x list price) and wrong for a column carrying the "
+            f"replicated row's own magnitude."
+        ),
+        hint=(
+            "Check the replicated column is a rate rather than a total. Set "
+            "allowFanOut: true on the query or the measure once it is understood."
+        ),
+        context={"measures": sorted(flagged), "replicated": objects},
+    )
 
 
 def dedup_warning(dedup_measures: dict[str, str]) -> SemanticError:
