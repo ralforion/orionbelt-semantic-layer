@@ -494,3 +494,31 @@ def test_a_query_filter_on_the_anchors_own_fact_still_applies() -> None:
     compiled = _filtered("Sale Status")
     assert "WHERE" in compiled.sql.upper()
     assert '"Sales"."status"' in compiled.sql
+
+
+def _static_filtered(data_object: str):
+    yaml_text = _status_model() + (
+        f"filters:\n  - dataObject: {data_object}\n    column: Status\n"
+        f"    operator: equals\n    value: keep\n"
+    )
+    query = QueryObject(**{"select": {"dimensions": ["Year"], "measures": ["Anchored Cross"]}})
+    return CompilationPipeline().compile(query, _model(yaml_text), "duckdb")
+
+
+def test_a_static_model_filter_on_a_conformed_fact_is_refused_not_dropped() -> None:
+    """A model filter is applied to *every* query, so dropping one is worse still.
+
+    The refusal added for query filters checked only the query's own ``where``.
+    A static ``filters:`` entry resolved later, found its data object
+    unreachable, and was skipped: the model's standing restriction silently did
+    not apply, widening every result rather than one query's.
+    """
+    with pytest.raises(ResolutionError, match="Returns"):
+        _static_filtered("Returns")
+
+
+def test_a_static_model_filter_on_the_anchors_own_fact_still_applies() -> None:
+    """Scoped like the query-filter refusal: the anchor's own columns filter."""
+    compiled = _static_filtered("Sales")
+    assert "WHERE" in compiled.sql.upper()
+    assert '"Sales"."status"' in compiled.sql

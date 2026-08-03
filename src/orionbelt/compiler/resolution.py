@@ -617,7 +617,15 @@ class QueryResolver:
         # skipped silently elsewhere, which is tolerable when the object is
         # merely absent - here the query names a real fact the plan does read,
         # and skipping returned unfiltered totals with nothing to say so.
-        self._reject_filters_on_conformed_objects(ctx, where_filter_objects)
+        # Static model filters count, and count for more: they are documented
+        # as applied to every query, so dropping one silently widens every
+        # result the model ever returns. Collected here rather than in
+        # ``_collect_where_filter_objects`` so base-object selection keeps the
+        # behaviour it has for models with no anchored measure.
+        self._reject_filters_on_conformed_objects(
+            ctx,
+            where_filter_objects | {mf.data_object for mf in model.filters},
+        )
 
         # Detect multi-fact: CFL is needed only when measure source objects
         # span multiple independent fact tables.
@@ -1200,7 +1208,12 @@ class QueryResolver:
     def _reject_filters_on_conformed_objects(
         self, ctx: _ResolutionContext, filter_objects: set[str]
     ) -> None:
-        """Refuse a WHERE predicate on a fact an anchored measure only conforms."""
+        """Refuse a WHERE predicate on a fact an anchored measure only conforms.
+
+        Covers both the query's ``where`` and the model's static ``filters:``.
+        Either one resolves against an object the plan reads only as an
+        aggregate, so neither can choose rows, and both were being skipped.
+        """
         if not ctx.result.anchored_measures or not filter_objects:
             return
         conformed: set[str] = set()
@@ -1218,10 +1231,11 @@ class QueryResolver:
             SemanticError(
                 code="FILTER_ON_CONFORMED_OBJECT",
                 message=(
-                    f"This query filters on {listed}, which an anchored measure reaches "
+                    f"A filter constrains {listed}, which an anchored measure reaches "
                     f"only by aggregating it to a shared key. The filter would compare a "
                     f"per-key total rather than choose rows, so it cannot be applied "
-                    f"where it stands."
+                    f"where it stands. This covers the query's own filters and the "
+                    f"model's static ones alike."
                 ),
                 path="where",
                 hint=(
