@@ -47,8 +47,9 @@ from orionbelt.ast.nodes import (
     JoinType,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
+from orionbelt.compiler.expr_rewrite import collect_column_refs, map_nodes
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.filters import collect_measure_filter_objects
 from orionbelt.compiler.graph import path_overrides
 from orionbelt.compiler.resolution import (
     ResolvedQuery,
@@ -86,6 +87,36 @@ class AnchorNotConformableError(FanoutError):
         )
 
 
+class AnchoredFilterNotSupportedError(FanoutError):
+    """A measure's ``filters:`` constrain a fact the anchor conforms.
+
+    A measure filter becomes a ``CASE`` around the aggregate's argument, and by
+    the time the planner sees it the predicate is inlined into the expression.
+    Conforming cannot aggregate a predicate: restricting the foreign fact has to
+    happen *before* it is aggregated to the shared key, as a ``WHERE`` inside the
+    conformed subquery, or the filter compares a per-key total instead of
+    choosing rows. Aggregating it anyway produced ``SUM("Returns"."status")``,
+    which the database rejects outright when the column is text and answers the
+    wrong question when it is numeric.
+
+    Pushing the predicate down is a coherent extension and is not built.
+
+    Subclasses :class:`~orionbelt.compiler.fanout.FanoutError` so callers that
+    already surface fanout as a 422 surface this the same way.
+    """
+
+    def __init__(self, measure_name: str, objects: list[str]) -> None:
+        listed = ", ".join(f"'{name}'" for name in objects)
+        super().__init__(
+            f"Measure '{measure_name}' filters on {listed}, which its anchor reaches "
+            f"only by conforming: those facts are aggregated to a shared key before "
+            f"the expression is evaluated, so the filter would compare a per-key "
+            f"total rather than choose rows. Filter on the anchor's own data "
+            f"objects, or move the restriction into a filtered measure on "
+            f"{listed} and combine the two with a metric."
+        )
+
+
 @dataclass(frozen=True)
 class ConformedFact:
     """One foreign fact, aggregated to the shared key and ready to join in."""
@@ -95,8 +126,14 @@ class ConformedFact:
     on: Expr
     """Join condition against the anchor's own copy of the shared key."""
 
-    column_aliases: dict[str, str]
-    """Physical column of the foreign fact, mapped to its subquery alias."""
+    value_aliases: list[tuple[Expr, str]]
+    """Each conformed sub-expression of the foreign fact, with its subquery alias.
+
+    Paired with the whole sub-expression rather than keyed by column, because a
+    measure may read several columns of one fact inside one arithmetic term and
+    the aggregate has to close over the term, not its leaves. A list rather than
+    a mapping because ``Expr`` nodes hold lists and so are unhashable; they
+    compare by value, which is what the lookup needs."""
 
     object_name: str
     measure_name: str
@@ -161,11 +198,12 @@ def _conform_one(
     if foreign_obj is None:  # pragma: no cover - resolution rejects this earlier
         raise AnchorNotConformableError(measure_name, anchor, foreign)
 
-    # Every column of the foreign fact the expression reads, in a stable order
-    # so the generated aliases do not depend on set iteration.
-    refs: list[ColumnRef] = []
-    collect_column_refs(expression, refs)
-    read_columns = sorted({ref.name for ref in refs if ref.table == foreign})
+    # The *maximal* sub-expressions reading only the foreign fact, in the order
+    # the expression names them. Conforming leaf columns instead pulled
+    # arithmetic apart: a computed column ``Amount = Qty * Price`` is inlined by
+    # resolution, so summing each leaf produced SUM(qty) * SUM(price) where the
+    # measure asked for SUM(qty * price) - a different number, silently.
+    conformed_parts = _foreign_only_subexpressions(expression, foreign)
 
     builder = QueryBuilder()
     key_aliases: list[str] = []
@@ -176,16 +214,11 @@ def _conform_one(
         builder.select(AliasedExpr(expr=key_expr, alias=key_alias))
         builder.group_by(key_expr)
 
-    column_aliases: dict[str, str] = {}
-    for i, column in enumerate(read_columns):
+    value_aliases: list[tuple[Expr, str]] = []
+    for i, part in enumerate(conformed_parts):
         value_alias = f"{_VALUE_ALIAS}{i}"
-        column_aliases[column] = value_alias
-        builder.select(
-            AliasedExpr(
-                expr=FunctionCall(name="SUM", args=[ColumnRef(name=column, table=foreign)]),
-                alias=value_alias,
-            )
-        )
+        value_aliases.append((part, value_alias))
+        builder.select(AliasedExpr(expr=FunctionCall(name="SUM", args=[part]), alias=value_alias))
 
     qualified = qualify(foreign_obj) if qualify else foreign_obj.qualified_code
     builder.from_(qualified, alias=foreign)
@@ -204,7 +237,7 @@ def _conform_one(
         alias=alias,
         select=builder.build(),
         on=on,
-        column_aliases=column_aliases,
+        value_aliases=value_aliases,
         object_name=foreign,
         measure_name=measure_name,
     )
@@ -250,6 +283,12 @@ def plan_conformed_facts(
         if model_measure is None:  # pragma: no cover - resolution guarantees this
             continue
         foreign_objects = anchored_conformed_objects(model, model_measure, resolved.use_path_names)
+        filtered: set[str] = set()
+        for measure_filter in model_measure.filters:
+            collect_measure_filter_objects(measure_filter, filtered)
+        constrained = sorted(filtered & foreign_objects)
+        if constrained:
+            raise AnchoredFilterNotSupportedError(resolved_measure.name, constrained)
         expression = resolved_measure.expression
         for foreign in sorted(foreign_objects):
             fact = _conform_one(
@@ -269,18 +308,43 @@ def plan_conformed_facts(
     return conformed, rewritten
 
 
+def _foreign_only_subexpressions(expression: Expr, foreign: str) -> list[Expr]:
+    """The maximal sub-expressions of *expression* reading only *foreign*.
+
+    Maximal is the point: the largest term that closes over the foreign fact
+    alone is what gets aggregated, so ``Qty * Price`` conforms as one
+    ``SUM(Qty * Price)``. Descending past it and conforming each column would
+    compute ``SUM(Qty) * SUM(Price)``.
+
+    A term reading no columns at all (a literal) is not conformed: there is
+    nothing to aggregate and it is equally valid on either side of the join.
+    """
+    found: list[Expr] = []
+
+    def visit(node: Expr) -> Expr | None:
+        refs: list[ColumnRef] = []
+        collect_column_refs(node, refs)
+        tables = {ref.table for ref in refs if ref.table}
+        if tables and tables <= {foreign}:
+            if node not in found:
+                found.append(node)
+            return node  # stop: this whole term is what conforms
+        return None
+
+    map_nodes(expression, visit)
+    return found
+
+
 def _point_at_conformed(expression: Expr, fact: ConformedFact) -> Expr:
-    """Repoint the foreign fact's column references at its conformed subquery."""
+    """Repoint the foreign fact's conformed sub-expressions at its subquery."""
 
-    def rewrite(ref: ColumnRef) -> ColumnRef:
-        if ref.table != fact.object_name:
-            return ref
-        conformed_name = fact.column_aliases.get(ref.name)
-        if conformed_name is None:  # pragma: no cover - every read column is conformed
-            return ref
-        return ColumnRef(name=conformed_name, table=fact.alias)
+    def rewrite(node: Expr) -> Expr | None:
+        for part, alias in fact.value_aliases:
+            if node == part:
+                return ColumnRef(name=alias, table=fact.alias)
+        return None
 
-    return map_column_refs(expression, rewrite)
+    return map_nodes(expression, rewrite)
 
 
 def conformed_join_type() -> JoinType:

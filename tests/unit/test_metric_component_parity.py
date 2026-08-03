@@ -358,3 +358,83 @@ def test_a_derived_metric_over_a_window_metric_over_an_anchored_measure() -> Non
     except (ResolutionError, FanoutError):
         return  # a documented refusal is acceptable; unbound SQL is not
     _db().execute(compiled.sql).fetchall()
+
+
+def test_a_computed_column_on_a_conformed_fact_stays_one_aggregate() -> None:
+    """``SUM(qty * price)``, not ``SUM(qty) * SUM(price)``.
+
+    Resolution inlines a computed column, so conforming leaf columns pulled the
+    arithmetic apart and multiplied two independent sums. Silent and wrong: the
+    SQL binds, the number is simply not the measure.
+    """
+    yaml_text = _BASE.replace(
+        """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}""",
+        """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+      Price: {code: price, abstractType: float}
+      Amount:
+        abstractType: float
+        expression: '{[Returns].[Qty]} * {[Returns].[Price]}'""",
+    ).replace(
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Amount]}'",
+    )
+    sql = _compile(yaml_text, ["Anchored Cross"]).sql
+    assert '"Returns"."qty" * "Returns"."price"' in sql, sql
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE main.calendar(datekey VARCHAR, year INT)")
+    con.execute("INSERT INTO main.calendar VALUES ('d1',2024)")
+    con.execute("CREATE TABLE main.products(pid VARCHAR, price DOUBLE)")
+    con.execute("INSERT INTO main.products VALUES ('p1',10)")
+    con.execute("CREATE TABLE main.sales(id VARCHAR, datekey VARCHAR, pid VARCHAR, qty DOUBLE)")
+    con.execute("INSERT INTO main.sales VALUES ('s1','d1','p1',10)")
+    con.execute("CREATE TABLE main.returns(id VARCHAR, datekey VARCHAR, qty DOUBLE, price DOUBLE)")
+    con.execute("INSERT INTO main.returns VALUES ('r1','d1',2,20),('r2','d1',3,10)")
+    con.execute("CREATE TABLE main.visits(id VARCHAR, datekey VARCHAR, cnt DOUBLE)")
+    con.execute("INSERT INTO main.visits VALUES ('v1','d1',1)")
+    # SUM(2*20 + 3*10) = 70, times the single sale's qty of 10.
+    assert float(con.execute(sql).fetchall()[0][1]) == pytest.approx(700.0)
+
+
+def test_a_measure_filter_on_a_conformed_fact_is_refused() -> None:
+    """A predicate cannot be aggregated to the shared key.
+
+    Restricting the foreign fact has to happen before it is conformed. Treated
+    as a value it became ``SUM("Returns"."status")``, rejected outright for text
+    and answering the wrong question for a number.
+    """
+    from orionbelt.compiler.anchored import AnchoredFilterNotSupportedError
+
+    yaml_text = _BASE.replace(
+        """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}""",
+        """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+      Status: {code: status, abstractType: string}""",
+    ).replace(
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'\n"
+        "    filters:\n      - column: {dataObject: Returns, column: Status}\n"
+        "        operator: equals\n        values: [{dataType: string, valueString: keep}]",
+    )
+    with pytest.raises(AnchoredFilterNotSupportedError, match="Returns"):
+        _compile(yaml_text, ["Anchored Cross"])
+
+
+def test_a_measure_filter_on_the_anchor_itself_still_works() -> None:
+    """The refusal is scoped to the conformed facts, not to filters generally."""
+    yaml_text = _BASE.replace(
+        """      Sale Product ID: {code: pid, abstractType: string}
+      Qty: {code: qty, abstractType: float}""",
+        """      Sale Product ID: {code: pid, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+      Status: {code: status, abstractType: string}""",
+    ).replace(
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'",
+        "    anchor: Sales\n    expression: '{[Sales].[Qty]} * {[Returns].[Qty]}'\n"
+        "    filters:\n      - column: {dataObject: Sales, column: Status}\n"
+        "        operator: equals\n        values: [{dataType: string, valueString: keep}]",
+    )
+    assert "__ob_conf_" in _compile(yaml_text, ["Anchored Cross"]).sql
