@@ -600,11 +600,24 @@ class QueryResolver:
         # WHERE filters are resolved much later, so the objects they reference
         # are collected up front — the base has to be able to reach them, or
         # the filter is silently dropped as unreachable further down.
-        ctx.result.base_object = self._select_base_object(
-            ctx, self._collect_where_filter_objects(query, model)
-        )
+        where_filter_objects = self._collect_where_filter_objects(query, model)
+        ctx.result.base_object = self._select_base_object(ctx, where_filter_objects)
         if ctx.result.base_object:
             ctx.result.required_objects.add(ctx.result.base_object)
+
+        # An anchored measure pins the base, which bypasses the re-anchoring that
+        # normally makes a filter's data object reachable. A predicate on a fact
+        # the anchor only reaches by conforming cannot be honoured where it
+        # stands: the fact is aggregated to the shared key before the expression
+        # is evaluated, so the predicate would compare a per-key total rather
+        # than choose rows. Restricting it properly means a WHERE inside the
+        # conformed subquery, which is not built.
+        #
+        # Refused rather than dropped. Filters on an unreachable object are
+        # skipped silently elsewhere, which is tolerable when the object is
+        # merely absent - here the query names a real fact the plan does read,
+        # and skipping returned unfiltered totals with nothing to say so.
+        self._reject_filters_on_conformed_objects(ctx, where_filter_objects)
 
         # Detect multi-fact: CFL is needed only when measure source objects
         # span multiple independent fact tables.
@@ -1183,6 +1196,40 @@ class QueryResolver:
                 for ref_name in re.findall(r"\{\[([^\]]+)\]\}", metric.expression):
                     result.update(self._get_measure_join_objects(ctx, ref_name))
         return result
+
+    def _reject_filters_on_conformed_objects(
+        self, ctx: _ResolutionContext, filter_objects: set[str]
+    ) -> None:
+        """Refuse a WHERE predicate on a fact an anchored measure only conforms."""
+        if not ctx.result.anchored_measures or not filter_objects:
+            return
+        conformed: set[str] = set()
+        for name in ctx.result.anchored_measures:
+            measure = ctx.model.effective_measures.get(name)
+            if measure is not None:
+                conformed |= anchored_conformed_objects(
+                    ctx.model, measure, ctx.result.use_path_names
+                )
+        constrained = sorted(filter_objects & conformed)
+        if not constrained:
+            return
+        listed = ", ".join(f"'{name}'" for name in constrained)
+        ctx.errors.append(
+            SemanticError(
+                code="FILTER_ON_CONFORMED_OBJECT",
+                message=(
+                    f"This query filters on {listed}, which an anchored measure reaches "
+                    f"only by aggregating it to a shared key. The filter would compare a "
+                    f"per-key total rather than choose rows, so it cannot be applied "
+                    f"where it stands."
+                ),
+                path="where",
+                hint=(
+                    "Filter on a data object the anchor reaches directly, or query the "
+                    f"anchored measure separately from the restriction on {listed}."
+                ),
+            )
+        )
 
     def _record_anchor(
         self,

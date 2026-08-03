@@ -438,3 +438,59 @@ def test_a_measure_filter_on_the_anchor_itself_still_works() -> None:
         "        operator: equals\n        values: [{dataType: string, valueString: keep}]",
     )
     assert "__ob_conf_" in _compile(yaml_text, ["Anchored Cross"]).sql
+
+
+def _status_model() -> str:
+    """The anchored model with a status column on each fact, and dimensions for both."""
+    return (
+        _BASE.replace(
+            """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}""",
+            """      Return Date Key: {code: datekey, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+      Status: {code: status, abstractType: string}""",
+        )
+        .replace(
+            """      Sale Product ID: {code: pid, abstractType: string}
+      Qty: {code: qty, abstractType: float}""",
+            """      Sale Product ID: {code: pid, abstractType: string}
+      Qty: {code: qty, abstractType: float}
+      Status: {code: status, abstractType: string}""",
+        )
+        .replace(
+            "dimensions:\n  Year:",
+            "dimensions:\n"
+            "  Return Status: {dataObject: Returns, column: Status, resultType: string}\n"
+            "  Sale Status: {dataObject: Sales, column: Status, resultType: string}\n"
+            "  Year:",
+        )
+    )
+
+
+def _filtered(field: str):
+    query = QueryObject(
+        **{
+            "select": {"dimensions": ["Year"], "measures": ["Anchored Cross"]},
+            "where": [{"field": field, "op": "equals", "value": "keep"}],
+        }
+    )
+    return CompilationPipeline().compile(query, _model(_status_model()), "duckdb")
+
+
+def test_a_query_filter_on_a_conformed_fact_is_refused_not_dropped() -> None:
+    """Silently returning unfiltered totals is the worst available outcome.
+
+    An anchored measure pins the base object, which bypasses the re-anchoring
+    that normally makes a filter's data object reachable. The predicate then
+    resolved to nothing and was skipped, so the query answered 70 where the
+    filter asked for 20, with no WHERE clause and no warning.
+    """
+    with pytest.raises(ResolutionError, match="Returns"):
+        _filtered("Return Status")
+
+
+def test_a_query_filter_on_the_anchors_own_fact_still_applies() -> None:
+    """Scoped to the conformed facts: the anchor's own columns filter normally."""
+    compiled = _filtered("Sale Status")
+    assert "WHERE" in compiled.sql.upper()
+    assert '"Sales"."status"' in compiled.sql
