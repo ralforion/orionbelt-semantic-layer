@@ -922,6 +922,13 @@ metrics:
     expression: "{[Total Sales]} - {[Total Purchases]}"
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
+  Electronics Share:
+    # A metric over a measure that carries its own filter: the numerator is
+    # Electronics-only and the denominator is not, so the ratio is a share of
+    # the whole rather than 1.0. Same trailing-% convention as Return Rate.
+    expression: "{[Electronics Sales]} / NULLIF({[Total Sales]}, 0)"
+    dataType: "decimal(18, 4)"
+    format: "#,##0.0%"
 
   # ── Cumulative metrics — window functions over a base measure ordered by a
   # time dimension. The time dimension must be in the query's SELECT. ──

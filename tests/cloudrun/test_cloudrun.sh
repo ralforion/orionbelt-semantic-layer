@@ -246,7 +246,7 @@ compile_query "Filtered query with ORDER BY + LIMIT" "postgres" "$FILTER_QUERY" 
 MULTI_MEASURE='{
     "select": {
         "dimensions": ["Employee Name"],
-        "measures": ["Total Sales", "Total Sales Qty", "Sales Count"]
+        "measures": ["Total Sales", "Total Sales Quantity", "Sales Count"]
     }
 }'
 compile_query "Multi-measure single-fact query" "snowflake" "$MULTI_MEASURE" "SELECT"
@@ -264,7 +264,7 @@ compile_query "Deep join (Sales→Products→Suppliers)" "postgres" "$DEEP_JOIN"
 PURCHASE_QUERY='{
     "select": {
         "dimensions": ["Supplier Name"],
-        "measures": ["Total Purchases", "Total Purchase Qty"]
+        "measures": ["Total Purchases", "Total Purchase Quantity"]
     },
     "orderBy": [{"field": "Total Purchases", "direction": "desc"}]
 }'
@@ -275,8 +275,8 @@ compile_query "Purchases fact table query" "dremio" "$PURCHASE_QUERY" "purchases
 # 22. Cumulative metric — running total
 CUMUL_QUERY='{
     "select": {
-        "dimensions": ["Sales Date"],
-        "measures": ["Running Total Sales"]
+        "dimensions": ["Sales Month"],
+        "measures": ["Cumulative Sales"]
     }
 }'
 compile_query "Cumulative running total" "postgres" "$CUMUL_QUERY" "cumulative_base"
@@ -285,7 +285,7 @@ compile_query "Cumulative running total" "postgres" "$CUMUL_QUERY" "cumulative_b
 ROLLING_QUERY='{
     "select": {
         "dimensions": ["Sales Date"],
-        "measures": ["Rolling 3m Sales"]
+        "measures": ["Rolling 30 Day Sales"]
     }
 }'
 compile_query "Cumulative rolling 3m" "postgres" "$ROLLING_QUERY" "cumulative_base"
@@ -293,7 +293,7 @@ compile_query "Cumulative rolling 3m" "postgres" "$ROLLING_QUERY" "cumulative_ba
 # 24. Period-over-Period metric — MoM change
 POP_QUERY='{
     "select": {
-        "dimensions": ["Sales Date"],
+        "dimensions": ["Sales Month"],
         "measures": ["Sales MoM Change"]
     }
 }'
@@ -302,7 +302,7 @@ compile_query "PoP MoM change" "postgres" "$POP_QUERY" "date_spine"
 # 25. PoP metric with additional dimension
 POP_DIM_QUERY='{
     "select": {
-        "dimensions": ["Sales Date", "Product Category"],
+        "dimensions": ["Sales Month", "Product Category"],
         "measures": ["Sales MoM Change"]
     }
 }'

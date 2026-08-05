@@ -221,8 +221,8 @@ fi
 # 13. Cumulative metric query (running total)
 CUMUL_QUERY='{
     "select": {
-        "dimensions": ["Sales Date"],
-        "measures": ["Running Total Sales"]
+        "dimensions": ["Sales Month"],
+        "measures": ["Cumulative Sales"]
     }
 }'
 api POST "/v1/sessions/${SESSION_ID}/query/sql" \
@@ -243,7 +243,7 @@ fi
 ROLLING_QUERY='{
     "select": {
         "dimensions": ["Sales Date"],
-        "measures": ["Rolling 3m Sales"]
+        "measures": ["Rolling 30 Day Sales"]
     }
 }'
 api POST "/v1/sessions/${SESSION_ID}/query/sql" \
@@ -263,7 +263,7 @@ fi
 # 15. Period-over-Period metric query (MoM change)
 POP_QUERY='{
     "select": {
-        "dimensions": ["Sales Date"],
+        "dimensions": ["Sales Month"],
         "measures": ["Sales MoM Change"]
     }
 }'
