@@ -1182,7 +1182,7 @@ def create_blocks(
     api_unreachable = bool(api_settings.get("_unreachable"))
     # Pre-v2.7.6 (issue #89): an empty ``api_settings`` (from a cached
     # transient fetch failure) collapsed into self-service mode and
-    # silently loaded the bundled ``sem-layer.obml.yml`` over whatever
+    # silently loaded the bundled ``orionbelt_1_commerce.yaml`` over whatever
     # the API actually had. Now we distinguish three real cases:
     #
     # * single-model API reached → use ``model_yaml`` (the deployed model)

@@ -24,7 +24,7 @@ MODEL_ID=""
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-MODEL_FILE="$PROJECT_ROOT/examples/sem-layer.obml.yml"
+MODEL_FILE="$PROJECT_ROOT/examples/orionbelt_1_commerce.yaml"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

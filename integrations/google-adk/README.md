@@ -20,7 +20,7 @@ pip install google-adk httpx
 Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 Set your API key:

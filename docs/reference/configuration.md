@@ -46,7 +46,7 @@ When `MODEL_FILES` is set to one or more OBML YAML paths, the server starts in *
 
 ```bash
 # One model
-MODEL_FILES=./examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=./examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 
 # Multiple models, comma-separated
 MODEL_FILES=./models/sales.yaml,./models/finance.yaml uv run orionbelt-api

@@ -16,7 +16,7 @@ OrionBelt includes an interactive web UI built with [Gradio](https://www.gradio.
 - **OSI Import / Export** — Import OSI format models (converted to OBML) and export OBML models to OSI format, with validation feedback
 - **Dark / light mode** — Toggle via the header button; all inputs and UI state are persisted across mode switches
 
-The bundled example model (`examples/sem-layer.obml.yml`) is loaded automatically on startup.
+The bundled example model (`examples/orionbelt_1_commerce.yaml`) is loaded automatically on startup. It matches the seeded demo dataset, so its queries execute as well as compile.
 
 ![SQL Compiler](../assets/ui-sqlcompiler-dark.png)
 

@@ -16,13 +16,13 @@ This directory contains everything needed to create a Custom GPT with Actions in
 The GPT Action works best with OrionBelt running in **single-model mode** (one pre-loaded model, no session management needed). Set the `MODEL_FILE` environment variable:
 
 ```bash
-MODEL_FILE=path/to/your/model.yaml uv run orionbelt-api
+MODEL_FILES=path/to/your/model.yaml uv run orionbelt-api
 ```
 
 Or via Docker:
 
 ```bash
-docker run -p 8080:8080 -e MODEL_FILE=/models/model.yaml -v ./models:/models orionbelt-semantic-layer-api
+docker run -p 8080:8080 -e MODEL_FILES=/models/model.yaml -v ./models:/models orionbelt-semantic-layer-api
 ```
 
 The API must be reachable over **HTTPS** (required by OpenAI). Use a cloud deployment, ngrok for testing, or any reverse proxy with TLS.

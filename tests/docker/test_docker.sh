@@ -139,7 +139,7 @@ else
 fi
 
 # 7. Load model
-MODEL_YAML=$(python3 -c "import json; print(json.dumps(open('examples/sem-layer.obml.yml').read()))")
+MODEL_YAML=$(python3 -c "import json; print(json.dumps(open('examples/orionbelt_1_commerce.yaml').read()))")
 api POST "/v1/sessions/${SESSION_ID}/models" \
     -H "Content-Type: application/json" \
     -d "{\"model_id\": \"test\", \"model_yaml\": ${MODEL_YAML}}"

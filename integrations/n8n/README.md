@@ -19,7 +19,7 @@ n8n workflow templates that connect to the OrionBelt Semantic Layer REST API. Us
 1. Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 2. In n8n, set the environment variable `ORIONBELT_API_URL`:

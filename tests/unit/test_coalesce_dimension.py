@@ -22,7 +22,7 @@ from orionbelt.models.query import (
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
-_MODEL_PATH = Path(__file__).resolve().parents[2] / "examples" / "sem-layer.obml.yml"
+_MODEL_PATH = Path(__file__).resolve().parents[2] / "examples" / "orionbelt_1_commerce.yaml"
 
 
 def _load_model():
@@ -38,19 +38,19 @@ class TestCoalesceCompilation:
             select=QuerySelect(
                 dimensions=[
                     CoalesceDimension(
-                        coalesce=["Employee Name", "Purchase Employee"], alias="Employee"
+                        coalesce=["Sales Employee", "Purchase Employee"], alias="Employee"
                     )
                 ],
-                measures=["Total Sales", "Total Purchase Qty"],
+                measures=["Total Sales", "Total Purchase Quantity"],
             )
         )
         result = CompilationPipeline().compile(query, model, "postgres")
         sql = result.sql
 
         # Outer wrapper coalesces the two role-playing dims into one alias
-        assert 'COALESCE("Employee Name", "Purchase Employee") AS "Employee"' in sql
+        assert 'COALESCE("Sales Employee", "Purchase Employee") AS "Employee"' in sql
         # GROUP BY uses the same expression (portable across dialects)
-        assert 'GROUP BY COALESCE("Employee Name", "Purchase Employee")' in sql
+        assert 'GROUP BY COALESCE("Sales Employee", "Purchase Employee")' in sql
 
     def test_order_by_coalesce_alias(self) -> None:
         # ORDER BY by the coalesce alias must work — most dialects accept
@@ -60,10 +60,10 @@ class TestCoalesceCompilation:
             select=QuerySelect(
                 dimensions=[
                     CoalesceDimension(
-                        coalesce=["Employee Name", "Purchase Employee"], alias="Employee"
+                        coalesce=["Sales Employee", "Purchase Employee"], alias="Employee"
                     )
                 ],
-                measures=["Total Sales", "Total Purchase Qty"],
+                measures=["Total Sales", "Total Purchase Quantity"],
             ),
             order_by=[QueryOrderBy(field="Employee", direction=SortDirection.ASC)],
         )
@@ -78,17 +78,17 @@ class TestCoalesceCompilation:
             select=QuerySelect(
                 dimensions=[
                     CoalesceDimension(
-                        coalesce=["Employee Name", "Purchase Employee"], alias="Employee"
+                        coalesce=["Sales Employee", "Purchase Employee"], alias="Employee"
                     )
                 ],
-                measures=["Total Sales", "Total Purchase Qty"],
+                measures=["Total Sales", "Total Purchase Quantity"],
             )
         )
         result = CompilationPipeline().compile(query, model, "postgres")
         # Leg 1 (Sales): Purchase Employee projects as NULL
         assert 'CAST(NULL AS VARCHAR) AS "Purchase Employee"' in result.sql
-        # Leg 2 (Purchases): Employee Name projects as NULL
-        assert 'CAST(NULL AS VARCHAR) AS "Employee Name"' in result.sql
+        # Leg 2 (Purchases): Sales Employee projects as NULL
+        assert 'CAST(NULL AS VARCHAR) AS "Sales Employee"' in result.sql
 
 
 class TestCoalesceValidation:
@@ -129,7 +129,7 @@ class TestCoalesceValidation:
             select=QuerySelect(
                 dimensions=[
                     CoalesceDimension(
-                        coalesce=["Employee Name", "Purchase Employee"], alias="Employee"
+                        coalesce=["Sales Employee", "Purchase Employee"], alias="Employee"
                     ),
                     CoalesceDimension(
                         coalesce=["Return Employee", "Shipment Employee"], alias="Employee"
