@@ -13,16 +13,16 @@ This directory contains everything needed to create a Custom GPT with Actions in
 
 ### 1. Deploy OrionBelt in Single-Model Mode
 
-The GPT Action works best with OrionBelt running in **single-model mode** (one pre-loaded model, no session management needed). Set the `MODEL_FILE` environment variable:
+The GPT Action works best with OrionBelt running in **single-model mode** (one pre-loaded model, no session management needed). Set the `MODEL_FILES` environment variable:
 
 ```bash
-MODEL_FILE=path/to/your/model.yaml uv run orionbelt-api
+MODEL_FILES=path/to/your/model.yaml uv run orionbelt-api
 ```
 
 Or via Docker:
 
 ```bash
-docker run -p 8080:8080 -e MODEL_FILE=/models/model.yaml -v ./models:/models orionbelt-semantic-layer-api
+docker run -p 8080:8080 -e MODEL_FILES=/models/model.yaml -v ./models:/models orionbelt-semantic-layer-api
 ```
 
 The API must be reachable over **HTTPS** (required by OpenAI). Use a cloud deployment, ngrok for testing, or any reverse proxy with TLS.
@@ -36,8 +36,8 @@ The API must be reachable over **HTTPS** (required by OpenAI). Use a cloud deplo
    - **Instructions:** Paste the contents of `instructions.md`
    - **Conversation starters:**
      - What dimensions and measures are available?
-     - Show me Revenue by Country for Snowflake
-     - What is the lineage of the Revenue measure?
+     - Show me Total Sales by Country Name for Snowflake
+     - What is the lineage of the Total Sales measure?
      - How are the tables connected?
 
 ### 3. Add the Action
@@ -54,8 +54,8 @@ The API must be reachable over **HTTPS** (required by OpenAI). Use a cloud deplo
 
 Use the **Preview** tab to test. Try:
 - "What measures are available?"
-- "Compile Revenue by Country for BigQuery"
-- "Explain the lineage of Order Count"
+- "Compile Total Sales by Country Name for BigQuery"
+- "Explain the lineage of Sales Count"
 
 Click on any action call in the conversation to see the raw request/response for debugging.
 
@@ -89,6 +89,6 @@ The spec exposes 11 curated endpoints (all shortcut/auto-resolve, no session man
 
 - GPT Actions require HTTPS. No plain HTTP, no localhost.
 - Response timeout is ~45 seconds. SQL compilation is fast, so this is fine.
-- No file upload support in GPT Actions, so model loading is handled via `MODEL_FILE` env var.
+- No file upload support in GPT Actions, so model loading is handled via `MODEL_FILES` env var.
 - The `compileQuery` action has `x-openai-isConsequential: false` so it executes without user confirmation (read-only operation).
 - Keep the model reasonably sized. Very large schema responses may hit the ~100K character response limit.

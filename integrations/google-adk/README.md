@@ -20,7 +20,7 @@ pip install google-adk httpx
 Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 Set your API key:
@@ -60,7 +60,7 @@ async def main():
 
     content = types.Content(
         role="user",
-        parts=[types.Part(text="Show me Revenue by Country for BigQuery")],
+        parts=[types.Part(text="Show me Total Sales by Country Name for BigQuery")],
     )
     async for event in runner.run_async(
         user_id="user", session_id=session.id, new_message=content,

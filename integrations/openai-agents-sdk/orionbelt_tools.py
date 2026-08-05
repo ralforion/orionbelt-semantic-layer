@@ -1,7 +1,7 @@
 """OpenAI Agents SDK tools for the OrionBelt Semantic Layer REST API.
 
 These tools wrap the shortcut endpoints (auto-resolve session/model) and work
-when OrionBelt runs in single-model mode (MODEL_FILE set).
+when OrionBelt runs in single-model mode (MODEL_FILES set).
 
 Usage:
     from orionbelt_tools import get_tools
@@ -35,7 +35,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
         """List all dimensions in the semantic model.
 
         Dimensions are categorical or temporal attributes used for grouping
-        and filtering (e.g. Country, Order Date, Product Category).
+        and filtering (e.g. Country Name, Sales Date, Product Category).
         """
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
             resp = await client.get("/v1/dimensions")
@@ -46,7 +46,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
         """List all measures in the semantic model.
 
         Measures are numeric aggregations computed from data object columns
-        (e.g. Revenue, Order Count, Average Price).
+        (e.g. Total Sales, Sales Count, Avg Unit Price).
         """
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
             resp = await client.get("/v1/measures")
@@ -87,8 +87,8 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
         as returned by describe_model, list_dimensions, and list_measures.
 
         Args:
-            dimensions: Dimension names to group by (e.g. ["Country", "Order Date"]).
-            measures: Measure names to aggregate (e.g. ["Revenue", "Order Count"]).
+            dimensions: Dimension names to group by (e.g. ["Country Name", "Sales Date"]).
+            measures: Measure names to aggregate (e.g. ["Total Sales", "Sales Count"]).
             dialect: Target SQL dialect (postgres, snowflake, bigquery, clickhouse,
                      databricks, dremio, duckdb, mysql).
             limit: Maximum rows to return.
@@ -125,9 +125,9 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
             query_json: Full query as JSON string. Format:
                 {
                     "select": {"dimensions": [...], "measures": [...]},
-                    "where": [{"dimension": "Country", "operator": "=", "value": "Germany"}],
-                    "having": [{"measure": "Revenue", "operator": ">", "value": 1000}],
-                    "orderBy": [{"field": "Revenue", "direction": "desc"}],
+                    "where": [{"field": "Country Name", "op": "equals", "value": "Germany"}],
+                    "having": [{"field": "Total Sales", "op": "gt", "value": 1000}],
+                    "orderBy": [{"field": "Total Sales", "direction": "desc"}],
                     "limit": 100
                 }
             dialect: Target SQL dialect.

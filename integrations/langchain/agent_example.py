@@ -7,7 +7,7 @@ Prerequisites:
     pip install langchain langchain-openai langgraph httpx
 
 Start OrionBelt API in single-model mode first:
-    MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+    MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 
 Then run this script:
     export ANTHROPIC_API_KEY=sk-ant-...

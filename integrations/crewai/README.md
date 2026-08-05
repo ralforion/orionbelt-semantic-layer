@@ -20,7 +20,7 @@ pip install crewai httpx
 Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 ## Quick Start
@@ -39,7 +39,7 @@ agent = Agent(
 )
 
 task = Task(
-    description="Compile Revenue by Country for Snowflake.",
+    description="Compile Total Sales by Country Name for Snowflake.",
     expected_output="The compiled Snowflake SQL query.",
     agent=agent,
 )

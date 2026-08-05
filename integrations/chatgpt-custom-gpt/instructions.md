@@ -21,18 +21,18 @@ Users describe what they want in business terms (dimensions, measures, metrics),
 ## Query Format
 
 Queries use business names, not SQL:
-- **Dimensions** are grouping/filtering attributes (Country, Order Date, Product Category)
-- **Measures** are aggregations (Revenue, Order Count, Average Price)
+- **Dimensions** are grouping/filtering attributes (Country Name, Sales Date, Product Category)
+- **Measures** are aggregations (Total Sales, Sales Count, Avg Unit Price)
 - **Metrics** are derived calculations built from measures (Profit Margin, YoY Growth)
 
-Example query for "Revenue by Country, top 10":
+Example query for "Total Sales by Country Name, top 10":
 ```json
 {
   "select": {
-    "dimensions": ["Country"],
-    "measures": ["Revenue"]
+    "dimensions": ["Country Name"],
+    "measures": ["Total Sales"]
   },
-  "orderBy": [{"field": "Revenue", "direction": "desc"}],
+  "orderBy": [{"field": "Total Sales", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -55,7 +55,7 @@ HAVING filters on measures: `=`, `!=`, `>`, `<`, `>=`, `<=`
 ## Conversation Starters
 
 - "What dimensions and measures are available?"
-- "Show me Revenue by Country for Snowflake"
-- "What is the lineage of the Revenue measure?"
-- "Compare Revenue across all 8 SQL dialects"
+- "Show me Total Sales by Country Name for Snowflake"
+- "What is the lineage of the Total Sales measure?"
+- "Compare Total Sales across all 8 SQL dialects"
 - "How are the tables connected?"

@@ -22,7 +22,7 @@ npm install ai @ai-sdk/openai zod
 Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 Set environment variables:
@@ -59,7 +59,7 @@ const { text } = await generateText({
   model: anthropic("claude-sonnet-4-5"),
   tools,
   maxSteps: 10,
-  prompt: "Show me Revenue by Country for Snowflake",
+  prompt: "Show me Total Sales by Country Name for Snowflake",
 });
 
 console.log(text);

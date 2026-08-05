@@ -23,7 +23,7 @@ pip install langchain langchain-openai langgraph httpx
 Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 ## Quick Start
@@ -37,7 +37,7 @@ async def main():
     tools = get_tools("http://localhost:8000")
     agent = create_agent("anthropic:claude-sonnet-4-5", tools)
     result = await agent.ainvoke(
-        {"messages": "Show me Revenue by Country for Snowflake"}
+        {"messages": "Show me Total Sales by Country Name for Snowflake"}
     )
     print(result["messages"][-1].content)
 
@@ -98,7 +98,7 @@ async def main():
     graph = builder.compile()
 
     result = await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Revenue by Country, top 10, Snowflake"}]}
+        {"messages": [{"role": "user", "content": "Total Sales by Country Name, top 10, Snowflake"}]}
     )
     for msg in result["messages"]:
         if msg.content:

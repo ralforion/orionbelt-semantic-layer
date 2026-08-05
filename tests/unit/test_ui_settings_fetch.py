@@ -1,7 +1,7 @@
 """UI ``_fetch_settings`` retry + no-silent-fallback (v2.7.6, issue #89).
 
 Pre-fix: a single transient ``/v1/settings`` failure cached ``{}`` and
-the UI silently swapped in the bundled ``examples/sem-layer.obml.yml``
+the UI silently swapped in the bundled ``examples/orionbelt_1_commerce.yaml``
 starter — users saw a different model than what was deployed and had
 no way to know why.
 

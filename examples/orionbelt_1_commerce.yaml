@@ -391,6 +391,25 @@ dataObjects:
       Supplier Country ID:
         code: suppliercountryid
         abstractType: string
+    joins:
+      # Named secondary path. Countries is already reachable from Sales the
+      # ordinary way (Sales -> Clients -> Countries), so a plain join here
+      # would make Sales -> Products -> Suppliers -> Countries a second route
+      # to the same object: a multipath diamond the planner has no basis to
+      # choose between. Marking it secondary keeps it out of ordinary planning
+      # and makes it opt-in, so "Country Name" means the client's country
+      # unless a query asks for this path by name:
+      #
+      #   usePathNames:
+      #     - {source: Suppliers, target: Countries, pathName: supplier_country}
+      #
+      # which re-reads the same dimension as the supplier's country instead.
+      - joinType: many-to-one
+        joinTo: Countries
+        secondary: true
+        pathName: supplier_country
+        columnsFrom: [Supplier Country ID]
+        columnsTo: [Country ID]
 
   Countries:
     code: countries
@@ -817,6 +836,70 @@ measures:
       - dataObject: Products
         column: Unit Price
 
+  Distinct Clients:
+    # ``distinct: true`` counts each client once however many times they
+    # bought. Counted from the Sales side on purpose: this is "clients who
+    # bought", which the Clients row count cannot answer.
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    format: "#,##0"
+    columns:
+      - dataObject: Sales
+        column: Sales Client
+
+  Electronics Sales:
+    # A measure-level filter: the predicate belongs to the measure, not to the
+    # query, so this stays Electronics-only in every query that selects it and
+    # can sit beside unfiltered Total Sales in the same result.
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    filters:
+      - column: {dataObject: Products, column: Product Category}
+        operator: equals
+        values: [{dataType: string, valueString: "Electronics"}]
+    description: Total sales filtered to the Electronics category
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+
+  Sales by Country:
+    # A grain override with an include list: this measure is aggregated at
+    # country level whatever the query groups by, so grouping by product still
+    # reads the country total. Contrast Unfiltered Sales below, which fixes the
+    # grain to nothing at all and reads one grand total.
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+      include: [Country Name]
+    description: Sales aggregated at country level only
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+
+  Unfiltered Sales:
+    # Filter context: this measure ignores the query's WHERE entirely, so it
+    # reads the same grand total in every row no matter how the query is
+    # sliced. Pair it with "Total Sales" to get a share-of-total without a
+    # second round trip - the query filters one and not the other.
+    #
+    # grain FIXED with no include list is what makes it a single number: the
+    # measure is aggregated at no grain rather than at the query's grain.
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    filterContext:
+      mode: FIXED
+    description: Grand total ignoring all query filters
+    columns:
+      - dataObject: Sales
+        column: Sales Amount
+
 metrics:
   # ── Derived metrics — algebra over base measures ──
   Average Sale:
@@ -839,6 +922,13 @@ metrics:
     expression: "{[Total Sales]} - {[Total Purchases]}"
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
+  Electronics Share:
+    # A metric over a measure that carries its own filter: the numerator is
+    # Electronics-only and the denominator is not, so the ratio is a share of
+    # the whole rather than 1.0. Same trailing-% convention as Return Rate.
+    expression: "{[Electronics Sales]} / NULLIF({[Total Sales]}, 0)"
+    dataType: "decimal(18, 4)"
+    format: "#,##0.0%"
 
   # ── Cumulative metrics — window functions over a base measure ordered by a
   # time dimension. The time dimension must be in the query's SELECT. ──

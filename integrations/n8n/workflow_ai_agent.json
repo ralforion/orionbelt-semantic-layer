@@ -67,7 +67,7 @@
     {
       "parameters": {
         "name": "list_measures",
-        "description": "List all measures (numeric aggregations like Revenue, Order Count).",
+        "description": "List all measures (numeric aggregations like Total Sales, Sales Count).",
         "method": "GET",
         "url": "={{ $env.ORIONBELT_API_URL }}/v1/measures",
         "placeholderDefinitions": {

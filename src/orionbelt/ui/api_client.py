@@ -299,7 +299,7 @@ def _fetch_settings(api_url: str) -> dict[str, Any]:
     Not cached: pre-v2.7.6 a single transient failure (Cloud Run cold
     start exceeding the 5-second client timeout) wrote ``{}`` to the
     cache, sticking forever and silently swapping the deployed model
-    out for ``examples/sem-layer.obml.yml``. The session-wide model
+    out for ``examples/orionbelt_1_commerce.yaml``. The session-wide model
     fetch happens once at UI startup; the cache served no real purpose.
     """
     url = api_url.rstrip("/")

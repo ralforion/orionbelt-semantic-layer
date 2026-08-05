@@ -1192,12 +1192,20 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
 
 
 def _load_example_model() -> str:
-    """Load the bundled example OBML model, or return a placeholder."""
+    """Load the bundled example OBML model, or return a placeholder.
+
+    This is the starter the UI shows in self-service mode, so it has to be a
+    model the user can actually press Run on. The previous starter
+    (``sem-layer.obml.yml``) declared column codes no seeded database had, so
+    it compiled and then failed at execution with "column does not exist";
+    nothing caught that because everything consuming it only compiled.
+    ``orionbelt_1_commerce.yaml`` is the model the demo dataset is built from.
+    """
     from pathlib import Path
 
     candidates = [
-        Path(__file__).resolve().parents[3] / "examples" / "sem-layer.obml.yml",
-        Path.cwd() / "examples" / "sem-layer.obml.yml",
+        Path(__file__).resolve().parents[3] / "examples" / "orionbelt_1_commerce.yaml",
+        Path.cwd() / "examples" / "orionbelt_1_commerce.yaml",
     ]
     for p in candidates:
         if p.is_file():

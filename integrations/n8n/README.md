@@ -19,7 +19,7 @@ n8n workflow templates that connect to the OrionBelt Semantic Layer REST API. Us
 1. Start OrionBelt API in single-model mode:
 
 ```bash
-MODEL_FILE=examples/sem-layer.obml.yml uv run orionbelt-api
+MODEL_FILES=examples/orionbelt_1_commerce.yaml uv run orionbelt-api
 ```
 
 2. In n8n, set the environment variable `ORIONBELT_API_URL`:
@@ -48,10 +48,10 @@ Manual Trigger
 ```json
 {
   "select": {
-    "dimensions": ["Country"],
-    "measures": ["Revenue"]
+    "dimensions": ["Country Name"],
+    "measures": ["Total Sales"]
   },
-  "orderBy": [{"field": "Revenue", "direction": "desc"}],
+  "orderBy": [{"field": "Total Sales", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -75,8 +75,8 @@ Chat Trigger ──→ AI Agent
 
 **Example conversations:**
 - "What dimensions and measures are available?"
-- "Show me Revenue by Country for Snowflake"
-- "Compile a query with Revenue and Order Count grouped by Product Category, sorted by Revenue descending"
+- "Show me Total Sales by Country Name for Snowflake"
+- "Compile a query with Total Sales and Sales Count grouped by Product Category, sorted by Total Sales descending"
 
 ## Customization
 
