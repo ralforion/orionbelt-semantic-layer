@@ -4,6 +4,14 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.24.1] - 2026-08-05
+
+### Fixed
+
+- **The converter changes in 2.24.0 never reached PyPI.** `osi-orionbelt` carries its own version, and none of the six converter changes in 2.24.0 bumped it: it stayed at `0.1.2`, which was already published. `pypi-publish.yml` sets `skip-existing: true` on that job so that a release in which the converter genuinely did not change does not fail, and it cannot tell that case apart from a forgotten bump, so the tag build uploaded nothing and reported success (`Skipping osi_orionbelt-0.1.2-py3-none-any.whl because it appears to already exist`). The converter is now `0.2.0`, a major-for-pre-1.0 bump because 2.24.0 removed `OBMLtoOSIOntology` and `validate_osi_ontology` from its public API. Nothing crashed while this was wrong: the four symbols the app imports all exist in `0.1.2`, so it degraded silently. Concretely, on a PyPI install of the `osi` extra, a model using the new `anchor:` field was reported schema-invalid by the converter's advisory validation (`Additional properties are not allowed ('anchor' was unexpected)`), and `anchor` was dropped on an OBML to OSI to OBML round trip, because `0.1.2` vendors a copy of the OBML schema that predates the field. The other 2.24.0 converter work was equally absent: sqlglot metric decomposition, key-derived relationship cardinality, the Apache Ossie `datatype`, and the fix that stopped a non-SQL field expression being written into a column `code`. Both builds report `__version__ == "0.1.2"`, so the version string could not distinguish them, which is the part that made this hard to see. **Only PyPI installs of the `osi`, `flight`, and `flight-duckdb-only` extras were affected**; the Docker images and the Cloud Run demo build the converter from workspace source and always had the 2.24.0 code.
+
+- **The `osi-orionbelt` dependency now declares a floor.** The extras required it unpinned, so a resolver was free to satisfy `orionbelt-semantic-layer[osi]==2.24.0` with converter `0.1.2` and produce exactly the mismatch above. They now require `>=0.2`, which is the first release that understands the OBML surface 2.24.0 emits.
+
 ## [2.24.0] - 2026-08-04
 
 ### Added
