@@ -68,7 +68,7 @@ paths:
       description: >
         Returns all dimensions in the semantic model. Dimensions are categorical
         or temporal attributes used for grouping and filtering (e.g. Country,
-        Order Date, Product Category).
+        Sales Date, Product Category).
       responses:
         "200":
           description: List of dimensions
@@ -109,8 +109,8 @@ paths:
       summary: List all measures
       description: >
         Returns all measures in the semantic model. Measures are numeric
-        aggregations computed from data object columns (e.g. Revenue, Order Count,
-        Average Price). Each measure has an aggregation type (sum, count, avg, etc.)
+        aggregations computed from data object columns (e.g. Total Sales, Sales Count,
+        Avg Unit Price). Each measure has an aggregation type (sum, count, avg, etc.)
         and an expression referencing data object columns.
       responses:
         "200":
@@ -152,7 +152,7 @@ paths:
       summary: List all metrics
       description: >
         Returns all metrics in the semantic model. Metrics are derived calculations
-        built from measures (e.g. Profit Margin = Revenue - Cost, or cumulative/
+        built from measures (e.g. Return Rate = Total Returns / Total Sales, or cumulative/
         period-over-period computations). Types include derived, cumulative, and
         period_over_period.
       responses:
@@ -326,16 +326,16 @@ paths:
                   select:
                     dimensions:
                       - Country Name
-                      - Order Date
+                      - Sales Date
                     measures:
                       - Total Sales
-                      - Order Count
+                      - Sales Count
                   where:
-                    - field: Country
+                    - field: Country Name
                       op: "="
                       value: "Germany"
                   orderBy:
-                    - field: Revenue
+                    - field: Total Sales
                       direction: desc
                   limit: 50
       responses:
@@ -587,12 +587,12 @@ components:
               type: array
               items:
                 type: string
-              description: "Dimension names (e.g. [\"Country\", \"Order Date\"])"
+              description: "Dimension names (e.g. [\"Country Name\", \"Sales Date\"])"
             measures:
               type: array
               items:
                 type: string
-              description: "Measure names (e.g. [\"Revenue\", \"Order Count\"])"
+              description: "Measure names (e.g. [\"Total Sales\", \"Sales Count\"])"
         where:
           type: array
           description: WHERE filters on dimensions

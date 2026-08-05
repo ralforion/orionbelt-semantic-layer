@@ -37,7 +37,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list:
         """List all dimensions in the semantic model.
 
         Dimensions are categorical or temporal attributes used for grouping
-        and filtering (e.g. Country, Order Date, Product Category).
+        and filtering (e.g. Country, Sales Date, Product Category).
         """
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
             resp = await client.get("/v1/dimensions")
@@ -49,7 +49,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list:
         """List all measures in the semantic model.
 
         Measures are numeric aggregations computed from data object columns
-        (e.g. Revenue, Order Count, Average Price).
+        (e.g. Total Sales, Sales Count, Avg Unit Price).
         """
         async with httpx.AsyncClient(base_url=api_base_url, timeout=30) as client:
             resp = await client.get("/v1/measures")

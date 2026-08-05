@@ -55,7 +55,7 @@ The API must be reachable over **HTTPS** (required by OpenAI). Use a cloud deplo
 Use the **Preview** tab to test. Try:
 - "What measures are available?"
 - "Compile Total Sales by Country Name for BigQuery"
-- "Explain the lineage of Order Count"
+- "Explain the lineage of Sales Count"
 
 Click on any action call in the conversation to see the raw request/response for debugging.
 

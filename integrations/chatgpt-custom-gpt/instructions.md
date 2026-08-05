@@ -57,5 +57,5 @@ HAVING filters on measures: `=`, `!=`, `>`, `<`, `>=`, `<=`
 - "What dimensions and measures are available?"
 - "Show me Total Sales by Country Name for Snowflake"
 - "What is the lineage of the Total Sales measure?"
-- "Compare Revenue across all 8 SQL dialects"
+- "Compare Total Sales across all 8 SQL dialects"
 - "How are the tables connected?"

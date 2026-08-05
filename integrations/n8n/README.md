@@ -76,7 +76,7 @@ Chat Trigger ──→ AI Agent
 **Example conversations:**
 - "What dimensions and measures are available?"
 - "Show me Total Sales by Country Name for Snowflake"
-- "Compile a query with Revenue and Order Count grouped by Product Category, sorted by Revenue descending"
+- "Compile a query with Total Sales and Sales Count grouped by Product Category, sorted by Total Sales descending"
 
 ## Customization
 
