@@ -128,6 +128,23 @@ jobs:
         working-directory: packages/osi-orionbelt
         run: uv run mypy src/osi_orionbelt
 
+  # osi-orionbelt is published with skip-existing, so editing it without
+  # bumping its version makes the release upload nothing and still pass. That
+  # shipped: the six converter changes in 2.24.0 never reached PyPI, and the
+  # published converter stayed on a schema that predates `anchor:`. Only
+  # meaningful on a PR, where there is a base to diff the source against.
+  osi-version-bump:
+    name: osi-orionbelt version is publishable
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the check diffs against the merge base
+
+      - name: Check the converter version against PyPI
+        run: python scripts/check_osi_version_bump.py --base-ref origin/${{ github.base_ref }}
+
   # Import the UI against the dependency set the UI image actually ships.
   #
   # The `test` job installs --all-extras --all-groups, which pulls
