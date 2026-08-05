@@ -171,3 +171,47 @@ def test_a_deliberately_invalid_payload_still_fails(model, label: str, query: di
     """
     with pytest.raises(ResolutionError):
         CompilationPipeline().compile(QueryObject(**query), model, "postgres")
+
+
+# Names the bundled model does not expose, which nonetheless kept turning up in
+# prose. The compile tests above cannot catch these: a tool *description* is not
+# a query, so nothing parses it - but it is prompt metadata handed to an LLM,
+# and an example field name in it steers the calls the agent generates. The
+# sentinels stay allowed; the suites need them to assert a 4xx.
+_RETIRED_NAMES = (
+    "Country",
+    "Revenue",
+    "Order Count",
+    "Order Date",
+    "Order ID",
+    "Average Price",
+    "Total Sales Qty",
+    "Total Purchase Qty",
+    "Running Total Sales",
+    "Rolling 3m Sales",
+)
+_PROSE_FILES = sorted(
+    p
+    for p in _INTEGRATIONS.rglob("*")
+    if p.suffix in {".md", ".json", ".yaml", ".yml", ".py", ".ts"}
+)
+
+
+@pytest.mark.parametrize("path", _PROSE_FILES, ids=lambda p: str(p.relative_to(_REPO)))
+def test_no_retired_name_survives_anywhere(path: Path) -> None:
+    """Including in prose, where a stale example name misleads an agent."""
+    text = path.read_text()
+    offenders: list[str] = []
+    for name in _RETIRED_NAMES:
+        # Whole-word, and not merely the prefix of a name that IS real
+        # ("Country" must not match "Country Name", "Revenue" is retired outright).
+        for m in re.finditer(rf"\b{re.escape(name)}\b", text):
+            tail = text[m.end() : m.end() + 6]
+            if name == "Country" and tail.startswith(" Name"):
+                continue
+            line = text[: m.start()].count("\n") + 1
+            offenders.append(f"{name!r} at line {line}")
+    assert not offenders, (
+        f"{path.relative_to(_REPO)} names dimensions/measures the bundled model "
+        f"does not expose: {offenders}"
+    )

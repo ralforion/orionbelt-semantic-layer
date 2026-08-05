@@ -43,7 +43,7 @@ def get_tools(api_base_url: str = "http://localhost:8000") -> list[FunctionTool]
     def list_dimensions() -> str:
         """List all dimensions in the semantic model.
         Dimensions are categorical or temporal attributes used for grouping
-        and filtering (e.g. Country, Sales Date, Product Category)."""
+        and filtering (e.g. Country Name, Sales Date, Product Category)."""
         return json.dumps(_get(api_base_url, "/v1/dimensions"), indent=2)
 
     def list_measures() -> str:

@@ -67,7 +67,7 @@ paths:
       summary: List all dimensions
       description: >
         Returns all dimensions in the semantic model. Dimensions are categorical
-        or temporal attributes used for grouping and filtering (e.g. Country,
+        or temporal attributes used for grouping and filtering (e.g. Country Name,
         Sales Date, Product Category).
       responses:
         "200":
