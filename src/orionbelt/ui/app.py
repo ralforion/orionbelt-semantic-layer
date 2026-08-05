@@ -629,45 +629,83 @@ _ALIGN_HEADERS_JS = """
     // Inject per-column sort controls (up / down / clear) into each header. They
     // write a hidden signal textbox that triggers a server-side re-query. Value-
     // less selects the injection may cause are now harmless (handlers use EventData).
-    var tries = 0;
-    var iv = setInterval(function () {
-        var root = document.querySelector('.result-table');
-        var ths = root ? root.querySelectorAll('th') : [];
-        if (!ths.length) { if (++tries > 25) clearInterval(iv); return; }
-        clearInterval(iv);
-        // Active orderBy ("field|dir" per line) -> colour the matching ▲/▼ orange.
+    // Active orderBy ("field|dir" per line) -> colour the matching ▲/▼ orange.
+    function readSortMap() {
         var sortState = (document.querySelector('#ob-sort-state textarea') || {}).value || '';
         var sortMap = {};
         sortState.split('\\n').forEach(function (s) {
             var kv = s.split('|');
             if (kv[0]) sortMap[kv[0]] = kv[1];
         });
+        return sortMap;
+    }
+    function buildControls(label, sortMap) {
+        var wrap = document.createElement('span');
+        wrap.className = 'ob-sort';
+        wrap.dataset.label = label;                    // label, free of the glyphs
+        [['\\u25B2', 'asc'], ['\\u25BC', 'desc'], ['\\u2715', 'clear']].forEach(function (p) {
+            var b = document.createElement('span');
+            b.textContent = p[0];
+            b.dataset.dir = p[1];
+            b.className = 'ob-sort-btn' + (sortMap[label] === p[1] ? ' ob-active' : '');
+            b.title = (p[1] === 'clear' ? 'Clear sort on ' : 'Sort ' + p[1] + ' by ') + label;
+            b.addEventListener('click', function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+                var signal = document.querySelector('#ob-sort-signal textarea');
+                if (!signal) return;
+                signal.value = label + '|' + p[1] + '|' + Date.now();
+                signal.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+            wrap.appendChild(b);
+        });
+        return wrap;
+    }
+    // Inject per-column sort controls (up / down / clear) into each header. They
+    // write a hidden signal textbox that triggers a server-side re-query. Value-
+    // less selects the injection may cause are now harmless (handlers use EventData).
+    //
+    // Controls already present are recoloured in place rather than removed and
+    // rebuilt: tearing them down made the icons disappear and pop back on every
+    // re-render, which read as a flicker on each sort click. Keeping the nodes
+    // also keeps their click listeners, so no rebinding is needed.
+    function injectSortControls() {
+        var root = document.querySelector('.result-table');
+        var ths = root ? root.querySelectorAll('th') : [];
+        if (!ths.length) return false;
+        var sortMap = readSortMap();
         ths.forEach(function (th) {
-            var existing = th.querySelector('.ob-sort');
-            if (existing) existing.remove();           // re-inject to refresh active colour
             var btn = th.querySelector('button');
+            var existing = th.querySelector('.ob-sort');
+            if (existing) {
+                // The header text with the glyphs stripped back out. If Gradio
+                // reused this node for a different column, the controls carry
+                // the wrong label and must be rebuilt rather than recoloured.
+                var current = ((btn || th).textContent || '')
+                    .replace(existing.textContent, '').trim();
+                if (current === existing.dataset.label) {
+                    var known = existing.dataset.label;
+                    existing.querySelectorAll('.ob-sort-btn').forEach(function (b) {
+                        b.classList.toggle('ob-active', sortMap[known] === b.dataset.dir);
+                    });
+                    return;
+                }
+                existing.remove();
+            }
             var label = ((btn || th).textContent || '').trim();
             if (!label || label === '#') return;       // skip the index + empty columns
-            var wrap = document.createElement('span');
-            wrap.className = 'ob-sort';
-            [['\\u25B2', 'asc'], ['\\u25BC', 'desc'], ['\\u2715', 'clear']].forEach(function (p) {
-                var b = document.createElement('span');
-                b.textContent = p[0];
-                b.className = 'ob-sort-btn' + (sortMap[label] === p[1] ? ' ob-active' : '');
-                b.title = (p[1] === 'clear' ? 'Clear sort on ' : 'Sort ' + p[1] + ' by ') + label;
-                b.addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    var signal = document.querySelector('#ob-sort-signal textarea');
-                    if (!signal) return;
-                    signal.value = label + '|' + p[1] + '|' + Date.now();
-                    signal.dispatchEvent(new Event('input', { bubbles: true }));
-                });
-                wrap.appendChild(b);
-            });
-            (btn || th).appendChild(wrap);             // inline, next to the label
+            (btn || th).appendChild(buildControls(label, sortMap));
         });
-    }, 150);
+        return true;
+    }
+    // Try immediately: setInterval does not fire until after its first delay, so
+    // polling first made an already-rendered table wait 150ms for its icons.
+    if (!injectSortControls()) {
+        var tries = 0;
+        var iv = setInterval(function () {
+            if (injectSortControls() || ++tries > 25) clearInterval(iv);
+        }, 150);
+    }
 }
 """
 
@@ -1716,15 +1754,17 @@ def create_blocks(
                     meta_code,
                 ],
             ).then(
+                # ``result_table`` is deliberately absent: ``execute_query``
+                # already returns its visibility with its value, and sending a
+                # second update to the same component re-rendered the Dataframe.
                 fn=lambda info: (
                     gr.Tabs(selected=1) if info else gr.Tabs(),
                     gr.update(visible=bool(info)),
                     gr.update(visible=bool(info)),
                     gr.update(visible=bool(info)),
-                    gr.update(visible=bool(info)),
                 ),
                 inputs=[result_info],
-                outputs=[tabs, tsv_download, copy_data_btn, meta_acc, result_table],
+                outputs=[tabs, tsv_download, copy_data_btn, meta_acc],
             ).then(
                 fn=filter_chip_update,
                 inputs=[query_input],
@@ -1767,14 +1807,16 @@ def create_blocks(
             ]
 
             def _wire_post(trigger: Any) -> Any:
+                # As above, ``result_table`` is not an output here: its
+                # visibility rides along with its value from the handler, so a
+                # filter or sort click renders the table once instead of twice.
                 return trigger.then(
                     fn=lambda info: (
                         gr.update(visible=bool(info)),
                         gr.update(visible=bool(info)),
-                        gr.update(visible=bool(info)),
                     ),
                     inputs=[result_info],
-                    outputs=[tsv_download, copy_data_btn, result_table],
+                    outputs=[tsv_download, copy_data_btn],
                 ).then(fn=None, inputs=[num_cols_box], js=_ALIGN_HEADERS_JS)
 
             # Click a dimension value -> add/toggle its filter and re-run in one shot.

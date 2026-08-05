@@ -624,15 +624,7 @@ def _decode_arrow_execute_response(resp: Any) -> Any:
     return data
 
 
-def execute_query(
-    model_yaml: str,
-    query_yaml: str,
-    dialect: str,
-    api_url: str,
-    session_state: dict[str, str] | None,
-    model_state: dict[str, str] | None,
-    request: gr.Request | None = None,
-) -> tuple[
+_ExecuteResult = tuple[
     str,
     str,
     dict[str, str] | None,
@@ -643,7 +635,43 @@ def execute_query(
     str | None,
     str,
     str,
-]:
+]
+
+
+def execute_query(
+    model_yaml: str,
+    query_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    request: gr.Request | None = None,
+) -> _ExecuteResult:
+    """Execute a query and return the results with the table ready to show.
+
+    Same tuple as :func:`_execute_query`, except the ``display_df`` slot is a
+    ``gr.update`` carrying the table's visibility alongside its value. The
+    caller used to reveal the table in a chained ``.then``, which sent a second
+    update to the same component and re-rendered the Dataframe on every run and
+    every sort click - visible as a flicker. One update renders once.
+    """
+    result = _execute_query(
+        model_yaml, query_yaml, dialect, api_url, session_state, model_state, request
+    )
+    # result[6] is result_info: empty on every error path, set on success.
+    table = gr.update(value=result[4], visible=bool(result[6]))
+    return (*result[:4], table, *result[5:])
+
+
+def _execute_query(
+    model_yaml: str,
+    query_yaml: str,
+    dialect: str,
+    api_url: str,
+    session_state: dict[str, str] | None,
+    model_state: dict[str, str] | None,
+    request: gr.Request | None = None,
+) -> _ExecuteResult:
     """Execute query via the REST API and return results as a table.
 
     Returns ``(sql_output, explain_yaml, session_state, model_state,

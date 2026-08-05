@@ -4,6 +4,12 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The results table rendered twice on every run and every sort click.** `execute_query` returned a bare frame for the table, and the caller revealed the table in a chained `.then` that sent a *second* update to the same component purely to set `visible`. Gradio renders each update, so a sort click, whose data barely changes, visibly repainted the table. Visibility now rides along with the value in one update and the table is one output of one call, so it renders once. The same chain served the Run Query path, which had the same double render.
+
+- **The sort icons disappeared and popped back on every re-render.** The post-render JS removed each header's `▲▼✕` span and rebuilt it from scratch, only to recolour the active direction. It now updates the active class in place and keeps the nodes, so nothing is torn down, and the click listeners survive rather than being rebound. It also ran on a `setInterval(..., 150)`, which does not fire until after its first delay, so an already-rendered table waited 150ms for its icons; the injection is attempted immediately and only falls back to polling when the headers are not there yet. A header whose column changed underneath it is still rebuilt, since its controls would otherwise carry the previous column's label.
+
 ## [2.24.1] - 2026-08-05
 
 ### Added
