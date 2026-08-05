@@ -2,7 +2,7 @@
  * Vercel AI SDK tools for the OrionBelt Semantic Layer REST API.
  *
  * These tools wrap the shortcut endpoints (auto-resolve session/model) and work
- * when OrionBelt runs in single-model mode (MODEL_FILE set).
+ * when OrionBelt runs in single-model mode (MODEL_FILES set).
  *
  * Usage:
  *   import { getOrionBeltTools } from "./orionbelt-tools";
@@ -82,10 +82,10 @@ export function getOrionBeltTools(apiBaseUrl: string = "http://localhost:8000") 
       parameters: z.object({
         dimensions: z
           .array(z.string())
-          .describe('Dimension names (e.g. ["Country", "Order Date"])'),
+          .describe('Dimension names (e.g. ["Country Name", "Sales Date"])'),
         measures: z
           .array(z.string())
-          .describe('Measure names (e.g. ["Revenue", "Order Count"])'),
+          .describe('Measure names (e.g. ["Total Sales", "Sales Count"])'),
         dialect: z
           .enum([
             "bigquery",

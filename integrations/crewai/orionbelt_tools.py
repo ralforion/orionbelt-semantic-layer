@@ -1,7 +1,7 @@
 """CrewAI tools for the OrionBelt Semantic Layer REST API.
 
 These tools wrap the shortcut endpoints (auto-resolve session/model) and work
-when OrionBelt runs in single-model mode (MODEL_FILE set).
+when OrionBelt runs in single-model mode (MODEL_FILES set).
 
 Usage:
     from orionbelt_tools import OrionBeltTools
@@ -51,14 +51,14 @@ class OrionBeltTools:
         def list_dimensions() -> str:
             """List all dimensions in the semantic model.
             Dimensions are categorical or temporal attributes used for grouping
-            and filtering (e.g. Country, Order Date, Product Category)."""
+            and filtering (e.g. Country Name, Sales Date, Product Category)."""
             return json.dumps(ob._get("/v1/dimensions"), indent=2)
 
         @tool("List Measures")
         def list_measures() -> str:
             """List all measures in the semantic model.
             Measures are numeric aggregations computed from data object columns
-            (e.g. Revenue, Order Count, Average Price)."""
+            (e.g. Total Sales, Sales Count, Avg Unit Price)."""
             return json.dumps(ob._get("/v1/measures"), indent=2)
 
         @tool("List Metrics")
@@ -80,8 +80,8 @@ class OrionBeltTools:
             Dimensions and measures must be exact business names from the model.
 
             Args:
-                dimensions: Comma-separated dimension names (e.g. "Country, Order Date").
-                measures: Comma-separated measure names (e.g. "Revenue, Order Count").
+                dimensions: Comma-separated dimension names (e.g. "Country Name, Sales Date").
+                measures: Comma-separated measure names (e.g. "Total Sales, Sales Count").
                 dialect: Target SQL dialect (postgres, snowflake, bigquery, etc.).
                 limit: Maximum rows (0 for no limit).
             """
@@ -106,8 +106,8 @@ class OrionBeltTools:
             Args:
                 query_json: Full query as JSON string. Format:
                     {"select": {"dimensions": [...], "measures": [...]},
-                     "where": [{"dimension": "Country", "operator": "=", "value": "Germany"}],
-                     "orderBy": [{"field": "Revenue", "direction": "desc"}],
+                     "where": [{"field": "Country Name", "op": "equals", "value": "Germany"}],
+                     "orderBy": [{"field": "Total Sales", "direction": "desc"}],
                      "limit": 100}
                 dialect: Target SQL dialect.
             """

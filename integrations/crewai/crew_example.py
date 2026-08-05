@@ -53,7 +53,7 @@ explore_task = Task(
     description=(
         "1. Explore the semantic model to understand what data is available.\n"
         "2. List the available dimensions and measures.\n"
-        "3. Compile a query for 'Revenue by Country' using the Snowflake dialect.\n"
+        "3. Compile a query for 'Total Sales by Country Name' using the Snowflake dialect.\n"
         "4. Also compile the same query for BigQuery to show dialect differences."
     ),
     expected_output=(

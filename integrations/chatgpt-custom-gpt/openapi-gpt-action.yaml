@@ -92,7 +92,7 @@ paths:
           required: true
           schema:
             type: string
-          description: The dimension name (e.g. "Country", "Order Date")
+          description: The dimension name (e.g. "Country Name", "Sales Date")
       responses:
         "200":
           description: Dimension details
@@ -135,7 +135,7 @@ paths:
           required: true
           schema:
             type: string
-          description: The measure name (e.g. "Revenue", "Order Count")
+          description: The measure name (e.g. "Total Sales", "Sales Count")
       responses:
         "200":
           description: Measure details
@@ -316,19 +316,19 @@ paths:
                 value:
                   select:
                     dimensions:
-                      - Country
+                      - Country Name
                     measures:
-                      - Revenue
+                      - Total Sales
                   limit: 100
               filtered:
                 summary: Query with filter and ordering
                 value:
                   select:
                     dimensions:
-                      - Country
+                      - Country Name
                       - Order Date
                     measures:
-                      - Revenue
+                      - Total Sales
                       - Order Count
                   where:
                     - field: Country

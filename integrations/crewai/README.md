@@ -39,7 +39,7 @@ agent = Agent(
 )
 
 task = Task(
-    description="Compile Revenue by Country for Snowflake.",
+    description="Compile Total Sales by Country Name for Snowflake.",
     expected_output="The compiled Snowflake SQL query.",
     agent=agent,
 )

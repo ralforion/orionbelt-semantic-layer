@@ -48,10 +48,10 @@ Manual Trigger
 ```json
 {
   "select": {
-    "dimensions": ["Country"],
-    "measures": ["Revenue"]
+    "dimensions": ["Country Name"],
+    "measures": ["Total Sales"]
   },
-  "orderBy": [{"field": "Revenue", "direction": "desc"}],
+  "orderBy": [{"field": "Total Sales", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -75,7 +75,7 @@ Chat Trigger ──→ AI Agent
 
 **Example conversations:**
 - "What dimensions and measures are available?"
-- "Show me Revenue by Country for Snowflake"
+- "Show me Total Sales by Country Name for Snowflake"
 - "Compile a query with Revenue and Order Count grouped by Product Category, sorted by Revenue descending"
 
 ## Customization

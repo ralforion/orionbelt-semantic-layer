@@ -59,7 +59,7 @@ const { text } = await generateText({
   model: anthropic("claude-sonnet-4-5"),
   tools,
   maxSteps: 10,
-  prompt: "Show me Revenue by Country for Snowflake",
+  prompt: "Show me Total Sales by Country Name for Snowflake",
 });
 
 console.log(text);

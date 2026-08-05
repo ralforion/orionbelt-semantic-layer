@@ -38,7 +38,7 @@ async def main():
         tools=tools,
         instructions="You are a data analyst. Use the tools to explore the semantic model and compile SQL.",
     )
-    result = await Runner.run(agent, "Show me Revenue by Country for Snowflake")
+    result = await Runner.run(agent, "Show me Total Sales by Country Name for Snowflake")
     print(result.final_output)
 
 asyncio.run(main())
