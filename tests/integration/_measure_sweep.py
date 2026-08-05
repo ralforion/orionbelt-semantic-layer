@@ -30,15 +30,30 @@ def _metric_time_dimension(metric: Metric) -> str | None:
     return pop.time_dimension if pop is not None else None
 
 
+def _measure_required_dimensions(measure: object) -> list[str]:
+    """Dimensions a measure cannot be queried without.
+
+    A ``grain: {mode: FIXED, include: [...]}`` measure is aggregated at exactly
+    those dimensions, so resolution requires them to be a subset of the query's
+    dimensions - a grand-total sweep of one raises rather than executing. That
+    is the feature working, not a defect, so the sweep groups such a measure by
+    the grain it declares instead of skipping it.
+    """
+    grain = getattr(measure, "grain", None)
+    return list(getattr(grain, "include", None) or []) if grain is not None else []
+
+
 def build_sweep_items(model: SemanticModel) -> list[tuple[str, str, list[str]]]:
     """Return ``(kind, name, dimensions)`` for every measure and metric.
 
-    Measures are swept as grand totals (always resolvable, exercises the
-    aggregation). Cumulative / period-over-period metrics carry their required
-    time dimension; derived metrics are grouped by a plain dimension.
+    Measures are swept as grand totals (exercises the aggregation) except where
+    a fixed grain requires dimensions, in which case they are swept at that
+    grain. Cumulative / period-over-period metrics carry their required time
+    dimension; derived metrics are grouped by a plain dimension.
     """
     items: list[tuple[str, str, list[str]]] = [
-        ("measure", name, []) for name in model.effective_measures
+        ("measure", name, _measure_required_dimensions(measure))
+        for name, measure in model.effective_measures.items()
     ]
     for name, metric in model.metrics.items():
         time_dim = _metric_time_dimension(metric)
