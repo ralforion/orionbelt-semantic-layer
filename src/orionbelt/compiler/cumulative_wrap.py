@@ -31,6 +31,7 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
+from orionbelt.compiler.having_hoist import apply_having_hoist, split_having
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     resolve_measure_data_type,
@@ -234,6 +235,11 @@ def wrap_with_cumulative(
         else:
             base_columns.append(col_node)
 
+    # A running total exists only in the outer query. A HAVING predicate on one
+    # left in the CTE would filter the per-group value instead.
+    windowed = {m.name for m in cumulative_measures}
+    inner_having, hoisted_having = split_having(ast, resolved, windowed)
+
     # --- Build base CTE ---
     base_cte_query = Select(
         columns=base_columns,
@@ -241,7 +247,7 @@ def wrap_with_cumulative(
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having,
+        having=inner_having,
         order_by=[],
         limit=None,
         offset=None,
@@ -277,17 +283,21 @@ def wrap_with_cumulative(
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
 
-    return Select(
-        columns=outer_columns,
-        from_=From(source=cte_name, alias=cte_name),
-        joins=[],
-        where=None,
-        group_by=[],
-        having=None,
-        order_by=outer_order_by,
-        limit=ast.limit,
-        offset=ast.offset,
-        ctes=all_ctes,
+    return apply_having_hoist(
+        Select(
+            columns=outer_columns,
+            from_=From(source=cte_name, alias=cte_name),
+            joins=[],
+            where=None,
+            group_by=[],
+            having=None,
+            order_by=outer_order_by,
+            limit=ast.limit,
+            offset=ast.offset,
+            ctes=all_ctes,
+        ),
+        hoisted_having,
+        cte_name="cumulative",
     )
 
 

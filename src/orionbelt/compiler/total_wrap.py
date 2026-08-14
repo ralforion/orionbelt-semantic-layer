@@ -38,6 +38,7 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
+from orionbelt.compiler.having_hoist import apply_having_hoist, split_having
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 
@@ -195,6 +196,17 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
     if not total_names and not decompose_metrics:
         return ast
 
+    # A predicate on a measure this wrapper windows cannot stay in the CTE,
+    # where only the pre-window aggregate exists. It moves to a filtering query
+    # over the windowed rows instead.
+    windowed = set(total_names) | set(decompose_metrics)
+    windowed |= {
+        m.name
+        for m in resolved.measures
+        if not m.component_measures and _needs_window_wrap(m, resolved.dedup_measures)
+    }
+    inner_having, hoisted_having = split_having(ast, resolved, windowed)
+
     # --- Build base CTE columns from the planner's AST columns ---
     base_columns: list[Expr] = []
     # Track which component measures are already present as direct measures
@@ -245,7 +257,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having,
+        having=inner_having,
         order_by=[],
         limit=None,
         offset=None,
@@ -288,17 +300,21 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
 
-    return Select(
-        columns=outer_columns,
-        from_=_from_cte("base"),
-        joins=[],
-        where=None,
-        group_by=[],
-        having=None,
-        order_by=outer_order_by,
-        limit=ast.limit,
-        offset=ast.offset,
-        ctes=all_ctes,
+    return apply_having_hoist(
+        Select(
+            columns=outer_columns,
+            from_=_from_cte("base"),
+            joins=[],
+            where=None,
+            group_by=[],
+            having=None,
+            order_by=outer_order_by,
+            limit=ast.limit,
+            offset=ast.offset,
+            ctes=all_ctes,
+        ),
+        hoisted_having,
+        cte_name="totals",
     )
 
 
