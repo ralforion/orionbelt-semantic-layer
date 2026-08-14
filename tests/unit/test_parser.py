@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.semantic import (
+    AggregationType,
+    DataColumnRef,
+    DataType,
+    Dimension,
+    FilterValue,
+    Measure,
+    MeasureFilter,
+    SemanticModel,
+    WithinGroup,
+)
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -1969,3 +1980,99 @@ class TestWithinGroupRefs:
         model, _ = resolver.resolve(raw, source_map)
         codes = [e.code for e in SemanticValidator().validate(model)]
         assert "UNKNOWN_DATA_OBJECT" in codes
+
+
+class TestIncompleteColumnRefs:
+    """Both halves of a ``DataColumnRef`` are required.
+
+    The JSON schema enforces this, but ``ModelStore.load_model`` does not run
+    the schema, and the Pydantic type leaves both fields optional. An omitted
+    half is not inert: it reaches codegen as an empty SQL identifier
+    (``ORDER BY "Sales".""``), so the validator has to reject it too.
+    """
+
+    @staticmethod
+    def _validate(model: SemanticModel) -> list[str]:
+        return [e.code for e in SemanticValidator().validate(model)]
+
+    def _model(self) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(
+            _COMPUTED_COLUMN_MODEL.format(extra_columns="")
+        )
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid
+        return model
+
+    def test_within_group_missing_column(self) -> None:
+        model = self._model()
+        model.measures["Listagg"] = Measure(
+            name="Listagg",
+            aggregation=AggregationType.LISTAGG,
+            columns=[DataColumnRef(view="Sales", column="Zip")],
+            within_group=WithinGroup(column=DataColumnRef(view="Sales")),
+        )
+        assert self._validate(model) == ["INCOMPLETE_COLUMN_REF"]
+
+    def test_within_group_missing_data_object(self) -> None:
+        model = self._model()
+        model.measures["Listagg"] = Measure(
+            name="Listagg",
+            aggregation=AggregationType.LISTAGG,
+            columns=[DataColumnRef(view="Sales", column="Zip")],
+            within_group=WithinGroup(column=DataColumnRef(column="Zip")),
+        )
+        assert self._validate(model) == ["INCOMPLETE_COLUMN_REF"]
+
+    def test_within_group_missing_both(self) -> None:
+        model = self._model()
+        model.measures["Listagg"] = Measure(
+            name="Listagg",
+            aggregation=AggregationType.LISTAGG,
+            columns=[DataColumnRef(view="Sales", column="Zip")],
+            within_group=WithinGroup(column=DataColumnRef()),
+        )
+        errors = SemanticValidator().validate(model)
+        assert [e.code for e in errors] == ["INCOMPLETE_COLUMN_REF"]
+        assert "dataObject and column" in errors[0].message
+
+    def test_measure_column_missing_column(self) -> None:
+        model = self._model()
+        model.measures["Broken"] = Measure(
+            name="Broken",
+            aggregation=AggregationType.SUM,
+            columns=[DataColumnRef(view="Sales")],
+        )
+        assert self._validate(model) == ["INCOMPLETE_COLUMN_REF"]
+
+    def test_dimension_missing_column(self) -> None:
+        model = self._model()
+        model.dimensions["Broken"] = Dimension(name="Broken", view="Sales")
+        assert self._validate(model) == ["INCOMPLETE_COLUMN_REF"]
+
+    def test_measure_filter_missing_data_object(self) -> None:
+        """The filter site keeps its own UNKNOWN_FILTER_* codes for refs that resolve."""
+        model = self._model()
+        model.measures["Filtered"] = Measure(
+            name="Filtered",
+            aggregation=AggregationType.SUM,
+            columns=[DataColumnRef(view="Sales", column="Amount")],
+            filters=[
+                MeasureFilter(
+                    column=DataColumnRef(column="Amount"),
+                    operator="equals",
+                    values=[FilterValue(data_type=DataType.INT, value_int=1)],
+                )
+            ],
+        )
+        assert self._validate(model) == ["INCOMPLETE_COLUMN_REF"]
+
+    def test_complete_refs_stay_valid(self) -> None:
+        """The guard must not fire on a fully specified reference."""
+        model = self._model()
+        model.measures["Fine"] = Measure(
+            name="Fine",
+            aggregation=AggregationType.SUM,
+            columns=[DataColumnRef(view="Sales", column="Amount")],
+        )
+        model.dimensions["Fine Dim"] = Dimension(name="Fine Dim", view="Sales", column="Amount")
+        assert self._validate(model) == []

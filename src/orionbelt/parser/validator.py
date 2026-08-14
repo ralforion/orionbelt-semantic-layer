@@ -8,7 +8,9 @@ from collections import deque
 import networkx as nx
 
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.expressions import find_placeholders
 from orionbelt.models.semantic import (
+    DataColumnRef,
     DataObject,
     DataType,
     Measure,
@@ -21,19 +23,6 @@ from orionbelt.models.synthesis import count_label, model_count_pattern
 
 # ``{[Data Object].[Column]}`` reference inside a measure expression.
 _MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
-
-# ``{name}`` placeholder inside a computed column's ``expression``. Mirrors
-# ``compiler/resolution.py::_COMPUTED_PLACEHOLDER`` — the two must agree, or
-# the validator would accept a placeholder the compiler cannot resolve.
-_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
-
-# Single-quoted SQL string literal, stripped before scanning for placeholders
-# so a regex quantifier inside one (``regexp_extract(x, '[0-9]{4}')``) is not
-# mistaken for a column reference.
-_SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
-
-# A bare regex quantifier — ``{4}``, ``{2,}``, ``{2,4}``. Never a column name.
-_REGEX_QUANTIFIER = re.compile(r"^\d+(?:,\d*)?$")
 
 
 class SemanticValidator:
@@ -311,37 +300,77 @@ class SemanticValidator:
 
         return errors
 
+    def _check_column_ref(
+        self,
+        ref: DataColumnRef,
+        model: SemanticModel,
+        *,
+        subject: str,
+        path: str,
+    ) -> list[SemanticError]:
+        """Validate one ``DataColumnRef``: both halves present, and both resolving.
+
+        The JSON schema makes ``dataObject`` and ``column`` required, but the
+        Pydantic type leaves both optional so models can be built in Python,
+        and ``ModelStore.load_model`` does not run the schema. A missing half
+        is not inert: codegen renders it as an empty identifier, so a ref
+        without a column compiles to ``ORDER BY "Sales".""`` and one without a
+        data object to ``ORDER BY ""."Product Name"``.
+        """
+        obj_name, col_name = ref.view, ref.column
+
+        missing = [
+            field for field, value in (("dataObject", obj_name), ("column", col_name)) if not value
+        ]
+        if missing:
+            return [
+                SemanticError(
+                    code="INCOMPLETE_COLUMN_REF",
+                    message=(
+                        f"{subject} is missing {' and '.join(missing)}. A column "
+                        f"reference needs both dataObject and column; an omitted "
+                        f"one compiles to an empty SQL identifier."
+                    ),
+                    path=path,
+                )
+            ]
+
+        if obj_name not in model.data_objects:
+            return [
+                SemanticError(
+                    code="UNKNOWN_DATA_OBJECT",
+                    message=f"{subject} references unknown data object '{obj_name}'",
+                    path=path,
+                )
+            ]
+
+        if col_name not in model.data_objects[obj_name].columns:
+            return [
+                SemanticError(
+                    code="UNKNOWN_COLUMN",
+                    message=(
+                        f"{subject} references unknown column '{col_name}' "
+                        f"in data object '{obj_name}'"
+                    ),
+                    path=path,
+                )
+            ]
+
+        return []
+
     def _check_measures_resolve(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure measure column references resolve to actual data object columns."""
         errors: list[SemanticError] = []
         for name, measure in model.measures.items():
             for i, col_ref in enumerate(measure.columns):
-                obj_name = col_ref.view
-                col_name = col_ref.column
-                if obj_name and obj_name not in model.data_objects:
-                    errors.append(
-                        SemanticError(
-                            code="UNKNOWN_DATA_OBJECT",
-                            message=(
-                                f"Measure '{name}' column[{i}] references "
-                                f"unknown data object '{obj_name}'"
-                            ),
-                            path=f"measures.{name}.columns[{i}]",
-                        )
+                errors.extend(
+                    self._check_column_ref(
+                        col_ref,
+                        model,
+                        subject=f"Measure '{name}' column[{i}]",
+                        path=f"measures.{name}.columns[{i}]",
                     )
-                elif obj_name and col_name:
-                    obj = model.data_objects[obj_name]
-                    if col_name not in obj.columns:
-                        errors.append(
-                            SemanticError(
-                                code="UNKNOWN_COLUMN",
-                                message=(
-                                    f"Measure '{name}' column[{i}] references "
-                                    f"unknown column '{col_name}' in data object '{obj_name}'"
-                                ),
-                                path=f"measures.{name}.columns[{i}]",
-                            )
-                        )
+                )
         return errors
 
     def _check_join_targets_exist(self, model: SemanticModel) -> list[SemanticError]:
@@ -417,29 +446,14 @@ class SemanticValidator:
         """Ensure dimension references resolve."""
         errors: list[SemanticError] = []
         for name, dim in model.dimensions.items():
-            obj_name = dim.view
-            col_name = dim.column
-            if obj_name and obj_name not in model.data_objects:
-                errors.append(
-                    SemanticError(
-                        code="UNKNOWN_DATA_OBJECT",
-                        message=f"Dimension '{name}' references unknown data object '{obj_name}'",
-                        path=f"dimensions.{name}",
-                    )
+            errors.extend(
+                self._check_column_ref(
+                    DataColumnRef(view=dim.view, column=dim.column),
+                    model,
+                    subject=f"Dimension '{name}'",
+                    path=f"dimensions.{name}",
                 )
-            elif obj_name and col_name:
-                obj = model.data_objects[obj_name]
-                if col_name not in obj.columns:
-                    errors.append(
-                        SemanticError(
-                            code="UNKNOWN_COLUMN",
-                            message=(
-                                f"Dimension '{name}' references unknown column "
-                                f"'{col_name}' in data object '{obj_name}'"
-                            ),
-                            path=f"dimensions.{name}",
-                        )
-                    )
+            )
         return errors
 
     _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
@@ -591,28 +605,47 @@ class SemanticValidator:
     ) -> None:
         """Recursively validate a measure filter item."""
         if isinstance(item, MeasureFilter):
-            if not item.column or not item.column.view:
+            if item.column is None:
                 return
-            obj = model.data_objects.get(item.column.view)
-            if not obj:
+            view, column = item.column.view, item.column.column
+            # An omitted half reaches codegen as an empty identifier, the same
+            # way it does for a dimension or a withinGroup column.
+            missing = [
+                field for field, value in (("dataObject", view), ("column", column)) if not value
+            ]
+            if missing or not view or not column:
                 errors.append(
                     SemanticError(
-                        code="UNKNOWN_FILTER_DATA_OBJECT",
+                        code="INCOMPLETE_COLUMN_REF",
                         message=(
-                            f"Measure '{meas_name}' filter references unknown "
-                            f"data object '{item.column.view}'"
+                            f"Measure '{meas_name}' filter is missing "
+                            f"{' and '.join(missing)}. A column reference needs both "
+                            f"dataObject and column; an omitted one compiles to an "
+                            f"empty SQL identifier."
                         ),
                         path=f"measures.{meas_name}.filters",
                     )
                 )
                 return
-            if item.column.column and item.column.column not in obj.columns:
+            obj = model.data_objects.get(view)
+            if not obj:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_FILTER_DATA_OBJECT",
+                        message=(
+                            f"Measure '{meas_name}' filter references unknown data object '{view}'"
+                        ),
+                        path=f"measures.{meas_name}.filters",
+                    )
+                )
+                return
+            if column not in obj.columns:
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_FILTER_COLUMN",
                         message=(
                             f"Measure '{meas_name}' filter references unknown "
-                            f"column '{item.column.column}' in '{item.column.view}'"
+                            f"column '{column}' in '{view}'"
                         ),
                         path=f"measures.{meas_name}.filters",
                     )
@@ -635,46 +668,15 @@ class SemanticValidator:
         for name, measure in model.measures.items():
             if measure.within_group is None:
                 continue
-            ref = measure.within_group.column
-            obj_name, col_name = ref.view, ref.column
-            if obj_name and obj_name not in model.data_objects:
-                errors.append(
-                    SemanticError(
-                        code="UNKNOWN_DATA_OBJECT",
-                        message=(
-                            f"Measure '{name}' withinGroup references unknown "
-                            f"data object '{obj_name}'"
-                        ),
-                        path=f"measures.{name}.withinGroup",
-                    )
+            errors.extend(
+                self._check_column_ref(
+                    measure.within_group.column,
+                    model,
+                    subject=f"Measure '{name}' withinGroup",
+                    path=f"measures.{name}.withinGroup",
                 )
-            elif obj_name and col_name and col_name not in model.data_objects[obj_name].columns:
-                errors.append(
-                    SemanticError(
-                        code="UNKNOWN_COLUMN",
-                        message=(
-                            f"Measure '{name}' withinGroup references unknown column "
-                            f"'{col_name}' in data object '{obj_name}'"
-                        ),
-                        path=f"measures.{name}.withinGroup",
-                    )
-                )
+            )
         return errors
-
-    @staticmethod
-    def _computed_placeholders(expression: str) -> list[str]:
-        """The ``{name}`` column placeholders in a computed column's expression.
-
-        String literals are stripped first and bare regex quantifiers skipped,
-        so ``regexp_extract({Zip}, '[0-9]{4}')`` yields ``["Zip"]`` rather than
-        also reporting ``4`` as a missing column.
-        """
-        body = _SQL_STRING_LITERAL.sub("''", expression)
-        return [
-            name.strip()
-            for name in _COMPUTED_PLACEHOLDER.findall(body)
-            if not _REGEX_QUANTIFIER.match(name.strip())
-        ]
 
     def _check_computed_column_refs(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure a computed column's ``{name}`` placeholders name sibling columns.
@@ -690,7 +692,7 @@ class SemanticValidator:
             for col_name, col in obj.columns.items():
                 if not col.expression:
                     continue
-                for ref in self._computed_placeholders(col.expression):
+                for ref in find_placeholders(col.expression):
                     if ref in obj.columns:
                         continue
                     errors.append(
@@ -759,7 +761,7 @@ class SemanticValidator:
             g.add_node(name)
         for name in computed:
             expression = obj.columns[name].expression or ""
-            for ref in self._computed_placeholders(expression):
+            for ref in find_placeholders(expression):
                 if ref in computed:
                     g.add_edge(name, ref)
         return g

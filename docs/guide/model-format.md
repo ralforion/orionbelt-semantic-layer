@@ -185,7 +185,8 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 - The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node, so dialect-specific functions are dialect-portable only insofar as they appear in OBML's expression grammar (arithmetic, `CASE WHEN`, function calls).
 - Every `{Column}` placeholder must name a sibling column of the same data object. An unresolvable placeholder is rejected at validation time with `UNKNOWN_COLUMN_IN_EXPRESSION` — it is not silently dropped, so a typo cannot reach the database as a string literal. To reference a column of a *different* data object, use a measure expression's `{[DataObject].[Column]}` form.
 - A computed column may reference another computed column on the same data object; the referenced expression is inlined recursively (`{doubled} * 2` where `doubled` is `{amount} * 2` compiles to `amount * 2 * 2`). A reference cycle is rejected with `CYCLIC_COMPUTED_COLUMN`.
-- Braces inside string literals are left alone, so a regex quantifier such as `regexp_extract({Zip}, '[0-9]{5}')` is not mistaken for a placeholder.
+- Braces inside a single-quoted string literal are data, never placeholders. A regex quantifier such as `regexp_extract({Zip}, '[0-9]{5}')` keeps its `{5}`, and `'{Zip}'` stays the literal five characters rather than becoming a column reference. Validation and compilation apply the same rule.
+- Both halves of a column reference are required wherever one appears (`dimensions`, a measure's `columns`, `withinGroup`, measure filters). Omitting `dataObject` or `column` is rejected with `INCOMPLETE_COLUMN_REF`, because an omitted half would otherwise reach SQL as an empty identifier.
 - ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).
 
 ### Joins

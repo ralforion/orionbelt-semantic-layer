@@ -47,6 +47,7 @@ from orionbelt.ast.nodes import (
     Literal,
     UnaryOp,
 )
+from orionbelt.models.expressions import substitute_placeholders
 
 if TYPE_CHECKING:
     from orionbelt.models.semantic import SemanticModel
@@ -96,12 +97,8 @@ _LITERAL_KEYWORDS: dict[str, str | int | float | bool | None] = {
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
-# ``{ColumnName}`` placeholder inside a computed-column expression body.
-# Same shape as ``compiler.resolution._COMPUTED_PLACEHOLDER`` — kept here
-# to avoid a circular import; both must match the OBML spec rule
-# "computed-column expressions use ``{column}`` for sibling columns
-# and ``{[obj].[col]}`` for cross-object references".
-_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
+# ``{ColumnName}`` placeholder handling lives in ``models.expressions`` so the
+# validator and both compiler call sites share one rule. See that module.
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +258,7 @@ def tokenize_measure_expression(
                             return f"{{[{label}].[{name}]}}"
                         return match.group(0)
 
-                    rewritten = _COMPUTED_PLACEHOLDER.sub(_sub, inner)
+                    rewritten = substitute_placeholders(inner, _sub)
                     inner_tokens = tokenize_measure_expression(
                         rewritten, model, _seen=_seen | {key}
                     )
