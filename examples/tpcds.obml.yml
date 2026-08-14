@@ -1,15 +1,18 @@
 # yaml-language-server: $schema=../schema/obml-schema.json
 #
-# TPC-DS Semantic Model — focused subset for ClickHouse.
+# TPC-DS Semantic Model — all three sales channels, their returns, and inventory.
 #
 # ClickHouse maps the OBML `schema` to its own database namespace, so set
 # `schema: tpcds` on every data object. The `database` field is required by
 # OBML but unused for ClickHouse table refs (it produces "schema"."code").
+# The model is dialect-portable and is verified on DuckDB as well.
 #
-# Covers three conformed-dimension fact tables:
-#   - Store Sales / Store Returns / Web Sales
-# plus the dimensions needed to answer the questions behind queries Q1, Q3,
-# Q6, Q7 of the TPC-DS suite.
+# Seven fact tables:
+#   - Store Sales / Catalog Sales / Web Sales
+#   - Store Returns / Catalog Returns / Web Returns
+#   - Inventory
+# joined to the conformed dimensions those channels share. Sized to answer the
+# questions behind 30 cross-engine-verified queries of the TPC-DS suite.
 #
 version: 1.0
 
@@ -41,6 +44,9 @@ dataObjects:
         abstractType: int
       Day of Month:
         code: d_dom
+        abstractType: int
+      Day of Week:
+        code: d_dow
         abstractType: int
       Quarter of Year:
         code: d_qoy
@@ -84,6 +90,9 @@ dataObjects:
       Preferred Flag:
         code: c_preferred_cust_flag
         abstractType: string
+      Salutation:
+        code: c_salutation
+        abstractType: string
       Birth Country:
         code: c_birth_country
         abstractType: string
@@ -124,9 +133,15 @@ dataObjects:
       Zip:
         code: ca_zip
         abstractType: string
+      Zip 5:
+        expression: "SUBSTRING({Zip}, 1, 5)"
+        abstractType: string
       Country:
         code: ca_country
         abstractType: string
+      GMT Offset:
+        code: ca_gmt_offset
+        abstractType: float
 
   Customer Demographics:
     code: customer_demographics
@@ -149,6 +164,10 @@ dataObjects:
       Purchase Estimate:
         code: cd_purchase_estimate
         abstractType: int
+        numClass: non-additive
+      Credit Rating:
+        code: cd_credit_rating
+        abstractType: string
 
   Item:
     code: item
@@ -187,6 +206,12 @@ dataObjects:
         code: i_current_price
         abstractType: float
         numClass: non-additive
+      Product Name:
+        code: i_product_name
+        abstractType: string
+      Category ID:
+        code: i_category_id
+        abstractType: int
 
   Store:
     code: store
@@ -215,6 +240,15 @@ dataObjects:
       Store Zip:
         code: s_zip
         abstractType: string
+      Number Employees:
+        code: s_number_employees
+        abstractType: int
+      GMT Offset:
+        code: s_gmt_offset
+        abstractType: float
+      Store City 30:
+        expression: "SUBSTRING({Store City}, 1, 30)"
+        abstractType: string
 
   Promotion:
     code: promotion
@@ -233,6 +267,12 @@ dataObjects:
         abstractType: string
       Channel Event:
         code: p_channel_event
+        abstractType: string
+      Channel DMail:
+        code: p_channel_dmail
+        abstractType: string
+      Channel TV:
+        code: p_channel_tv
         abstractType: string
 
   Warehouse:
@@ -262,6 +302,9 @@ dataObjects:
         abstractType: string
       Warehouse Country:
         code: w_country
+        abstractType: string
+      Warehouse Name 20:
+        expression: "SUBSTRING({Warehouse Name}, 1, 20)"
         abstractType: string
 
   Ship Mode:
@@ -299,6 +342,90 @@ dataObjects:
         code: r_reason_desc
         abstractType: string
 
+  Household Demographics:
+    code: household_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demo Key:
+        code: hd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Buy Potential:
+        code: hd_buy_potential
+        abstractType: string
+      Dependent Count:
+        code: hd_dep_count
+        abstractType: int
+      Vehicle Count:
+        code: hd_vehicle_count
+        abstractType: int
+      Dependents Per Vehicle:
+        expression: "(CASE WHEN {Vehicle Count} > 0 THEN ({Dependent Count} * 1.000) / {Vehicle Count} ELSE NULL END)"
+        abstractType: float
+
+  Time:
+    code: time_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Time Key:
+        code: t_time_sk
+        abstractType: int
+        primaryKey: true
+      Hour:
+        code: t_hour
+        abstractType: int
+      Minute:
+        code: t_minute
+        abstractType: int
+
+  Web Page:
+    code: web_page
+    database: tpcds
+    schema: tpcds
+    columns:
+      Web Page Key:
+        code: wp_web_page_sk
+        abstractType: int
+        primaryKey: true
+      Char Count:
+        code: wp_char_count
+        abstractType: int
+        numClass: non-additive
+
+  Web Site:
+    code: web_site
+    database: tpcds
+    schema: tpcds
+    columns:
+      Web Site Key:
+        code: web_site_sk
+        abstractType: int
+        primaryKey: true
+      Web Name:
+        code: web_name
+        abstractType: string
+
+  Call Center:
+    code: call_center
+    database: tpcds
+    schema: tpcds
+    columns:
+      Call Center Key:
+        code: cc_call_center_sk
+        abstractType: int
+        primaryKey: true
+      Call Center ID:
+        code: cc_call_center_id
+        abstractType: string
+      Call Center Name:
+        code: cc_name
+        abstractType: string
+      Call Center Manager:
+        code: cc_manager
+        abstractType: string
+
   # ── Fact tables ────────────────────────────────────────────────────
 
   Store Sales:
@@ -321,6 +448,15 @@ dataObjects:
       Store Key:
         code: ss_store_sk
         abstractType: int
+      HDemo Key:
+        code: ss_hdemo_sk
+        abstractType: int
+      Addr Key:
+        code: ss_addr_sk
+        abstractType: int
+      Sold Time Key:
+        code: ss_sold_time_sk
+        abstractType: int
       Promo Key:
         code: ss_promo_sk
         abstractType: int
@@ -341,6 +477,22 @@ dataObjects:
         numClass: non-additive
       Coupon Amount:
         code: ss_coupon_amt
+        abstractType: float
+        numClass: additive
+      Wholesale Cost:
+        code: ss_wholesale_cost
+        abstractType: float
+        numClass: non-additive
+      Ext Discount Amount:
+        code: ss_ext_discount_amt
+        abstractType: float
+        numClass: additive
+      Net Paid:
+        code: ss_net_paid
+        abstractType: float
+        numClass: additive
+      Ext Wholesale Cost:
+        code: ss_ext_wholesale_cost
         abstractType: float
         numClass: additive
       Ext Sales Price:
@@ -376,6 +528,24 @@ dataObjects:
         joinTo: Promotion
         columnsFrom: [Promo Key]
         columnsTo: [Promo Key]
+      - joinType: many-to-one
+        joinTo: Household Demographics
+        columnsFrom: [HDemo Key]
+        columnsTo: [Demo Key]
+      - joinType: many-to-one
+        joinTo: Time
+        columnsFrom: [Sold Time Key]
+        columnsTo: [Time Key]
+      - joinType: many-to-one
+        joinTo: Customer Address
+        columnsFrom: [Addr Key]
+        columnsTo: [Address Key]
+        secondary: true
+        pathName: sale_address
+      - joinType: many-to-one
+        joinTo: Store Returns
+        columnsFrom: [Item Key, Ticket Number]
+        columnsTo: [Item Key, Ticket Number]
 
   Store Returns:
     code: store_returns
@@ -396,6 +566,9 @@ dataObjects:
         abstractType: int
       Ticket Number:
         code: sr_ticket_number
+        abstractType: int
+      Reason Key:
+        code: sr_reason_sk
         abstractType: int
       Return Quantity:
         code: sr_return_quantity
@@ -426,6 +599,10 @@ dataObjects:
         joinTo: Store
         columnsFrom: [Store Key]
         columnsTo: [Store Key]
+      - joinType: many-to-one
+        joinTo: Reason
+        columnsFrom: [Reason Key]
+        columnsTo: [Reason Key]
 
   Web Sales:
     code: web_sales
@@ -437,6 +614,30 @@ dataObjects:
         abstractType: int
       Item Key:
         code: ws_item_sk
+        abstractType: int
+      Ship Date Key:
+        code: ws_ship_date_sk
+        abstractType: int
+      Warehouse Key:
+        code: ws_warehouse_sk
+        abstractType: int
+      Ship Mode Key:
+        code: ws_ship_mode_sk
+        abstractType: int
+      Web Site Key:
+        code: ws_web_site_sk
+        abstractType: int
+      Sold Time Key:
+        code: ws_sold_time_sk
+        abstractType: int
+      Ship HDemo Key:
+        code: ws_ship_hdemo_sk
+        abstractType: int
+      Web Page Key:
+        code: ws_web_page_sk
+        abstractType: int
+      Ship Delay:
+        expression: "({Ship Date Key} - {Sold Date Key})"
         abstractType: int
       Bill Customer Key:
         code: ws_bill_customer_sk
@@ -473,6 +674,36 @@ dataObjects:
         joinTo: Customer
         columnsFrom: [Bill Customer Key]
         columnsTo: [Customer Key]
+      - joinType: many-to-one
+        joinTo: Warehouse
+        columnsFrom: [Warehouse Key]
+        columnsTo: [Warehouse Key]
+      - joinType: many-to-one
+        joinTo: Ship Mode
+        columnsFrom: [Ship Mode Key]
+        columnsTo: [Ship Mode Key]
+      - joinType: many-to-one
+        joinTo: Web Site
+        columnsFrom: [Web Site Key]
+        columnsTo: [Web Site Key]
+      - joinType: many-to-one
+        joinTo: Time
+        columnsFrom: [Sold Time Key]
+        columnsTo: [Time Key]
+      - joinType: many-to-one
+        joinTo: Household Demographics
+        columnsFrom: [Ship HDemo Key]
+        columnsTo: [Demo Key]
+      - joinType: many-to-one
+        joinTo: Web Page
+        columnsFrom: [Web Page Key]
+        columnsTo: [Web Page Key]
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Ship Date Key]
+        columnsTo: [Date Key]
+        secondary: true
+        pathName: ship_date
 
   Catalog Sales:
     code: catalog_sales
@@ -497,6 +728,15 @@ dataObjects:
       Warehouse Key:
         code: cs_warehouse_sk
         abstractType: int
+      Ship Date Key:
+        code: cs_ship_date_sk
+        abstractType: int
+      Call Center Key:
+        code: cs_call_center_sk
+        abstractType: int
+      Ship Delay:
+        expression: "({Ship Date Key} - {Sold Date Key})"
+        abstractType: int
       Ship Mode Key:
         code: cs_ship_mode_sk
         abstractType: int
@@ -511,6 +751,10 @@ dataObjects:
         code: cs_sales_price
         abstractType: float
         numClass: non-additive
+      Coupon Amount:
+        code: cs_coupon_amt
+        abstractType: float
+        numClass: additive
       List Price:
         code: cs_list_price
         abstractType: float
@@ -552,6 +796,20 @@ dataObjects:
         joinTo: Ship Mode
         columnsFrom: [Ship Mode Key]
         columnsTo: [Ship Mode Key]
+      - joinType: many-to-one
+        joinTo: Catalog Returns
+        columnsFrom: [Order Number, Item Key]
+        columnsTo: [Order Number, Item Key]
+      - joinType: many-to-one
+        joinTo: Call Center
+        columnsFrom: [Call Center Key]
+        columnsTo: [Call Center Key]
+      - joinType: many-to-one
+        joinTo: Date
+        columnsFrom: [Ship Date Key]
+        columnsTo: [Date Key]
+        secondary: true
+        pathName: ship_date
 
   Catalog Returns:
     code: catalog_returns
@@ -583,6 +841,10 @@ dataObjects:
         numClass: additive
       Net Loss:
         code: cr_net_loss
+        abstractType: float
+        numClass: additive
+      Refunded Cash:
+        code: cr_refunded_cash
         abstractType: float
         numClass: additive
     joins:
@@ -799,6 +1061,16 @@ dimensions:
     column: Current Price
     resultType: float
 
+  Product Name:
+    dataObject: Item
+    column: Product Name
+    resultType: string
+
+  Category ID:
+    dataObject: Item
+    column: Category ID
+    resultType: int
+
   # Date — additional
   Day Name:
     dataObject: Date
@@ -844,6 +1116,131 @@ dimensions:
     resultType: string
 
   # Reason
+  Channel Email:
+    dataObject: Promotion
+    column: Channel Email
+    resultType: string
+
+  Channel Event:
+    dataObject: Promotion
+    column: Channel Event
+    resultType: string
+
+  Customer First Name:
+    dataObject: Customer
+    column: First Name
+    resultType: string
+
+  Customer Salutation:
+    dataObject: Customer
+    column: Salutation
+    resultType: string
+
+  Customer Preferred Flag:
+    dataObject: Customer
+    column: Preferred Flag
+    resultType: string
+
+  Ticket Number:
+    dataObject: Store Sales
+    column: Ticket Number
+    resultType: int
+
+  Store County:
+    dataObject: Store
+    column: Store County
+    resultType: string
+
+  Day of Month:
+    dataObject: Date
+    column: Day of Month
+    resultType: int
+
+  Buy Potential:
+    dataObject: Household Demographics
+    column: Buy Potential
+    resultType: string
+
+  Store City 30:
+    dataObject: Store
+    column: Store City 30
+    resultType: string
+
+  Sales Addr Key:
+    dataObject: Store Sales
+    column: Addr Key
+    resultType: int
+
+  Customer Zip:
+    dataObject: Customer Address
+    column: Zip
+    resultType: string
+
+  Customer Zip 5:
+    dataObject: Customer Address
+    column: Zip 5
+    resultType: string
+
+  Store ID:
+    dataObject: Store
+    column: Store ID
+    resultType: string
+
+  Address Country:
+    dataObject: Customer Address
+    column: Country
+    resultType: string
+
+  Address State:
+    dataObject: Customer Address
+    column: State
+    resultType: string
+
+  Dependent Count:
+    dataObject: Household Demographics
+    column: Dependent Count
+    resultType: int
+
+  Warehouse Name 20:
+    dataObject: Warehouse
+    column: Warehouse Name 20
+    resultType: string
+
+  Web Name:
+    dataObject: Web Site
+    column: Web Name
+    resultType: string
+
+  Call Center Name:
+    dataObject: Call Center
+    column: Call Center Name
+    resultType: string
+
+  Store ID Dim:
+    dataObject: Store
+    column: Store ID
+    resultType: string
+
+  Customer SK:
+    dataObject: Store Sales
+    column: Customer Key
+    resultType: int
+
+  Customer Key Dim:
+    dataObject: Customer
+    column: Customer Key
+    resultType: int
+
+  Purchase Estimate:
+    dataObject: Customer Demographics
+    column: Purchase Estimate
+    resultType: int
+
+  Credit Rating:
+    dataObject: Customer Demographics
+    column: Credit Rating
+    resultType: string
+
   Reason Description:
     dataObject: Reason
     column: Reason Description
@@ -1010,6 +1407,1330 @@ measures:
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
 
+  Class Revenue:
+    columns:
+      - dataObject: Store Sales
+        column: Ext Sales Price
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+      keepOnly: [Class]
+    dataType: "decimal(18, 2)"
+
+
+  Sales Price Sum:
+    columns:
+      - dataObject: Store Sales
+        column: Sales Price
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+
+  Manufacturer Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+      keepOnly: [Manufacturer ID]
+    dataType: "decimal(18, 2)"
+
+  Manufacturer Quarter Groups:
+    columns: [{dataObject: Date, column: Quarter of Year}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    grain:
+      mode: FIXED
+      keepOnly: [Manufacturer ID]
+    dataType: bigint
+
+  Manager Sales:
+    columns:
+      - dataObject: Store Sales
+        column: Sales Price
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+      keepOnly: [Manager ID]
+    dataType: "decimal(18, 2)"
+
+  Manager Month Groups:
+    columns:
+      - dataObject: Date
+        column: Month of Year
+    resultType: int
+    aggregation: count
+    distinct: true
+    grain:
+      mode: FIXED
+      keepOnly: [Manager ID]
+    dataType: bigint
+
+  h8_30_to_9:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 8}]
+      - column: {dataObject: Time, column: Minute}
+        operator: gte
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h9_to_9_30:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 9}]
+      - column: {dataObject: Time, column: Minute}
+        operator: lt
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h9_30_to_10:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 9}]
+      - column: {dataObject: Time, column: Minute}
+        operator: gte
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h10_to_10_30:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 10}]
+      - column: {dataObject: Time, column: Minute}
+        operator: lt
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h10_30_to_11:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 10}]
+      - column: {dataObject: Time, column: Minute}
+        operator: gte
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h11_to_11_30:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 11}]
+      - column: {dataObject: Time, column: Minute}
+        operator: lt
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h11_30_to_12:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 11}]
+      - column: {dataObject: Time, column: Minute}
+        operator: gte
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  h12_to_12_30:
+    columns:
+      - dataObject: Store Sales
+        column: Ticket Number
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: equals
+        values: [{dataType: int, valueInt: 12}]
+      - column: {dataObject: Time, column: Minute}
+        operator: lt
+        values: [{dataType: int, valueInt: 30}]
+      - column: {dataObject: Store, column: Store Name}
+        operator: equals
+        values: [{dataType: string, valueString: "ese"}]
+      - logic: or
+        filters:
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 4}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 6}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 2}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 4}]
+          - logic: and
+            filters:
+              - column: {dataObject: Household Demographics, column: Dependent Count}
+                operator: equals
+                values: [{dataType: int, valueInt: 0}]
+              - column: {dataObject: Household Demographics, column: Vehicle Count}
+                operator: lte
+                values: [{dataType: int, valueInt: 2}]
+
+  Avg Quantity:
+    columns: [{dataObject: Store Sales, column: Quantity}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Coupon Amount:
+    columns: [{dataObject: Store Sales, column: Coupon Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg List Price Precise:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Sales Price Precise:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Catalog Class Revenue:
+    columns: [{dataObject: Catalog Sales, column: Ext Sales Price}]
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+      keepOnly: [Class]
+    dataType: "decimal(18, 2)"
+
+
+  Coupon Amount Sum:
+    columns: [{dataObject: Store Sales, column: Coupon Amount}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+
+
+  Catalog Sales Price Sum:
+    columns: [{dataObject: Catalog Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+
+  Catalog Avg Quantity:
+    columns: [{dataObject: Catalog Sales, column: Quantity}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Catalog Avg List Price:
+    columns: [{dataObject: Catalog Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Catalog Avg Coupon Amount:
+    columns: [{dataObject: Catalog Sales, column: Coupon Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Catalog Avg Sales Price:
+    columns: [{dataObject: Catalog Sales, column: Sales Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Inventory Before:
+    columns: [{dataObject: Inventory, column: Quantity On Hand}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 3)"
+    filters:
+      - column: {dataObject: Date, column: Date}
+        operator: lt
+        values: [{dataType: date, valueDate: "2000-03-11"}]
+
+  Inventory After:
+    columns: [{dataObject: Inventory, column: Quantity On Hand}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 3)"
+    filters:
+      - column: {dataObject: Date, column: Date}
+        operator: gte
+        values: [{dataType: date, valueDate: "2000-03-11"}]
+
+  Sun Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Sunday"}]
+
+  Mon Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Monday"}]
+
+  Tue Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Tuesday"}]
+
+  Wed Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Wednesday"}]
+
+  Thu Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Thursday"}]
+
+  Fri Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Friday"}]
+
+  Sat Sales:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - column: {dataObject: Date, column: Day Name}
+        operator: equals
+        values: [{dataType: string, valueString: "Saturday"}]
+  Net Sales Before:
+    expression: "{[Catalog Sales].[Sales Price]} - COALESCE({[Catalog Returns].[Refunded Cash]}, 0)"
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Date, column: Date}
+        operator: lt
+        values: [{dataType: date, valueDate: "2000-03-11"}]
+
+  Net Sales After:
+    expression: "{[Catalog Sales].[Sales Price]} - COALESCE({[Catalog Returns].[Refunded Cash]}, 0)"
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Date, column: Date}
+        operator: gte
+        values: [{dataType: date, valueDate: "2000-03-11"}]
+
+  Avg Ext Wholesale Cost:
+    columns: [{dataObject: Store Sales, column: Ext Wholesale Cost}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Ext Wholesale Cost Sum:
+    columns: [{dataObject: Store Sales, column: Ext Wholesale Cost}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+
+  Avg Ext Sales Price:
+    columns: [{dataObject: Store Sales, column: Ext Sales Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Quantity Sum:
+    columns: [{dataObject: Store Sales, column: Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
+  Web 30 days:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Web Sales, column: Ship Delay}
+        operator: lte
+        values: [{dataType: int, valueInt: 30}]
+
+  Web 31-60 days:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Web Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 60}]
+
+  Web 61-90 days:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Web Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 90}]
+
+  Web 91-120 days:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Web Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 91}, {dataType: int, valueInt: 120}]
+
+  Web >120 days:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Web Sales, column: Ship Delay}
+        operator: gt
+        values: [{dataType: int, valueInt: 120}]
+
+  Catalog 30 days:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Catalog Sales, column: Ship Delay}
+        operator: lte
+        values: [{dataType: int, valueInt: 30}]
+
+  Catalog 31-60 days:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Catalog Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 60}]
+
+  Catalog 61-90 days:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Catalog Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 90}]
+
+  Catalog 91-120 days:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Catalog Sales, column: Ship Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 91}, {dataType: int, valueInt: 120}]
+
+  Catalog >120 days:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Catalog Sales, column: Ship Delay}
+        operator: gt
+        values: [{dataType: int, valueInt: 120}]
+
+  Store Returns Net Loss:
+    columns: [{dataObject: Store Returns, column: Net Loss}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+
+  Store Returns Quantity:
+    columns: [{dataObject: Store Returns, column: Return Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
+  B1 Count:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 1}, {dataType: int, valueInt: 20}]
+
+  B1 Avg Discount:
+    columns: [{dataObject: Store Sales, column: Ext Discount Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 1}, {dataType: int, valueInt: 20}]
+
+  B1 Avg Net Paid:
+    columns: [{dataObject: Store Sales, column: Net Paid}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 1}, {dataType: int, valueInt: 20}]
+
+  B2 Count:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 40}]
+
+  B2 Avg Discount:
+    columns: [{dataObject: Store Sales, column: Ext Discount Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 40}]
+
+  B2 Avg Net Paid:
+    columns: [{dataObject: Store Sales, column: Net Paid}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 40}]
+
+  B3 Count:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 41}, {dataType: int, valueInt: 60}]
+
+  B3 Avg Discount:
+    columns: [{dataObject: Store Sales, column: Ext Discount Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 41}, {dataType: int, valueInt: 60}]
+
+  B3 Avg Net Paid:
+    columns: [{dataObject: Store Sales, column: Net Paid}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 41}, {dataType: int, valueInt: 60}]
+
+  B4 Count:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 80}]
+
+  B4 Avg Discount:
+    columns: [{dataObject: Store Sales, column: Ext Discount Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 80}]
+
+  B4 Avg Net Paid:
+    columns: [{dataObject: Store Sales, column: Net Paid}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 80}]
+
+  B5 Count:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 81}, {dataType: int, valueInt: 100}]
+
+  B5 Avg Discount:
+    columns: [{dataObject: Store Sales, column: Ext Discount Amount}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 81}, {dataType: int, valueInt: 100}]
+
+  B5 Avg Net Paid:
+    columns: [{dataObject: Store Sales, column: Net Paid}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 81}, {dataType: int, valueInt: 100}]
+
+  B1 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 0}, {dataType: int, valueInt: 5}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 8}, {dataType: int, valueInt: 18}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 459}, {dataType: int, valueInt: 1459}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 57}, {dataType: int, valueInt: 77}]
+
+  B1 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 0}, {dataType: int, valueInt: 5}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 8}, {dataType: int, valueInt: 18}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 459}, {dataType: int, valueInt: 1459}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 57}, {dataType: int, valueInt: 77}]
+
+  B1 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 0}, {dataType: int, valueInt: 5}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 8}, {dataType: int, valueInt: 18}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 459}, {dataType: int, valueInt: 1459}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 57}, {dataType: int, valueInt: 77}]
+
+  B2 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 6}, {dataType: int, valueInt: 10}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 90}, {dataType: int, valueInt: 100}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 2323}, {dataType: int, valueInt: 3323}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 51}]
+
+  B2 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 6}, {dataType: int, valueInt: 10}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 90}, {dataType: int, valueInt: 100}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 2323}, {dataType: int, valueInt: 3323}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 51}]
+
+  B2 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 6}, {dataType: int, valueInt: 10}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 90}, {dataType: int, valueInt: 100}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 2323}, {dataType: int, valueInt: 3323}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 51}]
+
+  B3 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 11}, {dataType: int, valueInt: 15}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 142}, {dataType: int, valueInt: 152}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 12214}, {dataType: int, valueInt: 13214}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 79}, {dataType: int, valueInt: 99}]
+
+  B3 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 11}, {dataType: int, valueInt: 15}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 142}, {dataType: int, valueInt: 152}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 12214}, {dataType: int, valueInt: 13214}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 79}, {dataType: int, valueInt: 99}]
+
+  B3 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 11}, {dataType: int, valueInt: 15}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 142}, {dataType: int, valueInt: 152}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 12214}, {dataType: int, valueInt: 13214}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 79}, {dataType: int, valueInt: 99}]
+
+  B4 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 16}, {dataType: int, valueInt: 20}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 135}, {dataType: int, valueInt: 145}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 6071}, {dataType: int, valueInt: 7071}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 38}, {dataType: int, valueInt: 58}]
+
+  B4 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 16}, {dataType: int, valueInt: 20}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 135}, {dataType: int, valueInt: 145}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 6071}, {dataType: int, valueInt: 7071}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 38}, {dataType: int, valueInt: 58}]
+
+  B4 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 16}, {dataType: int, valueInt: 20}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 135}, {dataType: int, valueInt: 145}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 6071}, {dataType: int, valueInt: 7071}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 38}, {dataType: int, valueInt: 58}]
+
+  B5 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 25}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 122}, {dataType: int, valueInt: 132}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 836}, {dataType: int, valueInt: 1836}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 17}, {dataType: int, valueInt: 37}]
+
+  B5 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 25}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 122}, {dataType: int, valueInt: 132}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 836}, {dataType: int, valueInt: 1836}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 17}, {dataType: int, valueInt: 37}]
+
+  B5 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 21}, {dataType: int, valueInt: 25}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 122}, {dataType: int, valueInt: 132}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 836}, {dataType: int, valueInt: 1836}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 17}, {dataType: int, valueInt: 37}]
+
+  B6 LP:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 26}, {dataType: int, valueInt: 30}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 154}, {dataType: int, valueInt: 164}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 7326}, {dataType: int, valueInt: 8326}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 7}, {dataType: int, valueInt: 27}]
+
+  B6 CNT:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 26}, {dataType: int, valueInt: 30}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 154}, {dataType: int, valueInt: 164}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 7326}, {dataType: int, valueInt: 8326}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 7}, {dataType: int, valueInt: 27}]
+
+  B6 CNTD:
+    columns: [{dataObject: Store Sales, column: List Price}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Quantity}
+        operator: between
+        values: [{dataType: int, valueInt: 26}, {dataType: int, valueInt: 30}]
+      - logic: or
+        filters:
+          - column: {dataObject: Store Sales, column: List Price}
+            operator: between
+            values: [{dataType: int, valueInt: 154}, {dataType: int, valueInt: 164}]
+          - column: {dataObject: Store Sales, column: Coupon Amount}
+            operator: between
+            values: [{dataType: int, valueInt: 7326}, {dataType: int, valueInt: 8326}]
+          - column: {dataObject: Store Sales, column: Wholesale Cost}
+            operator: between
+            values: [{dataType: int, valueInt: 7}, {dataType: int, valueInt: 27}]
+
+  AM Count:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: between
+        values: [{dataType: int, valueInt: 8}, {dataType: int, valueInt: 9}]
+      - column: {dataObject: Household Demographics, column: Dependent Count}
+        operator: equals
+        values: [{dataType: int, valueInt: 6}]
+      - column: {dataObject: Web Page, column: Char Count}
+        operator: between
+        values: [{dataType: int, valueInt: 5000}, {dataType: int, valueInt: 5200}]
+
+  PM Count:
+    columns: [{dataObject: Web Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Time, column: Hour}
+        operator: between
+        values: [{dataType: int, valueInt: 19}, {dataType: int, valueInt: 20}]
+      - column: {dataObject: Household Demographics, column: Dependent Count}
+        operator: equals
+        values: [{dataType: int, valueInt: 6}]
+      - column: {dataObject: Web Page, column: Char Count}
+        operator: between
+        values: [{dataType: int, valueInt: 5000}, {dataType: int, valueInt: 5200}]
+
+  Act Sales:
+    expression: "(CASE WHEN {[Store Returns].[Return Quantity]} IS NOT NULL THEN ({[Store Sales].[Quantity]} - {[Store Returns].[Return Quantity]}) * {[Store Sales].[Sales Price]} ELSE {[Store Sales].[Quantity]} * {[Store Sales].[Sales Price]} END)"
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    allowFanOut: true
+
+  Promotional Sales:
+    columns: [{dataObject: Store Sales, column: Ext Sales Price}]
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    filters:
+      - logic: or
+        filters:
+          - column: {dataObject: Promotion, column: Channel DMail}
+            operator: equals
+            values: [{dataType: string, valueString: "Y"}]
+          - column: {dataObject: Promotion, column: Channel Email}
+            operator: equals
+            values: [{dataType: string, valueString: "Y"}]
+          - column: {dataObject: Promotion, column: Channel TV}
+            operator: equals
+            values: [{dataType: string, valueString: "Y"}]
+
+
 # ── Metrics (cross-measure formulas) ──────────────────────────────
 
 metrics:
@@ -1025,3 +2746,70 @@ metrics:
     dataType: "decimal(5, 4)"
     format: "0.00%"
     description: Returned amount as percentage of store sales
+
+  Revenue Ratio:
+    expression: "{[Store Sales Amount]} * 100.0 / {[Class Revenue]}"
+    dataType: "decimal(18, 6)"
+
+  Avg Monthly Sales:
+    expression: "{[Manager Sales]} / {[Manager Month Groups]}"
+    dataType: "decimal(18, 6)"
+
+  Monthly Variance:
+    expression: "ABS({[Sales Price Sum]} - {[Manager Sales]} / {[Manager Month Groups]}) / ({[Manager Sales]} / {[Manager Month Groups]})"
+    dataType: "decimal(18, 6)"
+
+  Catalog Revenue Ratio:
+    expression: "{[Catalog Sales Amount]} * 100.0 / {[Catalog Class Revenue]}"
+    dataType: "decimal(18, 6)"
+
+  State Rank:
+    type: window
+    windowFunction: rank
+    measure: Store Net Profit
+    orderDirection: desc
+    dataType: bigint
+
+  Inventory Ratio:
+    expression: "({[Inventory After]} * 1.000) / NULLIF({[Inventory Before]}, 0)"
+    dataType: "decimal(18, 6)"
+
+  Sales Before:
+    expression: "COALESCE({[Net Sales Before]}, 0)"
+    dataType: "decimal(18, 2)"
+
+  Sales After:
+    expression: "COALESCE({[Net Sales After]}, 0)"
+    dataType: "decimal(18, 2)"
+
+  Avg Quarterly Sales:
+    expression: "{[Manufacturer Sales]} / {[Manufacturer Quarter Groups]}"
+    dataType: "decimal(18, 6)"
+
+  bucket1:
+    expression: "(CASE WHEN {[B1 Count]} > 74129 THEN {[B1 Avg Discount]} ELSE {[B1 Avg Net Paid]} END)"
+    dataType: "decimal(18, 6)"
+
+  bucket2:
+    expression: "(CASE WHEN {[B2 Count]} > 122840 THEN {[B2 Avg Discount]} ELSE {[B2 Avg Net Paid]} END)"
+    dataType: "decimal(18, 6)"
+
+  bucket3:
+    expression: "(CASE WHEN {[B3 Count]} > 56580 THEN {[B3 Avg Discount]} ELSE {[B3 Avg Net Paid]} END)"
+    dataType: "decimal(18, 6)"
+
+  bucket4:
+    expression: "(CASE WHEN {[B4 Count]} > 10097 THEN {[B4 Avg Discount]} ELSE {[B4 Avg Net Paid]} END)"
+    dataType: "decimal(18, 6)"
+
+  bucket5:
+    expression: "(CASE WHEN {[B5 Count]} > 165306 THEN {[B5 Avg Discount]} ELSE {[B5 Avg Net Paid]} END)"
+    dataType: "decimal(18, 6)"
+
+  am_pm_ratio:
+    expression: "{[AM Count]} / {[PM Count]}"
+    dataType: "decimal(18, 6)"
+
+  promo_pct:
+    expression: "{[Promotional Sales]} * 100.0 / {[Store Sales Amount]}"
+    dataType: "decimal(18, 6)"
