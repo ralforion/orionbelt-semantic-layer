@@ -9,6 +9,7 @@ import networkx as nx
 
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
+    DataObject,
     DataType,
     Measure,
     MeasureFilter,
@@ -20,6 +21,19 @@ from orionbelt.models.synthesis import count_label, model_count_pattern
 
 # ``{[Data Object].[Column]}`` reference inside a measure expression.
 _MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+
+# ``{name}`` placeholder inside a computed column's ``expression``. Mirrors
+# ``compiler/resolution.py::_COMPUTED_PLACEHOLDER`` — the two must agree, or
+# the validator would accept a placeholder the compiler cannot resolve.
+_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
+
+# Single-quoted SQL string literal, stripped before scanning for placeholders
+# so a regex quantifier inside one (``regexp_extract(x, '[0-9]{4}')``) is not
+# mistaken for a column reference.
+_SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+
+# A bare regex quantifier — ``{4}``, ``{2,}``, ``{2,4}``. Never a column name.
+_REGEX_QUANTIFIER = re.compile(r"^\d+(?:,\d*)?$")
 
 
 class SemanticValidator:
@@ -38,6 +52,9 @@ class SemanticValidator:
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
+        errors.extend(self._check_within_group_refs(model))
+        errors.extend(self._check_computed_column_refs(model))
+        errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
@@ -603,6 +620,158 @@ class SemanticValidator:
         elif isinstance(item, MeasureFilterGroup):
             for child in item.filters:
                 self._validate_filter_item(child, model, meas_name, errors)
+
+    def _check_within_group_refs(self, model: SemanticModel) -> list[SemanticError]:
+        """Verify that a ``withinGroup`` ordering column exists.
+
+        ``withinGroup`` is the one ``DataColumnRef`` site on a measure that no
+        other check covers: ``columns:`` goes through
+        :meth:`_check_measures_resolve` and filter columns through
+        :meth:`_check_measure_filter_refs`. Left unchecked, a typo compiles
+        straight into ``ORDER BY "Sales"."no_such_col"`` inside the LISTAGG and
+        only fails at the database.
+        """
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if measure.within_group is None:
+                continue
+            ref = measure.within_group.column
+            obj_name, col_name = ref.view, ref.column
+            if obj_name and obj_name not in model.data_objects:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_DATA_OBJECT",
+                        message=(
+                            f"Measure '{name}' withinGroup references unknown "
+                            f"data object '{obj_name}'"
+                        ),
+                        path=f"measures.{name}.withinGroup",
+                    )
+                )
+            elif obj_name and col_name and col_name not in model.data_objects[obj_name].columns:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_COLUMN",
+                        message=(
+                            f"Measure '{name}' withinGroup references unknown column "
+                            f"'{col_name}' in data object '{obj_name}'"
+                        ),
+                        path=f"measures.{name}.withinGroup",
+                    )
+                )
+        return errors
+
+    @staticmethod
+    def _computed_placeholders(expression: str) -> list[str]:
+        """The ``{name}`` column placeholders in a computed column's expression.
+
+        String literals are stripped first and bare regex quantifiers skipped,
+        so ``regexp_extract({Zip}, '[0-9]{4}')`` yields ``["Zip"]`` rather than
+        also reporting ``4`` as a missing column.
+        """
+        body = _SQL_STRING_LITERAL.sub("''", expression)
+        return [
+            name.strip()
+            for name in _COMPUTED_PLACEHOLDER.findall(body)
+            if not _REGEX_QUANTIFIER.match(name.strip())
+        ]
+
+    def _check_computed_column_refs(self, model: SemanticModel) -> list[SemanticError]:
+        """Ensure a computed column's ``{name}`` placeholders name sibling columns.
+
+        A placeholder the compiler cannot resolve is not dropped and not
+        reported — it survives into codegen as a *string literal*, so
+        ``{amount} * {no_such_col}`` emits ``"Sales"."amount" * 'no_such_col'``.
+        The model validates clean and the wrongness surfaces, at best, as a
+        type error from the database.
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, col in obj.columns.items():
+                if not col.expression:
+                    continue
+                for ref in self._computed_placeholders(col.expression):
+                    if ref in obj.columns:
+                        continue
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_COLUMN_IN_EXPRESSION",
+                            message=(
+                                f"Computed column '{col_name}' in data object "
+                                f"'{obj_name}' references unknown column '{ref}'"
+                            ),
+                            path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                            hint=(
+                                "A computed column's {placeholder} must name another "
+                                f"column of '{obj_name}'. To reference a column of a "
+                                "different data object, use a measure expression's "
+                                "{[Data Object].[Column]} form instead."
+                            ),
+                        )
+                    )
+        return errors
+
+    def _check_no_cyclic_computed_columns(self, model: SemanticModel) -> list[SemanticError]:
+        """Detect computed columns whose expressions reference each other in a loop.
+
+        The compiler raises ``RecursionError`` on such a chain, but
+        ``_build_computed_column_expr`` catches every exception and falls back
+        to a plain reference to the column's own ``code`` — which for a computed
+        column is empty, so the *label* is emitted as a physical column name.
+        A cycle therefore compiles to SQL naming a column that does not exist.
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            g = self._computed_column_graph(obj)
+            # Each strongly connected component that is not a single acyclic
+            # node is exactly one reference cycle. Using SCCs rather than
+            # walking from every column keeps this linear and reports each
+            # cycle once, however many columns sit on it.
+            for scc in nx.strongly_connected_components(g):
+                if len(scc) == 1:
+                    only = next(iter(scc))
+                    if not g.has_edge(only, only):
+                        continue
+                cycle = self._describe_cycle(g, scc)
+                start = cycle[0]
+                errors.append(
+                    SemanticError(
+                        code="CYCLIC_COMPUTED_COLUMN",
+                        message=(
+                            f"Cyclic computed-column reference in data object "
+                            f"'{obj_name}': {' -> '.join(cycle)}"
+                        ),
+                        path=f"dataObjects.{obj_name}.columns.{start}.expression",
+                    )
+                )
+        return errors
+
+    def _computed_column_graph(self, obj: DataObject) -> nx.DiGraph[str]:
+        """Dependency graph over a data object's computed columns.
+
+        An edge ``a -> b`` means computed column ``a``'s expression references
+        ``b``. Only computed columns become nodes: a placeholder naming a
+        physical column terminates the chain and cannot be part of a cycle.
+        """
+        g: nx.DiGraph[str] = nx.DiGraph()
+        computed = {name for name, col in obj.columns.items() if col.expression}
+        for name in computed:
+            g.add_node(name)
+        for name in computed:
+            expression = obj.columns[name].expression or ""
+            for ref in self._computed_placeholders(expression):
+                if ref in computed:
+                    g.add_edge(name, ref)
+        return g
+
+    @staticmethod
+    def _describe_cycle(g: nx.DiGraph[str], scc: set[str]) -> list[str]:
+        """A readable ``a -> b -> a`` walk through one cyclic component."""
+        try:
+            edges = nx.find_cycle(g.subgraph(scc))
+        except nx.NetworkXNoCycle:  # pragma: no cover - scc is cyclic by construction
+            return sorted(scc)
+        return [source for source, _target in edges] + [edges[0][0]]
 
     def _build_directed_graph(self, model: SemanticModel) -> nx.DiGraph[str]:
         """Build a directed graph from primary (non-secondary) joins."""

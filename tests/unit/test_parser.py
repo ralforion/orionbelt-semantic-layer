@@ -1799,3 +1799,173 @@ def _listagg_errors(resolver: ReferenceResolver, *, distinct: bool, order_column
     raw, source_map = TrackedLoader().load_string(yaml_content)
     model, _ = resolver.resolve(raw, source_map)
     return [e.code for e in SemanticValidator().validate(model)]
+
+
+_COMPUTED_COLUMN_MODEL = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    database: db
+    schema: public
+    columns:
+      Amount:
+        code: amount
+        abstractType: float
+      Zip:
+        code: zip
+        abstractType: string
+{extra_columns}\
+dimensions:
+  Zip Code:
+    dataObject: Sales
+    column: Zip
+    resultType: string
+"""
+
+
+def _computed_column_errors(resolver: ReferenceResolver, extra_columns: str) -> list[str]:
+    yaml_content = _COMPUTED_COLUMN_MODEL.format(extra_columns=extra_columns)
+    raw, source_map = TrackedLoader().load_string(yaml_content)
+    model, _ = resolver.resolve(raw, source_map)
+    return [e.code for e in SemanticValidator().validate(model)]
+
+
+class TestComputedColumnRefs:
+    """A computed column's ``{name}`` placeholders must name sibling columns.
+
+    An unresolved placeholder is not dropped by the compiler — it survives into
+    codegen as a string literal (``"Sales"."amount" * 'no_such_col'``), so the
+    model has to be rejected at validation time.
+    """
+
+    def test_resolvable_placeholder_is_valid(self, resolver: ReferenceResolver) -> None:
+        codes = _computed_column_errors(
+            resolver,
+            """      Doubled:
+        abstractType: float
+        expression: "{Amount} * 2"
+""",
+        )
+        assert codes == []
+
+    def test_unknown_placeholder_rejected(self, resolver: ReferenceResolver) -> None:
+        codes = _computed_column_errors(
+            resolver,
+            """      Bad:
+        abstractType: float
+        expression: "{Amount} * {No Such Column}"
+""",
+        )
+        assert codes == ["UNKNOWN_COLUMN_IN_EXPRESSION"]
+
+    def test_regex_quantifier_is_not_a_column_ref(self, resolver: ReferenceResolver) -> None:
+        """``'[0-9]{5}'`` is a quantifier inside a string literal, not a placeholder."""
+        codes = _computed_column_errors(
+            resolver,
+            """      Zip5:
+        abstractType: string
+        expression: "regexp_extract({Zip}, '[0-9]{5}')"
+""",
+        )
+        assert codes == []
+
+    def test_chained_computed_columns_are_valid(self, resolver: ReferenceResolver) -> None:
+        codes = _computed_column_errors(
+            resolver,
+            """      Doubled:
+        abstractType: float
+        expression: "{Amount} * 2"
+      Quadrupled:
+        abstractType: float
+        expression: "{Doubled} * 2"
+""",
+        )
+        assert codes == []
+
+    def test_direct_cycle_rejected(self, resolver: ReferenceResolver) -> None:
+        codes = _computed_column_errors(
+            resolver,
+            """      Loop:
+        abstractType: float
+        expression: "{Loop} + 1"
+""",
+        )
+        assert codes == ["CYCLIC_COMPUTED_COLUMN"]
+
+    def test_mutual_cycle_reported_once(self, resolver: ReferenceResolver) -> None:
+        codes = _computed_column_errors(
+            resolver,
+            """      A:
+        abstractType: float
+        expression: "{B} + 1"
+      B:
+        abstractType: float
+        expression: "{A} + 2"
+""",
+        )
+        assert codes == ["CYCLIC_COMPUTED_COLUMN"]
+
+    def test_three_node_cycle_reported_once_with_full_path(
+        self, resolver: ReferenceResolver
+    ) -> None:
+        yaml_content = _COMPUTED_COLUMN_MODEL.format(
+            extra_columns="""      A:
+        abstractType: float
+        expression: "{B} + 1"
+      B:
+        abstractType: float
+        expression: "{C} + 2"
+      C:
+        abstractType: float
+        expression: "{A} + 3"
+"""
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_content)
+        model, _ = resolver.resolve(raw, source_map)
+        errors = SemanticValidator().validate(model)
+        assert [e.code for e in errors] == ["CYCLIC_COMPUTED_COLUMN"]
+        # Every column on the cycle is named, and the walk closes on itself.
+        message = errors[0].message
+        assert "A" in message and "B" in message and "C" in message
+        walk = message.rsplit(": ", 1)[1].split(" -> ")
+        assert len(walk) == 4 and walk[0] == walk[-1]
+
+    def test_entering_a_cycle_from_outside_is_reported(self, resolver: ReferenceResolver) -> None:
+        """A column that *reaches* a cycle is unusable too, but the cycle is the defect."""
+        codes = _computed_column_errors(
+            resolver,
+            """      Entry:
+        abstractType: float
+        expression: "{A} * 2"
+      A:
+        abstractType: float
+        expression: "{B} + 1"
+      B:
+        abstractType: float
+        expression: "{A} + 2"
+""",
+        )
+        assert codes == ["CYCLIC_COMPUTED_COLUMN"]
+
+
+class TestWithinGroupRefs:
+    """``withinGroup.column`` is validated like any other DataColumnRef site."""
+
+    def test_valid_within_group_column(self, resolver: ReferenceResolver) -> None:
+        codes = _listagg_errors(resolver, distinct=False, order_column="Stock On Hand")
+        assert codes == []
+
+    def test_unknown_within_group_column(self, resolver: ReferenceResolver) -> None:
+        codes = _listagg_errors(resolver, distinct=False, order_column="No Such Column")
+        assert "UNKNOWN_COLUMN" in codes
+
+    def test_unknown_within_group_data_object(self, resolver: ReferenceResolver) -> None:
+        yaml_content = _LISTAGG_MODEL.format(distinct="", order_column="Product ID").replace(
+            "column: {dataObject: Products, column: Product ID}\n      order: ASC",
+            "column: {dataObject: No Such Object, column: Product ID}\n      order: ASC",
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_content)
+        model, _ = resolver.resolve(raw, source_map)
+        codes = [e.code for e in SemanticValidator().validate(model)]
+        assert "UNKNOWN_DATA_OBJECT" in codes

@@ -183,7 +183,9 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 
 - `expression` and `code` are mutually exclusive on a single column.
 - The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node, so dialect-specific functions are dialect-portable only insofar as they appear in OBML's expression grammar (arithmetic, `CASE WHEN`, function calls).
-- A computed column may not reference another computed column on the same data object (no recursive resolution today).
+- Every `{Column}` placeholder must name a sibling column of the same data object. An unresolvable placeholder is rejected at validation time with `UNKNOWN_COLUMN_IN_EXPRESSION` — it is not silently dropped, so a typo cannot reach the database as a string literal. To reference a column of a *different* data object, use a measure expression's `{[DataObject].[Column]}` form.
+- A computed column may reference another computed column on the same data object; the referenced expression is inlined recursively (`{doubled} * 2` where `doubled` is `{amount} * 2` compiles to `amount * 2 * 2`). A reference cycle is rejected with `CYCLIC_COMPUTED_COLUMN`.
+- Braces inside string literals are left alone, so a regex quantifier such as `regexp_extract({Zip}, '[0-9]{5}')` is not mistaken for a placeholder.
 - ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).
 
 ### Joins
@@ -424,7 +426,7 @@ measures:
 | `grain` | object | No | [Grain override](grain-filter-context.md#grain-override) -- controls aggregation grain independently from query dimensions |
 | `filterContext` | object | No | [Filter context override](grain-filter-context.md#filter-context) -- controls which query WHERE filters apply |
 | `delimiter` | string | No | Separator for `listagg` aggregation (default: `","`) |
-| `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). With `distinct: true` the column must be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
+| `withinGroup` | object | No | Ordering clause for `listagg` — specifies `column` and `order` (`ASC`/`DESC`). The `column` must resolve to a real data object column (`UNKNOWN_DATA_OBJECT` / `UNKNOWN_COLUMN`). With `distinct: true` it must additionally be the one being aggregated (error code `WITHIN_GROUP_NOT_IN_DISTINCT_ARGS`). |
 | `dataType` | string | No | OBML data type (e.g. `decimal(18, 4)`, `bigint`). Overrides automatic type inference for CAST wrapping. |
 | `format` | string | No | Display format pattern (e.g. `#,##0.00`, `0.00%`) |
 | `description` | string | No | Business description |
