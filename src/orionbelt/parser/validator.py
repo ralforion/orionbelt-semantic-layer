@@ -8,7 +8,10 @@ from collections import deque
 import networkx as nx
 
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.expressions import find_placeholders
 from orionbelt.models.semantic import (
+    DataColumnRef,
+    DataObject,
     DataType,
     Measure,
     MeasureFilter,
@@ -38,6 +41,9 @@ class SemanticValidator:
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
+        errors.extend(self._check_within_group_refs(model))
+        errors.extend(self._check_computed_column_refs(model))
+        errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
@@ -294,37 +300,77 @@ class SemanticValidator:
 
         return errors
 
+    def _check_column_ref(
+        self,
+        ref: DataColumnRef,
+        model: SemanticModel,
+        *,
+        subject: str,
+        path: str,
+    ) -> list[SemanticError]:
+        """Validate one ``DataColumnRef``: both halves present, and both resolving.
+
+        The JSON schema makes ``dataObject`` and ``column`` required, but the
+        Pydantic type leaves both optional so models can be built in Python,
+        and ``ModelStore.load_model`` does not run the schema. A missing half
+        is not inert: codegen renders it as an empty identifier, so a ref
+        without a column compiles to ``ORDER BY "Sales".""`` and one without a
+        data object to ``ORDER BY ""."Product Name"``.
+        """
+        obj_name, col_name = ref.view, ref.column
+
+        missing = [
+            field for field, value in (("dataObject", obj_name), ("column", col_name)) if not value
+        ]
+        if missing:
+            return [
+                SemanticError(
+                    code="INCOMPLETE_COLUMN_REF",
+                    message=(
+                        f"{subject} is missing {' and '.join(missing)}. A column "
+                        f"reference needs both dataObject and column; an omitted "
+                        f"one compiles to an empty SQL identifier."
+                    ),
+                    path=path,
+                )
+            ]
+
+        if obj_name not in model.data_objects:
+            return [
+                SemanticError(
+                    code="UNKNOWN_DATA_OBJECT",
+                    message=f"{subject} references unknown data object '{obj_name}'",
+                    path=path,
+                )
+            ]
+
+        if col_name not in model.data_objects[obj_name].columns:
+            return [
+                SemanticError(
+                    code="UNKNOWN_COLUMN",
+                    message=(
+                        f"{subject} references unknown column '{col_name}' "
+                        f"in data object '{obj_name}'"
+                    ),
+                    path=path,
+                )
+            ]
+
+        return []
+
     def _check_measures_resolve(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure measure column references resolve to actual data object columns."""
         errors: list[SemanticError] = []
         for name, measure in model.measures.items():
             for i, col_ref in enumerate(measure.columns):
-                obj_name = col_ref.view
-                col_name = col_ref.column
-                if obj_name and obj_name not in model.data_objects:
-                    errors.append(
-                        SemanticError(
-                            code="UNKNOWN_DATA_OBJECT",
-                            message=(
-                                f"Measure '{name}' column[{i}] references "
-                                f"unknown data object '{obj_name}'"
-                            ),
-                            path=f"measures.{name}.columns[{i}]",
-                        )
+                errors.extend(
+                    self._check_column_ref(
+                        col_ref,
+                        model,
+                        subject=f"Measure '{name}' column[{i}]",
+                        path=f"measures.{name}.columns[{i}]",
                     )
-                elif obj_name and col_name:
-                    obj = model.data_objects[obj_name]
-                    if col_name not in obj.columns:
-                        errors.append(
-                            SemanticError(
-                                code="UNKNOWN_COLUMN",
-                                message=(
-                                    f"Measure '{name}' column[{i}] references "
-                                    f"unknown column '{col_name}' in data object '{obj_name}'"
-                                ),
-                                path=f"measures.{name}.columns[{i}]",
-                            )
-                        )
+                )
         return errors
 
     def _check_join_targets_exist(self, model: SemanticModel) -> list[SemanticError]:
@@ -400,29 +446,14 @@ class SemanticValidator:
         """Ensure dimension references resolve."""
         errors: list[SemanticError] = []
         for name, dim in model.dimensions.items():
-            obj_name = dim.view
-            col_name = dim.column
-            if obj_name and obj_name not in model.data_objects:
-                errors.append(
-                    SemanticError(
-                        code="UNKNOWN_DATA_OBJECT",
-                        message=f"Dimension '{name}' references unknown data object '{obj_name}'",
-                        path=f"dimensions.{name}",
-                    )
+            errors.extend(
+                self._check_column_ref(
+                    DataColumnRef(view=dim.view, column=dim.column),
+                    model,
+                    subject=f"Dimension '{name}'",
+                    path=f"dimensions.{name}",
                 )
-            elif obj_name and col_name:
-                obj = model.data_objects[obj_name]
-                if col_name not in obj.columns:
-                    errors.append(
-                        SemanticError(
-                            code="UNKNOWN_COLUMN",
-                            message=(
-                                f"Dimension '{name}' references unknown column "
-                                f"'{col_name}' in data object '{obj_name}'"
-                            ),
-                            path=f"dimensions.{name}",
-                        )
-                    )
+            )
         return errors
 
     _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
@@ -574,28 +605,47 @@ class SemanticValidator:
     ) -> None:
         """Recursively validate a measure filter item."""
         if isinstance(item, MeasureFilter):
-            if not item.column or not item.column.view:
+            if item.column is None:
                 return
-            obj = model.data_objects.get(item.column.view)
-            if not obj:
+            view, column = item.column.view, item.column.column
+            # An omitted half reaches codegen as an empty identifier, the same
+            # way it does for a dimension or a withinGroup column.
+            missing = [
+                field for field, value in (("dataObject", view), ("column", column)) if not value
+            ]
+            if missing or not view or not column:
                 errors.append(
                     SemanticError(
-                        code="UNKNOWN_FILTER_DATA_OBJECT",
+                        code="INCOMPLETE_COLUMN_REF",
                         message=(
-                            f"Measure '{meas_name}' filter references unknown "
-                            f"data object '{item.column.view}'"
+                            f"Measure '{meas_name}' filter is missing "
+                            f"{' and '.join(missing)}. A column reference needs both "
+                            f"dataObject and column; an omitted one compiles to an "
+                            f"empty SQL identifier."
                         ),
                         path=f"measures.{meas_name}.filters",
                     )
                 )
                 return
-            if item.column.column and item.column.column not in obj.columns:
+            obj = model.data_objects.get(view)
+            if not obj:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_FILTER_DATA_OBJECT",
+                        message=(
+                            f"Measure '{meas_name}' filter references unknown data object '{view}'"
+                        ),
+                        path=f"measures.{meas_name}.filters",
+                    )
+                )
+                return
+            if column not in obj.columns:
                 errors.append(
                     SemanticError(
                         code="UNKNOWN_FILTER_COLUMN",
                         message=(
                             f"Measure '{meas_name}' filter references unknown "
-                            f"column '{item.column.column}' in '{item.column.view}'"
+                            f"column '{column}' in '{view}'"
                         ),
                         path=f"measures.{meas_name}.filters",
                     )
@@ -603,6 +653,127 @@ class SemanticValidator:
         elif isinstance(item, MeasureFilterGroup):
             for child in item.filters:
                 self._validate_filter_item(child, model, meas_name, errors)
+
+    def _check_within_group_refs(self, model: SemanticModel) -> list[SemanticError]:
+        """Verify that a ``withinGroup`` ordering column exists.
+
+        ``withinGroup`` is the one ``DataColumnRef`` site on a measure that no
+        other check covers: ``columns:`` goes through
+        :meth:`_check_measures_resolve` and filter columns through
+        :meth:`_check_measure_filter_refs`. Left unchecked, a typo compiles
+        straight into ``ORDER BY "Sales"."no_such_col"`` inside the LISTAGG and
+        only fails at the database.
+        """
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if measure.within_group is None:
+                continue
+            errors.extend(
+                self._check_column_ref(
+                    measure.within_group.column,
+                    model,
+                    subject=f"Measure '{name}' withinGroup",
+                    path=f"measures.{name}.withinGroup",
+                )
+            )
+        return errors
+
+    def _check_computed_column_refs(self, model: SemanticModel) -> list[SemanticError]:
+        """Ensure a computed column's ``{name}`` placeholders name sibling columns.
+
+        A placeholder the compiler cannot resolve is not dropped and not
+        reported — it survives into codegen as a *string literal*, so
+        ``{amount} * {no_such_col}`` emits ``"Sales"."amount" * 'no_such_col'``.
+        The model validates clean and the wrongness surfaces, at best, as a
+        type error from the database.
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, col in obj.columns.items():
+                if not col.expression:
+                    continue
+                for ref in find_placeholders(col.expression):
+                    if ref in obj.columns:
+                        continue
+                    errors.append(
+                        SemanticError(
+                            code="UNKNOWN_COLUMN_IN_EXPRESSION",
+                            message=(
+                                f"Computed column '{col_name}' in data object "
+                                f"'{obj_name}' references unknown column '{ref}'"
+                            ),
+                            path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                            hint=(
+                                "A computed column's {placeholder} must name another "
+                                f"column of '{obj_name}'. To reference a column of a "
+                                "different data object, use a measure expression's "
+                                "{[Data Object].[Column]} form instead."
+                            ),
+                        )
+                    )
+        return errors
+
+    def _check_no_cyclic_computed_columns(self, model: SemanticModel) -> list[SemanticError]:
+        """Detect computed columns whose expressions reference each other in a loop.
+
+        The compiler raises ``RecursionError`` on such a chain, but
+        ``_build_computed_column_expr`` catches every exception and falls back
+        to a plain reference to the column's own ``code`` — which for a computed
+        column is empty, so the *label* is emitted as a physical column name.
+        A cycle therefore compiles to SQL naming a column that does not exist.
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            g = self._computed_column_graph(obj)
+            # Each strongly connected component that is not a single acyclic
+            # node is exactly one reference cycle. Using SCCs rather than
+            # walking from every column keeps this linear and reports each
+            # cycle once, however many columns sit on it.
+            for scc in nx.strongly_connected_components(g):
+                if len(scc) == 1:
+                    only = next(iter(scc))
+                    if not g.has_edge(only, only):
+                        continue
+                cycle = self._describe_cycle(g, scc)
+                start = cycle[0]
+                errors.append(
+                    SemanticError(
+                        code="CYCLIC_COMPUTED_COLUMN",
+                        message=(
+                            f"Cyclic computed-column reference in data object "
+                            f"'{obj_name}': {' -> '.join(cycle)}"
+                        ),
+                        path=f"dataObjects.{obj_name}.columns.{start}.expression",
+                    )
+                )
+        return errors
+
+    def _computed_column_graph(self, obj: DataObject) -> nx.DiGraph[str]:
+        """Dependency graph over a data object's computed columns.
+
+        An edge ``a -> b`` means computed column ``a``'s expression references
+        ``b``. Only computed columns become nodes: a placeholder naming a
+        physical column terminates the chain and cannot be part of a cycle.
+        """
+        g: nx.DiGraph[str] = nx.DiGraph()
+        computed = {name for name, col in obj.columns.items() if col.expression}
+        for name in computed:
+            g.add_node(name)
+        for name in computed:
+            expression = obj.columns[name].expression or ""
+            for ref in find_placeholders(expression):
+                if ref in computed:
+                    g.add_edge(name, ref)
+        return g
+
+    @staticmethod
+    def _describe_cycle(g: nx.DiGraph[str], scc: set[str]) -> list[str]:
+        """A readable ``a -> b -> a`` walk through one cyclic component."""
+        try:
+            edges = nx.find_cycle(g.subgraph(scc))
+        except nx.NetworkXNoCycle:  # pragma: no cover - scc is cyclic by construction
+            return sorted(scc)
+        return [source for source, _target in edges] + [edges[0][0]]
 
     def _build_directed_graph(self, model: SemanticModel) -> nx.DiGraph[str]:
         """Build a directed graph from primary (non-secondary) joins."""

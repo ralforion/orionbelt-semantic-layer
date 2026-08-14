@@ -201,3 +201,87 @@ class TestComputedColumnInOrderBy:
         assert '""' not in ob_clause
         assert "REPORTINGDATEYEAR" in ob_clause
         assert "REPORTINGDATEMONTH" in ob_clause
+
+
+_STRING_LITERAL_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: ORDERS
+    columns:
+      Order ID:
+        code: ORDER_ID
+        abstractType: string
+      Zip:
+        code: ZIP
+        abstractType: string
+      Zip 5:
+        abstractType: string
+        expression: "regexp_extract({Zip}, '[0-9]{5}')"
+      Quoted:
+        abstractType: string
+        expression: "'{Zip}'"
+      Nested:
+        abstractType: string
+        expression: "concat({Quoted}, '{Zip}')"
+
+dimensions:
+  Zip 5:
+    dataObject: Orders
+    column: Zip 5
+    resultType: string
+  Quoted:
+    dataObject: Orders
+    column: Quoted
+    resultType: string
+  Nested:
+    dataObject: Orders
+    column: Nested
+    resultType: string
+
+measures:
+  Order Count:
+    columns: [{dataObject: Orders, column: Order ID}]
+    resultType: int
+    aggregation: count
+"""
+
+
+def _string_literal_model() -> SemanticModel:
+    raw, sm = TrackedLoader().load_string(_STRING_LITERAL_MODEL_YAML)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    assert result.valid, result.errors
+    return model
+
+
+def _compile_dimension(dimension: str) -> str:
+    query = QueryObject(
+        select=QuerySelect(dimensions=[dimension], measures=["Order Count"]),
+    )
+    return CompilationPipeline().compile(query, _string_literal_model(), "duckdb").sql
+
+
+class TestComputedColumnStringLiterals:
+    """Braces inside a string literal are data, not column placeholders.
+
+    Substitution used to run over the whole expression, so a placeholder
+    naming a real column was rewritten inside quotes and emitted as the
+    literal text ``'{[Orders].[Zip]}'``.
+    """
+
+    def test_regex_quantifier_survives(self) -> None:
+        sql = _compile_dimension("Zip 5")
+        assert "'[0-9]{5}'" in sql
+        assert '"Orders"."ZIP"' in sql
+
+    def test_placeholder_inside_literal_is_not_substituted(self) -> None:
+        sql = _compile_dimension("Quoted")
+        assert "'{Zip}'" in sql
+        assert "[Orders]" not in sql
+
+    def test_nested_computed_column_keeps_its_literals(self) -> None:
+        """The inlining path in expr_parser applies the same rule."""
+        sql = _compile_dimension("Nested")
+        # The {Quoted} reference resolves and inlines; both literals survive.
+        assert sql.count("'{Zip}'") == 2
+        assert "[Orders]" not in sql

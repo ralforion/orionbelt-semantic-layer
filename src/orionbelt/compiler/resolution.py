@@ -29,6 +29,7 @@ from orionbelt.compiler.filters import (
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.expressions import substitute_placeholders
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
@@ -60,8 +61,6 @@ from orionbelt.models.semantic import (
 )
 from orionbelt.models.warnings import WarningCode, warning
 
-_COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
-
 
 def _build_computed_column_expr(
     column: DataObjectColumn, obj: DataObject, model: SemanticModel
@@ -82,7 +81,7 @@ def _build_computed_column_expr(
             return f"{{[{obj.name}].[{name}]}}"
         return match.group(0)
 
-    rewritten = _COMPUTED_PLACEHOLDER.sub(_sub, expr_str)
+    rewritten = substitute_placeholders(expr_str, _sub)
     try:
         tokens = tokenize_measure_expression(rewritten, model)
         return parse_expression(tokens)
