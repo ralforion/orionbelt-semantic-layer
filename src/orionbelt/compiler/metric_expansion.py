@@ -24,9 +24,12 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import ColumnRef, Expr
 from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.models.semantic import SemanticModel
 
 if TYPE_CHECKING:
     from orionbelt.compiler.resolution import ResolvedMeasure
+    from orionbelt.dialect.base import Dialect
 
 
 def expand_metric_expression(
@@ -129,3 +132,31 @@ def metric_leaf_components(
 
     walk(measure)
     return out
+
+
+def metric_over_components(
+    metric: ResolvedMeasure,
+    components: dict[str, ResolvedMeasure],
+    measure_ref: Callable[[str], Expr],
+    model: SemanticModel,
+    dialect: Dialect,
+) -> Expr:
+    """Rebuild a metric's expression from its components' finished values.
+
+    The planner inlines each component's aggregate into the metric's column,
+    which is right only while every component belongs in that column. A pass
+    that computes one somewhere else - ``grain_dedup`` in a deduplicated CTE,
+    ``filter_wrap`` in a differently filtered one - has to re-expand the formula
+    instead, reading each component from whichever CTE holds it via
+    *measure_ref*. Nested derived metrics are expanded on the way, exactly as
+    the planner expands them, and the declared ``dataType`` cast is reapplied as
+    ``star.py`` applies it, since the column it wrapped no longer exists.
+    """
+    expr = expand_metric_expression(
+        metric.expression, components, lambda comp: measure_ref(comp.name)
+    )
+    metric_def = model.metrics.get(metric.name)
+    if metric_def is None:
+        return expr
+    result_type = resolve_metric_data_type(metric_def, model.settings)
+    return dialect.cast_to_obml_type(expr, result_type) if result_type else expr

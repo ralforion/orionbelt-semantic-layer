@@ -419,46 +419,7 @@ def evaluate_compatibility(
                 ]
             )
 
-    # Rule 2c (raising): ``filter_wrap`` isolates the measures the query
-    # *selects*, so a filterContext declared on a metric's component never gets
-    # a CTE of its own. The planner inlines that component's aggregate into the
-    # metric column instead, where the query's WHERE applies to it like any
-    # other - the metric then answers a number that looks right and is not the
-    # one the context asked for. Refuse until the component can be split out
-    # the way ``grain_dedup`` splits a deduplicated one.
-    fc_components = sorted(
-        {
-            f"{m.name}.{comp.name}"
-            for m in resolved.measures
-            if m.component_measures
-            for comp in metric_leaf_components(m, resolved.metric_components)
-            if comp.filter_context is not None
-        }
-    )
-    if fc_components:
-        listed = ", ".join(f"'{c}'" for c in fc_components)
-        raise ResolutionError(
-            [
-                SemanticError(
-                    code="INCOMPATIBLE_COMBINATION",
-                    message=(
-                        f"Measure(s) {listed} declare a filterContext and are read through "
-                        f"a metric. A filterContext needs the measure computed in its own "
-                        f"filtered scan, which only a directly selected measure gets - "
-                        f"through a metric the aggregate is inlined into the metric's "
-                        f"column and the query's filters apply to it."
-                    ),
-                    path="select.measures",
-                    hint=(
-                        "Select the filterContext measure directly, or drop the "
-                        "filterContext from the measure the metric reads."
-                    ),
-                    context={"components": fc_components},
-                )
-            ]
-        )
-
-    # Rule 2d (raising): a filterContext measure is computed in a CTE of its
+    # Rule 2c (raising): a filterContext measure is computed in a CTE of its
     # own, whose WHERE is the query's with some filters dropped or added. Under
     # a multi-fact plan there is nothing to compute it from: the union legs
     # applied the query's filters before the composite CTE existed, so a context
@@ -468,7 +429,17 @@ def evaluate_compatibility(
     # engine binds - refuse instead, since suppressing the pass would answer the
     # unfiltered number under the filtered measure's name.
     if resolved.composite_cte is not None:
-        fc_measures = sorted(m.name for m in resolved.measures if m.filter_context is not None)
+        # Read through a metric counts: the component is computed in a CTE of
+        # its own too, and that CTE has the same nothing to read.
+        fc_measures = sorted(
+            {m.name for m in resolved.measures if m.filter_context is not None}
+            | {
+                comp.name
+                for m in resolved.measures
+                for comp in metric_leaf_components(m, resolved.metric_components)
+                if comp.filter_context is not None
+            }
+        )
         if fc_measures:
             listed = ", ".join(f"'{m}'" for m in fc_measures)
             raise ResolutionError(
@@ -494,6 +465,46 @@ def evaluate_compatibility(
                     )
                 ]
             )
+
+    # Rule 2d (raising): a HAVING predicate is evaluated inside the CTE the
+    # planner built, which for a filterContext measure is the *main* one - under
+    # the query's filters, on an aggregate that is not the measure's. The
+    # predicate then reads the filtered value and silently keeps the wrong
+    # groups. Moving it to the outer query is the fix (``grain_dedup`` does that
+    # for a deduplicated measure); until then, refuse.
+    fc_names = {m.name for m in resolved.measures if m.filter_context is not None} | {
+        m.name
+        for m in resolved.measures
+        if m.component_measures
+        and any(
+            comp.filter_context is not None
+            for comp in metric_leaf_components(m, resolved.metric_components)
+        )
+    }
+    fc_having = sorted(
+        {name for hf in resolved.having_filters for name in hf.referenced_fields & fc_names}
+    )
+    if fc_having:
+        listed = ", ".join(f"'{name}'" for name in fc_having)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INCOMPATIBLE_COMBINATION",
+                    message=(
+                        f"HAVING references {listed}, which a filterContext computes in a "
+                        f"CTE of its own. The predicate is evaluated in the query's own "
+                        f"scan instead, where that value does not exist and the "
+                        f"query-filtered aggregate stands in for it."
+                    ),
+                    path="having",
+                    hint=(
+                        "Filter on a measure without a filterContext, or apply the "
+                        "threshold in the caller."
+                    ),
+                    context={"measures": fc_having},
+                )
+            ]
+        )
 
     # Rule 3 (raising): grain dedup splits the projection across CTEs keyed on
     # the query grain. Every wrapper in ``incompatible_with`` restructures that

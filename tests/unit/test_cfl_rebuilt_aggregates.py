@@ -243,12 +243,12 @@ class TestTheCompositeFlag:
 
 
 class TestFilterContextReadThroughAMetric:
-    """``filter_wrap`` isolates the measures the query *selects*. A metric
-    inlines its components' aggregates into one column instead, so a context
-    declared on a component never gets the filtered scan it asks for and the
-    query's WHERE applies to it like any other aggregate. The metric then
-    answers a number that looks right and is not the one that was asked for,
-    which is why it is refused on every plan rather than only under CFL.
+    """A metric inlines its components' aggregates into one column, so a
+    context declared on a component used to be dropped silently. The component
+    now gets the same CTE a selected measure gets, and the formula is rebuilt
+    over the CTEs' columns - see ``test_filter_context_metrics``. Under a
+    multi-fact plan that CTE has the same nothing to read as a selected one, so
+    the refusal covers components too.
     """
 
     @staticmethod
@@ -262,27 +262,28 @@ class TestFilterContextReadThroughAMetric:
             "duckdb",
         ).sql
 
-    def test_refused_on_a_single_fact_plan(self) -> None:
-        with pytest.raises(ResolutionError) as exc:
-            self._sql_filtered(["Filtered Share"])
-        assert "Filtered Share.Unfiltered Sales" in str(exc.value)
+    def test_it_compiles_on_a_single_fact_plan(self) -> None:
+        sql = self._sql_filtered(["Filtered Share"])
+        assert '"fc_0" AS' in sql
+        assert '"main"."Sales Amount" / "fc_0"."Unfiltered Sales"' in sql
 
     def test_refused_alongside_another_fact(self) -> None:
         with pytest.raises(ResolutionError) as exc:
             self._sql_filtered(["Filtered Share", "Refund Amount"])
-        assert "Filtered Share.Unfiltered Sales" in str(exc.value)
+        assert "Unfiltered Sales" in str(exc.value)
 
-    def test_the_refusal_says_what_a_metric_does_to_it(self) -> None:
+    def test_the_refusal_names_the_component_not_the_metric(self) -> None:
+        """The component is what needs the scan, and what the author has to
+        change - naming the metric would point at the wrong declaration."""
         with pytest.raises(ResolutionError) as exc:
-            self._sql_filtered(["Filtered Share"])
+            self._sql_filtered(["Filtered Share", "Refund Amount"])
         message = str(exc.value)
-        assert "filterContext" in message
-        assert "metric" in message
+        assert "'Unfiltered Sales'" in message
+        assert "Filtered Share" not in message
 
     def test_the_component_still_works_when_selected_directly(self) -> None:
-        """The refusal is about how the metric reads it, not about the
-        measure — selecting it by name still gets its own filtered scan, with
-        the query's WHERE left out of it."""
+        """Selecting it by name gets its own filtered scan, with the query's
+        WHERE left out of it."""
         sql = self._sql_filtered(["Grand Unfiltered Sales", "Sales Amount"])
         assert "fc_0" in sql
         # The wrapper projects the inline measure first, then the isolated one.

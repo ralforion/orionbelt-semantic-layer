@@ -48,7 +48,11 @@ def _resolved(**attrs: object) -> ResolvedQuery:
     """
     grouping = attrs.get("grouping")
     has_window = bool(attrs.get("has_window", False))
-    measures = [SimpleNamespace(is_window=True, component_measures=[])] if has_window else []
+    measures = (
+        [SimpleNamespace(is_window=True, component_measures=[], filter_context=None)]
+        if has_window
+        else []
+    )
     ns = SimpleNamespace(
         grouping=SimpleNamespace(value=grouping) if grouping is not None else None,
         has_totals=attrs.get("has_totals", False),
