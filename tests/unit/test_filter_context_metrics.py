@@ -87,6 +87,21 @@ measures:
     columns: [{dataObject: Sales, column: Amount}]
     resultType: int
     aggregation: count
+  Grand Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    total: true
+  Month Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Month]}
+  Grand Avg:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: avg
+    total: true
   Unfiltered Total Revenue:
     columns: [{dataObject: Sales, column: Amount}]
     resultType: float
@@ -112,6 +127,12 @@ metrics:
     measure: Unfiltered Revenue
   Doubled Rank:
     expression: "{[Rank Unfiltered]} * 2"
+  Share Of Grand:
+    expression: "{[Unfiltered Revenue]} / {[Grand Revenue]}"
+  Share Of Month:
+    expression: "{[Unfiltered Revenue]} / {[Month Revenue]}"
+  Share Of Grand Avg:
+    expression: "{[Unfiltered Revenue]} / {[Grand Avg]}"
 """
 
 
@@ -349,3 +370,61 @@ class TestAContextBehindAWindowMetric:
 
         resolved = QueryResolver().resolve(_query(["Rank Unfiltered"]), _model())
         assert resolved.has_filter_context
+
+
+class TestAMetricMixingAContextWithATotal:
+    """This wrapper runs before ``total_wrap`` and rewrites the FROM, so the
+    components it leaves behind are columns of ``main`` and of the isolated
+    CTEs. ``total_wrap`` decomposes the same metric next and was rebuilding
+    those components from their resolved expressions - naming a fact table its
+    own CTE no longer selects from. It reads what this wrapper projected
+    instead, recorded in ``projected_expressions`` the way the planners record
+    theirs."""
+
+    def test_a_total_component_composes(self) -> None:
+        sql = _sql(["Share Of Grand"])
+        assert '"Sales"."AMOUNT"' not in sql.split('"base" AS')[-1]
+        assert 'SUM("Grand Revenue") OVER ()' in sql
+
+    def test_it_answers_what_the_two_measures_do(self) -> None:
+        direct = _rows(["Unfiltered Revenue", "Grand Revenue"])
+        share = _rows(["Share Of Grand"])["Share Of Grand"]
+        expected = [
+            n / d
+            for n, d in zip(direct["Unfiltered Revenue"], direct["Grand Revenue"], strict=True)
+        ]
+        assert [round(v, 6) for v in share] == [round(v, 6) for v in expected]
+
+    def test_a_grain_override_component_composes(self) -> None:
+        direct = _rows(["Unfiltered Revenue", "Month Revenue"])
+        share = _rows(["Share Of Month"])["Share Of Month"]
+        expected = [
+            n / d
+            for n, d in zip(direct["Unfiltered Revenue"], direct["Month Revenue"], strict=True)
+        ]
+        assert [round(v, 6) for v in share] == [round(v, 6) for v in expected]
+
+    @pytest.mark.parametrize(
+        "measures",
+        [
+            ["Share Of Grand Avg"],
+            ["Unfiltered Revenue", "Grand Avg"],
+        ],
+        ids=["through a metric", "side by side"],
+    )
+    def test_an_averaged_total_is_refused(self, measures: list[str]) -> None:
+        """An AVG total decomposes into SUM and COUNT of the aggregate's
+        *argument*, and by the time this wrapper has run the argument is a
+        value that has already been averaged. It was emitting ``SUM(1)`` and
+        ``COUNT(1)`` - neither the right number nor valid SQL - and it did so
+        whether the two met inside a metric or merely in the same query."""
+        with pytest.raises(ResolutionError) as exc:
+            _sql(measures)
+        message = str(exc.value)
+        assert "Grand Avg" in message
+        assert "average" in message
+
+    def test_an_averaged_total_without_a_context_is_untouched(self) -> None:
+        """The refusal is about what filterContext does to the plan, so a query
+        without one still gets its averaged total."""
+        assert _rows(["Grand Avg"])["Grand Avg"] == [3.5, 3.5]

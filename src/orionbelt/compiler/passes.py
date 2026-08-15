@@ -48,7 +48,7 @@ from orionbelt.compiler.having_hoist import (
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
-from orionbelt.compiler.total_wrap import wrap_with_totals
+from orionbelt.compiler.total_wrap import is_avg_total, wrap_with_totals
 from orionbelt.compiler.window_wrap import (
     _ddm_window_components,
     window_pass_applies,
@@ -462,6 +462,47 @@ def evaluate_compatibility(
                             "measures": fc_measures,
                             "conflictsWith": ["a multi-fact (CFL) plan"],
                         },
+                    )
+                ]
+            )
+
+    # Rule 2c2 (raising): an averaged total in a query that also has a
+    # filterContext. ``filter_wrap`` runs first and rewrites the FROM, leaving
+    # every measure as one column of a CTE - which is enough to re-aggregate a
+    # sum, a count, a min or a max over, and not enough for an average.
+    # ``total_wrap`` builds an AVG's grand total from SUM and COUNT of the
+    # aggregate's *argument*, and by then the argument is a value that has
+    # already been averaged; it was emitting ``SUM(1)`` and ``COUNT(1)``,
+    # neither the right number nor valid SQL.
+    if resolved.has_filter_context:
+        candidates = list(resolved.measures) + [
+            comp
+            for m in resolved.measures
+            for comp in metric_leaf_components(m, resolved.metric_components)
+        ]
+        avg_totals = sorted(
+            {c.name for c in candidates if is_avg_total(c, resolved.dedup_measures)}
+        )
+        if avg_totals:
+            listed = ", ".join(f"'{name}'" for name in avg_totals)
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} average over a total or grain override, in "
+                            f"a query that also has a filterContext. The filterContext is "
+                            f"computed first, in a CTE of its own, and leaves every measure "
+                            f"as one column - enough to re-aggregate a sum or a count over, "
+                            f"and not enough for an average, whose total is built from the "
+                            f"rows it averaged."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Total a sum rather than an average, or query the averaged "
+                            "total without the filterContext measure."
+                        ),
+                        context={"measures": avg_totals},
                     )
                 ]
             )

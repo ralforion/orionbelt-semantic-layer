@@ -404,6 +404,21 @@ def wrap_with_filter_context(
                 )
             )
 
+    # Recorded for the wrappers that run after this one. Each of them
+    # re-projects some measure's aggregate into a CTE of its own, and their CTE
+    # selects from what this wrapper built - where the fact tables the resolved
+    # expressions name are gone, and every component is one column of ``main``
+    # or of an isolated CTE. Without this, a metric mixing a filterContext
+    # component with a ``total`` one had the second rebuilt as
+    # ``SUM("Sales"."AMOUNT")`` against a FROM that no longer has ``Sales``.
+    for cte_name, measure_group, _ in isolated_cte_info:
+        for m in measure_group:
+            resolved.projected_expressions[m.name] = ColumnRef(name=m.name, table=cte_name)
+    for metric in split_metrics.values():
+        for comp in leaf_components[metric.name]:
+            if comp.filter_context is None:
+                resolved.projected_expressions[comp.name] = ColumnRef(name=comp.name, table=anchor)
+
     # --- ORDER BY remapping: resolve to CTE aliases ---
     dim_map: dict[tuple[str, str | None], str] = {
         (d.source_column, d.object_name): d.name for d in resolved.dimensions

@@ -84,8 +84,13 @@ def _needs_window_wrap(measure: ResolvedMeasure, dedup_measures: Container[str])
     return measure.total or measure.grain_override is not None
 
 
-def _is_avg_total(measure: ResolvedMeasure, dedup_measures: Container[str]) -> bool:
-    """Check if a measure is an AVG total/grain-override (needs sum+count helpers)."""
+def is_avg_total(measure: ResolvedMeasure, dedup_measures: Container[str]) -> bool:
+    """Whether a measure is an AVG total/grain-override, needing sum+count helpers.
+
+    Public because it is also a *precondition*: the helpers decompose the
+    aggregate's argument, so this measure cannot be window-wrapped over a value
+    some earlier pass already averaged. ``compiler.passes`` refuses that.
+    """
     return _needs_window_wrap(measure, dedup_measures) and measure.aggregation.upper() == "AVG"
 
 
@@ -138,7 +143,7 @@ def _build_total_window(measure: ResolvedMeasure, dedup_measures: Container[str]
 
 def _build_total_window_expr(measure: ResolvedMeasure, dedup_measures: Container[str]) -> Expr:
     partition_by = _partition_by_exprs(measure)
-    if _is_avg_total(measure, dedup_measures):
+    if is_avg_total(measure, dedup_measures):
         return BinaryOp(
             left=WindowFunction(
                 func_name="SUM",
@@ -241,7 +246,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
             for comp in metric_leaf_components(metric, resolved.metric_components):
                 if comp.name in direct_measure_names:
                     continue  # Already present as a direct measure
-                if _is_avg_total(comp, resolved.dedup_measures):
+                if is_avg_total(comp, resolved.dedup_measures):
                     # AVG total needs sum + count helper columns
                     comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
                     base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
@@ -393,7 +398,7 @@ def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:
     """Check if a direct measure with given name is an AVG total/grain-override."""
     for m in resolved.measures:
         if m.name == name and not m.component_measures:
-            return _is_avg_total(m, resolved.dedup_measures)
+            return is_avg_total(m, resolved.dedup_measures)
     return False
 
 
