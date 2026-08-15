@@ -883,6 +883,31 @@ class TestPoPDeclaredDataType:
         # The operand it inherits from is typed.
         assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
 
+    def test_a_wrapper_metric_placeholder_is_not_cast_early(self) -> None:
+        """A window metric's ``pop_base`` column is the base measure, not the rank.
+
+        It only holds the base aggregate until ``window_wrap`` builds the real
+        window call, so the metric's own dataType does not describe it yet.
+        Casting early corrupts the input: a rank declaring ``dataType: integer``
+        truncated ``SUM(amount)`` to INT, so 1.49 and 1.40 both became 1 and
+        ranked equal. The finished window value is still cast, by window_wrap.
+        """
+        raw, source_map = TrackedLoader().load_string(_RANK_POP_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, [e.message for e in result.errors]
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Day", "Region"],
+                measures=["Region Rank", "Amount MoM"],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        pop_base = sql[sql.index('"pop_base" AS (') : sql.index('"pop_compare" AS (')]
+        assert 'SUM("Sales"."amount") AS "Region Rank"' in pop_base
+        assert "CAST" not in pop_base.split('AS "Region Rank"')[0].rsplit(",", 1)[-1]
+        # The window result itself still carries the metric's declared type.
+        assert 'CAST(RANK() OVER (ORDER BY "Amount Sum" DESC) AS INTEGER)' in sql
+
     def test_a_measure_keeps_its_declared_type_inside_a_pop_query(self) -> None:
         """``pop_base`` rebuilds the aggregation, so it must re-apply the cast.
 
@@ -917,3 +942,42 @@ class TestPoPDeclaredDataType:
         cast = 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"'
         assert cast in plain
         assert cast in pop
+
+
+_RANK_POP_YAML = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Id: {code: id, abstractType: string, primaryKey: true}
+      Amount: {code: amount, abstractType: float}
+      Day: {code: day, abstractType: date}
+      Region: {code: region, abstractType: string}
+dimensions:
+  Day: {dataObject: Sales, column: Day}
+  Region: {dataObject: Sales, column: Region}
+measures:
+  Amount Sum:
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    expression: '{[Sales].[Amount]}'
+metrics:
+  Region Rank:
+    type: window
+    measure: Amount Sum
+    windowFunction: rank
+    orderDirection: desc
+    dataType: integer
+  Amount MoM:
+    type: period_over_period
+    expression: '{[Amount Sum]}'
+    dataType: "decimal(18, 2)"
+    periodOverPeriod:
+      timeDimension: Day
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""

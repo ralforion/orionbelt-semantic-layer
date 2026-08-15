@@ -479,11 +479,20 @@ def _build_pop_base_sql(
             )
             # Same cast the star planner applies, so a measure keeps its
             # declared type whether or not the query also has a PoP metric.
-            expr = (
-                _apply_metric_cast(expr, m.name, model, dialect)
-                if m.component_measures
-                else _apply_measure_cast(expr, m.name, model, dialect)
-            )
+            #
+            # A *wrapper* metric is excluded. Its column here is only a
+            # placeholder holding the base measure's aggregate until
+            # ``window_wrap`` / ``cumulative_wrap`` builds the real window
+            # call, so the metric's own dataType does not describe it yet.
+            # Casting it early corrupts the input: a rank declaring
+            # ``dataType: integer`` truncated ``SUM(amount)`` to INT, so 1.49
+            # and 1.40 both became 1 and ranked equal. Those wrappers apply
+            # the metric's type to the finished window value themselves.
+            is_wrapper_metric = m.is_window or m.is_cumulative
+            if m.component_measures and not is_wrapper_metric:
+                expr = _apply_metric_cast(expr, m.name, model, dialect)
+            elif not m.component_measures:
+                expr = _apply_measure_cast(expr, m.name, model, dialect)
             expr_sql = dialect.compile_expr(expr)
             measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(m.name)}")
 
