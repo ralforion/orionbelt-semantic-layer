@@ -43,6 +43,7 @@ class SemanticValidator:
         errors.extend(self._check_within_group_refs(model))
         errors.extend(self._check_computed_column_refs(model))
         errors.extend(self._check_no_cyclic_computed_columns(model))
+        errors.extend(self._check_join_key_expressions(model))
         errors.extend(self._check_distinct_within_group(model))
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
@@ -777,6 +778,47 @@ class SemanticValidator:
                     path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
                 )
             )
+        return errors
+
+    def _check_join_key_expressions(self, model: SemanticModel) -> list[SemanticError]:
+        """Refuse a join key whose expression reads another data object.
+
+        A computed column is legal as a join key — ``build_join_condition``
+        inlines it — but only while it reads its own object. Reading another
+        one puts that object's alias in the ON clause of the join that would
+        introduce it: unbound at best, and circular whenever the reference is
+        reachable only *through* this join. Nothing downstream can repair that,
+        so it is rejected here rather than compiled into SQL the database
+        rejects (or, worse, a plan that silently drops the reference).
+        """
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for i, join in enumerate(obj.joins):
+                sides = [(obj_name, col) for col in join.columns_from]
+                sides += [(join.join_to, col) for col in join.columns_to]
+                for side, col_name in sides:
+                    read = model.column_reference_objects(side, col_name)
+                    if not read:
+                        continue
+                    reads = ", ".join(f"'{name}'" for name in sorted(read))
+                    errors.append(
+                        SemanticError(
+                            code="CROSS_OBJECT_JOIN_KEY",
+                            message=(
+                                f"Join '{obj_name}' → '{join.join_to}' uses computed column "
+                                f"'{col_name}' on '{side}' as a key, but its expression reads "
+                                f"{reads}. A join key cannot depend on another data object."
+                            ),
+                            path=f"dataObjects.{obj_name}.joins[{i}]",
+                            hint=(
+                                "The ON clause is evaluated as the join is made, so a key "
+                                f"reading {reads} would need that object joined first — which "
+                                "is circular when it is reachable only through this join. Use "
+                                f"a physical column of '{side}', or an expression over its own "
+                                "columns."
+                            ),
+                        )
+                    )
         return errors
 
     def _computed_column_graph(self, model: SemanticModel) -> nx.DiGraph[str]:

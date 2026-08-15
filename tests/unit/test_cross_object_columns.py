@@ -288,6 +288,92 @@ class TestUnreachableReference:
         assert "WHERE" not in sql
 
 
+class TestJoinKeys:
+    """A computed column may be a join key — but only while it stays local.
+
+    ``build_join_condition`` inlines the expression into the ON clause, so a
+    key that reads another data object names an alias the join itself is about
+    to introduce: unbound at best, circular when that object is reachable only
+    through this join. There is nothing downstream to repair it with.
+    """
+
+    # Sales joins to Store on a key computed from Store's *own* column.
+    LOCAL_KEY = """\
+version: 1.0
+
+dataObjects:
+  Address:
+    code: CUSTOMER_ADDRESS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Zip: {code: CA_ZIP, abstractType: string}
+
+  Store:
+    code: STORE
+    database: WH
+    schema: PUBLIC
+    columns:
+      Store Zip: {code: S_ZIP, abstractType: string}
+      Store Name: {code: S_NAME, abstractType: string}
+      Zip 5:
+        expression: "SUBSTRING({Store Zip}, 1, 5)"
+        abstractType: string
+
+  Sales:
+    code: STORE_SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Sold Zip: {code: SS_ZIP, abstractType: string}
+      Amount: {code: SS_EXT_SALES_PRICE, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Store
+        columnsFrom: [Sold Zip]
+        columnsTo: [Zip 5]
+
+dimensions:
+  Store Name: {dataObject: Store, column: Store Name, resultType: string}
+
+measures:
+  Sales Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+    # The same model with the key reading Address instead of a sibling.
+    CROSS_OBJECT_KEY = LOCAL_KEY.replace(
+        'expression: "SUBSTRING({Store Zip}, 1, 5)"',
+        'expression: "COALESCE({Store Zip}, {[Address].[Zip]})"',
+    )
+
+    def test_local_computed_join_key_still_inlines(self) -> None:
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=["Store Name"], measures=["Sales Amount"])),
+            _load(self.LOCAL_KEY),
+            "postgres",
+        ).sql
+        assert 'ON "Sales"."SS_ZIP" = SUBSTRING("Store"."S_ZIP", 1, 5)' in sql
+
+    def test_cross_object_join_key_rejected(self) -> None:
+        errors = _errors(self.CROSS_OBJECT_KEY)
+        assert [code for code, _ in errors] == ["CROSS_OBJECT_JOIN_KEY"]
+        message = errors[0][1]
+        assert "Zip 5" in message and "'Address'" in message
+
+    def test_cross_object_join_key_refused_at_load(self) -> None:
+        """The refusal has to land where models are loaded, since that is what
+        every serving surface goes through."""
+        from orionbelt.service.model_store import ModelStore
+
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 — ModelValidationError
+            ModelStore().load_model(self.CROSS_OBJECT_KEY)
+        codes = {e.code for e in getattr(excinfo.value, "errors", [])}
+        assert "CROSS_OBJECT_JOIN_KEY" in codes, codes
+
+
 class TestValidation:
     """References that name nothing are rejected at validation time."""
 
