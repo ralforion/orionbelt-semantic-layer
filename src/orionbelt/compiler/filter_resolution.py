@@ -110,6 +110,12 @@ def resolve_filter_object(
 
     Silently skips filters on unreachable data objects — they are
     irrelevant to the current query.
+
+    Refuses, though, when the object is reachable as more than one *role*: a
+    predicate on ``Date`` in a query joining two facts that each have their own
+    date means one of them, and picking is not the compiler's call. Unlike an
+    unreachable object — absent from the query, so dropping its filter changes
+    nothing — an ambiguous one silently answers a different question.
     """
     if obj_name in ctx.joined_objects:
         return True
@@ -118,7 +124,32 @@ def resolve_filter_object(
     reachable = any(obj_name in ctx.graph.descendants(j) for j in list(ctx.joined_objects))
     if not reachable:
         return False
-    new_steps = ctx.graph.find_join_path(ctx.joined_objects, {obj_name})
+    roles = ctx.graph.role_candidates(
+        ctx.joined_objects, obj_name, prefer_from=ctx.result.base_object
+    )
+    if len(roles) > 1:
+        routes = ", ".join(f"via '{path[-2]}'" for path in roles)
+        ctx.errors.append(
+            SemanticError(
+                code="AMBIGUOUS_JOIN_PATH",
+                message=(
+                    f"Filter field '{_field_label}' is on '{obj_name}', which this "
+                    f"query reaches equally well by more than one route ({routes}). "
+                    f"Those are different roles of the same data object and they "
+                    f"select different rows."
+                ),
+                path=filter_path,
+                hint=(
+                    "Say which one is meant: declare a data object per role over "
+                    "the same table and filter on that, or give the dimension a "
+                    "'via:' waypoint naming the object the join must traverse."
+                ),
+            )
+        )
+        return False
+    new_steps = ctx.graph.find_join_path(
+        ctx.joined_objects, {obj_name}, prefer_from=ctx.result.base_object
+    )
     for step in new_steps:
         if step.to_object not in ctx.joined_objects:
             ctx.result.join_steps.append(step)
