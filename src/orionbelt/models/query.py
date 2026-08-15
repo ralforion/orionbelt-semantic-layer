@@ -117,6 +117,11 @@ class Subquery(BaseModel):
     resolved by walking the model's existing ``joins:`` from the subject's
     data object to ``dataObject`` (same path-resolution machinery the
     query planner uses).
+
+    Each entry in ``filter`` names a column of ``dataObject``, a dimension,
+    or a qualified ``DataObject.Column``. A field on another data object is
+    joined in inside the subquery when it is reachable from ``dataObject``,
+    which is what lets a semi-join be windowed by, say, a date dimension.
     """
 
     data_object: str = Field(alias="dataObject")

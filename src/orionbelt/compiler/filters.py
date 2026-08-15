@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from orionbelt.ast.nodes import (
     Between,
@@ -34,6 +34,9 @@ from orionbelt.models.semantic import (
     MeasureFilterItem,
     SemanticModel,
 )
+
+if TYPE_CHECKING:
+    from orionbelt.compiler.graph import JoinGraph
 
 
 def _escape_like(val: str) -> str:
@@ -508,12 +511,156 @@ def collect_measure_filter_objects(item: MeasureFilterItem, objects: set[str]) -
 # ---------------------------------------------------------------------------
 
 
+def _resolve_subquery_filter_field(
+    field: str,
+    model: SemanticModel,
+    target_object: str,
+    errors: list[SemanticError],
+) -> tuple[str, str] | None:
+    """Resolve a subquery filter's ``field`` to a ``(data object, column)`` pair.
+
+    Accepts, in precedence order, a column of the subquery's own data object,
+    a dimension name, or a qualified ``DataObject.Column`` — the same
+    vocabulary the outer ``where`` understands, minus measure names: a
+    correlated subquery filters rows, not aggregates.
+
+    Column-of-the-target wins over a same-named dimension so a model that
+    grew a dimension shadowing a column keeps compiling to the same SQL.
+    """
+    target_obj = model.data_objects.get(target_object)
+    if target_obj is not None and field in target_obj.columns:
+        return target_object, field
+
+    dim = model.dimensions.get(field)
+    if dim is not None and dim.view:
+        dim_obj = model.data_objects.get(dim.view)
+        if dim_obj is not None and dim.column in dim_obj.columns:
+            return dim.view, dim.column
+
+    if "." in field:
+        obj_name, _, col_name = field.partition(".")
+        obj_name, col_name = obj_name.strip(), col_name.strip()
+        obj = model.data_objects.get(obj_name)
+        if obj is not None and col_name in obj.columns:
+            return obj_name, col_name
+
+    errors.append(
+        SemanticError(
+            code="UNKNOWN_SUBQUERY_FILTER_COLUMN",
+            message=(
+                f"Subquery filter references unknown column '{field}' on "
+                f"'{target_object}' — use a column of that data object, a "
+                f"dimension name, or a qualified 'DataObject.Column'"
+            ),
+            path="filters",
+        )
+    )
+    return None
+
+
+def _join_filter_object_into_subquery(
+    ref_object: str,
+    field: str,
+    *,
+    graph: JoinGraph,
+    model: SemanticModel,
+    subject_object: str,
+    target_object: str,
+    scope: set[str],
+    joins: list[Join],
+    qualify_table: Callable[[DataObject], str],
+    errors: list[SemanticError],
+) -> bool:
+    """Make *ref_object* addressable inside the ``EXISTS`` body.
+
+    Objects already in *scope* — the subquery's own target and the hops the
+    correlation path walked through — need nothing. Anything else is reached
+    with the same walker the outer query uses (forward along many-to-one,
+    either way along the row-preserving cardinalities), and the resulting
+    INNER JOINs are appended to *joins* (and *scope*) in place.
+
+    Returns ``False`` (with a :class:`SemanticError` appended) when the object
+    cannot be reached, or when reaching it would re-enter the correlation
+    subject: an inner ``FROM``/``JOIN`` alias shadows the outer one, which
+    would silently rebind the correlation predicate to the subquery's own rows.
+    """
+    if ref_object in scope:
+        return True
+
+    if ref_object == subject_object:
+        errors.append(
+            SemanticError(
+                code="SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
+                message=(
+                    f"Subquery filter field '{field}' resolves to "
+                    f"'{ref_object}', the subject of the correlation — filter "
+                    f"it in the outer 'where' instead"
+                ),
+                path="filters",
+            )
+        )
+        return False
+
+    # Ask the walker itself rather than a separate reachability test: it is
+    # what decides which hops are legal, so a second rule would only diverge.
+    steps = graph.find_join_path(set(scope), {ref_object})
+    if not steps:
+        errors.append(
+            SemanticError(
+                code="UNREACHABLE_SUBQUERY_FILTER_OBJECT",
+                message=(
+                    f"Subquery filter field '{field}' is on '{ref_object}', "
+                    f"which is not reachable from '{target_object}' — declare "
+                    f"a 'joins:' block"
+                ),
+                path="filters",
+            )
+        )
+        return False
+
+    # ``JoinStep`` keeps from/to in the declared join direction, so the object
+    # a step actually brings into the body is the far end of its *traversal*.
+    joined_objects = [step.from_object if step.reversed else step.to_object for step in steps]
+
+    if subject_object in joined_objects:
+        errors.append(
+            SemanticError(
+                code="SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
+                message=(
+                    f"Subquery filter field '{field}' is on '{ref_object}', "
+                    f"reachable only through '{subject_object}' — the subject "
+                    f"of the correlation cannot be joined inside the subquery"
+                ),
+                path="filters",
+            )
+        )
+        return False
+
+    for step, joined_object in zip(steps, joined_objects, strict=True):
+        if joined_object in scope:
+            continue
+        step_obj = model.data_objects.get(joined_object)
+        if step_obj is None:
+            continue
+        joins.append(
+            Join(
+                join_type=JoinType.INNER,
+                source=qualify_table(step_obj),
+                alias=joined_object,
+                on=graph.build_join_condition(step),
+            )
+        )
+        scope.add(joined_object)
+    return True
+
+
 def build_exists_filter_expr(
     qf: QueryFilter,
     model: SemanticModel,
     subject_object: str,
     qualify_table: Callable[[DataObject], str],
     errors: list[SemanticError],
+    touched_objects: set[str] | None = None,
 ) -> Expr | None:
     """Compile an ``exists`` / ``nonexists`` filter into an ``Exists`` AST node.
 
@@ -521,6 +668,15 @@ def build_exists_filter_expr(
     resolved by walking the model's existing ``joins:`` — the same machinery
     the query planner uses.  Single-hop is the common case; multi-hop paths
     are supported and emit INNER JOINs inside the subquery.
+
+    Subquery filters resolve against the target's join graph, not only its own
+    columns, so a semi-join can be windowed by a dimension one or more hops
+    away; the joins that makes necessary are emitted inside the ``EXISTS``
+    body.
+
+    Every data object the body reads is added to *touched_objects* when given,
+    so the caller can key the freshness cache on tables that never appear in
+    the outer FROM/JOIN chain.
 
     Returns ``None`` and appends ``SemanticError``s on validation failure.
     """
@@ -645,6 +801,11 @@ def build_exists_filter_expr(
 
     where_parts: list[Expr] = [graph.build_join_condition(first_step)]
 
+    # Aliases the subquery body owns: its target plus every hop the
+    # correlation path walked through. The subject stays outside — it is
+    # referenced by the correlation predicate, not joined.
+    scope = {step.to_object for step in path}
+
     nested_seen = False
     for sub_qf in sub.filter:
         if sub_qf.op in (FilterOperator.EXISTS, FilterOperator.NONEXISTS):
@@ -661,22 +822,30 @@ def build_exists_filter_expr(
                 )
                 nested_seen = True
             continue
-        if sub_qf.field not in target_obj.columns:
-            errors.append(
-                SemanticError(
-                    code="UNKNOWN_SUBQUERY_FILTER_COLUMN",
-                    message=(
-                        f"Subquery filter references unknown column "
-                        f"'{sub_qf.field}' on '{sub.data_object}'"
-                    ),
-                    path="filters",
-                )
-            )
+        ref = _resolve_subquery_filter_field(sub_qf.field, model, sub.data_object, errors)
+        if ref is None:
             continue
-        col_expr = make_column_expr(model, sub.data_object, sub_qf.field)
+        ref_object, ref_column = ref
+        if not _join_filter_object_into_subquery(
+            ref_object,
+            sub_qf.field,
+            graph=graph,
+            model=model,
+            subject_object=subject_object,
+            target_object=sub.data_object,
+            scope=scope,
+            joins=joins,
+            qualify_table=qualify_table,
+            errors=errors,
+        ):
+            continue
+        col_expr = make_column_expr(model, ref_object, ref_column)
         sub_expr = build_filter_expr(col_expr, sub_qf, errors)
         if sub_expr is not None:
             where_parts.append(sub_expr)
+
+    if touched_objects is not None:
+        touched_objects.update(scope)
 
     where_expr: Expr = where_parts[0]
     for part in where_parts[1:]:

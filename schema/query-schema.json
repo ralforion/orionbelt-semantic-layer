@@ -61,7 +61,7 @@
         },
         "filter": {
           "type": "array",
-          "description": "Optional predicates restricting which target rows count. Same operator vocabulary as the outer filter; nested 'exists' / 'nonexists' are rejected.",
+          "description": "Optional predicates restricting which target rows count. Same operator vocabulary as the outer filter; nested 'exists' / 'nonexists' are rejected. Each field names a column of the target data object, a dimension, or a qualified 'DataObject.Column'; an object other than the target is joined in inside the subquery when it is reachable from the target and is not the correlation subject.",
           "items": {
             "$ref": "#/definitions/queryFilter"
           }

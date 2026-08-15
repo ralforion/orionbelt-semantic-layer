@@ -168,6 +168,18 @@ dataObjects:
       Credit Rating:
         code: cd_credit_rating
         abstractType: string
+      Dependent Count:
+        code: cd_dep_count
+        abstractType: int
+        numClass: non-additive
+      Employed Dependent Count:
+        code: cd_dep_employed_count
+        abstractType: int
+        numClass: non-additive
+      College Dependent Count:
+        code: cd_dep_college_count
+        abstractType: int
+        numClass: non-additive
 
   Item:
     code: item
@@ -719,6 +731,9 @@ dataObjects:
       Bill Customer Key:
         code: cs_bill_customer_sk
         abstractType: int
+      Ship Customer Key:
+        code: cs_ship_customer_sk
+        abstractType: int
       Bill CDemo Key:
         code: cs_bill_cdemo_sk
         abstractType: int
@@ -810,6 +825,12 @@ dataObjects:
         columnsTo: [Date Key]
         secondary: true
         pathName: ship_date
+      - joinType: many-to-one
+        joinTo: Customer
+        columnsFrom: [Ship Customer Key]
+        columnsTo: [Customer Key]
+        secondary: true
+        pathName: ship_customer
 
   Catalog Returns:
     code: catalog_returns
@@ -1240,6 +1261,21 @@ dimensions:
     dataObject: Customer Demographics
     column: Credit Rating
     resultType: string
+
+  Customer Dependent Count:
+    dataObject: Customer Demographics
+    column: Dependent Count
+    resultType: int
+
+  Customer Employed Dependent Count:
+    dataObject: Customer Demographics
+    column: Employed Dependent Count
+    resultType: int
+
+  Customer College Dependent Count:
+    dataObject: Customer Demographics
+    column: College Dependent Count
+    resultType: int
 
   Reason Description:
     dataObject: Reason

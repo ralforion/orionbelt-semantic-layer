@@ -1257,8 +1257,9 @@ def _atom_to_query_filter(
     # The outer-row subject column is derived from the SELECT's first
     # dim / measure (``exists_subject``) — the planner uses it only to
     # locate the outer data object for join resolution. Inner WHERE
-    # predicates become ``Subquery.filter`` items where ``field`` is a
-    # bare column name on the target data object.
+    # predicates become ``Subquery.filter`` items whose ``field`` is a bare
+    # name — a column of the target, or a dimension the planner resolves
+    # against the target's joins.
     if isinstance(atom, exp.Exists) or (
         isinstance(atom, exp.Not) and isinstance(atom.this, exp.Exists)
     ):
@@ -1435,8 +1436,10 @@ def _translate_exists(
     Inner ``SELECT`` is consumed for two things only:
 
     * ``FROM <target>`` — names the target data object (single source).
-    * ``WHERE <preds>`` — optional predicates on the *target's* columns;
-      become ``Subquery.filter`` items.
+    * ``WHERE <preds>`` — optional predicates; become ``Subquery.filter``
+      items. Each names the target's own column or a dimension, which the
+      planner resolves against the target's joins and joins into the
+      ``EXISTS`` body when it lives one or more hops away.
 
     ``SELECT`` list, ``GROUP BY``, ``ORDER BY``, ``LIMIT``, and joins on
     the inner query are rejected — the planner derives the correlation

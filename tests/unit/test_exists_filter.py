@@ -194,6 +194,200 @@ measures:
 """
 
 
+# A model whose subquery targets join onward, so a subquery filter has
+# somewhere to traverse to: OrderItems → Products, Orders → Dates. Payments
+# hangs off Orders on a many-to-one, which makes it unreachable *from*
+# OrderItems — the negative case.
+TRAVERSAL_MODEL = """\
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+
+  Dates:
+    code: DATES
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: string}
+      Year: {code: YEAR, abstractType: int}
+
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID: {code: ORDER_ID, abstractType: string}
+      Order Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Order Date Key: {code: DATE_KEY, abstractType: string}
+      Amount: {code: AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Order Date Key]
+        columnsTo: [Date Key]
+
+  OrderItems:
+    code: ORDER_ITEMS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Item ID: {code: ITEM_ID, abstractType: string}
+      Item Order ID: {code: ORDER_ID, abstractType: string}
+      Item Product ID: {code: PRODUCT_ID, abstractType: string}
+      SKU: {code: SKU, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom: [Item Order ID]
+        columnsTo: [Order ID]
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Item Product ID]
+        columnsTo: [Product ID]
+
+  Products:
+    code: PRODUCTS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Product ID: {code: PRODUCT_ID, abstractType: string}
+      Category: {code: CATEGORY, abstractType: string}
+      Product SKU: {code: PRODUCT_SKU, abstractType: string}
+
+  Payments:
+    code: PAYMENTS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Payment ID: {code: PAYMENT_ID, abstractType: string}
+      Payment Order ID: {code: ORDER_ID, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom: [Payment Order ID]
+        columnsTo: [Order ID]
+
+dimensions:
+  Customer Country: {dataObject: Customers, column: Country, resultType: string}
+  Order ID: {dataObject: Orders, column: Order ID, resultType: string}
+  Product Category: {dataObject: Products, column: Category, resultType: string}
+  Order Year: {dataObject: Dates, column: Year, resultType: int}
+  SKU: {dataObject: Products, column: Product SKU, resultType: string}
+
+measures:
+  Order Count:
+    columns: [{dataObject: Orders, column: Order ID}]
+    resultType: int
+    aggregation: count
+"""
+
+
+# Like TRAVERSAL_MODEL, but the objects hanging off OrderItems declare their
+# joins the other way round: ItemDetails → OrderItems one-to-one and ItemTags
+# → OrderItems many-to-many. Neither is a *directed* descendant of OrderItems,
+# yet both are row-preserving and therefore legal traversals.
+REVERSE_MODEL = """\
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID: {code: ORDER_ID, abstractType: string}
+      Order Customer ID: {code: CUSTOMER_ID, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+
+  OrderItems:
+    code: ORDER_ITEMS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Item ID: {code: ITEM_ID, abstractType: string}
+      Item Order ID: {code: ORDER_ID, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom: [Item Order ID]
+        columnsTo: [Order ID]
+
+  ItemDetails:
+    code: ITEM_DETAILS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Detail Item ID: {code: DETAIL_ITEM_ID, abstractType: string}
+      Gift Wrapped: {code: GIFT_WRAPPED, abstractType: boolean}
+    joins:
+      - joinType: one-to-one
+        joinTo: OrderItems
+        columnsFrom: [Detail Item ID]
+        columnsTo: [Item ID]
+
+  ItemTags:
+    code: ITEM_TAGS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Tag Item ID: {code: TAG_ITEM_ID, abstractType: string}
+      Tag Name: {code: TAG_NAME, abstractType: string}
+    joins:
+      - joinType: many-to-many
+        joinTo: OrderItems
+        columnsFrom: [Tag Item ID]
+        columnsTo: [Item ID]
+
+dimensions:
+  Customer Country: {dataObject: Customers, column: Country, resultType: string}
+  Order ID: {dataObject: Orders, column: Order ID, resultType: string}
+  Gift Wrapped: {dataObject: ItemDetails, column: Gift Wrapped, resultType: boolean}
+
+measures:
+  Order Count:
+    columns: [{dataObject: Orders, column: Order ID}]
+    resultType: int
+    aggregation: count
+"""
+
+
+def _exists_on_items(sub_filters: list[QueryFilter]) -> QueryObject:
+    """Orders-by-country query semi-joined to OrderItems with *sub_filters*."""
+    return QueryObject(
+        select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+        where=[
+            QueryFilter(
+                field="Order ID",
+                op=FilterOperator.EXISTS,
+                subquery=Subquery(data_object="OrderItems", filter=sub_filters),
+            )
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pydantic-level model validation
 # ---------------------------------------------------------------------------
@@ -372,6 +566,226 @@ class TestExistsCompilation:
         result = PIPELINE.compile(query, model, "postgres")
         assert '"Returns"."ORDER_ID"' in result.sql
         assert '"Returns"."WAREHOUSE_ID"' not in result.sql
+
+
+# ---------------------------------------------------------------------------
+# Subquery filters that traverse the target's joins
+# ---------------------------------------------------------------------------
+
+
+class TestSubqueryFilterTraversal:
+    """A ``Subquery.filter`` may name a dimension or a qualified column on any
+    data object reachable from the subquery's target; the join it needs is
+    emitted inside the ``EXISTS`` body."""
+
+    def test_dimension_one_hop_joins_inside_exists(self) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Product Category", op=FilterOperator.EQUALS, value="Toys")]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert '"Products"."CATEGORY" = \'Toys\'' in sql
+        # The join lands inside the subquery, as an INNER JOIN, and the outer
+        # query is left untouched: Products appears exactly once.
+        assert sql.count("PRODUCTS") == 1
+        assert 'INNER JOIN "PUBLIC"."PRODUCTS" AS "Products"' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+
+    def test_qualified_column_one_hop(self) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Products.Category", op=FilterOperator.EQUALS, value="Toys")]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert '"Products"."CATEGORY" = \'Toys\'' in sql
+        assert sql.count("PRODUCTS") == 1
+
+    def test_target_column_wins_over_same_named_dimension(self) -> None:
+        """``SKU`` is both a column of OrderItems and a dimension on Products.
+        The target's own column takes precedence, so no join is added."""
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="SKU", op=FilterOperator.EQUALS, value="sku-a")]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert '"OrderItems"."SKU" = \'sku-a\'' in sql
+        assert "PRODUCTS" not in sql
+
+    def test_same_object_joined_once_for_two_filters(self) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [
+                QueryFilter(field="Product Category", op=FilterOperator.EQUALS, value="Toys"),
+                QueryFilter(field="Products.Product SKU", op=FilterOperator.EQUALS, value="p-1"),
+            ]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert sql.count('INNER JOIN "PUBLIC"."PRODUCTS"') == 1
+        assert '"Products"."CATEGORY"' in sql
+        assert '"Products"."PRODUCT_SKU"' in sql
+
+    def test_semi_join_windowed_by_a_date_dimension(self) -> None:
+        """The shape this unlocks: "customers who ordered in 2024", where the
+        window lives on a Date object one join past the subquery's target."""
+        model = _load_model(TRAVERSAL_MODEL)
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+            where=[
+                QueryFilter(
+                    field="Customer Country",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(
+                        data_object="Orders",
+                        filter=[
+                            QueryFilter(field="Order Year", op=FilterOperator.EQUALS, value=2024)
+                        ],
+                    ),
+                )
+            ],
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."DATES" AS "Dates"' in sql
+        assert '"Dates"."YEAR" = 2024' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+
+    @pytest.mark.parametrize("dialect_name", ALL_DIALECTS)
+    def test_traversing_filter_compiles_per_dialect(self, dialect_name: str) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Product Category", op=FilterOperator.EQUALS, value="Toys")]
+        )
+        sql = PIPELINE.compile(query, model, dialect_name).sql
+        assert "EXISTS (" in sql, f"{dialect_name}: missing EXISTS"
+        assert "INNER JOIN" in sql, f"{dialect_name}: subquery join not emitted"
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN"), (
+            f"{dialect_name}: join landed outside the subquery"
+        )
+
+    def test_joined_object_tracked_in_physical_tables(self) -> None:
+        """The cache key must cover tables only the EXISTS body reads."""
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Product Category", op=FilterOperator.EQUALS, value="Toys")]
+        )
+        refs = PIPELINE.compile(query, model, "postgres").physical_tables
+        assert any(r.endswith(".PRODUCTS") for r in refs), refs
+        assert any(r.endswith(".ORDER_ITEMS") for r in refs), refs
+
+
+class TestSubqueryFilterReverseTraversal:
+    """Row-preserving joins declared *towards* the subquery's target.
+
+    ``EXISTS`` bodies reach filter objects with the same walker the outer
+    query uses, and that walker treats one-to-one and many-to-many joins as
+    bidirectional. A reachability rule that only followed declared direction
+    would refuse these paths even though the walker would happily emit them.
+    """
+
+    def test_reverse_one_to_one_dimension(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Gift Wrapped", op=FilterOperator.EQUALS, value=True)]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."ITEM_DETAILS" AS "ItemDetails"' in sql
+        assert '"ItemDetails"."DETAIL_ITEM_ID" = "OrderItems"."ITEM_ID"' in sql
+        assert '"ItemDetails"."GIFT_WRAPPED" = TRUE' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+
+    def test_reverse_many_to_many_qualified_column(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="ItemTags.Tag Name", op=FilterOperator.EQUALS, value="gift")]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."ITEM_TAGS" AS "ItemTags"' in sql
+        assert '"ItemTags"."TAG_ITEM_ID" = "OrderItems"."ITEM_ID"' in sql
+        assert '"ItemTags"."TAG_NAME" = \'gift\'' in sql
+
+    def test_reverse_join_tracked_in_physical_tables(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Gift Wrapped", op=FilterOperator.EQUALS, value=True)]
+        )
+        refs = PIPELINE.compile(query, model, "postgres").physical_tables
+        assert any(r.endswith(".ITEM_DETAILS") for r in refs), refs
+
+    def test_reverse_many_to_one_still_refused(self) -> None:
+        """Only row-preserving joins are bidirectional: Orders stays the
+        subject, so nothing changes for the many-to-one direction."""
+        model = _load_model(REVERSE_MODEL)
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [QueryFilter(field="Customers.Country", op=FilterOperator.EQUALS, value="DE")]
+                ),
+                model,
+                "postgres",
+            )
+        assert "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE" in {e.code for e in excinfo.value.errors}
+
+
+class TestSubqueryFilterTraversalValidation:
+    def _expect(self, query: QueryObject, model, code: str) -> None:
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(query, model, "postgres")
+        codes = {e.code for e in excinfo.value.errors}
+        assert code in codes, f"expected {code} in {codes}"
+
+    def test_unreachable_object_rejected(self) -> None:
+        """Payments joins *to* Orders many-to-one, so it is not reachable from
+        OrderItems — filtering on it inside the subquery must not silently
+        widen the semi-join."""
+        model = _load_model(TRAVERSAL_MODEL)
+        self._expect(
+            _exists_on_items(
+                [QueryFilter(field="Payments.Payment ID", op=FilterOperator.EQUALS, value="p1")]
+            ),
+            model,
+            "UNREACHABLE_SUBQUERY_FILTER_OBJECT",
+        )
+
+    def test_subject_object_rejected(self) -> None:
+        """Joining the correlation subject inside the body would shadow its
+        outer alias and rebind the correlation predicate."""
+        model = _load_model(TRAVERSAL_MODEL)
+        self._expect(
+            _exists_on_items([QueryFilter(field="Orders.Amount", op=FilterOperator.GT, value=10)]),
+            model,
+            "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
+        )
+
+    def test_path_through_the_subject_rejected(self) -> None:
+        """Customers is reachable from OrderItems only via Orders, the
+        subject — same shadowing hazard, one hop further out."""
+        model = _load_model(TRAVERSAL_MODEL)
+        self._expect(
+            _exists_on_items(
+                [QueryFilter(field="Customers.Country", op=FilterOperator.EQUALS, value="DE")]
+            ),
+            model,
+            "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
+        )
+
+    def test_unknown_qualified_column_rejected(self) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        self._expect(
+            _exists_on_items(
+                [QueryFilter(field="Products.No Such", op=FilterOperator.EQUALS, value="x")]
+            ),
+            model,
+            "UNKNOWN_SUBQUERY_FILTER_COLUMN",
+        )
+
+    def test_unknown_data_object_in_qualified_field_rejected(self) -> None:
+        model = _load_model(TRAVERSAL_MODEL)
+        self._expect(
+            _exists_on_items(
+                [QueryFilter(field="Nope.Category", op=FilterOperator.EQUALS, value="x")]
+            ),
+            model,
+            "UNKNOWN_SUBQUERY_FILTER_COLUMN",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -754,3 +1168,109 @@ class TestExistsExecution:
         by_country = {country: count for country, count in rows}
         # Only o3 (France) has a returned item.
         assert by_country == {"France": 1}
+
+
+class TestTraversingSubqueryFilterExecution:
+    """The joined-in filter must restrict the semi-join, not the outer rows."""
+
+    def _setup_duckdb(self):
+        import duckdb
+
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE SCHEMA PUBLIC")
+        conn.execute("CREATE TABLE PUBLIC.CUSTOMERS (CUSTOMER_ID TEXT, COUNTRY TEXT)")
+        conn.execute("CREATE TABLE PUBLIC.DATES (DATE_KEY TEXT, YEAR INTEGER)")
+        conn.execute(
+            "CREATE TABLE PUBLIC.ORDERS "
+            "(ORDER_ID TEXT, CUSTOMER_ID TEXT, DATE_KEY TEXT, AMOUNT DOUBLE)"
+        )
+        conn.execute(
+            "CREATE TABLE PUBLIC.ORDER_ITEMS "
+            "(ITEM_ID TEXT, ORDER_ID TEXT, PRODUCT_ID TEXT, SKU TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE PUBLIC.PRODUCTS (PRODUCT_ID TEXT, CATEGORY TEXT, PRODUCT_SKU TEXT)"
+        )
+        conn.execute("CREATE TABLE PUBLIC.PAYMENTS (PAYMENT_ID TEXT, ORDER_ID TEXT)")
+        conn.execute("INSERT INTO PUBLIC.CUSTOMERS VALUES ('c1', 'Germany'), ('c2', 'France')")
+        conn.execute("INSERT INTO PUBLIC.DATES VALUES ('d2023', 2023), ('d2024', 2024)")
+        # o1 (Germany, 2024) has a Toys item; o2 (Germany, 2023) has a Books
+        # item; o3 (France, 2024) has a Books item.
+        conn.execute(
+            "INSERT INTO PUBLIC.ORDERS VALUES "
+            "('o1', 'c1', 'd2024', 100), ('o2', 'c1', 'd2023', 50), ('o3', 'c2', 'd2024', 200)"
+        )
+        conn.execute(
+            "INSERT INTO PUBLIC.PRODUCTS VALUES "
+            "('p1', 'Toys', 'sku-toy'), ('p2', 'Books', 'sku-book')"
+        )
+        conn.execute(
+            "INSERT INTO PUBLIC.ORDER_ITEMS VALUES "
+            "('i1', 'o1', 'p1', 'sku-a'), ('i2', 'o2', 'p2', 'sku-b'), "
+            "('i3', 'o3', 'p2', 'sku-c')"
+        )
+        return conn
+
+    def test_filter_on_joined_object_restricts_the_semi_join(self) -> None:
+        conn = self._setup_duckdb()
+        model = _load_model(TRAVERSAL_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Product Category", op=FilterOperator.EQUALS, value="Toys")]
+        )
+        result = PIPELINE.compile(query, model, "duckdb")
+        rows = conn.execute(result.sql).fetchall()
+        # Only o1 has a Toys item, and it belongs to Germany.
+        assert {country: count for country, count in rows} == {"Germany": 1}
+
+    def test_semi_join_windowed_by_a_date_dimension(self) -> None:
+        conn = self._setup_duckdb()
+        model = _load_model(TRAVERSAL_MODEL)
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+            where=[
+                QueryFilter(
+                    field="Customer Country",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(
+                        data_object="Orders",
+                        filter=[
+                            QueryFilter(field="Order Year", op=FilterOperator.EQUALS, value=2024)
+                        ],
+                    ),
+                )
+            ],
+        )
+        result = PIPELINE.compile(query, model, "duckdb")
+        rows = conn.execute(result.sql).fetchall()
+        # Both customers ordered in 2024, so both are kept — and every one of
+        # their orders is counted, 2023 included. That is the semi-join's
+        # meaning: the window restricts *which customers qualify*, not which
+        # of the outer rows survive.
+        assert {country: count for country, count in rows} == {"Germany": 2, "France": 1}
+
+    def test_nonexists_with_a_traversing_filter(self) -> None:
+        conn = self._setup_duckdb()
+        model = _load_model(TRAVERSAL_MODEL)
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Customer Country"], measures=["Order Count"]),
+            where=[
+                QueryFilter(
+                    field="Order ID",
+                    op=FilterOperator.NONEXISTS,
+                    subquery=Subquery(
+                        data_object="OrderItems",
+                        filter=[
+                            QueryFilter(
+                                field="Product Category",
+                                op=FilterOperator.EQUALS,
+                                value="Toys",
+                            )
+                        ],
+                    ),
+                )
+            ],
+        )
+        result = PIPELINE.compile(query, model, "duckdb")
+        rows = conn.execute(result.sql).fetchall()
+        # o2 and o3 carry no Toys item.
+        assert {country: count for country, count in rows} == {"Germany": 1, "France": 1}
