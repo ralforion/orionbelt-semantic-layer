@@ -200,6 +200,7 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 - A computed column may reference another computed column, on its own data object or another; the referenced expression is inlined recursively (`{doubled} * 2` where `doubled` is `{amount} * 2` compiles to `amount * 2 * 2`). A reference cycle is rejected with `CYCLIC_COMPUTED_COLUMN`, across data objects as well as within one.
 - Braces inside a single-quoted string literal are data, never placeholders. A regex quantifier such as `regexp_extract({Zip}, '[0-9]{5}')` keeps its `{5}`, and `'{Zip}'` stays the literal five characters rather than becoming a column reference. Validation and compilation apply the same rule.
 - Both halves of a column reference are required wherever one appears (`dimensions`, a measure's `columns`, `withinGroup`, measure filters). Omitting `dataObject` or `column` is rejected with `INCOMPLETE_COLUMN_REF`, because an omitted half would otherwise reach SQL as an empty identifier.
+- A computed column must carry its own guards. Filters do not protect it: engines are free to evaluate the projection before, or regardless of, a predicate that would have made it safe. `({Dependent Count} * 1.000) / {Vehicle Count}` alongside a `Vehicle Count > 0` filter is tolerated by DuckDB and raises `Division by zero` on ClickHouse. Write the guard into the expression — `CASE WHEN {Vehicle Count} > 0 THEN ... ELSE NULL END`, or `NULLIF({Vehicle Count}, 0)` as the divisor — and it holds everywhere.
 - ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).
 
 ### Joins
@@ -214,9 +215,35 @@ Joins define relationships between data objects. The data object that declares t
 | `columnsTo` | list | Yes | Column names in the target data object (join keys) |
 | `secondary` | bool | No | Mark as a secondary (alternative) join path (default: `false`) |
 | `pathName` | string | No | Unique name for this join path (required when `secondary: true`) |
+| `required` | bool | No | Whether a row without a match survives the join (default: `false` → `LEFT JOIN`; `true` → `INNER JOIN`) |
 
 !!! note "Fact tables declare joins"
  By convention, fact tables (e.g., `Orders`) declare joins to dimension tables (e.g., `Customers`, `Products`). The compiler uses this to identify fact tables — data objects with joins are preferred as base objects during query resolution.
+
+### Required Joins
+
+Joins compile to `LEFT JOIN`, so a fact row whose foreign key matches nothing
+still appears, with NULLs on the other side. Where the key is mandatory in the
+data and an unmatched row is meaningless, say so:
+
+```yaml
+joins:
+  - joinType: many-to-one
+    joinTo: Store
+    columnsFrom: [Store Key]
+    columnsTo: [Store Key]
+    required: true          # INNER JOIN — unmatched rows drop
+```
+
+This is not the same statement as `joinType`, which is a *cardinality* — how
+many rows meet how many — and says nothing about whether the match is optional.
+
+It is worth stating in the model rather than filtering per query, because the
+filter that stands in for it is not portable. `WHERE right.key IS NOT NULL`
+works on most engines and **silently keeps every row on ClickHouse**, where an
+unmatched right-side column comes back as the type's default (`0`, `''`) rather
+than NULL. Which side of the join to test is not something a model author
+should have to know.
 
 ### Secondary Joins
 
@@ -446,6 +473,7 @@ measures:
 | `description` | string | No | Business description |
 | `filters` | list | No | Filters applied to this measure (supports AND/OR/NOT groups) |
 | `allowFanOut` | bool | No | Allow fan-out joins (default: false) |
+| `defaultValue` | str/number/bool | No | Value to report when the aggregate has nothing to add up (emitted as `COALESCE` around the aggregate). Unset keeps the SQL-standard NULL. |
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
 
@@ -566,6 +594,37 @@ metrics:
  Return Rate:
  expression: "{[Returned Revenue]} / {[Revenue]}"
 ```
+
+### Empty-Set Values
+
+An aggregate over no rows is NULL in standard SQL, and a filtered measure
+reaches that state routinely — the group exists, the filter matches none of it.
+Whether that should read as NULL or as zero is a modelling decision, and
+engines do not agree on the default: ClickHouse answers `0` for an aggregate
+over an empty row set where Postgres, DuckDB and the rest answer NULL.
+
+`defaultValue` settles it in the model, on every dialect:
+
+```yaml
+measures:
+  Returned Revenue:
+    columns: [{dataObject: Returns, column: Amount}]
+    aggregation: sum
+    defaultValue: 0          # COALESCE(SUM(...), 0) — omit to keep NULL
+    filters:
+      - column: {dataObject: Returns, column: Status}
+        operator: equals
+        values: [{dataType: string, valueString: refunded}]
+```
+
+It wraps the aggregate rather than its input: `COALESCE(SUM(x), 0)` answers 0
+when the aggregate saw nothing, where `SUM(COALESCE(x, 0))` would answer 0 for
+a row whose value is missing — a different claim.
+
+Reach for it especially on a measure used as a divisor. A NULL denominator
+yields NULL, but a `0` denominator is a division-by-zero error on some engines,
+so a metric over filtered measures is one empty group away from failing on one
+engine and not another.
 
 ### LISTAGG Measures
 

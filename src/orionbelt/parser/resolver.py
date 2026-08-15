@@ -408,6 +408,7 @@ class ReferenceResolver:
                             columns_to=jdata["columnsTo"],
                             secondary=jdata.get("secondary", False),
                             path_name=jdata.get("pathName"),
+                            required=jdata.get("required", False),
                         )
                     )
 
@@ -719,6 +720,7 @@ class ReferenceResolver:
                     expression=expression,
                     distinct=raw_meas.get("distinct", False),
                     total=raw_meas.get("total", False),
+                    default_value=raw_meas.get("defaultValue"),
                     anchor=raw_meas.get("anchor"),
                     grain=grain_override,
                     filter_context=filter_ctx,

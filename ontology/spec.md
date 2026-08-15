@@ -145,6 +145,7 @@ Required:
 Optional:
 - `obsl:secondary`
 - `obsl:pathName`
+- `obsl:joinRequired` — when true the join is an INNER JOIN rather than the default LEFT
 
 Cardinality:
 - exactly one `obsl:joinTo`
@@ -192,6 +193,7 @@ Optional:
 - `obsl:distinct`
 - `obsl:total`
 - `obsl:allowFanOut`
+- `obsl:defaultValue` — the value to report when the aggregate has nothing to add up
 - `obsl:filterExpression`
 - `obsl:grainMode` — grain override mode: `FIXED` or `RELATIVE`
 - `obsl:grainExclude` — dimension names excluded from inherited grain (multi-valued)
@@ -395,6 +397,7 @@ Recommended practice:
 - `columnsTo[]` -> `obsl:columnTo`
 - `secondary` -> `obsl:secondary`
 - `pathName` -> `obsl:pathName`
+- `required` -> `obsl:joinRequired`
 
 ### 10.5 Dimensions
 - `dataObject` -> `obsl:dataObject`
@@ -412,6 +415,7 @@ Recommended practice:
 - `distinct` -> `obsl:distinct`
 - `total` -> `obsl:total`
 - `allowFanOut` -> `obsl:allowFanOut`
+- `defaultValue` -> `obsl:defaultValue`
 - `filters[]` -> `obsl:filterExpression` (serialized as expression string)
 
 ### 10.7 Metrics

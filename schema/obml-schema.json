@@ -297,6 +297,11 @@
         "pathName": {
           "type": "string",
           "description": "Unique name for this join path within the (source, target) pair. Required when secondary is true. Used in queries via usePathNames to select this join."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether a row without a match on the other side should survive the join. Joins compile to LEFT JOIN by default; set this when the foreign key is mandatory and an unmatched row is meaningless, and the join becomes an INNER JOIN. Distinct from joinType, which is a cardinality and says nothing about optionality. Stating it here rather than filtering per query matters because the equivalent filter is not portable: 'WHERE right.key IS NOT NULL' silently keeps every row on ClickHouse, where an unmatched right-side column comes back as the type default rather than NULL.",
+          "default": false
         }
       },
       "required": [
@@ -709,6 +714,10 @@
         "total": {
           "type": "boolean",
           "description": "will use the total value of the measure"
+        },
+        "defaultValue": {
+          "type": ["string", "number", "boolean"],
+          "description": "Value to report when the aggregate has nothing to add up. An aggregate over no rows is NULL in standard SQL, which a filtered measure reaches routinely, and engines disagree: ClickHouse returns 0 over an empty row set where Postgres, DuckDB and the rest return NULL. Setting this pins the value on every dialect (emitted as COALESCE around the aggregate); leaving it unset keeps the SQL-standard NULL. Same slot as a metric's defaultValue."
         },
         "anchor": {
           "type": "string",

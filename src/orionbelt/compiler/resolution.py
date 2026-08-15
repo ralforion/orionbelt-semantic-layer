@@ -1107,7 +1107,9 @@ class QueryResolver:
             order_by=order_by,
             separator=separator,
         )
-        return self._apply_measure_filters(ctx, measure, result)
+        return self._apply_measure_default(
+            measure, self._apply_measure_filters(ctx, measure, result)
+        )
 
     def _expand_expression(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
         """Expand a measure expression with ``{[DataObject].[Column]}`` refs into AST."""
@@ -1127,7 +1129,25 @@ class QueryResolver:
             args=[inner],
             distinct=distinct,
         )
-        return self._apply_measure_filters(ctx, measure, result)
+        return self._apply_measure_default(
+            measure, self._apply_measure_filters(ctx, measure, result)
+        )
+
+    @staticmethod
+    def _apply_measure_default(measure: Measure, expr: Expr) -> Expr:
+        """Wrap an aggregate in its declared empty-set value.
+
+        Outside the aggregate rather than inside: ``COALESCE(SUM(x), 0)``
+        answers 0 when the aggregate saw nothing, where ``SUM(COALESCE(x, 0))``
+        would answer 0 for a row whose value is missing — a different claim.
+
+        Emitted for every dialect, which is the point: an aggregate over an
+        empty row set is NULL in standard SQL and 0 on ClickHouse, so a model
+        that says what it wants no longer depends on which engine runs it.
+        """
+        if measure.default_value is None:
+            return expr
+        return FunctionCall(name="COALESCE", args=[expr, Literal(value=measure.default_value)])
 
     @staticmethod
     def _apply_measure_filters(

@@ -298,6 +298,24 @@ class DataObjectJoin(BaseModel):
     columns_to: list[str] = Field(alias="columnsTo")
     secondary: bool = False
     path_name: str | None = Field(None, alias="pathName")
+    required: bool = False
+    """Whether a row without a match on the other side should survive the join.
+
+    Joins compile to ``LEFT JOIN`` by default, which keeps such rows. Set this
+    when the foreign key is mandatory in the data and an unmatched row is
+    meaningless: the join becomes an ``INNER JOIN``, and the rows drop.
+
+    It says something ``joinType`` does not. That is a
+    :class:`Cardinality` — how many rows meet how many — and carries nothing
+    about whether the match is optional.
+
+    Stating it here rather than filtering per query matters because the filter
+    that stands in for it is not portable: ``WHERE right.key IS NOT NULL``
+    works on most engines and silently fails on ClickHouse, where an unmatched
+    right-side column comes back as the type's default rather than NULL, so
+    the predicate keeps every row. Which side to test is not something a model
+    author should have to know.
+    """
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -500,6 +518,20 @@ class Measure(BaseModel):
     expression: str | None = None
     distinct: bool = False
     total: bool = False
+    default_value: str | int | float | bool | None = Field(None, alias="defaultValue")
+    """Value to report when the aggregate has nothing to add up.
+
+    An aggregate over no rows is NULL in standard SQL, and a filtered measure
+    reaches that state routinely — the group exists, the filter matches none of
+    it. Whether the answer should read as NULL or as zero is the modeller's
+    call, not the engine's, and engines disagree: ClickHouse returns 0 where
+    Postgres, DuckDB and the rest return NULL for an aggregate over an empty
+    row set. Setting this pins the value on every dialect; leaving it unset
+    keeps the SQL-standard NULL.
+
+    Same slot as :attr:`Metric.default_value`, which does the same job for a
+    window function with nothing to look at.
+    """
     anchor: str | None = None
     """Data object whose grain this measure's expression is evaluated at.
 

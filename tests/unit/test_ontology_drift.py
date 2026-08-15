@@ -169,6 +169,9 @@ _NAME_REMAP = {
     "refresh": "hasRefreshPolicy",
     "maxStaleness": "maxStaleness",
     "delimiter": "delimiter",
+    # ``required`` on a join is ``obsl:joinRequired`` — plain "required" is too
+    # generic for a vocabulary shared with other producers.
+    "required": "joinRequired",
     "vendor": "vendor",
     "data": "extensionData",
     "synonyms": "synonym",

@@ -309,6 +309,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.expressionSource,
         OBSL.filterExpression,
         OBSL.pathName,
+        OBSL.joinRequired,
+        OBSL.defaultValue,
         OBSL.synonym,
         OBSL.secondary,
         OBSL.distinct,
@@ -450,6 +452,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
                 g.add((join_uri, OBSL.secondary, Literal(True)))
             if join.path_name:
                 g.add((join_uri, OBSL.pathName, Literal(join.path_name)))
+            if join.required:
+                g.add((join_uri, OBSL.joinRequired, Literal(True)))
 
     # -- Dimensions ---------------------------------------------------------
     for dim_name, dim in model.dimensions.items():
@@ -536,6 +540,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             g.add((meas_uri, OBSL.total, Literal(True)))
         if meas.allow_fan_out:
             g.add((meas_uri, OBSL.allowFanOut, Literal(True)))
+        if meas.default_value is not None:
+            g.add((meas_uri, OBSL.defaultValue, Literal(meas.default_value)))
 
         # Filter expression
         filter_expr = _serialize_measure_filters(meas.filters)

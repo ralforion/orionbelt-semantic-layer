@@ -1144,6 +1144,8 @@ class OSItoOBML:
             measure_def["filters"] = extras["obml_filters"]
         if extras.get("obml_total"):
             measure_def["total"] = True
+        if extras.get("obml_default_value") is not None:
+            measure_def["defaultValue"] = extras["obml_default_value"]
         if extras.get("obml_allow_fan_out"):
             measure_def["allowFanOut"] = True
         if extras.get("obml_format"):
