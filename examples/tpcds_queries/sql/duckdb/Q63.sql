@@ -32,15 +32,34 @@ WITH "base" AS (
       AND "Item"."i_brand" IN ('amalgimporto #1', 'edu packscholar #1', 'exportiimporto #1', 'importoamalg #1')
     )
   GROUP BY ALL
+), "having_window" AS (
+  SELECT
+    "Manager ID" AS "Manager ID",
+    "Month of Year" AS "Month of Year",
+    "Sales Price Sum" AS "Sales Price Sum",
+    SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS "Avg Monthly Sales",
+    CASE
+      WHEN SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") > 0
+      THEN ABS(
+        "Sales Price Sum" - SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
+      ) / (
+        SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
+      )
+      ELSE NULL
+    END AS "Monthly Variance"
+  FROM "base" AS "base"
 )
 SELECT
-  "Manager ID" AS "Manager ID",
-  "Month of Year" AS "Month of Year",
-  "Sales Price Sum" AS "Sales Price Sum",
-  SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS "Avg Monthly Sales",
-  ABS(
-    "Sales Price Sum" - SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
-  ) / (
-    SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
-  ) AS "Monthly Variance"
-FROM "base" AS "base"
+  "having_window"."Manager ID" AS "Manager ID",
+  "having_window"."Month of Year" AS "Month of Year",
+  "having_window"."Sales Price Sum" AS "Sales Price Sum",
+  "having_window"."Avg Monthly Sales" AS "Avg Monthly Sales",
+  "having_window"."Monthly Variance" AS "Monthly Variance"
+FROM "having_window" AS "having_window"
+WHERE
+  "Monthly Variance" > 0.1
+ORDER BY
+  "Manager ID" ASC,
+  "Avg Monthly Sales" ASC,
+  "Sales Price Sum" ASC
+LIMIT 100

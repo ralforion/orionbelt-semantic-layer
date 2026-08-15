@@ -3315,8 +3315,10 @@ metrics:
     dataType: "decimal(18, 6)"
 
   Monthly Variance:
-    expression: "ABS({[Sales Price Sum]} - {[Manager Sales]} / {[Manager Month Groups]}) / ({[Manager Sales]} / {[Manager Month Groups]})"
-    dataType: "decimal(18, 6)"
+    # Guarded like the reference: a zero average would divide by zero, which
+    # DuckDB tolerates as NULL and ClickHouse raises on.
+    expression: "(CASE WHEN {[Avg Monthly Sales]} > 0 THEN ABS({[Sales Price Sum]} - {[Avg Monthly Sales]}) / {[Avg Monthly Sales]} ELSE NULL END)"
+    dataType: "decimal(18, 8)"
 
   Catalog Revenue Ratio:
     expression: "{[Catalog Sales Amount]} * 100.0 / {[Catalog Class Revenue]}"
@@ -3344,6 +3346,11 @@ metrics:
   Avg Quarterly Sales:
     expression: "{[Manufacturer Sales]} / {[Manufacturer Quarter Groups]}"
     dataType: "decimal(18, 6)"
+
+  Quarterly Deviation:
+    expression: "(CASE WHEN {[Avg Quarterly Sales]} > 0 THEN ABS({[Sales Price Sum]} - {[Avg Quarterly Sales]}) / {[Avg Quarterly Sales]} ELSE NULL END)"
+    dataType: "decimal(18, 8)"
+    description: How far a quarter's sales sit from the manufacturer's quarterly average
 
   bucket1:
     expression: "(CASE WHEN {[B1 Count]} > 74129 THEN {[B1 Avg Discount]} ELSE {[B1 Avg Net Paid]} END)"

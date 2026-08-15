@@ -23,16 +23,18 @@ anything, and so a compiler change shows up as a readable diff.
 ## Coverage
 
 **39 queries verified on two engines** — DuckDB (sf=1) and ClickHouse (sf=10) —
-against each engine's own reference SQL.
+against each engine's own reference SQL, every one compared in full.
 
 ```
 Q3  Q7  Q9  Q10 Q13 Q15 Q19 Q20 Q21 Q22 Q26 Q27 Q28 Q34 Q40 Q42 Q43 Q46 Q48
-Q50 Q52 Q55 Q61 Q62 Q68 Q69 Q72 Q73 Q79 Q83 Q85 Q88 Q90 Q93 Q96 Q98 Q99
+Q50 Q52 Q53 Q55 Q61 Q62 Q63 Q68 Q69 Q72 Q73 Q79 Q83 Q85 Q88 Q90 Q93 Q96 Q98
+Q99
 ```
 
-Two more (`Q53`, `Q63`) match the reference's inner aggregate block exactly;
-their outer threshold filter compares a value against a window-produced
-average, which is compiled but not yet verified end to end here.
+`Q53` and `Q63` were long compared against the reference's inner aggregate
+block only, because their outer threshold tests a value against a
+window-produced average and that predicate used to be evaluated *before* the
+window. They now match end to end.
 
 Known differences, all reference-variant artifacts rather than OBSL errors.
 `sweep.py` reports them separately and does not fail on them (`EXPECTED_DIFF`),

@@ -72,6 +72,10 @@ CASES: dict[str, tuple[list[int] | None, list[int] | None, int, bool]] = {
     "Q48": (None, None, 2, False),
     "Q50": (None, None, 2, True),
     "Q52": (None, None, 2, False),
+    # groups by quarter without selecting it, as the reference does.
+    "Q53": ([0, 2, 3], [0, 1, 2], 4, True),
+    # groups by month without selecting it, as the reference does.
+    "Q63": ([0, 2, 3], [0, 1, 2], 4, True),
     "Q55": (None, None, 2, False),
     "Q61": (None, None, 2, False),
     "Q62": (None, None, 2, True),
@@ -110,10 +114,7 @@ EXPECTED_DIFF: dict[str, set[str]] = {
 # Queries whose aggregate block matches but whose outer threshold filter cannot be
 # expressed today (a HAVING on a windowed value is applied before the window).
 # Compared against the reference's inner block only.
-PARTIAL: dict[str, tuple[list[int], list[int], int]] = {
-    "Q53": ([0, 2, 3], [0, 1, 2], 4),
-    "Q63": ([0, 2, 3], [0, 1, 2], 4),
-}
+PARTIAL: dict[str, tuple[list[int], list[int], int]] = {}
 
 
 # --------------------------------------------------------------------------- model
