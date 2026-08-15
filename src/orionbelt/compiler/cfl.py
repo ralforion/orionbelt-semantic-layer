@@ -752,8 +752,20 @@ class CFLPlanner:
                 flag_col = FunctionCall(name="GROUPING", args=[ColumnRef(name=alias)])
                 outer_builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
 
-        # HAVING — expand alias references to actual CAST'd aggregate expressions
+        # HAVING — expand alias references to actual CAST'd aggregate expressions.
+        # A predicate on a measure a later wrapper finishes with a window
+        # function is withheld, exactly as ``star.py`` withholds it: only the
+        # pre-window aggregate exists here, so evaluating it would filter the
+        # wrong value, and ``PASS_HAVING_WINDOW`` applies it over the windowed
+        # rows instead. CFL is picked by the planner before any pass runs, so
+        # the window pass lands on ``composite_01`` just as it lands on a
+        # wrapper's CTE - this is the multi-fact half of the same rule.
+        from orionbelt.compiler.having_hoist import windowed_aliases
+
+        deferred = windowed_aliases(resolved)
         for hf in resolved.having_filters:
+            if hf.referenced_fields & deferred:
+                continue
             outer_builder.having(_expand_cfl_measure_refs(hf.expression, outer_measure_exprs))
 
         # ORDER BY and LIMIT — remap to CTE aliases
