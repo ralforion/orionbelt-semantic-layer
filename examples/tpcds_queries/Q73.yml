@@ -1,0 +1,16 @@
+select:
+  dimensions: [Customer Name, Customer First Name, Customer Salutation, Customer Preferred Flag, Ticket Number]
+  measures: [Store Sales Count]
+where:
+  - {field: Year, op: inlist, value: [1999, 2000, 2001]}
+  - {field: Day of Month, op: between, value: [1, 2]}
+  - {field: Store County, op: inlist, value: ["Orange County", "Bronx County", "Franklin Parish", "Williamson County"]}
+  - {field: Household Demographics.Vehicle Count, op: gt, value: 0}
+  - {field: Household Demographics.Dependents Per Vehicle, op: gt, value: 1}
+  - {field: Buy Potential, op: inlist, value: ["Unknown", ">10000"]}
+  - {field: Store Sales.Customer Key, op: is_not_null}
+having:
+  - {field: Store Sales Count, op: between, value: [1, 5]}
+orderBy:
+  - {field: Store Sales Count, direction: desc}
+  - {field: Customer Name, direction: asc}

@@ -1,0 +1,18 @@
+select:
+  dimensions: [Manufacturer ID, Quarter of Year]
+  measures: [Sales Price Sum, Avg Quarterly Sales]
+where:
+  - {field: Date.Month Sequence, op: between, value: [1200, 1211]}
+  - {field: Store Sales.Store Key, op: is_not_null}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Category, op: inlist, value: [Books, Children, Electronics]}
+          - {field: Class, op: inlist, value: [personal, portable, reference, self-help]}
+          - {field: Brand, op: inlist, value: ["scholaramalgamalg #14", "scholaramalgamalg #7", "exportiunivamalg #9", "scholaramalgamalg #9"]}
+      - logic: and
+        filters:
+          - {field: Category, op: inlist, value: [Women, Music, Men]}
+          - {field: Class, op: inlist, value: [accessories, classical, fragrances, pants]}
+          - {field: Brand, op: inlist, value: ["amalgimporto #1", "edu packscholar #1", "exportiimporto #1", "importoamalg #1"]}

@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q72 — Catalog sales in 1999 whose item was short in stock that same week,
+# shipped more than five days after the sale, by item, warehouse and week.
+#
+# Three date roles at once (sold, shipped, inventory snapshot) and three
+# cross-object comparisons between them and inventory. The inventory join is
+# on item alone, so it multiplies rows — which the reference counts on
+# purpose, hence allowFanOut on the three counts.
+
+select:
+  dimensions: [Item Description, Inventory Warehouse Name, Catalog Sold Week]
+  measures:
+    - Catalog Sales No Promo Count
+    - Catalog Sales Promo Count
+    - Catalog Sales Row Count
+where:
+  - {field: Catalog Sales.Inventory Same Week, op: "=", value: true}
+  - {field: Catalog Sales.Inventory Below Sold Quantity, op: "=", value: true}
+  - {field: Catalog Sales.Ships After 5 Days, op: "=", value: true}
+  - {field: Buy Potential, op: "=", value: ">10000"}
+  - {field: Catalog Sold Date.Year, op: "=", value: 1999}
+  - {field: Marital Status, op: "=", value: D}
+orderBy:
+  - {field: Catalog Sales Row Count, direction: desc}
+  - {field: Item Description, direction: asc}
+  - {field: Inventory Warehouse Name, direction: asc}
+  - {field: Catalog Sold Week, direction: asc}
+limit: 100

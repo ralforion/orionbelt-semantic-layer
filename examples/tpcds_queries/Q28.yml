@@ -1,0 +1,4 @@
+# Q28 - six quantity/price buckets in one scan
+select:
+  dimensions: []
+  measures: [B1 LP, B1 CNT, B1 CNTD, B2 LP, B2 CNT, B2 CNTD, B3 LP, B3 CNT, B3 CNTD, B4 LP, B4 CNT, B4 CNTD, B5 LP, B5 CNT, B5 CNTD, B6 LP, B6 CNT, B6 CNTD]

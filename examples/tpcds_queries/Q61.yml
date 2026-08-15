@@ -1,0 +1,12 @@
+# Q61 - promotional vs total sales, Jewelry, Nov 1998
+select:
+  dimensions: []
+  measures: [Promotional Sales, Store Sales Amount, promo_pct]
+where:
+  - {field: Year, op: "=", value: 1998}
+  - {field: Month of Year, op: "=", value: 11}
+  - {field: Category, op: "=", value: "Jewelry"}
+  - {field: Store.GMT Offset, op: "=", value: -5}
+  - {field: Customer Address.GMT Offset, op: "=", value: -5}
+  - {field: Store Sales.Customer Key, op: is_not_null}
+  - {field: Store Sales.Store Key, op: is_not_null}

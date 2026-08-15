@@ -1,0 +1,13 @@
+# Q98 — item revenue and share of class revenue
+select:
+  dimensions: [Item ID, Item Description, Category, Class, Current Price]
+  measures: [Store Sales Amount, Revenue Ratio]
+where:
+  - {field: Category, op: inlist, value: [Sports, Books, Home]}
+  - {field: Order Date, op: between, value: ["1999-02-22", "1999-03-24"]}
+orderBy:
+  - {field: Category, direction: asc}
+  - {field: Class, direction: asc}
+  - {field: Item ID, direction: asc}
+  - {field: Item Description, direction: asc}
+  - {field: Revenue Ratio, direction: asc}

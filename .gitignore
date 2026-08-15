@@ -39,7 +39,18 @@ blog/
 review*
 design/
 examples/test*
-examples/tpcds_queries/
+# TPC-DS sweep harness. The queries, the runner and the compiled SQL are
+# published so the coverage is auditable; the generated database, the working
+# notes and the drafts that do not yet match the reference are not.
+examples/tpcds_queries/*
+!examples/tpcds_queries/README.md
+!examples/tpcds_queries/sweep.py
+!examples/tpcds_queries/Q*.yml
+!examples/tpcds_queries/sql/
+examples/tpcds_queries/*.duckdb
+examples/tpcds_queries/REPORT.md
+examples/tpcds_queries/tpcds_run.py
+examples/tpcds_queries/drafts/
 semantic-layer-spec.md
 
 # Generated per-vendor seed scripts (backup of what the drift seed executed)

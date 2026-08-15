@@ -1,0 +1,58 @@
+# TPC-DS Q10 — demographics of customers in five counties who bought in store
+# in Q1 2002 and also bought on the web or from the catalog in that window.
+#
+# Same three date-windowed semi-joins as Q69, but the web and catalog legs are
+# OR-ed: a group of two `exists` filters, each carrying a filter that traverses
+# from the subquery's target to the Date object.
+select:
+  dimensions:
+    - Gender
+    - Marital Status
+    - Education Status
+    - Purchase Estimate
+    - Credit Rating
+    - Customer Dependent Count
+    - Customer Employed Dependent Count
+    - Customer College Dependent Count
+  measures: [Customer Count]
+where:
+  - field: Customer County
+    op: inlist
+    value: ["Rush County", "Toole County", "Jefferson County", "Dona Ana County", "La Porte County"]
+  # The reference inner-joins customer_demographics; every join compiles to a
+  # LEFT JOIN today, so the FK is filtered on the left side (finding 6).
+  - {field: Customer.Customer Demographics Key, op: is_not_null}
+  - field: Customer.Customer Key
+    op: exists
+    subquery:
+      dataObject: Store Sales
+      filter:
+        - {field: Year, op: "=", value: 2002}
+        - {field: Month of Year, op: between, value: [1, 4]}
+  - logic: or
+    filters:
+      - field: Customer.Customer Key
+        op: exists
+        subquery:
+          dataObject: Web Sales
+          filter:
+            - {field: Year, op: "=", value: 2002}
+            - {field: Month of Year, op: between, value: [1, 4]}
+      - field: Customer.Customer Key
+        op: exists
+        subquery:
+          dataObject: Catalog Sales
+          pathName: ship_customer
+          filter:
+            - {field: Year, op: "=", value: 2002}
+            - {field: Month of Year, op: between, value: [1, 4]}
+orderBy:
+  - {field: Gender, direction: asc}
+  - {field: Marital Status, direction: asc}
+  - {field: Education Status, direction: asc}
+  - {field: Purchase Estimate, direction: asc}
+  - {field: Credit Rating, direction: asc}
+  - {field: Customer Dependent Count, direction: asc}
+  - {field: Customer Employed Dependent Count, direction: asc}
+  - {field: Customer College Dependent Count, direction: asc}
+limit: 100

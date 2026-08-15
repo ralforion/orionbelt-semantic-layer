@@ -283,6 +283,42 @@ dataObjects:
         columnsFrom: [Week Sequence]
         columnsTo: [Week Sequence]
 
+  # Q72 needs three date roles in one query — the sale's, the shipment's and
+  # the inventory snapshot's — and compares them to each other.
+  Catalog Sold Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Date: {code: d_date, abstractType: date}
+      Year: {code: d_year, abstractType: int}
+      Week Sequence: {code: d_week_seq, abstractType: int}
+
+  Catalog Ship Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Date: {code: d_date, abstractType: date}
+
+  Inventory Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Week Sequence: {code: d_week_seq, abstractType: int}
+
+  Inventory Warehouse:
+    code: warehouse
+    database: tpcds
+    schema: tpcds
+    columns:
+      Warehouse Key: {code: w_warehouse_sk, abstractType: int, primaryKey: true}
+      Warehouse Name: {code: w_warehouse_name, abstractType: string}
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -936,6 +972,9 @@ dataObjects:
       Bill CDemo Key:
         code: cs_bill_cdemo_sk
         abstractType: int
+      Bill HDemo Key:
+        code: cs_bill_hdemo_sk
+        abstractType: int
       Promo Key:
         code: cs_promo_sk
         abstractType: int
@@ -981,6 +1020,16 @@ dataObjects:
         code: cs_net_profit
         abstractType: float
         numClass: additive
+      # Cross-object comparisons between the three date roles and inventory.
+      Inventory Same Week:
+        expression: "{[Catalog Sold Date].[Week Sequence]} = {[Inventory Date].[Week Sequence]}"
+        abstractType: boolean
+      Ships After 5 Days:
+        expression: "{[Catalog Ship Date].[Date]} > {[Catalog Sold Date].[Date]} + 5"
+        abstractType: boolean
+      Inventory Below Sold Quantity:
+        expression: "{[Inventory].[Quantity On Hand]} < {Quantity}"
+        abstractType: boolean
     joins:
       - joinType: many-to-one
         joinTo: Date
@@ -1024,6 +1073,24 @@ dataObjects:
         columnsTo: [Date Key]
         secondary: true
         pathName: ship_date
+      - joinType: many-to-one
+        joinTo: Catalog Sold Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Catalog Ship Date
+        columnsFrom: [Ship Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Household Demographics
+        columnsFrom: [Bill HDemo Key]
+        columnsTo: [Demo Key]
+      # Inventory joins on item alone, so one sale meets every snapshot of
+      # that item: many-to-many, and Q72 counts the product on purpose.
+      - joinType: many-to-many
+        joinTo: Inventory
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
       - joinType: many-to-one
         joinTo: Customer
         columnsFrom: [Ship Customer Key]
@@ -1187,6 +1254,14 @@ dataObjects:
         joinTo: Date
         columnsFrom: [Date Key]
         columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Inventory Date
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Inventory Warehouse
+        columnsFrom: [Warehouse Key]
+        columnsTo: [Warehouse Key]
       - joinType: many-to-one
         joinTo: Item
         columnsFrom: [Item Key]
@@ -1505,6 +1580,16 @@ dimensions:
     column: Dependent Count
     resultType: int
 
+  Inventory Warehouse Name:
+    dataObject: Inventory Warehouse
+    column: Warehouse Name
+    resultType: string
+
+  Catalog Sold Week:
+    dataObject: Catalog Sold Date
+    column: Week Sequence
+    resultType: int
+
   Warehouse Name 20:
     dataObject: Warehouse
     column: Warehouse Name 20
@@ -1757,6 +1842,33 @@ measures:
     aggregation: sum
     dataType: bigint
     format: "#,##0"
+
+  Catalog Sales No Promo Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Catalog Sales, column: Promo Key}
+        operator: notset
+
+  Catalog Sales Promo Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Catalog Sales, column: Promo Key}
+        operator: set
+
+  Catalog Sales Row Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
 
   Avg Inventory:
     columns:

@@ -1,0 +1,40 @@
+select:
+  dimensions: []
+  measures: [Quantity Sum]
+where:
+  - {field: Year, op: "=", value: 2000}
+  - {field: Store Sales.Store Key, op: is_not_null}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "M"}
+          - {field: Education Status, op: "=", value: "4 yr Degree"}
+          - {field: Store Sales.Sales Price, op: between, value: [100.00, 150.00]}
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "D"}
+          - {field: Education Status, op: "=", value: "2 yr Degree"}
+          - {field: Store Sales.Sales Price, op: between, value: [50.00, 100.00]}
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "S"}
+          - {field: Education Status, op: "=", value: "College"}
+          - {field: Store Sales.Sales Price, op: between, value: [150.00, 200.00]}
+  - {field: Address Country, op: "=", value: "United States"}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["CO", "OH", "TX"]}
+          - {field: Store Sales.Net Profit, op: between, value: [0, 2000]}
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["OR", "MN", "KY"]}
+          - {field: Store Sales.Net Profit, op: between, value: [150, 3000]}
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["VA", "CA", "MS"]}
+          - {field: Store Sales.Net Profit, op: between, value: [50, 25000]}
+usePathNames:
+  - {source: Store Sales, target: Customer Address, pathName: sale_address}

@@ -1,0 +1,14 @@
+select:
+  dimensions: [Customer Zip]
+  measures: [Catalog Sales Price Sum]
+where:
+  - {field: Quarter of Year, op: "=", value: 2}
+  - {field: Year, op: "=", value: 2001}
+  - logic: or
+    filters:
+      - {field: Customer Zip 5, op: inlist, value: ["85669","86197","88274","83405","86475","85392","85460","80348","81792"]}
+      - {field: Customer State, op: inlist, value: ["CA","WA","GA"]}
+      - {field: Catalog Sales.Sales Price, op: gt, value: 500}
+orderBy:
+  - {field: Customer Zip, direction: asc}
+limit: 100

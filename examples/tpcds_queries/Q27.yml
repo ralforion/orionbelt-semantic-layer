@@ -1,0 +1,13 @@
+select:
+  dimensions: [Item ID, Store State]
+  measures: [Avg Quantity, Avg List Price Precise, Avg Coupon Amount, Avg Sales Price Precise]
+where:
+  - {field: Gender, op: "=", value: "M"}
+  - {field: Marital Status, op: "=", value: "S"}
+  - {field: Education Status, op: "=", value: "College"}
+  - {field: Year, op: "=", value: 2002}
+  - {field: Store State, op: "=", value: "TN"}
+grouping: rollup
+orderBy:
+  - {field: Item ID, direction: asc}
+  - {field: Store State, direction: asc}

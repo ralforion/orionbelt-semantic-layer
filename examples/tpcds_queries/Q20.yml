@@ -1,0 +1,13 @@
+select:
+  dimensions: [Item ID, Item Description, Category, Class, Current Price]
+  measures: [Catalog Sales Amount, Catalog Revenue Ratio]
+where:
+  - {field: Category, op: inlist, value: [Sports, Books, Home]}
+  - {field: Order Date, op: between, value: ["1999-02-22", "1999-03-24"]}
+orderBy:
+  - {field: Category, direction: asc}
+  - {field: Class, direction: asc}
+  - {field: Item ID, direction: asc}
+  - {field: Item Description, direction: asc}
+  - {field: Catalog Revenue Ratio, direction: asc}
+limit: 100

@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q50 — Store returns in August 2001 bucketed by how long after the sale they
+# came back. The delay is a cross-object computed column on Store Sales
+# (returned date key minus sold date key), and so is the customer-match
+# condition the reference expresses as a join predicate.
+
+select:
+  dimensions:
+    - Store Name
+    - Store Company ID
+    - Store Street Number
+    - Store Street Name
+    - Store Street Type
+    - Store Suite Number
+    - Store City
+    - Store County
+    - Store State
+    - Store Zip
+  measures:
+    - Store Return 30 days
+    - Store Return 31-60 days
+    - Store Return 61-90 days
+    - Store Return 91-120 days
+    - Store Return over 120 days
+where:
+  - {field: Store Returned Date.Year, op: "=", value: 2001}
+  - {field: Store Returned Date.Month of Year, op: "=", value: 8}
+  - {field: Store Sales.Same Return Customer, op: "=", value: true}
+  # The reference inner-joins store; every join here is a LEFT JOIN, so the
+  # sales rows with no store are excluded explicitly (gap #3 in REPORT.md).
+  - {field: Store Sales.Store Key, op: is_not_null}
+orderBy:
+  - {field: Store Name, direction: asc}
+  - {field: Store Company ID, direction: asc}
+  - {field: Store Street Number, direction: asc}
+  - {field: Store Street Name, direction: asc}
+  - {field: Store Street Type, direction: asc}
+  - {field: Store Suite Number, direction: asc}
+  - {field: Store City, direction: asc}
+  - {field: Store County, direction: asc}
+  - {field: Store State, direction: asc}
+  - {field: Store Zip, direction: asc}
+limit: 100

@@ -1,0 +1,12 @@
+select:
+  dimensions: [Warehouse Name, Item ID]
+  measures: [Inventory Before, Inventory After, Inventory Ratio]
+where:
+  - {field: Current Price, op: between, value: [0.99, 1.49]}
+  - {field: Order Date, op: between, value: ["2000-02-10", "2000-04-10"]}
+having:
+  - {field: Inventory Ratio, op: between, value: [0.666666666, 1.5]}
+orderBy:
+  - {field: Warehouse Name, direction: asc}
+  - {field: Item ID, direction: asc}
+limit: 100
