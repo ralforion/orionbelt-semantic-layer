@@ -309,6 +309,15 @@ classes:
         json_schema: true
         ontology_property: pathName
         osi_roundtrip: true
+      required:
+        alias: required
+        type: "bool"
+        json_schema: true
+        ontology_property: joinRequired
+        # Joins carry no custom-extension channel in the OSI converter, so
+        # this is dropped on the way out — as `secondary` and `pathName`
+        # already are, despite what their entries claim.
+        osi_roundtrip: false
   Dimension:
     python: orionbelt.models.semantic.Dimension
     json_schema_def: dimension
@@ -610,6 +619,12 @@ classes:
         json_schema: true
         ontology_property: allowFanOut
         osi_roundtrip: true
+      default_value:
+        alias: defaultValue
+        type: "str | int | float | bool | None"
+        json_schema: true
+        ontology_property: defaultValue
+        osi_roundtrip: true
       delimiter:
         alias: delimiter
         type: "str | None"
@@ -781,7 +796,7 @@ classes:
         alias: defaultValue
         type: "str | int | float | bool | None"
         json_schema: true
-        ontology_property: null
+        ontology_property: windowDefaultValue
         osi_roundtrip: true
       data_type:
         alias: dataType

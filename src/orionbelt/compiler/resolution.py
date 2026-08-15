@@ -284,6 +284,7 @@ class ResolvedMeasure:
     aggregation: str
     expression: Expr
     is_expression: bool = False
+    default_value: str | int | float | bool | None = None
     component_measures: list[str] = field(default_factory=list)
     total: bool = False
     # Grain override fields
@@ -317,6 +318,37 @@ class ResolvedMeasure:
     window_buckets: int | None = None
     window_order_direction: str = "desc"
     window_default_value: str | int | float | bool | None = None
+
+    @property
+    def aggregate(self) -> Expr:
+        """The aggregate itself, with any declared empty-set default peeled off.
+
+        ``defaultValue`` presents as ``COALESCE(<aggregate>, <default>)``,
+        which is what should be *projected* but not what should be taken
+        apart: code reading an aggregate's arguments — a multi-field COUNT
+        spread across CFL legs, a two-column statistic — would otherwise count
+        the default as an argument, and did, producing a union leg that
+        selected a bare ``0`` and an outer query that concatenated it.
+
+        Anything inspecting the shape of the aggregate wants this; anything
+        emitting the measure's value wants :attr:`expression`.
+        """
+        expr = self.expression
+        if self.default_value is None:
+            return expr
+        if (
+            isinstance(expr, FunctionCall)
+            and expr.name.upper() == "COALESCE"
+            and len(expr.args) == 2
+        ):
+            return expr.args[0]
+        return expr
+
+    def with_default(self, expr: Expr) -> Expr:
+        """Re-apply the declared default around a rebuilt aggregate."""
+        if self.default_value is None:
+            return expr
+        return FunctionCall(name="COALESCE", args=[expr, Literal(value=self.default_value)])
 
     @property
     def is_derived_metric(self) -> bool:
@@ -1032,6 +1064,7 @@ class QueryResolver:
             expression=expr,
             is_expression=measure.expression is not None,
             total=measure.total,
+            default_value=measure.default_value,
             grain_override=grain_override,
             effective_grain=effective_grain,
             filter_context=measure.filter_context,
@@ -1107,7 +1140,9 @@ class QueryResolver:
             order_by=order_by,
             separator=separator,
         )
-        return self._apply_measure_filters(ctx, measure, result)
+        return self._apply_measure_default(
+            measure, self._apply_measure_filters(ctx, measure, result)
+        )
 
     def _expand_expression(self, ctx: _ResolutionContext, measure: Measure) -> Expr:
         """Expand a measure expression with ``{[DataObject].[Column]}`` refs into AST."""
@@ -1127,7 +1162,25 @@ class QueryResolver:
             args=[inner],
             distinct=distinct,
         )
-        return self._apply_measure_filters(ctx, measure, result)
+        return self._apply_measure_default(
+            measure, self._apply_measure_filters(ctx, measure, result)
+        )
+
+    @staticmethod
+    def _apply_measure_default(measure: Measure, expr: Expr) -> Expr:
+        """Wrap an aggregate in its declared empty-set value.
+
+        Outside the aggregate rather than inside: ``COALESCE(SUM(x), 0)``
+        answers 0 when the aggregate saw nothing, where ``SUM(COALESCE(x, 0))``
+        would answer 0 for a row whose value is missing — a different claim.
+
+        Emitted for every dialect, which is the point: an aggregate over an
+        empty row set is NULL in standard SQL and 0 on ClickHouse, so a model
+        that says what it wants no longer depends on which engine runs it.
+        """
+        if measure.default_value is None:
+            return expr
+        return FunctionCall(name="COALESCE", args=[expr, Literal(value=measure.default_value)])
 
     @staticmethod
     def _apply_measure_filters(

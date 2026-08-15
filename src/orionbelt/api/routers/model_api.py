@@ -118,6 +118,7 @@ def _build_schema(model_id: str, model: SemanticModel) -> SchemaResponse:
             columns=[{"dataObject": c.view or "", "column": c.column or ""} for c in m.columns],
             distinct=m.distinct,
             total=m.total,
+            default_value=m.default_value,
             description=m.description,
             format=m.format,
             data_type=m.data_type,
@@ -343,6 +344,7 @@ def _build_join_graph(model: SemanticModel) -> JoinGraphResponse:
                     columns_to=join.columns_to,
                     secondary=join.secondary,
                     path_name=join.path_name,
+                    required=join.required,
                 )
             )
     return JoinGraphResponse(nodes=nodes, edges=edges)

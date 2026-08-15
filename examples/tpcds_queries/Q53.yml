@@ -16,3 +16,12 @@ where:
           - {field: Category, op: inlist, value: [Women, Music, Men]}
           - {field: Class, op: inlist, value: [accessories, classical, fragrances, pants]}
           - {field: Brand, op: inlist, value: ["amalgimporto #1", "edu packscholar #1", "exportiimporto #1", "importoamalg #1"]}
+having:
+  # The outer threshold the reference applies after the window — blocked until
+  # a HAVING on a window-produced value stopped being evaluated before it.
+  - {field: Quarterly Deviation, op: gt, value: 0.1}
+orderBy:
+  - {field: Avg Quarterly Sales, direction: asc}
+  - {field: Sales Price Sum, direction: asc}
+  - {field: Manufacturer ID, direction: asc}
+limit: 100

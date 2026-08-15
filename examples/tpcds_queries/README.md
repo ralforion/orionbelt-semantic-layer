@@ -22,17 +22,19 @@ anything, and so a compiler change shows up as a readable diff.
 
 ## Coverage
 
-**39 queries verified on two engines** — DuckDB (sf=1) and ClickHouse (sf=10) —
-against each engine's own reference SQL.
+**40 queries verified on two engines** — DuckDB (sf=1) and ClickHouse (sf=10) —
+against each engine's own reference SQL, every one compared in full.
 
 ```
-Q3  Q7  Q9  Q10 Q13 Q15 Q19 Q20 Q21 Q22 Q26 Q27 Q28 Q34 Q40 Q42 Q43 Q46 Q48
-Q50 Q52 Q55 Q61 Q62 Q68 Q69 Q72 Q73 Q79 Q83 Q85 Q88 Q90 Q93 Q96 Q98 Q99
+Q03 Q07 Q09 Q10 Q13 Q15 Q19 Q20 Q21 Q22 Q26 Q27 Q28 Q34 Q40 Q42 Q43 Q46 Q48
+Q50 Q52 Q53 Q55 Q61 Q62 Q63 Q65 Q68 Q69 Q72 Q73 Q79 Q83 Q85 Q88 Q90 Q93 Q96
+Q98 Q99
 ```
 
-Two more (`Q53`, `Q63`) match the reference's inner aggregate block exactly;
-their outer threshold filter compares a value against a window-produced
-average, which is compiled but not yet verified end to end here.
+`Q53` and `Q63` were long compared against the reference's inner aggregate
+block only, because their outer threshold tests a value against a
+window-produced average and that predicate used to be evaluated *before* the
+window. They now match end to end.
 
 Known differences, all reference-variant artifacts rather than OBSL errors.
 `sweep.py` reports them separately and does not fail on them (`EXPECTED_DIFF`),
@@ -43,6 +45,21 @@ so a non-zero exit means something genuinely regressed:
 | Q20, Q98 | ClickHouse | the reference truncates a ratio to 2dp; every other column and row matches |
 | Q40 | ClickHouse | the `COALESCE(..., 0)` metric added for DuckDB is wrong where the filtered measure already yields 0 |
 | Q99 | DuckDB | DuckDB's reference variant lowercases `cc_name`; ClickHouse's does not, and Q99 matches there exactly |
+
+### An aggregate of aggregates
+
+Revenue per (store, item), then the mean of those per store — `Q53`, `Q63` and
+`Q65` all need it. It is modelled as a grain-override sum divided by the number
+of groups in the partition. Two things about that reconstruction are easy to
+get wrong, and both were:
+
+- **Group by the surrogate keys the reference groups by.** Twelve stores share
+  eight names and 18,000 items have 17,992 distinct description tuples, so
+  grouping by the display columns merges rows the reference keeps apart. At
+  sf=1 that passed; at sf=10 it returned 3,022 rows against 181,274.
+- **Count only the groups that have a value.** `avg` skips a group whose value
+  is NULL — 18,899 of them here — while `count(distinct …)` counts it, making
+  the average too low and the threshold too tight.
 
 ## Running it
 

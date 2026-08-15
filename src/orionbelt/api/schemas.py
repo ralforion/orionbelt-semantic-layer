@@ -936,6 +936,14 @@ class MeasureDetail(BaseModel):
     columns: list[dict[str, str]] = Field(default_factory=list)
     distinct: bool = False
     total: bool = False
+    default_value: str | int | float | bool | None = Field(
+        default=None,
+        alias="defaultValue",
+        description=(
+            "Value reported when the aggregate has nothing to add up. Unset "
+            "means the SQL-standard NULL."
+        ),
+    )
     description: str | None = None
     format: str | None = None
     data_type: str | None = Field(default=None, alias="dataType")
@@ -1068,6 +1076,13 @@ class JoinEdge(BaseModel):
     columns_to: list[str] = Field(default_factory=list)
     secondary: bool = False
     path_name: str | None = None
+    required: bool = Field(
+        False,
+        description=(
+            "Whether an unmatched row survives this join. False compiles to "
+            "LEFT JOIN, true to INNER JOIN."
+        ),
+    )
 
 
 class JoinGraphResponse(BaseModel):

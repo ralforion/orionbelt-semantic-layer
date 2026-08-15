@@ -1,4 +1,4 @@
--- Q9 — OBSL-compiled, dialect: duckdb
+-- Q09 — OBSL-compiled, dialect: duckdb
 -- Regenerate: uv run python sweep.py --dialect duckdb --dump
 
 SELECT

@@ -483,8 +483,11 @@ class CFLPlanner:
             # measures — the database fills them automatically.
             for m in all_measures:
                 if self._is_multi_field(m):
-                    assert isinstance(m.expression, FunctionCall)
-                    for i, arg in enumerate(m.expression.args):
+                    # The aggregate, not the expression: a declared default
+                    # wraps it in a COALESCE whose second argument is the
+                    # default itself, which is not one of the aggregate's.
+                    assert isinstance(m.aggregate, FunctionCall)
+                    for i, arg in enumerate(m.aggregate.args):
                         alias = aliases.multi_field[m.name][i]
                         if self._leg_projects_argument(m, arg, obj_name, this_measure_names):
                             leg_builder.select(AliasedExpr(expr=arg, alias=alias))

@@ -34,13 +34,32 @@ WITH "base" AS (
       AND "Item"."i_brand" IN ('amalgimporto #1', 'edu packscholar #1', 'exportiimporto #1', 'importoamalg #1')
     )
   GROUP BY ALL
+), "having_window" AS (
+  SELECT
+    "Manager ID" AS "Manager ID",
+    "Month of Year" AS "Month of Year",
+    "Sales Price Sum" AS "Sales Price Sum",
+    CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS "Avg Monthly Sales",
+    CASE
+      WHEN CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) > 0
+      THEN CAST(ABS(
+        "Sales Price Sum" - CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14)))
+      ) AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14)))
+      ELSE NULL
+    END AS "Monthly Variance"
+  FROM "base" AS "base"
 )
 SELECT
-  "Manager ID" AS "Manager ID",
-  "Month of Year" AS "Month of Year",
-  "Sales Price Sum" AS "Sales Price Sum",
-  CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS "Avg Monthly Sales",
-  CAST(ABS(
-    "Sales Price Sum" - CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14)))
-  ) AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14))) AS "Monthly Variance"
-FROM "base" AS "base"
+  "having_window"."Manager ID" AS "Manager ID",
+  "having_window"."Month of Year" AS "Month of Year",
+  "having_window"."Sales Price Sum" AS "Sales Price Sum",
+  "having_window"."Avg Monthly Sales" AS "Avg Monthly Sales",
+  "having_window"."Monthly Variance" AS "Monthly Variance"
+FROM "having_window" AS "having_window"
+WHERE
+  "Monthly Variance" > 0.1
+ORDER BY
+  "Manager ID" ASC,
+  "Avg Monthly Sales" ASC,
+  "Sales Price Sum" ASC
+LIMIT 100

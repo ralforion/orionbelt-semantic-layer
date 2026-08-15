@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q65 — Items whose revenue at a store is a tenth or less of what that store
+# makes per item on average, over one year of month sequences.
+#
+# The average is an aggregate of aggregates: revenue per (store, item), then
+# the mean of those per store. It becomes a grain-override sum over the count
+# of item groups in the partition, and the threshold is a HAVING on that
+# windowed value — which is only evaluated after the window since phase 2.
+
+select:
+  dimensions:
+    # Grouped by the surrogate keys, as the reference is: store names are not
+    # unique, and item description tuples repeat across item rows.
+    - Store Key Dim
+    - Item Key Dim
+    - Store Name
+    - Item Description
+    - Current Price
+    - Item Wholesale Cost
+    - Brand
+  measures: [Sales Price Sum]
+where:
+  - {field: Date.Month Sequence, op: between, value: [1176, 1187]}
+  # The reference inner-joins store; ss_store_sk is nullable (gap #3).
+  - {field: Store Sales.Store Key, op: is_not_null}
+  - {field: Store Sales.Item Key, op: is_not_null}
+having:
+  - {field: Store Item Revenue Share, op: lte, value: 0.1}
+orderBy:
+  - {field: Store Name, direction: asc}
+  - {field: Item Description, direction: asc}
+limit: 100

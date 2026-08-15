@@ -26,6 +26,16 @@ class JoinStep:
     reversed: bool = False
 
 
+def _join_type_for(edge_data: dict[str, object]) -> ASTJoinType:
+    """LEFT unless the join declares the match mandatory.
+
+    ``required: true`` says a row without a match on the other side is
+    meaningless, which is what an INNER JOIN encodes. Everything else keeps the
+    LEFT default, where an unmatched row survives with NULLs.
+    """
+    return ASTJoinType.INNER if edge_data.get("required") else ASTJoinType.LEFT
+
+
 def path_overrides(use_path_names: list[UsePathName] | None) -> dict[tuple[str, str], str]:
     """``(source, target)`` to the secondary ``pathName`` the query selected.
 
@@ -104,6 +114,7 @@ class JoinGraph:
             columns_to=join.columns_to,
             cardinality=join.join_type,
             source_object=obj_name,
+            required=join.required,
         )
         self._directed.add_edge(
             obj_name,
@@ -350,7 +361,7 @@ class JoinGraph:
                         to_object=edge[1],
                         from_columns=edge_data["columns_from"],
                         to_columns=edge_data["columns_to"],
-                        join_type=ASTJoinType.LEFT,
+                        join_type=_join_type_for(edge_data),
                         cardinality=edge_data["cardinality"],
                     )
                 else:
@@ -364,7 +375,7 @@ class JoinGraph:
                         to_object=edge[0],
                         from_columns=edge_data["columns_from"],
                         to_columns=edge_data["columns_to"],
-                        join_type=ASTJoinType.LEFT,
+                        join_type=_join_type_for(edge_data),
                         cardinality=edge_data["cardinality"],
                         reversed=True,
                     )
@@ -422,7 +433,7 @@ class JoinGraph:
                     to_object=succ,
                     from_columns=from_cols,
                     to_columns=to_cols,
-                    join_type=ASTJoinType.LEFT,
+                    join_type=_join_type_for(edge_data),
                     cardinality=edge_data["cardinality"],
                     reversed=reversed_,
                 )

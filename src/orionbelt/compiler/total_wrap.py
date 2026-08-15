@@ -24,11 +24,13 @@ Re-aggregation mapping (outer window function per aggregation type):
 from __future__ import annotations
 
 from collections.abc import Container
+from dataclasses import replace
 
 from orionbelt.ast.nodes import (
     CTE,
     AliasedExpr,
     BinaryOp,
+    Cast,
     ColumnRef,
     Expr,
     From,
@@ -102,8 +104,39 @@ def _partition_by_exprs(measure: ResolvedMeasure) -> list[Expr]:
     return []
 
 
+def _peel_default(expr: Expr, measure: ResolvedMeasure) -> Expr:
+    """Strip *measure*'s declared default off a base-CTE column.
+
+    The base CTE feeds a window that re-aggregates the column, so the default
+    cannot stay inside it: ``SUM(COALESCE(SUM(x), 5)) OVER ()`` adds 5 for every
+    group that saw nothing, where the field says the *measure* reads 5 when it
+    saw nothing. :func:`_build_total_window` puts it back around the window.
+
+    Descends through the planner's cast, which stays where it is - it types the
+    aggregate, not the default.
+    """
+    if measure.default_value is None:
+        return expr
+    if isinstance(expr, AliasedExpr):
+        return replace(expr, expr=_peel_default(expr.expr, measure))
+    if isinstance(expr, Cast):
+        return replace(expr, expr=_peel_default(expr.expr, measure))
+    if isinstance(expr, FunctionCall) and expr.name.upper() == "COALESCE" and len(expr.args) == 2:
+        return expr.args[0]
+    return expr
+
+
 def _build_total_window(measure: ResolvedMeasure, dedup_measures: Container[str]) -> Expr:
-    """Build a window function for a total/grain-override measure's outer column."""
+    """Build a window function for a total/grain-override measure's outer column.
+
+    This is where the measure's value is finally produced, so a declared default
+    is re-applied here - :func:`_peel_default` took it off the column the window
+    reads.
+    """
+    return measure.with_default(_build_total_window_expr(measure, dedup_measures))
+
+
+def _build_total_window_expr(measure: ResolvedMeasure, dedup_measures: Container[str]) -> Expr:
     partition_by = _partition_by_exprs(measure)
     if _is_avg_total(measure, dedup_measures):
         return BinaryOp(
@@ -210,31 +243,32 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                     continue  # Already present as a direct measure
                 if _is_avg_total(comp, resolved.dedup_measures):
                     # AVG total needs sum + count helper columns
-                    base_columns.append(
-                        _build_avg_helpers_base_col(comp, "sum", resolved.conformed_expressions)
-                    )
-                    base_columns.append(
-                        _build_avg_helpers_base_col(comp, "count", resolved.conformed_expressions)
-                    )
+                    comp_expr = resolved.conformed_expressions.get(comp.name, comp.expression)
+                    base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
+                    base_columns.append(_build_avg_helpers_base_col(comp, "count", comp_expr))
                 else:
                     # An anchored component's aggregate reads conformed subquery
                     # columns. This CTE reuses the planner's FROM and joins, so
                     # those subqueries are in scope and the foreign fact is not.
                     base_columns.append(
-                        AliasedExpr(
-                            expr=resolved.conformed_expressions.get(comp.name, comp.expression),
-                            alias=comp.name,
+                        _peel_default(
+                            AliasedExpr(
+                                expr=resolved.conformed_expressions.get(comp.name, comp.expression),
+                                alias=comp.name,
+                            ),
+                            comp,
                         )
                     )
         elif alias and _is_avg_window_wrap_by_name(alias, resolved):
             # AVG total/grain-override direct measure: replace with sum + count helpers
             measure = next(m for m in resolved.measures if m.name == alias)
-            base_columns.append(
-                _build_avg_helpers_base_col(measure, "sum", resolved.conformed_expressions)
-            )
-            base_columns.append(
-                _build_avg_helpers_base_col(measure, "count", resolved.conformed_expressions)
-            )
+            base_columns.append(_build_avg_helpers_base_col(measure, "sum", col_node))
+            base_columns.append(_build_avg_helpers_base_col(measure, "count", col_node))
+        elif alias and _is_window_wrapped_by_name(alias, resolved):
+            # A window re-aggregates this column, so the declared default comes
+            # off it here and goes back on around the window.
+            measure = next(m for m in resolved.measures if m.name == alias)
+            base_columns.append(_peel_default(col_node, measure))
         else:
             base_columns.append(col_node)
 
@@ -363,23 +397,49 @@ def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:
     return False
 
 
-def _build_avg_helpers_base_col(
-    measure: ResolvedMeasure,
-    kind: str,
-    conformed: dict[str, Expr] | None = None,
-) -> AliasedExpr:
+def _is_window_wrapped_by_name(name: str, resolved: ResolvedQuery) -> bool:
+    """Check if a direct measure with given name is re-aggregated by a window."""
+    for m in resolved.measures:
+        if m.name == name and not m.component_measures:
+            return _needs_window_wrap(m, resolved.dedup_measures)
+    return False
+
+
+def _aggregate_of(expr: Expr) -> Expr:
+    """The aggregate inside a projected measure column.
+
+    Peels what the layers above it wrap it in and nothing else: the column
+    alias, the planner's cast to the measure's declared type, and a declared
+    default's ``COALESCE``.
+    """
+    if isinstance(expr, AliasedExpr):
+        return _aggregate_of(expr.expr)
+    if isinstance(expr, Cast):
+        return _aggregate_of(expr.expr)
+    if isinstance(expr, FunctionCall) and expr.name.upper() == "COALESCE" and len(expr.args) == 2:
+        return _aggregate_of(expr.args[0])
+    return expr
+
+
+def _build_avg_helpers_base_col(measure: ResolvedMeasure, kind: str, source: Expr) -> AliasedExpr:
     """Build a SUM or COUNT base CTE column for an AVG total measure.
 
     For AVG(expr), we need:
     - SUM(expr) AS "name__sum"
     - COUNT(expr) AS "name__count"
 
-    The aggregate is taken from *conformed* when the measure is anchored: its
-    argument then reads a conformed subquery's column, and the measure's own
-    resolved expression still names the foreign fact, which this CTE's FROM
-    joins that subquery in place of.
+    *source* is the column the plan already projects the measure as, so its
+    argument is whatever that plan actually reads: the fact's own column in a
+    star, a conformed subquery's column when the measure is anchored, and the
+    composite CTE's column under CFL - where the measure's own resolved
+    expression still names a fact table this CTE does not select from. What it
+    is not is the whole projected column: :func:`_aggregate_of` takes the cast
+    and any declared default off first, since ``COALESCE(AVG(x), 0)``
+    decomposed as it stands reads the default as a second argument and emits
+    ``SUM(AVG(x), 0)``, which is not SQL. The default goes back on in
+    :func:`_build_total_window`.
     """
-    aggregate = (conformed or {}).get(measure.name, measure.expression)
+    aggregate = _aggregate_of(source)
     if isinstance(aggregate, FunctionCall) and aggregate.args:
         inner_args = list(aggregate.args)
     else:

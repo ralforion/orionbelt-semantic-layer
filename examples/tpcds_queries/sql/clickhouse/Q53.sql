@@ -7,6 +7,8 @@ WITH "base" AS (
     "Date"."d_qoy" AS "Quarter of Year",
     CAST(round(SUM("Store Sales"."ss_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
     SUM("Store Sales"."ss_sales_price") AS "Manufacturer Sales",
+    COUNT(DISTINCT "Date"."d_qoy") AS "Manufacturer Quarter Groups",
+    SUM("Store Sales"."ss_sales_price") AS "Manufacturer Sales",
     COUNT(DISTINCT "Date"."d_qoy") AS "Manufacturer Quarter Groups"
   FROM "tpcds"."store_sales" AS "Store Sales"
   LEFT JOIN "tpcds"."date_dim" AS "Date"
@@ -32,10 +34,31 @@ WITH "base" AS (
       AND "Item"."i_brand" IN ('amalgimporto #1', 'edu packscholar #1', 'exportiimporto #1', 'importoamalg #1')
     )
   GROUP BY ALL
+), "having_window" AS (
+  SELECT
+    "Manufacturer ID" AS "Manufacturer ID",
+    "Quarter of Year" AS "Quarter of Year",
+    "Sales Price Sum" AS "Sales Price Sum",
+    CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) AS "Avg Quarterly Sales",
+    CASE
+      WHEN CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) > 0
+      THEN CAST(ABS(
+        "Sales Price Sum" - CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14)))
+      ) AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14)))
+      ELSE NULL
+    END AS "Quarterly Deviation"
+  FROM "base" AS "base"
 )
 SELECT
-  "Manufacturer ID" AS "Manufacturer ID",
-  "Quarter of Year" AS "Quarter of Year",
-  "Sales Price Sum" AS "Sales Price Sum",
-  CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) AS "Avg Quarterly Sales"
-FROM "base" AS "base"
+  "having_window"."Manufacturer ID" AS "Manufacturer ID",
+  "having_window"."Quarter of Year" AS "Quarter of Year",
+  "having_window"."Sales Price Sum" AS "Sales Price Sum",
+  "having_window"."Avg Quarterly Sales" AS "Avg Quarterly Sales"
+FROM "having_window" AS "having_window"
+WHERE
+  "Quarterly Deviation" > 0.1
+ORDER BY
+  "Avg Quarterly Sales" ASC,
+  "Sales Price Sum" ASC,
+  "Manufacturer ID" ASC
+LIMIT 100

@@ -296,6 +296,17 @@ obsl:secondary a owl:DatatypeProperty ;
     rdfs:comment "When true, marks a join as a secondary join path (not the default path between two data objects)." ;
     rdfs:range xsd:boolean .
 
+obsl:joinRequired a owl:DatatypeProperty ;
+    rdfs:label "join required" ;
+    rdfs:comment "When true, a row without a match on the other side of this join does not survive it: the join is compiled as an INNER JOIN rather than the default LEFT JOIN.  Distinct from obsl:cardinality, which counts how many rows meet how many and says nothing about whether the match is optional." ;
+    rdfs:domain obsl:Join ;
+    rdfs:range xsd:boolean .
+
+obsl:defaultValue a owl:DatatypeProperty ;
+    rdfs:label "default value" ;
+    rdfs:comment "Value to report when there is nothing to compute from: an aggregate over no rows, or a window function with no row at the offset it asks for.  On a measure it also settles a portability question, since an aggregate over an empty row set is NULL in standard SQL and 0 on some engines." ;
+    rdfs:range rdfs:Literal .
+
 obsl:pathName a owl:DatatypeProperty ;
     rdfs:label "path name" ;
     rdfs:comment "Named join path used when a dimension reaches its data object through a non-default route." ;
