@@ -25,6 +25,7 @@ from orionbelt.compiler.anchored import (
     plan_conformed_facts,
 )
 from orionbelt.compiler.fanout import FanoutError
+from orionbelt.compiler.grain_dedup import detect_dedup_measures
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
     ResolutionError,
@@ -476,6 +477,7 @@ class CFLPlanner:
         # and the measure's source object with minimal hops.
         union_legs: list[Select] = []
         leg_infos: list[CflLegInfo] = []
+        dedup_offenders: dict[str, str] = {}
         for obj_name, measures in measures_by_object.items():
             leg_builder = QueryBuilder()
             this_measure_names = {m.name for m in measures}
@@ -666,6 +668,20 @@ class CFLPlanner:
                         )
                         joined_aliases.add(step.to_object)
 
+            # A measure sourced from an object this leg's own joins replicate
+            # is summed once per row of the many side. Resolution cannot see
+            # that: its join steps are the base object's, and the step that
+            # replicates lives inside a leg. The union has no per-leg grain to
+            # deduplicate at either - the legs project the values to aggregate
+            # rather than aggregating them - so this is refused rather than
+            # answered with a plausible number in the right group.
+            leg_dedup = detect_dedup_measures(
+                replace(resolved, join_steps=steps, base_object=lead, measures=measures),
+                model,
+            )
+            dedup_offenders.update(leg_dedup.measures)
+            dedup_offenders.update(leg_dedup.components)
+
             # Capture leg info for explain
             leg_join_strs = (
                 [f"{s.from_object} → {s.to_object}" for s in steps] if join_targets else []
@@ -695,6 +711,30 @@ class CFLPlanner:
                 leg_builder.where(wf.expression)
 
             union_legs.append(leg_builder.build())
+
+        if dedup_offenders:
+            listed = ", ".join(f"'{name}'" for name in sorted(dedup_offenders))
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} are sourced from an object whose rows this "
+                            f"query's joins replicate, so they must be aggregated over "
+                            f"deduplicated rows. This query spans facts that cannot be "
+                            f"joined, so it is planned as a UNION ALL whose legs project the "
+                            f"values to aggregate rather than aggregating them, leaving no "
+                            f"per-leg grain to deduplicate at."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the measure without the measures from the other fact, or "
+                            "set allowFanOut: true to aggregate the duplicated rows as-is."
+                        ),
+                        context={"measures": sorted(dedup_offenders)},
+                    )
+                ]
+            )
 
         # Create the UNION ALL CTE
         cte_name = "composite_01"

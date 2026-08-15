@@ -164,7 +164,10 @@ class CompilationPipeline:
         summed once per row of the many side - the exact overcount the pass
         exists to prevent, in a query where nothing said so.
         """
-        # Skipped for CFL: each fact is queried independently there.
+        # Skipped for CFL: its join steps span facts a union queries
+        # independently, so the check would refuse a query the union answers.
+        # The per-leg equivalent lives in the CFL planner, which is where a
+        # leg's own joins are known.
         if resolved.requires_cfl:
             return
         detect_fanout(resolved, model)

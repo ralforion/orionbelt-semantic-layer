@@ -139,6 +139,11 @@ measures:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
     aggregation: sum
+  Fanned Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    allowFanOut: true
   Unfiltered Stock:
     columns: [{dataObject: Products, column: Stock On Hand}]
     resultType: float
@@ -419,23 +424,54 @@ class TestALegProjectsWhatItsFromCanReach:
     """
 
     def test_a_one_side_measure_keeps_the_grain(self) -> None:
-        assert _keyed(["Stock", "Refund Amount"]) == {
-            (1,): {"Stock": 100.0, "Refund Amount": 1.0},
-            (2,): {"Stock": 110.0, "Refund Amount": 4.0},
+        """``Fanned Stock`` declares the duplication intentional, which is what
+        makes a one-side measure answerable in a union at all - see below."""
+        assert _keyed(["Fanned Stock", "Refund Amount"]) == {
+            (1,): {"Fanned Stock": 100.0, "Refund Amount": 1.0},
+            (2,): {"Fanned Stock": 110.0, "Refund Amount": 4.0},
         }
 
     def test_it_agrees_with_the_single_fact_plan(self) -> None:
         """The other fact changes how the query is planned; it must not change
-        what this measure answers."""
-        together = _keyed(["Stock", "Refund Amount"])
-        alone = _keyed(["Stock"])
-        assert {k: v["Stock"] for k, v in together.items()} == {
-            k: v["Stock"] for k, v in alone.items()
+        which group this measure's value lands in."""
+        together = _keyed(["Fanned Stock", "Refund Amount"])
+        alone = _keyed(["Fanned Stock"])
+        assert {k: v["Fanned Stock"] for k, v in together.items()} == {
+            k: v["Fanned Stock"] for k, v in alone.items()
         }
 
     def test_the_leg_projects_the_dimension(self) -> None:
-        leg = _sql(["Stock", "Refund Amount"]).split("UNION ALL")[0]
+        leg = _sql(["Fanned Stock", "Refund Amount"]).split("UNION ALL")[0]
         assert '"Dates"."MONTH" AS "Month"' in leg
+
+
+class TestAOneSideMeasureInAUnionIsRefused:
+    """The legs project the values to aggregate rather than aggregating them,
+    so there is no per-leg grain to deduplicate at: a measure on the *one* side
+    of a replicating join is summed once per row of the many side. Resolution
+    cannot see it - its join steps are the base object's, and the step that
+    replicates lives inside a leg - so the check belongs to the CFL planner.
+    """
+
+    def test_it_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as exc:
+            _sql(["Stock", "Refund Amount"])
+        message = str(exc.value)
+        assert "'Stock'" in message
+        assert "deduplicated" in message
+
+    def test_the_same_measure_alone_is_answered(self) -> None:
+        """One fact, one plan, and the dedup pass that goes with it."""
+        assert _rows(["Stock"])["Stock"] == [100.0, 110.0]
+
+    def test_declaring_the_fan_out_intentional_answers_it(self) -> None:
+        """Which is what the refusal points the author at."""
+        assert _rows(["Fanned Stock", "Refund Amount"])["Fanned Stock"] == [100.0, 110.0]
+
+    def test_an_isolated_one_is_answered_because_its_scan_is_a_query(self) -> None:
+        """A filterContext scan is planned in its own right, so it gets the
+        dedup pass - the union's problem is not its problem."""
+        assert _rows(["Unfiltered Stock", "Refund Amount"])["Unfiltered Stock"] == [100.0, 110.0]
 
 
 class TestScansAreGroupedByTheFactTheyRead:
