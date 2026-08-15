@@ -436,3 +436,50 @@ class TestALegProjectsWhatItsFromCanReach:
     def test_the_leg_projects_the_dimension(self) -> None:
         leg = _sql(["Stock", "Refund Amount"]).split("UNION ALL")[0]
         assert '"Dates"."MONTH" AS "Month"' in leg
+
+
+class TestScansAreGroupedByTheFactTheyRead:
+    """Each group becomes one scan planned over what it reads, so measures on
+    independent facts cannot share one - there is no single fact to plan it
+    against. They shared a group whenever the query had no dimension to force
+    them apart, and the scan projected an aggregate over a table its own FROM
+    did not have."""
+
+    def test_two_facts_at_no_grain(self) -> None:
+        rows = _rows(["Unfiltered Revenue", "Unfiltered Refunds"], [])
+        assert rows == {"Unfiltered Revenue": [45.0], "Unfiltered Refunds": [5.0]}
+
+    def test_each_gets_its_own_scan(self) -> None:
+        sql = _sql(["Unfiltered Revenue", "Unfiltered Refunds"], [])
+        assert '"fc_0" AS' in sql and '"fc_1" AS' in sql
+
+    def test_and_at_a_grain_too(self) -> None:
+        together = _rows(["Unfiltered Revenue", "Unfiltered Refunds"])
+        assert together["Unfiltered Revenue"] == _rows(["Unfiltered Revenue"])["Unfiltered Revenue"]
+        assert together["Unfiltered Refunds"] == _rows(["Unfiltered Refunds"])["Unfiltered Refunds"]
+
+
+class TestTheScansWarningsAreTheQuerysWarnings:
+    """The scan is planned in its own right, warnings included. Left on the
+    sub-query they went nowhere: the same measure warned of a fan trap when
+    selected plainly and said nothing behind a filterContext."""
+
+    @staticmethod
+    def _warnings(measures: list[str]) -> list[str]:
+        return [
+            w.code
+            for w in PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Month"], measures=measures),
+                    where=[QueryFilter(field="Day", op=FilterOperator.EQUALS, value=1)],
+                ),
+                _model(),
+                "duckdb",
+            ).warnings
+        ]
+
+    def test_a_fan_trap_is_reported_either_way(self) -> None:
+        assert self._warnings(["Stock"]) == self._warnings(["Unfiltered Stock"]) != []
+
+    def test_a_measure_with_nothing_to_warn_about_is_quiet(self) -> None:
+        assert self._warnings(["Unfiltered Revenue"]) == []
