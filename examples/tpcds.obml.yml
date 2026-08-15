@@ -164,6 +164,82 @@ dataObjects:
         expression: "{City} <> {[Customer Address].[City]}"
         abstractType: boolean
 
+  # Two roles of customer_demographics on one web return: whose goods came
+  # back (refunded) and who sent them back (returning). Q85 compares the two,
+  # which needs both in one query, each with its own alias.
+  Refunded Demographics:
+    code: customer_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demographics Key:
+        code: cd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Marital Status:
+        code: cd_marital_status
+        abstractType: string
+      Education Status:
+        code: cd_education_status
+        abstractType: string
+      # Cross-object: the other role's value for the same return.
+      Same Marital Status:
+        expression: "{Marital Status} = {[Returning Demographics].[Marital Status]}"
+        abstractType: boolean
+      Same Education Status:
+        expression: "{Education Status} = {[Returning Demographics].[Education Status]}"
+        abstractType: boolean
+
+  Returning Demographics:
+    code: customer_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demographics Key:
+        code: cd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Marital Status:
+        code: cd_marital_status
+        abstractType: string
+      Education Status:
+        code: cd_education_status
+        abstractType: string
+
+  # The address a refund went to (wr_refunded_addr_sk), a third role of
+  # customer_address alongside Customer Address and Sale Address.
+  Refunded Address:
+    code: customer_address
+    database: tpcds
+    schema: tpcds
+    columns:
+      Address Key:
+        code: ca_address_sk
+        abstractType: int
+        primaryKey: true
+      Country:
+        code: ca_country
+        abstractType: string
+      State:
+        code: ca_state
+        abstractType: string
+
+  # date_dim in its web-sold-date role. Web Sales and Web Returns both join
+  # the shared Date object, which leaves a plain Year filter to pick a role by
+  # path length; Q85 means the sold date specifically.
+  Web Sold Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Year:
+        code: d_year
+        abstractType: int
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -381,6 +457,9 @@ dataObjects:
         abstractType: string
       Reason Description:
         code: r_reason_desc
+        abstractType: string
+      Reason Description 20:
+        expression: "SUBSTRING({Reason Description}, 1, 20)"
         abstractType: string
 
   Household Demographics:
@@ -757,6 +836,14 @@ dataObjects:
         columnsTo: [Date Key]
         secondary: true
         pathName: ship_date
+      - joinType: many-to-one
+        joinTo: Web Sold Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Web Returns
+        columnsFrom: [Item Key, Order Number]
+        columnsTo: [Item Key, Order Number]
 
   Catalog Sales:
     code: catalog_sales
@@ -959,11 +1046,40 @@ dataObjects:
         code: wr_net_loss
         abstractType: float
         numClass: additive
+      Refunded CDemo Key:
+        code: wr_refunded_cdemo_sk
+        abstractType: int
+      Returning CDemo Key:
+        code: wr_returning_cdemo_sk
+        abstractType: int
+      Refunded Addr Key:
+        code: wr_refunded_addr_sk
+        abstractType: int
+      Refunded Cash:
+        code: wr_refunded_cash
+        abstractType: float
+        numClass: additive
+      Return Fee:
+        code: wr_fee
+        abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Date
         columnsFrom: [Returned Date Key]
         columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Refunded Demographics
+        columnsFrom: [Refunded CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Returning Demographics
+        columnsFrom: [Returning CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Refunded Address
+        columnsFrom: [Refunded Addr Key]
+        columnsTo: [Address Key]
       - joinType: many-to-one
         joinTo: Item
         columnsFrom: [Item Key]
@@ -1343,6 +1459,11 @@ dimensions:
     column: Reason Description
     resultType: string
 
+  Reason Description 20:
+    dataObject: Reason
+    column: Reason Description 20
+    resultType: string
+
 # ── Measures ───────────────────────────────────────────────────────
 
 measures:
@@ -1456,6 +1577,24 @@ measures:
     aggregation: sum
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
+
+  Avg Web Quantity:
+    columns: [{dataObject: Web Sales, column: Quantity}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Refunded Cash:
+    columns: [{dataObject: Web Returns, column: Refunded Cash}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Return Fee:
+    columns: [{dataObject: Web Returns, column: Return Fee}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
 
   Web Returns Amount:
     columns:
