@@ -808,6 +808,50 @@ class TestPoPDeclaredDataType:
         # The division itself stays uncast inside the CTE.
         assert 'NULLIF(pop_prev."Revenue", 0) - 1 AS "Revenue YoY Growth"' in sql
 
+    def test_having_filters_the_typed_value_not_the_raw_ratio(self) -> None:
+        """The filter must see the same value the projection returns.
+
+        Both live in one SELECT and WHERE is evaluated before the select list,
+        so a bare alias reference reads ``pop_compare``'s *uncast* column. With
+        a metric declared ``decimal(18, 4)`` that made `> 0.99318` drop a row
+        whose returned value is 0.9932, because the underlying ratio is
+        0.9931620307.
+        """
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue YoY Growth"],
+            ),
+            having=[
+                QueryFilter(
+                    field="Revenue YoY Growth",
+                    op=FilterOperator.GT,
+                    value=0.99318,
+                )
+            ],
+        )
+        sql = CompilationPipeline().compile(query, _typed_model(), "duckdb").sql
+        where = sql[sql.rindex("WHERE") :]
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4)) > 0.99318' in where
+        # The bare column must not be compared anywhere in the filter.
+        assert '"Revenue YoY Growth" > 0.99318' not in where
+
+    def test_having_on_a_non_pop_measure_is_untouched(self) -> None:
+        """Only PoP metrics are cast in this projection, so only they are wrapped."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue YoY Growth"],
+            ),
+            having=[
+                QueryFilter(field="Revenue", op=FilterOperator.GT, value=5),
+            ],
+        )
+        sql = CompilationPipeline().compile(query, _typed_model(), "duckdb").sql
+        where = sql[sql.rindex("WHERE") :]
+        assert '"Revenue" > 5' in where
+        assert 'CAST("Revenue" AS' not in where
+
     def test_undeclared_percent_change_takes_the_division_default(self) -> None:
         """A ratio is not a value in the base measure's units.
 

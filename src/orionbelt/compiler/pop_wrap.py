@@ -30,6 +30,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
+from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
@@ -244,17 +245,34 @@ def wrap_with_pop(
     # filter references it by alias). The star planner applies these at GROUP BY
     # level, which the PoP rewrite bypasses entirely — without this they were
     # silently dropped, returning unfiltered rows.
-    # Predicates on a window-produced alias are excluded here and applied once
-    # by ``PASS_HAVING_WINDOW``, after any wrapper nesting this one has run.
+    # Two independent rules apply to the predicates this wrapper emits, and
+    # they do not overlap: ``windowed_aliases`` never contains a PoP metric.
+    #
+    # 1. A predicate on a *windowed* alias belongs to ``PASS_HAVING_WINDOW``,
+    #    which applies it after the wrapper nesting this one has run.
+    # 2. A PoP metric's declared dataType governs its value, so the filter has
+    #    to see the same value the projection returns. Both live in this one
+    #    SELECT, and WHERE is evaluated before the select list, so a bare alias
+    #    reference would read ``pop_compare``'s *uncast* column: with a metric
+    #    declared decimal(18, 4), `> 0.99318` dropped a row whose returned
+    #    value is 0.9932, because the underlying ratio is 0.9931620307.
     deferred = windowed_aliases(resolved)
+    pop_metrics = {m.name for m in resolved.measures if m.is_pop}
+
+    def _typed(ref: ColumnRef) -> Expr:
+        if ref.table is None and ref.name in pop_metrics:
+            return _apply_metric_cast(ref, ref.name, model, dialect)
+        return ref
+
     outer_where: Expr | None = None
     for hf in resolved.having_filters:
         if hf.referenced_fields & deferred:
             continue
+        predicate = map_column_refs(hf.expression, _typed)
         outer_where = (
-            hf.expression
+            predicate
             if outer_where is None
-            else BinaryOp(left=outer_where, op="AND", right=hf.expression)
+            else BinaryOp(left=outer_where, op="AND", right=predicate)
         )
 
     # Collect all CTEs (planner CTEs + our 4 new ones)
