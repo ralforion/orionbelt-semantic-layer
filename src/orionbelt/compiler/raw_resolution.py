@@ -70,3 +70,6 @@ def resolve_raw_field(resolver: QueryResolver, ctx: _ResolutionContext, ref: str
         )
     )
     ctx.result.required_objects.add(obj_name)
+    # A computed column is inlined into the projection, so whatever other data
+    # object its expression reads has to be joined for the SQL to bind.
+    ctx.result.required_objects.update(ctx.model.column_reference_objects(obj_name, col_name))

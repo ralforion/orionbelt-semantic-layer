@@ -143,6 +143,27 @@ dataObjects:
         code: ca_gmt_offset
         abstractType: float
 
+  # The same physical table in its second role: the address a sale was made
+  # to (ss_addr_sk), as opposed to the customer's current address reached
+  # through Customer. A role is its own data object because a query needs
+  # both at once, each with its own alias (Q68).
+  Sale Address:
+    code: customer_address
+    database: tpcds
+    schema: tpcds
+    columns:
+      Address Key:
+        code: ca_address_sk
+        abstractType: int
+        primaryKey: true
+      City:
+        code: ca_city
+        abstractType: string
+      # Cross-object: the customer's *current* city lives on the other role.
+      City Differs From Customer:
+        expression: "{City} <> {[Customer Address].[City]}"
+        abstractType: boolean
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -211,6 +232,9 @@ dataObjects:
       Manufacturer ID:
         code: i_manufact_id
         abstractType: int
+      Manufacturer:
+        code: i_manufact
+        abstractType: string
       Manager ID:
         code: i_manager_id
         abstractType: int
@@ -261,6 +285,11 @@ dataObjects:
       Store City 30:
         expression: "SUBSTRING({Store City}, 1, 30)"
         abstractType: string
+      # Cross-object: the customer's address is a column of another data
+      # object, reached through the joins the query already walks (Q19).
+      Zip Matches Customer:
+        expression: "SUBSTRING({Store Zip}, 1, 5) = {[Customer Address].[Zip 5]}"
+        abstractType: boolean
 
   Promotion:
     code: promotion
@@ -511,6 +540,14 @@ dataObjects:
         code: ss_ext_sales_price
         abstractType: float
         numClass: additive
+      Ext List Price:
+        code: ss_ext_list_price
+        abstractType: float
+        numClass: additive
+      Ext Tax:
+        code: ss_ext_tax
+        abstractType: float
+        numClass: additive
       Net Profit:
         code: ss_net_profit
         abstractType: float
@@ -554,6 +591,10 @@ dataObjects:
         columnsTo: [Address Key]
         secondary: true
         pathName: sale_address
+      - joinType: many-to-one
+        joinTo: Sale Address
+        columnsFrom: [Addr Key]
+        columnsTo: [Address Key]
       - joinType: many-to-one
         joinTo: Store Returns
         columnsFrom: [Item Key, Ticket Number]
@@ -1062,6 +1103,11 @@ dimensions:
     column: Manufacturer ID
     resultType: int
 
+  Manufacturer:
+    dataObject: Item
+    column: Manufacturer
+    resultType: string
+
   Manager ID:
     dataObject: Item
     column: Manager ID
@@ -1177,6 +1223,11 @@ dimensions:
     column: Day of Month
     resultType: int
 
+  Day of Week:
+    dataObject: Date
+    column: Day of Week
+    resultType: int
+
   Buy Potential:
     dataObject: Household Demographics
     column: Buy Potential
@@ -1200,6 +1251,16 @@ dimensions:
   Customer Zip 5:
     dataObject: Customer Address
     column: Zip 5
+    resultType: string
+
+  Customer City:
+    dataObject: Customer Address
+    column: City
+    resultType: string
+
+  Bought City:
+    dataObject: Sale Address
+    column: City
     resultType: string
 
   Store ID:
@@ -1298,6 +1359,24 @@ measures:
     columns:
       - dataObject: Store Sales
         column: Net Profit
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Ext List Price:
+    columns:
+      - dataObject: Store Sales
+        column: Ext List Price
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Ext Tax:
+    columns:
+      - dataObject: Store Sales
+        column: Ext Tax
     resultType: float
     aggregation: sum
     dataType: "decimal(18, 2)"

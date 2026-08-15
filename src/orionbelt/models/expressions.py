@@ -1,8 +1,10 @@
-"""Placeholder scanning for computed-column expressions.
+"""Placeholder scanning for computed-column and measure expressions.
 
 A computed column's ``expression`` refers to sibling columns of the same data
-object with single-brace ``{Column}`` placeholders. Three call sites need to
-agree on exactly which braces count as a placeholder:
+object with single-brace ``{Column}`` placeholders, and to a column of another
+data object with the qualified ``{[Data Object].[Column]}`` form measure
+expressions use. Three call sites need to agree on exactly which braces count
+as a placeholder:
 
 * ``parser/validator.py`` reports a placeholder that names no sibling column.
 * ``compiler/resolution.py`` rewrites placeholders to the qualified
@@ -24,7 +26,14 @@ import re
 from collections.abc import Callable, Iterator
 
 COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
-"""``{ColumnName}`` placeholder inside a computed-column expression body."""
+"""``{ColumnName}`` placeholder inside a computed-column expression body.
+
+Requires a word character after the brace, so the qualified
+:data:`QUALIFIED_COLUMN_REF` form passes through untouched.
+"""
+
+QUALIFIED_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+"""``{[Data Object].[Column]}`` — a column named together with its object."""
 
 SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
 """A single-quoted SQL string literal, ``''`` being the escaped quote."""
@@ -76,3 +85,19 @@ def find_placeholders(expression: str) -> list[str]:
             if not _REGEX_QUANTIFIER.match(name):
                 names.append(name)
     return names
+
+
+def find_qualified_refs(expression: str) -> list[tuple[str, str]]:
+    """The ``(data object, column)`` pairs *expression* names, in order.
+
+    The qualified counterpart of :func:`find_placeholders`: a computed column
+    reads a *sibling* through ``{Column}`` and a column of another data object
+    through ``{[Data Object].[Column]}``. Skips string literals for the same
+    reason.
+    """
+    refs: list[tuple[str, str]] = []
+    for text, is_literal in _segments(expression):
+        if is_literal:
+            continue
+        refs.extend((obj.strip(), col.strip()) for obj, col in QUALIFIED_COLUMN_REF.findall(text))
+    return refs

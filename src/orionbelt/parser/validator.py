@@ -8,10 +8,9 @@ from collections import deque
 import networkx as nx
 
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.expressions import find_placeholders
+from orionbelt.models.expressions import find_placeholders, find_qualified_refs
 from orionbelt.models.semantic import (
     DataColumnRef,
-    DataObject,
     DataType,
     Measure,
     MeasureFilter,
@@ -679,11 +678,16 @@ class SemanticValidator:
         return errors
 
     def _check_computed_column_refs(self, model: SemanticModel) -> list[SemanticError]:
-        """Ensure a computed column's ``{name}`` placeholders name sibling columns.
+        """Ensure a computed column's references name columns that exist.
 
-        A placeholder the compiler cannot resolve is not dropped and not
+        Two forms, checked the same way: ``{name}`` must name a sibling column
+        of the same data object, and ``{[Data Object].[Column]}`` must name a
+        column of a data object the model declares.
+
+        A reference the compiler cannot resolve is not dropped and not
         reported — it survives into codegen as a *string literal*, so
-        ``{amount} * {no_such_col}`` emits ``"Sales"."amount" * 'no_such_col'``.
+        ``{amount} * {no_such_col}`` emits ``"Sales"."amount" * 'no_such_col'``,
+        and a qualified reference to nothing emits the labels as identifiers.
         The model validates clean and the wrongness surfaces, at best, as a
         type error from the database.
         """
@@ -692,6 +696,7 @@ class SemanticValidator:
             for col_name, col in obj.columns.items():
                 if not col.expression:
                     continue
+                path = f"dataObjects.{obj_name}.columns.{col_name}.expression"
                 for ref in find_placeholders(col.expression):
                     if ref in obj.columns:
                         continue
@@ -702,15 +707,41 @@ class SemanticValidator:
                                 f"Computed column '{col_name}' in data object "
                                 f"'{obj_name}' references unknown column '{ref}'"
                             ),
-                            path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                            path=path,
                             hint=(
                                 "A computed column's {placeholder} must name another "
                                 f"column of '{obj_name}'. To reference a column of a "
-                                "different data object, use a measure expression's "
+                                "different data object, use the "
                                 "{[Data Object].[Column]} form instead."
                             ),
                         )
                     )
+                for ref_object, ref_column in find_qualified_refs(col.expression):
+                    target = model.data_objects.get(ref_object)
+                    if target is None:
+                        errors.append(
+                            SemanticError(
+                                code="UNKNOWN_DATA_OBJECT_IN_EXPRESSION",
+                                message=(
+                                    f"Computed column '{col_name}' in data object "
+                                    f"'{obj_name}' references unknown data object "
+                                    f"'{ref_object}'"
+                                ),
+                                path=path,
+                            )
+                        )
+                    elif ref_column not in target.columns:
+                        errors.append(
+                            SemanticError(
+                                code="UNKNOWN_COLUMN_IN_EXPRESSION",
+                                message=(
+                                    f"Computed column '{col_name}' in data object "
+                                    f"'{obj_name}' references unknown column "
+                                    f"'{ref_column}' in data object '{ref_object}'"
+                                ),
+                                path=path,
+                            )
+                        )
         return errors
 
     def _check_no_cyclic_computed_columns(self, model: SemanticModel) -> list[SemanticError]:
@@ -721,49 +752,58 @@ class SemanticValidator:
         to a plain reference to the column's own ``code`` — which for a computed
         column is empty, so the *label* is emitted as a physical column name.
         A cycle therefore compiles to SQL naming a column that does not exist.
+
+        Model-wide rather than per data object: a qualified reference lets a
+        cycle leave and re-enter an object, and the compiler's cycle guard is
+        keyed on ``(object, column)`` for exactly that reason.
         """
         errors: list[SemanticError] = []
-        for obj_name, obj in model.data_objects.items():
-            g = self._computed_column_graph(obj)
-            # Each strongly connected component that is not a single acyclic
-            # node is exactly one reference cycle. Using SCCs rather than
-            # walking from every column keeps this linear and reports each
-            # cycle once, however many columns sit on it.
-            for scc in nx.strongly_connected_components(g):
-                if len(scc) == 1:
-                    only = next(iter(scc))
-                    if not g.has_edge(only, only):
-                        continue
-                cycle = self._describe_cycle(g, scc)
-                start = cycle[0]
-                errors.append(
-                    SemanticError(
-                        code="CYCLIC_COMPUTED_COLUMN",
-                        message=(
-                            f"Cyclic computed-column reference in data object "
-                            f"'{obj_name}': {' -> '.join(cycle)}"
-                        ),
-                        path=f"dataObjects.{obj_name}.columns.{start}.expression",
-                    )
+        g = self._computed_column_graph(model)
+        # Each strongly connected component that is not a single acyclic
+        # node is exactly one reference cycle. Using SCCs rather than
+        # walking from every column keeps this linear and reports each
+        # cycle once, however many columns sit on it.
+        for scc in nx.strongly_connected_components(g):
+            if len(scc) == 1:
+                only = next(iter(scc))
+                if not g.has_edge(only, only):
+                    continue
+            cycle = self._describe_cycle(g, scc)
+            obj_name, _, col_name = cycle[0].partition(".")
+            errors.append(
+                SemanticError(
+                    code="CYCLIC_COMPUTED_COLUMN",
+                    message=(f"Cyclic computed-column reference: {' -> '.join(cycle)}"),
+                    path=f"dataObjects.{obj_name}.columns.{col_name}.expression",
                 )
+            )
         return errors
 
-    def _computed_column_graph(self, obj: DataObject) -> nx.DiGraph[str]:
-        """Dependency graph over a data object's computed columns.
+    def _computed_column_graph(self, model: SemanticModel) -> nx.DiGraph[str]:
+        """Dependency graph over every computed column in *model*.
 
-        An edge ``a -> b`` means computed column ``a``'s expression references
-        ``b``. Only computed columns become nodes: a placeholder naming a
-        physical column terminates the chain and cannot be part of a cycle.
+        Nodes are ``"Data Object.Column"``; an edge ``a -> b`` means computed
+        column ``a``'s expression references ``b``, whether as a ``{sibling}``
+        or as a qualified ``{[Data Object].[Column]}``. Only computed columns
+        become nodes: a reference to a physical column terminates the chain and
+        cannot be part of a cycle.
         """
         g: nx.DiGraph[str] = nx.DiGraph()
-        computed = {name for name, col in obj.columns.items() if col.expression}
-        for name in computed:
-            g.add_node(name)
-        for name in computed:
-            expression = obj.columns[name].expression or ""
-            for ref in find_placeholders(expression):
+        computed = {
+            (obj_name, col_name)
+            for obj_name, obj in model.data_objects.items()
+            for col_name, col in obj.columns.items()
+            if col.expression
+        }
+        for obj_name, col_name in computed:
+            g.add_node(f"{obj_name}.{col_name}")
+        for obj_name, col_name in computed:
+            expression = model.data_objects[obj_name].columns[col_name].expression or ""
+            refs = [(obj_name, sibling) for sibling in find_placeholders(expression)]
+            refs.extend(find_qualified_refs(expression))
+            for ref in refs:
                 if ref in computed:
-                    g.add_edge(name, ref)
+                    g.add_edge(f"{obj_name}.{col_name}", f"{ref[0]}.{ref[1]}")
         return g
 
     @staticmethod

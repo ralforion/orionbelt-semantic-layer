@@ -39,6 +39,27 @@ if TYPE_CHECKING:
     )
 
 
+def _join_expression_objects(
+    resolver: QueryResolver,
+    ctx: _ResolutionContext,
+    object_name: str,
+    column_name: str,
+    filter_path: str,
+    field_label: str,
+) -> bool:
+    """Join whatever a computed column reads besides its own data object.
+
+    ``make_column_expr`` inlines the expression, so the predicate names those
+    aliases directly and is only usable once each of them is in the FROM chain.
+    Unreachable means here what it means for the filter's own object: skip the
+    predicate rather than emit SQL that binds to nothing.
+    """
+    return all(
+        resolver._resolve_filter_object(ctx, dep, filter_path, field_label)
+        for dep in sorted(ctx.model.column_reference_objects(object_name, column_name))
+    )
+
+
 def resolve_static_filter(
     resolver: QueryResolver, ctx: _ResolutionContext, mf: ModelFilter
 ) -> ResolvedFilter | None:
@@ -58,6 +79,8 @@ def resolve_static_filter(
         return None
 
     if not resolver._resolve_filter_object(ctx, mf.data_object, "filters", mf.column):
+        return None
+    if not _join_expression_objects(resolver, ctx, mf.data_object, mf.column, "filters", mf.column):
         return None
 
     # Route through ``make_column_expr`` so a ``MeasureFilter`` on a
@@ -185,6 +208,8 @@ def resolve_filter(
         if not resolver._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
             return None
         col_name = dim.column
+        if not _join_expression_objects(resolver, ctx, obj_name, col_name, filter_path, qf.field):
+            return None
         col_expr = make_column_expr(ctx.model, obj_name, col_name)
         subject_object = obj_name
 
@@ -219,6 +244,8 @@ def resolve_filter(
             )
             return None
         if not resolver._resolve_filter_object(ctx, obj_name, filter_path, qf.field):
+            return None
+        if not _join_expression_objects(resolver, ctx, obj_name, col_name, filter_path, qf.field):
             return None
         col_expr = make_column_expr(ctx.model, obj_name, col_name)
         subject_object = obj_name

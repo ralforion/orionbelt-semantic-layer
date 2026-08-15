@@ -7,10 +7,14 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from orionbelt.models.expressions import (
+    QUALIFIED_COLUMN_REF as _MEASURE_COLUMN_REF,
+)
+from orionbelt.models.expressions import (
+    find_placeholders,
+    find_qualified_refs,
+)
 from orionbelt.models.types import parse_data_type
-
-_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
-"""``{[DataObject].[Column]}`` as it appears inside a measure ``expression:``."""
 
 
 class DataType(StrEnum):
@@ -866,8 +870,6 @@ class ModelSettings(BaseModel):
         """
         if v is None:
             return v
-        import re
-
         if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", v):
             raise ValueError(
                 f"defaultLocale must be a BCP-47 tag (e.g. 'en-US', 'de-DE'), got '{v}'"
@@ -1008,6 +1010,50 @@ class SemanticModel(BaseModel):
             elif pair not in overrides:
                 active.append(join)
         return active
+
+    def column_reference_objects(self, object_name: str, column_label: str) -> set[str]:
+        """Other data objects a column's ``expression`` reads.
+
+        A computed column names a sibling with ``{Column}`` and a column of
+        another data object with the qualified ``{[Data Object].[Column]}``
+        form. Reading the latter means joining that object in, so callers add
+        what this returns to a query's join requirements — it is deliberately
+        *not* part of ``measure_source_objects``, which drives multi-fact
+        detection: a cross-object computed column is one row of a star, not a
+        second fact.
+
+        Follows nested computed columns, across objects as well as within one,
+        and returns every object involved except the owning one — which stays
+        out however many hops away the walk reaches it again, because it is
+        joined already by virtue of owning the column.
+
+        Empty for a plain column and for a computed one that reads only
+        siblings, which is what makes this cheap to call on every column.
+        """
+        found: set[str] = set()
+        seen: set[tuple[str, str]] = set()
+
+        def walk(obj_name: str, col_label: str) -> None:
+            key = (obj_name, col_label)
+            if key in seen:
+                return
+            seen.add(key)
+            obj = self.data_objects.get(obj_name)
+            column = obj.columns.get(col_label) if obj else None
+            if obj is None or column is None or not column.expression:
+                return
+            for sibling in find_placeholders(column.expression):
+                if sibling in obj.columns:
+                    walk(obj_name, sibling)
+            for ref_object, ref_column in find_qualified_refs(column.expression):
+                if ref_object not in self.data_objects:
+                    continue
+                if ref_object != object_name:
+                    found.add(ref_object)
+                walk(ref_object, ref_column)
+
+        walk(object_name, column_label)
+        return found
 
     def common_join_targets(
         self,

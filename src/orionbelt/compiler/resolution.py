@@ -25,11 +25,12 @@ from orionbelt.compiler.expr_parser import (
 )
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
+    collect_measure_filter_columns,
     collect_measure_filter_objects,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.expressions import substitute_placeholders
+from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
@@ -832,6 +833,12 @@ class QueryResolver:
             resolved_dim.coalesce_alias = coalesce_alias
         ctx.result.dimensions.append(resolved_dim)
         ctx.result.required_objects.add(resolved_dim.object_name)
+        # A computed column may read a column of another data object, which the
+        # plan then has to join — the expression is inlined into the SELECT list
+        # and would otherwise name an alias nothing in the FROM chain binds.
+        ctx.result.required_objects.update(
+            ctx.model.column_reference_objects(resolved_dim.object_name, resolved_dim.column_name)
+        )
         return resolved_dim
 
     def _resolve_coalesce_dimension(
@@ -1195,13 +1202,31 @@ class QueryResolver:
             FROM "products" AS "Products"          -- Sales never joined
 
         which every engine rejects at execution time.
+
+        A column the measure reads may itself be computed from a column of
+        another object, which lands here for the same reason and with the same
+        care about ``measure_source_objects``: the object supplies part of an
+        expression evaluated per fact row, not a second fact to union.
         """
         result: set[str] = set()
 
         measure = ctx.model.effective_measures.get(name)
         if measure is not None:
+            crefs = list(measure.columns)
             if measure.within_group is not None and measure.within_group.column.view:
                 result.add(measure.within_group.column.view)
+                crefs.append(measure.within_group.column)
+            for cref in crefs:
+                if cref.view and cref.column:
+                    result.update(ctx.model.column_reference_objects(cref.view, cref.column))
+            if measure.expression:
+                for obj_name, col_name in find_qualified_refs(measure.expression):
+                    result.update(ctx.model.column_reference_objects(obj_name, col_name))
+            filter_columns: set[tuple[str, str]] = set()
+            for fi in measure.filters:
+                collect_measure_filter_columns(fi, filter_columns)
+            for obj_name, col_name in filter_columns:
+                result.update(ctx.model.column_reference_objects(obj_name, col_name))
             return result
 
         metric = ctx.model.metrics.get(name)
@@ -1383,6 +1408,10 @@ class QueryResolver:
         ``EXISTS`` / ``NONEXISTS`` targets are skipped too: they compile to a
         correlated subquery, not a join, so they place no reachability demand on
         the base object.
+
+        A predicate on a computed column demands whatever objects its expression
+        reads as well — the predicate is only as reachable as the columns it
+        compares.
         """
         found: set[str] = set()
         measure_names = model.effective_measures
@@ -1399,11 +1428,14 @@ class QueryResolver:
             if dimension is not None:
                 if dimension.view:
                     found.add(dimension.view)
+                    found.update(model.column_reference_objects(dimension.view, dimension.column))
                 return
             if "." in field:
-                object_name = field.split(".", 1)[0].strip()
+                object_name, _, column_name = field.partition(".")
+                object_name, column_name = object_name.strip(), column_name.strip()
                 if object_name in model.data_objects:
                     found.add(object_name)
+                    found.update(model.column_reference_objects(object_name, column_name))
 
         for entry in query.where:
             visit(entry)
