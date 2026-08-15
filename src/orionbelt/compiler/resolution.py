@@ -523,8 +523,23 @@ class ResolvedQuery:
 
     @property
     def has_filter_context(self) -> bool:
-        """Check if any measure has a filter context override."""
-        return any(m.filter_context is not None for m in self.measures)
+        """Check if any measure (direct or metric component) has a filter context.
+
+        Components count for the same reason they do in :attr:`has_totals`: a
+        metric inlines their aggregates, so a context declared on one is a
+        context this query has to honour. ``filter_wrap`` isolates only the
+        directly selected ones, which is why a metric over such a component is
+        refused in ``compiler.passes`` rather than compiled - reporting False
+        here instead would skip the pass and answer the query-filtered number
+        under the unfiltered measure's name.
+        """
+        for m in self.measures:
+            if m.filter_context is not None:
+                return True
+            for comp in self._components_of(m):
+                if comp.filter_context is not None:
+                    return True
+        return False
 
     @property
     def has_cumulative(self) -> bool:

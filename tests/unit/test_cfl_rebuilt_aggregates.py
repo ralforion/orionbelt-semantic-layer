@@ -21,7 +21,7 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import QueryResolver, ResolutionError
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -94,12 +94,22 @@ measures:
     aggregation: sum
     filterContext:
       mode: FIXED
+  Grand Unfiltered Sales:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+    filterContext:
+      mode: FIXED
 
 metrics:
   Sales Share:
     expression: "{[Sales Amount]} / {[Total Sales]}"
   Sales vs Average:
     expression: "{[Sales Amount]} / {[Avg Sales]}"
+  Filtered Share:
+    expression: "{[Sales Amount]} / {[Unfiltered Sales]}"
 """
 
 
@@ -230,3 +240,79 @@ class TestTheCompositeFlag:
         resolved = QueryResolver().resolve(query, model)
         PIPELINE._star_planner.plan(resolved, model)
         assert resolved.composite_cte is None
+
+
+class TestFilterContextReadThroughAMetric:
+    """``filter_wrap`` isolates the measures the query *selects*. A metric
+    inlines its components' aggregates into one column instead, so a context
+    declared on a component never gets the filtered scan it asks for and the
+    query's WHERE applies to it like any other aggregate. The metric then
+    answers a number that looks right and is not the one that was asked for,
+    which is why it is refused on every plan rather than only under CFL.
+    """
+
+    @staticmethod
+    def _sql_filtered(measures: list[str]) -> str:
+        return PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Month"], measures=measures),
+                where=[QueryFilter(field="Month", op=FilterOperator.EQUALS, value=1)],
+            ),
+            _model(),
+            "duckdb",
+        ).sql
+
+    def test_refused_on_a_single_fact_plan(self) -> None:
+        with pytest.raises(ResolutionError) as exc:
+            self._sql_filtered(["Filtered Share"])
+        assert "Filtered Share.Unfiltered Sales" in str(exc.value)
+
+    def test_refused_alongside_another_fact(self) -> None:
+        with pytest.raises(ResolutionError) as exc:
+            self._sql_filtered(["Filtered Share", "Refund Amount"])
+        assert "Filtered Share.Unfiltered Sales" in str(exc.value)
+
+    def test_the_refusal_says_what_a_metric_does_to_it(self) -> None:
+        with pytest.raises(ResolutionError) as exc:
+            self._sql_filtered(["Filtered Share"])
+        message = str(exc.value)
+        assert "filterContext" in message
+        assert "metric" in message
+
+    def test_the_component_still_works_when_selected_directly(self) -> None:
+        """The refusal is about how the metric reads it, not about the
+        measure — selecting it by name still gets its own filtered scan, with
+        the query's WHERE left out of it."""
+        sql = self._sql_filtered(["Grand Unfiltered Sales", "Sales Amount"])
+        assert "fc_0" in sql
+        # The wrapper projects the inline measure first, then the isolated one.
+        rows = [(float(r[1]), float(r[2])) for r in _run(sql)]
+        # Month 1 holds 10 of the 30, and the unfiltered measure reports all 30
+        # even though the query asked only for month 1.
+        assert rows == [(10.0, 30.0)]
+
+    def test_a_metric_over_plain_components_is_untouched(self) -> None:
+        assert "Sales Share" in self._sql_filtered(["Sales Share"])
+
+
+class TestTheFilterContextFlagCoversComponents:
+    """``has_filter_context`` decides whether the pass runs at all, and it read
+    only the directly selected measures while its siblings (``has_totals``,
+    ``has_grain_overrides``) walk metric components. That gap is what let the
+    metric case through silently."""
+
+    @staticmethod
+    def _resolved(measures: list[str]):
+        return QueryResolver().resolve(
+            QueryObject(select=QuerySelect(dimensions=["Month"], measures=measures)),
+            _model(),
+        )
+
+    def test_true_for_a_directly_selected_measure(self) -> None:
+        assert self._resolved(["Unfiltered Sales"]).has_filter_context
+
+    def test_true_for_a_component_read_through_a_metric(self) -> None:
+        assert self._resolved(["Filtered Share"]).has_filter_context
+
+    def test_false_without_one(self) -> None:
+        assert not self._resolved(["Sales Amount"]).has_filter_context
