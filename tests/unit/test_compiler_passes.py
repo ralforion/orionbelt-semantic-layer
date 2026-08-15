@@ -20,6 +20,7 @@ from orionbelt.compiler.passes import (
     PASS_FILTER_CONTEXT,
     PASS_GRAIN_DEDUP,
     PASS_HAVING_CLEANUP,
+    PASS_HAVING_WINDOW,
     PASS_PERIOD_OVER_PERIOD,
     PASS_TOTALS,
     PASS_WINDOW,
@@ -78,6 +79,9 @@ def test_pass_order_is_declared_once() -> None:
         PASS_TOTALS,
         PASS_CUMULATIVE,
         PASS_WINDOW,
+        # Runs after every wrapper: the filtering query it adds needs all of
+        # their aliases in scope at once.
+        PASS_HAVING_WINDOW,
         PASS_HAVING_CLEANUP,
     ]
 

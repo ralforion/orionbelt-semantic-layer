@@ -456,3 +456,39 @@ def test_a_derived_metric_over_a_window_metric_refuses_a_cfl_plan() -> None:
             {"select": {"dimensions": [], "measures": ["Doubled Sales Rank", "Refund Amount"]}},
             CFL_YAML,
         )
+
+
+def test_having_on_a_window_metric_over_a_cfl_plan() -> None:
+    """A CFL query withholds a windowed HAVING just as the star planner does.
+
+    ``CFLPlanner._plan_union_all`` emits its own HAVING, so the rule that
+    ``star.py`` follows has to hold here too. Left in the outer union query the
+    predicate compared the *base measure* to the rank threshold —
+    ``HAVING SUM("composite_01"."Sales Amount") <= 1`` — and returned nothing.
+    """
+    result = _compile(
+        {
+            "select": {"dimensions": [], "measures": ["Sales Rank", "Refund Amount"]},
+            "having": [{"field": "Sales Rank", "op": "lte", "value": 1}],
+        },
+        CFL_YAML,
+    )
+    assert "HAVING" not in result.sql, result.sql
+    assert '"Sales Rank" <= 1' in result.sql
+
+    rows = _cfl_db().execute(result.sql).fetchall()
+    assert len(rows) == 1
+    assert (int(rows[0][0]), float(rows[0][1])) == (1, 30.0)
+
+
+def test_a_plain_having_over_a_cfl_plan_still_applies() -> None:
+    """Only windowed predicates are withheld; the rest stay in the union query."""
+    result = _compile(
+        {
+            "select": {"dimensions": [], "measures": ["Sales Amount", "Refund Amount"]},
+            "having": [{"field": "Refund Amount", "op": "gt", "value": 1000}],
+        },
+        CFL_YAML,
+    )
+    assert "HAVING" in result.sql
+    assert _cfl_db().execute(result.sql).fetchall() == []
