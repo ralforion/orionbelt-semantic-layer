@@ -36,6 +36,13 @@ class DremioDialect(Dialect):
         path (user encodes the complete Dremio path in the OBML ``code`` field).
         Otherwise falls back to the standard 3-part format.
         All components are quoted to prevent SQL injection.
+
+        Unlike the other three-part dialects this does *not* refuse a
+        ``database`` with no ``schema``: a Dremio path has no fixed arity, so
+        ``"PROD"."sales"`` is a well-formed two-level path naming exactly what
+        the model named. Elsewhere the same pair would silently be read as
+        ``schema.table`` - see
+        :class:`~orionbelt.dialect.base.AmbiguousTableReferenceError`.
         """
         parts = [self.quote_identifier(p) for p in (database, schema) if p]
         if parts:

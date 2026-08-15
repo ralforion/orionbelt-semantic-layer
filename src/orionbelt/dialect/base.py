@@ -80,6 +80,32 @@ class UnsupportedGroupingError(Exception):
         super().__init__(f"Dialect '{dialect}' does not support GROUP BY {grouping.upper()}")
 
 
+class AmbiguousTableReferenceError(Exception):
+    """Raised when a table reference cannot be qualified unambiguously.
+
+    On a three-part dialect a data object with a ``database`` but no ``schema``
+    has no correct rendering. Emitting two parts would be read as
+    ``schema.table`` (Snowflake, Databricks) or ``dataset.table`` (BigQuery),
+    silently pointing at a different namespace than the model names; emitting
+    three with an empty middle is not valid syntax. Only Snowflake offers
+    ``db..table`` for "the default schema", and that is not portable.
+
+    A domain error rather than a bare ``ValueError`` so routers surface a 422,
+    matching every other unsupported-model case, instead of a 500.
+    """
+
+    def __init__(self, dialect: str, database: str, code: str) -> None:
+        self.dialect = dialect
+        self.database = database
+        self.code = code
+        super().__init__(
+            f"Data object '{code}' sets database '{database}' but no schema, which "
+            f"dialect '{dialect}' cannot qualify: a two-part name would be read as "
+            f"schema.table, not database.table. Set 'schema' on the data object, or "
+            f"drop 'database' and let the connection's current database apply."
+        )
+
+
 @dataclass
 class DialectCapabilities:
     """Flags indicating what SQL features a dialect supports."""
@@ -177,6 +203,8 @@ class Dialect(ABC):
         resolve against the connection's current database, which is how a
         single model serves several deployments of the same schema.
         """
+        if database and not schema:
+            raise AmbiguousTableReferenceError(self.name, database, code)
         parts = [database, schema, code]
         return ".".join(self.quote_identifier(p) for p in parts if p)
 

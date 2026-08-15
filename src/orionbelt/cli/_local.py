@@ -16,7 +16,11 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.pipeline import CompilationResult
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    UnsupportedAggregationError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -71,7 +75,11 @@ def _compile(
         raise CliError(f"Query resolution failed: {details}") from None
     except FanoutError as exc:
         raise CliError(f"Query fanout detected: {exc.message}") from None
-    except (UnsupportedAggregationError, UnsupportedGroupingError) as exc:
+    except (
+        AmbiguousTableReferenceError,
+        UnsupportedAggregationError,
+        UnsupportedGroupingError,
+    ) as exc:
         raise CliError(str(exc)) from None
 
 

@@ -31,7 +31,15 @@ class DuckDBDialect(Dialect):
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
-        """DuckDB: two-part ``schema.code`` (skip database for local mode)."""
+        """DuckDB: two-part ``schema.code`` (skip database for local mode).
+
+        An omitted schema collapses to the bare table rather than an empty
+        quoted component, so the reference resolves against the connection's
+        search path. ``database`` is not part of the name on this dialect, so
+        setting it without a schema is not ambiguous here.
+        """
+        if not schema:
+            return self.quote_identifier(code)
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
     def quote_identifier(self, name: str) -> str:

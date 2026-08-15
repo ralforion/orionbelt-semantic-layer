@@ -22,7 +22,11 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    UnsupportedAggregationError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.model_store import ModelStore
 
@@ -121,6 +125,16 @@ def compile_query_or_raise(*, store: ModelStore, model_id: str, query: Any, dial
                 "message": str(exc),
                 "dialect": exc.dialect,
                 "grouping": exc.grouping,
+            },
+        ) from None
+    except AmbiguousTableReferenceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Ambiguous table reference",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "database": exc.database,
             },
         ) from None
 
@@ -226,6 +240,19 @@ def compile_query_for_plan(
                     severity="error",
                     message=str(exc),
                     context={"dialect": exc.dialect, "grouping": exc.grouping},
+                )
+            ],
+            would_compile=False,
+        )
+    except AmbiguousTableReferenceError as exc:
+        return None, QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="AMBIGUOUS_TABLE_REFERENCE",
+                    severity="error",
+                    message=str(exc),
+                    context={"dialect": exc.dialect, "database": exc.database},
                 )
             ],
             would_compile=False,

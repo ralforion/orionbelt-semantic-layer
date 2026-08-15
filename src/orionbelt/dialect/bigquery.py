@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, RawSQL
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    Dialect,
+    DialectCapabilities,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
@@ -90,7 +94,11 @@ class BigQueryDialect(Dialect):
 
         An omitted project is dropped rather than backquoted empty, so
         ``dataset.table`` resolves against the connection's default project.
+        A project *with* no dataset is refused: ``project.table`` is read as
+        ``dataset.table``, which would silently query a different namespace.
         """
+        if database and not schema:
+            raise AmbiguousTableReferenceError(self.name, database, code)
         parts = [database, schema, code]
         return ".".join(self.quote_identifier(p) for p in parts if p)
 
