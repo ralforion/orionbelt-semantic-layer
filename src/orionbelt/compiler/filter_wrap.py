@@ -18,7 +18,7 @@ Strategy selection per the design doc:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -33,7 +33,9 @@ from orionbelt.ast.nodes import (
     OrderByItem,
     Select,
 )
+from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.filters import build_filter_expr
+from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.resolution import (
     ResolvedFilter,
@@ -174,6 +176,26 @@ def _combine_where(filters: list[ResolvedFilter]) -> Expr | None:
     return combined
 
 
+def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
+    """Replace every bare (unqualified) ``ColumnRef`` that names a mapped alias.
+
+    A HAVING predicate references a measure as a table-less ``ColumnRef``
+    carrying its name, so this turns one into whichever expression the target
+    scope projects under that name.
+    """
+    return map_column_refs(
+        expr, lambda ref: by_alias.get(ref.name, ref) if ref.table is None else ref
+    )
+
+
+def _combine_exprs(exprs: Iterable[Expr]) -> Expr | None:
+    """AND a run of predicates together, or ``None`` if there are none."""
+    combined: Expr | None = None
+    for expr in exprs:
+        combined = expr if combined is None else BinaryOp(left=combined, op="AND", right=expr)
+    return combined
+
+
 def _component_expr(measure: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     """The aggregate to project for *measure*, in a CTE of this wrapper's own.
 
@@ -256,13 +278,38 @@ def wrap_with_filter_context(
             main_columns.append(AliasedExpr(expr=_component_expr(comp, resolved), alias=comp.name))
             main_aliases.add(comp.name)
 
+    # A HAVING predicate is evaluated inside the CTE the planner built. For an
+    # isolated measure that CTE is ``main``, under the query's filters and over
+    # an aggregate that is not the measure's - the predicate read the wrong
+    # value and silently kept the wrong groups. Those predicates move to the
+    # outer query instead, where every measure is one column of a CTE. The rest
+    # stay where the planner put them, expression for expression.
+    hoisted = {m.name for m in isolated} | set(split_metrics)
+    outer_having = [hf for hf in resolved.having_filters if hf.referenced_fields & hoisted]
+    main_having = ast.having
+    if outer_having:
+        planner_exprs = {
+            alias: col.expr
+            for col in ast.columns
+            if isinstance(col, AliasedExpr) and (alias := _get_alias(col)) is not None
+        }
+        # A predicate on a measure a *later* wrapper windows stays withheld:
+        # the planner left it out deliberately and ``PASS_HAVING_WINDOW``
+        # applies it once over the windowed rows.
+        deferred = hoisted | windowed_aliases(resolved)
+        main_having = _combine_exprs(
+            _substitute_aliases(hf.expression, planner_exprs)
+            for hf in resolved.having_filters
+            if not hf.referenced_fields & deferred
+        )
+
     main_cte_query = Select(
         columns=main_columns,
         from_=ast.from_,
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=ast.having,
+        having=main_having,
         order_by=[],
         limit=None,
         offset=None,
@@ -404,6 +451,18 @@ def wrap_with_filter_context(
                 )
             )
 
+    # The hoisted predicates, rebuilt over the outer projection. One row per
+    # query grain here, so filtering it is exactly what HAVING would have done
+    # had the value been available where the planner put the predicate.
+    outer_exprs = {
+        alias: col.expr
+        for col in outer_columns
+        if isinstance(col, AliasedExpr) and (alias := _get_alias(col)) is not None
+    }
+    outer_where = _combine_exprs(
+        _substitute_aliases(hf.expression, outer_exprs) for hf in outer_having
+    )
+
     # Recorded for the wrappers that run after this one. Each of them
     # re-projects some measure's aggregate into a CTE of its own, and their CTE
     # selects from what this wrapper built - where the fact tables the resolved
@@ -454,7 +513,7 @@ def wrap_with_filter_context(
         columns=outer_columns,
         from_=From(source=anchor, alias=anchor),
         joins=outer_joins,
-        where=None,
+        where=outer_where,
         group_by=[],
         having=None,
         order_by=outer_order_by,
