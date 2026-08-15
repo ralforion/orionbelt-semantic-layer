@@ -34,7 +34,12 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.filters import build_filter_expr
-from orionbelt.compiler.resolution import ResolvedFilter, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.resolution import (
+    ResolvedFilter,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter
 from orionbelt.models.semantic import (
@@ -229,7 +234,7 @@ def wrap_with_filter_context(
         cte_columns: list[Expr] = []
         for dim in resolved.dimensions:
             if dim.name in grain:
-                col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+                col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
                 if dim.grain and dialect:
                     col = dialect.render_time_grain(col, dim.grain)
                 cte_columns.append(AliasedExpr(expr=col, alias=dim.name))
@@ -241,7 +246,7 @@ def wrap_with_filter_context(
         cte_group_by: list[Expr] = []
         for dim in resolved.dimensions:
             if dim.name in grain:
-                gb_col: Expr = ColumnRef(name=dim.source_column, table=dim.object_name)
+                gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
                 if dim.grain and dialect:
                     gb_col = dialect.render_time_grain(gb_col, dim.grain)
                 cte_group_by.append(gb_col)
@@ -314,10 +319,13 @@ def wrap_with_filter_context(
     dim_map: dict[tuple[str, str | None], str] = {
         (d.source_column, d.object_name): d.name for d in resolved.dimensions
     }
+    dim_exprs: list[tuple[Expr, str]] = [
+        (make_column_expr(model, d.object_name, d.column_name), d.name) for d in resolved.dimensions
+    ]
     measure_exprs: list[tuple[Expr, str]] = [(m.expression, m.name) for m in resolved.measures]
     outer_order_by: list[OrderByItem] = []
     for ob in ast.order_by:
-        remapped = _remap_fc_order_expr(ob.expr, dim_map, measure_exprs)
+        remapped = _remap_fc_order_expr(ob.expr, dim_map, dim_exprs, measure_exprs)
         outer_order_by.append(OrderByItem(expr=remapped, desc=ob.desc, nulls_last=ob.nulls_last))
 
     return Select(
@@ -337,6 +345,7 @@ def wrap_with_filter_context(
 def _remap_fc_order_expr(
     expr: Expr,
     dim_map: dict[tuple[str, str | None], str],
+    dim_exprs: list[tuple[Expr, str]],
     measure_exprs: list[tuple[Expr, str]],
 ) -> Expr:
     """Remap one ORDER BY expression for the filter-context outer query."""
@@ -345,6 +354,12 @@ def _remap_fc_order_expr(
         if key in dim_map:
             return ColumnRef(name=dim_map[key], table="main")
         return ColumnRef(name=expr.name, table="main")
+    # A computed dimension orders by its inlined expression, not by a column
+    # reference, so it is matched structurally against the same expression the
+    # CTE projected under its alias.
+    for dim_expr, name in dim_exprs:
+        if expr == dim_expr:
+            return ColumnRef(name=name, table="main")
     for meas_expr, name in measure_exprs:
         if expr is meas_expr or expr == meas_expr:
             return ColumnRef(name=name, table="main")

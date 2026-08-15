@@ -231,7 +231,11 @@ def tokenize_measure_expression(
         if ch == "{" and i + 1 < len(formula) and formula[i + 1] == "[":
             m = _MEASURE_REF_PATTERN.match(formula, i)
             if m:
-                obj_name, col_name = m.group(1), m.group(2)
+                # Stripped, because the scanners that discover dependencies and
+                # validate references strip too. Leaving the padding on here
+                # made ``{[ Address ].[ Zip 5 ]}`` validate and join Address,
+                # then render `" Address "." Zip 5 "` — names no database has.
+                obj_name, col_name = m.group(1).strip(), m.group(2).strip()
                 obj = model.data_objects.get(obj_name)
                 column = obj.columns.get(col_name) if obj else None
                 if column is not None and column.expression:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import islice
 
 import networkx as nx
 
@@ -246,10 +247,18 @@ class JoinGraph:
         ranked: list[tuple[tuple[int, int, str], list[str]]] = []
         for source in sorted(from_objects):
             try:
-                path: list[str] = nx.shortest_path(self._traversable, source, to_object)
+                # Every shortest path, not just one: a single source often
+                # reaches a dimension by two equally short routes — a fact
+                # joining ``region`` through both its store and its supplier —
+                # and ``shortest_path`` would return whichever it found first,
+                # hiding the choice. Capped, since only the tie matters and a
+                # dense graph can enumerate a great many equal paths.
+                paths = islice(nx.all_shortest_paths(self._traversable, source, to_object), 16)
+                found: list[list[str]] = [list(p) for p in paths]
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 continue
-            ranked.append(((len(path), self._hops_from(prefer_from, source), source), path))
+            for path in found:
+                ranked.append(((len(path), self._hops_from(prefer_from, source), source), path))
         if not ranked:
             return []
 
@@ -268,6 +277,7 @@ class JoinGraph:
         to_objects: set[str],
         via_constraints: dict[str, str] | None = None,
         prefer_from: str | None = None,
+        ambiguous: dict[str, list[list[str]]] | None = None,
     ) -> list[JoinStep]:
         """Find a minimal join path connecting all required data objects.
 
@@ -279,6 +289,11 @@ class JoinGraph:
         the ``via`` object is used as the source so the path is forced through it.
         *prefer_from* is the query's base object, which breaks ties in favour of
         the role it reaches directly.
+
+        A path is still produced when several roles tie, because most callers
+        only need *a* join. Pass *ambiguous* to learn about it: each target that
+        tied is recorded there with the routes it tied between, so a caller that
+        must not guess — query resolution — can refuse instead.
         """
         steps: list[JoinStep] = []
         visited_edges: set[tuple[str, str]] = set()
@@ -302,6 +317,8 @@ class JoinGraph:
         for target in ordered_targets:
             sources = [via[target]] if target in via and via[target] in source_list else source_list
             candidates = self.role_candidates(set(sources), target, prefer_from=anchor)
+            if len(candidates) > 1 and ambiguous is not None:
+                ambiguous[target] = candidates
             best_path = candidates[0] if candidates else None
 
             if best_path is None:

@@ -249,6 +249,33 @@ class TestAmbiguousRoleRefused:
         assert "Store" in message and "Supplier" in message
         assert ambiguous[0].hint is not None and "via" in ambiguous[0].hint
 
+    def test_selected_dimension_on_an_ambiguous_object_is_refused(self) -> None:
+        """Planning the required objects has the same exposure as filtering:
+        the two routes to Region are equally short from the base, and picking
+        one silently answers a different question. Note the tie here is within
+        a *single* source — the base reaches Region through Store and through
+        Supplier — which a single shortest path would have hidden."""
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(
+                        dimensions=["Store Name", "Supplier Name", "Region Name"],
+                        measures=["Sales Amount"],
+                    )
+                ),
+                _load(SYMMETRIC),
+                "postgres",
+            )
+        ambiguous = [e for e in excinfo.value.errors if e.code == "AMBIGUOUS_JOIN_PATH"]
+        assert ambiguous, [e.code for e in excinfo.value.errors]
+        assert "Region Name" in ambiguous[0].message
+        assert "Store" in ambiguous[0].message and "Supplier" in ambiguous[0].message
+
+    def test_role_candidates_reports_two_routes_from_one_source(self) -> None:
+        graph = JoinGraph(_load(SYMMETRIC))
+        roles = graph.role_candidates({"Sales"}, "Region", prefer_from="Sales")
+        assert sorted(path[-2] for path in roles) == ["Store", "Supplier"]
+
     def test_one_route_is_not_ambiguous(self) -> None:
         """A dimension only one joined object reaches compiles as before."""
         sql = PIPELINE.compile(

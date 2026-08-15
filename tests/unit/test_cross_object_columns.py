@@ -18,6 +18,7 @@ from orionbelt.models.query import (
     FilterOperator,
     QueryFilter,
     QueryObject,
+    QueryOrderBy,
     QuerySelect,
 )
 from orionbelt.models.semantic import SemanticModel
@@ -273,6 +274,36 @@ class TestJoinEmission:
             result.physical_tables
         )
 
+    def test_filter_context_cte_inlines_a_computed_grain(self) -> None:
+        """The wrapper's CTE rebuilds the query's grain from scratch. A
+        computed dimension has no ``code:``, so projecting it as a bare column
+        reference emitted `"Store".""` — an empty identifier every database
+        rejects."""
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Zip Matches"], measures=["Context Matched Amount"])
+            ),
+            _load(),
+            "postgres",
+        ).sql
+        assert '""' not in sql
+        wrapper = sql[sql.index('"fc_0" AS (') :]
+        assert 'SUBSTRING("Store"."S_ZIP", 1, 5)' in wrapper
+
+    def test_filter_context_order_by_remaps_a_computed_grain(self) -> None:
+        """ORDER BY on a computed dimension is an inlined expression, not a
+        column reference, so it has to be matched structurally to reach the
+        CTE alias."""
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Zip Matches"], measures=["Context Matched Amount"]),
+                order_by=[QueryOrderBy(field="Zip Matches", direction="asc")],
+            ),
+            _load(),
+            "postgres",
+        ).sql
+        assert 'ORDER BY "main"."Zip Matches" ASC' in sql
+
     def test_object_joined_once_for_two_referencing_columns(self) -> None:
         sql = PIPELINE.compile(
             QueryObject(
@@ -338,6 +369,27 @@ class TestUnreachableReference:
         ).sql
         assert "WAREHOUSE" not in sql
         assert "WHERE" not in sql
+
+
+class TestReferenceWhitespace:
+    """``{[ Object ].[ Column ]}`` — padding inside the brackets."""
+
+    PADDED = MODEL_YAML.replace("{[Address].[Zip 5]}", "{[ Address ].[ Zip 5 ]}")
+
+    def test_padded_reference_resolves_to_the_same_columns(self) -> None:
+        """Discovery and validation strip the padding, so tokenization has to
+        as well — otherwise a model validates, joins the object, and then
+        renders `" Address "." Zip 5 "`."""
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=["Zip Matches"], measures=["Sales Amount"])),
+            _load(self.PADDED),
+            "postgres",
+        ).sql
+        assert 'SUBSTRING("Address"."CA_ZIP", 1, 5)' in sql
+        assert '" Address "' not in sql
+
+    def test_padded_reference_is_discovered(self) -> None:
+        assert _load(self.PADDED).column_reference_objects("Store", "Zip Matches") == {"Address"}
 
 
 class TestJoinKeys:

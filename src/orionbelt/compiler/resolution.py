@@ -701,11 +701,45 @@ class QueryResolver:
         # 5. Resolve join paths
         ctx.graph = JoinGraph(model, use_path_names=query.use_path_names or None)
         if ctx.result.base_object and len(ctx.result.required_objects) > 1:
+            ambiguous: dict[str, list[list[str]]] = {}
             ctx.result.join_steps = ctx.graph.find_join_path(
                 {ctx.result.base_object},
                 ctx.result.required_objects,
                 via_constraints=ctx.result.via_constraints or None,
+                ambiguous=ambiguous,
             )
+            # A dimension the query reaches by two equally close routes is two
+            # different roles of one data object, and they select different
+            # rows. Refused rather than picked — the same stance the filter
+            # path takes, since a projected dimension is no more guessable.
+            for object_name, routes in sorted(ambiguous.items()):
+                names = (
+                    ", ".join(
+                        f"'{dim.name}'"
+                        for dim in ctx.result.dimensions
+                        if dim.object_name == object_name
+                    )
+                    or f"'{object_name}'"
+                )
+                ctx.errors.append(
+                    SemanticError(
+                        code="AMBIGUOUS_JOIN_PATH",
+                        message=(
+                            f"{names} is on '{object_name}', which this query reaches "
+                            f"equally well by more than one route "
+                            f"({', '.join(f'via {path[-2]!r}' for path in routes)}). "
+                            f"Those are different roles of the same data object and "
+                            f"they select different rows."
+                        ),
+                        path="select.dimensions",
+                        hint=(
+                            "Say which one is meant: declare a data object per role "
+                            "over the same table and select from that, or give the "
+                            "dimension a 'via:' waypoint naming the object the join "
+                            "must traverse."
+                        ),
+                    )
+                )
 
         # Build set of all objects present in the query's join graph
         if ctx.result.base_object:
