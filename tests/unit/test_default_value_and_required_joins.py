@@ -210,3 +210,133 @@ class TestExecuted:
         assert None in [r[0] for r in left]
         assert None not in [r[0] for r in inner]
         assert sum(r[1] for r in inner) == 10.0
+
+
+# ---------------------------------------------------------------------------
+# The default must not be mistaken for part of the aggregate
+# ---------------------------------------------------------------------------
+
+MULTI_FACT = """\
+version: 1.0
+
+dataObjects:
+  Dates:
+    code: DATES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int, primaryKey: true}
+      Month: {code: MONTH, abstractType: int}
+
+  Sales:
+    code: SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int}
+      Amount: {code: AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+
+  Refunds:
+    code: REFUNDS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int}
+      Refund: {code: REFUND, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+
+dimensions:
+  Month: {dataObject: Dates, column: Month, resultType: int}
+
+measures:
+  Sales Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    defaultValue: 0
+  Refund Amount:
+    columns: [{dataObject: Refunds, column: Refund}]
+    resultType: float
+    aggregation: sum
+"""
+
+
+class TestDefaultValueInAMultiFactPlan:
+    """CFL spreads a multi-argument aggregate across its union legs, one column
+    per argument. A declared default presents as ``COALESCE(agg, default)``,
+    which is two arguments and is not that — the legs projected a bare ``0`` as
+    a column and the outer query concatenated it into a string.
+    """
+
+    def _sql(self) -> str:
+        return PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Month"], measures=["Sales Amount", "Refund Amount"])
+            ),
+            _load(MULTI_FACT),
+            "duckdb",
+        ).sql
+
+    def test_plan_is_multi_fact(self) -> None:
+        assert "UNION ALL" in self._sql()
+
+    def test_legs_project_the_aggregate_input_not_the_default(self) -> None:
+        legs = self._sql().split("UNION ALL")[0]
+        assert '"Sales"."AMOUNT"' in legs
+        assert "__f0" not in legs and "__f1" not in legs
+
+    def test_the_default_lands_on_the_outer_rebuild(self) -> None:
+        assert 'COALESCE(SUM("composite_01"."Sales Amount"), 0)' in self._sql()
+
+    def test_the_sql_executes(self) -> None:
+        import duckdb
+
+        con = duckdb.connect(":memory:")
+        con.execute('CREATE SCHEMA "PUBLIC"')
+        con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT)')
+        con.execute('CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, AMOUNT DOUBLE)')
+        con.execute('CREATE TABLE "PUBLIC"."REFUNDS" (DATE_KEY INT, REFUND DOUBLE)')
+        con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 3)')
+        con.execute('INSERT INTO "PUBLIC"."REFUNDS" VALUES (1, 4.0)')
+        rows = con.execute(self._sql()).fetchall()
+        # A month with refunds but no sales still reports the declared 0.
+        assert rows == [(3, 0, 4.0)], rows
+
+
+class TestDefaultValueWithDelegatedAggregation:
+    """``aggregation: measure`` hands resolution to the engine, so OBSL never
+    sees the empty set it would substitute for. Refused rather than accepted
+    and dropped, which is what happened: the SQL came out as a bare
+    ``MEASURE(...)`` with the declared default nowhere in it."""
+
+    def test_the_combination_is_refused(self) -> None:
+        yaml_str = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Region: {code: REGION, abstractType: string}
+dimensions:
+  Region: {dataObject: Sales, column: Region, resultType: string}
+measures:
+  Total Revenue:
+    resultType: float
+    aggregation: measure
+    defaultValue: 0
+"""
+        raw, source_map = TrackedLoader().load_string(yaml_str)
+        _, result = ReferenceResolver().resolve(raw, source_map)
+        assert not result.valid
+        assert "defaultValue" in " ".join(e.message for e in result.errors)

@@ -664,6 +664,13 @@ class Measure(BaseModel):
                     "(OBSL cannot wrap the engine-resolved aggregation in "
                     "a window function — define the total at the metric-view level)."
                 )
+            if self.default_value is not None:
+                raise ValueError(
+                    "aggregation: measure cannot be combined with 'defaultValue' "
+                    "(the engine resolves the aggregation, so OBSL never sees "
+                    "the empty set it would substitute for — declare the "
+                    "default in the metric view itself)."
+                )
         return self
 
     @model_validator(mode="after")

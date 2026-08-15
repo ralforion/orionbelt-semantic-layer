@@ -107,8 +107,14 @@ def group_dimensions_into_legs(
 
 
 def is_multi_field(measure: ResolvedMeasure) -> bool:
-    """Check if a measure has multiple field args (e.g. COUNT(a, b))."""
-    return isinstance(measure.expression, FunctionCall) and len(measure.expression.args) > 1
+    """Check if a measure has multiple field args (e.g. COUNT(a, b)).
+
+    Reads :attr:`ResolvedMeasure.aggregate`, not ``expression``: a declared
+    ``defaultValue`` wraps the aggregate in a two-argument ``COALESCE``, and
+    counting that as a multi-field aggregate spread the default across the
+    union legs as a column of its own.
+    """
+    return isinstance(measure.aggregate, FunctionCall) and len(measure.aggregate.args) > 1
 
 
 def resolve_null_type_for_field(
@@ -190,7 +196,7 @@ def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
     if agg == "COUNT_DISTINCT":
         agg = "COUNT"
         distinct = True
-    if isinstance(measure.expression, FunctionCall) and measure.expression.distinct:
+    if isinstance(measure.aggregate, FunctionCall) and measure.aggregate.distinct:
         distinct = True
     return agg, distinct
 
@@ -215,7 +221,7 @@ def build_outer_aggregate(
     composite column, which only a single-column measure has.
     """
     agg, distinct = outer_aggregation(measure)
-    source = measure.expression if isinstance(measure.expression, FunctionCall) else None
+    source = measure.aggregate if isinstance(measure.aggregate, FunctionCall) else None
     order_by: list[OrderByItem] = []
     if source is not None and source.order_by:
         # A self-ordering aggregate orders by the very column it aggregates.
@@ -323,10 +329,9 @@ def composite_aliases(resolved: ResolvedQuery) -> CompositeAliases:
     for name in sorted(by_name):
         measure = by_name[name]
         if is_multi_field(measure):
-            assert isinstance(measure.expression, FunctionCall)
-            multi_field[name] = [
-                allocate(f"{name}__f{i}") for i in range(len(measure.expression.args))
-            ]
+            aggregate = measure.aggregate
+            assert isinstance(aggregate, FunctionCall)
+            multi_field[name] = [allocate(f"{name}__f{i}") for i in range(len(aggregate.args))]
         if within_group_item(measure) is not None:
             within_group[name] = allocate(f"{name}__wg")
     return CompositeAliases(multi_field=multi_field, within_group=within_group)
@@ -338,9 +343,10 @@ def unwrap_aggregation(measure: ResolvedMeasure) -> Expr:
     For FunctionCall(SUM, [inner]) → returns inner.
     Falls back to the full expression if not a FunctionCall.
     """
-    if isinstance(measure.expression, FunctionCall) and measure.expression.args:
-        return measure.expression.args[0]
-    return measure.expression
+    aggregate = measure.aggregate
+    if isinstance(aggregate, FunctionCall) and aggregate.args:
+        return aggregate.args[0]
+    return aggregate
 
 
 def build_outer_metric_expr(
@@ -535,10 +541,15 @@ def build_outer_measure_expr(
         # Two-column statistics keep their arguments apart; a tuple count folds
         # them into one string. Both read the same per-argument columns.
         if measure.aggregation.lower() in TWO_COLUMN_AGGREGATIONS:
-            return build_outer_paired_aggregate(measure, field_aliases, cte_name)
-        agg, distinct = outer_aggregation(measure)
-        return build_outer_concat_count(field_aliases, agg, distinct, cte_name)
-    return build_outer_aggregate(measure, cte_name, aliases.within_group)
+            rebuilt: Expr = build_outer_paired_aggregate(measure, field_aliases, cte_name)
+        else:
+            agg, distinct = outer_aggregation(measure)
+            rebuilt = build_outer_concat_count(field_aliases, agg, distinct, cte_name)
+    else:
+        rebuilt = build_outer_aggregate(measure, cte_name, aliases.within_group)
+    # The legs carried the aggregate's input; the default belongs on the value
+    # this rebuild produces, which is what the query finally reports.
+    return measure.with_default(rebuilt)
 
 
 def _single_leg_root(
