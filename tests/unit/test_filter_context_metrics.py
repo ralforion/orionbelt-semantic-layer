@@ -15,6 +15,8 @@ for a deduplicated component and ``total_wrap`` for a windowed one.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 import pytest
 
@@ -23,6 +25,7 @@ from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import (
     FilterOperator,
     QueryFilter,
+    QueryFilterGroup,
     QueryObject,
     QueryOrderBy,
     QuerySelect,
@@ -180,8 +183,8 @@ def _sql(measures: list[str], dimensions: list[str] | None = None) -> str:
     return PIPELINE.compile(_query(measures, dimensions), _model(), "duckdb").sql
 
 
-def _rows(measures: list[str], dimensions: list[str] | None = None) -> dict[str, list]:
-    """Execute, returning one list of values per selected measure."""
+def _connect() -> duckdb.DuckDBPyConnection:
+    """A DuckDB with the fixture rows loaded."""
     con = duckdb.connect(":memory:")
     con.execute('CREATE SCHEMA "PUBLIC"')
     con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT, ODATE DATE)')
@@ -196,7 +199,12 @@ def _rows(measures: list[str], dimensions: list[str] | None = None) -> dict[str,
     con.execute(
         "INSERT INTO \"PUBLIC\".\"SALES\" VALUES (1, 'EU', 2.0), (2, 'EU', 38.0), (3, 'US', 5.0)"
     )
-    result = con.execute(_sql(measures, dimensions)).fetchdf()
+    return con
+
+
+def _rows(measures: list[str], dimensions: list[str] | None = None) -> dict[str, list]:
+    """Execute, returning one list of values per selected measure."""
+    result = _connect().execute(_sql(measures, dimensions)).fetchdf()
     # Sorted on the dimensions: nothing orders the rows, and two queries have to
     # be comparable row for row.
     if _dims(dimensions):
@@ -321,21 +329,49 @@ class TestTheEdgesTheRebuildReaches:
         assert '"main"."Unfiltered Revenue"' not in sql
 
     @pytest.mark.parametrize("measure", ["Unfiltered Revenue", "Revenue Share"])
-    def test_having_on_a_filter_contexted_value_is_refused(self, measure: str) -> None:
-        """HAVING is evaluated inside the CTE the planner built, where the
-        measure's own value does not exist — the query-filtered aggregate stood
-        in for it and the wrong groups survived, without any sign of it."""
-        query = _query([measure])
+    def test_having_on_a_filter_contexted_value_reads_that_value(self, measure: str) -> None:
+        """HAVING is evaluated inside the CTE the planner built, which for an
+        isolated measure is ``main`` - under the query's filters and over an
+        aggregate that is not the measure's. The predicate read the wrong value
+        and silently kept the wrong groups; it moves to the outer query, where
+        every measure is one column of a CTE."""
+        query = _query([measure, "Revenue"])
         query.having = [QueryFilter(field=measure, op=FilterOperator.GREATER, value=10)]
-        with pytest.raises(ResolutionError) as exc:
-            PIPELINE.compile(query, _model(), "duckdb")
-        assert measure in str(exc.value)
+        sql = PIPELINE.compile(query, _model(), "duckdb").sql
+        assert "HAVING" not in sql
+        assert sql.rstrip().splitlines()[-1].startswith("WHERE ")
 
-    def test_having_on_a_plain_measure_still_works(self) -> None:
+    def test_the_threshold_keeps_the_right_groups(self) -> None:
+        """Unfiltered revenue is 40 for month 1 and 5 for month 2, so a
+        threshold of 10 keeps month 1. Read from ``main`` it would have been
+        the filtered 2 and 5, and kept neither."""
+        query = _query(["Unfiltered Revenue"])
+        query.having = [
+            QueryFilter(field="Unfiltered Revenue", op=FilterOperator.GREATER, value=10)
+        ]
+        sql = PIPELINE.compile(query, _model(), "duckdb").sql
+        assert [(r[0], float(r[1])) for r in _connect().execute(sql).fetchall()] == [(1, 40.0)]
+
+    def test_having_on_a_plain_measure_stays_where_the_planner_put_it(self) -> None:
         query = _query(["Revenue", "Unfiltered Revenue"])
-        query.having = [QueryFilter(field="Revenue", op=FilterOperator.GREATER, value=6)]
+        query.having = [QueryFilter(field="Revenue", op=FilterOperator.GREATER, value=3)]
         sql = PIPELINE.compile(query, _model(), "duckdb").sql
         assert "HAVING" in sql
+        assert sql.rstrip().splitlines()[-1].startswith("LEFT JOIN ")
+        assert [(r[0], float(r[1])) for r in _connect().execute(sql).fetchall()] == [(2, 5.0)]
+
+    def test_a_query_can_have_one_of_each(self) -> None:
+        """One predicate stays in ``main``'s HAVING and the other moves out;
+        both have to hold."""
+        query = _query(["Revenue", "Unfiltered Revenue"])
+        query.having = [
+            QueryFilter(field="Revenue", op=FilterOperator.GREATER, value=1),
+            QueryFilter(field="Unfiltered Revenue", op=FilterOperator.GREATER, value=10),
+        ]
+        sql = PIPELINE.compile(query, _model(), "duckdb").sql
+        assert "HAVING" in sql and "\nWHERE " in sql
+        rows = [(r[0], float(r[1]), float(r[2])) for r in _connect().execute(sql).fetchall()]
+        assert rows == [(1, 2.0, 40.0)]
 
 
 class TestAContextOnATotalMeasure:
@@ -478,3 +514,80 @@ class TestAContextUnderAPeriodOverPeriodMetric:
 
     def test_a_pop_metric_without_one_still_compiles(self) -> None:
         assert "Revenue YoY" in _sql(["Revenue YoY"], ["Order Date"])
+
+
+class TestAHoistedPredicateThatIsNotAloneInItsGroup:
+    """Hoisting reads a predicate's *referenced fields*, and a grouped one can
+    name more than a filter-contexted measure."""
+
+    @staticmethod
+    def _or(*filters: QueryFilter) -> list[QueryFilterGroup]:
+        return [QueryFilterGroup(logic="or", filters=list(filters))]
+
+    @staticmethod
+    def _run_having(measures: list[str], having: list[QueryFilterGroup]) -> list[tuple]:
+        query = _query(measures)
+        query.having = having
+        sql = PIPELINE.compile(query, _model(), "duckdb").sql
+        return [
+            tuple(float(v) if isinstance(v, (int, float, Decimal)) else v for v in row)
+            for row in _connect().execute(sql).fetchall()
+        ]
+
+    @pytest.mark.parametrize(
+        ("unfiltered_over", "grand_over", "expected"),
+        [
+            # Unfiltered revenue is 40 and 5; the grand total is 7 on every row.
+            (10, 6, [(1.0, 40.0, 7.0), (2.0, 5.0, 7.0)]),
+            (1000, 6, [(1.0, 40.0, 7.0), (2.0, 5.0, 7.0)]),
+            (10, 100, [(1.0, 40.0, 7.0)]),
+            (1000, 100, []),
+        ],
+    )
+    def test_grouped_with_a_windowed_value(
+        self, unfiltered_over: int, grand_over: int, expected: list[tuple]
+    ) -> None:
+        """A predicate naming both belongs to neither scope: the window does
+        not exist yet in this wrapper, so hoisting it would test the pre-window
+        value here and leave ``PASS_HAVING_WINDOW`` to test it again over the
+        windowed rows. It stays whole, for the pass that sees both values - it
+        was reading a per-group 2 where the total is 7."""
+        assert (
+            self._run_having(
+                ["Unfiltered Revenue", "Grand Revenue"],
+                self._or(
+                    QueryFilter(
+                        field="Unfiltered Revenue",
+                        op=FilterOperator.GREATER,
+                        value=unfiltered_over,
+                    ),
+                    QueryFilter(field="Grand Revenue", op=FilterOperator.GREATER, value=grand_over),
+                ),
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        ("unfiltered_over", "expected"),
+        [(10, [(1.0, 40.0), (2.0, 5.0)]), (1000, [(2.0, 5.0)])],
+    )
+    def test_grouped_with_a_dimension(self, unfiltered_over: int, expected: list[tuple]) -> None:
+        """The measure arrives as a bare placeholder, but the dimension carries
+        the physical column the planner referenced - and out here that table is
+        no longer in the FROM. It reads by the alias the CTEs projected it
+        under instead; it was emitting `"Dates"."MONTH"` against a query that
+        selects from ``main``, which no engine binds."""
+        assert (
+            self._run_having(
+                ["Unfiltered Revenue"],
+                self._or(
+                    QueryFilter(
+                        field="Unfiltered Revenue",
+                        op=FilterOperator.GREATER,
+                        value=unfiltered_over,
+                    ),
+                    QueryFilter(field="Month", op=FilterOperator.EQUALS, value=2),
+                ),
+            )
+            == expected
+        )
