@@ -598,3 +598,39 @@ def test_what_an_anchor_offers_actually_compiles(reachable_model: bool) -> None:
             assert _compiles(model, [dimension], [measure]), f"{dimension} + {measure}"
             checked += 1
     assert checked, "nothing offered — the test would prove nothing"
+
+
+@pytest.mark.parametrize("reachable_model", [True, False])
+def test_named_anchor_agrees_with_the_same_anchor_as_a_query(reachable_model: bool) -> None:
+    """``GET /composables?anchor=X`` and ``POST`` with a query selecting X are
+    two ways to ask the same question, so they have to resolve the same
+    objects. They drifted once: the named path returned a dimension's own data
+    object and forgot what its expression reads."""
+    from orionbelt.models.query import QuerySelect
+
+    reachable, unreachable = _cross_object_models()
+    model = reachable if reachable_model else unreachable
+    resolver = ComposabilityResolver(model)
+
+    for name in model.dimensions:
+        as_query = resolver.objects_from_query(QueryObject(select=QuerySelect(dimensions=[name])))
+        assert resolver.objects_from_anchor_name(name) == as_query, name
+    for name in model.measures:
+        as_query = resolver.objects_from_query(QueryObject(select=QuerySelect(measures=[name])))
+        assert resolver.objects_from_anchor_name(name) == as_query, name
+
+
+@pytest.mark.parametrize("reachable_model", [True, False])
+def test_what_a_named_anchor_offers_actually_compiles(reachable_model: bool) -> None:
+    """The same property the query anchor is held to, through the GET path."""
+    reachable, unreachable = _cross_object_models()
+    model = reachable if reachable_model else unreachable
+    resolver = ComposabilityResolver(model)
+
+    checked = 0
+    for dimension in resolver.resolve(set(), set()).dimensions:
+        offered = resolver.resolve(*resolver.objects_from_anchor_name(dimension))
+        for measure in offered.measures:
+            assert _compiles(model, [dimension], [measure]), f"{dimension} + {measure}"
+            checked += 1
+    assert checked, "nothing offered — the test would prove nothing"

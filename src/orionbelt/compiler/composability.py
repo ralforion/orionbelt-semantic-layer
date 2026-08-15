@@ -199,7 +199,14 @@ class ComposabilityResolver:
         """
         if anchor_type in (None, "dimension") and name in self.model.dimensions:
             obj = _dimension_object(self.model, name)
-            return ({obj} if obj else set()), set()
+            if not obj:
+                return set(), set()
+            # Same reading as the query-as-anchor path: a computed dimension
+            # drags in whatever its expression reads, and an anchor that
+            # forgets them offers pairings the planner refuses. The two entry
+            # points answering differently is itself the bug — one is GET
+            # /composables?anchor=, the other POST with a query.
+            return {obj} | self.model.dimension_join_objects(name), set()
         if anchor_type in (None, "measure") and name in self.model.effective_measures:
             return set(), measure_source_objects(self.model, name)
         if anchor_type in (None, "metric") and name in self.model.metrics:
