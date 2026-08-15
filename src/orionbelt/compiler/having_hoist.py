@@ -19,20 +19,24 @@ places: ``QUALIFY``, which only three of the eight dialects here declare, or a
 wrapping ``SELECT`` over the windowed rows, which all eight support. This
 module does the latter, so one code path serves every dialect.
 
-Several of these wrappers can run in the same query - totals then window, or
-cumulative then window - each nesting the previous one's output. So the
-decision cannot be made per wrapper: a wrapper asked only about *its own*
-aliases would leave a later wrapper's predicate in its CTE, and re-add an
-earlier wrapper's on top. :func:`windowed_aliases` therefore answers the
-question once for the whole query, and every wrapper excludes the same set. The
-filtering query is applied once, at the end of the pass chain, where every
-alias exists (see ``passes.PASS_HAVING_WINDOW``).
+Several wrappers can run in one query - dedup then totals then window, filter
+context then totals - each nesting the previous one's output, and each copying
+or rebuilding ``ast.having`` differently. Stripping the predicate per wrapper
+therefore does not hold: any wrapper that kept a stale copy would filter
+pre-window behind this module's back, which is how ``filter_wrap`` and
+``grain_dedup`` both ended up double-filtering.
 
-``pop_wrap`` materialises every measure in ``pop_compare`` and applies HAVING
-as an outer ``WHERE``; it excludes the windowed ones so the final pass owns
-them. ``grain_dedup`` hoists its own, into a query where the deduplicated
-measures are plain CTE columns and a ``WHERE`` suffices, and never runs
-alongside these wrappers.
+So the predicate is withheld at the source instead. ``star.py`` never emits a
+HAVING on a windowed alias, so no wrapper can carry one, and
+``passes.PASS_HAVING_WINDOW`` applies them once at the end of the chain where
+every alias exists. :func:`windowed_aliases` is the single answer to "which
+aliases does a wrapper finish with a window function", shared by the planner,
+``grain_dedup``, ``pop_wrap`` and the pass itself.
+
+``grain_dedup`` hoists its *own* predicates separately, into a query where the
+deduplicated measures are plain CTE columns and a ``WHERE`` suffices. The two
+sets are disjoint: :func:`windowed_aliases` excludes deduplicated measures via
+``total_wrap._needs_window_wrap``.
 """
 
 from __future__ import annotations
@@ -143,52 +147,6 @@ def _alias_of(column: Expr) -> str | None:
     return column.alias if isinstance(column, AliasedExpr) else None
 
 
-def inner_having(ast: Select, resolved: ResolvedQuery) -> Expr | None:
-    """The HAVING a window wrapper may keep in its CTE.
-
-    Everything referencing a windowed alias is dropped, whichever wrapper
-    produces it, so no wrapper leaves a later one's predicate behind or re-adds
-    an earlier one's. The dropped predicates are applied once at the end of the
-    pass chain by :func:`apply_having_hoist`.
-
-    ``resolved.having_filters`` carry the measure as a bare ``ColumnRef``;
-    ``star.py`` expands that into the aggregate when it emits HAVING, so a
-    predicate staying inside the CTE needs the same expansion, taken from the
-    planner's own column expressions on *ast*.
-
-    Returns ``ast.having`` untouched when nothing is windowed, so a query with
-    no such predicate compiles byte-for-byte as before.
-
-    Only the wrapper sitting directly on the planner's grouped query may derive
-    a HAVING. Once an earlier wrapper has replaced the FROM with its own output,
-    ``ast.having`` is that wrapper's settled answer and is passed straight
-    through: re-deriving it would copy a plain predicate, already applied in the
-    grouped CTE, into a wrapper CTE that has no GROUP BY.
-    """
-    # Local import: window_wrap imports this module for the split.
-    from orionbelt.compiler.window_wrap import wraps_a_cte
-
-    if wraps_a_cte(ast):
-        return ast.having
-
-    windowed = windowed_aliases(resolved)
-    if not any(hf.referenced_fields & windowed for hf in resolved.having_filters):
-        return ast.having
-
-    planner_exprs = {
-        alias: column.expr
-        for column in ast.columns
-        if (alias := _alias_of(column)) is not None and isinstance(column, AliasedExpr)
-    }
-    return _combine(
-        [
-            _expand(hf.expression, planner_exprs)
-            for hf in resolved.having_filters
-            if not hf.referenced_fields & windowed
-        ]
-    )
-
-
 def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
     """The HAVING predicates that must be evaluated after the window functions.
 
@@ -216,14 +174,6 @@ def hoisted_predicates(resolved: ResolvedQuery) -> list[Expr]:
         for hf in resolved.having_filters
         if hf.referenced_fields & windowed
     ]
-
-
-def _expand(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
-    """Replace bare alias references with the planner's expression for them."""
-    return map_column_refs(
-        expr,
-        lambda ref: by_alias.get(ref.name, ref) if ref.table is None else ref,
-    )
 
 
 def apply_having_hoist(

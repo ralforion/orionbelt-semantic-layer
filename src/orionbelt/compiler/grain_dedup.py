@@ -78,6 +78,7 @@ from orionbelt.compiler.expr_rewrite import (
 )
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import collect_measure_filter_objects
+from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
     metric_leaf_components,
@@ -532,10 +533,16 @@ def wrap_with_grain_dedup(
             for col in ast.columns
             if (alias := _measure_alias(col)) in planner_measures and isinstance(col, AliasedExpr)
         }
+        # A predicate on a measure a *later* wrapper windows must not be
+        # rebuilt into ``main`` either: the planner deliberately withheld it
+        # (see ``star.py``), and ``PASS_HAVING_WINDOW`` applies it once over
+        # the windowed rows. Dedup composes with totals, cumulative and direct
+        # window metrics, so this path is reachable.
+        deferred = hoisted | windowed_aliases(resolved)
         main_having = _combine(
             _substitute_aliases(hf.expression, planner_exprs)
             for hf in resolved.having_filters
-            if not hf.referenced_fields & hoisted
+            if not hf.referenced_fields & deferred
         )
 
     all_ctes = list(ast.ctes)

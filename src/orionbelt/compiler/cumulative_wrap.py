@@ -31,7 +31,6 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
-from orionbelt.compiler.having_hoist import inner_having
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     resolve_measure_data_type,
@@ -235,10 +234,6 @@ def wrap_with_cumulative(
         else:
             base_columns.append(col_node)
 
-    # A running total exists only in the outer query. A HAVING predicate on one
-    # left in the CTE would filter the per-group value instead.
-    base_having = inner_having(ast, resolved)
-
     # --- Build base CTE ---
     base_cte_query = Select(
         columns=base_columns,
@@ -246,7 +241,7 @@ def wrap_with_cumulative(
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=base_having,
+        having=ast.having,
         order_by=[],
         limit=None,
         offset=None,

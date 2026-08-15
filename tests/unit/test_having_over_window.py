@@ -534,3 +534,158 @@ class TestSuppressedTotalsPass:
         assert filter_at < window_at
         # Nothing to hoist, so no filtering wrapper is added.
         assert '"having_window" AS (' not in sql
+
+
+# ---------------------------------------------------------------------------
+# Compositions with wrappers that build their own CTEs
+# ---------------------------------------------------------------------------
+
+COMPOSITION_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  Products:
+    code: products
+    schema: main
+    columns:
+      Product ID: {code: id, abstractType: string, primaryKey: true}
+      Stock On Hand: {code: stock_on_hand, abstractType: int}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Product ID: {code: product_id, abstractType: string}
+      Region: {code: region, abstractType: string}
+      Day: {code: day, abstractType: date}
+      Quantity: {code: quantity, abstractType: int}
+      Yr: {code: yr, abstractType: int}
+    joins:
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Sale Product ID]
+        columnsTo: [Product ID]
+
+dimensions:
+  Region: {dataObject: Sales, column: Region}
+  Day: {dataObject: Sales, column: Day}
+  Year: {dataObject: Sales, column: Yr}
+
+measures:
+  Sold Quantity:
+    aggregation: sum
+    expression: '{[Sales].[Quantity]}'
+  Total Stock On Hand:
+    aggregation: sum
+    expression: '{[Products].[Stock On Hand]}'
+  Grand Total Quantity:
+    aggregation: sum
+    total: true
+    expression: '{[Sales].[Quantity]}'
+  Unfiltered Quantity:
+    aggregation: sum
+    filterContext: {mode: FIXED}
+    expression: '{[Sales].[Quantity]}'
+
+metrics:
+  Quantity Rank:
+    type: window
+    measure: Sold Quantity
+    windowFunction: rank
+  Running Quantity:
+    type: cumulative
+    measure: Sold Quantity
+    timeDimension: Day
+"""
+
+
+@pytest.fixture(scope="module")
+def composition_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(COMPOSITION_MODEL_YAML)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, [e.message for e in result.errors]
+    return resolved
+
+
+def _no_having_anywhere(sql: str) -> bool:
+    return "HAVING" not in sql
+
+
+class TestGrainDedupCompositions:
+    """Grain dedup composes with totals, cumulative and direct window metrics.
+
+    ``_conflicts_with_dedup`` lets each of those through, so gating the hoist
+    off whenever ``dedup_targets`` was non-empty left the predicate inside
+    ``__ob_main``, before the window. Selecting a measure sourced from the
+    *one* side of the many-to-one join (``Total Stock On Hand``) is what makes
+    the dedup pass apply.
+    """
+
+    @pytest.mark.parametrize(
+        "windowed,threshold",
+        [
+            ("Grand Total Quantity", 10),
+            ("Quantity Rank", 1),
+            ("Running Quantity", 5),
+        ],
+    )
+    def test_predicate_does_not_stay_in_the_pre_window_cte(
+        self, composition_model: SemanticModel, windowed: str, threshold: int
+    ) -> None:
+        sql = _compile(
+            composition_model,
+            {
+                "select": {
+                    "dimensions": ["Day"],
+                    "measures": ["Total Stock On Hand", windowed],
+                },
+                "having": [{"field": windowed, "op": "gt", "value": threshold}],
+            },
+        )
+        assert _no_having_anywhere(sql), sql
+        assert f'"{windowed}" > {threshold}' in _tail_after_ctes(sql)
+
+    def test_dedup_still_hoists_its_own_predicate(self, composition_model: SemanticModel) -> None:
+        """The two hoists are disjoint and must not interfere.
+
+        ``windowed_aliases`` excludes deduplicated measures (via
+        ``_needs_window_wrap``), so a predicate on the deduplicated measure
+        stays grain-dedup's to move.
+        """
+        sql = _compile(
+            composition_model,
+            {
+                "select": {"dimensions": ["Region"], "measures": ["Total Stock On Hand"]},
+                "having": [{"field": "Total Stock On Hand", "op": "gt", "value": 5}],
+            },
+        )
+        assert _no_having_anywhere(sql), sql
+        assert "> 5" in sql
+
+
+class TestFilterContextComposition:
+    """``filter_wrap`` copies ``ast.having`` into its own ``main`` CTE.
+
+    So a windowed predicate the planner emitted survived there *and* was
+    applied again as the outer WHERE, pruning rows before the windowed total
+    was computed. Withholding it in ``star.py`` fixes every such wrapper at
+    once rather than one at a time.
+    """
+
+    QUERY = {
+        "select": {
+            "dimensions": ["Region"],
+            "measures": ["Sold Quantity", "Unfiltered Quantity", "Grand Total Quantity"],
+        },
+        "where": [{"field": "Year", "op": "equals", "value": 2024}],
+        "having": [{"field": "Grand Total Quantity", "op": "gt", "value": 10}],
+    }
+
+    def test_predicate_is_applied_exactly_once(self, composition_model: SemanticModel) -> None:
+        sql = _compile(composition_model, self.QUERY)
+        assert _no_having_anywhere(sql), sql
+        assert sql.count("> 10") == 1
+
+    def test_it_is_applied_after_the_window(self, composition_model: SemanticModel) -> None:
+        sql = _compile(composition_model, self.QUERY)
+        assert 'SUM("Grand Total Quantity") OVER ()' in sql
+        assert '"Grand Total Quantity" > 10' in _tail_after_ctes(sql)

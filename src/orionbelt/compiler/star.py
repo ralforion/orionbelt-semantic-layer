@@ -246,8 +246,21 @@ class StarSchemaPlanner:
                 flag_col = FunctionCall(name="GROUPING", args=[gb_arg])
                 builder.select(AliasedExpr(expr=flag_col, alias=_grouping_flag_alias(alias)))
 
-        # HAVING — expand alias references to actual CAST'd aggregate expressions
+        # HAVING — expand alias references to actual CAST'd aggregate expressions.
+        # A predicate on a measure some later wrapper finishes with a window
+        # function is left out entirely: at this level only the pre-window
+        # aggregate exists, so evaluating it here filters the wrong value.
+        # ``PASS_HAVING_WINDOW`` applies those once, over the windowed rows.
+        # Withholding them here rather than stripping them per wrapper is what
+        # keeps every wrapper composition correct — each one copies or rebuilds
+        # ``ast.having`` differently, and any that kept a stale copy would
+        # filter pre-window behind the pass's back.
+        from orionbelt.compiler.having_hoist import windowed_aliases
+
+        deferred = windowed_aliases(resolved)
         for hf in resolved.having_filters:
+            if hf.referenced_fields & deferred:
+                continue
             builder.having(_expand_measure_refs(hf.expression, measure_exprs))
 
         # ORDER BY (use alias for time-grained dimensions)

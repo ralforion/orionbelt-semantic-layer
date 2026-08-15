@@ -200,13 +200,15 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
         ),
         CompilerPass(
             name=PASS_HAVING_WINDOW,
-            # Grain dedup hoists its own HAVING and never runs beside the
-            # window wrappers, so it is excluded rather than double-filtered.
-            applies=lambda r: (
-                not r.dedup_targets
-                and bool(
-                    [hf for hf in r.having_filters if hf.referenced_fields & windowed_aliases(r)]
-                )
+            # Runs for dedup queries too: ``_conflicts_with_dedup`` lets grain
+            # dedup compose with totals on a base-grain measure, with cumulative
+            # metrics, and with direct window metrics. Gating this off whenever
+            # ``dedup_targets`` was non-empty left those compositions filtering
+            # inside the pre-window CTE. Dedup's own hoisted predicates are
+            # disjoint: ``windowed_aliases`` excludes deduplicated measures via
+            # ``_needs_window_wrap``, so neither pass claims the other's.
+            applies=lambda r: any(
+                hf.referenced_fields & windowed_aliases(r) for hf in r.having_filters
             ),
             run=lambda ast, ctx: apply_having_hoist(
                 ast, hoisted_predicates(ctx.resolved), cte_name="having_window"

@@ -38,7 +38,6 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
-from orionbelt.compiler.having_hoist import inner_having
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 
@@ -196,11 +195,6 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
     if not total_names and not decompose_metrics:
         return ast
 
-    # A predicate on any measure a window wrapper produces cannot stay in the
-    # CTE, where only the pre-window aggregate exists. ``PASS_HAVING_WINDOW``
-    # applies them all once, after every wrapper has run.
-    base_having = inner_having(ast, resolved)
-
     # --- Build base CTE columns from the planner's AST columns ---
     base_columns: list[Expr] = []
     # Track which component measures are already present as direct measures
@@ -251,7 +245,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=base_having,
+        having=ast.having,
         order_by=[],
         limit=None,
         offset=None,

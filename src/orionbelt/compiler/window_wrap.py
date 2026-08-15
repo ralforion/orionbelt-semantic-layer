@@ -25,7 +25,6 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
-from orionbelt.compiler.having_hoist import inner_having
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
     metric_leaf_components,
@@ -380,18 +379,13 @@ def wrap_with_window(
         else:
             base_columns.append(col_node)
 
-    # The window function exists only in the outer query, so a HAVING predicate
-    # on one of these aliases must not stay in the CTE — left there it would
-    # silently bind to the window's *base* measure instead of the window value.
-    base_having = inner_having(ast, resolved)
-
     base_cte_query = Select(
         columns=base_columns,
         from_=ast.from_,
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=base_having,
+        having=ast.having,
         order_by=[],
         limit=None,
         offset=None,
