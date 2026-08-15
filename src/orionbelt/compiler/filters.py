@@ -506,21 +506,6 @@ def collect_measure_filter_objects(item: MeasureFilterItem, objects: set[str]) -
             collect_measure_filter_objects(child, objects)
 
 
-def collect_measure_filter_columns(item: MeasureFilterItem, columns: set[tuple[str, str]]) -> None:
-    """Recursively collect the ``(data object, column)`` pairs a filter reads.
-
-    The pair rather than the object alone, because a computed column carries
-    join requirements of its own — which object it belongs to says nothing
-    about what its expression reads.
-    """
-    if isinstance(item, MeasureFilter):
-        if item.column and item.column.view and item.column.column:
-            columns.add((item.column.view, item.column.column))
-    elif isinstance(item, MeasureFilterGroup):
-        for child in item.filters:
-            collect_measure_filter_columns(child, columns)
-
-
 # ---------------------------------------------------------------------------
 # exists / nonexists — correlated subquery filter
 # ---------------------------------------------------------------------------

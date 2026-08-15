@@ -1052,6 +1052,86 @@ class SemanticModel(BaseModel):
         walk(object_name, column_label)
         return found
 
+    def measure_join_objects(self, name: str) -> set[str]:
+        """Objects a measure needs *joined* without sourcing values from them.
+
+        Two kinds. A ``withinGroup`` column becomes the aggregate's ORDER BY,
+        so it has to resolve while contributing no value. And any column the
+        measure touches — its own, its filters', its filter context's — may be
+        computed from another data object, which the expression names directly
+        and so has to be joined.
+
+        Deliberately separate from the objects a measure *sources*: that set
+        drives multi-fact detection, and neither an ordering column nor an
+        expression's neighbour is a second fact.
+
+        Lives on the model because two callers need the same answer — the
+        planner, which adds these to a query's join requirements, and
+        composability, which must not advertise a measure the planner will
+        then refuse. Computed independently, they drifted.
+        """
+        measure = self.effective_measures.get(name)
+        if measure is None:
+            return set()
+
+        result: set[str] = set()
+        columns: list[tuple[str, str]] = [
+            (c.view, c.column) for c in measure.columns if c.view and c.column
+        ]
+
+        within = measure.within_group.column if measure.within_group is not None else None
+        if within is not None and within.view:
+            result.add(within.view)
+            if within.column:
+                columns.append((within.view, within.column))
+
+        def collect(item: MeasureFilterItem) -> None:
+            if isinstance(item, MeasureFilter):
+                if item.column and item.column.view and item.column.column:
+                    columns.append((item.column.view, item.column.column))
+            elif isinstance(item, MeasureFilterGroup):
+                for child in item.filters:
+                    collect(child)
+
+        for fi in measure.filters:
+            collect(fi)
+
+        # filterContext.include is resolved by a wrapper that runs after join
+        # planning, over the joins planning chose — so its dependencies have to
+        # be known here. Both field forms the wrapper accepts.
+        if measure.filter_context is not None:
+            for incl in measure.filter_context.include:
+                dim = self.dimensions.get(incl.field)
+                if dim is not None:
+                    if dim.view and dim.column:
+                        result.add(dim.view)
+                        columns.append((dim.view, dim.column))
+                    continue
+                obj_name, _, col_name = incl.field.partition(".")
+                obj_name, col_name = obj_name.strip(), col_name.strip()
+                obj = self.data_objects.get(obj_name)
+                if obj is not None and col_name in obj.columns:
+                    result.add(obj_name)
+                    columns.append((obj_name, col_name))
+
+        if measure.expression:
+            columns.extend(find_qualified_refs(measure.expression))
+
+        for object_name, column_label in columns:
+            result |= self.column_reference_objects(object_name, column_label)
+        return result
+
+    def dimension_join_objects(self, name: str) -> set[str]:
+        """Objects a dimension needs joined besides the one it belongs to.
+
+        Its column may be computed from another data object's column, which is
+        inlined wherever the dimension is projected or filtered.
+        """
+        dim = self.dimensions.get(name)
+        if dim is None or not dim.view or not dim.column:
+            return set()
+        return self.column_reference_objects(dim.view, dim.column)
+
     def common_join_targets(
         self,
         objects: list[str],

@@ -25,7 +25,6 @@ from orionbelt.compiler.expr_parser import (
 )
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
-    collect_measure_filter_columns,
     collect_measure_filter_objects,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
@@ -1244,44 +1243,8 @@ class QueryResolver:
         """
         result: set[str] = set()
 
-        measure = ctx.model.effective_measures.get(name)
-        if measure is not None:
-            crefs = list(measure.columns)
-            if measure.within_group is not None and measure.within_group.column.view:
-                result.add(measure.within_group.column.view)
-                crefs.append(measure.within_group.column)
-            for cref in crefs:
-                if cref.view and cref.column:
-                    result.update(ctx.model.column_reference_objects(cref.view, cref.column))
-            if measure.expression:
-                for obj_name, col_name in find_qualified_refs(measure.expression):
-                    result.update(ctx.model.column_reference_objects(obj_name, col_name))
-            filter_columns: set[tuple[str, str]] = set()
-            for fi in measure.filters:
-                collect_measure_filter_columns(fi, filter_columns)
-            if measure.filter_context is not None:
-                # ``filterContext.include`` items are resolved by the filter
-                # wrapper, which runs *after* join planning and builds its CTE
-                # over the joins planned here. Whatever they read has to be in
-                # that set, or the CTE's WHERE names an alias it never joined.
-                # Both field forms the wrapper accepts: a dimension name, or a
-                # qualified 'DataObject.Column'.
-                for incl in measure.filter_context.include:
-                    dim = ctx.model.dimensions.get(incl.field)
-                    if dim is not None:
-                        if dim.view and dim.column:
-                            result.add(dim.view)
-                            filter_columns.add((dim.view, dim.column))
-                        continue
-                    obj_name, _, col_name = incl.field.partition(".")
-                    obj_name, col_name = obj_name.strip(), col_name.strip()
-                    obj = ctx.model.data_objects.get(obj_name)
-                    if obj is not None and col_name in obj.columns:
-                        result.add(obj_name)
-                        filter_columns.add((obj_name, col_name))
-            for obj_name, col_name in filter_columns:
-                result.update(ctx.model.column_reference_objects(obj_name, col_name))
-            return result
+        if name in ctx.model.effective_measures:
+            return ctx.model.measure_join_objects(name)
 
         metric = ctx.model.metrics.get(name)
         if metric is not None:

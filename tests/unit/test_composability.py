@@ -515,3 +515,86 @@ def test_acr_excludes_a_metric_whose_deduplicated_component_is_nested() -> None:
     composables = ComposabilityResolver(model).resolve({"Sales"}, set())
     assert "Stock per Sale" in composables.metrics
     assert "Doubled Stock Rank" not in composables.metrics
+
+
+# ---------------------------------------------------------------------------
+# Cross-object computed columns
+# ---------------------------------------------------------------------------
+
+
+def _cross_object_models() -> tuple[SemanticModel, SemanticModel]:
+    """(reachable, unreachable) — the same model with one expression changed.
+
+    In the second, ``Store.Zip Matches`` reads ``Warehouse``, which no fact
+    joins, so anything reading that column is unplannable.
+    """
+    import tests.unit.test_cross_object_columns as fixtures
+
+    reachable = fixtures.MODEL_YAML
+    unreachable = reachable.replace(
+        'expression: "SUBSTRING({Store Zip}, 1, 5) = {[Address].[Zip 5]}"',
+        'expression: "{Store Zip} = {[Warehouse].[Warehouse Zip]}"',
+    )
+    return _load(reachable), _load(unreachable)
+
+
+def _compiles(model: SemanticModel, dimensions: list[str], measures: list[str]) -> bool:
+    from orionbelt.compiler.pipeline import CompilationPipeline
+    from orionbelt.models.query import QuerySelect
+
+    try:
+        CompilationPipeline().compile(
+            QueryObject(select=QuerySelect(dimensions=dimensions, measures=measures)),
+            model,
+            "postgres",
+        )
+    except Exception:  # noqa: BLE001 — any refusal counts
+        return False
+    return True
+
+
+def test_unreachable_cross_object_reference_is_not_advertised() -> None:
+    """ACR weighs what a computed column reads, as the planner does.
+
+    Advertising an artefact the compiler then refuses is worse than not
+    advertising it: the whole point of composables is to tell an agent what it
+    can ask for.
+    """
+    _, unreachable = _cross_object_models()
+    result = ComposabilityResolver(unreachable).resolve(set(), set())
+    assert "Zip Matches" not in result.dimensions
+    assert "Zip Differs" not in result.dimensions  # reaches it through a sibling
+    assert "Local Sales Amount" not in result.measures
+    assert "Store Zip" in result.dimensions  # a plain column is unaffected
+
+
+def test_reachable_cross_object_reference_is_still_advertised() -> None:
+    reachable, _ = _cross_object_models()
+    result = ComposabilityResolver(reachable).resolve(set(), set())
+    assert "Zip Matches" in result.dimensions
+    assert "Local Sales Amount" in result.measures
+
+
+@pytest.mark.parametrize("reachable_model", [True, False])
+def test_what_an_anchor_offers_actually_compiles(reachable_model: bool) -> None:
+    """The property that matters, and the guard against this drifting again.
+
+    An empty anchor lists what is available *independently*, so not every pair
+    of its dimensions and measures combines — that is what anchoring answers.
+    Anchor on each dimension in turn and the measures offered alongside it must
+    survive the planner.
+    """
+    from orionbelt.models.query import QuerySelect
+
+    reachable, unreachable = _cross_object_models()
+    model = reachable if reachable_model else unreachable
+    resolver = ComposabilityResolver(model)
+
+    checked = 0
+    for dimension in resolver.resolve(set(), set()).dimensions:
+        anchor = QueryObject(select=QuerySelect(dimensions=[dimension]))
+        offered = resolver.resolve(*resolver.objects_from_query(anchor))
+        for measure in offered.measures:
+            assert _compiles(model, [dimension], [measure]), f"{dimension} + {measure}"
+            checked += 1
+    assert checked, "nothing offered — the test would prove nothing"
