@@ -418,6 +418,10 @@ class CFLPlanner:
         filter_objects: set[str] = set()
         for wf in resolved.where_filters:
             self._collect_table_refs(wf.expression, filter_objects)
+            # An EXISTS body correlates to an outer table, which the walk above
+            # cannot see: the body is a Select, not an expression. Each leg
+            # emits that body in its own WHERE, so each leg has to join it.
+            cfl_projection.collect_correlated_tables(wf.expression, filter_objects)
 
         # Build one SELECT per fact object group.
         # Each leg computes its own LCA (least common ancestor) as the lead

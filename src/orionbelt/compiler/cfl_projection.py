@@ -16,12 +16,13 @@ from orionbelt.ast.nodes import (
     BinaryOp,
     Cast,
     ColumnRef,
+    Exists,
     Expr,
     FunctionCall,
     Literal,
     OrderByItem,
 )
-from orionbelt.compiler.expr_rewrite import collect_column_refs
+from orionbelt.compiler.expr_rewrite import collect_column_refs, map_nodes
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
@@ -396,6 +397,35 @@ def collect_table_refs(expr: Expr, tables: set[str]) -> None:
     refs: list[ColumnRef] = []
     collect_column_refs(expr, refs)
     tables.update(ref.table for ref in refs if ref.table)
+
+
+def collect_correlated_tables(expr: Expr, tables: set[str]) -> None:
+    """Collect the *outer* tables an ``EXISTS`` body correlates to.
+
+    The AST walk stops at an ``Exists`` — its body is a whole ``Select``, not
+    an expression to rewrite — so the correlation predicate is invisible to
+    :func:`collect_table_refs`. A CFL leg still has to join what that
+    predicate names: the body is emitted inside the leg's ``WHERE``, and a leg
+    that never joined the outer table binds nothing at all.
+
+    Only the outer side counts. Everything the body's own ``FROM``/``JOIN``
+    introduces is bound within the subquery, so those aliases are subtracted
+    rather than dragged into the leg.
+    """
+
+    def visit(node: Expr) -> Expr | None:
+        if not isinstance(node, Exists):
+            return None
+        select = node.subquery
+        bound = {select.from_.alias} if select.from_ and select.from_.alias else set()
+        bound.update(join.alias for join in select.joins if join.alias)
+        refs: list[ColumnRef] = []
+        if select.where is not None:
+            collect_column_refs(select.where, refs)
+        tables.update(ref.table for ref in refs if ref.table and ref.table not in bound)
+        return None
+
+    map_nodes(expr, visit)
 
 
 def remap_cfl_order_by(expr: Expr, resolved: ResolvedQuery, model: SemanticModel) -> Expr:

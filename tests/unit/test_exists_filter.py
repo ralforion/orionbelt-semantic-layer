@@ -1111,6 +1111,144 @@ class TestExistsDialects:
         assert "NOT EXISTS (" in result.sql, f"{dialect_name}: missing NOT EXISTS in compiled SQL"
 
 
+class TestExistsInMultiFactPlan:
+    """A CFL leg has to join whatever the EXISTS body correlates to.
+
+    Each leg emits the body in its own WHERE, so the outer table the
+    correlation predicate names must be in that leg's FROM chain. The AST walk
+    that collects a leg's tables stops at an ``Exists`` — the body is a
+    ``Select``, not an expression — so the correlation was invisible and every
+    leg emitted a predicate against an alias it never joined.
+    """
+
+    # Two independent facts conformed on Customers, plus a self-join on Dates
+    # by month so an EXISTS can correlate through the *dimension* rather than
+    # through either fact.
+    MODEL = """\
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+
+  Dates:
+    code: DATES
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: string}
+      Date: {code: THE_DATE, abstractType: date}
+      Month Seq: {code: MONTH_SEQ, abstractType: int}
+
+  MonthDates:
+    code: DATES
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Date: {code: THE_DATE, abstractType: date}
+      Month Seq: {code: MONTH_SEQ, abstractType: int}
+    joins:
+      - joinType: many-to-many
+        joinTo: Dates
+        columnsFrom: [Month Seq]
+        columnsTo: [Month Seq]
+
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID: {code: ORDER_ID, abstractType: string}
+      Order Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Order Date Key: {code: DATE_KEY, abstractType: string}
+      Amount: {code: AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Order Date Key]
+        columnsTo: [Date Key]
+
+  Refunds:
+    code: REFUNDS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Refund ID: {code: REFUND_ID, abstractType: string}
+      Refund Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Refund Date Key: {code: DATE_KEY, abstractType: string}
+      Refund Amount: {code: REFUND_AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Refund Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Refund Date Key]
+        columnsTo: [Date Key]
+
+dimensions:
+  Customer Country: {dataObject: Customers, column: Country, resultType: string}
+  Order Date: {dataObject: Dates, column: Date, resultType: date}
+
+measures:
+  Total Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Total Refunds:
+    columns: [{dataObject: Refunds, column: Refund Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+    def _sql(self) -> str:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"], measures=["Total Revenue", "Total Refunds"]
+            ),
+            where=[
+                QueryFilter(
+                    field="Order Date",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(
+                        data_object="MonthDates",
+                        filter=[
+                            QueryFilter(field="Date", op=FilterOperator.EQUALS, value="2024-01-15")
+                        ],
+                    ),
+                )
+            ],
+        )
+        return PIPELINE.compile(query, _load_model(self.MODEL), "postgres").sql
+
+    def test_plan_is_multi_fact(self) -> None:
+        assert "UNION ALL" in self._sql()
+
+    def test_every_leg_joins_the_correlated_object(self) -> None:
+        sql = self._sql()
+        # One join per leg — two legs, two joins of the correlated dimension.
+        assert sql.count('JOIN "PUBLIC"."DATES" AS "Dates"') == 2
+        assert sql.count("EXISTS (") == 2
+
+    def test_the_subquery_target_is_not_dragged_into_the_legs(self) -> None:
+        """``MonthDates`` is bound by the body's own FROM; a leg joining it too
+        would both duplicate the scan and change what the predicate means."""
+        sql = self._sql()
+        assert sql.count('AS "MonthDates"') == 2  # once per subquery, never in a leg
+        for leg in sql.split("UNION ALL"):
+            assert leg.count('AS "MonthDates"') == leg.count("EXISTS (")
+
+
 class TestExistsPhysicalTables:
     """``physical_tables`` must include EXISTS / NONEXISTS subquery targets so
     the cache key reflects every table the SQL reads — otherwise child-table

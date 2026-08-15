@@ -259,6 +259,30 @@ dataObjects:
         code: d_moy
         abstractType: int
 
+  # date_dim joined to itself by week: the dates sharing a week with a given
+  # date. Q83 selects "the weeks containing these three dates" through it.
+  # Declared on this side so Date keeps no outgoing join of its own.
+  Week Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Date:
+        code: d_date
+        abstractType: date
+      Week Sequence:
+        code: d_week_seq
+        abstractType: int
+    joins:
+      - joinType: many-to-many
+        joinTo: Date
+        columnsFrom: [Week Sequence]
+        columnsTo: [Week Sequence]
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -2530,6 +2554,18 @@ measures:
     aggregation: sum
     dataType: bigint
 
+  Catalog Returns Quantity:
+    columns: [{dataObject: Catalog Returns, column: Return Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
+  Web Returns Quantity:
+    columns: [{dataObject: Web Returns, column: Return Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
   B1 Count:
     columns: [{dataObject: Store Sales, column: Ticket Number}]
     resultType: int
@@ -3125,6 +3161,26 @@ measures:
 # ── Metrics (cross-measure formulas) ──────────────────────────────
 
 metrics:
+
+  Store Return Share:
+    expression: "{[Store Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Store share of an item's returns across the three channels
+
+  Catalog Return Share:
+    expression: "{[Catalog Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Catalog share of an item's returns across the three channels
+
+  Web Return Share:
+    expression: "{[Web Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Web share of an item's returns across the three channels
+
+  Average Channel Returns:
+    expression: "({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0"
+    dataType: "decimal(18, 6)"
+    description: Mean returned quantity per channel for an item
 
   Net Margin %:
     expression: "{[Store Net Profit]} / {[Store Sales Amount]}"
