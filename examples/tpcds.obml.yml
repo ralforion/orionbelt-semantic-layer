@@ -240,6 +240,25 @@ dataObjects:
         code: d_year
         abstractType: int
 
+  # date_dim in its store-returned-date role, so a filter on the return's
+  # year/month cannot bind to the sold date — Store Sales and Store Returns
+  # both join the shared Date object.
+  Store Returned Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Year:
+        code: d_year
+        abstractType: int
+      Month of Year:
+        code: d_moy
+        abstractType: int
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -360,6 +379,21 @@ dataObjects:
         abstractType: float
       Store City 30:
         expression: "SUBSTRING({Store City}, 1, 30)"
+        abstractType: string
+      Company ID:
+        code: s_company_id
+        abstractType: int
+      Street Number:
+        code: s_street_number
+        abstractType: string
+      Street Name:
+        code: s_street_name
+        abstractType: string
+      Street Type:
+        code: s_street_type
+        abstractType: string
+      Suite Number:
+        code: s_suite_number
         abstractType: string
       # Cross-object: the customer's address is a column of another data
       # object, reached through the joins the query already walks (Q19).
@@ -627,6 +661,15 @@ dataObjects:
         code: ss_ext_tax
         abstractType: float
         numClass: additive
+      # Cross-object: how long after the sale the return came back. TPC-DS
+      # date keys are sequential day numbers, so the difference is in days.
+      Return Delay:
+        expression: "{[Store Returns].[Returned Date Key]} - {Sold Date Key}"
+        abstractType: int
+      # Cross-object: the reference joins on ss_customer_sk = sr_customer_sk.
+      Same Return Customer:
+        expression: "{Customer Key} = {[Store Returns].[Customer Key]}"
+        abstractType: boolean
       Net Profit:
         code: ss_net_profit
         abstractType: float
@@ -717,6 +760,10 @@ dataObjects:
     joins:
       - joinType: many-to-one
         joinTo: Date
+        columnsFrom: [Returned Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Store Returned Date
         columnsFrom: [Returned Date Key]
         columnsTo: [Date Key]
       - joinType: many-to-one
@@ -1352,6 +1399,41 @@ dimensions:
   Store City 30:
     dataObject: Store
     column: Store City 30
+    resultType: string
+
+  Store City:
+    dataObject: Store
+    column: Store City
+    resultType: string
+
+  Store Zip:
+    dataObject: Store
+    column: Store Zip
+    resultType: string
+
+  Store Company ID:
+    dataObject: Store
+    column: Company ID
+    resultType: int
+
+  Store Street Number:
+    dataObject: Store
+    column: Street Number
+    resultType: string
+
+  Store Street Name:
+    dataObject: Store
+    column: Street Name
+    resultType: string
+
+  Store Street Type:
+    dataObject: Store
+    column: Street Type
+    resultType: string
+
+  Store Suite Number:
+    dataObject: Store
+    column: Suite Number
     resultType: string
 
   Sales Addr Key:
@@ -2280,6 +2362,61 @@ measures:
     resultType: float
     aggregation: sum
     dataType: bigint
+
+  Store Return 30 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: lte
+        values: [{dataType: int, valueInt: 30}]
+
+
+  Store Return 31-60 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 60}]
+
+
+  Store Return 61-90 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 90}]
+
+
+  Store Return 91-120 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 91}, {dataType: int, valueInt: 120}]
+
+
+  Store Return over 120 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: gt
+        values: [{dataType: int, valueInt: 120}]
+
 
   Web 30 days:
     columns: [{dataObject: Web Sales, column: Order Number}]
