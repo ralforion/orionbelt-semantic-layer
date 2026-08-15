@@ -223,6 +223,140 @@ class TestDeterministicRole:
         assert sorted(path[0] for path in roles) == ["Returns", "Sales"]
 
 
+def _many_routes_model(bridge_count: int) -> str:
+    """One role reached by many equally short routes, another by exactly one.
+
+    ``Sales`` reaches ``Region`` through ``X`` by *bridge_count* different
+    two-hop routes, and through ``Y`` by one. Every route is the same length,
+    so all of them are shortest paths — but only two roles exist, because a
+    role is the last edge, not the walk that got there.
+    """
+    bridges = "\n".join(
+        f"""  A{i}:
+    code: A{i}
+    database: WH
+    schema: PUBLIC
+    columns:
+      A Key: {{code: A_KEY, abstractType: int, primaryKey: true}}
+      X Key: {{code: X_KEY, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: X
+        columnsFrom: [X Key]
+        columnsTo: [X Key]
+"""
+        for i in range(bridge_count)
+    )
+    sales_joins = "\n".join(
+        f"""      - joinType: many-to-one
+        joinTo: A{i}
+        columnsFrom: [A Key]
+        columnsTo: [A Key]"""
+        for i in range(bridge_count)
+    )
+    return f"""version: 1.0
+dataObjects:
+  Region:
+    code: REGION
+    database: WH
+    schema: PUBLIC
+    columns:
+      Region Key: {{code: REGION_KEY, abstractType: int, primaryKey: true}}
+      Region Name: {{code: REGION_NAME, abstractType: string}}
+
+  X:
+    code: X
+    database: WH
+    schema: PUBLIC
+    columns:
+      X Key: {{code: X_KEY, abstractType: int, primaryKey: true}}
+      Region Key: {{code: REGION_KEY, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Region
+        columnsFrom: [Region Key]
+        columnsTo: [Region Key]
+
+  Y:
+    code: Y
+    database: WH
+    schema: PUBLIC
+    columns:
+      Y Key: {{code: Y_KEY, abstractType: int, primaryKey: true}}
+      Region Key: {{code: REGION_KEY, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Region
+        columnsFrom: [Region Key]
+        columnsTo: [Region Key]
+
+  B:
+    code: B
+    database: WH
+    schema: PUBLIC
+    columns:
+      B Key: {{code: B_KEY, abstractType: int, primaryKey: true}}
+      Y Key: {{code: Y_KEY, abstractType: int}}
+    joins:
+      - joinType: many-to-one
+        joinTo: Y
+        columnsFrom: [Y Key]
+        columnsTo: [Y Key]
+
+{bridges}
+  Sales:
+    code: SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      A Key: {{code: A_KEY, abstractType: int}}
+      B Key: {{code: B_KEY, abstractType: int}}
+      Amount: {{code: AMOUNT, abstractType: float}}
+    joins:
+{sales_joins}
+      - joinType: many-to-one
+        joinTo: B
+        columnsFrom: [B Key]
+        columnsTo: [B Key]
+
+dimensions:
+  Region Name: {{dataObject: Region, column: Region Name, resultType: string}}
+
+measures:
+  Sales Amount:
+    columns: [{{dataObject: Sales, column: Amount}}]
+    resultType: float
+    aggregation: sum
+"""
+
+
+class TestRolesBehindManyRoutes:
+    """A role must not hide behind routes that share an entry.
+
+    Roles are told apart by the last edge — which join lands on the target —
+    so they have to be derived from the graph rather than sampled from the
+    paths. Enumerating paths and cutting the list short loses a role whenever
+    enough routes share one entry, however high the cut is set.
+    """
+
+    @pytest.mark.parametrize("bridge_count", [1, 3, 17, 40])
+    def test_both_roles_are_found_whatever_the_route_count(self, bridge_count: int) -> None:
+        graph = JoinGraph(_load(_many_routes_model(bridge_count)))
+        roles = graph.role_candidates({"Sales"}, "Region", prefer_from="Sales")
+        assert sorted(path[-2] for path in roles) == ["X", "Y"]
+
+    def test_the_query_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Region Name"], measures=["Sales Amount"])
+                ),
+                _load(_many_routes_model(17)),
+                "postgres",
+            )
+        assert "AMBIGUOUS_JOIN_PATH" in {e.code for e in excinfo.value.errors}
+
+
 class TestAmbiguousRoleRefused:
     """Equidistant roles are refused, not guessed."""
 

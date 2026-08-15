@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import islice
 
 import networkx as nx
 
@@ -246,29 +245,40 @@ class JoinGraph:
         """
         ranked: list[tuple[tuple[int, int, str], list[str]]] = []
         for source in sorted(from_objects):
-            try:
-                # Every shortest path, not just one: a single source often
-                # reaches a dimension by two equally short routes — a fact
-                # joining ``region`` through both its store and its supplier —
-                # and ``shortest_path`` would return whichever it found first,
-                # hiding the choice. Capped, since only the tie matters and a
-                # dense graph can enumerate a great many equal paths.
-                paths = islice(nx.all_shortest_paths(self._traversable, source, to_object), 16)
-                found: list[list[str]] = [list(p) for p in paths]
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
+            if source not in self._traversable or to_object not in self._traversable:
                 continue
-            for path in found:
-                ranked.append(((len(path), self._hops_from(prefer_from, source), source), path))
+            lengths = nx.single_source_shortest_path_length(self._traversable, source)
+            distance = lengths.get(to_object)
+            if distance is None:
+                continue
+            # What separates one role from another is the *last* edge — which
+            # join actually lands on the target. Every predecessor sitting one
+            # hop closer to the source is the last edge of some shortest path,
+            # so one traversal yields the complete set of roles. Enumerating
+            # the paths instead would need a cap, and a cap applied before
+            # roles are distinguished can hide one behind many routes that
+            # share an entry.
+            for entry in sorted(self._traversable.predecessors(to_object)):
+                if lengths.get(entry) != distance - 1:
+                    continue
+                prefix: list[str] = nx.shortest_path(self._traversable, source, entry)
+                candidate = [*prefix, to_object]
+                rank = (len(candidate), self._hops_from(prefer_from, source), source)
+                ranked.append((rank, candidate))
         if not ranked:
             return []
 
         best = min(rank for rank, _ in ranked)[:2]
         by_entry: dict[tuple[str, str], list[str]] = {}
-        for rank, path in sorted(ranked):
+        for rank, candidate in sorted(ranked):
             if rank[:2] != best:
                 continue
-            entry = (path[-2], path[-1]) if len(path) > 1 else (path[0], path[0])
-            by_entry.setdefault(entry, path)
+            last_edge = (
+                (candidate[-2], candidate[-1])
+                if len(candidate) > 1
+                else (candidate[0], candidate[0])
+            )
+            by_entry.setdefault(last_edge, candidate)
         return list(by_entry.values())
 
     def find_join_path(

@@ -42,6 +42,7 @@ class SemanticValidator:
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         errors.extend(self._check_computed_column_refs(model))
+        errors.extend(self._check_reference_name_collisions(model))
         errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_join_key_expressions(model))
         errors.extend(self._check_distinct_within_group(model))
@@ -743,6 +744,85 @@ class SemanticValidator:
                                 path=path,
                             )
                         )
+        return errors
+
+    def _check_reference_name_collisions(self, model: SemanticModel) -> list[SemanticError]:
+        """Refuse an expression reference that two names answer to.
+
+        ``{[Data Object].[Column]}`` is read with the brackets' padding
+        stripped, so a reference to ``[ Zip 5 ]`` addresses ``Zip 5``. Where a
+        model holds both ``Zip 5`` and ``" Zip 5 "`` the reference names them
+        both, and silently binding to one is how an expression comes to read a
+        different column than the author wrote.
+
+        Only references are refused, not the names themselves: both columns are
+        still addressable by the exact ``dataObject``/``column`` pair a
+        dimension or measure uses. It is the bracket syntax that cannot tell
+        them apart.
+        """
+        errors: list[SemanticError] = []
+
+        def collisions(names: list[str], wanted: str) -> list[str]:
+            return sorted(name for name in names if name.strip() == wanted)
+
+        def check(refs: list[tuple[str, str]], path: str, subject: str) -> None:
+            for ref_object, ref_column in refs:
+                matches = collisions(list(model.data_objects), ref_object)
+                if len(matches) > 1:
+                    errors.append(
+                        SemanticError(
+                            code="AMBIGUOUS_NAME",
+                            message=(
+                                f"{subject} references data object '{ref_object}', which "
+                                f"{len(matches)} names answer to "
+                                f"({', '.join(repr(m) for m in matches)}) — they differ "
+                                f"only in surrounding whitespace"
+                            ),
+                            path=path,
+                            hint=(
+                                "Bracket references are read with the padding stripped, so "
+                                "rename one of them to something a reference can single out."
+                            ),
+                        )
+                    )
+                    continue
+                target = model.data_objects.get(ref_object)
+                if target is None:
+                    continue
+                column_matches = collisions(list(target.columns), ref_column)
+                if len(column_matches) > 1:
+                    errors.append(
+                        SemanticError(
+                            code="AMBIGUOUS_NAME",
+                            message=(
+                                f"{subject} references column '{ref_column}' on "
+                                f"'{ref_object}', which {len(column_matches)} names answer to "
+                                f"({', '.join(repr(m) for m in column_matches)}) — they differ "
+                                f"only in surrounding whitespace"
+                            ),
+                            path=path,
+                            hint=(
+                                "Bracket references are read with the padding stripped, so "
+                                "rename one of them to something a reference can single out."
+                            ),
+                        )
+                    )
+
+        for obj_name, obj in model.data_objects.items():
+            for col_name, col in obj.columns.items():
+                if col.expression:
+                    check(
+                        find_qualified_refs(col.expression),
+                        f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                        f"Computed column '{col_name}' in data object '{obj_name}'",
+                    )
+        for measure_name, measure in model.measures.items():
+            if measure.expression:
+                check(
+                    find_qualified_refs(measure.expression),
+                    f"measures.{measure_name}.expression",
+                    f"Measure '{measure_name}'",
+                )
         return errors
 
     def _check_no_cyclic_computed_columns(self, model: SemanticModel) -> list[SemanticError]:

@@ -392,6 +392,41 @@ class TestReferenceWhitespace:
         assert _load(self.PADDED).column_reference_objects("Store", "Zip Matches") == {"Address"}
 
 
+class TestNameCollisionOnWhitespace:
+    """Two names a bracket reference cannot tell apart."""
+
+    # Address carries both "Zip 5" and " Zip 5 ", so "[ Zip 5 ]" names them
+    # both once the padding is stripped.
+    COLLIDING = MODEL_YAML.replace(
+        """      Zip 5:
+        expression: "SUBSTRING({Zip}, 1, 5)"
+        abstractType: string""",
+        """      Zip 5:
+        expression: "SUBSTRING({Zip}, 1, 5)"
+        abstractType: string
+      " Zip 5 ": {code: CA_ZIP_PADDED, abstractType: string}""",
+    )
+
+    def test_reference_that_two_names_answer_to_is_refused(self) -> None:
+        """Binding to one of them silently would make the expression read a
+        different column than the author wrote."""
+        errors = _errors(self.COLLIDING)
+        assert [code for code, _ in errors] == ["AMBIGUOUS_NAME"]
+        message = errors[0][1]
+        assert "Zip 5" in message and "Address" in message
+
+    def test_the_names_themselves_are_still_usable(self) -> None:
+        """Only the bracket syntax cannot single them out — a dimension names
+        its column exactly, so both stay addressable that way."""
+        model_yaml = self.COLLIDING.replace(
+            'expression: "SUBSTRING({Store Zip}, 1, 5) = {[Address].[Zip 5]}"',
+            'expression: "SUBSTRING({Store Zip}, 1, 5) = SUBSTRING({Store Zip}, 1, 5)"',
+        )
+        model = _load(model_yaml)
+        assert " Zip 5 " in model.data_objects["Address"].columns
+        assert "Zip 5" in model.data_objects["Address"].columns
+
+
 class TestJoinKeys:
     """A computed column may be a join key — but only while it stays local.
 
