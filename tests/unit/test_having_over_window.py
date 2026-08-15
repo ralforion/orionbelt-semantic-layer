@@ -467,3 +467,70 @@ class TestDimensionInHoistedPredicate:
                 },
             )
         assert "cat" in str(excinfo.value)
+
+
+class TestPlainPredicateAcrossWrappers:
+    """A plain predicate belongs to the grouped query, and only to it.
+
+    Regression: ``inner_having`` re-derived HAVING from the original filter
+    list on every wrapper, so a predicate already applied in the grouped CTE
+    was copied into the next wrapper's CTE, which has no GROUP BY.
+    """
+
+    QUERY = {
+        "select": {
+            "dimensions": ["State", "Class"],
+            "measures": ["Sales Amount", "Grand Total", "State Rank"],
+        },
+        "having": [
+            {"field": "Sales Amount", "op": "gt", "value": 10},
+            {"field": "State Rank", "op": "lte", "value": 1},
+        ],
+    }
+
+    def test_plain_predicate_stays_only_in_the_grouped_cte(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        base = _cte_body(sql, "base")
+        assert "GROUP BY" in base and "HAVING" in base
+        assert "> 10" in base
+        # Every later wrapper CTE is ungrouped, so none may carry a HAVING.
+        for cte in ("window_base", "having_window"):
+            body = _cte_body(sql, cte)
+            assert "HAVING" not in body, f"{cte}: {body}"
+        assert sql.count("> 10") == 1
+
+    def test_windowed_predicate_still_hoists(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        assert '"State Rank" <= 1' in _tail_after_ctes(sql)
+
+
+class TestSuppressedTotalsPass:
+    """``total: true`` is an ordinary aggregate when the totals pass is suppressed.
+
+    Combined with a cumulative metric the totals pass is skipped (passes rule
+    2), so the measure is never windowed. Its predicate must stay in the
+    grouped query: a running total accumulates over whichever rows survive
+    HAVING, so filtering afterwards would change the totals themselves.
+    """
+
+    QUERY = {
+        "select": {
+            "dimensions": ["Day"],
+            "measures": ["Sales Amount", "Grand Total", "Running Total"],
+        },
+        "having": [{"field": "Grand Total", "op": "gt", "value": 10}],
+    }
+
+    def test_predicate_stays_in_the_grouped_query(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        base = _cte_body(sql, "cumulative_base")
+        assert "GROUP BY" in base
+        assert "HAVING" in base and "> 10" in base
+
+    def test_running_total_is_computed_over_filtered_rows(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        filter_at = sql.index("> 10")
+        window_at = sql.index("ROWS BETWEEN UNBOUNDED PRECEDING")
+        assert filter_at < window_at
+        # Nothing to hoist, so no filtering wrapper is added.
+        assert '"having_window" AS (' not in sql

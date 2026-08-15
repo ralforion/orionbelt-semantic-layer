@@ -92,10 +92,13 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
     totals and then window, and neither may leave the other's predicate behind
     in its CTE.
 
-    Derived from *resolved* alone, so it does not depend on which passes the
-    compatibility rules end up suppressing. A suppressed wrapper leaves the
-    measure un-windowed, and filtering that plain aggregate in the outer query
-    is equivalent to filtering it in HAVING, so over-inclusion here is safe.
+    Over-inclusion is *not* safe, so this tracks pass suppression. The totals
+    pass is skipped when combined with PoP or cumulative (``passes`` rule 2),
+    which leaves ``total: true`` as an ordinary aggregate. Treating it as
+    windowed anyway would move its predicate past the cumulative window, and a
+    running total accumulates over whichever rows survive HAVING - so the
+    filter has to stay in the grouped query or the totals themselves come out
+    wrong.
     """
     # Local imports: both modules import this one for the split.
     from orionbelt.compiler.total_wrap import (
@@ -104,7 +107,11 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
     )
     from orionbelt.compiler.window_wrap import _ddm_window_components
 
-    names = set(_metrics_with_total_components(resolved))
+    # Mirrors ``evaluate_compatibility`` rule 2: PASS_TOTALS is suppressed when
+    # PASS_PERIOD_OVER_PERIOD or PASS_CUMULATIVE also applies.
+    totals_run = resolved.has_totals and not (resolved.has_pop or resolved.has_cumulative)
+
+    names = set(_metrics_with_total_components(resolved)) if totals_run else set()
     for measure in resolved.measures:
         is_windowed = (
             # window_wrap: a rank / lag / lead metric, or a derived metric
@@ -115,7 +122,8 @@ def windowed_aliases(resolved: ResolvedQuery) -> set[str]:
             or measure.is_cumulative
             # total_wrap: a direct measure with total: true or a grain override.
             or (
-                not measure.component_measures
+                totals_run
+                and not measure.component_measures
                 and _needs_window_wrap(measure, resolved.dedup_measures)
             )
         )
@@ -150,7 +158,19 @@ def inner_having(ast: Select, resolved: ResolvedQuery) -> Expr | None:
 
     Returns ``ast.having`` untouched when nothing is windowed, so a query with
     no such predicate compiles byte-for-byte as before.
+
+    Only the wrapper sitting directly on the planner's grouped query may derive
+    a HAVING. Once an earlier wrapper has replaced the FROM with its own output,
+    ``ast.having`` is that wrapper's settled answer and is passed straight
+    through: re-deriving it would copy a plain predicate, already applied in the
+    grouped CTE, into a wrapper CTE that has no GROUP BY.
     """
+    # Local import: window_wrap imports this module for the split.
+    from orionbelt.compiler.window_wrap import wraps_a_cte
+
+    if wraps_a_cte(ast):
+        return ast.having
+
     windowed = windowed_aliases(resolved)
     if not any(hf.referenced_fields & windowed for hf in resolved.having_filters):
         return ast.having
