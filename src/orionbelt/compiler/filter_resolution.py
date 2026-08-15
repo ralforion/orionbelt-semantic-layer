@@ -270,7 +270,14 @@ def resolve_filter(
             )
             return None
         qt = ctx.qualify_table or (lambda obj: obj.qualified_code)
-        filter_expr = build_exists_filter_expr(qf, ctx.model, subject_object, qt, ctx.errors)
+        filter_expr = build_exists_filter_expr(
+            qf,
+            ctx.model,
+            subject_object,
+            qt,
+            ctx.errors,
+            touched_objects=ctx.result.subquery_objects,
+        )
     else:
         filter_expr = build_filter_expr(col_expr, qf, ctx.errors)
 

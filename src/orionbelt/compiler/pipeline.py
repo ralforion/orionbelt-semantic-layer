@@ -120,8 +120,12 @@ def _compute_physical_tables(
     ``resolved.required_objects`` (they live behind a correlated subquery,
     not in the FROM/JOIN chain), so the original query is walked too —
     otherwise child-table edits would not invalidate cached results.
+    ``resolved.subquery_objects`` adds the tables only the compiler knows
+    about: the hops a correlation path walked and the objects a subquery
+    filter joined in.
     """
     object_names: set[str] = set(resolved.required_objects)
+    object_names.update(resolved.subquery_objects)
     object_names.update(_collect_subquery_objects(list(query.where)))
     object_names.update(_collect_subquery_objects(list(query.having)))
 

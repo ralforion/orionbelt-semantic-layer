@@ -664,10 +664,42 @@ where:
 
 **Subquery filter rules**
 
-`subquery.filter` accepts the same operator vocabulary as the outer filter, with two exceptions:
+`subquery.filter` accepts the same operator vocabulary as the outer filter, with one exception: nested `exists` / `nonexists` are rejected (`NESTED_SUBQUERY_NOT_SUPPORTED`) — that keeps the planner simple.
 
-* Nested `exists` / `nonexists` are rejected (`NESTED_SUBQUERY_NOT_SUPPORTED`) — keeps the planner simple.
-* `field` is interpreted as a column **on the target data object** (e.g. `Is Returned` lives on `OrderItems`), not a dimension on the model.
+Its `field` resolves like an outer `where` field, minus measure names — a correlated subquery filters rows, not aggregates:
+
+1. a column on the target data object (e.g. `Is Returned` on `OrderItems`),
+2. a dimension name,
+3. a qualified `DataObject.Column`.
+
+A field on a *different* data object is joined in **inside** the subquery, so a semi-join can be windowed by something one or more joins past the target:
+
+```yaml
+where:
+  - field: Customer Country            # subject: Customers
+    op: exists
+    subquery:
+      dataObject: Orders               # target
+      filter:
+        - field: Order Year            # dimension on Dates, one join past Orders
+          op: equals
+          value: 2024
+```
+
+```sql
+EXISTS (
+  SELECT 1 FROM ORDERS "Orders"
+  INNER JOIN DATES "Dates" ON "Orders"."DATE_KEY" = "Dates"."DATE_KEY"
+  WHERE "Customers"."CUSTOMER_ID" = "Orders"."CUSTOMER_ID" AND "Dates"."YEAR" = 2024
+)
+```
+
+Two rules bound the traversal:
+
+* The object must be reachable from the target by the same forward-only join walk the outer query uses, or the filter is rejected (`UNREACHABLE_SUBQUERY_FILTER_OBJECT`) rather than silently dropped.
+* It must not be, or be reached through, the **subject** of the correlation (`SUBQUERY_FILTER_OBJECT_NOT_JOINABLE`): joining the subject inside the body would shadow its outer alias and rebind the correlation predicate to the subquery's own rows. Filter the subject in the outer `where` instead.
+
+A column of the target wins over a same-named dimension, so adding a dimension to a model never changes what an existing subquery filter compiles to.
 
 **`exists` / `nonexists` are WHERE-only.** Both operators are rejected in `having:` with `INVALID_FILTER_OPERATOR` because the correlation predicate references the subject's row-level column, which is out of scope after `GROUP BY`. Measure-level EXISTS — "groups where some matching child row exists" — is a deferred follow-up (`MeasureFilter.subquery`).
 
@@ -717,7 +749,9 @@ Invalid queries return error responses:
 | `INVALID_RELATIVE_FILTER` | 400 | Malformed relative time filter |
 | `UNKNOWN_SUBQUERY_DATA_OBJECT` | 400 | `exists` / `nonexists` references an unknown target data object |
 | `NO_JOIN_PATH_TO_SUBQUERY` | 400 | No join path exists from the filter subject to the subquery target |
-| `UNKNOWN_SUBQUERY_FILTER_COLUMN` | 400 | `subquery.filter` references a column not on the target |
+| `UNKNOWN_SUBQUERY_FILTER_COLUMN` | 400 | `subquery.filter` field is neither a column of the target, a dimension, nor a valid `DataObject.Column` |
+| `UNREACHABLE_SUBQUERY_FILTER_OBJECT` | 400 | `subquery.filter` names a data object not reachable from the target |
+| `SUBQUERY_FILTER_OBJECT_NOT_JOINABLE` | 400 | `subquery.filter` resolves to (or only through) the correlation subject |
 | `NESTED_SUBQUERY_NOT_SUPPORTED` | 400 | `subquery.filter` cannot contain another `exists` / `nonexists` |
 | `UNKNOWN_PATH_NAME` | 400 | `subquery.pathName` does not match any declared secondary join |
 | `AMBIGUOUS_JOIN` | 422 | Multiple join paths possible |
