@@ -250,8 +250,6 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
       into a CTE whose FROM is only ``main``/``dedup_0`` —
       ``Referenced table "Sales" not found``. This is the dividing line against
       ``totals``: alias reference composes, expression re-projection does not.
-    * ``filter_context`` emits its own CTE named ``main``, colliding with the
-      one dedup emits — ``Duplicate CTE name "main"``.
     * ``period_over_period`` rebuilds the FROM from a date spine and re-joins
       the tables the dedup CTEs already joined —
       ``Ambiguous reference to table ... duplicate alias``.
@@ -261,6 +259,12 @@ def _conflicts_with_dedup(pass_name: str, resolved: ResolvedQuery) -> bool:
     ORDER BY. That is a change inside those wrappers, not a predicate here.
     """
     if pass_name == PASS_CUMULATIVE:
+        return False
+    if pass_name == PASS_FILTER_CONTEXT:
+        # Composes: the filterContext measure is planned as a scan of its own,
+        # which runs the dedup phase for itself, and this plan no longer counts
+        # it among what it has to deduplicate. What is left is dedup's CTEs
+        # feeding the wrapper's ``main``, which is a different name.
         return False
     if pass_name == PASS_WINDOW:
         # A derived metric over window metrics needs several base measures

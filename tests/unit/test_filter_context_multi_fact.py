@@ -39,6 +39,14 @@ dataObjects:
       Month: {code: MONTH, abstractType: int}
       Day: {code: DAY, abstractType: int}
 
+  Products:
+    code: PRODUCTS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Product Key: {code: PRODUCT_KEY, abstractType: int, primaryKey: true}
+      Stock On Hand: {code: STOCK, abstractType: float}
+
   Stores:
     code: STORES
     database: WH
@@ -54,6 +62,7 @@ dataObjects:
     columns:
       Date Key: {code: DATE_KEY, abstractType: int}
       Store Key: {code: STORE_KEY, abstractType: int}
+      Product Key: {code: PRODUCT_KEY, abstractType: int}
       Amount: {code: AMOUNT, abstractType: float}
     joins:
       - joinType: many-to-one
@@ -64,6 +73,10 @@ dataObjects:
         joinTo: Stores
         columnsFrom: [Store Key]
         columnsTo: [Store Key]
+      - joinType: many-to-one
+        joinTo: Products
+        columnsFrom: [Product Key]
+        columnsTo: [Product Key]
 
   Refunds:
     code: REFUNDS
@@ -122,6 +135,16 @@ measures:
         - field: Store Name
           op: "="
           value: North
+  Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+  Unfiltered Stock:
+    columns: [{dataObject: Products, column: Stock On Hand}]
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: FIXED
   Unfiltered Refunds:
     columns: [{dataObject: Refunds, column: Refund}]
     resultType: float
@@ -160,12 +183,20 @@ def _connect() -> duckdb.DuckDBPyConnection:
     con.execute('CREATE SCHEMA "PUBLIC"')
     con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT)')
     con.execute('CREATE TABLE "PUBLIC"."STORES" (STORE_KEY INT, STORE_NAME VARCHAR)')
-    con.execute('CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, STORE_KEY INT, AMOUNT DOUBLE)')
+    con.execute(
+        'CREATE TABLE "PUBLIC"."SALES" '
+        "(DATE_KEY INT, STORE_KEY INT, PRODUCT_KEY INT, AMOUNT DOUBLE)"
+    )
+    con.execute('CREATE TABLE "PUBLIC"."PRODUCTS" (PRODUCT_KEY INT, STOCK DOUBLE)')
+    # Product 1 is sold twice, so its stock must count once, not twice.
+    con.execute('INSERT INTO "PUBLIC"."PRODUCTS" VALUES (1, 100.0), (2, 110.0)')
     con.execute('CREATE TABLE "PUBLIC"."REFUNDS" (DATE_KEY INT, REFUND DOUBLE)')
     con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 1, 1), (2, 1, 2), (3, 2, 1)')
     con.execute("INSERT INTO \"PUBLIC\".\"STORES\" VALUES (1, 'North'), (2, 'South')")
     # Month 1: 2 on the filtered day, 38 on another. Month 2: 5, all on day 1.
-    con.execute('INSERT INTO "PUBLIC"."SALES" VALUES (1, 1, 2.0), (2, 1, 38.0), (3, 2, 5.0)')
+    con.execute(
+        'INSERT INTO "PUBLIC"."SALES" VALUES (1, 1, 1, 2.0), (2, 1, 1, 38.0), (3, 2, 2, 5.0)'
+    )
     con.execute('INSERT INTO "PUBLIC"."REFUNDS" VALUES (1, 1.0), (3, 4.0)')
     return con
 
@@ -327,3 +358,81 @@ class TestWhatIsStillRefused:
         message = str(exc.value)
         assert "'Stores'" in message
         assert "queried independently" in message
+
+
+class TestTheScanIsPlannedLikeAnyOtherQuery:
+    """It is a query, so it goes through the phases a query goes through. This
+    was the one place in the compiler that planned one without them."""
+
+    def test_a_one_side_measure_is_deduplicated(self) -> None:
+        """``Stock On Hand`` sits on the *one* side of Sales -> Products, so a
+        product sold twice must contribute its stock once. Month 1 holds both
+        of product 1's sales: 100 deduplicated, 200 summed per sale. Planning
+        the scan straight past the phase that detects that gave the 200 -
+        silently, and only in a multi-fact query."""
+        assert _rows(["Unfiltered Stock", "Refund Amount"])["Unfiltered Stock"] == [100.0, 110.0]
+
+    def test_it_agrees_with_the_same_query_on_one_fact(self) -> None:
+        """The scan is the same either way, so the other fact's presence
+        cannot move it."""
+        assert (
+            _rows(["Unfiltered Stock", "Refund Amount"])["Unfiltered Stock"]
+            == _rows(["Unfiltered Stock", "Revenue"])["Unfiltered Stock"]
+        )
+
+    def test_the_scan_is_grouped_where_the_join_replicates(self) -> None:
+        sql = _sql(["Unfiltered Stock", "Refund Amount"])
+        assert '"PUBLIC"."PRODUCTS"' in sql
+
+
+class TestALegForAFactThatCarriesNoDimension:
+    """A leg's FROM is not its key but the common root of that key and the
+    dimensions the key reaches. Keyed at a fact that reaches none of them, the
+    leg projects nothing at all and degenerates to ``SELECT *`` - so the leg
+    left standing for an isolated measure is rooted where that measure's own
+    leg would have been."""
+
+    def test_it_compiles_and_pads_the_other_fact(self) -> None:
+        """``Stock`` reads Products, which reaches no dimension; ``Region``
+        lives on Sales. One leg carries the grain and the other pads it, which
+        is what the union is for."""
+        rows = _keyed(["Unfiltered Stock", "Refund Amount"], ["Store Name"])
+        # North sold product 1 twice: its stock counts once.
+        assert rows[("North",)]["Unfiltered Stock"] == 100.0
+        assert rows[("South",)]["Unfiltered Stock"] == 110.0
+        assert rows[(None,)]["Refund Amount"] == 5.0
+
+    def test_the_leg_is_rooted_where_the_grain_is(self) -> None:
+        sql = _sql(["Unfiltered Stock", "Refund Amount"], ["Store Name"])
+        composite = sql.split('"fc_0" AS')[0]
+        assert "SELECT *" not in composite
+        assert '"Stores"."STORE_NAME"' in composite
+
+
+class TestALegProjectsWhatItsFromCanReach:
+    """A leg's FROM is its *lead* - the common root of its key and what that
+    key reaches - not the key itself. The dimensions it projected were decided
+    from the key, so a leg keyed at a measure's source on the one side of a
+    join (``Products``, which reaches nothing) NULL-padded dimensions its own
+    FROM could produce, and every row of it collapsed into one NULL group.
+    Nothing to do with filterContext: the measure only has to be in a union.
+    """
+
+    def test_a_one_side_measure_keeps_the_grain(self) -> None:
+        assert _keyed(["Stock", "Refund Amount"]) == {
+            (1,): {"Stock": 100.0, "Refund Amount": 1.0},
+            (2,): {"Stock": 110.0, "Refund Amount": 4.0},
+        }
+
+    def test_it_agrees_with_the_single_fact_plan(self) -> None:
+        """The other fact changes how the query is planned; it must not change
+        what this measure answers."""
+        together = _keyed(["Stock", "Refund Amount"])
+        alone = _keyed(["Stock"])
+        assert {k: v["Stock"] for k, v in together.items()} == {
+            k: v["Stock"] for k, v in alone.items()
+        }
+
+    def test_the_leg_projects_the_dimension(self) -> None:
+        leg = _sql(["Stock", "Refund Amount"]).split("UNION ALL")[0]
+        assert '"Dates"."MONTH" AS "Month"' in leg

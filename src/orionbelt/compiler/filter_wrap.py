@@ -289,6 +289,12 @@ def _plan_isolated_scan(
     whose joins are then harmless - and its resolved filters are replaced with
     the effective set afterwards. A context that keeps a filter therefore has
     the column in scope, and one that drops it does not have to un-join it.
+
+    It then goes through the phases the pipeline runs between resolving and
+    planning, and the wrappers it runs after. Skipping them made this scan the
+    one place in the compiler where a measure on the one side of a replicating
+    join was summed once per row of the many side, and where a combination the
+    single-fact path refuses compiled quietly instead.
     """
     sub_query = QueryObject(
         select=QuerySelect(dimensions=list(grain), measures=[m.name for m in measure_group]),
@@ -296,16 +302,29 @@ def _plan_isolated_scan(
         use_path_names=list(query.use_path_names),
         allow_fan_out=query.allow_fan_out,
     )
+    # Imported here: the pipeline owns the phase order, and importing it at
+    # module scope would be a cycle back through ``compiler.passes``.
+    from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
+    from orionbelt.compiler.pipeline import CompilationPipeline
     from orionbelt.compiler.resolution import QueryResolver
 
     sub_resolved = QueryResolver().resolve(sub_query, model, qualify_table=qualify_table)
     sub_resolved.where_filters = list(filters)
-    # The context is this scan's own, not something to apply twice.
+    # The context is this scan's own, not something to apply again inside it.
     sub_resolved.measures = [replace(m, filter_context=None) for m in sub_resolved.measures]
-    return (
-        StarSchemaPlanner()
-        .plan(sub_resolved, model, qualify_table=qualify_table, dialect=dialect)
-        .ast
+    CompilationPipeline.detect_replication(sub_resolved, model)
+    plan = StarSchemaPlanner().plan(
+        sub_resolved, model, qualify_table=qualify_table, dialect=dialect
+    )
+    return apply_aggregate_passes(
+        plan.ast,
+        CompileContext(
+            resolved=sub_resolved,
+            model=model,
+            dialect=dialect,
+            qualify_table=qualify_table,
+            query=sub_query,
+        ),
     )
 
 
@@ -478,29 +497,15 @@ def wrap_with_filter_context(
                 cte_group_by.append(gb_col)
 
         cte_name = f"fc_{idx}"
-        if _needs_its_own_plan(measure_group, resolved, model):
-            # This scan cannot borrow the plan's FROM: either that FROM is a
-            # UNION ALL composite, whose legs applied the query's filters before
-            # it existed and whose columns are the projected measures rather
-            # than the fact's, or it is a star built around a different fact,
-            # because the measure was left out of what that plan has to compute.
-            # Plan it here as what it is - a star query over its own fact.
-            cte_query = _plan_isolated_scan(
-                measure_group, grain, all_filters, query, model, dialect, qualify_table
-            )
-        else:
-            cte_query = Select(
-                columns=cte_columns,
-                from_=ast.from_,
-                joins=list(ast.joins),
-                where=_combine_where(all_filters),
-                group_by=cte_group_by,
-                having=None,
-                order_by=[],
-                limit=None,
-                offset=None,
-                ctes=[],
-            )
+        # Planned as the query it is, rather than assembled from the plan's own
+        # FROM with a different WHERE. Borrowing that FROM was right only while
+        # the plan was built around the same fact at the same grain, and it
+        # skipped every phase between resolving and planning - which is how a
+        # measure on the one side of a replicating join came back summed once
+        # per row of the many side.
+        cte_query = _plan_isolated_scan(
+            measure_group, grain, all_filters, query, model, dialect, qualify_table
+        )
         all_ctes.append(CTE(name=cte_name, query=cte_query))
         isolated_cte_info.append((cte_name, measure_group, grain))
 

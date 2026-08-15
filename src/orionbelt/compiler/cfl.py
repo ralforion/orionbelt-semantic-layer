@@ -27,6 +27,7 @@ from orionbelt.compiler.anchored import (
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.resolution import (
+    ResolutionError,
     ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
@@ -35,6 +36,7 @@ from orionbelt.compiler.resolution import (
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import resolve_measure_data_type, resolve_metric_data_type
 from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     DataObject,
     SemanticModel,
@@ -165,7 +167,11 @@ class CFLPlanner:
             measures_by_object = self._group_dimensions_into_legs(resolved, model)
 
         if len(measures_by_object) <= 1 and not cross_fact:
-            # Single fact — delegate to star schema
+            # Single fact — delegate to star schema. Resolution let this query
+            # past the reachability check because it looked multi-fact, and a
+            # star has to serve every dimension from one root, so check now
+            # that the leg left standing can.
+            self._reject_unreachable_dimensions(measures_by_object, resolved, model)
             from orionbelt.compiler.star import StarSchemaPlanner
 
             return StarSchemaPlanner().plan(
@@ -275,6 +281,47 @@ class CFLPlanner:
     ) -> tuple[dict[str, list[ResolvedMeasure]], list[ResolvedMeasure]]:
         """Group measures by their primary source object."""
         return cfl_projection.group_measures_by_object(self, resolved, model)
+
+    @staticmethod
+    def _reject_unreachable_dimensions(
+        measures_by_object: dict[str, list[ResolvedMeasure]],
+        resolved: ResolvedQuery,
+        model: SemanticModel,
+    ) -> None:
+        """Refuse a dimension the one remaining leg cannot produce.
+
+        A query looks multi-fact while its measures span facts, and resolution
+        skips the reachability check on that basis - the union answers it, each
+        leg projecting the dimensions it reaches and NULL-padding the rest. When
+        the legs collapse to one there is no union to do that, and the star this
+        delegates to would project a column from a table it does not select
+        from. The same refusal resolution would have raised.
+        """
+        root = next(iter(measures_by_object), resolved.base_object)
+        graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+        reachable = graph.descendants(root) | {root}
+        unreachable = sorted(
+            {dim.object_name for dim in resolved.dimensions if dim.object_name not in reachable}
+        )
+        if not unreachable:
+            return
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="UNREACHABLE_REQUIRED_OBJECT",
+                    message=(
+                        f"Data object '{name}' is required by the query but cannot be "
+                        f"reached from base '{root}' via directed joins. Many-to-one joins "
+                        f"are forward-only; reverse traversal would inflate row counts. Add "
+                        f"an explicit join from '{root}' (or an intermediate object) to "
+                        f"'{name}', or split the query so each fact is queried "
+                        f"independently."
+                    ),
+                    path="select",
+                )
+                for name in unreachable
+            ]
+        )
 
     @staticmethod
     def _group_dimensions_into_legs(
@@ -458,6 +505,25 @@ class CFLPlanner:
                 for m in cross_fact:
                     if m.name in this_measure_names:
                         self._collect_table_refs(m.expression, measure_expr_objects)
+
+            # A leg's FROM is its *lead*, not its key: the common root of the
+            # key and what that key reaches. Where the key is a measure's source
+            # on the one side of a join - ``Products``, reaching nothing - the
+            # lead is the ``Sales`` that reaches both, and dimensions the lead
+            # can produce were being NULL-padded on the grounds that the key
+            # could not. Every row of the leg then collapsed into one NULL
+            # group. Widen the reachability to the lead where a lead covering
+            # the query's dimensions exists at all; where none does, the facts
+            # really are independent and the padding below is right.
+            wanted = (
+                {dim.object_name for dim in resolved.dimensions}
+                | {obj_name}
+                | filter_objects
+                | measure_expr_objects
+            )
+            wide_lead = graph.find_common_root(wanted)
+            if wide_lead and obj_name in (graph.descendants(wide_lead) | {wide_lead}):
+                reachable = graph.descendants(wide_lead) | {wide_lead}
 
             # SELECT conformed dimensions — only emit real column refs for
             # dimensions reachable from this leg's fact AND whose `via:`

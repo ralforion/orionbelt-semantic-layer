@@ -582,6 +582,28 @@ def _single_leg_root(
     return None
 
 
+def _dimension_carrying_leg(
+    sources: set[str], resolved: ResolvedQuery, model: SemanticModel
+) -> str | None:
+    """Where a leg covering *sources* has to be rooted to carry the query grain.
+
+    A leg's FROM is not its key but the common root of that key and whatever
+    dimensions the key reaches, so a leg keyed at an object that reaches none of
+    them projects nothing at all and degenerates to ``SELECT *``. A measure on
+    the *one* side of a join is exactly that case: ``Products`` reaches no
+    dimension, and the leg carrying it has to be rooted at the ``Sales`` that
+    reaches both. Returns ``None`` when no root reaches a dimension - the leg
+    would carry nothing and must not be created.
+    """
+    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    dim_objects = {dim.object_name for dim in resolved.dimensions}
+    root = graph.find_common_root(sources | dim_objects) if dim_objects else None
+    if not root:
+        return None
+    reachable = graph.descendants(root) | {root}
+    return root if dim_objects & reachable else None
+
+
 def _measure_objects(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -625,12 +647,15 @@ def group_measures_by_object(
             # opposite of what the field asks for - and its value went into the
             # composite, where the wrapper could not recompute it.
             #
-            # Its fact still earns a leg, with no measure of its own. The union
-            # is what makes a dimension only that fact reaches available at all,
-            # NULL-padded in the others, and dropping the leg would leave the
-            # query unable to group by one.
-            for obj in _measure_objects(planner, resolved, model, measure):
-                groups.setdefault(obj, [])
+            # A leg still stands where this measure's own leg would have, with
+            # no measure of its own: the union is what makes a dimension only
+            # that branch reaches available at all, NULL-padded in the others,
+            # and dropping it left the query unable to group by one.
+            leg = _dimension_carrying_leg(
+                _measure_objects(planner, resolved, model, measure), resolved, model
+            )
+            if leg is not None:
+                groups.setdefault(leg, [])
             continue
         if measure.component_measures:
             # Metric: add each component measure to its source object, following
@@ -641,8 +666,11 @@ def group_measures_by_object(
                     continue
                 seen.add(comp.name)
                 if comp.filter_context is not None:
-                    for obj in _measure_objects(planner, resolved, model, comp):
-                        groups.setdefault(obj, [])
+                    leg = _dimension_carrying_leg(
+                        _measure_objects(planner, resolved, model, comp), resolved, model
+                    )
+                    if leg is not None:
+                        groups.setdefault(leg, [])
                     continue
                 model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:

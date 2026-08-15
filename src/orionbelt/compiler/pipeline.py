@@ -154,6 +154,42 @@ class CompilationPipeline:
         self._cfl_planner = CFLPlanner()
         self._raw_planner = RawPlanner()
 
+    @staticmethod
+    def detect_replication(resolved: ResolvedQuery, model: SemanticModel) -> None:
+        """Phase 1.5: fanout detection, and which measures need deduplicating.
+
+        A method rather than inline because a *sub*-query needs the same phase:
+        ``filter_wrap`` plans a filterContext measure's scan in its own right,
+        and skipping this left a measure on the one side of a replicating join
+        summed once per row of the many side - the exact overcount the pass
+        exists to prevent, in a query where nothing said so.
+        """
+        # Skipped for CFL: each fact is queried independently there.
+        if resolved.requires_cfl:
+            return
+        detect_fanout(resolved, model)
+        # Forward many-to-one joins replicate the *one* side, which
+        # `detect_fanout` treats as safe. Flag any measure sourced from a
+        # replicated object so the `grain_dedup` pass aggregates it over
+        # deduplicated rows instead of the flattened join.
+        if not resolved.is_raw:
+            dedup_plan = detect_dedup_measures(resolved, model)
+            # A filterContext measure is not this plan's to deduplicate: it is
+            # computed by a scan of its own, which runs this same phase for
+            # itself. Leaving it in built a dedup CTE for a column the final
+            # projection takes from elsewhere.
+            isolated = {m.name for m in resolved.measures if m.filter_context is not None} | {
+                name
+                for name, comp in resolved.metric_components.items()
+                if comp.filter_context is not None
+            }
+            resolved.dedup_measures = {
+                k: v for k, v in dedup_plan.measures.items() if k not in isolated
+            }
+            resolved.dedup_components = {
+                k: v for k, v in dedup_plan.components.items() if k not in isolated
+            }
+
     def compile(
         self,
         query: QueryObject,
@@ -173,16 +209,7 @@ class CompilationPipeline:
         resolved = self._resolver.resolve(query, model, qualify_table=qualify_table)
 
         # Phase 1.5: Fanout detection (skip for CFL — each fact queried independently)
-        if not resolved.requires_cfl:
-            detect_fanout(resolved, model)
-            # Forward many-to-one joins replicate the *one* side, which
-            # `detect_fanout` treats as safe. Flag any measure sourced from a
-            # replicated object so the `grain_dedup` pass aggregates it over
-            # deduplicated rows instead of the flattened join.
-            if not resolved.is_raw:
-                dedup_plan = detect_dedup_measures(resolved, model)
-                resolved.dedup_measures = dedup_plan.measures
-                resolved.dedup_components = dedup_plan.components
+        self.detect_replication(resolved, model)
 
         # Phase 2: Planning (raw / star schema / CFL)
         use_cfl = resolved.requires_cfl or resolved.dimensions_exclude
