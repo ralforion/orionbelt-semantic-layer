@@ -130,6 +130,14 @@ measures:
       mode: RELATIVE
       include:
         - {field: Zip Matches, op: "=", value: true}
+  Qualified Context Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: RELATIVE
+      include:
+        - {field: Store.Zip Matches, op: "=", value: true}
 """
 
 
@@ -237,6 +245,23 @@ class TestJoinEmission:
         result = PIPELINE.compile(
             QueryObject(
                 select=QuerySelect(dimensions=["Store Zip"], measures=["Context Matched Amount"])
+            ),
+            _load(),
+            "postgres",
+        )
+        wrapper = result.sql[result.sql.index('"fc_0" AS (') :]
+        assert 'JOIN "PUBLIC"."CUSTOMER_ADDRESS" AS "Address"' in wrapper
+        assert '"Address"."CA_ZIP"' in wrapper
+        assert any(ref.endswith(".CUSTOMER_ADDRESS") for ref in result.physical_tables), (
+            result.physical_tables
+        )
+
+    def test_qualified_filter_context_include_joins_it(self) -> None:
+        """The wrapper accepts a qualified ``DataObject.Column`` include as
+        well as a dimension name; both have to be collected before planning."""
+        result = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Store Zip"], measures=["Qualified Context Amount"])
             ),
             _load(),
             "postgres",

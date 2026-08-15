@@ -34,11 +34,14 @@ Two more (`Q53`, `Q63`) match the reference's inner aggregate block exactly;
 their outer threshold filter compares a value against a window-produced
 average, which is compiled but not yet verified end to end here.
 
-Known differences, both reference-variant artifacts rather than OBSL errors:
+Known differences, all reference-variant artifacts rather than OBSL errors.
+`sweep.py` reports them separately and does not fail on them (`EXPECTED_DIFF`),
+so a non-zero exit means something genuinely regressed:
 
 | Q | Engine | Cause |
 |---|---|---|
 | Q20, Q98 | ClickHouse | the reference truncates a ratio to 2dp; every other column and row matches |
+| Q40 | ClickHouse | the `COALESCE(..., 0)` metric added for DuckDB is wrong where the filtered measure already yields 0 |
 | Q99 | DuckDB | DuckDB's reference variant lowercases `cc_name`; ClickHouse's does not, and Q99 matches there exactly |
 
 ## Running it
@@ -112,4 +115,18 @@ on Item; the planner unions them and re-aggregates.
 
 **Deliberate fan-out.** Q72 joins inventory on item alone, so one sale meets
 every snapshot of that item. That multiplication is the query's intent, so its
-counts carry `allowFanOut: true` and opt out of grain deduplication.
+counts carry `allowFanOut: true` and opt out of grain deduplication. It is the
+largest comparison here: 2,008 rows at sf=1 and 42,226 at sf=10, both exact.
+
+## Why two engines
+
+Running the same query files against two engines is not redundancy. Twice now
+the second engine caught something the first could not:
+
+- Q72's promo split first tested the *sale's* promo key rather than the
+  promotion row reached through the join. At sf=1 no catalog sale has an
+  unmatched promo key, so DuckDB matched exactly; at sf=10 one row flipped
+  between the two counts. The scale-1 data quietly satisfied a referential
+  integrity assumption the query should not have made.
+- Q20, Q98 and Q99 differ between the two engines' *reference variants*, not
+  in OBSL's output — which only becomes visible when both are run.

@@ -1230,11 +1230,21 @@ class QueryResolver:
                 # wrapper, which runs *after* join planning and builds its CTE
                 # over the joins planned here. Whatever they read has to be in
                 # that set, or the CTE's WHERE names an alias it never joined.
+                # Both field forms the wrapper accepts: a dimension name, or a
+                # qualified 'DataObject.Column'.
                 for incl in measure.filter_context.include:
                     dim = ctx.model.dimensions.get(incl.field)
-                    if dim is not None and dim.view and dim.column:
-                        result.add(dim.view)
-                        filter_columns.add((dim.view, dim.column))
+                    if dim is not None:
+                        if dim.view and dim.column:
+                            result.add(dim.view)
+                            filter_columns.add((dim.view, dim.column))
+                        continue
+                    obj_name, _, col_name = incl.field.partition(".")
+                    obj_name, col_name = obj_name.strip(), col_name.strip()
+                    obj = ctx.model.data_objects.get(obj_name)
+                    if obj is not None and col_name in obj.columns:
+                        result.add(obj_name)
+                        filter_columns.add((obj_name, col_name))
             for obj_name, col_name in filter_columns:
                 result.update(ctx.model.column_reference_objects(obj_name, col_name))
             return result
