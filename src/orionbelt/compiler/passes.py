@@ -419,6 +419,43 @@ def evaluate_compatibility(
                 ]
             )
 
+    # Rule 2c (raising): a filterContext measure is computed in a CTE of its
+    # own, whose WHERE is the query's with some filters dropped or added. Under
+    # a multi-fact plan there is nothing to compute it from: the union legs
+    # applied the query's filters before the composite CTE existed, so a context
+    # that drops one cannot un-apply it, and the fact columns a context of its
+    # own would filter on are not among the composite's columns either. The
+    # projection came out reading tables the CTE does not select from, which no
+    # engine binds — refuse instead, since suppressing the pass would answer the
+    # unfiltered number under the filtered measure's name.
+    if resolved.composite_cte is not None:
+        fc_measures = sorted(m.name for m in resolved.measures if m.filter_context is not None)
+        if fc_measures:
+            listed = ", ".join(f"'{m}'" for m in fc_measures)
+            raise ResolutionError(
+                [
+                    SemanticError(
+                        code="INCOMPATIBLE_COMBINATION",
+                        message=(
+                            f"Measure(s) {listed} declare a filterContext, which needs its "
+                            f"own filtered scan of the fact. This query spans facts that "
+                            f"cannot be joined, so it is planned as a UNION ALL whose legs "
+                            f"are already filtered and whose columns are the projected "
+                            f"measures, leaving nothing for that scan to read."
+                        ),
+                        path="select.measures",
+                        hint=(
+                            "Query the filterContext measure without the measures from the "
+                            "other fact, or drop the filterContext."
+                        ),
+                        context={
+                            "measures": fc_measures,
+                            "conflictsWith": ["a multi-fact (CFL) plan"],
+                        },
+                    )
+                ]
+            )
+
     # Rule 3 (raising): grain dedup splits the projection across CTEs keyed on
     # the query grain. Every wrapper in ``incompatible_with`` restructures that
     # same projection, and ROLLUP/CUBE changes the grain itself, so the join

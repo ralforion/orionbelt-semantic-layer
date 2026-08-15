@@ -722,6 +722,14 @@ class CFLPlanner:
                 outer_builder.select(AliasedExpr(expr=metric_expr, alias=m.name))
                 outer_measure_exprs[m.name] = metric_expr
 
+        # Recorded for the wrappers that run after planning. Each of them
+        # re-projects some measure's aggregate into a CTE of its own, and every
+        # such CTE selects from the composite below - where the fact tables the
+        # resolved expressions name are not in scope, so rebuilding from those
+        # produces SQL that does not bind.
+        resolved.projected_expressions = dict(outer_measure_exprs)
+        resolved.composite_cte = cte_name
+
         outer_builder.from_(cte_name, alias=cte_name)
 
         # GROUP BY dimensions.  Coalesce groups group by the COALESCE expression

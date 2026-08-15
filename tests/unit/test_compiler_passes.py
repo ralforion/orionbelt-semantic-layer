@@ -66,6 +66,7 @@ def _resolved(**attrs: object) -> ResolvedQuery:
         having_filters=attrs.get("having_filters") or [],
         measures=measures,
         metric_components={},
+        composite_cte=attrs.get("composite_cte"),
     )
     return cast(ResolvedQuery, ns)
 

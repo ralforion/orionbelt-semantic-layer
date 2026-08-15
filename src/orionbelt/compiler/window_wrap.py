@@ -352,7 +352,7 @@ def wrap_with_window(
                                 over_cte,
                                 model,
                                 dialect,
-                                resolved.conformed_expressions,
+                                resolved.projected_expressions,
                             )
                         )
         elif alias and alias in ddm_names:
@@ -370,7 +370,7 @@ def wrap_with_window(
                 if already_in_base:
                     continue
                 comp_expr = _apply_measure_cast(
-                    resolved.conformed_expressions.get(base_comp.name, base_comp.expression),
+                    resolved.projected_expressions.get(base_comp.name, base_comp.expression),
                     base_comp.name,
                     model,
                     dialect,

@@ -507,7 +507,7 @@ def test_a_wrapper_reprojecting_an_anchored_measure_reads_the_conformed_columns(
     column, so both projected the raw ``SUM("Sales"."qty" * "Returns"."qty")``
     into a CTE whose FROM joins conformed subqueries in place of those tables.
     The expression they re-project now comes from
-    ``ResolvedQuery.conformed_expressions``.
+    ``ResolvedQuery.projected_expressions``.
     """
     sql = _sql(WRAPPED_YAML, [metric])
     assert '"Sales"."qty" * "Returns"."qty"' not in sql

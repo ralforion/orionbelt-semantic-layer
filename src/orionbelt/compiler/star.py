@@ -142,7 +142,7 @@ class StarSchemaPlanner:
         # Recorded for the wrappers that run after planning: each re-projects a
         # measure's aggregate into its own CTE, and the resolved expression they
         # would otherwise use still names the foreign fact's table.
-        resolved.conformed_expressions = conformed_exprs
+        resolved.projected_expressions = conformed_exprs
 
         # SELECT: dimensions (apply time grain truncation if specified)
         grouping_dim_aliases: list[str] = []
