@@ -30,11 +30,11 @@ from orionbelt.compiler.grain_dedup import (
     auxiliary_references,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.query import CoalesceDimension, QueryObject, UsePathName
 from orionbelt.models.semantic import MetricType, SemanticModel
 
 # Measure expression column refs: ``{[DataObject].[Column]}``
-_MEASURE_COL_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 # Derived metric measure refs: ``{[Measure Name]}``
 _METRIC_MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 
@@ -83,7 +83,7 @@ def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
         return set()
     objects = {c.view for c in m.columns if c.view}
     if m.expression:
-        objects |= {obj for obj, _ in _MEASURE_COL_REF.findall(m.expression)}
+        objects |= {obj for obj, _ in find_qualified_refs(m.expression)}
     return objects
 
 

@@ -29,6 +29,7 @@ from orionbelt.api.schemas import (
     SearchResponse,
     SearchResultItem,
 )
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import (
@@ -207,7 +208,7 @@ def _build_explain(name: str, model: SemanticModel) -> ExplainResponse:
             lineage.append(
                 ExplainLineageItem(type="expression", name=m.expression, detail="measure formula")
             )
-            col_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", m.expression)
+            col_refs = find_qualified_refs(m.expression)
             for obj_name, col_name in col_refs:
                 lineage.append(
                     ExplainLineageItem(

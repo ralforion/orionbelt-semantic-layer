@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 
 import networkx as nx
 
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.expressions import find_placeholders, find_qualified_refs
+from orionbelt.models.expressions import (
+    QUALIFIED_COLUMN_REF,
+    find_placeholders,
+    find_qualified_refs,
+)
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -19,9 +22,6 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
-
-# ``{[Data Object].[Column]}`` reference inside a measure expression.
-_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 
 
 class SemanticValidator:
@@ -576,10 +576,10 @@ class SemanticValidator:
         if measure.columns:
             return {(c.view or "", c.column or "") for c in measure.columns}
         if measure.expression:
-            refs = _MEASURE_COLUMN_REF.findall(measure.expression.strip())
-            whole = _MEASURE_COLUMN_REF.fullmatch(measure.expression.strip())
-            if whole is not None and len(refs) == 1:
-                return {(refs[0][0], refs[0][1])}
+            body = measure.expression.strip()
+            refs = find_qualified_refs(body)
+            if len(refs) == 1 and QUALIFIED_COLUMN_REF.fullmatch(body) is not None:
+                return {refs[0]}
         return set()
 
     @staticmethod

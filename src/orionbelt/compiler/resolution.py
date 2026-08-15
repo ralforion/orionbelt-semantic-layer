@@ -1413,8 +1413,7 @@ class QueryResolver:
                 if cref.view:
                     result.add(cref.view)
             if measure.expression:
-                col_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", measure.expression)
-                for obj_name, _col_name in col_refs:
+                for obj_name, _col_name in find_qualified_refs(measure.expression):
                     result.add(obj_name)
             for fi in measure.filters:
                 collect_measure_filter_objects(fi, result)

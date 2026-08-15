@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from orionbelt.models.errors import SemanticError, ValidationResult
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     CustomExtension,
     DataColumnRef,
@@ -1240,7 +1241,9 @@ class ReferenceResolver:
     ) -> None:
         """Validate {[DataObject].[Column]} references in a measure expression."""
         span = source_map.get(f"measures.{measure_name}.expression") if source_map else None
-        named_refs = re.findall(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\]\}", expression)
+        # The same scanner the tokenizer and the dependency walk use, so a
+        # padded reference is read here exactly as it will be compiled.
+        named_refs = find_qualified_refs(expression)
         for obj_name, col_name in named_refs:
             if obj_name not in data_objects:
                 errors.append(

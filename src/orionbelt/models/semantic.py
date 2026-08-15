@@ -8,9 +8,6 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orionbelt.models.expressions import (
-    QUALIFIED_COLUMN_REF as _MEASURE_COLUMN_REF,
-)
-from orionbelt.models.expressions import (
     find_placeholders,
     find_qualified_refs,
 )
@@ -590,7 +587,7 @@ class Measure(BaseModel):
             if cref.view and cref.view not in ordered:
                 ordered.append(cref.view)
         if self.expression:
-            for obj, _col in _MEASURE_COLUMN_REF.findall(self.expression):
+            for obj, _col in find_qualified_refs(self.expression):
                 if obj not in ordered:
                     ordered.append(obj)
         return ordered

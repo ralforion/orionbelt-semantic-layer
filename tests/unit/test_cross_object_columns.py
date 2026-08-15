@@ -391,6 +391,47 @@ class TestReferenceWhitespace:
     def test_padded_reference_is_discovered(self) -> None:
         assert _load(self.PADDED).column_reference_objects("Store", "Zip Matches") == {"Address"}
 
+    # A measure expression uses the same reference syntax, so it has to read it
+    # the same way — the resolver validating it, and the measure reporting the
+    # objects it reads, both feed planning.
+    PADDED_MEASURE = MODEL_YAML.replace(
+        """  Sales Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum""",
+        """  Sales Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Padded Measure:
+    expression: "{[ Sales ].[ Amount ]} * 2"
+    resultType: float
+    aggregation: sum""",
+    )
+
+    def test_padded_measure_expression_validates(self) -> None:
+        assert _errors(self.PADDED_MEASURE) == []
+
+    def test_padded_measure_reports_the_object_it_reads(self) -> None:
+        """Reported raw, planning saw a data object called ``' Sales '`` and
+        failed with an anchor error that named no real object."""
+        measure = _load(self.PADDED_MEASURE).measures["Padded Measure"]
+        assert measure.referenced_objects == ["Sales"]
+        assert measure.source_objects == {"Sales"}
+
+    def test_padded_measure_compiles_to_the_same_sql(self) -> None:
+        padded = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=["Store Zip"], measures=["Padded Measure"])),
+            _load(self.PADDED_MEASURE),
+            "postgres",
+        ).sql
+        tight = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=["Store Zip"], measures=["Padded Measure"])),
+            _load(self.PADDED_MEASURE.replace("{[ Sales ].[ Amount ]}", "{[Sales].[Amount]}")),
+            "postgres",
+        ).sql
+        assert padded == tight
+
 
 class TestNameCollisionOnWhitespace:
     """Two names a bracket reference cannot tell apart."""
