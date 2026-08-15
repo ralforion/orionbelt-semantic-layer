@@ -1,0 +1,8 @@
+select:
+  dimensions: []
+  measures: [Store Sales Count]
+where:
+  - {field: Time.Hour, op: "=", value: 20}
+  - {field: Time.Minute, op: gte, value: 30}
+  - {field: Dependent Count, op: "=", value: 7}
+  - {field: Store Name, op: "=", value: "ese"}

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
-
 from orionbelt.compiler.graph import JoinGraph, JoinStep
 from orionbelt.compiler.metric_expansion import metric_leaf_measure_names
 from orionbelt.compiler.resolution import ResolvedQuery
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import Cardinality, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -145,7 +144,7 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
             if cref.view:
                 source_objects.add(cref.view)
         if model_measure.expression:
-            col_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", model_measure.expression)
+            col_refs = find_qualified_refs(model_measure.expression)
             for obj_name, _col_name in col_refs:
                 source_objects.add(obj_name)
 

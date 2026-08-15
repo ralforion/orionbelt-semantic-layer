@@ -29,7 +29,7 @@ from orionbelt.compiler.filters import (
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.expressions import substitute_placeholders
+from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
 from orionbelt.models.query import (
     CoalesceDimension,
     DimensionRef,
@@ -700,11 +700,45 @@ class QueryResolver:
         # 5. Resolve join paths
         ctx.graph = JoinGraph(model, use_path_names=query.use_path_names or None)
         if ctx.result.base_object and len(ctx.result.required_objects) > 1:
+            ambiguous: dict[str, list[list[str]]] = {}
             ctx.result.join_steps = ctx.graph.find_join_path(
                 {ctx.result.base_object},
                 ctx.result.required_objects,
                 via_constraints=ctx.result.via_constraints or None,
+                ambiguous=ambiguous,
             )
+            # A dimension the query reaches by two equally close routes is two
+            # different roles of one data object, and they select different
+            # rows. Refused rather than picked — the same stance the filter
+            # path takes, since a projected dimension is no more guessable.
+            for object_name, routes in sorted(ambiguous.items()):
+                names = (
+                    ", ".join(
+                        f"'{dim.name}'"
+                        for dim in ctx.result.dimensions
+                        if dim.object_name == object_name
+                    )
+                    or f"'{object_name}'"
+                )
+                ctx.errors.append(
+                    SemanticError(
+                        code="AMBIGUOUS_JOIN_PATH",
+                        message=(
+                            f"{names} is on '{object_name}', which this query reaches "
+                            f"equally well by more than one route "
+                            f"({', '.join(f'via {path[-2]!r}' for path in routes)}). "
+                            f"Those are different roles of the same data object and "
+                            f"they select different rows."
+                        ),
+                        path="select.dimensions",
+                        hint=(
+                            "Say which one is meant: declare a data object per role "
+                            "over the same table and select from that, or give the "
+                            "dimension a 'via:' waypoint naming the object the join "
+                            "must traverse."
+                        ),
+                    )
+                )
 
         # Build set of all objects present in the query's join graph
         if ctx.result.base_object:
@@ -832,6 +866,12 @@ class QueryResolver:
             resolved_dim.coalesce_alias = coalesce_alias
         ctx.result.dimensions.append(resolved_dim)
         ctx.result.required_objects.add(resolved_dim.object_name)
+        # A computed column may read a column of another data object, which the
+        # plan then has to join — the expression is inlined into the SELECT list
+        # and would otherwise name an alias nothing in the FROM chain binds.
+        ctx.result.required_objects.update(
+            ctx.model.column_reference_objects(resolved_dim.object_name, resolved_dim.column_name)
+        )
         return resolved_dim
 
     def _resolve_coalesce_dimension(
@@ -1195,14 +1235,16 @@ class QueryResolver:
             FROM "products" AS "Products"          -- Sales never joined
 
         which every engine rejects at execution time.
+
+        A column the measure reads may itself be computed from a column of
+        another object, which lands here for the same reason and with the same
+        care about ``measure_source_objects``: the object supplies part of an
+        expression evaluated per fact row, not a second fact to union.
         """
         result: set[str] = set()
 
-        measure = ctx.model.effective_measures.get(name)
-        if measure is not None:
-            if measure.within_group is not None and measure.within_group.column.view:
-                result.add(measure.within_group.column.view)
-            return result
+        if name in ctx.model.effective_measures:
+            return ctx.model.measure_join_objects(name)
 
         metric = ctx.model.metrics.get(name)
         if metric is not None:
@@ -1334,8 +1376,7 @@ class QueryResolver:
                 if cref.view:
                     result.add(cref.view)
             if measure.expression:
-                col_refs = re.findall(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", measure.expression)
-                for obj_name, _col_name in col_refs:
+                for obj_name, _col_name in find_qualified_refs(measure.expression):
                     result.add(obj_name)
             for fi in measure.filters:
                 collect_measure_filter_objects(fi, result)
@@ -1383,6 +1424,10 @@ class QueryResolver:
         ``EXISTS`` / ``NONEXISTS`` targets are skipped too: they compile to a
         correlated subquery, not a join, so they place no reachability demand on
         the base object.
+
+        A predicate on a computed column demands whatever objects its expression
+        reads as well — the predicate is only as reachable as the columns it
+        compares.
         """
         found: set[str] = set()
         measure_names = model.effective_measures
@@ -1399,11 +1444,14 @@ class QueryResolver:
             if dimension is not None:
                 if dimension.view:
                     found.add(dimension.view)
+                    found.update(model.column_reference_objects(dimension.view, dimension.column))
                 return
             if "." in field:
-                object_name = field.split(".", 1)[0].strip()
+                object_name, _, column_name = field.partition(".")
+                object_name, column_name = object_name.strip(), column_name.strip()
                 if object_name in model.data_objects:
                     found.add(object_name)
+                    found.update(model.column_reference_objects(object_name, column_name))
 
         for entry in query.where:
             visit(entry)

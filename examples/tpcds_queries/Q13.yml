@@ -1,0 +1,45 @@
+select:
+  dimensions: []
+  measures: [Avg Quantity, Avg Ext Sales Price, Avg Ext Wholesale Cost, Ext Wholesale Cost Sum]
+where:
+  - {field: Year, op: "=", value: 2001}
+  - {field: Store Sales.Store Key, op: is_not_null}
+  - {field: Store Sales.HDemo Key, op: is_not_null}
+  - {field: Store Sales.CDemo Key, op: is_not_null}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "M"}
+          - {field: Education Status, op: "=", value: "Advanced Degree"}
+          - {field: Store Sales.Sales Price, op: between, value: [100.00, 150.00]}
+          - {field: Dependent Count, op: "=", value: 3}
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "S"}
+          - {field: Education Status, op: "=", value: "College"}
+          - {field: Store Sales.Sales Price, op: between, value: [50.00, 100.00]}
+          - {field: Dependent Count, op: "=", value: 1}
+      - logic: and
+        filters:
+          - {field: Marital Status, op: "=", value: "W"}
+          - {field: Education Status, op: "=", value: "2 yr Degree"}
+          - {field: Store Sales.Sales Price, op: between, value: [150.00, 200.00]}
+          - {field: Dependent Count, op: "=", value: 1}
+  - {field: Address Country, op: "=", value: "United States"}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["TX", "OH"]}
+          - {field: Store Sales.Net Profit, op: between, value: [100, 200]}
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["OR", "NM", "KY"]}
+          - {field: Store Sales.Net Profit, op: between, value: [150, 300]}
+      - logic: and
+        filters:
+          - {field: Address State, op: inlist, value: ["VA", "TX", "MS"]}
+          - {field: Store Sales.Net Profit, op: between, value: [50, 250]}
+usePathNames:
+  - {source: Store Sales, target: Customer Address, pathName: sale_address}

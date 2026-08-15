@@ -200,18 +200,110 @@ class JoinGraph:
                 best = node
         return best
 
+    def _hops_from(self, origin: str | None, node: str) -> int:
+        """Hops from *origin* to *node* in the traversable graph.
+
+        ``0`` when they are the same or no origin was given, and a value larger
+        than any real path when *node* is out of reach — so an unreachable
+        source sorts last rather than raising.
+        """
+        if origin is None or origin == node:
+            return 0
+        try:
+            return int(nx.shortest_path_length(self._traversable, origin, node))
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return len(self._traversable) + 1
+
+    def role_candidates(
+        self,
+        from_objects: set[str],
+        to_object: str,
+        prefer_from: str | None = None,
+    ) -> list[list[str]]:
+        """The equally-good ways to reach *to_object*, one path each.
+
+        A data object joined by more than one of the objects already in the
+        query is reachable by more than one *role* — ``date_dim`` as the sold
+        date and as the returned date, ``warehouse`` as the sale's and as the
+        inventory's. Which role a plain reference means is a question the model
+        cannot answer, so the caller has to know when there is a real choice.
+
+        Candidates are ranked by path length first, then by how far the source
+        sits from *prefer_from* (the query's base object). That makes the
+        answer both deterministic and principled: the base is what the query is
+        anchored on, so the role reached from it directly beats one reached
+        through another fact. Ranking by nothing, as this did before, left the
+        choice to set iteration order — the same query then compiled to a
+        different role from run to run, since string hashing is randomised per
+        process.
+
+        Returns every path tied at the best rank that enters *to_object* by a
+        *different* join, deduplicated on that last edge: two routes arriving
+        on the same key are the same role, however they got there. One element
+        means the choice is clear; more than one means it is genuinely
+        ambiguous and only the query can resolve it.
+        """
+        ranked: list[tuple[tuple[int, int, str], list[str]]] = []
+        for source in sorted(from_objects):
+            if source not in self._traversable or to_object not in self._traversable:
+                continue
+            lengths = nx.single_source_shortest_path_length(self._traversable, source)
+            distance = lengths.get(to_object)
+            if distance is None:
+                continue
+            # What separates one role from another is the *last* edge — which
+            # join actually lands on the target. Every predecessor sitting one
+            # hop closer to the source is the last edge of some shortest path,
+            # so one traversal yields the complete set of roles. Enumerating
+            # the paths instead would need a cap, and a cap applied before
+            # roles are distinguished can hide one behind many routes that
+            # share an entry.
+            for entry in sorted(self._traversable.predecessors(to_object)):
+                if lengths.get(entry) != distance - 1:
+                    continue
+                prefix: list[str] = nx.shortest_path(self._traversable, source, entry)
+                candidate = [*prefix, to_object]
+                rank = (len(candidate), self._hops_from(prefer_from, source), source)
+                ranked.append((rank, candidate))
+        if not ranked:
+            return []
+
+        best = min(rank for rank, _ in ranked)[:2]
+        by_entry: dict[tuple[str, str], list[str]] = {}
+        for rank, candidate in sorted(ranked):
+            if rank[:2] != best:
+                continue
+            last_edge = (
+                (candidate[-2], candidate[-1])
+                if len(candidate) > 1
+                else (candidate[0], candidate[0])
+            )
+            by_entry.setdefault(last_edge, candidate)
+        return list(by_entry.values())
+
     def find_join_path(
         self,
         from_objects: set[str],
         to_objects: set[str],
         via_constraints: dict[str, str] | None = None,
+        prefer_from: str | None = None,
+        ambiguous: dict[str, list[list[str]]] | None = None,
     ) -> list[JoinStep]:
         """Find a minimal join path connecting all required data objects.
 
-        Uses shortest path for each target object from the set of source objects.
+        Uses shortest path for each target object from the set of source
+        objects, ranked by :meth:`role_candidates` so the choice among several
+        reachable roles is deterministic rather than set-order dependent.
 
         *via_constraints* maps ``target → via``: for constrained targets, only
         the ``via`` object is used as the source so the path is forced through it.
+        *prefer_from* is the query's base object, which breaks ties in favour of
+        the role it reaches directly.
+
+        A path is still produced when several roles tie, because most callers
+        only need *a* join. Pass *ambiguous* to learn about it: each target that
+        tied is recorded there with the routes it tied between, so a caller that
+        must not guess — query resolution — can refuse instead.
         """
         steps: list[JoinStep] = []
         visited_edges: set[tuple[str, str]] = set()
@@ -226,17 +318,18 @@ class JoinGraph:
         ordered_targets = sorted(via_waypoints) + sorted(non_via_targets) + sorted(via_targets)
 
         source_list = list(from_objects)
+        # A single starting object *is* the anchor — that is how the planner
+        # calls this, from the query's base. Without it the tie-break falls
+        # back to the source name, which is deterministic but arbitrary: it
+        # bound a date filter to whichever fact sorted first.
+        anchor = prefer_from or (next(iter(from_objects)) if len(from_objects) == 1 else None)
 
         for target in ordered_targets:
-            best_path: list[str] | None = None
             sources = [via[target]] if target in via and via[target] in source_list else source_list
-            for source in sources:
-                try:
-                    path = nx.shortest_path(self._traversable, source, target)
-                    if best_path is None or len(path) < len(best_path):
-                        best_path = path
-                except nx.NetworkXNoPath:
-                    continue
+            candidates = self.role_candidates(set(sources), target, prefer_from=anchor)
+            if len(candidates) > 1 and ambiguous is not None:
+                ambiguous[target] = candidates
+            best_path = candidates[0] if candidates else None
 
             if best_path is None:
                 continue

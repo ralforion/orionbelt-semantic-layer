@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q83 — Returned quantity per item across the store, catalog and web channels
+# for the weeks containing three given dates, with each channel's share.
+#
+# Two things make it expressible: a multi-fact CFL over the three return
+# facts conformed on Item, and a self-referential date role (Week Date) that
+# the exists filter correlates by week sequence — "the weeks containing these
+# dates" without a subquery language.
+
+select:
+  dimensions: [Item ID]
+  measures:
+    - Store Returns Quantity
+    - Store Return Share
+    - Catalog Returns Quantity
+    - Catalog Return Share
+    - Web Returns Quantity
+    - Web Return Share
+    - Average Channel Returns
+where:
+  - field: Order Date
+    op: exists
+    subquery:
+      dataObject: Week Date
+      filter:
+        - {field: Date, op: in, value: ["2000-06-30", "2000-09-27", "2000-11-17"]}
+having:
+  # The reference inner-joins the three per-channel blocks, so an item has to
+  # appear in all three. Presence is a row count, not a non-null sum: an item
+  # can have catalog returns whose quantity is NULL, and the reference keeps
+  # it (with NULL derived columns) while a not-null test on the sum drops it.
+  - {field: Store Returns Count, op: gt, value: 0}
+  - {field: Catalog Returns Count, op: gt, value: 0}
+  - {field: Web Returns Count, op: gt, value: 0}
+orderBy:
+  - {field: Item ID, direction: asc}
+  - {field: Store Returns Quantity, direction: asc}
+limit: 100

@@ -30,11 +30,11 @@ from orionbelt.compiler.grain_dedup import (
     auxiliary_references,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.query import CoalesceDimension, QueryObject, UsePathName
 from orionbelt.models.semantic import MetricType, SemanticModel
 
 # Measure expression column refs: ``{[DataObject].[Column]}``
-_MEASURE_COL_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 # Derived metric measure refs: ``{[Measure Name]}``
 _METRIC_MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 
@@ -54,18 +54,18 @@ class ComposablesResult:
 def measure_join_requirements(model: SemanticModel, name: str) -> set[str]:
     """Objects a measure needs *joined* without being sourced from them.
 
-    A ``withinGroup`` column becomes the aggregate's ``ORDER BY``, so the
-    compiler adds its data object to the query's required objects even though
-    the measure reads no value from it. If that object is not reachable, the
-    query fails with ``UNREACHABLE_REQUIRED_OBJECT`` — so ACR has to weigh it
-    alongside the value sources, or it advertises a measure that cannot be
-    planned.
+    A ``withinGroup`` column becomes the aggregate's ``ORDER BY`` and a
+    computed column reads its neighbours directly, so the planner adds both to
+    a query's required objects even though the measure takes no value from
+    them. Unreachable, either one fails the query with
+    ``UNREACHABLE_REQUIRED_OBJECT`` — so ACR has to weigh them alongside the
+    value sources, or it advertises a measure that cannot be planned.
+
+    Shared with the planner (:meth:`SemanticModel.measure_join_objects`) rather
+    than reimplemented, because the two answering differently is exactly how
+    ACR came to advertise what the compiler refuses.
     """
-    measure = model.effective_measures.get(name)
-    if measure is None or measure.within_group is None:
-        return set()
-    view = measure.within_group.column.view
-    return {view} if view else set()
+    return model.measure_join_objects(name)
 
 
 def metric_join_requirements(model: SemanticModel, name: str) -> set[str]:
@@ -83,7 +83,7 @@ def measure_source_objects(model: SemanticModel, name: str) -> set[str]:
         return set()
     objects = {c.view for c in m.columns if c.view}
     if m.expression:
-        objects |= {obj for obj, _ in _MEASURE_COL_REF.findall(m.expression)}
+        objects |= {obj for obj, _ in find_qualified_refs(m.expression)}
     return objects
 
 
@@ -177,6 +177,7 @@ class ComposabilityResolver:
                 obj = _dimension_object(self.model, dim_name)
                 if obj:
                     dim_objects.add(obj)
+                    dim_objects |= self.model.dimension_join_objects(dim_name)
 
         measure_objects: set[str] = set()
         for ref in query.select.measures:
@@ -198,7 +199,14 @@ class ComposabilityResolver:
         """
         if anchor_type in (None, "dimension") and name in self.model.dimensions:
             obj = _dimension_object(self.model, name)
-            return ({obj} if obj else set()), set()
+            if not obj:
+                return set(), set()
+            # Same reading as the query-as-anchor path: a computed dimension
+            # drags in whatever its expression reads, and an anchor that
+            # forgets them offers pairings the planner refuses. The two entry
+            # points answering differently is itself the bug — one is GET
+            # /composables?anchor=, the other POST with a query.
+            return {obj} | self.model.dimension_join_objects(name), set()
         if anchor_type in (None, "measure") and name in self.model.effective_measures:
             return set(), measure_source_objects(self.model, name)
         if anchor_type in (None, "metric") and name in self.model.metrics:
@@ -229,7 +237,11 @@ class ComposabilityResolver:
         if not anchor:
             return ComposablesResult(
                 anchor_objects=[],
-                dimensions=sorted(self.model.dimensions),
+                dimensions=sorted(
+                    name
+                    for name, dim in self.model.dimensions.items()
+                    if self._has_common_root({dim.view} | self.model.dimension_join_objects(name))
+                ),
                 measures=sorted(
                     name
                     for name in self.model.effective_measures
@@ -259,7 +271,9 @@ class ComposabilityResolver:
         dimensions = [
             name
             for name, dim in self.model.dimensions.items()
-            if self._dimension_composable(dim.view, spine, leg_facts)
+            if self._dimension_composable(
+                dim.view, spine, leg_facts, self.model.dimension_join_objects(name)
+            )
         ]
 
         measures: list[str] = []
@@ -425,12 +439,18 @@ class ComposabilityResolver:
                     behind |= metric_leaf_measures(self.model, ref)
         return behind
 
-    def _dimension_composable(self, obj: str, spine: set[str], leg_facts: set[str]) -> bool:
+    def _dimension_composable(
+        self, obj: str, spine: set[str], leg_facts: set[str], reads: set[str] | None = None
+    ) -> bool:
+        # A computed column reads other data objects, and the planner joins
+        # them wherever the dimension is projected — so they are as much a
+        # requirement as the dimension's own object.
+        needed = {obj} | (reads or set())
         if leg_facts:
             # Must be groupable across every existing measure leg.
-            return all(self._reaches_all(fact, {obj}) for fact in leg_facts)
+            return all(self._reaches_all(fact, needed) for fact in leg_facts)
         # No measures yet: the new dimension must share a root with the spine.
-        return self._has_common_root(spine | {obj})
+        return self._has_common_root(spine | needed)
 
     def _measure_status(
         self, source_objects: set[str], anchor: set[str], spine: set[str]

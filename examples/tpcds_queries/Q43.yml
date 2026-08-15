@@ -1,0 +1,9 @@
+select:
+  dimensions: [Store Name, Store ID]
+  measures: [Sun Sales, Mon Sales, Tue Sales, Wed Sales, Thu Sales, Fri Sales, Sat Sales]
+where:
+  - {field: Store.GMT Offset, op: "=", value: -5}
+  - {field: Year, op: "=", value: 2000}
+orderBy:
+  - {field: Store Name, direction: asc}
+  - {field: Store ID, direction: asc}

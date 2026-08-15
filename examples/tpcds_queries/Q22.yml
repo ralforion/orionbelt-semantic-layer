@@ -1,0 +1,13 @@
+select:
+  dimensions: [Product Name, Brand, Class, Category]
+  measures: [Avg Inventory]
+where:
+  - {field: Date.Month Sequence, op: between, value: [1200, 1211]}
+grouping: rollup
+orderBy:
+  - {field: Avg Inventory, direction: asc}
+  - {field: Product Name, direction: asc}
+  - {field: Brand, direction: asc}
+  - {field: Class, direction: asc}
+  - {field: Category, direction: asc}
+limit: 100

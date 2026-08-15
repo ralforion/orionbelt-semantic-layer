@@ -193,6 +193,42 @@ def _generate_ontology_graph_html(
         str(col): str(obj) for obj, col in g.subject_objects(OBSL.hasColumn)
     }
 
+    # One exception to "columns are not nodes": a computed column whose
+    # expression reads *another* data object. Collapsing that onto its owner
+    # would draw the dependency as an anonymous object-to-object edge and lose
+    # which column caused it — and it is the one edge that marks a join the
+    # planner has to make. A column reading only siblings stays collapsed:
+    # showing it would add a node per formula and say nothing new.
+    cross_object_columns: set[str] = {
+        str(col)
+        for col, ref in g.subject_objects(OBSL.referencesColumn)
+        if col_to_object.get(str(col)) not in (None, col_to_object.get(str(ref)))
+        and str(ref) in col_to_object
+    }
+
+    if show_data_objects:
+        for col_id in sorted(cross_object_columns):
+            col_uri = URIRef(col_id)
+            owner_id = col_to_object[col_id]
+            add_node(
+                col_id,
+                # Qualified, because a dimension usually carries the column's
+                # own name and two nodes labelled alike read as a duplicate.
+                label=f"{_label(URIRef(owner_id))}.{_label(col_uri)}",
+                title=_node_title(col_uri, "Computed column"),
+                color={"background": "#FFB74D", "border": "#F57C00"},
+                shape="box",
+                size=14,
+            )
+            add_edge(
+                owner_id,
+                col_id,
+                label="hasColumn",
+                title=f"{_label(URIRef(owner_id))} → {_label(col_uri)}",
+                color="#BDBDBD",
+                arrows="to",
+            )
+
     seen_edges: set[tuple[str, str, str]] = set()
 
     def link(src: Any, tgt: Any, label: str, color: str, *, dashes: bool = False) -> None:
@@ -226,10 +262,26 @@ def _generate_ontology_graph_html(
         (OBSL.sourceColumn, "sourceColumn"),
         (OBSL.referencesColumn, "referencesColumn"),
     ):
-        for meas, col in g.subject_objects(pred):
+        for subject, col in g.subject_objects(pred):
             obj_id = col_to_object.get(str(col))
-            if obj_id is not None:
-                link(meas, URIRef(obj_id), edge_label, "#64B5F6")
+            if obj_id is None:
+                continue
+            # The target end: a cross-object computed column is a node of its
+            # own, so point at it; every other column collapses onto its owner.
+            target = str(col) if str(col) in cross_object_columns else obj_id
+            source_object = col_to_object.get(str(subject))
+            if source_object is None:
+                link(subject, URIRef(target), edge_label, "#64B5F6")  # measure subject
+                continue
+            # A computed column reading another column. Only a reference that
+            # leaves the data object is worth an edge: an intra-object one is
+            # already implied by both columns hanging off the same node.
+            # Dashed, to separate "reads through an expression" from a measure's
+            # own column.
+            if obj_id == source_object:
+                continue
+            source = str(subject) if str(subject) in cross_object_columns else source_object
+            link(URIRef(source), URIRef(target), edge_label, "#64B5F6", dashes=True)
     for meas, obj in g.subject_objects(OBSL.anchoredTo):
         link(meas, obj, "anchor", "#64B5F6")
 

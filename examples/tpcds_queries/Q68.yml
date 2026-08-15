@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q68 — Ticket totals for customers who bought in a city other than the one
+# they live in. The two cities are two roles of customer_address: the sale's
+# address (Sale Address) and the customer's current one (Customer Address).
+# The comparison is a cross-object computed column on Sale Address.
+
+select:
+  dimensions:
+    - Customer Name
+    - Customer First Name
+    - Customer City
+    - Bought City
+    - Ticket Number
+  measures: [Store Sales Amount, Store Ext List Price, Store Ext Tax]
+where:
+  - {field: Day of Month, op: between, value: [1, 2]}
+  - {field: Year, op: in, value: [1999, 2000, 2001]}
+  - {field: Store.Store City, op: in, value: [Midway, Fairview]}
+  - logic: or
+    filters:
+      - {field: Dependent Count, op: "=", value: 4}
+      - {field: Household Demographics.Vehicle Count, op: "=", value: 3}
+  - {field: Sale Address.City Differs From Customer, op: "=", value: true}
+orderBy:
+  - {field: Customer Name, direction: asc}
+  - {field: Ticket Number, direction: asc}
+limit: 100

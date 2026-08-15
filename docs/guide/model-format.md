@@ -176,15 +176,28 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 | Syntax | Where used | What it references |
 |---|---|---|
 | `{Column}` (single brace) | column-level `expression`, `Date.columns.Year-Month` | a sibling column in the **same** data object |
-| `{[DataObject].[Column]}` (double brace + brackets) | measure-level `expression` | any physical column anywhere in the model |
+| `{[DataObject].[Column]}` (double brace + brackets) | column-level and measure-level `expression` | any column anywhere in the model |
 | `{[Measure Name]}` (double brace + brackets) | metric-level `expression` | a measure by name |
 
 **Constraints:**
 
 - `expression` and `code` are mutually exclusive on a single column.
 - The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node, so dialect-specific functions are dialect-portable only insofar as they appear in OBML's expression grammar (arithmetic, `CASE WHEN`, function calls).
-- Every `{Column}` placeholder must name a sibling column of the same data object. An unresolvable placeholder is rejected at validation time with `UNKNOWN_COLUMN_IN_EXPRESSION` — it is not silently dropped, so a typo cannot reach the database as a string literal. To reference a column of a *different* data object, use a measure expression's `{[DataObject].[Column]}` form.
-- A computed column may reference another computed column on the same data object; the referenced expression is inlined recursively (`{doubled} * 2` where `doubled` is `{amount} * 2` compiles to `amount * 2 * 2`). A reference cycle is rejected with `CYCLIC_COMPUTED_COLUMN`.
+- Every `{Column}` placeholder must name a sibling column of the same data object. An unresolvable placeholder is rejected at validation time with `UNKNOWN_COLUMN_IN_EXPRESSION` — it is not silently dropped, so a typo cannot reach the database as a string literal.
+- A column of a *different* data object is referenced with the qualified `{[DataObject].[Column]}` form. This is what makes a column-to-column comparison across objects expressible — the thing query filters cannot do, since they compare a column to a literal:
+
+    ```yaml
+    Store:
+      columns:
+        Store Zip: { code: s_zip, abstractType: string }
+        Zip Matches Customer:
+          expression: "SUBSTRING({Store Zip}, 1, 5) = {[Customer Address].[Zip 5]}"
+          abstractType: boolean
+    ```
+
+    The result is an ordinary column: use it as a dimension, filter it (`{field: Store.Zip Matches Customer, op: "=", value: false}`), or read it from a measure. The compiler joins the referenced data object into the query the same way it joins one a dimension names, so an unknown object or column is rejected with `UNKNOWN_DATA_OBJECT_IN_EXPRESSION` / `UNKNOWN_COLUMN_IN_EXPRESSION`, and one the query's base object cannot reach is rejected with `UNREACHABLE_REQUIRED_OBJECT`. Reachability follows the usual rule — joins are traversed forward, so the referenced object must sit on the *one* side of the path, which is also what keeps the reference from multiplying rows.
+
+- A computed column may reference another computed column, on its own data object or another; the referenced expression is inlined recursively (`{doubled} * 2` where `doubled` is `{amount} * 2` compiles to `amount * 2 * 2`). A reference cycle is rejected with `CYCLIC_COMPUTED_COLUMN`, across data objects as well as within one.
 - Braces inside a single-quoted string literal are data, never placeholders. A regex quantifier such as `regexp_extract({Zip}, '[0-9]{5}')` keeps its `{5}`, and `'{Zip}'` stays the literal five characters rather than becoming a column reference. Validation and compilation apply the same rule.
 - Both halves of a column reference are required wherever one appears (`dimensions`, a measure's `columns`, `withinGroup`, measure filters). Omitting `dataObject` or `column` is rejected with `INCOMPLETE_COLUMN_REF`, because an omitted half would otherwise reach SQL as an empty identifier.
 - ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).

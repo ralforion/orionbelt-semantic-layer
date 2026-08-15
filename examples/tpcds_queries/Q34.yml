@@ -1,0 +1,21 @@
+select:
+  dimensions: [Customer Name, Customer First Name, Customer Salutation, Customer Preferred Flag, Ticket Number]
+  measures: [Store Sales Count]
+where:
+  - {field: Year, op: inlist, value: [1999, 2000, 2001]}
+  - {field: Store County, op: "=", value: "Williamson County"}
+  - {field: Household Demographics.Vehicle Count, op: gt, value: 0}
+  - {field: Household Demographics.Dependents Per Vehicle, op: gt, value: 1.2}
+  - {field: Buy Potential, op: inlist, value: [">10000", "Unknown"]}
+  - logic: or
+    filters:
+      - {field: Day of Month, op: between, value: [1, 3]}
+      - {field: Day of Month, op: between, value: [25, 28]}
+having:
+  - {field: Store Sales Count, op: between, value: [15, 20]}
+orderBy:
+  - {field: Customer Name, direction: desc}
+  - {field: Customer First Name, direction: desc}
+  - {field: Customer Salutation, direction: desc}
+  - {field: Customer Preferred Flag, direction: desc}
+  - {field: Ticket Number, direction: asc}

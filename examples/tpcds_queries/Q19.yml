@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q19 — Brand sales for one manager in November 1998, for customers whose
+# address is in a different zip than the store they bought from. The zip
+# comparison is a cross-object computed column on Store.
+
+select:
+  dimensions: [Brand ID, Brand, Manufacturer ID, Manufacturer]
+  measures: [Store Sales Amount]
+where:
+  - {field: Manager ID, op: "=", value: 8}
+  - {field: Month of Year, op: "=", value: 11}
+  - {field: Year, op: "=", value: 1998}
+  - {field: Store.Zip Matches Customer, op: "=", value: false}
+orderBy:
+  - {field: Store Sales Amount, direction: desc}
+  - {field: Brand, direction: asc}
+  - {field: Brand ID, direction: asc}
+  - {field: Manufacturer ID, direction: asc}
+  - {field: Manufacturer, direction: asc}
+limit: 100

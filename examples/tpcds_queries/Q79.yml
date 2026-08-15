@@ -1,0 +1,18 @@
+select:
+  dimensions: [Customer Name, Customer First Name, Store City 30, Ticket Number, Sales Addr Key]
+  measures: [Coupon Amount Sum, Store Net Profit]
+where:
+  - {field: Date.Day of Week, op: "=", value: 1}
+  - {field: Year, op: inlist, value: [1999, 2000, 2001]}
+  - {field: Store.Number Employees, op: between, value: [200, 295]}
+  - {field: Store Sales.Customer Key, op: is_not_null}
+  - logic: or
+    filters:
+      - {field: Household Demographics.Dependent Count, op: "=", value: 6}
+      - {field: Household Demographics.Vehicle Count, op: gt, value: 2}
+orderBy:
+  - {field: Customer Name, direction: asc}
+  - {field: Customer First Name, direction: asc}
+  - {field: Store City 30, direction: asc}
+  - {field: Store Net Profit, direction: asc}
+  - {field: Ticket Number, direction: asc}

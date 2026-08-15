@@ -1,7 +1,7 @@
 # =============================================================================
 # OBSL Example --- Sales Semantic Model
 #
-# A complete OBSL-Core 0.1 example showing a 3-table sales model (customers,
+# A complete OBSL-Core 0.2 example showing a 3-table sales model (customers,
 # orders, products) with dimensions, measures (column-based and expression-based),
 # and all three metric types: derived (obsl:Metric), cumulative
 # (obsl:CumulativeMetric), and period-over-period (obsl:PeriodOverPeriodMetric).

@@ -216,7 +216,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky \u2014 pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
+          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``{[Data Object].[Column]}`` references a column of another data object, which the compiler joins into any query reading this column \u2014 that is how a column-to-column comparison across data objects is expressed. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky \u2014 pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
         },
         "synonyms": {
           "type": "array",

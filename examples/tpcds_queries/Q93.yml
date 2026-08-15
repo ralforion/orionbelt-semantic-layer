@@ -1,0 +1,10 @@
+# Q93 - net-of-returns sales by customer for one return reason
+select:
+  dimensions: [Customer SK]
+  measures: [Act Sales]
+where:
+  - {field: Reason Description, op: "=", value: "reason 28"}
+orderBy:
+  - {field: Act Sales, direction: asc}
+  - {field: Customer SK, direction: asc}
+limit: 100

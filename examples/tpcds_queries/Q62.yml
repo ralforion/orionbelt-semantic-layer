@@ -1,0 +1,14 @@
+select:
+  dimensions: [Warehouse Name 20, Ship Type, Web Name]
+  measures: [Web 30 days, Web 31-60 days, Web 61-90 days, Web 91-120 days, Web >120 days]
+where:
+  - {field: Date.Month Sequence, op: between, value: [1200, 1211]}
+  - {field: Web Sales.Web Site Key, op: is_not_null}
+  - {field: Web Sales.Warehouse Key, op: is_not_null}
+  - {field: Web Sales.Ship Mode Key, op: is_not_null}
+usePathNames:
+  - {source: Web Sales, target: Date, pathName: ship_date}
+orderBy:
+  - {field: Warehouse Name 20, direction: asc}
+  - {field: Ship Type, direction: asc}
+  - {field: Web Name, direction: asc}

@@ -1,0 +1,73 @@
+-- Q10 — OBSL-compiled, dialect: duckdb
+-- Regenerate: uv run python sweep.py --dialect duckdb --dump
+
+SELECT
+  "Customer Demographics"."cd_gender" AS "Gender",
+  "Customer Demographics"."cd_marital_status" AS "Marital Status",
+  "Customer Demographics"."cd_education_status" AS "Education Status",
+  "Customer Demographics"."cd_purchase_estimate" AS "Purchase Estimate",
+  "Customer Demographics"."cd_credit_rating" AS "Credit Rating",
+  "Customer Demographics"."cd_dep_count" AS "Customer Dependent Count",
+  "Customer Demographics"."cd_dep_employed_count" AS "Customer Employed Dependent Count",
+  "Customer Demographics"."cd_dep_college_count" AS "Customer College Dependent Count",
+  CAST(COUNT(1) AS INT) AS "Customer Count"
+FROM "main"."customer" AS "Customer"
+LEFT JOIN "main"."customer_demographics" AS "Customer Demographics"
+  ON "Customer"."c_current_cdemo_sk" = "Customer Demographics"."cd_demo_sk"
+LEFT JOIN "main"."customer_address" AS "Customer Address"
+  ON "Customer"."c_current_addr_sk" = "Customer Address"."ca_address_sk"
+WHERE
+  "Customer Address"."ca_county" IN (
+    'Rush County',
+    'Toole County',
+    'Jefferson County',
+    'Dona Ana County',
+    'La Porte County'
+  )
+  AND NOT "Customer"."c_current_cdemo_sk" IS NULL
+  AND EXISTS(
+    SELECT
+      1
+    FROM "main"."store_sales" AS "Store Sales"
+    INNER JOIN "main"."date_dim" AS "Date"
+      ON "Store Sales"."ss_sold_date_sk" = "Date"."d_date_sk"
+    WHERE
+      "Customer"."c_customer_sk" = "Store Sales"."ss_customer_sk"
+      AND "Date"."d_year" = 2002
+      AND "Date"."d_moy" BETWEEN 1 AND 4
+  )
+  AND (
+    EXISTS(
+      SELECT
+        1
+      FROM "main"."web_sales" AS "Web Sales"
+      INNER JOIN "main"."date_dim" AS "Date"
+        ON "Web Sales"."ws_sold_date_sk" = "Date"."d_date_sk"
+      WHERE
+        "Customer"."c_customer_sk" = "Web Sales"."ws_bill_customer_sk"
+        AND "Date"."d_year" = 2002
+        AND "Date"."d_moy" BETWEEN 1 AND 4
+    )
+    OR EXISTS(
+      SELECT
+        1
+      FROM "main"."catalog_sales" AS "Catalog Sales"
+      INNER JOIN "main"."date_dim" AS "Date"
+        ON "Catalog Sales"."cs_sold_date_sk" = "Date"."d_date_sk"
+      WHERE
+        "Customer"."c_customer_sk" = "Catalog Sales"."cs_ship_customer_sk"
+        AND "Date"."d_year" = 2002
+        AND "Date"."d_moy" BETWEEN 1 AND 4
+    )
+  )
+GROUP BY ALL
+ORDER BY
+  "Customer Demographics"."cd_gender" ASC,
+  "Customer Demographics"."cd_marital_status" ASC,
+  "Customer Demographics"."cd_education_status" ASC,
+  "Customer Demographics"."cd_purchase_estimate" ASC,
+  "Customer Demographics"."cd_credit_rating" ASC,
+  "Customer Demographics"."cd_dep_count" ASC,
+  "Customer Demographics"."cd_dep_employed_count" ASC,
+  "Customer Demographics"."cd_dep_college_count" ASC
+LIMIT 100

@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=../../schema/query-schema.json
+# Q85 — Web returns in 2000 by reason, where the refunded and returning
+# customers share marital and education status. The two demographics are two
+# roles of customer_demographics on one return; the comparison between them is
+# a cross-object computed column on the refunded role.
+
+select:
+  dimensions: [Reason Description 20]
+  measures: [Avg Web Quantity, Avg Refunded Cash, Avg Return Fee]
+where:
+  - {field: Web Sold Date.Year, op: "=", value: 2000}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Refunded Demographics.Marital Status, op: "=", value: M}
+          - {field: Refunded Demographics.Same Marital Status, op: "=", value: true}
+          - {field: Refunded Demographics.Education Status, op: "=", value: Advanced Degree}
+          - {field: Refunded Demographics.Same Education Status, op: "=", value: true}
+          - {field: Web Sales.Sales Price, op: between, value: [100.00, 150.00]}
+      - logic: and
+        filters:
+          - {field: Refunded Demographics.Marital Status, op: "=", value: S}
+          - {field: Refunded Demographics.Same Marital Status, op: "=", value: true}
+          - {field: Refunded Demographics.Education Status, op: "=", value: College}
+          - {field: Refunded Demographics.Same Education Status, op: "=", value: true}
+          - {field: Web Sales.Sales Price, op: between, value: [50.00, 100.00]}
+      - logic: and
+        filters:
+          - {field: Refunded Demographics.Marital Status, op: "=", value: W}
+          - {field: Refunded Demographics.Same Marital Status, op: "=", value: true}
+          - {field: Refunded Demographics.Education Status, op: "=", value: 2 yr Degree}
+          - {field: Refunded Demographics.Same Education Status, op: "=", value: true}
+          - {field: Web Sales.Sales Price, op: between, value: [150.00, 200.00]}
+  - logic: or
+    filters:
+      - logic: and
+        filters:
+          - {field: Refunded Address.Country, op: "=", value: United States}
+          - {field: Refunded Address.State, op: in, value: [IN, OH, NJ]}
+          - {field: Web Sales.Net Profit, op: between, value: [100, 200]}
+      - logic: and
+        filters:
+          - {field: Refunded Address.Country, op: "=", value: United States}
+          - {field: Refunded Address.State, op: in, value: [WI, CT, KY]}
+          - {field: Web Sales.Net Profit, op: between, value: [150, 300]}
+      - logic: and
+        filters:
+          - {field: Refunded Address.Country, op: "=", value: United States}
+          - {field: Refunded Address.State, op: in, value: [LA, IA, AR]}
+          - {field: Web Sales.Net Profit, op: between, value: [50, 250]}
+orderBy:
+  - {field: Reason Description 20, direction: asc}
+  - {field: Avg Web Quantity, direction: asc}
+  - {field: Avg Refunded Cash, direction: asc}
+  - {field: Avg Return Fee, direction: asc}
+limit: 100

@@ -1,0 +1,13 @@
+select:
+  dimensions: [Year, Category ID, Category]
+  measures: [Store Sales Amount]
+where:
+  - {field: Manager ID, op: "=", value: 1}
+  - {field: Month of Year, op: "=", value: 11}
+  - {field: Year, op: "=", value: 2000}
+orderBy:
+  - {field: Store Sales Amount, direction: desc}
+  - {field: Year, direction: asc}
+  - {field: Category ID, direction: asc}
+  - {field: Category, direction: asc}
+limit: 100

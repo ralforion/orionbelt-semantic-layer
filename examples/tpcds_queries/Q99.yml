@@ -1,0 +1,14 @@
+select:
+  dimensions: [Warehouse Name 20, Ship Type, Call Center Name]
+  measures: [Catalog 30 days, Catalog 31-60 days, Catalog 61-90 days, Catalog 91-120 days, Catalog >120 days]
+where:
+  - {field: Date.Month Sequence, op: between, value: [1200, 1211]}
+  - {field: Catalog Sales.Call Center Key, op: is_not_null}
+  - {field: Catalog Sales.Warehouse Key, op: is_not_null}
+  - {field: Catalog Sales.Ship Mode Key, op: is_not_null}
+usePathNames:
+  - {source: Catalog Sales, target: Date, pathName: ship_date}
+orderBy:
+  - {field: Warehouse Name 20, direction: asc}
+  - {field: Ship Type, direction: asc}
+  - {field: Call Center Name, direction: asc}

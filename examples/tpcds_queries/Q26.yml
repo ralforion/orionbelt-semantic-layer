@@ -1,0 +1,15 @@
+select:
+  dimensions: [Item ID]
+  measures: [Catalog Avg Quantity, Catalog Avg List Price, Catalog Avg Coupon Amount, Catalog Avg Sales Price]
+where:
+  - {field: Gender, op: "=", value: "M"}
+  - {field: Marital Status, op: "=", value: "S"}
+  - {field: Education Status, op: "=", value: "College"}
+  - {field: Year, op: "=", value: 2000}
+  - logic: or
+    filters:
+      - {field: Channel Email, op: "=", value: "N"}
+      - {field: Channel Event, op: "=", value: "N"}
+orderBy:
+  - {field: Item ID, direction: asc}
+limit: 100

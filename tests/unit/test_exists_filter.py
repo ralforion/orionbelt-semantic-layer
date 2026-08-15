@@ -725,6 +725,97 @@ class TestSubqueryFilterReverseTraversal:
         assert "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE" in {e.code for e in excinfo.value.errors}
 
 
+class TestSubqueryFilterCrossObjectColumn:
+    """A subquery filter on a computed column that reads another data object.
+
+    The expression is inlined into the ``EXISTS`` body, so the object it reads
+    has to be joined *there* — the outer query's join list is a different
+    scope, and an unjoined alias is invalid SQL rather than a wrong number.
+    """
+
+    # ``Is Toy`` lives on the subquery's target and reads Products, one hop on.
+    TOY_MODEL = TRAVERSAL_MODEL.replace(
+        "      SKU: {code: SKU, abstractType: string}",
+        "      SKU: {code: SKU, abstractType: string}\n"
+        "      Is Toy:\n"
+        "        expression: \"{[Products].[Category]} = 'Toys'\"\n"
+        "        abstractType: boolean",
+    )
+
+    def _query(self) -> QueryObject:
+        return _exists_on_items(
+            [QueryFilter(field="OrderItems.Is Toy", op=FilterOperator.EQUALS, value=True)]
+        )
+
+    def test_referenced_object_joined_inside_the_body(self) -> None:
+        model = _load_model(self.TOY_MODEL)
+        sql = PIPELINE.compile(self._query(), model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."PRODUCTS" AS "Products"' in sql
+        assert '"Products"."CATEGORY" = \'Toys\'' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+        # Joined once, and only inside the subquery.
+        assert sql.count("PRODUCTS") == 1
+
+    def test_referenced_object_tracked_in_physical_tables(self) -> None:
+        """The freshness cache keys on tables the body reads, this one included."""
+        model = _load_model(self.TOY_MODEL)
+        refs = PIPELINE.compile(self._query(), model, "postgres").physical_tables
+        assert any(r.endswith(".PRODUCTS") for r in refs), refs
+
+    def test_reference_to_the_subject_rejected(self) -> None:
+        """Joining the subject inside the body would shadow its outer alias —
+        true whether the field names it or a computed column reads it."""
+        model = _load_model(
+            TRAVERSAL_MODEL.replace(
+                "      SKU: {code: SKU, abstractType: string}",
+                "      SKU: {code: SKU, abstractType: string}\n"
+                "      Big Order:\n"
+                '        expression: "{[Orders].[Amount]} > 100"\n'
+                "        abstractType: boolean",
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [
+                        QueryFilter(
+                            field="OrderItems.Big Order", op=FilterOperator.EQUALS, value=True
+                        )
+                    ]
+                ),
+                model,
+                "postgres",
+            )
+        errors = [
+            e for e in excinfo.value.errors if e.code == "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE"
+        ]
+        assert errors, [e.code for e in excinfo.value.errors]
+        assert "reads 'Orders'" in errors[0].message
+
+    def test_unreachable_reference_rejected(self) -> None:
+        """Payments joins *to* Orders, so it is not reachable from the target."""
+        model = _load_model(
+            TRAVERSAL_MODEL.replace(
+                "      SKU: {code: SKU, abstractType: string}",
+                "      SKU: {code: SKU, abstractType: string}\n"
+                "      Paid:\n"
+                '        expression: "{[Payments].[Payment ID]}"\n'
+                "        abstractType: string",
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [QueryFilter(field="OrderItems.Paid", op=FilterOperator.EQUALS, value="p1")]
+                ),
+                model,
+                "postgres",
+            )
+        errors = [e for e in excinfo.value.errors if e.code == "UNREACHABLE_SUBQUERY_FILTER_OBJECT"]
+        assert errors, [e.code for e in excinfo.value.errors]
+        assert "reads 'Payments'" in errors[0].message
+
+
 class TestSubqueryFilterTraversalValidation:
     def _expect(self, query: QueryObject, model, code: str) -> None:
         with pytest.raises(ResolutionError) as excinfo:
@@ -1018,6 +1109,144 @@ class TestExistsDialects:
         )
         result = PIPELINE.compile(query, model, dialect_name)
         assert "NOT EXISTS (" in result.sql, f"{dialect_name}: missing NOT EXISTS in compiled SQL"
+
+
+class TestExistsInMultiFactPlan:
+    """A CFL leg has to join whatever the EXISTS body correlates to.
+
+    Each leg emits the body in its own WHERE, so the outer table the
+    correlation predicate names must be in that leg's FROM chain. The AST walk
+    that collects a leg's tables stops at an ``Exists`` — the body is a
+    ``Select``, not an expression — so the correlation was invisible and every
+    leg emitted a predicate against an alias it never joined.
+    """
+
+    # Two independent facts conformed on Customers, plus a self-join on Dates
+    # by month so an EXISTS can correlate through the *dimension* rather than
+    # through either fact.
+    MODEL = """\
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+
+  Dates:
+    code: DATES
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: string}
+      Date: {code: THE_DATE, abstractType: date}
+      Month Seq: {code: MONTH_SEQ, abstractType: int}
+
+  MonthDates:
+    code: DATES
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Date: {code: THE_DATE, abstractType: date}
+      Month Seq: {code: MONTH_SEQ, abstractType: int}
+    joins:
+      - joinType: many-to-many
+        joinTo: Dates
+        columnsFrom: [Month Seq]
+        columnsTo: [Month Seq]
+
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID: {code: ORDER_ID, abstractType: string}
+      Order Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Order Date Key: {code: DATE_KEY, abstractType: string}
+      Amount: {code: AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Order Date Key]
+        columnsTo: [Date Key]
+
+  Refunds:
+    code: REFUNDS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Refund ID: {code: REFUND_ID, abstractType: string}
+      Refund Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Refund Date Key: {code: DATE_KEY, abstractType: string}
+      Refund Amount: {code: REFUND_AMOUNT, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Refund Customer ID]
+        columnsTo: [Customer ID]
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Refund Date Key]
+        columnsTo: [Date Key]
+
+dimensions:
+  Customer Country: {dataObject: Customers, column: Country, resultType: string}
+  Order Date: {dataObject: Dates, column: Date, resultType: date}
+
+measures:
+  Total Revenue:
+    columns: [{dataObject: Orders, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Total Refunds:
+    columns: [{dataObject: Refunds, column: Refund Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+    def _sql(self) -> str:
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Customer Country"], measures=["Total Revenue", "Total Refunds"]
+            ),
+            where=[
+                QueryFilter(
+                    field="Order Date",
+                    op=FilterOperator.EXISTS,
+                    subquery=Subquery(
+                        data_object="MonthDates",
+                        filter=[
+                            QueryFilter(field="Date", op=FilterOperator.EQUALS, value="2024-01-15")
+                        ],
+                    ),
+                )
+            ],
+        )
+        return PIPELINE.compile(query, _load_model(self.MODEL), "postgres").sql
+
+    def test_plan_is_multi_fact(self) -> None:
+        assert "UNION ALL" in self._sql()
+
+    def test_every_leg_joins_the_correlated_object(self) -> None:
+        sql = self._sql()
+        # One join per leg — two legs, two joins of the correlated dimension.
+        assert sql.count('JOIN "PUBLIC"."DATES" AS "Dates"') == 2
+        assert sql.count("EXISTS (") == 2
+
+    def test_the_subquery_target_is_not_dragged_into_the_legs(self) -> None:
+        """``MonthDates`` is bound by the body's own FROM; a leg joining it too
+        would both duplicate the scan and change what the predicate means."""
+        sql = self._sql()
+        assert sql.count('AS "MonthDates"') == 2  # once per subquery, never in a leg
+        for leg in sql.split("UNION ALL"):
+            assert leg.count('AS "MonthDates"') == leg.count("EXISTS (")
 
 
 class TestExistsPhysicalTables:

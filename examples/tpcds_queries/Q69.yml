@@ -1,0 +1,43 @@
+# TPC-DS Q69 — customers in KY/GA/NM who bought in store in Q2 2001 but
+# neither on the web nor from the catalog in the same window.
+#
+# Three correlated semi-joins, each windowed by a date dimension that lives one
+# join past the subquery's target. The catalog leg correlates on
+# cs_ship_customer_sk, pinned with the ship_customer secondary path.
+select:
+  dimensions: [Gender, Marital Status, Education Status, Purchase Estimate, Credit Rating]
+  measures: [Customer Count]
+where:
+  - {field: Customer State, op: inlist, value: [KY, GA, NM]}
+  # The reference inner-joins customer_demographics; every join compiles to a
+  # LEFT JOIN today, so the FK is filtered on the left side (finding 6).
+  - {field: Customer.Customer Demographics Key, op: is_not_null}
+  - field: Customer.Customer Key
+    op: exists
+    subquery:
+      dataObject: Store Sales
+      filter:
+        - {field: Year, op: "=", value: 2001}
+        - {field: Month of Year, op: between, value: [4, 6]}
+  - field: Customer.Customer Key
+    op: nonexists
+    subquery:
+      dataObject: Web Sales
+      filter:
+        - {field: Year, op: "=", value: 2001}
+        - {field: Month of Year, op: between, value: [4, 6]}
+  - field: Customer.Customer Key
+    op: nonexists
+    subquery:
+      dataObject: Catalog Sales
+      pathName: ship_customer
+      filter:
+        - {field: Year, op: "=", value: 2001}
+        - {field: Month of Year, op: between, value: [4, 6]}
+orderBy:
+  - {field: Gender, direction: asc}
+  - {field: Marital Status, direction: asc}
+  - {field: Education Status, direction: asc}
+  - {field: Purchase Estimate, direction: asc}
+  - {field: Credit Rating, direction: asc}
+limit: 100

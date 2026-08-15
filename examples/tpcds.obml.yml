@@ -143,6 +143,182 @@ dataObjects:
         code: ca_gmt_offset
         abstractType: float
 
+  # The same physical table in its second role: the address a sale was made
+  # to (ss_addr_sk), as opposed to the customer's current address reached
+  # through Customer. A role is its own data object because a query needs
+  # both at once, each with its own alias (Q68).
+  Sale Address:
+    code: customer_address
+    database: tpcds
+    schema: tpcds
+    columns:
+      Address Key:
+        code: ca_address_sk
+        abstractType: int
+        primaryKey: true
+      City:
+        code: ca_city
+        abstractType: string
+      # Cross-object: the customer's *current* city lives on the other role.
+      City Differs From Customer:
+        expression: "{City} <> {[Customer Address].[City]}"
+        abstractType: boolean
+
+  # Two roles of customer_demographics on one web return: whose goods came
+  # back (refunded) and who sent them back (returning). Q85 compares the two,
+  # which needs both in one query, each with its own alias.
+  Refunded Demographics:
+    code: customer_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demographics Key:
+        code: cd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Marital Status:
+        code: cd_marital_status
+        abstractType: string
+      Education Status:
+        code: cd_education_status
+        abstractType: string
+      # Cross-object: the other role's value for the same return.
+      Same Marital Status:
+        expression: "{Marital Status} = {[Returning Demographics].[Marital Status]}"
+        abstractType: boolean
+      Same Education Status:
+        expression: "{Education Status} = {[Returning Demographics].[Education Status]}"
+        abstractType: boolean
+
+  Returning Demographics:
+    code: customer_demographics
+    database: tpcds
+    schema: tpcds
+    columns:
+      Demographics Key:
+        code: cd_demo_sk
+        abstractType: int
+        primaryKey: true
+      Marital Status:
+        code: cd_marital_status
+        abstractType: string
+      Education Status:
+        code: cd_education_status
+        abstractType: string
+
+  # The address a refund went to (wr_refunded_addr_sk), a third role of
+  # customer_address alongside Customer Address and Sale Address.
+  Refunded Address:
+    code: customer_address
+    database: tpcds
+    schema: tpcds
+    columns:
+      Address Key:
+        code: ca_address_sk
+        abstractType: int
+        primaryKey: true
+      Country:
+        code: ca_country
+        abstractType: string
+      State:
+        code: ca_state
+        abstractType: string
+
+  # date_dim in its web-sold-date role. Web Sales and Web Returns both join
+  # the shared Date object, which leaves a plain Year filter to pick a role by
+  # path length; Q85 means the sold date specifically.
+  Web Sold Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Year:
+        code: d_year
+        abstractType: int
+
+  # date_dim in its store-returned-date role, so a filter on the return's
+  # year/month cannot bind to the sold date — Store Sales and Store Returns
+  # both join the shared Date object.
+  Store Returned Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Year:
+        code: d_year
+        abstractType: int
+      Month of Year:
+        code: d_moy
+        abstractType: int
+
+  # date_dim joined to itself by week: the dates sharing a week with a given
+  # date. Q83 selects "the weeks containing these three dates" through it.
+  # Declared on this side so Date keeps no outgoing join of its own.
+  Week Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key:
+        code: d_date_sk
+        abstractType: int
+        primaryKey: true
+      Date:
+        code: d_date
+        abstractType: date
+      Week Sequence:
+        code: d_week_seq
+        abstractType: int
+    joins:
+      - joinType: many-to-many
+        joinTo: Date
+        columnsFrom: [Week Sequence]
+        columnsTo: [Week Sequence]
+
+  # Q72 needs three date roles in one query — the sale's, the shipment's and
+  # the inventory snapshot's — and compares them to each other.
+  Catalog Sold Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Date: {code: d_date, abstractType: date}
+      Year: {code: d_year, abstractType: int}
+      Week Sequence: {code: d_week_seq, abstractType: int}
+
+  Catalog Ship Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Date: {code: d_date, abstractType: date}
+
+  Inventory Date:
+    code: date_dim
+    database: tpcds
+    schema: tpcds
+    columns:
+      Date Key: {code: d_date_sk, abstractType: int, primaryKey: true}
+      Week Sequence: {code: d_week_seq, abstractType: int}
+
+  Inventory Warehouse:
+    code: warehouse
+    database: tpcds
+    schema: tpcds
+    columns:
+      Warehouse Key: {code: w_warehouse_sk, abstractType: int, primaryKey: true}
+      Warehouse Name: {code: w_warehouse_name, abstractType: string}
+
   Customer Demographics:
     code: customer_demographics
     database: tpcds
@@ -211,6 +387,9 @@ dataObjects:
       Manufacturer ID:
         code: i_manufact_id
         abstractType: int
+      Manufacturer:
+        code: i_manufact
+        abstractType: string
       Manager ID:
         code: i_manager_id
         abstractType: int
@@ -261,6 +440,26 @@ dataObjects:
       Store City 30:
         expression: "SUBSTRING({Store City}, 1, 30)"
         abstractType: string
+      Company ID:
+        code: s_company_id
+        abstractType: int
+      Street Number:
+        code: s_street_number
+        abstractType: string
+      Street Name:
+        code: s_street_name
+        abstractType: string
+      Street Type:
+        code: s_street_type
+        abstractType: string
+      Suite Number:
+        code: s_suite_number
+        abstractType: string
+      # Cross-object: the customer's address is a column of another data
+      # object, reached through the joins the query already walks (Q19).
+      Zip Matches Customer:
+        expression: "SUBSTRING({Store Zip}, 1, 5) = {[Customer Address].[Zip 5]}"
+        abstractType: boolean
 
   Promotion:
     code: promotion
@@ -352,6 +551,9 @@ dataObjects:
         abstractType: string
       Reason Description:
         code: r_reason_desc
+        abstractType: string
+      Reason Description 20:
+        expression: "SUBSTRING({Reason Description}, 1, 20)"
         abstractType: string
 
   Household Demographics:
@@ -511,6 +713,23 @@ dataObjects:
         code: ss_ext_sales_price
         abstractType: float
         numClass: additive
+      Ext List Price:
+        code: ss_ext_list_price
+        abstractType: float
+        numClass: additive
+      Ext Tax:
+        code: ss_ext_tax
+        abstractType: float
+        numClass: additive
+      # Cross-object: how long after the sale the return came back. TPC-DS
+      # date keys are sequential day numbers, so the difference is in days.
+      Return Delay:
+        expression: "{[Store Returns].[Returned Date Key]} - {Sold Date Key}"
+        abstractType: int
+      # Cross-object: the reference joins on ss_customer_sk = sr_customer_sk.
+      Same Return Customer:
+        expression: "{Customer Key} = {[Store Returns].[Customer Key]}"
+        abstractType: boolean
       Net Profit:
         code: ss_net_profit
         abstractType: float
@@ -555,6 +774,10 @@ dataObjects:
         secondary: true
         pathName: sale_address
       - joinType: many-to-one
+        joinTo: Sale Address
+        columnsFrom: [Addr Key]
+        columnsTo: [Address Key]
+      - joinType: many-to-one
         joinTo: Store Returns
         columnsFrom: [Item Key, Ticket Number]
         columnsTo: [Item Key, Ticket Number]
@@ -597,6 +820,10 @@ dataObjects:
     joins:
       - joinType: many-to-one
         joinTo: Date
+        columnsFrom: [Returned Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Store Returned Date
         columnsFrom: [Returned Date Key]
         columnsTo: [Date Key]
       - joinType: many-to-one
@@ -716,6 +943,14 @@ dataObjects:
         columnsTo: [Date Key]
         secondary: true
         pathName: ship_date
+      - joinType: many-to-one
+        joinTo: Web Sold Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Web Returns
+        columnsFrom: [Item Key, Order Number]
+        columnsTo: [Item Key, Order Number]
 
   Catalog Sales:
     code: catalog_sales
@@ -736,6 +971,9 @@ dataObjects:
         abstractType: int
       Bill CDemo Key:
         code: cs_bill_cdemo_sk
+        abstractType: int
+      Bill HDemo Key:
+        code: cs_bill_hdemo_sk
         abstractType: int
       Promo Key:
         code: cs_promo_sk
@@ -782,6 +1020,16 @@ dataObjects:
         code: cs_net_profit
         abstractType: float
         numClass: additive
+      # Cross-object comparisons between the three date roles and inventory.
+      Inventory Same Week:
+        expression: "{[Catalog Sold Date].[Week Sequence]} = {[Inventory Date].[Week Sequence]}"
+        abstractType: boolean
+      Ships After 5 Days:
+        expression: "{[Catalog Ship Date].[Date]} > {[Catalog Sold Date].[Date]} + 5"
+        abstractType: boolean
+      Inventory Below Sold Quantity:
+        expression: "{[Inventory].[Quantity On Hand]} < {Quantity}"
+        abstractType: boolean
     joins:
       - joinType: many-to-one
         joinTo: Date
@@ -825,6 +1073,24 @@ dataObjects:
         columnsTo: [Date Key]
         secondary: true
         pathName: ship_date
+      - joinType: many-to-one
+        joinTo: Catalog Sold Date
+        columnsFrom: [Sold Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Catalog Ship Date
+        columnsFrom: [Ship Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Household Demographics
+        columnsFrom: [Bill HDemo Key]
+        columnsTo: [Demo Key]
+      # Inventory joins on item alone, so one sale meets every snapshot of
+      # that item: many-to-many, and Q72 counts the product on purpose.
+      - joinType: many-to-many
+        joinTo: Inventory
+        columnsFrom: [Item Key]
+        columnsTo: [Item Key]
       - joinType: many-to-one
         joinTo: Customer
         columnsFrom: [Ship Customer Key]
@@ -918,11 +1184,40 @@ dataObjects:
         code: wr_net_loss
         abstractType: float
         numClass: additive
+      Refunded CDemo Key:
+        code: wr_refunded_cdemo_sk
+        abstractType: int
+      Returning CDemo Key:
+        code: wr_returning_cdemo_sk
+        abstractType: int
+      Refunded Addr Key:
+        code: wr_refunded_addr_sk
+        abstractType: int
+      Refunded Cash:
+        code: wr_refunded_cash
+        abstractType: float
+        numClass: additive
+      Return Fee:
+        code: wr_fee
+        abstractType: float
+        numClass: additive
     joins:
       - joinType: many-to-one
         joinTo: Date
         columnsFrom: [Returned Date Key]
         columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Refunded Demographics
+        columnsFrom: [Refunded CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Returning Demographics
+        columnsFrom: [Returning CDemo Key]
+        columnsTo: [Demographics Key]
+      - joinType: many-to-one
+        joinTo: Refunded Address
+        columnsFrom: [Refunded Addr Key]
+        columnsTo: [Address Key]
       - joinType: many-to-one
         joinTo: Item
         columnsFrom: [Item Key]
@@ -959,6 +1254,14 @@ dataObjects:
         joinTo: Date
         columnsFrom: [Date Key]
         columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Inventory Date
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+      - joinType: many-to-one
+        joinTo: Inventory Warehouse
+        columnsFrom: [Warehouse Key]
+        columnsTo: [Warehouse Key]
       - joinType: many-to-one
         joinTo: Item
         columnsFrom: [Item Key]
@@ -1061,6 +1364,11 @@ dimensions:
     dataObject: Item
     column: Manufacturer ID
     resultType: int
+
+  Manufacturer:
+    dataObject: Item
+    column: Manufacturer
+    resultType: string
 
   Manager ID:
     dataObject: Item
@@ -1177,6 +1485,11 @@ dimensions:
     column: Day of Month
     resultType: int
 
+  Day of Week:
+    dataObject: Date
+    column: Day of Week
+    resultType: int
+
   Buy Potential:
     dataObject: Household Demographics
     column: Buy Potential
@@ -1185,6 +1498,41 @@ dimensions:
   Store City 30:
     dataObject: Store
     column: Store City 30
+    resultType: string
+
+  Store City:
+    dataObject: Store
+    column: Store City
+    resultType: string
+
+  Store Zip:
+    dataObject: Store
+    column: Store Zip
+    resultType: string
+
+  Store Company ID:
+    dataObject: Store
+    column: Company ID
+    resultType: int
+
+  Store Street Number:
+    dataObject: Store
+    column: Street Number
+    resultType: string
+
+  Store Street Name:
+    dataObject: Store
+    column: Street Name
+    resultType: string
+
+  Store Street Type:
+    dataObject: Store
+    column: Street Type
+    resultType: string
+
+  Store Suite Number:
+    dataObject: Store
+    column: Suite Number
     resultType: string
 
   Sales Addr Key:
@@ -1200,6 +1548,16 @@ dimensions:
   Customer Zip 5:
     dataObject: Customer Address
     column: Zip 5
+    resultType: string
+
+  Customer City:
+    dataObject: Customer Address
+    column: City
+    resultType: string
+
+  Bought City:
+    dataObject: Sale Address
+    column: City
     resultType: string
 
   Store ID:
@@ -1220,6 +1578,16 @@ dimensions:
   Dependent Count:
     dataObject: Household Demographics
     column: Dependent Count
+    resultType: int
+
+  Inventory Warehouse Name:
+    dataObject: Inventory Warehouse
+    column: Warehouse Name
+    resultType: string
+
+  Catalog Sold Week:
+    dataObject: Catalog Sold Date
+    column: Week Sequence
     resultType: int
 
   Warehouse Name 20:
@@ -1282,6 +1650,11 @@ dimensions:
     column: Reason Description
     resultType: string
 
+  Reason Description 20:
+    dataObject: Reason
+    column: Reason Description 20
+    resultType: string
+
 # ── Measures ───────────────────────────────────────────────────────
 
 measures:
@@ -1298,6 +1671,24 @@ measures:
     columns:
       - dataObject: Store Sales
         column: Net Profit
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Ext List Price:
+    columns:
+      - dataObject: Store Sales
+        column: Ext List Price
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Store Ext Tax:
+    columns:
+      - dataObject: Store Sales
+        column: Ext Tax
     resultType: float
     aggregation: sum
     dataType: "decimal(18, 2)"
@@ -1378,6 +1769,24 @@ measures:
     dataType: "decimal(18, 2)"
     format: "#,##0.00"
 
+  Avg Web Quantity:
+    columns: [{dataObject: Web Sales, column: Quantity}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Refunded Cash:
+    columns: [{dataObject: Web Returns, column: Refunded Cash}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
+  Avg Return Fee:
+    columns: [{dataObject: Web Returns, column: Return Fee}]
+    resultType: float
+    aggregation: avg
+    dataType: "decimal(18, 6)"
+
   Web Returns Amount:
     columns:
       - dataObject: Web Returns
@@ -1433,6 +1842,33 @@ measures:
     aggregation: sum
     dataType: bigint
     format: "#,##0"
+
+  Catalog Sales No Promo Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Promotion, column: Promo Key}
+        operator: notset
+
+  Catalog Sales Promo Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
+    filters:
+      - column: {dataObject: Promotion, column: Promo Key}
+        operator: set
+
+  Catalog Sales Row Count:
+    columns: [{dataObject: Catalog Sales, column: Order Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    allowFanOut: true
 
   Avg Inventory:
     columns:
@@ -2063,6 +2499,61 @@ measures:
     aggregation: sum
     dataType: bigint
 
+  Store Return 30 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: lte
+        values: [{dataType: int, valueInt: 30}]
+
+
+  Store Return 31-60 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 31}, {dataType: int, valueInt: 60}]
+
+
+  Store Return 61-90 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 61}, {dataType: int, valueInt: 90}]
+
+
+  Store Return 91-120 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: between
+        values: [{dataType: int, valueInt: 91}, {dataType: int, valueInt: 120}]
+
+
+  Store Return over 120 days:
+    columns: [{dataObject: Store Sales, column: Ticket Number}]
+    resultType: int
+    aggregation: count
+    dataType: bigint
+    filters:
+      - column: {dataObject: Store Sales, column: Return Delay}
+        operator: gt
+        values: [{dataType: int, valueInt: 120}]
+
+
   Web 30 days:
     columns: [{dataObject: Web Sales, column: Order Number}]
     resultType: int
@@ -2171,6 +2662,18 @@ measures:
 
   Store Returns Quantity:
     columns: [{dataObject: Store Returns, column: Return Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
+  Catalog Returns Quantity:
+    columns: [{dataObject: Catalog Returns, column: Return Quantity}]
+    resultType: float
+    aggregation: sum
+    dataType: bigint
+
+  Web Returns Quantity:
+    columns: [{dataObject: Web Returns, column: Return Quantity}]
     resultType: float
     aggregation: sum
     dataType: bigint
@@ -2770,6 +3273,26 @@ measures:
 # ── Metrics (cross-measure formulas) ──────────────────────────────
 
 metrics:
+
+  Store Return Share:
+    expression: "{[Store Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Store share of an item's returns across the three channels
+
+  Catalog Return Share:
+    expression: "{[Catalog Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Catalog share of an item's returns across the three channels
+
+  Web Return Share:
+    expression: "{[Web Returns Quantity]} * 1.0000 / ({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0000 * 100"
+    dataType: "decimal(18, 8)"
+    description: Web share of an item's returns across the three channels
+
+  Average Channel Returns:
+    expression: "({[Store Returns Quantity]} + {[Catalog Returns Quantity]} + {[Web Returns Quantity]}) / 3.0"
+    dataType: "decimal(18, 6)"
+    description: Mean returned quantity per channel for an item
 
   Net Margin %:
     expression: "{[Store Net Profit]} / {[Store Sales Amount]}"

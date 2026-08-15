@@ -7,10 +7,11 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from orionbelt.models.expressions import (
+    find_placeholders,
+    find_qualified_refs,
+)
 from orionbelt.models.types import parse_data_type
-
-_MEASURE_COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
-"""``{[DataObject].[Column]}`` as it appears inside a measure ``expression:``."""
 
 
 class DataType(StrEnum):
@@ -586,7 +587,7 @@ class Measure(BaseModel):
             if cref.view and cref.view not in ordered:
                 ordered.append(cref.view)
         if self.expression:
-            for obj, _col in _MEASURE_COLUMN_REF.findall(self.expression):
+            for obj, _col in find_qualified_refs(self.expression):
                 if obj not in ordered:
                     ordered.append(obj)
         return ordered
@@ -866,8 +867,6 @@ class ModelSettings(BaseModel):
         """
         if v is None:
             return v
-        import re
-
         if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", v):
             raise ValueError(
                 f"defaultLocale must be a BCP-47 tag (e.g. 'en-US', 'de-DE'), got '{v}'"
@@ -1008,6 +1007,130 @@ class SemanticModel(BaseModel):
             elif pair not in overrides:
                 active.append(join)
         return active
+
+    def column_reference_objects(self, object_name: str, column_label: str) -> set[str]:
+        """Other data objects a column's ``expression`` reads.
+
+        A computed column names a sibling with ``{Column}`` and a column of
+        another data object with the qualified ``{[Data Object].[Column]}``
+        form. Reading the latter means joining that object in, so callers add
+        what this returns to a query's join requirements — it is deliberately
+        *not* part of ``measure_source_objects``, which drives multi-fact
+        detection: a cross-object computed column is one row of a star, not a
+        second fact.
+
+        Follows nested computed columns, across objects as well as within one,
+        and returns every object involved except the owning one — which stays
+        out however many hops away the walk reaches it again, because it is
+        joined already by virtue of owning the column.
+
+        Empty for a plain column and for a computed one that reads only
+        siblings, which is what makes this cheap to call on every column.
+        """
+        found: set[str] = set()
+        seen: set[tuple[str, str]] = set()
+
+        def walk(obj_name: str, col_label: str) -> None:
+            key = (obj_name, col_label)
+            if key in seen:
+                return
+            seen.add(key)
+            obj = self.data_objects.get(obj_name)
+            column = obj.columns.get(col_label) if obj else None
+            if obj is None or column is None or not column.expression:
+                return
+            for sibling in find_placeholders(column.expression):
+                if sibling in obj.columns:
+                    walk(obj_name, sibling)
+            for ref_object, ref_column in find_qualified_refs(column.expression):
+                if ref_object not in self.data_objects:
+                    continue
+                if ref_object != object_name:
+                    found.add(ref_object)
+                walk(ref_object, ref_column)
+
+        walk(object_name, column_label)
+        return found
+
+    def measure_join_objects(self, name: str) -> set[str]:
+        """Objects a measure needs *joined* without sourcing values from them.
+
+        Two kinds. A ``withinGroup`` column becomes the aggregate's ORDER BY,
+        so it has to resolve while contributing no value. And any column the
+        measure touches — its own, its filters', its filter context's — may be
+        computed from another data object, which the expression names directly
+        and so has to be joined.
+
+        Deliberately separate from the objects a measure *sources*: that set
+        drives multi-fact detection, and neither an ordering column nor an
+        expression's neighbour is a second fact.
+
+        Lives on the model because two callers need the same answer — the
+        planner, which adds these to a query's join requirements, and
+        composability, which must not advertise a measure the planner will
+        then refuse. Computed independently, they drifted.
+        """
+        measure = self.effective_measures.get(name)
+        if measure is None:
+            return set()
+
+        result: set[str] = set()
+        columns: list[tuple[str, str]] = [
+            (c.view, c.column) for c in measure.columns if c.view and c.column
+        ]
+
+        within = measure.within_group.column if measure.within_group is not None else None
+        if within is not None and within.view:
+            result.add(within.view)
+            if within.column:
+                columns.append((within.view, within.column))
+
+        def collect(item: MeasureFilterItem) -> None:
+            if isinstance(item, MeasureFilter):
+                if item.column and item.column.view and item.column.column:
+                    columns.append((item.column.view, item.column.column))
+            elif isinstance(item, MeasureFilterGroup):
+                for child in item.filters:
+                    collect(child)
+
+        for fi in measure.filters:
+            collect(fi)
+
+        # filterContext.include is resolved by a wrapper that runs after join
+        # planning, over the joins planning chose — so its dependencies have to
+        # be known here. Both field forms the wrapper accepts.
+        if measure.filter_context is not None:
+            for incl in measure.filter_context.include:
+                dim = self.dimensions.get(incl.field)
+                if dim is not None:
+                    if dim.view and dim.column:
+                        result.add(dim.view)
+                        columns.append((dim.view, dim.column))
+                    continue
+                obj_name, _, col_name = incl.field.partition(".")
+                obj_name, col_name = obj_name.strip(), col_name.strip()
+                obj = self.data_objects.get(obj_name)
+                if obj is not None and col_name in obj.columns:
+                    result.add(obj_name)
+                    columns.append((obj_name, col_name))
+
+        if measure.expression:
+            columns.extend(find_qualified_refs(measure.expression))
+
+        for object_name, column_label in columns:
+            result |= self.column_reference_objects(object_name, column_label)
+        return result
+
+    def dimension_join_objects(self, name: str) -> set[str]:
+        """Objects a dimension needs joined besides the one it belongs to.
+
+        Its column may be computed from another data object's column, which is
+        inlined wherever the dimension is projected or filtered.
+        """
+        dim = self.dimensions.get(name)
+        if dim is None or not dim.view or not dim.column:
+            return set()
+        return self.column_reference_objects(dim.view, dim.column)
 
     def common_join_targets(
         self,

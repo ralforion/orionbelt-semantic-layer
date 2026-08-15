@@ -1,0 +1,49 @@
+-- Q21 — OBSL-compiled, dialect: duckdb
+-- Regenerate: uv run python sweep.py --dialect duckdb --dump
+
+SELECT
+  "Warehouse"."w_warehouse_name" AS "Warehouse Name",
+  "Item"."i_item_id" AS "Item ID",
+  CAST(SUM(
+    CASE
+      WHEN "Date"."d_date" < '2000-03-11'
+      THEN "Inventory"."inv_quantity_on_hand"
+    END
+  ) AS DECIMAL(18, 3)) AS "Inventory Before",
+  CAST(SUM(
+    CASE
+      WHEN "Date"."d_date" >= '2000-03-11'
+      THEN "Inventory"."inv_quantity_on_hand"
+    END
+  ) AS DECIMAL(18, 3)) AS "Inventory After",
+  CAST(SUM(
+    CASE
+      WHEN "Date"."d_date" >= '2000-03-11'
+      THEN "Inventory"."inv_quantity_on_hand"
+    END
+  ) * 1.0 / NULLIF(
+    SUM(
+      CASE
+        WHEN "Date"."d_date" < '2000-03-11'
+        THEN "Inventory"."inv_quantity_on_hand"
+      END
+    ),
+    0
+  ) AS DECIMAL(18, 6)) AS "Inventory Ratio"
+FROM "main"."inventory" AS "Inventory"
+LEFT JOIN "main"."date_dim" AS "Date"
+  ON "Inventory"."inv_date_sk" = "Date"."d_date_sk"
+LEFT JOIN "main"."item" AS "Item"
+  ON "Inventory"."inv_item_sk" = "Item"."i_item_sk"
+LEFT JOIN "main"."warehouse" AS "Warehouse"
+  ON "Inventory"."inv_warehouse_sk" = "Warehouse"."w_warehouse_sk"
+WHERE
+  "Item"."i_current_price" BETWEEN 0.99 AND 1.49
+  AND "Date"."d_date" BETWEEN '2000-02-10' AND '2000-04-10'
+GROUP BY ALL
+HAVING
+  "Inventory Ratio" BETWEEN 0.666666666 AND 1.5
+ORDER BY
+  "Warehouse"."w_warehouse_name" ASC,
+  "Item"."i_item_id" ASC
+LIMIT 100
