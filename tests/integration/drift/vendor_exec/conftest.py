@@ -14,6 +14,7 @@ the full vendor-exec sweep with::
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -37,11 +38,19 @@ from testcontainers.mysql import MySqlContainer  # noqa: E402
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
 from ._seed import (  # noqa: E402
+    SCHEMA as SEED_SCHEMA,
+)
+from ._seed import (  # noqa: E402
     seed_clickhouse,
     seed_duckdb,
     seed_mysql,
     seed_postgres,
 )
+
+# Row count of the bundled commerce ``sales`` table. A cloud vendor whose
+# seed does not match this is stale, and every comparison against the DuckDB
+# golden would fail for that reason rather than a real dialect difference.
+EXPECTED_SALES_ROWS = 10000
 
 
 @dataclass
@@ -192,3 +201,70 @@ def vendor_clickhouse() -> VendorTarget:
             yield VendorTarget(name="clickhouse", dialect="clickhouse", execute=_execute)
         finally:
             client.close()
+
+
+# ---------------------------------------------------------------------------
+# Snowflake (live account — no container exists for it)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def vendor_snowflake() -> VendorTarget:
+    """Live Snowflake, seeded out of band from ``seed_sql/snowflake/``.
+
+    The cloud vendors have no testcontainer, so the seed is applied once by
+    ``scripts/seed_cloud_vendor.py`` rather than per session: re-loading 26k
+    rows over the network on every run would dominate the suite, and the data
+    is static. The fixture asserts the schema is present and current rather
+    than creating it, so a stale or missing seed fails loudly here instead of
+    surfacing as a row-count mismatch in every test.
+
+    Skipped unless ``SNOWFLAKE_ACCOUNT`` and friends are set.
+    """
+    connector = pytest.importorskip(
+        "snowflake.connector",
+        reason="snowflake-connector-python required for snowflake vendor exec",
+    )
+    missing = [
+        name
+        for name in (
+            "SNOWFLAKE_ACCOUNT",
+            "SNOWFLAKE_USER",
+            "SNOWFLAKE_PASSWORD",
+            "SNOWFLAKE_DATABASE",
+        )
+        if not os.environ.get(name)
+    ]
+    if missing:
+        pytest.skip(f"Snowflake credentials not configured: {', '.join(missing)}")
+
+    conn = connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
+        database=os.environ["SNOWFLAKE_DATABASE"],
+    )
+
+    def _execute(sql: str) -> list[dict[str, Any]]:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+
+    try:
+        try:
+            seeded = _execute(f'SELECT COUNT(*) AS n FROM "{SEED_SCHEMA}"."sales"')[0]["N"]
+        except Exception as exc:  # noqa: BLE001 — any failure here means "not seeded"
+            pytest.skip(
+                f"Snowflake schema '{SEED_SCHEMA}' is not loaded ({exc}). Seed it with:\n"
+                f"  uv run python scripts/seed_cloud_vendor.py snowflake"
+            )
+        assert seeded == EXPECTED_SALES_ROWS, (
+            f"Snowflake '{SEED_SCHEMA}'.sales has {seeded} rows, expected "
+            f"{EXPECTED_SALES_ROWS}. Re-seed with: "
+            f"uv run python scripts/seed_cloud_vendor.py snowflake"
+        )
+        yield VendorTarget(name="snowflake", dialect="snowflake", execute=_execute)
+    finally:
+        conn.close()

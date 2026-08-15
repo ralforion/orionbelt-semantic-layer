@@ -1,7 +1,7 @@
 WITH `date_range` AS (
 SELECT DATE_TRUNC(MIN(`Sales`.`salesdate`), MONTH) AS min_date,
        DATE_TRUNC(MAX(`Sales`.`salesdate`), MONTH) AS max_date
-  FROM ``.`orionbelt_1`.`sales` AS `Sales`
+  FROM `orionbelt_1`.`sales` AS `Sales`
 ),
 `date_spine` AS (
 SELECT d AS spine_date,
@@ -13,7 +13,7 @@ FROM UNNEST(GENERATE_DATE_ARRAY((SELECT min_date FROM `date_range`), (SELECT max
 SELECT `date_spine`.spine_date AS `Sales Month`,
        SUM(`Sales`.`salesamount`) AS `Total Sales`
   FROM `date_spine`
-  LEFT JOIN ``.`orionbelt_1`.`sales` AS `Sales`
+  LEFT JOIN `orionbelt_1`.`sales` AS `Sales`
     ON DATE_TRUNC(`Sales`.`salesdate`, MONTH) = `date_spine`.spine_date
   GROUP BY 1
 ),

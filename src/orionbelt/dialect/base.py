@@ -169,12 +169,16 @@ class Dialect(ABC):
         Default: three-part ``database.schema.code`` (Snowflake/Databricks/Dremio).
         Postgres and ClickHouse override to two-part naming.
         All components are quoted to prevent SQL injection.
+
+        An omitted component is dropped rather than emitted as an empty
+        identifier. ``database`` is optional in OBML, and quoting it anyway
+        produced ``""."schema"."table"``, which Snowflake rejects with
+        ``Database '""' does not exist``. Leaving it out lets the reference
+        resolve against the connection's current database, which is how a
+        single model serves several deployments of the same schema.
         """
-        return (
-            f"{self.quote_identifier(database)}"
-            f".{self.quote_identifier(schema)}"
-            f".{self.quote_identifier(code)}"
-        )
+        parts = [database, schema, code]
+        return ".".join(self.quote_identifier(p) for p in parts if p)
 
     @property
     @abstractmethod

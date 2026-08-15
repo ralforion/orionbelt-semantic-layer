@@ -996,3 +996,42 @@ class TestMedianRendering:
         expr = FunctionCall(name="MEDIAN", args=[ColumnRef(name="price")])
         with pytest.raises(UnsupportedAggregationError, match="mysql.*MEDIAN"):
             dialect.compile_expr(expr)
+
+
+class TestTableRefWithoutDatabase:
+    """``database`` is optional in OBML, and an omitted one must be dropped.
+
+    Quoting it anyway produced ``""."schema"."table"``, which Snowflake
+    rejects with ``Database '""' does not exist`` and BigQuery/Databricks
+    with the backquoted equivalent. Dropping it lets the reference resolve
+    against the connection's current database, which is what lets one model
+    serve several deployments of the same schema.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "bigquery",
+            "clickhouse",
+            "databricks",
+            "dremio",
+            "duckdb",
+            "mysql",
+            "postgres",
+            "snowflake",
+        ],
+    )
+    def test_empty_database_is_omitted(self, name: str) -> None:
+        ref = DialectRegistry.get(name).format_table_ref("", "orionbelt_1", "sales")
+        assert "orionbelt_1" in ref and "sales" in ref
+        # No empty quoted component of any quoting style.
+        for empty in ('""', "``", "[]"):
+            assert empty not in ref, f"{name}: {ref}"
+
+    @pytest.mark.parametrize("name", ["bigquery", "databricks", "snowflake"])
+    def test_three_part_ref_is_unchanged_when_database_is_set(self, name: str) -> None:
+        dialect = DialectRegistry.get(name)
+        ref = dialect.format_table_ref("proj", "ds", "tbl")
+        assert ref.count(".") == 2
+        for part in ("proj", "ds", "tbl"):
+            assert part in ref

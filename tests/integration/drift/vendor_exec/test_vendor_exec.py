@@ -124,6 +124,9 @@ def _normalize_value(v: Any) -> Any:
     # ``"00123"`` and exponent-form strings like ``"1e3"`` as distinct
     # string values — coercing them would silently collapse different
     # IDs into equal cells and mask cross-vendor key-handling bugs.
+    # ``bool`` is an ``int`` subclass and must not be coerced to "1"/"0".
+    if isinstance(v, int) and not isinstance(v, bool):
+        return f"{float(v):.11g}"
     if isinstance(v, (Decimal, float)):
         return f"{float(v):.11g}"
     if isinstance(v, str) and _CANONICAL_DECIMAL_RE.match(v):
@@ -172,7 +175,17 @@ def _load_golden(query_id: str) -> list[list[Any]]:
 # test is tracked but doesn't break CI.
 # ---------------------------------------------------------------------------
 
-_KNOWN_ISSUES: dict[tuple[str, str], str] = {}
+_KNOWN_ISSUES: dict[tuple[str, str], str] = {
+    ("snowflake", "13_sales_yoy_growth"): (
+        "Period-over-period metrics ignore their declared dataType: pop_wrap is "
+        "the only wrapper that never calls _apply_metric_cast, so the ratio is "
+        "emitted uncast and each engine falls back to its own decimal-division "
+        "scale. DuckDB gives 0.9931620307032472, Snowflake NUMBER scale 8 "
+        "(0.99316203); the model declares decimal(18, 4), which would give "
+        "0.9932 on both. The golden is DuckDB-derived, so it encodes one "
+        "engine's default rather than the declared type."
+    ),
+}
 
 
 def _assert_matches_golden(
@@ -252,3 +265,14 @@ def test_clickhouse_vendor_exec(
 ) -> None:
     """ClickHouse latest testcontainer."""
     _assert_matches_golden(entry, vendor_clickhouse, commerce_model, pipeline)
+
+
+@pytest.mark.parametrize("entry", CORPUS, ids=lambda e: e.id)
+def test_snowflake_vendor_exec(
+    entry: CorpusEntry,
+    vendor_snowflake: VendorTarget,
+    commerce_model: SemanticModel,
+    pipeline: CompilationPipeline,
+) -> None:
+    """Live Snowflake account, seeded by scripts/seed_cloud_vendor.py."""
+    _assert_matches_golden(entry, vendor_snowflake, commerce_model, pipeline)

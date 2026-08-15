@@ -86,12 +86,13 @@ class BigQueryDialect(Dialect):
         return f"`{escaped}`"
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
-        """BigQuery: three-part ``project.dataset.table``."""
-        return (
-            f"{self.quote_identifier(database)}"
-            f".{self.quote_identifier(schema)}"
-            f".{self.quote_identifier(code)}"
-        )
+        """BigQuery: three-part ``project.dataset.table``.
+
+        An omitted project is dropped rather than backquoted empty, so
+        ``dataset.table`` resolves against the connection's default project.
+        """
+        parts = [database, schema, code]
+        return ".".join(self.quote_identifier(p) for p in parts if p)
 
     def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         # BigQuery DATE_TRUNC takes a date-part *keyword* (MONTH, ISOWEEK), not a
