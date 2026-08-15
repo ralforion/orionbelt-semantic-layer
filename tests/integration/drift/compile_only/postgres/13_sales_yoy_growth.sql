@@ -11,7 +11,7 @@ FROM generate_series((SELECT min_date FROM "date_range")::timestamp, (SELECT max
 ),
 "pop_base" AS (
 SELECT "date_spine".spine_date AS "Sales Month",
-       SUM("Sales"."salesamount") AS "Total Sales"
+       CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
   FROM "date_spine"
   LEFT JOIN "orionbelt_1"."sales" AS "Sales"
     ON date_trunc('month', "Sales"."salesdate") = "date_spine".spine_date

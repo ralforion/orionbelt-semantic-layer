@@ -15,7 +15,7 @@ WHERE DATEADD('month', rn - 1, (SELECT min_date FROM "date_range"))::date <= (SE
 ),
 "pop_base" AS (
 SELECT "date_spine".spine_date AS "Sales Month",
-       SUM("Sales"."salesamount") AS "Total Sales"
+       CAST(SUM("Sales"."salesamount") AS NUMBER(18, 2)) AS "Total Sales"
   FROM "date_spine"
   LEFT JOIN "orionbelt_1"."sales" AS "Sales"
     ON DATE_TRUNC('month', "Sales"."salesdate") = "date_spine".spine_date

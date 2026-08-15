@@ -865,7 +865,13 @@ class TestPoPDeclaredDataType:
         assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 6))' in sql
 
     def test_difference_inherits_the_base_measure_type(self) -> None:
-        """``difference`` carries the measure's own units, so no ratio default."""
+        """``difference`` carries the measure's own units, so no ratio default.
+
+        The inheritance is real rather than nominal: ``pop_base`` applies the
+        base measure's declared cast, so the subtraction is over typed
+        operands. It used to emit a bare ``SUM(...)`` there, which left the
+        comparison with no type to inherit at all.
+        """
         query = QueryObject(
             select=QuerySelect(
                 dimensions=["Order Date"],
@@ -874,3 +880,40 @@ class TestPoPDeclaredDataType:
         )
         sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
         assert 'CAST("Revenue MoM Diff"' not in sql
+        # The operand it inherits from is typed.
+        assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
+
+    def test_a_measure_keeps_its_declared_type_inside_a_pop_query(self) -> None:
+        """``pop_base`` rebuilds the aggregation, so it must re-apply the cast.
+
+        Without it the same measure had one type in a plain query and another
+        in a PoP query, and every comparison built on it inherited the untyped
+        form.
+        """
+        plain = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Order Date"], measures=["Revenue"]),
+                ),
+                _load_model(),
+                "duckdb",
+            )
+            .sql
+        )
+        pop = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(
+                        dimensions=["Order Date"], measures=["Revenue", "Revenue YoY Growth"]
+                    ),
+                ),
+                _load_model(),
+                "duckdb",
+            )
+            .sql
+        )
+        cast = 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"'
+        assert cast in plain
+        assert cast in pop

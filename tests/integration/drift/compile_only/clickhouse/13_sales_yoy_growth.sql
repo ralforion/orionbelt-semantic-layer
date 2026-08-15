@@ -11,7 +11,7 @@ FROM (SELECT arrayJoin(range(0, toUInt32(dateDiff('month', (SELECT min_date FROM
 ),
 "pop_base" AS (
 SELECT "date_spine".spine_date AS "Sales Month",
-       SUM("Sales"."salesamount") AS "Total Sales"
+       CAST(round(SUM("Sales"."salesamount"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM "date_spine"
   LEFT JOIN "orionbelt_1"."sales" AS "Sales"
     ON toStartOfMonth("Sales"."salesdate") = "date_spine".spine_date

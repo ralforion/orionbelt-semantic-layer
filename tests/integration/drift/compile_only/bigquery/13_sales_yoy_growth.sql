@@ -11,7 +11,7 @@ FROM UNNEST(GENERATE_DATE_ARRAY((SELECT min_date FROM `date_range`), (SELECT max
 ),
 `pop_base` AS (
 SELECT `date_spine`.spine_date AS `Sales Month`,
-       SUM(`Sales`.`salesamount`) AS `Total Sales`
+       ROUND(CAST(SUM(`Sales`.`salesamount`) AS NUMERIC), 2) AS `Total Sales`
   FROM `date_spine`
   LEFT JOIN `orionbelt_1`.`sales` AS `Sales`
     ON DATE_TRUNC(`Sales`.`salesdate`, MONTH) = `date_spine`.spine_date

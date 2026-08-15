@@ -34,7 +34,10 @@ from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
-from orionbelt.compiler.type_resolver import resolve_metric_data_type
+from orionbelt.compiler.type_resolver import (
+    resolve_measure_data_type,
+    resolve_metric_data_type,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
 
@@ -67,6 +70,32 @@ def _apply_metric_cast(
     if metric is None:
         return expr
     resolved_type = resolve_metric_data_type(metric, model.settings)
+    if resolved_type is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved_type)
+
+
+def _apply_measure_cast(
+    expr: Expr,
+    measure_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a base aggregate with the measure's declared dataType cast.
+
+    ``pop_base`` rebuilds the aggregation itself rather than reusing the
+    planner's projection, so without this it emitted a bare ``SUM(...)`` where
+    every other plan emits ``CAST(SUM(...) AS DECIMAL(18, 2))``. A PoP query
+    therefore returned a *different type* for the same measure than the same
+    query without a PoP metric, and the ``difference`` / ``previousValue``
+    comparisons built on top had no declared type to inherit.
+    """
+    if model is None or dialect is None:
+        return expr
+    measure = model.effective_measures.get(measure_name)
+    if measure is None:
+        return expr
+    resolved_type = resolve_measure_data_type(measure, model.settings)
     if resolved_type is None:
         return expr
     return dialect.cast_to_obml_type(expr, resolved_type)
@@ -432,7 +461,8 @@ def _build_pop_base_sql(
             for comp_name in m.component_measures:
                 comp = resolved.metric_components.get(comp_name)
                 if comp:
-                    expr_sql = dialect.compile_expr(comp.expression)
+                    comp_expr = _apply_measure_cast(comp.expression, comp_name, model, dialect)
+                    expr_sql = dialect.compile_expr(comp_expr)
                     measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(comp_name)}")
         else:
             # A metric rides along as its components' aggregates, not as its
@@ -446,6 +476,13 @@ def _build_pop_base_sql(
                 )
                 if m.component_measures
                 else m.expression
+            )
+            # Same cast the star planner applies, so a measure keeps its
+            # declared type whether or not the query also has a PoP metric.
+            expr = (
+                _apply_metric_cast(expr, m.name, model, dialect)
+                if m.component_measures
+                else _apply_measure_cast(expr, m.name, model, dialect)
             )
             expr_sql = dialect.compile_expr(expr)
             measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(m.name)}")
