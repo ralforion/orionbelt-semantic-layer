@@ -220,6 +220,7 @@ class CompilationPipeline:
                 model=model,
                 dialect=dialect,
                 qualify_table=qualify_table,
+                query=query,
             )
             wrapped_ast = apply_aggregate_passes(plan.ast, ctx)
 

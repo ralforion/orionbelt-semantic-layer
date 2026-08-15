@@ -582,6 +582,21 @@ def _single_leg_root(
     return None
 
 
+def _measure_objects(
+    planner: CFLPlanner,
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    measure: ResolvedMeasure,
+) -> set[str]:
+    """The data objects a measure reads, declared or referenced."""
+    model_measure = model.effective_measures.get(measure.name)
+    if model_measure and model_measure.columns:
+        return {f.view for f in model_measure.columns if f.view}
+    objects: set[str] = set()
+    planner._collect_table_refs(measure.expression, objects)
+    return objects
+
+
 def group_measures_by_object(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -602,6 +617,21 @@ def group_measures_by_object(
     seen: set[str] = set()
 
     for measure in resolved.measures:
+        if measure.filter_context is not None:
+            # A filterContext measure never belonged in the union: it reads one
+            # fact under its own filters, which is a scan of its own, and
+            # ``filter_wrap`` plans it as one. Projected here it got a leg whose
+            # rows the query's filters had already been applied to - the
+            # opposite of what the field asks for - and its value went into the
+            # composite, where the wrapper could not recompute it.
+            #
+            # Its fact still earns a leg, with no measure of its own. The union
+            # is what makes a dimension only that fact reaches available at all,
+            # NULL-padded in the others, and dropping the leg would leave the
+            # query unable to group by one.
+            for obj in _measure_objects(planner, resolved, model, measure):
+                groups.setdefault(obj, [])
+            continue
         if measure.component_measures:
             # Metric: add each component measure to its source object, following
             # nested derived metrics — those are expanded into the same formula,
@@ -610,6 +640,10 @@ def group_measures_by_object(
                 if comp.name in seen:
                     continue
                 seen.add(comp.name)
+                if comp.filter_context is not None:
+                    for obj in _measure_objects(planner, resolved, model, comp):
+                        groups.setdefault(obj, [])
+                    continue
                 model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:
                     comp_objects = {f.view for f in model_measure.columns if f.view}

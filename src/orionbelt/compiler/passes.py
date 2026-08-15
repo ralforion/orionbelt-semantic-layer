@@ -56,6 +56,7 @@ from orionbelt.compiler.window_wrap import (
 )
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.errors import SemanticError
+from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import DataObject, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
@@ -83,6 +84,11 @@ class CompileContext:
     model: SemanticModel
     dialect: Dialect
     qualify_table: Callable[[DataObject], str]
+    query: QueryObject
+    """The query as asked. A pass that has to *plan* rather than rewrite needs
+    it: ``filter_wrap`` resolves a query of its own for a filterContext
+    measure's scan, and a resolved filter keeps only its expression, not the
+    filter it came from."""
 
 
 @dataclass(frozen=True)
@@ -163,7 +169,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             name=PASS_FILTER_CONTEXT,
             applies=lambda r: r.has_filter_context,
             run=lambda ast, ctx: wrap_with_filter_context(
-                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table
+                ast, ctx.resolved, ctx.model, ctx.dialect, ctx.qualify_table, ctx.query
             ),
         ),
         CompilerPass(
@@ -419,54 +425,7 @@ def evaluate_compatibility(
                 ]
             )
 
-    # Rule 2c (raising): a filterContext measure is computed in a CTE of its
-    # own, whose WHERE is the query's with some filters dropped or added. Under
-    # a multi-fact plan there is nothing to compute it from: the union legs
-    # applied the query's filters before the composite CTE existed, so a context
-    # that drops one cannot un-apply it, and the fact columns a context of its
-    # own would filter on are not among the composite's columns either. The
-    # projection came out reading tables the CTE does not select from, which no
-    # engine binds - refuse instead, since suppressing the pass would answer the
-    # unfiltered number under the filtered measure's name.
-    if resolved.composite_cte is not None:
-        # Read through a metric counts: the component is computed in a CTE of
-        # its own too, and that CTE has the same nothing to read.
-        fc_measures = sorted(
-            {m.name for m in resolved.measures if m.filter_context is not None}
-            | {
-                comp.name
-                for m in resolved.measures
-                for comp in metric_leaf_components(m, resolved.metric_components)
-                if comp.filter_context is not None
-            }
-        )
-        if fc_measures:
-            listed = ", ".join(f"'{m}'" for m in fc_measures)
-            raise ResolutionError(
-                [
-                    SemanticError(
-                        code="INCOMPATIBLE_COMBINATION",
-                        message=(
-                            f"Measure(s) {listed} declare a filterContext, which needs its "
-                            f"own filtered scan of the fact. This query spans facts that "
-                            f"cannot be joined, so it is planned as a UNION ALL whose legs "
-                            f"are already filtered and whose columns are the projected "
-                            f"measures, leaving nothing for that scan to read."
-                        ),
-                        path="select.measures",
-                        hint=(
-                            "Query the filterContext measure without the measures from the "
-                            "other fact, or drop the filterContext."
-                        ),
-                        context={
-                            "measures": fc_measures,
-                            "conflictsWith": ["a multi-fact (CFL) plan"],
-                        },
-                    )
-                ]
-            )
-
-    # Rule 2c2 (raising): an averaged total in a query that also has a
+    # Rule 2c (raising): an averaged total in a query that also has a
     # filterContext. ``filter_wrap`` runs first and rewrites the FROM, leaving
     # every measure as one column of a CTE - which is enough to re-aggregate a
     # sum, a count, a min or a max over, and not enough for an average.
