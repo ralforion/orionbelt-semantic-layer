@@ -52,9 +52,11 @@ BINDING = {"duckdb": "main", "clickhouse": "tpcds"}
 # label -> (got column indices, ref column indices, decimals, compare without LIMIT)
 # None/None means "compare every column in order".
 CASES: dict[str, tuple[list[int] | None, list[int] | None, int, bool]] = {
-    "Q3": ([0, 1, 2, 3], [0, 2, 1, 3], 2, True),
-    "Q7": (None, None, 4, False),
-    "Q9": (None, None, 4, False),
+    "Q03": ([0, 1, 2, 3], [0, 2, 1, 3], 2, True),
+    "Q07": (None, None, 4, False),
+    "Q09": (None, None, 4, False),
+    # ref repeats count(*) six times (cnt1..cnt6); we project it once.
+    "Q10": ([0, 1, 2, 3, 4, 5, 6, 7, 8], [0, 1, 2, 4, 6, 8, 10, 12, 3], 2, False),
     "Q13": (None, None, 4, False),
     "Q15": ([0, 1], [0, 1], 2, True),
     "Q19": (None, None, 2, False),
@@ -62,8 +64,8 @@ CASES: dict[str, tuple[list[int] | None, list[int] | None, int, bool]] = {
     "Q21": ([0, 1, 2, 3], [0, 1, 2, 3], 2, True),
     "Q22": ([0, 1, 2, 3, 4], [0, 1, 2, 3, 4], 2, False),
     "Q26": (None, None, 4, False),
-    "Q28": (None, None, 3, False),  # 4th-decimal rounding on one avg under DuckDB
     "Q27": ([0, 1, 2, 3, 4, 5], [0, 1, 3, 4, 5, 6], 4, True),
+    "Q28": (None, None, 3, False),  # 4th-decimal rounding on one avg under DuckDB
     "Q34": (None, None, 2, False),
     "Q40": (None, None, 2, True),
     "Q42": (None, None, 2, False),
@@ -74,31 +76,28 @@ CASES: dict[str, tuple[list[int] | None, list[int] | None, int, bool]] = {
     "Q52": (None, None, 2, False),
     # groups by quarter without selecting it, as the reference does.
     "Q53": ([0, 2, 3], [0, 1, 2], 4, True),
-    # groups by month without selecting it, as the reference does.
-    "Q63": ([0, 2, 3], [0, 1, 2], 4, True),
     "Q55": (None, None, 2, False),
     "Q61": (None, None, 2, False),
     "Q62": (None, None, 2, True),
-    # ref column order is price, tax, list; we project price, list, tax.
+    # groups by month without selecting it, as the reference does.
+    "Q63": ([0, 2, 3], [0, 1, 2], 4, True),
     # ref order: name, desc, revenue, price, cost, brand; ours groups them first.
     "Q65": ([2, 3, 7, 4, 5, 6], [0, 1, 2, 3, 4, 5], 2, True),
     "Q68": ([0, 1, 2, 3, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 7, 6], 2, True),
+    # ref repeats count(*) three times (cnt1/cnt2/cnt3); we project it once.
+    "Q69": ([0, 1, 2, 3, 4, 5], [0, 1, 2, 4, 6, 3], 2, False),
     "Q72": (None, None, 2, True),
     "Q73": (None, None, 2, False),
-    "Q90": (None, None, 4, False),
-    "Q93": (None, None, 2, True),
     "Q79": ([0, 1, 2, 3, 5, 6], [0, 1, 2, 3, 4, 5], 2, True),
-    "Q85": (None, None, 2, True),
     # CFL projects the measures before the metrics; the reference interleaves them.
     "Q83": ([0, 1, 4, 2, 5, 3, 6, 7], [0, 1, 2, 3, 4, 5, 6, 7], 4, True),
+    "Q85": (None, None, 2, True),
     "Q88": (None, None, 2, False),
+    "Q90": (None, None, 4, False),
+    "Q93": (None, None, 2, True),
     "Q96": (None, None, 2, False),
     "Q98": (None, None, 2, False),
     "Q99": (None, None, 2, True),  # DuckDB's reference lowercases cc_name; ClickHouse's does not
-    # ref repeats count(*) three times (cnt1/cnt2/cnt3); we project it once.
-    "Q69": ([0, 1, 2, 3, 4, 5], [0, 1, 2, 4, 6, 3], 2, False),
-    # same, six times over (cnt1..cnt6).
-    "Q10": ([0, 1, 2, 3, 4, 5, 6, 7, 8], [0, 1, 2, 4, 6, 8, 10, 12, 3], 2, False),
 }
 
 # Differences that are the *reference variant's*, not OBSL's — each chased to

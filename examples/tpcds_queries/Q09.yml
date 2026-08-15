@@ -1,4 +1,4 @@
-# Q9 - per quantity bucket, pick avg discount or avg net paid by a count threshold
+# Q09 - per quantity bucket, pick avg discount or avg net paid by a count threshold
 select:
   dimensions: []
   measures: [bucket1, bucket2, bucket3, bucket4, bucket5]

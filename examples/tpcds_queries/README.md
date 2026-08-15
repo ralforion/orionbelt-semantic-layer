@@ -26,7 +26,7 @@ anything, and so a compiler change shows up as a readable diff.
 against each engine's own reference SQL, every one compared in full.
 
 ```
-Q3  Q7  Q9  Q10 Q13 Q15 Q19 Q20 Q21 Q22 Q26 Q27 Q28 Q34 Q40 Q42 Q43 Q46 Q48
+Q03 Q07 Q09 Q10 Q13 Q15 Q19 Q20 Q21 Q22 Q26 Q27 Q28 Q34 Q40 Q42 Q43 Q46 Q48
 Q50 Q52 Q53 Q55 Q61 Q62 Q63 Q65 Q68 Q69 Q72 Q73 Q79 Q83 Q85 Q88 Q90 Q93 Q96
 Q98 Q99
 ```

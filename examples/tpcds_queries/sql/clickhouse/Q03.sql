@@ -1,4 +1,4 @@
--- Q3 — OBSL-compiled, dialect: clickhouse
+-- Q03 — OBSL-compiled, dialect: clickhouse
 -- Regenerate: uv run python sweep.py --dialect clickhouse --dump
 
 SELECT
