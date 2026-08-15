@@ -33,12 +33,42 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.type_resolver import resolve_metric_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
     from orionbelt.models.semantic import DataObject
+
+
+def _apply_metric_cast(
+    expr: Expr,
+    metric_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a PoP projection with the metric's declared dataType cast.
+
+    Same shape as ``cumulative_wrap._apply_metric_cast`` and
+    ``window_wrap._apply_metric_cast``. PoP was the only metric wrapper that
+    never applied the declared type, so its output scale was whatever each
+    engine's decimal division produced.
+
+    The cast governs the *result*; it cannot recover precision the engine
+    already discarded mid-division. That is what
+    ``Dialect.render_decimal_division_sql`` is for, and why ClickHouse still
+    widens its operands before dividing - see the note there.
+    """
+    if model is None or dialect is None:
+        return expr
+    metric = model.metrics.get(metric_name)
+    if metric is None:
+        return expr
+    resolved_type = resolve_metric_data_type(metric, model.settings)
+    if resolved_type is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved_type)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:
@@ -192,10 +222,18 @@ def wrap_with_pop(
     for dim in resolved.dimensions:
         outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
     for m in resolved.measures:
-        if not m.is_pop:
-            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
-        else:
-            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+        column: Expr = ColumnRef(name=m.name)
+        if m.is_pop:
+            # The comparison is assembled as raw SQL inside ``pop_compare``, so
+            # the metric's declared dataType has to be applied here, over the
+            # materialised column. Without it the ratio carries whatever scale
+            # the engine's decimal division happens to produce, which differs
+            # per engine: for a metric declared ``decimal(18, 4)`` DuckDB
+            # returned 0.9931620307032472, BigQuery 0.993162031 and Snowflake
+            # 0.99316203, none of them the declared 0.9932. ``cumulative_wrap``
+            # and ``window_wrap`` already cast their own projections this way.
+            column = _apply_metric_cast(column, m.name, model, dialect)
+        outer_columns.append(AliasedExpr(expr=column, alias=m.name))
 
     # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
     outer_order_by = _build_outer_order_by(resolved)

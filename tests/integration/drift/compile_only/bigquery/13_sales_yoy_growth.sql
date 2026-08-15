@@ -25,5 +25,5 @@ SELECT `pop_base`.`Sales Month` AS `Sales Month`,
   LEFT JOIN `pop_base` AS pop_prev
     ON `date_spine`.spine_date_prev = pop_prev.`Sales Month`
 )
-SELECT `Sales Month` AS `Sales Month`, `Sales YoY Growth` AS `Sales YoY Growth`
+SELECT `Sales Month` AS `Sales Month`, ROUND(CAST(`Sales YoY Growth` AS NUMERIC), 4) AS `Sales YoY Growth`
 FROM `pop_compare` AS `pop_compare`

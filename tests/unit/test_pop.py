@@ -740,3 +740,93 @@ class TestPoPTimeDimOnDifferentTable:
         result = pipeline.compile(query, model, dialect)
         assert result.sql_valid
         assert "pop_compare" in result.sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# Declared dataType on a PoP metric
+# ---------------------------------------------------------------------------
+
+_TYPED_POP_YAML = POP_MODEL_YAML.replace(
+    """  Revenue YoY Growth:
+    type: period_over_period
+    expression: '{[Revenue]}'
+""",
+    """  Revenue YoY Growth:
+    type: period_over_period
+    expression: '{[Revenue]}'
+    dataType: 'decimal(18, 4)'
+""",
+)
+
+
+def _typed_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(_TYPED_POP_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, [e.message for e in result.errors]
+    return model
+
+
+class TestPoPDeclaredDataType:
+    """A PoP metric's ``dataType`` must reach the projection.
+
+    ``pop_wrap`` was the only metric wrapper that never applied it, so the
+    ratio carried whatever scale each engine's decimal division produced. For
+    a metric declared ``decimal(18, 4)`` DuckDB returned 0.9931620307032472,
+    BigQuery 0.993162031 and Snowflake 0.99316203 — three engines, three
+    answers, none of them the declared 0.9932.
+    """
+
+    QUERY = QueryObject(
+        select=QuerySelect(
+            dimensions=["Order Date"],
+            measures=["Revenue", "Revenue YoY Growth"],
+        ),
+    )
+
+    def test_declared_type_is_applied(self) -> None:
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), "duckdb").sql
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))' in sql
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("duckdb", 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))'),
+            ("postgres", 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))'),
+            ("snowflake", 'CAST("Revenue YoY Growth" AS NUMBER(18, 4))'),
+        ],
+    )
+    def test_cast_is_dialect_idiomatic(self, dialect: str, expected: str) -> None:
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), dialect).sql
+        assert expected in sql
+
+    def test_cast_wraps_the_materialised_column_not_the_raw_ratio(self) -> None:
+        """The cast belongs outside ``pop_compare``, over the finished value."""
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), "duckdb").sql
+        compare_at = sql.index('"pop_compare" AS (')
+        cast_at = sql.index('CAST("Revenue YoY Growth"')
+        assert cast_at > compare_at
+        # The division itself stays uncast inside the CTE.
+        assert 'NULLIF(pop_prev."Revenue", 0) - 1 AS "Revenue YoY Growth"' in sql
+
+    def test_undeclared_percent_change_takes_the_division_default(self) -> None:
+        """A ratio is not a value in the base measure's units.
+
+        Without an explicit ``dataType`` a PoP metric used to fall through to
+        the model's default numeric type, which is ``decimal(18, 2)`` — two
+        decimal places for a growth ratio. ``percentChange`` and ``ratio``
+        divide, so they take the same ``decimal(18, 6)`` default that an
+        expression containing ``/`` already gets.
+        """
+        sql = CompilationPipeline().compile(self.QUERY, _load_model(), "duckdb").sql
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 6))' in sql
+
+    def test_difference_inherits_the_base_measure_type(self) -> None:
+        """``difference`` carries the measure's own units, so no ratio default."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM Diff"],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        assert 'CAST("Revenue MoM Diff"' not in sql

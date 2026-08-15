@@ -39,6 +39,11 @@ from orionbelt.models.query import QueryObject, QuerySelect  # noqa: E402
 _FLOAT_REL = 1e-9
 _FLOAT_ABS = 1e-9
 
+# Declared scale of the ``Sales YoY Growth`` metric (``decimal(18, 4)``).
+# ``pop_wrap`` casts its projection to this, so the baseline is quantized to
+# match before comparison.
+_YOY_SCALE = 4
+
 
 def _quantize(value: Decimal, scale: int) -> Decimal:
     """Round to ``scale`` decimal places — matches DuckDB's CAST to DECIMAL(p, s).
@@ -274,7 +279,16 @@ def test_sales_yoy_growth(
             f"YoY Growth for {month}: OBSL={a}, baseline={b}. One is null, "
             f"the other isn't — likely a date-spine or lag-join bug."
         )
-        assert float(a) == pytest.approx(float(b), rel=_FLOAT_REL, abs=_FLOAT_ABS), (
-            f"YoY Growth for {month}: OBSL={a}, baseline={b}. Suggests a "
+        # ``Sales YoY Growth`` declares ``dataType: decimal(18, 4)`` and the
+        # PoP wrapper applies it, so OBSL returns the ratio at 4 decimal
+        # places. Quantize the full-precision pandas baseline the same way
+        # before comparing — as the sum assertions above already do — so this
+        # test checks the ratio's *value*, not the engine's division scale.
+        expected_at_scale = _quantize(Decimal(str(b)), _YOY_SCALE)
+        assert float(a) == pytest.approx(
+            float(expected_at_scale), rel=_FLOAT_REL, abs=_FLOAT_ABS
+        ), (
+            f"YoY Growth for {month}: OBSL={a}, baseline={b} "
+            f"(quantized to {expected_at_scale}). Suggests a "
             f"period-over-period offset bug or wrong percent-change formula."
         )
