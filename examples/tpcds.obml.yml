@@ -397,6 +397,10 @@ dataObjects:
         code: i_current_price
         abstractType: float
         numClass: non-additive
+      Wholesale Cost:
+        code: i_wholesale_cost
+        abstractType: float
+        numClass: non-additive
       Product Name:
         code: i_product_name
         abstractType: string
@@ -1375,6 +1379,11 @@ dimensions:
     column: Manager ID
     resultType: int
 
+  Item Key Dim:
+    dataObject: Item
+    column: Item Key
+    resultType: int
+
   Item ID:
     dataObject: Item
     column: Item ID
@@ -1384,6 +1393,11 @@ dimensions:
     dataObject: Item
     column: Item Description
     resultType: string
+
+  Item Wholesale Cost:
+    dataObject: Item
+    column: Wholesale Cost
+    resultType: float
 
   Current Price:
     dataObject: Item
@@ -1604,6 +1618,11 @@ dimensions:
     dataObject: Call Center
     column: Call Center Name
     resultType: string
+
+  Store Key Dim:
+    dataObject: Store
+    column: Store Key
+    resultType: int
 
   Store ID Dim:
     dataObject: Store
@@ -1917,6 +1936,30 @@ measures:
       mode: FIXED
       keepOnly: [Manufacturer ID]
     dataType: bigint
+
+  Store Revenue:
+    columns: [{dataObject: Store Sales, column: Sales Price}]
+    resultType: float
+    aggregation: sum
+    grain:
+      mode: FIXED
+      keepOnly: [Store Key Dim]
+    dataType: "decimal(18, 2)"
+
+  Store Item Groups:
+    columns: [{dataObject: Item, column: Item Key}]
+    resultType: int
+    aggregation: count
+    distinct: true
+    grain:
+      mode: FIXED
+      keepOnly: [Store Key Dim]
+    dataType: bigint
+    filters:
+      # An average skips a group with no value; a count does not, so the
+      # groups with nothing to average are excluded here instead.
+      - column: {dataObject: Store Sales, column: Sales Price}
+        operator: set
 
   Manager Sales:
     columns:
@@ -3309,6 +3352,18 @@ metrics:
   Revenue Ratio:
     expression: "{[Store Sales Amount]} * 100.0 / {[Class Revenue]}"
     dataType: "decimal(18, 6)"
+
+  Avg Store Item Revenue:
+    expression: "{[Store Revenue]} / {[Store Item Groups]}"
+    dataType: "decimal(18, 6)"
+    description: A store's mean revenue per item over the window
+
+  Store Item Revenue Share:
+    # Guarded: a store with no revenue would divide by zero, which DuckDB
+    # tolerates as NULL and ClickHouse raises on.
+    expression: "(CASE WHEN {[Avg Store Item Revenue]} > 0 THEN {[Sales Price Sum]} / {[Avg Store Item Revenue]} ELSE NULL END)"
+    dataType: "decimal(18, 8)"
+    description: An item's revenue at a store against that store's per-item average
 
   Avg Monthly Sales:
     expression: "{[Manager Sales]} / {[Manager Month Groups]}"

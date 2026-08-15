@@ -80,6 +80,8 @@ CASES: dict[str, tuple[list[int] | None, list[int] | None, int, bool]] = {
     "Q61": (None, None, 2, False),
     "Q62": (None, None, 2, True),
     # ref column order is price, tax, list; we project price, list, tax.
+    # ref order: name, desc, revenue, price, cost, brand; ours groups them first.
+    "Q65": ([2, 3, 7, 4, 5, 6], [0, 1, 2, 3, 4, 5], 2, True),
     "Q68": ([0, 1, 2, 3, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 7, 6], 2, True),
     "Q72": (None, None, 2, True),
     "Q73": (None, None, 2, False),
