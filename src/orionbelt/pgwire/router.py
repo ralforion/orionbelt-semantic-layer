@@ -35,7 +35,11 @@ from orionbelt.api.query_cache import (
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    UnsupportedAggregationError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.pgwire import protocol
@@ -257,7 +261,11 @@ class SemanticRouter:
                 code=SQLSTATE_FEATURE_NOT_SUPPORTED,
                 message=exc.message,
             )
-        except (UnsupportedAggregationError, UnsupportedGroupingError) as exc:
+        except (
+            AmbiguousTableReferenceError,
+            UnsupportedAggregationError,
+            UnsupportedGroupingError,
+        ) as exc:
             return protocol.build_error_response(
                 severity="ERROR",
                 code=SQLSTATE_FEATURE_NOT_SUPPORTED,

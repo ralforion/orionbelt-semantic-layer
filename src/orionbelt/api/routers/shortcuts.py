@@ -57,7 +57,11 @@ from orionbelt.api.warnings_adapter import error_info_to_detail, semantic_error_
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    UnsupportedAggregationError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -484,6 +488,16 @@ async def shortcut_compile_query(
                 "grouping": exc.grouping,
             },
         ) from None
+    except AmbiguousTableReferenceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Ambiguous table reference",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "database": exc.database,
+            },
+        ) from None
 
     explain_resp = None
     if result.explain:
@@ -637,6 +651,16 @@ async def shortcut_execute_query(
                 "message": str(exc),
                 "dialect": exc.dialect,
                 "grouping": exc.grouping,
+            },
+        ) from None
+    except AmbiguousTableReferenceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Ambiguous table reference",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "database": exc.database,
             },
         ) from None
 

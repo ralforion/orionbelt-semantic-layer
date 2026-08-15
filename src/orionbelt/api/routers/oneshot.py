@@ -55,7 +55,11 @@ from orionbelt.cache.ttl import NoCacheReason, TtlResult
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.compiler.validator import format_sql
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    AmbiguousTableReferenceError,
+    UnsupportedAggregationError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import (
     ExecutionError,
@@ -200,6 +204,11 @@ def _compile(
     except UnsupportedGroupingError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_GROUPING",
+            message=str(exc),
+        )
+    except AmbiguousTableReferenceError as exc:
+        return OneshotBatchQueryError(
+            code="AMBIGUOUS_TABLE_REFERENCE",
             message=str(exc),
         )
     return compile_result, dialect
