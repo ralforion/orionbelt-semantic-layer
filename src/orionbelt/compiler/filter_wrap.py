@@ -33,7 +33,7 @@ from orionbelt.ast.nodes import (
     OrderByItem,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.expr_rewrite import map_column_refs, map_nodes
 from orionbelt.compiler.filters import build_filter_expr
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
@@ -188,6 +188,39 @@ def _substitute_aliases(expr: Expr, by_alias: dict[str, Expr]) -> Expr:
     )
 
 
+def _outer_predicate(
+    expr: Expr,
+    by_alias: dict[str, Expr],
+    dim_map: dict[tuple[str, str | None], str],
+    dim_exprs: list[tuple[Expr, str]],
+    dim_ref: Callable[[str], Expr],
+) -> Expr:
+    """A HAVING predicate rewritten for the outer query's scope.
+
+    Measures arrive as bare ``ColumnRef`` placeholders and become whatever the
+    projection holds. A *dimension* does not: a predicate grouping one with a
+    measure (``Unfiltered Revenue > 10 OR Month = 2``) carries the physical
+    column the planner referenced, and out here the table it names is no longer
+    in the FROM. It reads by the alias the CTEs projected it under instead -
+    matched on that physical reference, or structurally for a computed
+    dimension, whose source is an inlined expression rather than a column.
+    """
+
+    def rewrite(node: Expr) -> Expr | None:
+        for dim_expr, name in dim_exprs:
+            if node == dim_expr:
+                return dim_ref(name)
+        if isinstance(node, ColumnRef):
+            if node.table is None:
+                return by_alias.get(node.name)
+            mapped = dim_map.get((node.name, node.table))
+            if mapped is not None:
+                return dim_ref(mapped)
+        return None
+
+    return map_nodes(expr, rewrite)
+
+
 def _combine_exprs(exprs: Iterable[Expr]) -> Expr | None:
     """AND a run of predicates together, or ``None`` if there are none."""
     combined: Expr | None = None
@@ -285,7 +318,17 @@ def wrap_with_filter_context(
     # outer query instead, where every measure is one column of a CTE. The rest
     # stay where the planner put them, expression for expression.
     hoisted = {m.name for m in isolated} | set(split_metrics)
-    outer_having = [hf for hf in resolved.having_filters if hf.referenced_fields & hoisted]
+    windowed = windowed_aliases(resolved)
+    # A predicate that also names a value a later wrapper windows belongs to
+    # neither scope: its window does not exist yet here, and hoisting it would
+    # apply it to the pre-window value *and* leave ``PASS_HAVING_WINDOW`` to
+    # apply it again over the windowed rows. That pass sees both values, so it
+    # is the one place the predicate holds together.
+    outer_having = [
+        hf
+        for hf in resolved.having_filters
+        if hf.referenced_fields & hoisted and not hf.referenced_fields & windowed
+    ]
     main_having = ast.having
     if outer_having:
         planner_exprs = {
@@ -296,7 +339,7 @@ def wrap_with_filter_context(
         # A predicate on a measure a *later* wrapper windows stays withheld:
         # the planner left it out deliberately and ``PASS_HAVING_WINDOW``
         # applies it once over the windowed rows.
-        deferred = hoisted | windowed_aliases(resolved)
+        deferred = hoisted | windowed
         main_having = _combine_exprs(
             _substitute_aliases(hf.expression, planner_exprs)
             for hf in resolved.having_filters
@@ -451,6 +494,17 @@ def wrap_with_filter_context(
                 )
             )
 
+    # How a dimension reads in the outer query, needed by both the hoisted
+    # predicates and the ORDER BY: by the alias the CTEs projected it under,
+    # matched either on the physical column the planner referenced or - for a
+    # computed dimension, whose source is an inlined expression - structurally.
+    dim_map: dict[tuple[str, str | None], str] = {
+        (d.source_column, d.object_name): d.name for d in resolved.dimensions
+    }
+    dim_exprs: list[tuple[Expr, str]] = [
+        (make_column_expr(model, d.object_name, d.column_name), d.name) for d in resolved.dimensions
+    ]
+
     # The hoisted predicates, rebuilt over the outer projection. One row per
     # query grain here, so filtering it is exactly what HAVING would have done
     # had the value been available where the planner put the predicate.
@@ -460,7 +514,14 @@ def wrap_with_filter_context(
         if isinstance(col, AliasedExpr) and (alias := _get_alias(col)) is not None
     }
     outer_where = _combine_exprs(
-        _substitute_aliases(hf.expression, outer_exprs) for hf in outer_having
+        _outer_predicate(
+            hf.expression,
+            outer_exprs,
+            dim_map,
+            dim_exprs,
+            lambda name: ColumnRef(name=name, table=anchor),
+        )
+        for hf in outer_having
     )
 
     # Recorded for the wrappers that run after this one. Each of them
@@ -479,12 +540,6 @@ def wrap_with_filter_context(
                 resolved.projected_expressions[comp.name] = ColumnRef(name=comp.name, table=anchor)
 
     # --- ORDER BY remapping: resolve to CTE aliases ---
-    dim_map: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    dim_exprs: list[tuple[Expr, str]] = [
-        (make_column_expr(model, d.object_name, d.column_name), d.name) for d in resolved.dimensions
-    ]
     measure_exprs: list[tuple[Expr, str]] = [(m.expression, m.name) for m in resolved.measures]
 
     def order_ref(name: str) -> Expr:

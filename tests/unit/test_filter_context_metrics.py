@@ -15,6 +15,8 @@ for a deduplicated component and ``total_wrap`` for a windowed one.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import duckdb
 import pytest
 
@@ -23,6 +25,7 @@ from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import (
     FilterOperator,
     QueryFilter,
+    QueryFilterGroup,
     QueryObject,
     QueryOrderBy,
     QuerySelect,
@@ -511,3 +514,80 @@ class TestAContextUnderAPeriodOverPeriodMetric:
 
     def test_a_pop_metric_without_one_still_compiles(self) -> None:
         assert "Revenue YoY" in _sql(["Revenue YoY"], ["Order Date"])
+
+
+class TestAHoistedPredicateThatIsNotAloneInItsGroup:
+    """Hoisting reads a predicate's *referenced fields*, and a grouped one can
+    name more than a filter-contexted measure."""
+
+    @staticmethod
+    def _or(*filters: QueryFilter) -> list[QueryFilterGroup]:
+        return [QueryFilterGroup(logic="or", filters=list(filters))]
+
+    @staticmethod
+    def _run_having(measures: list[str], having: list[QueryFilterGroup]) -> list[tuple]:
+        query = _query(measures)
+        query.having = having
+        sql = PIPELINE.compile(query, _model(), "duckdb").sql
+        return [
+            tuple(float(v) if isinstance(v, (int, float, Decimal)) else v for v in row)
+            for row in _connect().execute(sql).fetchall()
+        ]
+
+    @pytest.mark.parametrize(
+        ("unfiltered_over", "grand_over", "expected"),
+        [
+            # Unfiltered revenue is 40 and 5; the grand total is 7 on every row.
+            (10, 6, [(1.0, 40.0, 7.0), (2.0, 5.0, 7.0)]),
+            (1000, 6, [(1.0, 40.0, 7.0), (2.0, 5.0, 7.0)]),
+            (10, 100, [(1.0, 40.0, 7.0)]),
+            (1000, 100, []),
+        ],
+    )
+    def test_grouped_with_a_windowed_value(
+        self, unfiltered_over: int, grand_over: int, expected: list[tuple]
+    ) -> None:
+        """A predicate naming both belongs to neither scope: the window does
+        not exist yet in this wrapper, so hoisting it would test the pre-window
+        value here and leave ``PASS_HAVING_WINDOW`` to test it again over the
+        windowed rows. It stays whole, for the pass that sees both values - it
+        was reading a per-group 2 where the total is 7."""
+        assert (
+            self._run_having(
+                ["Unfiltered Revenue", "Grand Revenue"],
+                self._or(
+                    QueryFilter(
+                        field="Unfiltered Revenue",
+                        op=FilterOperator.GREATER,
+                        value=unfiltered_over,
+                    ),
+                    QueryFilter(field="Grand Revenue", op=FilterOperator.GREATER, value=grand_over),
+                ),
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        ("unfiltered_over", "expected"),
+        [(10, [(1.0, 40.0), (2.0, 5.0)]), (1000, [(2.0, 5.0)])],
+    )
+    def test_grouped_with_a_dimension(self, unfiltered_over: int, expected: list[tuple]) -> None:
+        """The measure arrives as a bare placeholder, but the dimension carries
+        the physical column the planner referenced - and out here that table is
+        no longer in the FROM. It reads by the alias the CTEs projected it
+        under instead; it was emitting `"Dates"."MONTH"` against a query that
+        selects from ``main``, which no engine binds."""
+        assert (
+            self._run_having(
+                ["Unfiltered Revenue"],
+                self._or(
+                    QueryFilter(
+                        field="Unfiltered Revenue",
+                        op=FilterOperator.GREATER,
+                        value=unfiltered_over,
+                    ),
+                    QueryFilter(field="Month", op=FilterOperator.EQUALS, value=2),
+                ),
+            )
+            == expected
+        )
