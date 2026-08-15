@@ -533,13 +533,17 @@ class ResolvedQuery:
         here instead would skip the pass and answer the query-filtered number
         under the unfiltered measure's name.
         """
-        for m in self.measures:
-            if m.filter_context is not None:
-                return True
-            for comp in self._components_of(m):
-                if comp.filter_context is not None:
-                    return True
-        return False
+        if any(m.filter_context is not None for m in self.measures):
+            return True
+        # Every component, not only the leaves a metric inlines:
+        # ``metric_leaf_components`` stops at a cumulative / window /
+        # period-over-period metric, because that one is computed by its own
+        # wrapper rather than substituted into the formula. Its *base measure*
+        # is still a measure this query has to compute, and a context declared
+        # on it is still one to honour - a derived metric over a window metric
+        # over a filter-contexted measure hid one exactly there, and the
+        # window's CTE was built under the query's WHERE.
+        return any(c.filter_context is not None for c in self.metric_components.values())
 
     @property
     def has_cumulative(self) -> bool:

@@ -34,6 +34,7 @@ from orionbelt.ast.nodes import (
     Select,
 )
 from orionbelt.compiler.filters import build_filter_expr
+from orionbelt.compiler.metric_expansion import metric_leaf_components, metric_over_components
 from orionbelt.compiler.resolution import (
     ResolvedFilter,
     ResolvedMeasure,
@@ -129,7 +130,16 @@ def _resolve_include_filters(
 
 
 def _effective_grain_dims(measure: ResolvedMeasure, query_dims: list[str]) -> list[str]:
-    """Get the effective grain dimensions for a filter-isolated measure."""
+    """The dimensions a filter-isolated measure's own CTE groups by.
+
+    ``total: true`` is the same claim as ``grain: {mode: FIXED}`` with nothing
+    kept - a grand total - but only the grain override reaches
+    ``effective_grain``. Read from the query grain instead, the measure came
+    back per group, and ``total_wrap`` was never going to correct it: it skips
+    filter-contexted measures on the grounds that this wrapper owns them.
+    """
+    if measure.total:
+        return []
     if measure.effective_grain is not None:
         return measure.effective_grain
     return query_dims
@@ -164,6 +174,17 @@ def _combine_where(filters: list[ResolvedFilter]) -> Expr | None:
     return combined
 
 
+def _component_expr(measure: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
+    """The aggregate to project for *measure*, in a CTE of this wrapper's own.
+
+    ``projected_expressions`` when the plan rewrote it - an anchored measure
+    reads a conformed subquery rather than its own fact - and the resolved
+    expression otherwise. Same rule every pass that re-projects an aggregate
+    follows; see ``ResolvedQuery.projected_expressions``.
+    """
+    return resolved.projected_expressions.get(measure.name, measure.expression)
+
+
 def wrap_with_filter_context(
     ast: Select,
     resolved: ResolvedQuery,
@@ -175,7 +196,31 @@ def wrap_with_filter_context(
 
     Returns ``ast`` unchanged if no measures have filter context.
     """
-    isolated = [m for m in resolved.measures if m.filter_context is not None]
+    leaf_components = {
+        m.name: metric_leaf_components(m, resolved.metric_components) for m in resolved.measures
+    }
+    # A metric whose formula reads a filter-contexted measure. The planner
+    # inlined that component's aggregate into the metric's one column, where the
+    # query's WHERE applies to it like any other - so the column is dropped and
+    # the formula rebuilt in the outer query over the components' own columns,
+    # each read from whichever CTE computed it.
+    split_metrics = {
+        m.name: m
+        for m in resolved.measures
+        if m.component_measures
+        and any(c.filter_context is not None for c in leaf_components[m.name])
+    }
+
+    # Isolated: the filter-contexted measures the query selects, plus the ones
+    # it only reads through a metric. Deduplicated by name, since selecting a
+    # measure *and* a metric over it must still compute it once.
+    isolated: list[ResolvedMeasure] = [m for m in resolved.measures if m.filter_context is not None]
+    seen_isolated = {m.name for m in isolated}
+    for metric in split_metrics.values():
+        for comp in leaf_components[metric.name]:
+            if comp.filter_context is not None and comp.name not in seen_isolated:
+                seen_isolated.add(comp.name)
+                isolated.append(comp)
     if not isolated:
         return ast
 
@@ -190,7 +235,7 @@ def wrap_with_filter_context(
         groups.setdefault(key, []).append(m)
 
     inline_measures = [m for m in resolved.measures if m.filter_context is None]
-    inline_names = {m.name for m in inline_measures}
+    inline_names = {m.name for m in inline_measures if m.name not in split_metrics}
 
     # --- Build main CTE from planner AST ---
     main_columns: list[Expr] = []
@@ -200,6 +245,16 @@ def wrap_with_filter_context(
         if alias and alias not in inline_names and alias not in dim_names:
             continue
         main_columns.append(col_node)
+
+    # A split metric's column is gone, so the components it carried that stay
+    # in ``main`` have to be projected in their own right.
+    main_aliases = {a for c in main_columns if (a := _get_alias(c)) is not None}
+    for metric in split_metrics.values():
+        for comp in leaf_components[metric.name]:
+            if comp.filter_context is not None or comp.name in main_aliases:
+                continue
+            main_columns.append(AliasedExpr(expr=_component_expr(comp, resolved), alias=comp.name))
+            main_aliases.add(comp.name)
 
     main_cte_query = Select(
         columns=main_columns,
@@ -214,10 +269,16 @@ def wrap_with_filter_context(
         ctes=[],
         grouping=ast.grouping,
     )
+    # With no dimensions and every measure isolated, ``main`` projects nothing
+    # and degenerates to ``SELECT *`` - one row per fact row, which the CROSS
+    # JOIN below then multiplies the scalar result by. The isolated CTEs are
+    # each one row at this grain and stand on their own, so drop it.
+    keep_main = bool(main_columns)
+
     main_cte = CTE(name="main", query=main_cte_query)
 
     # --- Build isolated CTEs ---
-    all_ctes = list(ast.ctes) + [main_cte]
+    all_ctes = list(ast.ctes) + ([main_cte] if keep_main else [])
     isolated_cte_info: list[tuple[str, list[ResolvedMeasure], list[str]]] = []
 
     for idx, (_key, measure_group) in enumerate(groups.items()):
@@ -240,7 +301,7 @@ def wrap_with_filter_context(
                 cte_columns.append(AliasedExpr(expr=col, alias=dim.name))
 
         for m in measure_group:
-            cte_columns.append(AliasedExpr(expr=m.expression, alias=m.name))
+            cte_columns.append(AliasedExpr(expr=_component_expr(m, resolved), alias=m.name))
 
         # GROUP BY
         cte_group_by: list[Expr] = []
@@ -273,17 +334,45 @@ def wrap_with_filter_context(
         outer_columns.append(
             AliasedExpr(expr=ColumnRef(name=dim.name, table="main"), alias=dim.name)
         )
+    cte_of: dict[str, str] = {
+        m.name: cte_name for cte_name, measure_group, _ in isolated_cte_info for m in measure_group
+    }
     for m in inline_measures:
+        if m.name in split_metrics:
+            outer_columns.append(
+                AliasedExpr(
+                    expr=metric_over_components(
+                        m,
+                        resolved.metric_components,
+                        lambda name: ColumnRef(name=name, table=cte_of.get(name, "main")),
+                        model,
+                        dialect,
+                    ),
+                    alias=m.name,
+                )
+            )
+            continue
         outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name, table="main"), alias=m.name))
+    selected_names = {m.name for m in resolved.measures}
     for cte_name, measure_group, _ in isolated_cte_info:
         for m in measure_group:
+            # A component the query reads only through a metric is computed in
+            # this CTE but is not one of the query's columns - the metric that
+            # reads it is.
+            if m.name not in selected_names:
+                continue
             outer_columns.append(
                 AliasedExpr(expr=ColumnRef(name=m.name, table=cte_name), alias=m.name)
             )
 
     # --- JOINs from main to isolated CTEs ---
+    # Without ``main`` the first isolated CTE anchors the FROM and the rest
+    # cross-join onto it, which is what they would have done anyway.
+    anchor = "main" if keep_main else isolated_cte_info[0][0]
     outer_joins: list[Join] = []
     for cte_name, _, grain in isolated_cte_info:
+        if cte_name == anchor:
+            continue
         if not grain:
             outer_joins.append(
                 Join(
@@ -298,7 +387,7 @@ def wrap_with_filter_context(
             for dim_name in grain:
                 on_parts.append(
                     BinaryOp(
-                        left=ColumnRef(name=dim_name, table="main"),
+                        left=ColumnRef(name=dim_name, table=anchor),
                         op="=",
                         right=ColumnRef(name=dim_name, table=cte_name),
                     )
@@ -315,6 +404,21 @@ def wrap_with_filter_context(
                 )
             )
 
+    # Recorded for the wrappers that run after this one. Each of them
+    # re-projects some measure's aggregate into a CTE of its own, and their CTE
+    # selects from what this wrapper built - where the fact tables the resolved
+    # expressions name are gone, and every component is one column of ``main``
+    # or of an isolated CTE. Without this, a metric mixing a filterContext
+    # component with a ``total`` one had the second rebuilt as
+    # ``SUM("Sales"."AMOUNT")`` against a FROM that no longer has ``Sales``.
+    for cte_name, measure_group, _ in isolated_cte_info:
+        for m in measure_group:
+            resolved.projected_expressions[m.name] = ColumnRef(name=m.name, table=cte_name)
+    for metric in split_metrics.values():
+        for comp in leaf_components[metric.name]:
+            if comp.filter_context is None:
+                resolved.projected_expressions[comp.name] = ColumnRef(name=comp.name, table=anchor)
+
     # --- ORDER BY remapping: resolve to CTE aliases ---
     dim_map: dict[tuple[str, str | None], str] = {
         (d.source_column, d.object_name): d.name for d in resolved.dimensions
@@ -323,14 +427,32 @@ def wrap_with_filter_context(
         (make_column_expr(model, d.object_name, d.column_name), d.name) for d in resolved.dimensions
     ]
     measure_exprs: list[tuple[Expr, str]] = [(m.expression, m.name) for m in resolved.measures]
+
+    def order_ref(name: str) -> Expr:
+        """Where to read *name* from in the outer query.
+
+        A rebuilt metric has no CTE column at all - it is assembled in this
+        query's own projection - so it orders by its select alias.
+        """
+        if name in split_metrics:
+            return ColumnRef(name=name)
+        return ColumnRef(name=name, table=cte_of.get(name, anchor))
+
     outer_order_by: list[OrderByItem] = []
     for ob in ast.order_by:
-        remapped = _remap_fc_order_expr(ob.expr, dim_map, dim_exprs, measure_exprs)
+        remapped = _remap_fc_order_expr(
+            ob.expr,
+            dim_map,
+            dim_exprs,
+            measure_exprs,
+            order_ref,
+            lambda name: ColumnRef(name=name, table=anchor),
+        )
         outer_order_by.append(OrderByItem(expr=remapped, desc=ob.desc, nulls_last=ob.nulls_last))
 
     return Select(
         columns=outer_columns,
-        from_=From(source="main", alias="main"),
+        from_=From(source=anchor, alias=anchor),
         joins=outer_joins,
         where=None,
         group_by=[],
@@ -347,20 +469,28 @@ def _remap_fc_order_expr(
     dim_map: dict[tuple[str, str | None], str],
     dim_exprs: list[tuple[Expr, str]],
     measure_exprs: list[tuple[Expr, str]],
+    order_ref: Callable[[str], Expr],
+    dim_ref: Callable[[str], Expr],
 ) -> Expr:
-    """Remap one ORDER BY expression for the filter-context outer query."""
+    """Remap one ORDER BY expression for the filter-context outer query.
+
+    The planner ordered by the raw expression; here every value is a column of
+    one of the CTEs, and *which* CTE depends on the value - a dimension is in
+    the anchor, a measure is in whichever CTE computed it. Ordering by the
+    measure's aggregate as written would read the wrong scan.
+    """
     if isinstance(expr, ColumnRef) and expr.table is not None:
         key = (expr.name, expr.table)
         if key in dim_map:
-            return ColumnRef(name=dim_map[key], table="main")
-        return ColumnRef(name=expr.name, table="main")
+            return dim_ref(dim_map[key])
+        return dim_ref(expr.name)
     # A computed dimension orders by its inlined expression, not by a column
     # reference, so it is matched structurally against the same expression the
     # CTE projected under its alias.
     for dim_expr, name in dim_exprs:
         if expr == dim_expr:
-            return ColumnRef(name=name, table="main")
+            return dim_ref(name)
     for meas_expr, name in measure_exprs:
         if expr is meas_expr or expr == meas_expr:
-            return ColumnRef(name=name, table="main")
+            return order_ref(name)
     return expr

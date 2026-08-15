@@ -80,8 +80,8 @@ from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.filters import collect_measure_filter_objects
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import (
-    expand_metric_expression,
     metric_leaf_components,
+    metric_over_components,
 )
 from orionbelt.compiler.resolution import (
     ResolvedFilter,
@@ -89,7 +89,6 @@ from orionbelt.compiler.resolution import (
     ResolvedQuery,
     make_column_expr,
 )
-from orionbelt.compiler.type_resolver import resolve_metric_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
@@ -396,33 +395,6 @@ def _combine(exprs: Iterable[Expr]) -> Expr | None:
     return combined
 
 
-def _metric_over_components(
-    metric: ResolvedMeasure,
-    components: dict[str, ResolvedMeasure],
-    measure_ref: Callable[[str], Expr],
-    model: SemanticModel,
-    dialect: Dialect,
-) -> Expr:
-    """Rebuild a metric's expression from its components' finished values.
-
-    The planner inlines each component's aggregate into the metric's column,
-    which over a replicating join reads the inflated value. Here the formula is
-    re-expanded against *measure_ref* instead, so every component is read from
-    whichever CTE computed it — deduplicated or not — with nested derived
-    metrics expanded on the way, exactly as the planner expands them. The
-    declared ``dataType`` cast is reapplied as ``star.py`` applies it, since the
-    column it wrapped no longer exists.
-    """
-    expr = expand_metric_expression(
-        metric.expression, components, lambda comp: measure_ref(comp.name)
-    )
-    metric_def = model.metrics.get(metric.name)
-    if metric_def is None:
-        return expr
-    result_type = resolve_metric_data_type(metric_def, model.settings)
-    return dialect.cast_to_obml_type(expr, result_type) if result_type else expr
-
-
 def _reject_unmovable_having(
     outer_having: list[ResolvedFilter],
     available: dict[str, Expr],
@@ -703,7 +675,7 @@ def wrap_with_grain_dedup(
         if alias in split_metrics:
             outer_columns.append(
                 AliasedExpr(
-                    expr=_metric_over_components(
+                    expr=metric_over_components(
                         split_metrics[alias],
                         resolved.metric_components,
                         measure_ref,
