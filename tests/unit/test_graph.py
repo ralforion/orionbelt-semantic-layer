@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from orionbelt.ast.nodes import BinaryOp, ColumnRef
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -178,3 +179,84 @@ class TestCommonRootDisconnected:
     def test_connected_objects_still_resolve_to_the_real_root(self) -> None:
         """The fallback must not disturb the ordinary directed-ancestor answer."""
         assert self._graph().find_common_root({"Products", "Sales"}) == "Sales"
+
+
+_ROW_PRESERVING_MODEL_YAML = """\
+version: 1.0
+
+dataObjects:
+  Orders:
+    code: ORDERS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Order ID:
+        code: ORDER_ID
+        abstractType: string
+      Amount:
+        code: AMOUNT
+        abstractType: float
+
+  OrderExtras:
+    code: ORDER_EXTRAS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Extra Order ID:
+        code: EXT_ORDER_ID
+        abstractType: string
+      Gift Wrapped:
+        code: GIFT_WRAPPED
+        abstractType: boolean
+    joins:
+      - joinType: one-to-one
+        joinTo: Orders
+        columnsFrom: [Extra Order ID]
+        columnsTo: [Order ID]
+
+dimensions:
+  Gift Wrapped:
+    dataObject: OrderExtras
+    column: Gift Wrapped
+    resultType: boolean
+"""
+
+
+class TestReverseTraversal:
+    """Walking a row-preserving join against its declared direction.
+
+    One-to-one and many-to-many joins are bidirectional in the traversal
+    graph, so ``find_join_path`` can reach ``OrderExtras`` from ``Orders``
+    even though the join is declared the other way round.
+    """
+
+    @staticmethod
+    def _graph() -> JoinGraph:
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(_ROW_PRESERVING_MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return JoinGraph(model)
+
+    def test_one_to_one_is_reachable_backwards(self) -> None:
+        steps = self._graph().find_join_path({"Orders"}, {"OrderExtras"})
+        assert len(steps) == 1
+        assert steps[0].reversed is True
+
+    def test_reversed_step_keeps_columns_with_their_object(self) -> None:
+        """from/to stay in *declared* order, so the columns must not be swapped.
+
+        Swapping them pairs ``OrderExtras`` with the ``Orders`` column, and
+        ``build_join_condition`` then renders an unresolvable identifier.
+        """
+        steps = self._graph().find_join_path({"Orders"}, {"OrderExtras"})
+        step = steps[0]
+        assert (step.from_object, step.from_columns) == ("OrderExtras", ["Extra Order ID"])
+        assert (step.to_object, step.to_columns) == ("Orders", ["Order ID"])
+
+    def test_reversed_step_builds_a_resolvable_on_clause(self) -> None:
+        graph = self._graph()
+        condition = graph.build_join_condition(graph.find_join_path({"Orders"}, {"OrderExtras"})[0])
+        assert isinstance(condition, BinaryOp)
+        assert condition.left == ColumnRef(name="EXT_ORDER_ID", table="OrderExtras")
+        assert condition.right == ColumnRef(name="ORDER_ID", table="Orders")

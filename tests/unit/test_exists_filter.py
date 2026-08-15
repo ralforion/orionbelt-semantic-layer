@@ -293,6 +293,87 @@ measures:
 """
 
 
+# Like TRAVERSAL_MODEL, but the objects hanging off OrderItems declare their
+# joins the other way round: ItemDetails → OrderItems one-to-one and ItemTags
+# → OrderItems many-to-many. Neither is a *directed* descendant of OrderItems,
+# yet both are row-preserving and therefore legal traversals.
+REVERSE_MODEL = """\
+version: 1.0
+
+dataObjects:
+  Customers:
+    code: CUSTOMERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Customer ID: {code: CUSTOMER_ID, abstractType: string}
+      Country: {code: COUNTRY, abstractType: string}
+
+  Orders:
+    code: ORDERS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Order ID: {code: ORDER_ID, abstractType: string}
+      Order Customer ID: {code: CUSTOMER_ID, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Customers
+        columnsFrom: [Order Customer ID]
+        columnsTo: [Customer ID]
+
+  OrderItems:
+    code: ORDER_ITEMS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Item ID: {code: ITEM_ID, abstractType: string}
+      Item Order ID: {code: ORDER_ID, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Orders
+        columnsFrom: [Item Order ID]
+        columnsTo: [Order ID]
+
+  ItemDetails:
+    code: ITEM_DETAILS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Detail Item ID: {code: DETAIL_ITEM_ID, abstractType: string}
+      Gift Wrapped: {code: GIFT_WRAPPED, abstractType: boolean}
+    joins:
+      - joinType: one-to-one
+        joinTo: OrderItems
+        columnsFrom: [Detail Item ID]
+        columnsTo: [Item ID]
+
+  ItemTags:
+    code: ITEM_TAGS
+    database: WAREHOUSE
+    schema: PUBLIC
+    columns:
+      Tag Item ID: {code: TAG_ITEM_ID, abstractType: string}
+      Tag Name: {code: TAG_NAME, abstractType: string}
+    joins:
+      - joinType: many-to-many
+        joinTo: OrderItems
+        columnsFrom: [Tag Item ID]
+        columnsTo: [Item ID]
+
+dimensions:
+  Customer Country: {dataObject: Customers, column: Country, resultType: string}
+  Order ID: {dataObject: Orders, column: Order ID, resultType: string}
+  Gift Wrapped: {dataObject: ItemDetails, column: Gift Wrapped, resultType: boolean}
+
+measures:
+  Order Count:
+    columns: [{dataObject: Orders, column: Order ID}]
+    resultType: int
+    aggregation: count
+"""
+
+
 def _exists_on_items(sub_filters: list[QueryFilter]) -> QueryObject:
     """Orders-by-country query semi-joined to OrderItems with *sub_filters*."""
     return QueryObject(
@@ -589,6 +670,59 @@ class TestSubqueryFilterTraversal:
         refs = PIPELINE.compile(query, model, "postgres").physical_tables
         assert any(r.endswith(".PRODUCTS") for r in refs), refs
         assert any(r.endswith(".ORDER_ITEMS") for r in refs), refs
+
+
+class TestSubqueryFilterReverseTraversal:
+    """Row-preserving joins declared *towards* the subquery's target.
+
+    ``EXISTS`` bodies reach filter objects with the same walker the outer
+    query uses, and that walker treats one-to-one and many-to-many joins as
+    bidirectional. A reachability rule that only followed declared direction
+    would refuse these paths even though the walker would happily emit them.
+    """
+
+    def test_reverse_one_to_one_dimension(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Gift Wrapped", op=FilterOperator.EQUALS, value=True)]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."ITEM_DETAILS" AS "ItemDetails"' in sql
+        assert '"ItemDetails"."DETAIL_ITEM_ID" = "OrderItems"."ITEM_ID"' in sql
+        assert '"ItemDetails"."GIFT_WRAPPED" = TRUE' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+
+    def test_reverse_many_to_many_qualified_column(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="ItemTags.Tag Name", op=FilterOperator.EQUALS, value="gift")]
+        )
+        sql = PIPELINE.compile(query, model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."ITEM_TAGS" AS "ItemTags"' in sql
+        assert '"ItemTags"."TAG_ITEM_ID" = "OrderItems"."ITEM_ID"' in sql
+        assert '"ItemTags"."TAG_NAME" = \'gift\'' in sql
+
+    def test_reverse_join_tracked_in_physical_tables(self) -> None:
+        model = _load_model(REVERSE_MODEL)
+        query = _exists_on_items(
+            [QueryFilter(field="Gift Wrapped", op=FilterOperator.EQUALS, value=True)]
+        )
+        refs = PIPELINE.compile(query, model, "postgres").physical_tables
+        assert any(r.endswith(".ITEM_DETAILS") for r in refs), refs
+
+    def test_reverse_many_to_one_still_refused(self) -> None:
+        """Only row-preserving joins are bidirectional: Orders stays the
+        subject, so nothing changes for the many-to-one direction."""
+        model = _load_model(REVERSE_MODEL)
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [QueryFilter(field="Customers.Country", op=FilterOperator.EQUALS, value="DE")]
+                ),
+                model,
+                "postgres",
+            )
+        assert "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE" in {e.code for e in excinfo.value.errors}
 
 
 class TestSubqueryFilterTraversalValidation:

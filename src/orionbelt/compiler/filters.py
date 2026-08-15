@@ -574,9 +574,10 @@ def _join_filter_object_into_subquery(
     """Make *ref_object* addressable inside the ``EXISTS`` body.
 
     Objects already in *scope* — the subquery's own target and the hops the
-    correlation path walked through — need nothing. Anything else is joined in
-    with the same forward-only reachability rule the outer query uses, and the
-    resulting INNER JOINs are appended to *joins* (and *scope*) in place.
+    correlation path walked through — need nothing. Anything else is reached
+    with the same walker the outer query uses (forward along many-to-one,
+    either way along the row-preserving cardinalities), and the resulting
+    INNER JOINs are appended to *joins* (and *scope*) in place.
 
     Returns ``False`` (with a :class:`SemanticError` appended) when the object
     cannot be reached, or when reaching it would re-enter the correlation
@@ -600,7 +601,10 @@ def _join_filter_object_into_subquery(
         )
         return False
 
-    if not any(ref_object in graph.descendants(obj) for obj in sorted(scope)):
+    # Ask the walker itself rather than a separate reachability test: it is
+    # what decides which hops are legal, so a second rule would only diverge.
+    steps = graph.find_join_path(set(scope), {ref_object})
+    if not steps:
         errors.append(
             SemanticError(
                 code="UNREACHABLE_SUBQUERY_FILTER_OBJECT",
@@ -614,8 +618,11 @@ def _join_filter_object_into_subquery(
         )
         return False
 
-    steps = graph.find_join_path(set(scope), {ref_object})
-    if any(step.to_object == subject_object for step in steps):
+    # ``JoinStep`` keeps from/to in the declared join direction, so the object
+    # a step actually brings into the body is the far end of its *traversal*.
+    joined_objects = [step.from_object if step.reversed else step.to_object for step in steps]
+
+    if subject_object in joined_objects:
         errors.append(
             SemanticError(
                 code="SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
@@ -629,21 +636,21 @@ def _join_filter_object_into_subquery(
         )
         return False
 
-    for step in steps:
-        if step.to_object in scope:
+    for step, joined_object in zip(steps, joined_objects, strict=True):
+        if joined_object in scope:
             continue
-        step_obj = model.data_objects.get(step.to_object)
+        step_obj = model.data_objects.get(joined_object)
         if step_obj is None:
             continue
         joins.append(
             Join(
                 join_type=JoinType.INNER,
                 source=qualify_table(step_obj),
-                alias=step.to_object,
+                alias=joined_object,
                 on=graph.build_join_condition(step),
             )
         )
-        scope.add(step.to_object)
+        scope.add(joined_object)
     return True
 
 
