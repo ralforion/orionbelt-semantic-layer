@@ -424,14 +424,29 @@ class ResolvedQuery:
     out so the deduplicated ones can be computed in their own CTE and the metric
     recomputed from the results."""
 
-    conformed_expressions: dict[str, Expr] = field(default_factory=dict)
-    """Anchored measures, mapped to the expression that reads their conformed columns.
+    composite_cte: str | None = None
+    """Name of the UNION ALL composite CTE, when the plan actually built one.
 
-    Set by the star planner once it has built the conformed subqueries. Any pass
-    that re-projects a measure's aggregate must read it from here: the resolved
-    expression still names the foreign fact's own table, which the conformed
-    plan joins a ``GROUP BY`` subquery in place of. Empty for every query with
-    no anchored measure."""
+    ``requires_cfl`` says a multi-fact plan was *asked for*; this says one was
+    *produced* - the CFL planner delegates back to the star planner whenever the
+    measures turn out to reach a single leg. A pass that has to reason about
+    what its own CTE can select from wants this one."""
+
+    projected_expressions: dict[str, Expr] = field(default_factory=dict)
+    """Measures and metric components, mapped to the expression the plan
+    projects them as.
+
+    Set by whichever planner ran, and read by every pass that *re-projects* a
+    measure's aggregate into a CTE of its own rather than passing its column
+    through. Those passes cannot use the resolved expression: it names the fact
+    table the measure was resolved against, and the plan may not select from it.
+
+    The star planner records the anchored measures, whose aggregate reads a
+    conformed ``GROUP BY`` subquery in place of the foreign fact; it leaves the
+    rest out, since a plain star's CTE reuses the planner's own FROM and joins
+    and the resolved expression is exactly right there. The CFL planner records
+    *every* measure, because its outer query reads the composite CTE the union
+    legs feed and none of the fact tables are in scope at all."""
 
     anchored_measures: dict[str, str] = field(default_factory=dict)
     """Measures whose expression is evaluated at a declared object's grain,
@@ -508,8 +523,23 @@ class ResolvedQuery:
 
     @property
     def has_filter_context(self) -> bool:
-        """Check if any measure has a filter context override."""
-        return any(m.filter_context is not None for m in self.measures)
+        """Check if any measure (direct or metric component) has a filter context.
+
+        Components count for the same reason they do in :attr:`has_totals`: a
+        metric inlines their aggregates, so a context declared on one is a
+        context this query has to honour. ``filter_wrap`` isolates only the
+        directly selected ones, which is why a metric over such a component is
+        refused in ``compiler.passes`` rather than compiled - reporting False
+        here instead would skip the pass and answer the query-filtered number
+        under the unfiltered measure's name.
+        """
+        for m in self.measures:
+            if m.filter_context is not None:
+                return True
+            for comp in self._components_of(m):
+                if comp.filter_context is not None:
+                    return True
+        return False
 
     @property
     def has_cumulative(self) -> bool:

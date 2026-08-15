@@ -159,7 +159,7 @@ def _component_base_column(
     # An anchored measure's aggregate reads conformed subquery columns, not the
     # foreign fact's own, so re-deriving it here would name a table this CTE
     # joins a GROUP BY subquery in place of.
-    rebuilt = resolved.conformed_expressions.get(comp.name, comp.expression)
+    rebuilt = resolved.projected_expressions.get(comp.name, comp.expression)
     # Taking the column by alias is required whenever the input is already a
     # CTE, not only after grain dedup: a CFL composite holds the aggregate too,
     # and neither the fact tables nor an anchored measure's conformed

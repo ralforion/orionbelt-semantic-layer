@@ -480,14 +480,10 @@ SHAPES_DEFAULTED = SHAPES.replace(
 
 _DEFAULT_LITERALS = {"0", "'none'"}
 
-# Two measures produce SQL that does not bind when a second fact puts the query
-# on the CFL path — on this branch and on ``main`` alike, with and without a
-# declared default. ``filter_wrap`` and the metric branch of ``total_wrap`` both
-# rebuild the aggregate from the measure's resolved expression, which names a
-# fact table the CFL plan replaced with the composite CTE. That is the same
-# mistake this file is about, in a place the default has nothing to do with, so
-# it is recorded here rather than fixed in a change about ``defaultValue``.
-UNBOUND_IN_CFL = {"Early Amount", "Amount Share"}
+# ``Early Amount`` declares a filterContext, which a multi-fact plan refuses —
+# see ``test_cfl_rebuilt_aggregates``. The refusal is compared like any other in
+# the equivalence tests; it just has no SQL to execute.
+REFUSED_IN_CFL = {"Early Amount"}
 
 
 def _without_defaults(sql: str) -> str:
@@ -605,7 +601,7 @@ class TestTheDefaultOnlyEverAddsACoalesce:
         con.execute('INSERT INTO "PUBLIC"."REFUNDS" VALUES (1, 1.0)')
         for measure in (*_SHAPE_MEASURES, "Net Amount", "Amount Share", "Running Amount"):
             for measures in ([measure], [measure, "Refund Amount"]):
-                if len(measures) > 1 and measure in UNBOUND_IN_CFL:
+                if len(measures) > 1 and measure in REFUSED_IN_CFL:
                     continue
                 sql = _compiled(SHAPES_DEFAULTED, measures, ["Month"])
                 if not sql.lstrip().upper().startswith(("WITH", "SELECT")):

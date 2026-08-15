@@ -243,7 +243,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                     continue  # Already present as a direct measure
                 if _is_avg_total(comp, resolved.dedup_measures):
                     # AVG total needs sum + count helper columns
-                    comp_expr = resolved.conformed_expressions.get(comp.name, comp.expression)
+                    comp_expr = resolved.projected_expressions.get(comp.name, comp.expression)
                     base_columns.append(_build_avg_helpers_base_col(comp, "sum", comp_expr))
                     base_columns.append(_build_avg_helpers_base_col(comp, "count", comp_expr))
                 else:
@@ -253,7 +253,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
                     base_columns.append(
                         _peel_default(
                             AliasedExpr(
-                                expr=resolved.conformed_expressions.get(comp.name, comp.expression),
+                                expr=resolved.projected_expressions.get(comp.name, comp.expression),
                                 alias=comp.name,
                             ),
                             comp,
