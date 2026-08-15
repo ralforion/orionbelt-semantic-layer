@@ -1,4 +1,4 @@
-"""OBSL — OrionBelt Semantic Layer RDF vocabulary (Core 0.1)."""
+"""OBSL — OrionBelt Semantic Layer RDF vocabulary (Core 0.2)."""
 
 from __future__ import annotations
 

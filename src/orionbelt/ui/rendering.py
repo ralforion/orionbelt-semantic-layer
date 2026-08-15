@@ -226,10 +226,20 @@ def _generate_ontology_graph_html(
         (OBSL.sourceColumn, "sourceColumn"),
         (OBSL.referencesColumn, "referencesColumn"),
     ):
-        for meas, col in g.subject_objects(pred):
+        for subject, col in g.subject_objects(pred):
             obj_id = col_to_object.get(str(col))
-            if obj_id is not None:
-                link(meas, URIRef(obj_id), edge_label, "#64B5F6")
+            if obj_id is None:
+                continue
+            # A computed column is a referencesColumn subject too, and columns
+            # are not nodes — so collapse that end onto its owning object as
+            # well and draw the dependency between the two objects, dashed to
+            # separate "reads through an expression" from a measure's own
+            # column. A sibling reference collapses to a self-loop; skip it.
+            source = col_to_object.get(str(subject))
+            if source is None:
+                link(subject, URIRef(obj_id), edge_label, "#64B5F6")
+            elif source != obj_id:
+                link(URIRef(source), URIRef(obj_id), edge_label, "#64B5F6", dashes=True)
     for meas, obj in g.subject_objects(OBSL.anchoredTo):
         link(meas, obj, "anchor", "#64B5F6")
 

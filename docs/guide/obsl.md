@@ -1,10 +1,10 @@
 # OBSL — RDF Graph & SPARQL
 
-OBSL (OrionBelt Semantic Layer vocabulary) is an RDF-based exchange format for semantic-layer models. When you load a model, OrionBelt automatically exports it as an **OBSL-Core 0.1** RDF graph. You can retrieve the graph as Turtle or run read-only SPARQL queries against it — no extra setup required.
+OBSL (OrionBelt Semantic Layer vocabulary) is an RDF-based exchange format for semantic-layer models. When you load a model, OrionBelt automatically exports it as an **OBSL-Core 0.2** RDF graph. You can retrieve the graph as Turtle or run read-only SPARQL queries against it — no extra setup required.
 
 ## What is OBSL-Core?
 
-OBSL-Core 0.1 maps every OBML concept to RDF triples using standard vocabularies:
+OBSL-Core 0.2 maps every OBML concept to RDF triples using standard vocabularies:
 
 | OBML Concept | RDF Class | Key Properties |
 |---|---|---|
@@ -174,6 +174,6 @@ The graph is removed when the model is unloaded (`DELETE /v1/sessions/{id}/model
 
 ## Specification
 
-The full OBSL-Core 0.1 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/ontology/spec.md).
+The full OBSL-Core 0.2 specification — including all classes, properties, URI strategy, OBML mapping, and controlled value sets — is in [`ontology/spec.md`](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/ontology/spec.md).
 
 The OWL ontology (`obsl.ttl`), SHACL shapes (`obsl.shacl.ttl`), and a Sales model example (`example-sales.ttl`) are available in the [`ontology/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/ontology) directory and at [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/).

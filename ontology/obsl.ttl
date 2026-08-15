@@ -7,7 +7,7 @@
 @prefix obsl:    <https://ralforion.com/ns/obsl#> .
 
 # =============================================================================
-# OBSL --- OrionBelt Semantic Layer Core Vocabulary 0.1
+# OBSL --- OrionBelt Semantic Layer Core Vocabulary 0.2
 #
 # A vocabulary for describing business-level semantic-layer concepts:
 # semantic models, data objects, columns, joins, dimensions, measures,
@@ -19,8 +19,8 @@
 # =============================================================================
 
 obsl: a owl:Ontology ;
-    owl:versionIRI <https://ralforion.com/ns/obsl/0.1> ;
-    owl:versionInfo "0.1" ;
+    owl:versionIRI <https://ralforion.com/ns/obsl/0.2> ;
+    owl:versionInfo "0.2" ;
     rdfs:label "OrionBelt Semantic Layer Core Vocabulary" ;
     rdfs:comment "Business-level vocabulary for semantic models, dimensions, measures, and metrics.  Designed for OBML-based model authoring and graph-based semantic-layer tooling." ;
     dcterms:creator "Ralf Becher" ;
@@ -177,8 +177,8 @@ obsl:sourceColumn a owl:ObjectProperty ;
 
 obsl:referencesColumn a owl:ObjectProperty ;
     rdfs:label "references column" ;
-    rdfs:comment "Column referenced by an expression-based measure's formula. Unlike obsl:sourceColumn (a declared columns[] the measure aggregates), this is a dependency edge derived from the expression; the measure still carries obsl:expressionSource as its source form." ;
-    rdfs:domain obsl:Measure ;
+    rdfs:comment "Column referenced by a formula — an expression-based measure's, or a computed column's. Unlike obsl:sourceColumn (a declared columns[] the measure aggregates), this is a dependency edge derived from the expression; the subject still carries obsl:expressionSource as its source form. A computed column whose formula names another data object's column produces an edge across data objects, which is a join requirement at query time." ;
+    rdfs:domain [ a owl:Class ; owl:unionOf ( obsl:Measure obsl:Column ) ] ;
     rdfs:range obsl:Column .
 
 obsl:anchoredTo a owl:ObjectProperty ;
@@ -278,7 +278,7 @@ obsl:timeGrain a owl:DatatypeProperty ;
 
 obsl:expressionSource a owl:DatatypeProperty ;
     rdfs:label "expression source" ;
-    rdfs:comment "Expression string defining a calculated measure or metric.  Measures use {[DataObject].[Column]} syntax; metrics use {[Measure Name]} syntax." ;
+    rdfs:comment "Expression string defining a computed column, a calculated measure, or a metric.  Columns use {Column} for a sibling and {[DataObject].[Column]} for another data object's column; measures use {[DataObject].[Column]}; metrics use {[Measure Name]}.  The columns or measures a formula reads are also emitted as obsl:referencesColumn / obsl:referencesMeasure edges, so dependencies are queryable without parsing the string." ;
     rdfs:range xsd:string .
 
 obsl:filterExpression a owl:DatatypeProperty ;

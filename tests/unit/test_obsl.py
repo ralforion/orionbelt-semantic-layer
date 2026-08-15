@@ -1,4 +1,4 @@
-"""Tests for OBSL-Core 0.1 exporter, SPARQL execution, and graph storage."""
+"""Tests for OBSL-Core 0.2 exporter, SPARQL execution, and graph storage."""
 
 from __future__ import annotations
 
@@ -357,6 +357,61 @@ class TestExporterMeasures:
         assert list(g.objects(uri, OBSL.expressionSource))
         assert not list(g.objects(uri, OBSL.sourceColumn))
 
+    def test_computed_column_exports_its_formula_and_dependencies(self) -> None:
+        """A computed column carries the same pair an expression measure does:
+        the formula, plus one edge per column it reads. Without the edges, a
+        cross-object dependency — which is a join requirement at query time —
+        is only discoverable by parsing the string."""
+        yaml_str = """
+version: 1.0
+dataObjects:
+  Store:
+    code: STORE
+    database: WH
+    schema: PUBLIC
+    columns:
+      Store Zip: {code: S_ZIP, abstractType: string}
+      Zip 5:
+        expression: "SUBSTRING({Store Zip}, 1, 5)"
+        abstractType: string
+      Zip Matches:
+        expression: "{Zip 5} = {[Address].[Zip]}"
+        abstractType: boolean
+  Address:
+    code: CUSTOMER_ADDRESS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Zip: {code: CA_ZIP, abstractType: string}
+dimensions:
+  Store Zip: {dataObject: Store, column: Store Zip, resultType: string}
+"""
+        from orionbelt.parser.loader import TrackedLoader
+        from orionbelt.parser.resolver import ReferenceResolver
+
+        raw, source_map = TrackedLoader().load_string(yaml_str)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        g = export_obsl(model, "t1")
+
+        zip5 = URIRef(f"{BASE}t1/data-object/store/column/zip-5")
+        matches = URIRef(f"{BASE}t1/data-object/store/column/zip-matches")
+        store_zip = URIRef(f"{BASE}t1/data-object/store/column/store-zip")
+        address_zip = URIRef(f"{BASE}t1/data-object/address/column/zip")
+
+        assert (zip5, OBSL.expressionSource, Literal("SUBSTRING({Store Zip}, 1, 5)")) in g
+        # Sibling reference.
+        assert (zip5, OBSL.referencesColumn, store_zip) in g
+        # Sibling *and* cross-object reference from one expression.
+        assert (matches, OBSL.referencesColumn, zip5) in g
+        assert (matches, OBSL.referencesColumn, address_zip) in g
+
+    def test_plain_column_has_no_expression_triples(self, sales_model: SemanticModel) -> None:
+        g = export_obsl(sales_model, "t1")
+        price = URIRef(f"{BASE}t1/data-object/orders/column/price")
+        assert not list(g.objects(price, OBSL.expressionSource))
+        assert not list(g.objects(price, OBSL.referencesColumn))
+
     def test_filter_expression(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")
         uri = URIRef(f"{BASE}t1/measure/us-revenue")
@@ -497,8 +552,16 @@ class TestExporterAxioms:
         assert (OBSL.anchoredTo, RDFS.domain, OBSL.Measure) in g
         assert (OBSL.anchoredTo, RDFS.range, OBSL.DataObject) in g
         assert (OBSL.referencesColumn, RDF.type, OWL_NS.ObjectProperty) in g
-        assert (OBSL.referencesColumn, RDFS.domain, OBSL.Measure) in g
         assert (OBSL.referencesColumn, RDFS.range, OBSL.Column) in g
+        # Domain is the union of Measure and Column — a computed column depends
+        # on the columns its formula reads just as an expression measure does.
+        # Repeating rdfs:domain would assert the *intersection* instead.
+        domain = next(g.objects(OBSL.referencesColumn, RDFS.domain))
+        assert (domain, RDF.type, OWL_NS.Class) in g
+        members = next(g.objects(domain, OWL_NS.unionOf))
+        from rdflib.collection import Collection
+
+        assert set(Collection(g, members)) == {OBSL.Measure, OBSL.Column}
 
     def test_functional_properties(self, sales_model: SemanticModel) -> None:
         g = export_obsl(sales_model, "t1")

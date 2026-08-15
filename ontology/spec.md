@@ -1,9 +1,9 @@
-# OBSL-Core 0.1
+# OBSL-Core 0.2
 
 Status: Finalized core profile
 
 ## 1. Abstract
-OBSL, the OrionBelt Semantic Layer vocabulary, is an RDF-based exchange format for semantic-layer models. `OBSL-Core 0.1` is the finalized minimal exchange profile. It represents data objects, columns, joins, dimensions, measures, and metrics in a graph form suitable for interoperability, governance, and knowledge exchange.
+OBSL, the OrionBelt Semantic Layer vocabulary, is an RDF-based exchange format for semantic-layer models. `OBSL-Core 0.2` is the finalized minimal exchange profile. It represents data objects, columns, joins, dimensions, measures, and metrics in a graph form suitable for interoperability, governance, and knowledge exchange.
 
 OBSL uses:
 - RDF for machine-readable structure
@@ -28,8 +28,8 @@ OBSL-Core is not intended to represent:
 
 ## 3. Profiles
 
-### 3.1 OBSL-Core 0.1
-`OBSL-Core 0.1` includes:
+### 3.1 OBSL-Core 0.2
+`OBSL-Core 0.2` includes:
 - semantic model container
 - data objects (with optional refresh-policy contracts)
 - columns (with optional `numClass` and `primaryKey` flags)
@@ -51,7 +51,7 @@ OBSL-Full adds:
 - structured expression graphs
 - structured filter graphs
 
-Only `OBSL-Core 0.1` is finalized by this document. `OBSL-Full` remains future work.
+Only `OBSL-Core 0.2` is finalized by this document. `OBSL-Full` remains future work.
 
 ## 4. Namespaces
 Final prefixes:
@@ -65,7 +65,7 @@ Final prefixes:
 @prefix obsl: <https://ralforion.com/ns/obsl#> .
 ```
 
-The `obsl:` namespace is frozen for `OBSL-Core 0.1` as:
+The `obsl:` namespace is frozen for `OBSL-Core 0.2` as:
 - `https://ralforion.com/ns/obsl#`
 - Hosted at: [https://ralforion.com/ns/obsl/](https://ralforion.com/ns/obsl/)
 
@@ -122,11 +122,14 @@ Required:
 Optional:
 - `obsl:synonym`
 - `rdfs:comment`
+- `obsl:expressionSource` — present when the column is computed rather than mapped to a physical column
+- `obsl:referencesColumn` — one edge per column the expression reads, sibling or cross-object
 
 Cardinality:
 - exactly one `rdfs:label`
 - exactly one `obsl:code`
 - exactly one `obsl:resultType`
+- at most one `obsl:expressionSource`
 
 Note: Column membership in a data object is expressed via `obsl:hasColumn` on the parent `DataObject`, not via a reverse property on the column.
 
@@ -262,17 +265,18 @@ Additional required:
 - `obsl:comparison`
 
 ## 6. Expressions
-In `OBSL-Core 0.1`, the normative expression representation is:
+In `OBSL-Core 0.2`, the normative expression representation is:
 - `obsl:expressionSource`
 
-Structured expression graphs are explicitly out of scope for `OBSL-Core 0.1`.
+Structured expression graphs are explicitly out of scope for `OBSL-Core 0.2`.
 
 Core-compatible derived links:
 - metrics MAY include `obsl:referencesMeasure`
 - expression-based measures include `obsl:referencesColumn` for the columns their formula references (a dependency edge; the measure's source form is still `obsl:expressionSource`, and `obsl:sourceColumn` stays reserved for declared `columns[]`)
+- computed columns carry the same pair: `obsl:expressionSource` for the formula and `obsl:referencesColumn` for each column it reads. `obsl:referencesColumn` therefore has a union domain (`obsl:Measure` or `obsl:Column`). Because the edges compose, a dependency chain — measure -> computed column -> another data object's column — is walkable in one property path, and a cross-object edge marks a join the query planner has to make
 
 ## 7. Filters
-Structured filter graphs (nested AND/OR trees) are out of scope for `OBSL-Core 0.1`.
+Structured filter graphs (nested AND/OR trees) are out of scope for `OBSL-Core 0.2`.
 
 Measure-level filters are represented as a human-readable expression string via `obsl:filterExpression`. This captures the filter semantics (e.g., `"Customers.Country equals 'US'"`) without requiring a full filter graph vocabulary. The expression is serialized from OBML's structured `MeasureFilter` / `MeasureFilterGroup` model, including nested groups and negation.
 
@@ -381,6 +385,8 @@ Recommended practice:
 ### 10.3 Columns
 - `code` -> `obsl:code`
 - `abstractType` -> `obsl:resultType`
+- `expression` -> `obsl:expressionSource`
+- columns referenced by `expression` -> `obsl:referencesColumn` (derived dependency edges; `{Column}` resolves within the owning data object, `{[DataObject].[Column]}` across data objects)
 
 ### 10.4 Joins
 - `joinType` -> `obsl:cardinality`
@@ -431,7 +437,7 @@ Fields intentionally excluded from Core mapping:
 - expression AST nodes
 
 ## 11. OWL Axioms
-OBSL-Core 0.1 includes a small set of OWL axioms that formalize structural invariants at the ontology level, complementing SHACL validation.
+OBSL-Core 0.2 includes a small set of OWL axioms that formalize structural invariants at the ontology level, complementing SHACL validation.
 
 ### 11.1 Class Disjointness
 The seven core classes are declared mutually exclusive via `owl:AllDisjointClasses`:
@@ -484,14 +490,14 @@ are derived from the canonical ontology and should not be treated as a second so
 of truth.
 
 ## 14. Versioning
-OBSL-Core 0.1 keeps:
+OBSL-Core 0.2 keeps:
 - expression strings as normative
 - AST out of scope
 - planner details out of scope
 - vocabulary small and close to OBML
 
 ## 15. Finalized Core Surface
-The finalized `OBSL-Core 0.1` surface is:
+The finalized `OBSL-Core 0.2` surface is:
 
 Classes:
 - `obsl:SemanticModel`

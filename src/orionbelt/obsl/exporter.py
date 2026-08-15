@@ -1,6 +1,6 @@
-"""OBSL-Core 0.1 exporter — SemanticModel → RDF graph.
+"""OBSL-Core 0.2 exporter — SemanticModel → RDF graph.
 
-Produces an in-memory rdflib.Graph that represents the full OBSL-Core 0.1
+Produces an in-memory rdflib.Graph that represents the full OBSL-Core 0.2
 graph for a loaded semantic model.  Expression strings are preserved as
 ``obsl:expressionSource`` literals; structured ASTs are out of scope for Core.
 """
@@ -13,6 +13,7 @@ from typing import Any
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
+from orionbelt.models.expressions import find_placeholders, find_qualified_refs
 from orionbelt.models.semantic import (
     MeasureFilter,
     MeasureFilterGroup,
@@ -92,6 +93,19 @@ def _rdf_list(g: Graph, items: list[URIRef]) -> BNode:
     return head
 
 
+def _add_union_domain(g: Graph, prop: URIRef, classes: list[URIRef]) -> None:
+    """Declare *prop*'s domain as the union of *classes*.
+
+    Repeating ``rdfs:domain`` would mean the intersection — a subject that is
+    every one of them at once — which is the opposite of what a property shared
+    by two unrelated classes needs.
+    """
+    union = BNode()
+    g.add((union, RDF.type, OWL.Class))
+    g.add((union, OWL.unionOf, _rdf_list(g, classes)))
+    g.add((prop, RDFS.domain, union))
+
+
 # ---------------------------------------------------------------------------
 # Measure filter → expression string
 # ---------------------------------------------------------------------------
@@ -157,7 +171,7 @@ def _serialize_measure_filters(filters: list[MeasureFilterItem]) -> str | None:
 
 
 def export_obsl(model: SemanticModel, model_id: str) -> Graph:
-    """Export a ``SemanticModel`` as an OBSL-Core 0.1 RDF graph.
+    """Export a ``SemanticModel`` as an OBSL-Core 0.2 RDF graph.
 
     Parameters
     ----------
@@ -264,7 +278,6 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.column, OBSL.Dimension, OBSL.Column),
         (OBSL.via, OBSL.Dimension, OBSL.DataObject),
         (OBSL.sourceColumn, OBSL.Measure, OBSL.Column),
-        (OBSL.referencesColumn, OBSL.Measure, OBSL.Column),
         (OBSL.anchoredTo, OBSL.Measure, OBSL.DataObject),
         (OBSL.anchorGrain, OBSL.Measure, OBSL.DataObject),
         (OBSL.baseMeasure, OBSL.Metric, OBSL.Measure),
@@ -274,6 +287,14 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         g.add((prop, RDF.type, OWL.ObjectProperty))
         g.add((prop, RDFS.domain, domain))
         g.add((prop, RDFS.range, range_))
+
+    # obsl:referencesColumn has two subject classes: an expression measure and a
+    # computed column both depend on the columns their formula reads. Its domain
+    # is therefore a union — two rdfs:domain triples would say the *intersection*,
+    # i.e. that every subject is both a Measure and a Column.
+    g.add((OBSL.referencesColumn, RDF.type, OWL.ObjectProperty))
+    g.add((OBSL.referencesColumn, RDFS.range, OBSL.Column))
+    _add_union_domain(g, OBSL.referencesColumn, [OBSL.Measure, OBSL.Column])
 
     # Datatype properties
     for prop in (
@@ -382,6 +403,19 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             if col.num_class is not None:
                 g.add((col_uri, OBSL.numClass, Literal(col.num_class.value)))
 
+            # A computed column carries its formula and the columns that formula
+            # reads, the same pair an expression measure carries. The qualified
+            # form reaches another data object, which is a join requirement at
+            # query time — so these edges are what makes that dependency visible
+            # in the graph rather than buried in a string.
+            if col.expression:
+                g.add((col_uri, OBSL.expressionSource, Literal(col.expression)))
+                sibling_refs = [(obj_name, ref) for ref in find_placeholders(col.expression)]
+                for ref_object, ref_column in sibling_refs + find_qualified_refs(col.expression):
+                    ref_uri = col_uris.get((ref_object, ref_column))
+                    if ref_uri:
+                        g.add((col_uri, OBSL.referencesColumn, ref_uri))
+
             if col.description:
                 g.add((col_uri, RDFS.comment, Literal(col.description)))
             if col.owner:
@@ -487,9 +521,10 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         # can't confuse the two.
         if meas.expression:
             g.add((meas_uri, OBSL.expressionSource, Literal(meas.expression)))
-            for obj_name, col_name in re.findall(
-                r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}", meas.expression
-            ):
+            # Same scanner the compiler and validator use, so the graph reports
+            # the dependencies that actually resolve — including skipping a
+            # reference that only appears inside a string literal.
+            for obj_name, col_name in find_qualified_refs(meas.expression):
                 ref_col = col_uris.get((obj_name, col_name))
                 if ref_col:
                     g.add((meas_uri, OBSL.referencesColumn, ref_col))

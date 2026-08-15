@@ -133,6 +133,18 @@ obsl:ColumnShape a sh:NodeShape ;
         sh:maxCount 1 ;
         sh:name "result type" ;
         sh:message "Every column must have exactly one obsl:resultType."
+    ] ;
+    sh:property [
+        sh:path obsl:expressionSource ;
+        sh:maxCount 1 ;
+        sh:name "expression source" ;
+        sh:message "A computed column has at most one obsl:expressionSource."
+    ] ;
+    sh:property [
+        sh:path obsl:referencesColumn ;
+        sh:class obsl:Column ;
+        sh:name "references column" ;
+        sh:message "obsl:referencesColumn on a column must point at an obsl:Column."
     ] .
 
 # -----------------------------------------------------------------------------
