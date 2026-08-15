@@ -53,6 +53,33 @@ from ._seed import (  # noqa: E402
 EXPECTED_SALES_ROWS = 10000
 
 
+def _require_seed(
+    vendor: str,
+    execute: Callable[[str], list[dict[str, Any]]],
+    sales_ref: str,
+) -> None:
+    """Skip unless *vendor* carries a current commerce seed.
+
+    Cloud vendors are seeded once, out of band, so a missing or stale schema
+    is reported here with the command that fixes it rather than surfacing as a
+    row mismatch in every test.
+    """
+    try:
+        row = execute(f"SELECT COUNT(*) AS n FROM {sales_ref}")[0]
+    except Exception as exc:  # noqa: BLE001 — any failure here means "not seeded"
+        pytest.skip(
+            f"{vendor} schema '{SEED_SCHEMA}' is not loaded ({exc}). Seed it with:\n"
+            f"  uv run python scripts/seed_cloud_vendor.py {vendor}"
+        )
+    count = next(iter(row.values()))
+    if count != EXPECTED_SALES_ROWS:
+        raise AssertionError(
+            f"{vendor} '{SEED_SCHEMA}'.sales has {count} rows, expected "
+            f"{EXPECTED_SALES_ROWS}. Re-seed with: "
+            f"uv run python scripts/seed_cloud_vendor.py {vendor}"
+        )
+
+
 @dataclass
 class VendorTarget:
     """Single contract every vendor fixture must satisfy.
@@ -253,18 +280,86 @@ def vendor_snowflake() -> VendorTarget:
             return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
     try:
-        try:
-            seeded = _execute(f'SELECT COUNT(*) AS n FROM "{SEED_SCHEMA}"."sales"')[0]["N"]
-        except Exception as exc:  # noqa: BLE001 — any failure here means "not seeded"
-            pytest.skip(
-                f"Snowflake schema '{SEED_SCHEMA}' is not loaded ({exc}). Seed it with:\n"
-                f"  uv run python scripts/seed_cloud_vendor.py snowflake"
-            )
-        assert seeded == EXPECTED_SALES_ROWS, (
-            f"Snowflake '{SEED_SCHEMA}'.sales has {seeded} rows, expected "
-            f"{EXPECTED_SALES_ROWS}. Re-seed with: "
-            f"uv run python scripts/seed_cloud_vendor.py snowflake"
-        )
+        _require_seed("snowflake", _execute, f'"{SEED_SCHEMA}"."sales"')
         yield VendorTarget(name="snowflake", dialect="snowflake", execute=_execute)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# BigQuery (live project — no container exists for it)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def vendor_bigquery() -> VendorTarget:
+    """Live BigQuery, seeded out of band from ``seed_sql/bigquery/``.
+
+    ``orionbelt_1`` is the dataset; the project comes from the client, so the
+    model's two-part ``dataset.table`` reference resolves without a
+    ``database:`` field. Skipped unless ``BIGQUERY_PROJECT`` is set.
+    """
+    bigquery = pytest.importorskip(
+        "google.cloud.bigquery", reason="google-cloud-bigquery required for bigquery vendor exec"
+    )
+    project = os.environ.get("BIGQUERY_PROJECT")
+    if not project:
+        pytest.skip("BIGQUERY_PROJECT not set")
+
+    client = bigquery.Client(project=project, location=os.environ.get("BIGQUERY_LOCATION"))
+
+    def _execute(sql: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in client.query(sql).result()]
+
+    try:
+        _require_seed("bigquery", _execute, f"`{SEED_SCHEMA}`.`sales`")
+        yield VendorTarget(name="bigquery", dialect="bigquery", execute=_execute)
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# Databricks (live workspace — no container exists for it)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def vendor_databricks() -> VendorTarget:
+    """Live Databricks SQL warehouse, seeded out of band from ``seed_sql/databricks/``.
+
+    ``orionbelt_1`` is the schema and the catalog comes from the connection,
+    so the model's two-part reference resolves as-is. Skipped unless the
+    workspace variables are set, and again if the warehouse cannot be reached
+    — a stopped warehouse answers ``BAD_REQUEST: Cannot create the resource``
+    rather than a connection error, so that is treated as unavailable too.
+    """
+    dbsql = pytest.importorskip(
+        "databricks.sql", reason="databricks-sql-connector required for databricks vendor exec"
+    )
+    host = os.environ.get("DATABRICKS_SERVER_HOSTNAME")
+    http_path = os.environ.get("DATABRICKS_HTTP_PATH")
+    token = os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
+    if not (host and http_path and token):
+        pytest.skip("Databricks workspace variables not configured")
+
+    try:
+        conn = dbsql.connect(
+            server_hostname=host,
+            http_path=http_path,
+            access_token=token,
+            catalog=os.environ.get("DATABRICKS_CATALOG", "main"),
+        )
+    except Exception as exc:  # noqa: BLE001 — an unreachable warehouse is a skip, not a failure
+        pytest.skip(f"Could not connect to Databricks: {exc}")
+
+    def _execute(sql: str) -> list[dict[str, Any]]:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+
+    try:
+        _require_seed("databricks", _execute, f"`{SEED_SCHEMA}`.`sales`")
+        yield VendorTarget(name="databricks", dialect="databricks", execute=_execute)
     finally:
         conn.close()

@@ -175,16 +175,30 @@ def _load_golden(query_id: str) -> list[list[Any]]:
 # test is tracked but doesn't break CI.
 # ---------------------------------------------------------------------------
 
+# A period-over-period metric's declared ``dataType`` is never applied:
+# ``pop_wrap`` is the only wrapper that does not call ``_apply_metric_cast``,
+# so the ratio is emitted uncast and every engine falls back to its own
+# decimal-division scale. The model declares ``decimal(18, 4)`` (0.9932);
+# no engine produces that:
+#
+#     DuckDB     0.9931620307032472   (float division)
+#     BigQuery   0.993162031          (NUMERIC, scale 9)
+#     Snowflake  0.99316203           (NUMBER, scale 8)
+#
+# The golden is DuckDB-derived, so it encodes one engine's default rather than
+# the declared type. Fixing this changes DuckDB output too, so it needs its own
+# change; until then every three-part cloud vendor diverges here.
+_POP_DATATYPE_REASON = (
+    "Period-over-period metrics ignore their declared dataType (pop_wrap never "
+    "calls _apply_metric_cast), so the ratio's scale is whatever the engine's "
+    "decimal division produces. DuckDB 0.9931620307032472, BigQuery 0.993162031, "
+    "Snowflake 0.99316203; the model declares decimal(18, 4) -> 0.9932."
+)
+
 _KNOWN_ISSUES: dict[tuple[str, str], str] = {
-    ("snowflake", "13_sales_yoy_growth"): (
-        "Period-over-period metrics ignore their declared dataType: pop_wrap is "
-        "the only wrapper that never calls _apply_metric_cast, so the ratio is "
-        "emitted uncast and each engine falls back to its own decimal-division "
-        "scale. DuckDB gives 0.9931620307032472, Snowflake NUMBER scale 8 "
-        "(0.99316203); the model declares decimal(18, 4), which would give "
-        "0.9932 on both. The golden is DuckDB-derived, so it encodes one "
-        "engine's default rather than the declared type."
-    ),
+    ("snowflake", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
+    ("bigquery", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
+    ("databricks", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
 }
 
 
@@ -276,3 +290,25 @@ def test_snowflake_vendor_exec(
 ) -> None:
     """Live Snowflake account, seeded by scripts/seed_cloud_vendor.py."""
     _assert_matches_golden(entry, vendor_snowflake, commerce_model, pipeline)
+
+
+@pytest.mark.parametrize("entry", CORPUS, ids=lambda e: e.id)
+def test_bigquery_vendor_exec(
+    entry: CorpusEntry,
+    vendor_bigquery: VendorTarget,
+    commerce_model: SemanticModel,
+    pipeline: CompilationPipeline,
+) -> None:
+    """Live BigQuery project, seeded by scripts/seed_cloud_vendor.py."""
+    _assert_matches_golden(entry, vendor_bigquery, commerce_model, pipeline)
+
+
+@pytest.mark.parametrize("entry", CORPUS, ids=lambda e: e.id)
+def test_databricks_vendor_exec(
+    entry: CorpusEntry,
+    vendor_databricks: VendorTarget,
+    commerce_model: SemanticModel,
+    pipeline: CompilationPipeline,
+) -> None:
+    """Live Databricks SQL warehouse, seeded by scripts/seed_cloud_vendor.py."""
+    _assert_matches_golden(entry, vendor_databricks, commerce_model, pipeline)
