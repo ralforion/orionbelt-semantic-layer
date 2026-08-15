@@ -122,6 +122,14 @@ measures:
       - column: {dataObject: Store, column: Zip Matches}
         operator: equals
         values: [{dataType: boolean, valueBoolean: true}]
+  Context Matched Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: RELATIVE
+      include:
+        - {field: Zip Matches, op: "=", value: true}
 """
 
 
@@ -220,6 +228,25 @@ class TestJoinEmission:
         ).sql
         assert 'JOIN "PUBLIC"."CUSTOMER_ADDRESS" AS "Address"' in sql
         assert '"Address"."CA_ZIP"' in sql
+
+    def test_filter_context_include_joins_it(self) -> None:
+        """``filterContext.include`` is resolved by the filter wrapper, which
+        runs after join planning and builds its CTE over the joins planned
+        here — so the dependency has to be declared before planning, not when
+        the wrapper inlines the expression."""
+        result = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Store Zip"], measures=["Context Matched Amount"])
+            ),
+            _load(),
+            "postgres",
+        )
+        wrapper = result.sql[result.sql.index('"fc_0" AS (') :]
+        assert 'JOIN "PUBLIC"."CUSTOMER_ADDRESS" AS "Address"' in wrapper
+        assert '"Address"."CA_ZIP"' in wrapper
+        assert any(ref.endswith(".CUSTOMER_ADDRESS") for ref in result.physical_tables), (
+            result.physical_tables
+        )
 
     def test_object_joined_once_for_two_referencing_columns(self) -> None:
         sql = PIPELINE.compile(

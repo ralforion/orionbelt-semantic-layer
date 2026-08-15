@@ -1225,6 +1225,16 @@ class QueryResolver:
             filter_columns: set[tuple[str, str]] = set()
             for fi in measure.filters:
                 collect_measure_filter_columns(fi, filter_columns)
+            if measure.filter_context is not None:
+                # ``filterContext.include`` items are resolved by the filter
+                # wrapper, which runs *after* join planning and builds its CTE
+                # over the joins planned here. Whatever they read has to be in
+                # that set, or the CTE's WHERE names an alias it never joined.
+                for incl in measure.filter_context.include:
+                    dim = ctx.model.dimensions.get(incl.field)
+                    if dim is not None and dim.view and dim.column:
+                        result.add(dim.view)
+                        filter_columns.add((dim.view, dim.column))
             for obj_name, col_name in filter_columns:
                 result.update(ctx.model.column_reference_objects(obj_name, col_name))
             return result

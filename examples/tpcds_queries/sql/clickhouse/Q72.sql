@@ -7,14 +7,14 @@ SELECT
   "Catalog Sold Date"."d_week_seq" AS "Catalog Sold Week",
   CAST(COUNT(
     CASE
-      WHEN "Catalog Sales"."cs_promo_sk" IS NULL
+      WHEN "Promotion"."p_promo_sk" IS NULL
       THEN "Catalog Sales"."cs_order_number"
     END
   ) AS Nullable(Int64)) AS "Catalog Sales No Promo Count",
   CAST(COUNT(
     CASE
       WHEN NOT (
-        "Catalog Sales"."cs_promo_sk" IS NULL
+        "Promotion"."p_promo_sk" IS NULL
       )
       THEN "Catalog Sales"."cs_order_number"
     END
@@ -29,6 +29,8 @@ LEFT JOIN "tpcds"."warehouse" AS "Inventory Warehouse"
   ON "Inventory"."inv_warehouse_sk" = "Inventory Warehouse"."w_warehouse_sk"
 LEFT JOIN "tpcds"."item" AS "Item"
   ON "Catalog Sales"."cs_item_sk" = "Item"."i_item_sk"
+LEFT JOIN "tpcds"."promotion" AS "Promotion"
+  ON "Catalog Sales"."cs_promo_sk" = "Promotion"."p_promo_sk"
 LEFT JOIN "tpcds"."date_dim" AS "Inventory Date"
   ON "Inventory"."inv_date_sk" = "Inventory Date"."d_date_sk"
 LEFT JOIN "tpcds"."date_dim" AS "Catalog Ship Date"

@@ -1850,7 +1850,7 @@ measures:
     dataType: bigint
     allowFanOut: true
     filters:
-      - column: {dataObject: Catalog Sales, column: Promo Key}
+      - column: {dataObject: Promotion, column: Promo Key}
         operator: notset
 
   Catalog Sales Promo Count:
@@ -1860,7 +1860,7 @@ measures:
     dataType: bigint
     allowFanOut: true
     filters:
-      - column: {dataObject: Catalog Sales, column: Promo Key}
+      - column: {dataObject: Promotion, column: Promo Key}
         operator: set
 
   Catalog Sales Row Count:
