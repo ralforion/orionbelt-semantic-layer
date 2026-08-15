@@ -22,7 +22,7 @@ from osi_orionbelt.converter import (
     validate_osi,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "OBMLtoOSI",
