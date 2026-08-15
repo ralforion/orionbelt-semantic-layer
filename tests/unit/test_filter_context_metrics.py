@@ -45,6 +45,7 @@ dataObjects:
       Date Key: {code: DATE_KEY, abstractType: int, primaryKey: true}
       Month: {code: MONTH, abstractType: int}
       Day: {code: DAY, abstractType: int}
+      Order Date: {code: ODATE, abstractType: date}
 
   Sales:
     code: SALES
@@ -64,6 +65,7 @@ dimensions:
   Month: {dataObject: Dates, column: Month, resultType: int}
   Day: {dataObject: Dates, column: Day, resultType: int}
   Region: {dataObject: Sales, column: Region, resultType: string}
+  Order Date: {dataObject: Dates, column: Order Date, resultType: date}
 
 measures:
   Revenue:
@@ -133,6 +135,24 @@ metrics:
     expression: "{[Unfiltered Revenue]} / {[Month Revenue]}"
   Share Of Grand Avg:
     expression: "{[Unfiltered Revenue]} / {[Grand Avg]}"
+  Unfiltered YoY:
+    type: period_over_period
+    expression: "{[Unfiltered Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: year
+      offset: -1
+      offsetGrain: year
+      comparison: previousValue
+  Revenue YoY:
+    type: period_over_period
+    expression: "{[Revenue]}"
+    periodOverPeriod:
+      timeDimension: Order Date
+      grain: year
+      offset: -1
+      offsetGrain: year
+      comparison: previousValue
 """
 
 
@@ -164,12 +184,15 @@ def _rows(measures: list[str], dimensions: list[str] | None = None) -> dict[str,
     """Execute, returning one list of values per selected measure."""
     con = duckdb.connect(":memory:")
     con.execute('CREATE SCHEMA "PUBLIC"')
-    con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT)')
+    con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT, ODATE DATE)')
     con.execute('CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, REGION VARCHAR, AMOUNT DOUBLE)')
     # Month 1 has 2 on day 1 and 38 on day 2; month 2 has 5 on day 1. So month 1
     # is the larger month overall and the smaller one on the filtered day —
     # which is what lets a rank tell a dropped context from an honoured one.
-    con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 1, 1), (2, 1, 2), (3, 2, 1)')
+    con.execute(
+        'INSERT INTO "PUBLIC"."DATES" VALUES '
+        "(1, 1, 1, DATE '2024-01-01'), (2, 1, 2, DATE '2024-01-02'), (3, 2, 1, DATE '2024-02-01')"
+    )
     con.execute(
         "INSERT INTO \"PUBLIC\".\"SALES\" VALUES (1, 'EU', 2.0), (2, 'EU', 38.0), (3, 'US', 5.0)"
     )
@@ -428,3 +451,30 @@ class TestAMetricMixingAContextWithATotal:
         """The refusal is about what filterContext does to the plan, so a query
         without one still gets its averaged total."""
         assert _rows(["Grand Avg"])["Grand Avg"] == [3.5, 3.5]
+
+
+class TestAContextUnderAPeriodOverPeriodMetric:
+    """A filterContext *is* a differently filtered scan of the fact, held in a
+    CTE of its own. Period-over-period rebuilds the query's FROM from a date
+    spine, which cannot read that CTE - it was being built and then ignored, so
+    the comparison ran on the query-filtered value under the filter-contexted
+    measure's name. Refused, the same treatment an anchored measure already
+    gets for the same reason."""
+
+    def test_a_pop_metric_over_such_a_measure_is_refused(self) -> None:
+        with pytest.raises(ResolutionError) as exc:
+            _sql(["Unfiltered YoY"], ["Order Date"])
+        message = str(exc.value)
+        assert "Unfiltered Revenue" in message
+        assert "date spine" in message
+
+    def test_an_unrelated_one_in_the_same_query_is_refused_too(self) -> None:
+        """The pass regroups the whole query to its own grain, so a
+        filterContext measure that the metric does not read comes back at that
+        grain rather than the query's."""
+        with pytest.raises(ResolutionError) as exc:
+            _sql(["Revenue YoY", "Unfiltered Revenue"], ["Order Date"])
+        assert "Unfiltered Revenue" in str(exc.value)
+
+    def test_a_pop_metric_without_one_still_compiles(self) -> None:
+        assert "Revenue YoY" in _sql(["Revenue YoY"], ["Order Date"])

@@ -604,6 +604,46 @@ def apply_aggregate_passes(ast: Select, ctx: CompileContext) -> Select:
     # there names a table out of scope. Refused rather than emitted, the same
     # treatment grain dedup already gives period-over-period for the same
     # reason: the wrapper rebuilds a FROM the rewrite's output cannot serve.
+    # The same rebuilt FROM cannot carry a filterContext's CTE either. That
+    # scan is the whole of what the field means - a differently filtered read of
+    # the fact - and period-over-period reassembles the query around a date
+    # spine, projecting each measure's aggregate afresh. The CTE was built and
+    # then ignored, so the metric compared the query-filtered value under the
+    # filter-contexted measure's name. Refused for both, since the pass regroups
+    # the whole query to its own grain: an unrelated filterContext measure in
+    # the same query comes back at that grain rather than the query's.
+    if ctx.resolved.has_pop and ctx.resolved.has_filter_context:
+        contexts = sorted(
+            {m.name for m in ctx.resolved.measures if m.filter_context is not None}
+            | {
+                comp.name
+                for comp in ctx.resolved.metric_components.values()
+                if comp.filter_context is not None
+            }
+        )
+        listed = ", ".join(f"'{name}'" for name in contexts)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INCOMPATIBLE_COMBINATION",
+                    message=(
+                        f"Measure(s) {listed} declare a filterContext, which is computed as "
+                        f"a differently filtered scan of the fact in a CTE of its own. A "
+                        f"period-over-period metric rebuilds the query's FROM from a date "
+                        f"spine, which cannot read that CTE and regroups the query to its "
+                        f"own grain."
+                    ),
+                    path="select.measures",
+                    hint=(
+                        "Query the period-over-period metric without the filterContext "
+                        "measure, or compare periods on a measure that takes the query's "
+                        "filters."
+                    ),
+                    context={"measures": contexts},
+                )
+            ]
+        )
+
     if ctx.resolved.has_pop and ctx.resolved.anchored_measures:
         anchored = sorted(ctx.resolved.anchored_measures)
         listed = ", ".join(f"'{name}'" for name in anchored)
