@@ -130,7 +130,16 @@ def _resolve_include_filters(
 
 
 def _effective_grain_dims(measure: ResolvedMeasure, query_dims: list[str]) -> list[str]:
-    """Get the effective grain dimensions for a filter-isolated measure."""
+    """The dimensions a filter-isolated measure's own CTE groups by.
+
+    ``total: true`` is the same claim as ``grain: {mode: FIXED}`` with nothing
+    kept - a grand total - but only the grain override reaches
+    ``effective_grain``. Read from the query grain instead, the measure came
+    back per group, and ``total_wrap`` was never going to correct it: it skips
+    filter-contexted measures on the grounds that this wrapper owns them.
+    """
+    if measure.total:
+        return []
     if measure.effective_grain is not None:
         return measure.effective_grain
     return query_dims

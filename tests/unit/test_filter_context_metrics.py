@@ -87,6 +87,13 @@ measures:
     columns: [{dataObject: Sales, column: Amount}]
     resultType: int
     aggregation: count
+  Unfiltered Total Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    total: true
+    filterContext:
+      mode: FIXED
 
 metrics:
   Revenue Share:
@@ -97,6 +104,14 @@ metrics:
     expression: "{[Unfiltered Revenue]} / {[Revenue Any Day]}"
   Plain Ratio:
     expression: "{[Revenue]} / {[Sale Count]}"
+  Total Share:
+    expression: "{[Revenue]} / {[Unfiltered Total Revenue]}"
+  Rank Unfiltered:
+    type: window
+    windowFunction: rank
+    measure: Unfiltered Revenue
+  Doubled Rank:
+    expression: "{[Rank Unfiltered]} * 2"
 """
 
 
@@ -130,10 +145,12 @@ def _rows(measures: list[str], dimensions: list[str] | None = None) -> dict[str,
     con.execute('CREATE SCHEMA "PUBLIC"')
     con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT)')
     con.execute('CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, REGION VARCHAR, AMOUNT DOUBLE)')
-    # Month 1 has 10 on day 1 and 30 on day 2; month 2 has 5 on day 1.
+    # Month 1 has 2 on day 1 and 38 on day 2; month 2 has 5 on day 1. So month 1
+    # is the larger month overall and the smaller one on the filtered day —
+    # which is what lets a rank tell a dropped context from an honoured one.
     con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 1, 1), (2, 1, 2), (3, 2, 1)')
     con.execute(
-        "INSERT INTO \"PUBLIC\".\"SALES\" VALUES (1, 'EU', 10.0), (2, 'EU', 30.0), (3, 'US', 5.0)"
+        "INSERT INTO \"PUBLIC\".\"SALES\" VALUES (1, 'EU', 2.0), (2, 'EU', 38.0), (3, 'US', 5.0)"
     )
     result = con.execute(_sql(measures, dimensions)).fetchdf()
     # Sorted on the dimensions: nothing orders the rows, and two queries have to
@@ -156,6 +173,7 @@ class TestTheContextSurvivesTheMetric:
             ("Day Share", "Revenue", "Revenue Any Day"),
             ("Two Contexts", "Unfiltered Revenue", "Revenue Any Day"),
             ("Plain Ratio", "Revenue", "Sale Count"),
+            ("Total Share", "Revenue", "Unfiltered Total Revenue"),
         ],
     )
     def test_the_metric_equals_its_components(
@@ -168,10 +186,10 @@ class TestTheContextSurvivesTheMetric:
 
     def test_the_context_actually_changes_the_number(self) -> None:
         """The equality above is only worth something if the two sides differ.
-        Month 1 holds 10 on the filtered day out of 40 altogether; month 2's
-        one row is on that day, so there the context changes nothing."""
+        Month 1 holds 2 on the filtered day out of 40 altogether; month 2's one
+        row is on that day, so there the context changes nothing."""
         assert _rows(["Revenue", "Unfiltered Revenue"], ["Month"]) == {
-            "Revenue": [10.0, 5.0],
+            "Revenue": [2.0, 5.0],
             "Unfiltered Revenue": [40.0, 5.0],
         }
 
@@ -224,7 +242,7 @@ class TestTheShapeOfTheSQL:
     def test_both_read_the_same_column(self) -> None:
         rows = _rows(["Revenue Share", "Unfiltered Revenue"])
         assert rows["Unfiltered Revenue"] == [40.0, 5.0]
-        assert [round(v, 6) for v in rows["Revenue Share"]] == [0.25, 1.0]
+        assert [round(v, 6) for v in rows["Revenue Share"]] == [0.05, 1.0]
 
 
 class TestTheEdgesTheRebuildReaches:
@@ -274,3 +292,60 @@ class TestTheEdgesTheRebuildReaches:
         query.having = [QueryFilter(field="Revenue", op=FilterOperator.GREATER, value=6)]
         sql = PIPELINE.compile(query, _model(), "duckdb").sql
         assert "HAVING" in sql
+
+
+class TestAContextOnATotalMeasure:
+    """``total: true`` and ``grain: {mode: FIXED}`` make the same claim - a
+    grand total - but only the grain override reaches ``effective_grain``. The
+    isolated CTE read the query grain instead and came back per group, and
+    ``total_wrap`` was never going to correct it: it skips filter-contexted
+    measures on the grounds that this wrapper owns them."""
+
+    def test_the_isolated_cte_has_no_grain(self) -> None:
+        sql = _sql(["Unfiltered Total Revenue"])
+        assert "CROSS JOIN" in sql
+        fc_block = sql.split('"fc_0" AS')[1].split("\n)")[0]
+        assert '"Month"' not in fc_block
+
+    def test_it_is_the_same_value_on_every_row(self) -> None:
+        """Sales total 45 across both months and both days; the query asks for
+        one day of one month, and this measure reports all of it regardless."""
+        assert _rows(["Unfiltered Total Revenue"])["Unfiltered Total Revenue"] == [45.0, 45.0]
+
+    def test_the_total_is_what_distinguishes_it(self) -> None:
+        """Without ``total`` the same context reports per month, so the two
+        measures must not agree — otherwise the assertion above proves
+        nothing."""
+        assert _rows(["Unfiltered Revenue"])["Unfiltered Revenue"] == [40.0, 5.0]
+
+
+class TestAContextBehindAWindowMetric:
+    """``metric_leaf_components`` stops at a cumulative / window /
+    period-over-period metric, because that one is computed by its own wrapper
+    rather than substituted into the formula. Its *base measure* is still a
+    measure the query computes, and a context declared on it is still one to
+    honour - a derived metric over a window metric over a filter-contexted
+    measure hid one exactly there."""
+
+    def test_a_window_metric_over_it_honours_the_context(self) -> None:
+        sql = _sql(["Rank Unfiltered"])
+        assert '"fc_0" AS' in sql
+        # Unfiltered: month 1 has 110, month 2 has 50. Filtered it is the other
+        # way round, so a dropped context would swap the ranks.
+        assert _rows(["Rank Unfiltered"])["Rank Unfiltered"] == [1.0, 2.0]
+
+    def test_a_derived_metric_over_that_window_is_refused(self) -> None:
+        """The derived expression is a placeholder until the window pass
+        resolves it, and this wrapper's CTE would materialize it first. The
+        rule that says so could not see the context to fire on."""
+        with pytest.raises(ResolutionError) as exc:
+            _sql(["Doubled Rank"])
+        message = str(exc.value)
+        assert "Doubled Rank" in message
+        assert "window metric" in message
+
+    def test_the_flag_sees_it(self) -> None:
+        from orionbelt.compiler.resolution import QueryResolver
+
+        resolved = QueryResolver().resolve(_query(["Rank Unfiltered"]), _model())
+        assert resolved.has_filter_context
