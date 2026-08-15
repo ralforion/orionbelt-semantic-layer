@@ -19,8 +19,9 @@ import pytest
 
 import orionbelt.dialect  # noqa: F401 - registers dialects
 from orionbelt.ast.nodes import AliasedExpr, BinaryOp, ColumnRef, From, Literal, Select
-from orionbelt.compiler.having_hoist import HavingHoistError, apply_having_hoist
+from orionbelt.compiler.having_hoist import apply_having_hoist
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -235,7 +236,7 @@ class TestDerivedMetricOverWindow:
         sql = _compile(model, self.QUERY)
         assert "HAVING" not in _cte_body(sql, "base")
         # The metric is assembled from the windowed component, not the raw sum.
-        assert 'SUM("Class Revenue") OVER (PARTITION BY "Class")' in _cte_body(sql, "totals")
+        assert 'SUM("Class Revenue") OVER (PARTITION BY "Class")' in _cte_body(sql, "having_window")
         assert '"Deviation" > 0.1' in _tail_after_ctes(sql)
 
 
@@ -283,7 +284,7 @@ class TestUnaffectedQueries:
             model,
             {"select": {"dimensions": ["Class"], "measures": ["Grand Total"]}},
         )
-        assert '"totals" AS (' not in sql
+        assert '"having_window" AS (' not in sql
 
 
 class TestCompoundPredicate:
@@ -313,7 +314,7 @@ class TestCompoundPredicate:
         )
         assert "HAVING" not in _cte_body(sql, "base")
         # "Sales Amount" is carried through the window CTE so the predicate resolves.
-        assert '"Sales Amount"' in _cte_body(sql, "totals")
+        assert '"Sales Amount"' in _cte_body(sql, "having_window")
         tail = _tail_after_ctes(sql)
         assert '"Grand Total" > 5 AND "Sales Amount" > 1' in tail
 
@@ -333,7 +334,7 @@ class TestRejection:
             from_=From(source="base", alias="base"),
         )
         predicate = BinaryOp(ColumnRef(name="Absent"), ">", Literal.number(1))
-        with pytest.raises(HavingHoistError) as excinfo:
+        with pytest.raises(ResolutionError) as excinfo:
             apply_having_hoist(windowed, [predicate], cte_name="w")
         assert "Absent" in str(excinfo.value)
 
@@ -371,3 +372,98 @@ class TestAllDialects:
         tail = _tail_after_ctes(sql)
         assert "WHERE" in tail
         assert "HAVING" not in tail
+
+
+class TestMultipleWrappers:
+    """Two wrappers in one query must not fight over the same filter list.
+
+    Regression: each wrapper used to classify ``resolved.having_filters``
+    against only *its own* aliases. Totals left the rank predicate in ``base``
+    as ``HAVING SUM(amount) <= 1``, then window re-added the totals predicate
+    inside a non-grouped ``window_base`` as both a WHERE and a HAVING.
+    """
+
+    QUERY = {
+        "select": {
+            "dimensions": ["State", "Class"],
+            "measures": ["Sales Amount", "Grand Total", "State Rank"],
+        },
+        "having": [
+            {"field": "Grand Total", "op": "gt", "value": 5},
+            {"field": "State Rank", "op": "lte", "value": 1},
+        ],
+    }
+
+    def test_neither_predicate_is_left_in_an_inner_cte(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        assert "HAVING" not in _cte_body(sql, "base")
+        assert "HAVING" not in _cte_body(sql, "window_base")
+        # The totals predicate must not be re-applied inside the window CTE.
+        assert "> 5" not in _cte_body(sql, "window_base")
+
+    def test_both_predicates_apply_once_at_the_end(self, model: SemanticModel) -> None:
+        sql = _compile(model, self.QUERY)
+        tail = _tail_after_ctes(sql)
+        assert '"Grand Total" > 5' in tail
+        assert '"State Rank" <= 1' in tail
+        assert sql.count("> 5") == 1
+        assert sql.count("<= 1") == 1
+
+    def test_no_having_survives_outside_a_grouped_query(self, model: SemanticModel) -> None:
+        """A HAVING in a CTE with no GROUP BY is the invalid-SQL symptom."""
+        for cte in ("window_base",):
+            body = _cte_body(sql := _compile(model, self.QUERY), cte)
+            assert "GROUP BY" in body or "HAVING" not in body, sql
+
+
+class TestDimensionInHoistedPredicate:
+    """A dimension in a hoisted predicate is a physical column until rewritten.
+
+    Regression: the guard only inspected bare ``ColumnRef``s, so a compound
+    predicate emitted ``"Sales"."cls" = 'A'`` over a CTE where ``Sales`` is
+    several levels out of scope.
+    """
+
+    def test_selected_dimension_is_rewritten_to_its_alias(self, model: SemanticModel) -> None:
+        sql = _compile(
+            model,
+            {
+                "select": {
+                    "dimensions": ["State", "Class"],
+                    "measures": ["Sales Amount", "State Rank"],
+                },
+                "having": [
+                    {
+                        "logic": "and",
+                        "filters": [
+                            {"field": "State Rank", "op": "lte", "value": 1},
+                            {"field": "Class", "op": "equals", "value": "A"},
+                        ],
+                    }
+                ],
+            },
+        )
+        tail = _tail_after_ctes(sql)
+        assert "\"Class\" = 'A'" in tail
+        # The physical column is out of scope here and must not appear.
+        assert '"Sales"."cls"' not in tail
+
+    def test_unselected_dimension_is_refused(self, model: SemanticModel) -> None:
+        """Nothing to rewrite it to, so it must raise rather than emit bad SQL."""
+        with pytest.raises(ResolutionError) as excinfo:
+            _compile(
+                model,
+                {
+                    "select": {"dimensions": ["State"], "measures": ["Sales Amount", "State Rank"]},
+                    "having": [
+                        {
+                            "logic": "and",
+                            "filters": [
+                                {"field": "State Rank", "op": "lte", "value": 1},
+                                {"field": "Category", "op": "equals", "value": "A"},
+                            ],
+                        }
+                    ],
+                },
+            )
+        assert "cat" in str(excinfo.value)

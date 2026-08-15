@@ -40,6 +40,11 @@ from orionbelt.compiler.grain_dedup import (
     mixed_grain_warning,
     wrap_with_grain_dedup,
 )
+from orionbelt.compiler.having_hoist import (
+    apply_having_hoist,
+    hoisted_predicates,
+    windowed_aliases,
+)
 from orionbelt.compiler.metric_expansion import metric_leaf_components
 from orionbelt.compiler.pop_wrap import wrap_with_pop
 from orionbelt.compiler.resolution import ResolutionError, ResolvedQuery
@@ -62,6 +67,7 @@ PASS_PERIOD_OVER_PERIOD = "period_over_period"
 PASS_TOTALS = "totals"
 PASS_CUMULATIVE = "cumulative"
 PASS_WINDOW = "window"
+PASS_HAVING_WINDOW = "having_over_window"
 PASS_HAVING_CLEANUP = "having_projection_cleanup"
 
 
@@ -190,6 +196,20 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
             applies=window_pass_applies,
             run=lambda ast, ctx: wrap_with_window(
                 ast, ctx.resolved, model=ctx.model, dialect=ctx.dialect
+            ),
+        ),
+        CompilerPass(
+            name=PASS_HAVING_WINDOW,
+            # Grain dedup hoists its own HAVING and never runs beside the
+            # window wrappers, so it is excluded rather than double-filtered.
+            applies=lambda r: (
+                not r.dedup_targets
+                and bool(
+                    [hf for hf in r.having_filters if hf.referenced_fields & windowed_aliases(r)]
+                )
+            ),
+            run=lambda ast, ctx: apply_having_hoist(
+                ast, hoisted_predicates(ctx.resolved), cte_name="having_window"
             ),
         ),
         CompilerPass(

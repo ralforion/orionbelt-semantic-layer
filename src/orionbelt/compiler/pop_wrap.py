@@ -30,6 +30,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
+from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.models.errors import SemanticError
@@ -205,8 +206,13 @@ def wrap_with_pop(
     # filter references it by alias). The star planner applies these at GROUP BY
     # level, which the PoP rewrite bypasses entirely — without this they were
     # silently dropped, returning unfiltered rows.
+    # Predicates on a window-produced alias are excluded here and applied once
+    # by ``PASS_HAVING_WINDOW``, after any wrapper nesting this one has run.
+    deferred = windowed_aliases(resolved)
     outer_where: Expr | None = None
     for hf in resolved.having_filters:
+        if hf.referenced_fields & deferred:
+            continue
         outer_where = (
             hf.expression
             if outer_where is None

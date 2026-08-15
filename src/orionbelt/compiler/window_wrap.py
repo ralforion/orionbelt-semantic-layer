@@ -25,7 +25,7 @@ from orionbelt.ast.nodes import (
     Select,
     WindowFunction,
 )
-from orionbelt.compiler.having_hoist import apply_having_hoist, split_having
+from orionbelt.compiler.having_hoist import inner_having
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
     metric_leaf_components,
@@ -383,8 +383,7 @@ def wrap_with_window(
     # The window function exists only in the outer query, so a HAVING predicate
     # on one of these aliases must not stay in the CTE — left there it would
     # silently bind to the window's *base* measure instead of the window value.
-    windowed = {m.name for m in direct_window_measures} | set(ddm_window_refs)
-    inner_having, hoisted_having = split_having(ast, resolved, windowed)
+    base_having = inner_having(ast, resolved)
 
     base_cte_query = Select(
         columns=base_columns,
@@ -392,7 +391,7 @@ def wrap_with_window(
         joins=ast.joins,
         where=ast.where,
         group_by=ast.group_by,
-        having=inner_having,
+        having=base_having,
         order_by=[],
         limit=None,
         offset=None,
@@ -442,21 +441,17 @@ def wrap_with_window(
 
     all_ctes = list(ast.ctes) + [base_cte]
 
-    return apply_having_hoist(
-        Select(
-            columns=outer_columns,
-            from_=From(source=cte_name, alias=cte_name),
-            joins=[],
-            where=None,
-            group_by=[],
-            having=None,
-            order_by=outer_order_by,
-            limit=ast.limit,
-            offset=ast.offset,
-            ctes=all_ctes,
-        ),
-        hoisted_having,
-        cte_name="windowed",
+    return Select(
+        columns=outer_columns,
+        from_=From(source=cte_name, alias=cte_name),
+        joins=[],
+        where=None,
+        group_by=[],
+        having=None,
+        order_by=outer_order_by,
+        limit=ast.limit,
+        offset=ast.offset,
+        ctes=all_ctes,
     )
 
 
