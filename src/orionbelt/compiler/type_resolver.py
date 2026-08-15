@@ -11,7 +11,12 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 
 from __future__ import annotations
 
-from orionbelt.models.semantic import Measure, Metric, ModelSettings
+from orionbelt.models.semantic import (
+    Measure,
+    Metric,
+    ModelSettings,
+    PeriodOverPeriodComparison,
+)
 from orionbelt.models.types import (
     BUILTIN_DEFAULT,
     DIVISION_DEFAULT,
@@ -59,6 +64,16 @@ def resolve_measure_data_type(
     return None
 
 
+# PoP comparisons whose result is a ratio rather than a value in the base
+# measure's units, so they take the division default rather than inherit.
+_POP_RATIO_COMPARISONS = frozenset(
+    {
+        PeriodOverPeriodComparison.PERCENT_CHANGE,
+        PeriodOverPeriodComparison.RATIO,
+    }
+)
+
+
 def resolve_metric_data_type(
     metric: Metric,
     settings: ModelSettings | None,
@@ -74,6 +89,17 @@ def resolve_metric_data_type(
     # 2. Structural inference: division in expression → decimal(18, 6)
     if metric.expression and "/" in metric.expression:
         return DIVISION_DEFAULT
+
+    # 2b. A period-over-period metric divides too, but the division is in the
+    # comparison rather than the expression: its ``expression`` names the base
+    # measure alone (``{[Revenue]}``). Without this it fell through to the
+    # model default — ``decimal(18, 2)`` — which would round a growth ratio to
+    # two places. ``difference`` and ``previousValue`` are not ratios: they
+    # carry the base measure's own units, so they inherit its type.
+    if metric.period_over_period is not None:
+        if metric.period_over_period.comparison in _POP_RATIO_COMPARISONS:
+            return DIVISION_DEFAULT
+        return None
 
     # 3. Metrics are always numeric expressions → default
     if metric.expression:

@@ -4,13 +4,14 @@ sql: "WITH \"date_range\" AS (\nSELECT date_trunc('month', MIN(\"Sales\".\"sales
   \ d::date AS spine_date,\n       CASE WHEN (d + INTERVAL '-1 year')::date >= (SELECT min_date FROM \"date_range\")\n   \
   \         THEN (d + INTERVAL '-1 year')::date END AS spine_date_prev\nFROM generate_series((SELECT min_date FROM \"date_range\"\
   )::timestamp, (SELECT max_date FROM \"date_range\")::timestamp, INTERVAL '1 month') AS t(d)\n),\n\"pop_base\" AS (\nSELECT\
-  \ \"date_spine\".spine_date AS \"Sales Month\",\n       SUM(\"Sales\".\"salesamount\") AS \"Total Sales\"\n  FROM \"date_spine\"\
-  \n  LEFT JOIN \"orionbelt_1\".\"sales\" AS \"Sales\"\n    ON date_trunc('month', \"Sales\".\"salesdate\") = \"date_spine\"\
-  .spine_date\n  GROUP BY 1\n),\n\"pop_compare\" AS (\nSELECT \"pop_base\".\"Sales Month\" AS \"Sales Month\",\n       \"\
-  pop_base\".\"Total Sales\" / NULLIF(pop_prev.\"Total Sales\", 0) - 1 AS \"Sales YoY Growth\"\n  FROM \"pop_base\"\n  LEFT\
-  \ JOIN \"date_spine\" ON \"pop_base\".\"Sales Month\" = \"date_spine\".spine_date\n  LEFT JOIN \"pop_base\" AS pop_prev\n\
-  \    ON \"date_spine\".spine_date_prev = pop_prev.\"Sales Month\"\n)\nSELECT \"Sales Month\" AS \"Sales Month\", \"Sales\
-  \ YoY Growth\" AS \"Sales YoY Growth\"\nFROM \"pop_compare\" AS \"pop_compare\"\n"
+  \ \"date_spine\".spine_date AS \"Sales Month\",\n       CAST(SUM(\"Sales\".\"salesamount\") AS DECIMAL(18, 2)) AS \"Total\
+  \ Sales\"\n  FROM \"date_spine\"\n  LEFT JOIN \"orionbelt_1\".\"sales\" AS \"Sales\"\n    ON date_trunc('month', \"Sales\"\
+  .\"salesdate\") = \"date_spine\".spine_date\n  GROUP BY 1\n),\n\"pop_compare\" AS (\nSELECT \"pop_base\".\"Sales Month\"\
+  \ AS \"Sales Month\",\n       \"pop_base\".\"Total Sales\" / NULLIF(pop_prev.\"Total Sales\", 0) - 1 AS \"Sales YoY Growth\"\
+  \n  FROM \"pop_base\"\n  LEFT JOIN \"date_spine\" ON \"pop_base\".\"Sales Month\" = \"date_spine\".spine_date\n  LEFT JOIN\
+  \ \"pop_base\" AS pop_prev\n    ON \"date_spine\".spine_date_prev = pop_prev.\"Sales Month\"\n)\nSELECT \"Sales Month\"\
+  \ AS \"Sales Month\", CAST(\"Sales YoY Growth\" AS DECIMAL(18, 4)) AS \"Sales YoY Growth\"\nFROM \"pop_compare\" AS \"pop_compare\"\
+  \n"
 rows:
 - - '2021-01-01'
   - null
@@ -37,98 +38,98 @@ rows:
 - - '2021-12-01'
   - null
 - - '2022-01-01'
-  - 0.9931620307032472
+  - '0.9932'
 - - '2022-02-01'
-  - -0.022336288817980665
+  - '-0.0223'
 - - '2022-03-01'
-  - 1.0022583085474106
+  - '1.0023'
 - - '2022-04-01'
-  - -0.17734923909737454
+  - '-0.1773'
 - - '2022-05-01'
-  - -0.17232280689541113
+  - '-0.1723'
 - - '2022-06-01'
-  - -0.5309757855302513
+  - '-0.5310'
 - - '2022-07-01'
-  - -0.11450478622882176
+  - '-0.1145'
 - - '2022-08-01'
-  - 0.043866131270241526
+  - '0.0439'
 - - '2022-09-01'
-  - 0.20325992897523681
+  - '0.2033'
 - - '2022-10-01'
-  - 0.4917563005304504
+  - '0.4918'
 - - '2022-11-01'
-  - 0.011264110536472138
+  - '0.0113'
 - - '2022-12-01'
-  - 0.04725169889213521
+  - '0.0473'
 - - '2023-01-01'
-  - -0.30947436707052434
+  - '-0.3095'
 - - '2023-02-01'
-  - 0.020629718173602596
+  - '0.0206'
 - - '2023-03-01'
-  - -0.3243718038147153
+  - '-0.3244'
 - - '2023-04-01'
-  - 0.11351139606170957
+  - '0.1135'
 - - '2023-05-01'
-  - 0.6619535804230248
+  - '0.6620'
 - - '2023-06-01'
-  - 0.3210558680356723
+  - '0.3211'
 - - '2023-07-01'
-  - -0.07597479773956695
+  - '-0.0760'
 - - '2023-08-01'
-  - -0.20413555346138046
+  - '-0.2041'
 - - '2023-09-01'
-  - 0.18397137360327398
+  - '0.1840'
 - - '2023-10-01'
-  - 0.7402788427659628
+  - '0.7403'
 - - '2023-11-01'
-  - -0.08615905795625356
+  - '-0.0862'
 - - '2023-12-01'
-  - 0.0518223937327178
+  - '0.0518'
 - - '2024-01-01'
-  - 0.4601070417317037
+  - '0.4601'
 - - '2024-02-01'
-  - 0.8437272772693942
+  - '0.8437'
 - - '2024-03-01'
-  - 0.8103824332229947
+  - '0.8104'
 - - '2024-04-01'
-  - 0.1561018005395718
+  - '0.1561'
 - - '2024-05-01'
-  - -0.09120741353781714
+  - '-0.0912'
 - - '2024-06-01'
-  - 1.337096438776347
+  - '1.3371'
 - - '2024-07-01'
-  - 0.232941553326103
+  - '0.2329'
 - - '2024-08-01'
-  - 0.07700166273871711
+  - '0.0770'
 - - '2024-09-01'
-  - 0.04767144091822173
+  - '0.0477'
 - - '2024-10-01'
-  - 0.36165295368970063
+  - '0.3617'
 - - '2024-11-01'
-  - 1.108567776899207
+  - '1.1086'
 - - '2024-12-01'
-  - 0.16057389616021345
+  - '0.1606'
 - - '2025-01-01'
-  - 0.4715245863679869
+  - '0.4715'
 - - '2025-02-01'
-  - 0.08961881905385605
+  - '0.0896'
 - - '2025-03-01'
-  - 0.20159962499396422
+  - '0.2016'
 - - '2025-04-01'
-  - 0.5134851613377718
+  - '0.5135'
 - - '2025-05-01'
-  - 0.2694077368963739
+  - '0.2694'
 - - '2025-06-01'
-  - -0.13351150619751073
+  - '-0.1335'
 - - '2025-07-01'
-  - 0.4672343595384518
+  - '0.4672'
 - - '2025-08-01'
-  - 1.4853561481834534
+  - '1.4854'
 - - '2025-09-01'
-  - 0.40749884203821884
+  - '0.4075'
 - - '2025-10-01'
-  - -0.015156876721989065
+  - '-0.0152'
 - - '2025-11-01'
-  - -0.23255164865537237
+  - '-0.2326'
 - - '2025-12-01'
-  - 0.19650300194857495
+  - '0.1965'

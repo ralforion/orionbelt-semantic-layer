@@ -175,31 +175,7 @@ def _load_golden(query_id: str) -> list[list[Any]]:
 # test is tracked but doesn't break CI.
 # ---------------------------------------------------------------------------
 
-# A period-over-period metric's declared ``dataType`` is never applied:
-# ``pop_wrap`` is the only wrapper that does not call ``_apply_metric_cast``,
-# so the ratio is emitted uncast and every engine falls back to its own
-# decimal-division scale. The model declares ``decimal(18, 4)`` (0.9932);
-# no engine produces that:
-#
-#     DuckDB     0.9931620307032472   (float division)
-#     BigQuery   0.993162031          (NUMERIC, scale 9)
-#     Snowflake  0.99316203           (NUMBER, scale 8)
-#
-# The golden is DuckDB-derived, so it encodes one engine's default rather than
-# the declared type. Fixing this changes DuckDB output too, so it needs its own
-# change; until then every three-part cloud vendor diverges here.
-_POP_DATATYPE_REASON = (
-    "Period-over-period metrics ignore their declared dataType (pop_wrap never "
-    "calls _apply_metric_cast), so the ratio's scale is whatever the engine's "
-    "decimal division produces. DuckDB 0.9931620307032472, BigQuery 0.993162031, "
-    "Snowflake 0.99316203; the model declares decimal(18, 4) -> 0.9932."
-)
-
-_KNOWN_ISSUES: dict[tuple[str, str], str] = {
-    ("snowflake", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
-    ("bigquery", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
-    ("databricks", "13_sales_yoy_growth"): _POP_DATATYPE_REASON,
-}
+_KNOWN_ISSUES: dict[tuple[str, str], str] = {}
 
 
 def _assert_matches_golden(

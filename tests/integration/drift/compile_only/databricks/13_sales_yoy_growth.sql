@@ -11,7 +11,7 @@ FROM (SELECT EXPLODE(SEQUENCE((SELECT min_date FROM `date_range`), (SELECT max_d
 ),
 `pop_base` AS (
 SELECT `date_spine`.spine_date AS `Sales Month`,
-       SUM(`Sales`.`salesamount`) AS `Total Sales`
+       CAST(SUM(`Sales`.`salesamount`) AS DECIMAL(18, 2)) AS `Total Sales`
   FROM `date_spine`
   LEFT JOIN `orionbelt_1`.`sales` AS `Sales`
     ON date_trunc('month', `Sales`.`salesdate`) = `date_spine`.spine_date
@@ -25,5 +25,5 @@ SELECT `pop_base`.`Sales Month` AS `Sales Month`,
   LEFT JOIN `pop_base` AS pop_prev
     ON `date_spine`.spine_date_prev = pop_prev.`Sales Month`
 )
-SELECT `Sales Month` AS `Sales Month`, `Sales YoY Growth` AS `Sales YoY Growth`
+SELECT `Sales Month` AS `Sales Month`, CAST(`Sales YoY Growth` AS DECIMAL(18, 4)) AS `Sales YoY Growth`
 FROM `pop_compare` AS `pop_compare`

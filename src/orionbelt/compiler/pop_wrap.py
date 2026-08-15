@@ -30,15 +30,75 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
+from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.type_resolver import (
+    resolve_measure_data_type,
+    resolve_metric_data_type,
+)
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import PeriodOverPeriodComparison, SemanticModel
 
 if TYPE_CHECKING:
     from orionbelt.dialect.base import Dialect
     from orionbelt.models.semantic import DataObject
+
+
+def _apply_metric_cast(
+    expr: Expr,
+    metric_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a PoP projection with the metric's declared dataType cast.
+
+    Same shape as ``cumulative_wrap._apply_metric_cast`` and
+    ``window_wrap._apply_metric_cast``. PoP was the only metric wrapper that
+    never applied the declared type, so its output scale was whatever each
+    engine's decimal division produced.
+
+    The cast governs the *result*; it cannot recover precision the engine
+    already discarded mid-division. That is what
+    ``Dialect.render_decimal_division_sql`` is for, and why ClickHouse still
+    widens its operands before dividing - see the note there.
+    """
+    if model is None or dialect is None:
+        return expr
+    metric = model.metrics.get(metric_name)
+    if metric is None:
+        return expr
+    resolved_type = resolve_metric_data_type(metric, model.settings)
+    if resolved_type is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved_type)
+
+
+def _apply_measure_cast(
+    expr: Expr,
+    measure_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Wrap a base aggregate with the measure's declared dataType cast.
+
+    ``pop_base`` rebuilds the aggregation itself rather than reusing the
+    planner's projection, so without this it emitted a bare ``SUM(...)`` where
+    every other plan emits ``CAST(SUM(...) AS DECIMAL(18, 2))``. A PoP query
+    therefore returned a *different type* for the same measure than the same
+    query without a PoP metric, and the ``difference`` / ``previousValue``
+    comparisons built on top had no declared type to inherit.
+    """
+    if model is None or dialect is None:
+        return expr
+    measure = model.effective_measures.get(measure_name)
+    if measure is None:
+        return expr
+    resolved_type = resolve_measure_data_type(measure, model.settings)
+    if resolved_type is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved_type)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:
@@ -192,10 +252,18 @@ def wrap_with_pop(
     for dim in resolved.dimensions:
         outer_columns.append(AliasedExpr(expr=ColumnRef(name=dim.name), alias=dim.name))
     for m in resolved.measures:
-        if not m.is_pop:
-            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
-        else:
-            outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
+        column: Expr = ColumnRef(name=m.name)
+        if m.is_pop:
+            # The comparison is assembled as raw SQL inside ``pop_compare``, so
+            # the metric's declared dataType has to be applied here, over the
+            # materialised column. Without it the ratio carries whatever scale
+            # the engine's decimal division happens to produce, which differs
+            # per engine: for a metric declared ``decimal(18, 4)`` DuckDB
+            # returned 0.9931620307032472, BigQuery 0.993162031 and Snowflake
+            # 0.99316203, none of them the declared 0.9932. ``cumulative_wrap``
+            # and ``window_wrap`` already cast their own projections this way.
+            column = _apply_metric_cast(column, m.name, model, dialect)
+        outer_columns.append(AliasedExpr(expr=column, alias=m.name))
 
     # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
     outer_order_by = _build_outer_order_by(resolved)
@@ -206,17 +274,34 @@ def wrap_with_pop(
     # filter references it by alias). The star planner applies these at GROUP BY
     # level, which the PoP rewrite bypasses entirely — without this they were
     # silently dropped, returning unfiltered rows.
-    # Predicates on a window-produced alias are excluded here and applied once
-    # by ``PASS_HAVING_WINDOW``, after any wrapper nesting this one has run.
+    # Two independent rules apply to the predicates this wrapper emits, and
+    # they do not overlap: ``windowed_aliases`` never contains a PoP metric.
+    #
+    # 1. A predicate on a *windowed* alias belongs to ``PASS_HAVING_WINDOW``,
+    #    which applies it after the wrapper nesting this one has run.
+    # 2. A PoP metric's declared dataType governs its value, so the filter has
+    #    to see the same value the projection returns. Both live in this one
+    #    SELECT, and WHERE is evaluated before the select list, so a bare alias
+    #    reference would read ``pop_compare``'s *uncast* column: with a metric
+    #    declared decimal(18, 4), `> 0.99318` dropped a row whose returned
+    #    value is 0.9932, because the underlying ratio is 0.9931620307.
     deferred = windowed_aliases(resolved)
+    pop_metrics = {m.name for m in resolved.measures if m.is_pop}
+
+    def _typed(ref: ColumnRef) -> Expr:
+        if ref.table is None and ref.name in pop_metrics:
+            return _apply_metric_cast(ref, ref.name, model, dialect)
+        return ref
+
     outer_where: Expr | None = None
     for hf in resolved.having_filters:
         if hf.referenced_fields & deferred:
             continue
+        predicate = map_column_refs(hf.expression, _typed)
         outer_where = (
-            hf.expression
+            predicate
             if outer_where is None
-            else BinaryOp(left=outer_where, op="AND", right=hf.expression)
+            else BinaryOp(left=outer_where, op="AND", right=predicate)
         )
 
     # Collect all CTEs (planner CTEs + our 4 new ones)
@@ -376,7 +461,8 @@ def _build_pop_base_sql(
             for comp_name in m.component_measures:
                 comp = resolved.metric_components.get(comp_name)
                 if comp:
-                    expr_sql = dialect.compile_expr(comp.expression)
+                    comp_expr = _apply_measure_cast(comp.expression, comp_name, model, dialect)
+                    expr_sql = dialect.compile_expr(comp_expr)
                     measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(comp_name)}")
         else:
             # A metric rides along as its components' aggregates, not as its
@@ -391,6 +477,22 @@ def _build_pop_base_sql(
                 if m.component_measures
                 else m.expression
             )
+            # Same cast the star planner applies, so a measure keeps its
+            # declared type whether or not the query also has a PoP metric.
+            #
+            # A *wrapper* metric is excluded. Its column here is only a
+            # placeholder holding the base measure's aggregate until
+            # ``window_wrap`` / ``cumulative_wrap`` builds the real window
+            # call, so the metric's own dataType does not describe it yet.
+            # Casting it early corrupts the input: a rank declaring
+            # ``dataType: integer`` truncated ``SUM(amount)`` to INT, so 1.49
+            # and 1.40 both became 1 and ranked equal. Those wrappers apply
+            # the metric's type to the finished window value themselves.
+            is_wrapper_metric = m.is_window or m.is_cumulative
+            if m.component_measures and not is_wrapper_metric:
+                expr = _apply_metric_cast(expr, m.name, model, dialect)
+            elif not m.component_measures:
+                expr = _apply_measure_cast(expr, m.name, model, dialect)
             expr_sql = dialect.compile_expr(expr)
             measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(m.name)}")
 

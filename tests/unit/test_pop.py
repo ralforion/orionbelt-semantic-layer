@@ -740,3 +740,244 @@ class TestPoPTimeDimOnDifferentTable:
         result = pipeline.compile(query, model, dialect)
         assert result.sql_valid
         assert "pop_compare" in result.sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# Declared dataType on a PoP metric
+# ---------------------------------------------------------------------------
+
+_TYPED_POP_YAML = POP_MODEL_YAML.replace(
+    """  Revenue YoY Growth:
+    type: period_over_period
+    expression: '{[Revenue]}'
+""",
+    """  Revenue YoY Growth:
+    type: period_over_period
+    expression: '{[Revenue]}'
+    dataType: 'decimal(18, 4)'
+""",
+)
+
+
+def _typed_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(_TYPED_POP_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, [e.message for e in result.errors]
+    return model
+
+
+class TestPoPDeclaredDataType:
+    """A PoP metric's ``dataType`` must reach the projection.
+
+    ``pop_wrap`` was the only metric wrapper that never applied it, so the
+    ratio carried whatever scale each engine's decimal division produced. For
+    a metric declared ``decimal(18, 4)`` DuckDB returned 0.9931620307032472,
+    BigQuery 0.993162031 and Snowflake 0.99316203 — three engines, three
+    answers, none of them the declared 0.9932.
+    """
+
+    QUERY = QueryObject(
+        select=QuerySelect(
+            dimensions=["Order Date"],
+            measures=["Revenue", "Revenue YoY Growth"],
+        ),
+    )
+
+    def test_declared_type_is_applied(self) -> None:
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), "duckdb").sql
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))' in sql
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("duckdb", 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))'),
+            ("postgres", 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4))'),
+            ("snowflake", 'CAST("Revenue YoY Growth" AS NUMBER(18, 4))'),
+        ],
+    )
+    def test_cast_is_dialect_idiomatic(self, dialect: str, expected: str) -> None:
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), dialect).sql
+        assert expected in sql
+
+    def test_cast_wraps_the_materialised_column_not_the_raw_ratio(self) -> None:
+        """The cast belongs outside ``pop_compare``, over the finished value."""
+        sql = CompilationPipeline().compile(self.QUERY, _typed_model(), "duckdb").sql
+        compare_at = sql.index('"pop_compare" AS (')
+        cast_at = sql.index('CAST("Revenue YoY Growth"')
+        assert cast_at > compare_at
+        # The division itself stays uncast inside the CTE.
+        assert 'NULLIF(pop_prev."Revenue", 0) - 1 AS "Revenue YoY Growth"' in sql
+
+    def test_having_filters_the_typed_value_not_the_raw_ratio(self) -> None:
+        """The filter must see the same value the projection returns.
+
+        Both live in one SELECT and WHERE is evaluated before the select list,
+        so a bare alias reference reads ``pop_compare``'s *uncast* column. With
+        a metric declared ``decimal(18, 4)`` that made `> 0.99318` drop a row
+        whose returned value is 0.9932, because the underlying ratio is
+        0.9931620307.
+        """
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue YoY Growth"],
+            ),
+            having=[
+                QueryFilter(
+                    field="Revenue YoY Growth",
+                    op=FilterOperator.GT,
+                    value=0.99318,
+                )
+            ],
+        )
+        sql = CompilationPipeline().compile(query, _typed_model(), "duckdb").sql
+        where = sql[sql.rindex("WHERE") :]
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 4)) > 0.99318' in where
+        # The bare column must not be compared anywhere in the filter.
+        assert '"Revenue YoY Growth" > 0.99318' not in where
+
+    def test_having_on_a_non_pop_measure_is_untouched(self) -> None:
+        """Only PoP metrics are cast in this projection, so only they are wrapped."""
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue YoY Growth"],
+            ),
+            having=[
+                QueryFilter(field="Revenue", op=FilterOperator.GT, value=5),
+            ],
+        )
+        sql = CompilationPipeline().compile(query, _typed_model(), "duckdb").sql
+        where = sql[sql.rindex("WHERE") :]
+        assert '"Revenue" > 5' in where
+        assert 'CAST("Revenue" AS' not in where
+
+    def test_undeclared_percent_change_takes_the_division_default(self) -> None:
+        """A ratio is not a value in the base measure's units.
+
+        Without an explicit ``dataType`` a PoP metric used to fall through to
+        the model's default numeric type, which is ``decimal(18, 2)`` — two
+        decimal places for a growth ratio. ``percentChange`` and ``ratio``
+        divide, so they take the same ``decimal(18, 6)`` default that an
+        expression containing ``/`` already gets.
+        """
+        sql = CompilationPipeline().compile(self.QUERY, _load_model(), "duckdb").sql
+        assert 'CAST("Revenue YoY Growth" AS DECIMAL(18, 6))' in sql
+
+    def test_difference_inherits_the_base_measure_type(self) -> None:
+        """``difference`` carries the measure's own units, so no ratio default.
+
+        The inheritance is real rather than nominal: ``pop_base`` applies the
+        base measure's declared cast, so the subtraction is over typed
+        operands. It used to emit a bare ``SUM(...)`` there, which left the
+        comparison with no type to inherit at all.
+        """
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue MoM Diff"],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
+        assert 'CAST("Revenue MoM Diff"' not in sql
+        # The operand it inherits from is typed.
+        assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
+
+    def test_a_wrapper_metric_placeholder_is_not_cast_early(self) -> None:
+        """A window metric's ``pop_base`` column is the base measure, not the rank.
+
+        It only holds the base aggregate until ``window_wrap`` builds the real
+        window call, so the metric's own dataType does not describe it yet.
+        Casting early corrupts the input: a rank declaring ``dataType: integer``
+        truncated ``SUM(amount)`` to INT, so 1.49 and 1.40 both became 1 and
+        ranked equal. The finished window value is still cast, by window_wrap.
+        """
+        raw, source_map = TrackedLoader().load_string(_RANK_POP_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, [e.message for e in result.errors]
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Day", "Region"],
+                measures=["Region Rank", "Amount MoM"],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        pop_base = sql[sql.index('"pop_base" AS (') : sql.index('"pop_compare" AS (')]
+        assert 'SUM("Sales"."amount") AS "Region Rank"' in pop_base
+        assert "CAST" not in pop_base.split('AS "Region Rank"')[0].rsplit(",", 1)[-1]
+        # The window result itself still carries the metric's declared type.
+        assert 'CAST(RANK() OVER (ORDER BY "Amount Sum" DESC) AS INTEGER)' in sql
+
+    def test_a_measure_keeps_its_declared_type_inside_a_pop_query(self) -> None:
+        """``pop_base`` rebuilds the aggregation, so it must re-apply the cast.
+
+        Without it the same measure had one type in a plain query and another
+        in a PoP query, and every comparison built on it inherited the untyped
+        form.
+        """
+        plain = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Order Date"], measures=["Revenue"]),
+                ),
+                _load_model(),
+                "duckdb",
+            )
+            .sql
+        )
+        pop = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(
+                        dimensions=["Order Date"], measures=["Revenue", "Revenue YoY Growth"]
+                    ),
+                ),
+                _load_model(),
+                "duckdb",
+            )
+            .sql
+        )
+        cast = 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"'
+        assert cast in plain
+        assert cast in pop
+
+
+_RANK_POP_YAML = """\
+version: 1.0
+dataObjects:
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Id: {code: id, abstractType: string, primaryKey: true}
+      Amount: {code: amount, abstractType: float}
+      Day: {code: day, abstractType: date}
+      Region: {code: region, abstractType: string}
+dimensions:
+  Day: {dataObject: Sales, column: Day}
+  Region: {dataObject: Sales, column: Region}
+measures:
+  Amount Sum:
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+    expression: '{[Sales].[Amount]}'
+metrics:
+  Region Rank:
+    type: window
+    measure: Amount Sum
+    windowFunction: rank
+    orderDirection: desc
+    dataType: integer
+  Amount MoM:
+    type: period_over_period
+    expression: '{[Amount Sum]}'
+    dataType: "decimal(18, 2)"
+    periodOverPeriod:
+      timeDimension: Day
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
