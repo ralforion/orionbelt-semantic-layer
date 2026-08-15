@@ -725,6 +725,97 @@ class TestSubqueryFilterReverseTraversal:
         assert "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE" in {e.code for e in excinfo.value.errors}
 
 
+class TestSubqueryFilterCrossObjectColumn:
+    """A subquery filter on a computed column that reads another data object.
+
+    The expression is inlined into the ``EXISTS`` body, so the object it reads
+    has to be joined *there* — the outer query's join list is a different
+    scope, and an unjoined alias is invalid SQL rather than a wrong number.
+    """
+
+    # ``Is Toy`` lives on the subquery's target and reads Products, one hop on.
+    TOY_MODEL = TRAVERSAL_MODEL.replace(
+        "      SKU: {code: SKU, abstractType: string}",
+        "      SKU: {code: SKU, abstractType: string}\n"
+        "      Is Toy:\n"
+        "        expression: \"{[Products].[Category]} = 'Toys'\"\n"
+        "        abstractType: boolean",
+    )
+
+    def _query(self) -> QueryObject:
+        return _exists_on_items(
+            [QueryFilter(field="OrderItems.Is Toy", op=FilterOperator.EQUALS, value=True)]
+        )
+
+    def test_referenced_object_joined_inside_the_body(self) -> None:
+        model = _load_model(self.TOY_MODEL)
+        sql = PIPELINE.compile(self._query(), model, "postgres").sql
+        assert 'INNER JOIN "PUBLIC"."PRODUCTS" AS "Products"' in sql
+        assert '"Products"."CATEGORY" = \'Toys\'' in sql
+        assert sql.index("EXISTS (") < sql.index("INNER JOIN")
+        # Joined once, and only inside the subquery.
+        assert sql.count("PRODUCTS") == 1
+
+    def test_referenced_object_tracked_in_physical_tables(self) -> None:
+        """The freshness cache keys on tables the body reads, this one included."""
+        model = _load_model(self.TOY_MODEL)
+        refs = PIPELINE.compile(self._query(), model, "postgres").physical_tables
+        assert any(r.endswith(".PRODUCTS") for r in refs), refs
+
+    def test_reference_to_the_subject_rejected(self) -> None:
+        """Joining the subject inside the body would shadow its outer alias —
+        true whether the field names it or a computed column reads it."""
+        model = _load_model(
+            TRAVERSAL_MODEL.replace(
+                "      SKU: {code: SKU, abstractType: string}",
+                "      SKU: {code: SKU, abstractType: string}\n"
+                "      Big Order:\n"
+                '        expression: "{[Orders].[Amount]} > 100"\n'
+                "        abstractType: boolean",
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [
+                        QueryFilter(
+                            field="OrderItems.Big Order", op=FilterOperator.EQUALS, value=True
+                        )
+                    ]
+                ),
+                model,
+                "postgres",
+            )
+        errors = [
+            e for e in excinfo.value.errors if e.code == "SUBQUERY_FILTER_OBJECT_NOT_JOINABLE"
+        ]
+        assert errors, [e.code for e in excinfo.value.errors]
+        assert "reads 'Orders'" in errors[0].message
+
+    def test_unreachable_reference_rejected(self) -> None:
+        """Payments joins *to* Orders, so it is not reachable from the target."""
+        model = _load_model(
+            TRAVERSAL_MODEL.replace(
+                "      SKU: {code: SKU, abstractType: string}",
+                "      SKU: {code: SKU, abstractType: string}\n"
+                "      Paid:\n"
+                '        expression: "{[Payments].[Payment ID]}"\n'
+                "        abstractType: string",
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            PIPELINE.compile(
+                _exists_on_items(
+                    [QueryFilter(field="OrderItems.Paid", op=FilterOperator.EQUALS, value="p1")]
+                ),
+                model,
+                "postgres",
+            )
+        errors = [e for e in excinfo.value.errors if e.code == "UNREACHABLE_SUBQUERY_FILTER_OBJECT"]
+        assert errors, [e.code for e in excinfo.value.errors]
+        assert "reads 'Payments'" in errors[0].message
+
+
 class TestSubqueryFilterTraversalValidation:
     def _expect(self, query: QueryObject, model, code: str) -> None:
         with pytest.raises(ResolutionError) as excinfo:

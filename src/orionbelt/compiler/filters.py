@@ -585,6 +585,7 @@ def _join_filter_object_into_subquery(
     joins: list[Join],
     qualify_table: Callable[[DataObject], str],
     errors: list[SemanticError],
+    read_through_expression: bool = False,
 ) -> bool:
     """Make *ref_object* addressable inside the ``EXISTS`` body.
 
@@ -594,6 +595,10 @@ def _join_filter_object_into_subquery(
     either way along the row-preserving cardinalities), and the resulting
     INNER JOINs are appended to *joins* (and *scope*) in place.
 
+    *read_through_expression* says *ref_object* is not where the field lives but
+    something its computed column reads, which only changes how the failures are
+    worded — the object has to be joined either way.
+
     Returns ``False`` (with a :class:`SemanticError` appended) when the object
     cannot be reached, or when reaching it would re-enter the correlation
     subject: an inner ``FROM``/``JOIN`` alias shadows the outer one, which
@@ -602,14 +607,24 @@ def _join_filter_object_into_subquery(
     if ref_object in scope:
         return True
 
+    reaches = (
+        f"reads '{ref_object}' through a computed column"
+        if read_through_expression
+        else f"is on '{ref_object}'"
+    )
+
     if ref_object == subject_object:
+        resolves = (
+            f"reads '{ref_object}' through a computed column"
+            if read_through_expression
+            else f"resolves to '{ref_object}'"
+        )
         errors.append(
             SemanticError(
                 code="SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
                 message=(
-                    f"Subquery filter field '{field}' resolves to "
-                    f"'{ref_object}', the subject of the correlation — filter "
-                    f"it in the outer 'where' instead"
+                    f"Subquery filter field '{field}' {resolves}, the subject "
+                    f"of the correlation — filter it in the outer 'where' instead"
                 ),
                 path="filters",
             )
@@ -624,9 +639,8 @@ def _join_filter_object_into_subquery(
             SemanticError(
                 code="UNREACHABLE_SUBQUERY_FILTER_OBJECT",
                 message=(
-                    f"Subquery filter field '{field}' is on '{ref_object}', "
-                    f"which is not reachable from '{target_object}' — declare "
-                    f"a 'joins:' block"
+                    f"Subquery filter field '{field}' {reaches}, which is not "
+                    f"reachable from '{target_object}' — declare a 'joins:' block"
                 ),
                 path="filters",
             )
@@ -642,9 +656,9 @@ def _join_filter_object_into_subquery(
             SemanticError(
                 code="SUBQUERY_FILTER_OBJECT_NOT_JOINABLE",
                 message=(
-                    f"Subquery filter field '{field}' is on '{ref_object}', "
-                    f"reachable only through '{subject_object}' — the subject "
-                    f"of the correlation cannot be joined inside the subquery"
+                    f"Subquery filter field '{field}' {reaches}, reachable only "
+                    f"through '{subject_object}' — the subject of the "
+                    f"correlation cannot be joined inside the subquery"
                 ),
                 path="filters",
             )
@@ -841,17 +855,27 @@ def build_exists_filter_expr(
         if ref is None:
             continue
         ref_object, ref_column = ref
-        if not _join_filter_object_into_subquery(
-            ref_object,
-            sub_qf.field,
-            graph=graph,
-            model=model,
-            subject_object=subject_object,
-            target_object=sub.data_object,
-            scope=scope,
-            joins=joins,
-            qualify_table=qualify_table,
-            errors=errors,
+        # The field's own object, then whatever its expression reads: a computed
+        # column is inlined into the body, so a cross-object reference names an
+        # alias the subquery has to join for itself.
+        needed = [(ref_object, False)] + [
+            (dep, True) for dep in sorted(model.column_reference_objects(ref_object, ref_column))
+        ]
+        if not all(
+            _join_filter_object_into_subquery(
+                obj,
+                sub_qf.field,
+                graph=graph,
+                model=model,
+                subject_object=subject_object,
+                target_object=sub.data_object,
+                scope=scope,
+                joins=joins,
+                qualify_table=qualify_table,
+                errors=errors,
+                read_through_expression=through_expression,
+            )
+            for obj, through_expression in needed
         ):
             continue
         col_expr = make_column_expr(model, ref_object, ref_column)
