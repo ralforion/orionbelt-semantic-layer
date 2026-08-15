@@ -11,9 +11,11 @@ keeps every row on ClickHouse rather than dropping the unmatched ones.
 from __future__ import annotations
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -340,3 +342,295 @@ measures:
         _, result = ReferenceResolver().resolve(raw, source_map)
         assert not result.valid
         assert "defaultValue" in " ".join(e.message for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# One rule, checked against every shape rather than site by site
+# ---------------------------------------------------------------------------
+
+SHAPES = """\
+version: 1.0
+
+dataObjects:
+  Dates:
+    code: DATES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int, primaryKey: true}
+      Month: {code: MONTH, abstractType: int}
+      Day: {code: DAY, abstractType: int}
+
+  Sales:
+    code: SALES
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int}
+      Amount: {code: AMOUNT, abstractType: float}
+      Qty: {code: QTY, abstractType: int}
+      Label: {code: LABEL, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+
+  Refunds:
+    code: REFUNDS
+    database: WH
+    schema: PUBLIC
+    columns:
+      Date Key: {code: DATE_KEY, abstractType: int}
+      Refund: {code: REFUND, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Dates
+        columnsFrom: [Date Key]
+        columnsTo: [Date Key]
+
+dimensions:
+  Month: {dataObject: Dates, column: Month, resultType: int}
+  Day: {dataObject: Dates, column: Day, resultType: int}
+
+measures:
+  Sales Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Avg Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: avg
+    total: true
+  Avg By Month:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: avg
+    grain: {mode: FIXED, keepOnly: [Month]}
+  Sum By Month:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Month]}
+  Pair Count:
+    columns:
+      - {dataObject: Sales, column: Amount}
+      - {dataObject: Sales, column: Qty}
+    resultType: int
+    aggregation: count
+    distinct: true
+  Sale List:
+    columns: [{dataObject: Sales, column: Label}]
+    resultType: string
+    aggregation: listagg
+    delimiter: "|"
+    withinGroup:
+      column: {dataObject: Sales, column: Amount}
+      order: ASC
+  Self List:
+    columns: [{dataObject: Sales, column: Label}]
+    resultType: string
+    aggregation: listagg
+    delimiter: "|"
+    withinGroup:
+      column: {dataObject: Sales, column: Label}
+      order: ASC
+  Refund Amount:
+    columns: [{dataObject: Refunds, column: Refund}]
+    resultType: float
+    aggregation: sum
+  Early Amount:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+    filterContext:
+      mode: FIXED
+
+metrics:
+  Net Amount:
+    expression: "{[Sales Amount]} - {[Refund Amount]}"
+  Amount Share:
+    expression: "{[Sales Amount]} / {[Avg Amount]}"
+  Running Amount:
+    type: cumulative
+    measure: Sales Amount
+    timeDimension: Month
+"""
+
+_SHAPE_MEASURES = [
+    "Sales Amount",
+    "Avg Amount",
+    "Avg By Month",
+    "Sum By Month",
+    "Pair Count",
+    "Sale List",
+    "Self List",
+    "Early Amount",
+]
+
+# Every measure the query names, with a default declared on all of them - a
+# string one where the measure's own type is a string, since COALESCE takes one
+# type and an engine is right to reject a VARCHAR defaulting to 0.
+SHAPES_DEFAULTED = SHAPES.replace(
+    "    aggregation: ", "    defaultValue: 0\n    aggregation: "
+).replace(
+    "defaultValue: 0\n    aggregation: listagg", "defaultValue: none\n    aggregation: listagg"
+)
+
+_DEFAULT_LITERALS = {"0", "'none'"}
+
+# Two measures produce SQL that does not bind when a second fact puts the query
+# on the CFL path — on this branch and on ``main`` alike, with and without a
+# declared default. ``filter_wrap`` and the metric branch of ``total_wrap`` both
+# rebuild the aggregate from the measure's resolved expression, which names a
+# fact table the CFL plan replaced with the composite CTE. That is the same
+# mistake this file is about, in a place the default has nothing to do with, so
+# it is recorded here rather than fixed in a change about ``defaultValue``.
+UNBOUND_IN_CFL = {"Early Amount", "Amount Share"}
+
+
+def _without_defaults(sql: str) -> str:
+    """*sql* as a canonical tree with each declared default's COALESCE removed.
+
+    Compared as a tree rather than as text so that the parentheses the default
+    brought with it do not count as a difference — ``x / COALESCE(a / b, 0)``
+    and ``x / (a / b)`` are the same expression, and ``x / a / b`` is not.
+    Nothing else in these queries writes a two-argument COALESCE over one of
+    the declared defaults: CFL's dimension coalesce takes two column refs.
+    """
+    if not sql.lstrip().upper().startswith(("WITH", "SELECT")):
+        return sql  # a refusal, compared verbatim
+
+    def reduce(node: exp.Expression) -> exp.Expression:
+        if isinstance(node, exp.Coalesce):
+            args = [node.this, *node.expressions]
+            if len(args) == 2 and args[1].sql() in _DEFAULT_LITERALS:
+                return args[0]
+        if isinstance(node, exp.Paren):
+            return node.this
+        return node
+
+    # Repeated because sqlglot's transform is top-down: a node it replaces is
+    # not descended into, so a COALESCE removed on one pass leaves whatever it
+    # wrapped untouched until the next.
+    tree = sqlglot.parse_one(sql, read="duckdb")
+    while (reduced := tree.transform(reduce)) and repr(reduced) != repr(tree):
+        tree = reduced
+    return repr(tree)
+
+
+def _compiled(yaml_str: str, measures: list[str], dimensions: list[str]) -> str:
+    """The SQL, or the refusal — a refusal has to match between the two too.
+
+    Every query carries a filter so that a measure declaring a ``filterContext``
+    has one to ignore, which is what puts it on the ``filter_wrap`` path.
+    """
+    model = _load(yaml_str)  # loudly, so a broken fixture cannot compare equal
+    query = QueryObject(
+        select=QuerySelect(dimensions=dimensions, measures=measures),
+        where=[QueryFilter(field="Day", op=FilterOperator.GREATER, value=0)],
+    )
+    try:
+        return PIPELINE.compile(query, model, "duckdb").sql
+    except Exception as exc:  # noqa: BLE001 - the message is the comparison
+        return f"{type(exc).__name__}: {exc}"
+
+
+class TestTheDefaultOnlyEverAddsACoalesce:
+    """``defaultValue`` presents as ``COALESCE(<aggregate>, <default>)``, which
+    every pass that *rebuilds* an aggregate has to see through: the window
+    helpers a total AVG decomposes into, the union columns CFL spreads a
+    multi-argument aggregate across, the sort key an ordered aggregate carries.
+    Each read the shape of ``expression`` and found the COALESCE instead, and
+    each was found separately, one review round at a time.
+
+    So this asserts the rule rather than the sites: compiling with the default
+    declared must produce the same SQL as compiling without it, once the
+    ``COALESCE`` wrappers are removed. A pass that mistakes the default for part
+    of the aggregate cannot satisfy that, whether or not anyone thought to name
+    it here.
+    """
+
+    @pytest.mark.parametrize("measure", _SHAPE_MEASURES)
+    @pytest.mark.parametrize("dimensions", [["Month"], ["Month", "Day"]])
+    def test_single_fact(self, measure: str, dimensions: list[str]) -> None:
+        plain = _compiled(SHAPES, [measure], dimensions)
+        defaulted = _compiled(SHAPES_DEFAULTED, [measure], dimensions)
+        assert _without_defaults(defaulted) == _without_defaults(plain)
+
+    @pytest.mark.parametrize("measure", _SHAPE_MEASURES)
+    def test_multi_fact(self, measure: str) -> None:
+        """The same measure alongside one the join graph cannot reach from it,
+        so the planner unions two legs and rebuilds the aggregate outside."""
+        plain = _compiled(SHAPES, [measure, "Refund Amount"], ["Month"])
+        defaulted = _compiled(SHAPES_DEFAULTED, [measure, "Refund Amount"], ["Month"])
+        assert _without_defaults(defaulted) == _without_defaults(plain)
+
+    @pytest.mark.parametrize("metric", ["Net Amount", "Amount Share", "Running Amount"])
+    def test_metric_over_defaulted_components(self, metric: str) -> None:
+        """A metric inlines its components' aggregates, so it rebuilds them
+        too - a derived one directly, a cumulative one inside its window."""
+        plain = _compiled(SHAPES, [metric], ["Month"])
+        defaulted = _compiled(SHAPES_DEFAULTED, [metric], ["Month"])
+        assert _without_defaults(defaulted) == _without_defaults(plain)
+
+    def test_the_comparison_would_notice(self) -> None:
+        """The comparison is only worth something if the default reaches the
+        SQL at all, and if re-association still counts as a difference."""
+        defaulted = _compiled(SHAPES_DEFAULTED, ["Sales Amount"], ["Month"])
+        assert "COALESCE" in defaulted
+        assert _without_defaults(defaulted) != _without_defaults(
+            defaulted.replace("COALESCE", "COALESCE_")
+        )
+        assert _without_defaults("SELECT x / (a / b) AS m") != _without_defaults(
+            "SELECT x / a / b AS m"
+        )
+
+    def test_the_shapes_execute(self) -> None:
+        """Equivalence to a baseline is not validity — the baseline could be
+        wrong too. ``COALESCE(AVG(x), 0)`` decomposed as it stood produced
+        ``SUM(AVG(x), 0)``, which DuckDB rejects outright."""
+        import duckdb
+
+        con = duckdb.connect(":memory:")
+        con.execute('CREATE SCHEMA "PUBLIC"')
+        con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT)')
+        con.execute(
+            'CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, AMOUNT DOUBLE, QTY INT, LABEL VARCHAR)'
+        )
+        con.execute('CREATE TABLE "PUBLIC"."REFUNDS" (DATE_KEY INT, REFUND DOUBLE)')
+        con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 3, 4), (2, 3, 20)')
+        con.execute("INSERT INTO \"PUBLIC\".\"SALES\" VALUES (1, 10.0, 2, 'a'), (2, 20.0, 3, 'b')")
+        con.execute('INSERT INTO "PUBLIC"."REFUNDS" VALUES (1, 1.0)')
+        for measure in (*_SHAPE_MEASURES, "Net Amount", "Amount Share", "Running Amount"):
+            for measures in ([measure], [measure, "Refund Amount"]):
+                if len(measures) > 1 and measure in UNBOUND_IN_CFL:
+                    continue
+                sql = _compiled(SHAPES_DEFAULTED, measures, ["Month"])
+                if not sql.lstrip().upper().startswith(("WITH", "SELECT")):
+                    continue  # a refusal, and the equivalence test compared it
+                con.execute(sql).fetchall()
+
+    def test_a_total_avg_averages_the_rows_not_the_groups(self) -> None:
+        """The default comes off the column the window reads and goes back on
+        around the window, so it cannot land inside the sum+count helpers."""
+        import duckdb
+
+        con = duckdb.connect(":memory:")
+        con.execute('CREATE SCHEMA "PUBLIC"')
+        con.execute('CREATE TABLE "PUBLIC"."DATES" (DATE_KEY INT, MONTH INT, DAY INT)')
+        con.execute(
+            'CREATE TABLE "PUBLIC"."SALES" (DATE_KEY INT, AMOUNT DOUBLE, QTY INT, LABEL VARCHAR)'
+        )
+        con.execute('CREATE TABLE "PUBLIC"."REFUNDS" (DATE_KEY INT, REFUND DOUBLE)')
+        con.execute('INSERT INTO "PUBLIC"."DATES" VALUES (1, 1, 4), (2, 2, 4)')
+        # Two rows in one month, one in the other: 30/3, not the mean of the
+        # two months' means (which would be 12.5).
+        con.execute(
+            'INSERT INTO "PUBLIC"."SALES" VALUES '
+            "(1, 5.0, 1, 'a'), (1, 15.0, 1, 'b'), (2, 10.0, 1, 'c')"
+        )
+        con.execute('INSERT INTO "PUBLIC"."REFUNDS" VALUES (1, 1.0)')
+        rows = con.execute(_compiled(SHAPES_DEFAULTED, ["Avg Amount"], ["Month"])).fetchall()
+        assert {r[1] for r in rows} == {10.0}, rows

@@ -256,8 +256,11 @@ def is_self_ordered(measure: ResolvedMeasure) -> bool:
     express self-ordering (ClickHouse's ``arraySort``, Databricks' ``sort_array``)
     depend on this, since they compare the aggregate's argument and its order
     key by rendered SQL.
+
+    Reads the aggregate rather than ``expression``: a declared default wraps it
+    in a ``COALESCE`` that carries no ``ORDER BY``, which reads as unordered.
     """
-    source = measure.expression
+    source = measure.aggregate
     if not isinstance(source, FunctionCall) or not source.order_by or not source.args:
         return False
     return source.order_by[0].expr == source.args[0]
@@ -273,8 +276,12 @@ def within_group_item(measure: ResolvedMeasure) -> OrderByItem | None:
     already projects as the measure's value, so a separate column would be
     redundant — and on ClickHouse / Databricks actively harmful, since they can
     only express ordering by the aggregated column itself.
+
+    Reads the aggregate for the reason :func:`is_self_ordered` does: behind a
+    declared default the sort key is invisible, and no leg carries it while
+    :func:`build_outer_aggregate` still asks for its alias.
     """
-    expr = measure.expression
+    expr = measure.aggregate
     if isinstance(expr, FunctionCall) and expr.order_by and not is_self_ordered(measure):
         return expr.order_by[0]
     return None
