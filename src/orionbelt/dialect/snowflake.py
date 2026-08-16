@@ -105,6 +105,16 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Snowflake: ``DATEADD('unit', n, x)``, quoted unit, value last."""
+        return f"DATEADD('{unit}', {self.compile_expr(count)}, {self.compile_expr(value)})"
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Snowflake spells it ``DATEDIFF`` and counts boundaries, as the
+        catalog documents.
+        """
+        return f"DATEDIFF('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
     def _render_div(self, args: list[Expr]) -> str:
         """Snowflake rejects ``DIV`` in every form ("Unsupported feature
         'DIV'"), but its ``/`` is float division even on integers, so

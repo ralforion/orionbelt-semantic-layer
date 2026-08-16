@@ -87,6 +87,28 @@ class DremioDialect(Dialect):
         """
         return self._render_concat_null_guard(args)
 
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Dremio: ``TIMESTAMPADD(UNIT, n, x)``, which is already how the
+        relative-date filters render here, and which takes QUARTER and WEEK
+        that its interval qualifiers reject.
+        """
+        return (
+            f"TIMESTAMPADD({unit.upper()}, {self.compile_expr(count)}, {self.compile_expr(value)})"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Dremio: ``TIMESTAMPDIFF(UNIT, start, end)``.
+
+        Whether it counts boundaries or complete units is not something this
+        repo can run and check, so both ends are truncated to the unit first,
+        which makes the two readings identical.
+        """
+        return (
+            f"TIMESTAMPDIFF({unit.upper()}, "
+            f"{self._render_date_trunc(unit, start)}, "
+            f"{self._render_date_trunc(unit, end)})"
+        )
+
     def _render_trunc(self, args: list[Expr]) -> str:
         """Dremio spells it ``TRUNCATE`` and documents it as truncating toward
         zero; it has no ``TRUNC``.

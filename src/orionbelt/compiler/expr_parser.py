@@ -20,6 +20,7 @@ Both share the same grammar:
     mul_expr  → factor (('*' | '/') factor)*
     factor → '(' expr ')'
            | ('-' | '+') factor      -- unary sign
+           | ('DATE' | 'TIMESTAMP' | 'TIME') STRING  -- typed literal
            | case_expr
            | NUMBER
            | STRING
@@ -40,6 +41,7 @@ from orionbelt.ast.nodes import (
     Between,
     BinaryOp,
     CaseExpr,
+    Cast,
     ColumnRef,
     Expr,
     FunctionCall,
@@ -96,6 +98,11 @@ _LITERAL_KEYWORDS: dict[str, str | int | float | bool | None] = {
     "FALSE": False,
     "NULL": None,
 }
+
+# Typed-literal keywords: ``DATE '2026-08-15'`` and friends, rendered as a
+# CAST so the escaping and the per-dialect type name are the ones the emitter
+# already knows.
+_TYPED_LITERAL_KEYWORDS: frozenset[str] = frozenset({"DATE", "TIMESTAMP", "TIME"})
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
@@ -366,6 +373,15 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         if tok.kind == "ident":
             _advance()
             upper = tok.value.upper()
+            # Typed literal — DATE '2026-08-15', TIMESTAMP '2026-08-15 13:45:00'.
+            # Without this the tokenizer read the keyword as a bare identifier
+            # and the parser stopped at the string that followed, so a date
+            # could not be written in an expression at all.
+            if upper in _TYPED_LITERAL_KEYWORDS:
+                following = _peek()
+                if following is not None and following.kind == "string":
+                    _advance()
+                    return Cast(expr=Literal.string(following.value), type_name=upper)
             # Bare keyword literal — TRUE / FALSE / NULL.
             if upper in _LITERAL_KEYWORDS:
                 lit_val = _LITERAL_KEYWORDS[upper]

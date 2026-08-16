@@ -85,6 +85,31 @@ class DatabricksDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Spark's interval literals want a constant, and its ``date_add`` adds
+        days only, so the interval is built with ``make_interval``, whose
+        arguments are ordinary expressions.
+        """
+        n = self.compile_expr(count)
+        slots = {
+            "year": f"{n}, 0, 0, 0, 0, 0, 0",
+            "quarter": f"0, {n} * 3, 0, 0, 0, 0, 0",
+            "month": f"0, {n}, 0, 0, 0, 0, 0",
+            "week": f"0, 0, {n}, 0, 0, 0, 0",
+            "day": f"0, 0, 0, {n}, 0, 0, 0",
+            "hour": f"0, 0, 0, 0, {n}, 0, 0",
+            "minute": f"0, 0, 0, 0, 0, {n}, 0",
+            "second": f"0, 0, 0, 0, 0, 0, {n}",
+        }
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} "
+            f"+ make_interval({slots[unit]})"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Databricks: ``date_diff(unit, start, end)`` with a keyword unit."""
+        return f"date_diff({unit.upper()}, {self.compile_expr(start)}, {self.compile_expr(end)})"
+
     def _render_trunc(self, args: list[Expr]) -> str:
         """Databricks has no numeric truncation: its ``trunc`` truncates a
         *date* to a format, so ``trunc(1.9)`` is a type error rather than 1.

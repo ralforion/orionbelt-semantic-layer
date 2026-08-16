@@ -21,6 +21,7 @@ Gated by the ``docker`` pytest marker::
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -50,6 +51,25 @@ still fails.
 """
 
 
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _matches_date(expected: str, actual: Any) -> bool:
+    """Whether a date-valued entry returned the documented calendar day.
+
+    ``date_trunc`` comes back as a DATE on ClickHouse, Snowflake and MySQL and
+    as a TIMESTAMP at midnight on DuckDB and Postgres. The catalog pins the
+    instant, not which of the two an engine chose, so the day is compared and a
+    time component is required to be midnight rather than ignored.
+    """
+    if not hasattr(actual, "isoformat"):
+        return False
+    if actual.isoformat()[:10] != expected:
+        return False
+    time = getattr(actual, "time", None)
+    return time is None or time().isoformat().startswith("00:00:00")
+
+
 def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
     """Whether *actual* is the documented value, across driver type mappings.
 
@@ -66,6 +86,8 @@ def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
         return bool(actual) is expected
     if isinstance(expected, (int, float)):
         return abs(float(actual) - expected) <= _NUMERIC_TOLERANCE * max(1.0, abs(expected))
+    if isinstance(expected, str) and _ISO_DATE.fullmatch(expected):
+        return _matches_date(expected, actual)
     return str(actual) == str(expected)
 
 

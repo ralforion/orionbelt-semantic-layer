@@ -14,7 +14,7 @@ from orionbelt.models.expressions import (
     find_placeholders,
     find_qualified_refs,
 )
-from orionbelt.models.functions import lookup_function
+from orionbelt.models.functions import TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -813,6 +813,57 @@ class SemanticValidator:
                             "function": spec.name,
                             "argCount": call.arg_count,
                             "signature": spec.signature,
+                        },
+                    )
+                )
+        errors.extend(self._check_expression_units(model))
+        return errors
+
+    @staticmethod
+    def _unit_literal(argument: str) -> str | None:
+        """The time unit a source argument names, or ``None`` if it names none."""
+        text = argument.strip()
+        if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+            inner = text[1:-1].lower()
+            if inner in TIME_UNITS:
+                return inner
+        return None
+
+    def _check_expression_units(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a date/time call whose unit is not one of the catalog's.
+
+        The unit cannot be an expression, and not for want of trying: every
+        dialect switches on it to render the call at all, as a keyword on
+        BigQuery and ClickHouse, a quoted string on Snowflake, an interval
+        qualifier on MySQL, and a different expression per unit on Postgres.
+        A misspelling is caught here rather than compiling to a call the
+        engine rejects, or worse, silently accepts as something else.
+        """
+        errors: list[SemanticError] = []
+        for path, subject, expression in self._expression_bodies(model):
+            for call in find_function_calls(expression):
+                spec = lookup_function(call.name)
+                if spec is None or spec.unit_argument is None or not spec.accepts(call.arg_count):
+                    continue
+                argument = call.arguments[spec.unit_argument]
+                if self._unit_literal(argument) is not None:
+                    continue
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_TIME_UNIT",
+                        message=(
+                            f"{subject} calls '{call.name}' with unit {argument}, "
+                            f"which is not one of {', '.join(TIME_UNITS)}"
+                        ),
+                        path=path,
+                        hint=(
+                            "The unit is a quoted literal, not an expression: every "
+                            "dialect renders the call differently per unit."
+                        ),
+                        context={
+                            "function": spec.name,
+                            "unit": argument,
+                            "units": list(TIME_UNITS),
                         },
                     )
                 )

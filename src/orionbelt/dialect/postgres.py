@@ -103,6 +103,46 @@ class PostgresDialect(Dialect):
         suffix = self.compile_expr(args[1])
         return f"(RIGHT({haystack}, LENGTH({suffix})) = {suffix})"
 
+    _MONTHS_PER_UNIT: dict[str, int] = {"year": 12, "quarter": 3, "month": 1}
+    _SECONDS_PER_UNIT: dict[str, int] = {"day": 86400, "hour": 3600, "minute": 60, "second": 1}
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Postgres has no date_diff, datediff or TIMESTAMPDIFF in any form.
+
+        Both halves of the rewrite count boundaries, as the catalog documents,
+        by truncating each end to the unit before measuring. Calendar units go
+        through month arithmetic, because an interval between two dates cannot
+        be converted to months without knowing which months; the rest divide
+        the elapsed seconds, which is exact once both ends sit on a boundary.
+        """
+        left = self._render_date_trunc(unit, start)
+        right = self._render_date_trunc(unit, end)
+        if unit in self._MONTHS_PER_UNIT:
+            months = (
+                f"(EXTRACT(YEAR FROM {right}) - EXTRACT(YEAR FROM {left})) * 12 "
+                f"+ (EXTRACT(MONTH FROM {right}) - EXTRACT(MONTH FROM {left}))"
+            )
+            step = self._MONTHS_PER_UNIT[unit]
+            inner = months if step == 1 else f"({months}) / {step}"
+            return f"CAST(TRUNC({inner}) AS INTEGER)"
+        seconds = f"EXTRACT(EPOCH FROM ({right} - {left}))"
+        if unit == "week":
+            return f"CAST(TRUNC({seconds} / 604800) AS INTEGER)"
+        return f"CAST(TRUNC({seconds} / {self._SECONDS_PER_UNIT[unit]}) AS INTEGER)"
+
+    def _render_extract(self, unit: str, value: Expr) -> str:
+        """Postgres returns a numeric where the catalog documents an int."""
+        return f"CAST({super()._render_extract(unit, value)} AS INTEGER)"
+
+    def _render_last_day(self, value: Expr) -> str:
+        """Postgres has no LAST_DAY: the day before the start of next month."""
+        month_start = self._render_date_trunc("month", value)
+        return f"CAST({month_start} + INTERVAL '1 month' - INTERVAL '1 day' AS DATE)"
+
+    def _render_current_date(self) -> str:
+        """Postgres rejects ``CURRENT_DATE()``; the keyword takes no parens."""
+        return "CURRENT_DATE"
+
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Postgres's ``GREATEST`` / ``LEAST`` skip NULL arguments; the catalog
         propagates NULL. ``div`` needs no override: Postgres has it natively

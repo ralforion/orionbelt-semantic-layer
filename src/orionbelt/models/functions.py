@@ -38,9 +38,8 @@ checked against a literal — arity and semantics are what the validator and the
 renderers actually need. ``result_type`` is carried because it documents the
 catalog for readers and for the reference surface.
 
-Groups ship in phases; this module currently holds the string, numeric and
-conditional groups. Date/time is next, and is the one where every dialect needs
-a renderer rather than a few.
+Groups ship in phases; this module holds the string, numeric, conditional and
+date/time groups.
 """
 
 from __future__ import annotations
@@ -51,6 +50,27 @@ from dataclasses import dataclass, field
 GROUP_STRING = "string"
 GROUP_NUMERIC = "numeric"
 GROUP_CONDITIONAL = "conditional"
+GROUP_DATETIME = "datetime"
+
+TIME_UNITS: tuple[str, ...] = (
+    "year",
+    "quarter",
+    "month",
+    "week",
+    "day",
+    "hour",
+    "minute",
+    "second",
+)
+"""The closed unit vocabulary of the date/time entries, matching OBML's
+``TimeGrain``.
+
+A unit is a *literal* rather than an expression, and it has to be: no engine
+takes the same shape, so every dialect switches on the unit to render the call
+at all — a keyword on BigQuery and ClickHouse, a quoted string on Snowflake, an
+interval qualifier on MySQL, a whole per-unit rewrite on Postgres. An
+expression there could not be compiled, so the validator rejects it rather than
+the renderer discovering it too late."""
 
 
 @dataclass(frozen=True)
@@ -88,6 +108,8 @@ class FunctionSpec:
     summary: str
     semantics: str | None = None
     examples: tuple[FunctionExample, ...] = field(default_factory=tuple)
+    unit_argument: int | None = None
+    """Index of an argument that must be a literal from :data:`TIME_UNITS`."""
 
     def accepts(self, arg_count: int) -> bool:
         """Whether *arg_count* satisfies this entry's arity."""
@@ -521,8 +543,150 @@ _CONDITIONAL_FUNCTIONS: tuple[FunctionSpec, ...] = (
 )
 
 
+_DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
+    FunctionSpec(
+        name="date_trunc",
+        signature="date_trunc(unit, x)",
+        group=GROUP_DATETIME,
+        min_args=2,
+        max_args=2,
+        result_type="timestamp",
+        summary="Truncate *x* down to the start of the given unit.",
+        semantics=(
+            "Unit first, and a literal from the unit vocabulary. A week starts "
+            "on Monday (ISO 8601), which is what DuckDB, Postgres, ClickHouse, "
+            "Snowflake and BigQuery's ISOWEEK already do; MySQL has no truncation "
+            "at all and is rewritten per unit. Whether the result comes back typed "
+            "as a date or a timestamp follows the engine: the instant is the same."
+        ),
+        examples=(
+            FunctionExample("date_trunc('month', DATE '2026-08-15')", "2026-08-01"),
+            FunctionExample("date_trunc('quarter', DATE '2026-08-15')", "2026-07-01"),
+            FunctionExample("date_trunc('week', DATE '2026-08-15')", "2026-08-10"),
+            FunctionExample("date_trunc('year', DATE '2026-08-15')", "2026-01-01"),
+        ),
+        unit_argument=0,
+    ),
+    FunctionSpec(
+        name="date_add",
+        signature="date_add(unit, n, x)",
+        group=GROUP_DATETIME,
+        min_args=3,
+        max_args=3,
+        result_type="timestamp",
+        summary="Add *n* units to *x*.",
+        semantics=(
+            "A negative *n* subtracts, so there is no separate date_sub. No engine "
+            "accepts this shape: DuckDB's two-argument date_add adds days, "
+            "ClickHouse takes a keyword unit, Snowflake a quoted one, MySQL and "
+            "BigQuery an interval qualifier. The name is an OBSL one every dialect "
+            "renders, and *n* may be an expression, so the renderers avoid interval "
+            "literals where an engine only accepts a constant."
+        ),
+        examples=(
+            FunctionExample("date_add('day', 5, DATE '2026-08-01')", "2026-08-06"),
+            FunctionExample("date_add('day', -5, DATE '2026-08-01')", "2026-07-27"),
+            FunctionExample("date_add('month', 1, DATE '2026-01-31')", "2026-02-28"),
+            FunctionExample("date_add('year', 1, DATE '2026-08-01')", "2027-08-01"),
+        ),
+        unit_argument=0,
+    ),
+    FunctionSpec(
+        name="date_diff",
+        signature="date_diff(unit, start, end)",
+        group=GROUP_DATETIME,
+        min_args=3,
+        max_args=3,
+        result_type="int",
+        summary="Whole units from *start* to *end*, signed.",
+        semantics=(
+            "Counts unit boundaries crossed, not complete units elapsed: 23:00 to "
+            "01:00 the next morning is 1 day, and 2026-01-31 to 2026-03-01 is 2 "
+            "months. DuckDB, ClickHouse, Snowflake and BigQuery agree; MySQL's "
+            "TIMESTAMPDIFF counts complete units (0 and 1 for those cases) and is "
+            "rewritten by truncating both ends to the unit first, and Postgres has "
+            "no such function at all. An *end* before *start* gives a negative."
+        ),
+        examples=(
+            FunctionExample("date_diff('day', DATE '2026-08-01', DATE '2026-08-15')", 14),
+            FunctionExample("date_diff('day', DATE '2026-08-15', DATE '2026-08-01')", -14),
+            FunctionExample("date_diff('month', DATE '2026-01-31', DATE '2026-03-01')", 2),
+            FunctionExample("date_diff('year', DATE '2026-12-31', DATE '2027-01-01')", 1),
+        ),
+        unit_argument=0,
+    ),
+    FunctionSpec(
+        name="extract",
+        signature="extract(unit, x)",
+        group=GROUP_DATETIME,
+        min_args=2,
+        max_args=2,
+        result_type="int",
+        summary="The given unit of *x* as a number.",
+        semantics=(
+            "An integer, where Postgres returns a numeric. Week numbering is ISO "
+            "8601, so 2026-08-15 is week 33: MySQL's WEEK and BigQuery's WEEK are "
+            "Sunday-based and answer 32, so both are rewritten. Written as a call "
+            "rather than the ANSI ``EXTRACT(unit FROM x)`` so it parses like every "
+            "other entry."
+        ),
+        examples=(
+            FunctionExample("extract('year', DATE '2026-08-15')", 2026),
+            FunctionExample("extract('month', DATE '2026-08-15')", 8),
+            FunctionExample("extract('quarter', DATE '2026-08-15')", 3),
+            FunctionExample("extract('week', DATE '2026-08-15')", 33),
+            FunctionExample("extract('day', DATE '2026-08-15')", 15),
+        ),
+        unit_argument=0,
+    ),
+    FunctionSpec(
+        name="last_day",
+        signature="last_day(x)",
+        group=GROUP_DATETIME,
+        min_args=1,
+        max_args=1,
+        result_type="date",
+        summary="The last day of *x*'s month.",
+        semantics="Postgres has no such function and is rewritten from date_trunc.",
+        examples=(
+            FunctionExample("last_day(DATE '2026-08-15')", "2026-08-31"),
+            FunctionExample("last_day(DATE '2026-02-01')", "2026-02-28"),
+        ),
+    ),
+    FunctionSpec(
+        name="current_date",
+        signature="current_date()",
+        group=GROUP_DATETIME,
+        min_args=0,
+        max_args=0,
+        result_type="date",
+        summary="Today's date, per the database session.",
+        semantics=(
+            "Written with parentheses, which Postgres rejects, so it renders as the "
+            "bare keyword there. ``current_timestamp`` is deliberately not in the "
+            "catalog: the engines disagree on whether it carries a time zone, and "
+            "pinning that needs a stated stance on session time zones rather than a "
+            "rewrite."
+        ),
+        examples=(
+            # Today has no constant value, so the example pins it by
+            # composition: whatever today is, it is zero days from itself.
+            # That still executes the rendering on every engine, which is what
+            # an example is for.
+            FunctionExample("date_diff('day', current_date(), current_date())", 0),
+        ),
+    ),
+)
+
+
 FUNCTION_CATALOG: dict[str, FunctionSpec] = {
-    spec.name: spec for spec in (*_STRING_FUNCTIONS, *_NUMERIC_FUNCTIONS, *_CONDITIONAL_FUNCTIONS)
+    spec.name: spec
+    for spec in (
+        *_STRING_FUNCTIONS,
+        *_NUMERIC_FUNCTIONS,
+        *_CONDITIONAL_FUNCTIONS,
+        *_DATETIME_FUNCTIONS,
+    )
 }
 """Every catalog entry, keyed by its canonical (lowercase) name."""
 

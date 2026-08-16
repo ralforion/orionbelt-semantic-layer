@@ -1,7 +1,7 @@
 last_verified_by: tests/integration/correctness/test_pandas_baseline.py::test_cumulative_sales_by_month
 sql: 'WITH "cumulative_base" AS (
 
-  SELECT date_trunc(''month'', "Sales"."salesdate") AS "Sales Month", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS
+  SELECT DATE_TRUNC(''month'', "Sales"."salesdate") AS "Sales Month", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS
   "Total Sales"
 
   FROM "orionbelt_1"."sales" AS "Sales"

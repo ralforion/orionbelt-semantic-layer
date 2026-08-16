@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
 """``{ColumnName}`` placeholder inside a computed-column expression body.
@@ -90,10 +90,20 @@ def find_placeholders(expression: str) -> list[str]:
 
 @dataclass(frozen=True)
 class FunctionCallRef:
-    """A ``name(...)`` call found in an expression body, with its arity."""
+    """A ``name(...)`` call found in an expression body, with its arguments.
+
+    ``arguments`` holds each argument's source text, stripped: the validator
+    needs it for the date/time entries, whose first argument must be a literal
+    time unit the renderers can switch on. Everything else only reads the
+    count.
+    """
 
     name: str
-    arg_count: int
+    arguments: tuple[str, ...] = ()
+
+    @property
+    def arg_count(self) -> int:
+        return len(self.arguments)
 
 
 BOOLEAN_KEYWORDS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
@@ -127,7 +137,8 @@ class _OpenParen:
     """An open parenthesis during the scan — a call when it carries a name."""
 
     name: str | None
-    commas: int = 0
+    start: int
+    commas: list[int] = field(default_factory=list)
     has_content: bool = False
 
 
@@ -154,6 +165,15 @@ def find_function_calls(expression: str) -> list[FunctionCallRef]:
         if stack:
             stack[-1].has_content = True
 
+    def split_arguments(frame: _OpenParen, close: int) -> tuple[str, ...]:
+        """The source text of each argument, from the recorded comma offsets."""
+        if not frame.has_content:
+            return ()
+        bounds = [frame.start, *frame.commas, close]
+        return tuple(
+            expression[bounds[i] + 1 : bounds[i + 1]].strip() for i in range(len(bounds) - 1)
+        )
+
     while pos < length:
         char = expression[pos]
         if char.isspace():
@@ -179,28 +199,29 @@ def find_function_calls(expression: str) -> list[FunctionCallRef]:
             if after < length and expression[after] == "(":
                 name = identifier.group(0)
                 is_call = name.upper() not in _KEYWORDS_BEFORE_PAREN
-                stack.append(_OpenParen(name=name if is_call else None))
+                stack.append(_OpenParen(name=name if is_call else None, start=after))
                 pos = after + 1
                 continue
             pos = after
             continue
         if char == "(":
             mark_content()
-            stack.append(_OpenParen(name=None))
+            stack.append(_OpenParen(name=None, start=pos))
             pos += 1
             continue
         if char == ")":
             if stack:
                 frame = stack.pop()
                 if frame.name is not None:
-                    arg_count = frame.commas + 1 if frame.has_content else 0
-                    calls.append(FunctionCallRef(name=frame.name, arg_count=arg_count))
+                    calls.append(
+                        FunctionCallRef(name=frame.name, arguments=split_arguments(frame, pos))
+                    )
             mark_content()
             pos += 1
             continue
         if char == ",":
             if stack:
-                stack[-1].commas += 1
+                stack[-1].commas.append(pos)
                 stack[-1].has_content = True
             pos += 1
             continue

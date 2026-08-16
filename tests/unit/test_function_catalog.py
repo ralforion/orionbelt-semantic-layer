@@ -93,9 +93,14 @@ class TestCatalogIntegrity:
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_arity_bounds_are_ordered(self, spec: FunctionSpec) -> None:
-        assert spec.min_args >= 1
+        assert spec.min_args >= 0
         if spec.max_args is not None:
             assert spec.max_args >= spec.min_args
+
+    @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
+    def test_a_unit_argument_is_within_the_arity(self, spec: FunctionSpec) -> None:
+        if spec.unit_argument is not None:
+            assert spec.unit_argument < spec.min_args
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_every_entry_carries_an_example(self, spec: FunctionSpec) -> None:
@@ -104,11 +109,17 @@ class TestCatalogIntegrity:
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_examples_parse_and_match_the_declared_arity(self, spec: FunctionSpec) -> None:
+        """An example calls its own entry, with an arity the entry accepts.
+
+        Usually it is the whole expression; an entry with no constant value of
+        its own (``current_date()``) is pinned by composition instead, so the
+        call is looked for anywhere in the example rather than only at the top.
+        """
         for example in spec.examples:
             calls = find_function_calls(example.call)
-            outer = calls[-1]
-            assert outer.name == spec.name
-            assert spec.accepts(outer.arg_count)
+            own = [call for call in calls if call.name == spec.name]
+            assert own, f"{example.call} never calls {spec.name}"
+            assert all(spec.accepts(call.arg_count) for call in own)
             parse_expression(tokenize_metric_formula(example.call))
 
     def test_lookup_is_case_insensitive(self) -> None:
@@ -123,10 +134,18 @@ class TestCatalogIntegrity:
 class TestFunctionCallScanner:
     """``find_function_calls`` feeds the validator; it must not invent calls."""
 
-    def test_reports_name_and_arity(self) -> None:
+    def test_reports_name_and_arguments(self) -> None:
         assert find_function_calls("substring({Zip}, 1, 5)") == [
-            FunctionCallRef(name="substring", arg_count=3)
+            FunctionCallRef(name="substring", arguments=("{Zip}", "1", "5"))
         ]
+
+    def test_argument_text_is_kept_for_the_unit_check(self) -> None:
+        """The date entries take a literal unit the renderers switch on, so
+        the validator needs the argument as written, not just how many.
+        """
+        call = find_function_calls("date_trunc('month', {Sales Date})")[0]
+        assert call.arguments == ("'month'", "{Sales Date}")
+        assert call.arg_count == 2
 
     def test_nested_calls_are_reported_innermost_first(self) -> None:
         names = [c.name for c in find_function_calls("upper(trim({X}))")]
@@ -251,6 +270,79 @@ class TestArityValidation:
         }
 
 
+class TestTimeUnits:
+    """The date entries take a literal unit, and every dialect switches on it."""
+
+    def test_a_misspelled_unit_is_rejected(self) -> None:
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_trunc('monht', {Zip})")
+
+    def test_an_expression_unit_is_rejected(self) -> None:
+        """It could not be compiled: the unit is a keyword on some engines and
+        a whole different expression per unit on others.
+        """
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_trunc({Zip}, {Zip})")
+
+    def test_a_valid_unit_passes(self) -> None:
+        assert _errors_for("date_trunc('month', {Zip})") == []
+
+    def test_the_unit_is_case_insensitive(self) -> None:
+        assert _errors_for("extract('WEEK', {Zip})") == []
+
+    def test_a_rejected_unit_still_compiles_to_the_authors_call(self) -> None:
+        """Codegen does not raise on what the validator reports, for the same
+        reason a wrong arity does not: the database error stays recognisable.
+        """
+        assert _render("date_trunc('monht', {[S].[D]})", "duckdb") == (
+            "date_trunc('monht', \"S].[D\")"
+        )
+
+
+class TestCompilerGeneratedCalls:
+    """The planner builds date_trunc calls of its own, for time grains.
+
+    Those now flow through the catalog like any other call, which is intended:
+    one rendering for one function. What must not happen is the catalog
+    *mangling* them, and BigQuery is where that would show, because its
+    ``render_time_grain`` already emits the engine's own value-first order.
+    """
+
+    def test_a_time_grain_dimension_still_compiles_per_dialect(self) -> None:
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.models.semantic import TimeGrain
+
+        column = ColumnRef(name="salesdate", table="Sales")
+        rendered = {
+            dialect: DialectRegistry.get(dialect).compile_expr(
+                DialectRegistry.get(dialect).render_time_grain(column, TimeGrain.MONTH)
+            )
+            for dialect in DIALECTS
+        }
+        assert rendered["duckdb"] == 'DATE_TRUNC(\'month\', "Sales"."salesdate")'
+        # BigQuery's own order is value-first, so the unit argument is not a
+        # literal and the call is left exactly as the planner built it.
+        assert rendered["bigquery"] == "DATE_TRUNC(`Sales`.`salesdate`, MONTH)"
+        # ClickHouse and MySQL never went through date_trunc at all.
+        assert rendered["clickhouse"] == 'toStartOfMonth("Sales"."salesdate")'
+        assert "DATE_FORMAT" in rendered["mysql"]
+
+
+class TestTypedLiterals:
+    """``DATE '2026-08-15'`` — without it the date group could not be written."""
+
+    def test_a_date_literal_parses_and_casts(self) -> None:
+        assert _render("DATE '2026-08-15'", "duckdb") == "CAST('2026-08-15' AS DATE)"
+
+    def test_a_timestamp_literal_parses(self) -> None:
+        assert _render("TIMESTAMP '2026-08-15 13:45:00'", "duckdb") == (
+            "CAST('2026-08-15 13:45:00' AS TIMESTAMP)"
+        )
+
+    def test_a_date_literal_composes_into_a_call(self) -> None:
+        assert _render("date_trunc('month', DATE '2026-08-15')", "duckdb") == (
+            "DATE_TRUNC('month', CAST('2026-08-15' AS DATE))"
+        )
+
+
 class TestPinnedSemantics:
     """The D3 rules: where engines disagree on the answer, the renderer bends.
 
@@ -280,6 +372,23 @@ class TestPinnedSemantics:
         sql = _render("split_part('a,b,c', ',', 9)", "mysql")
         assert sql.startswith("CASE WHEN 9 >")
         assert "THEN '' ELSE SUBSTRING_INDEX(" in sql
+
+    def test_date_diff_counts_boundaries_where_the_engine_counts_whole_units(self) -> None:
+        """MySQL's TIMESTAMPDIFF answers 1 month for 2026-01-31 to 2026-03-01
+        where the catalog documents 2, so both ends are truncated first.
+        """
+        sql = _render("date_diff('month', {[S].[A]}, {[S].[B]})", "mysql")
+        assert sql.startswith("TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(")
+
+    def test_week_is_iso_where_the_engine_numbers_from_sunday(self) -> None:
+        """MySQL and BigQuery answer 32 for 2026-08-15; ISO week 33 is the rule."""
+        assert _render("extract('week', {[S].[D]})", "mysql").startswith("WEEK(")
+        assert _render("extract('week', {[S].[D]})", "mysql").endswith(", 3)")
+        assert "ISOWEEK" in _render("extract('week', {[S].[D]})", "bigquery")
+
+    def test_extract_is_an_integer_where_the_engine_returns_numeric(self) -> None:
+        assert _render("extract('year', {[S].[D]})", "postgres").startswith("CAST(EXTRACT(")
+        assert _render("extract('year', {[S].[D]})", "postgres").endswith("AS INTEGER)")
 
     def test_split_part_past_the_end_is_empty_not_null_on_bigquery(self) -> None:
         assert _render("split_part('a,b,c', ',', 9)", "bigquery") == (
@@ -376,6 +485,45 @@ class TestArgumentRewrites:
         approximation: ``ln(100) / ln(10)`` returns 1.9999999996784485.
         """
         assert _render("log(10, 100)", "clickhouse") == "(log10(100) / log10(10))"
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("duckdb", "(\"S].[D\" + 5 * INTERVAL '1 day')"),
+            ("postgres", "(\"S].[D\" + 5 * INTERVAL '1 day')"),
+            ("mysql", "DATE_ADD(`S].[D`, INTERVAL 5 DAY)"),
+            ("clickhouse", 'date_add(DAY, 5, "S].[D")'),
+            ("snowflake", "DATEADD('day', 5, \"S].[D\")"),
+            ("bigquery", "(`S].[D` + INTERVAL 5 DAY)"),
+            ("databricks", "(`S].[D` + make_interval(0, 0, 0, 5, 0, 0, 0))"),
+            ("dremio", 'TIMESTAMPADD(DAY, 5, "S].[D")'),
+        ],
+    )
+    def test_date_add_is_a_different_shape_on_every_engine(
+        self, dialect: str, expected: str
+    ) -> None:
+        """No engine accepts ``date_add(unit, n, x)``, so all eight render it.
+
+        The interval is never a literal with *n* inside it: Postgres, DuckDB
+        and Spark only accept a constant there, and *n* is an expression in a
+        real model.
+        """
+        assert _render("date_add('day', 5, {[S].[D]})", dialect) == expected
+
+    def test_postgres_builds_date_diff_out_of_arithmetic(self) -> None:
+        """Postgres has no date_diff, datediff or TIMESTAMPDIFF in any form."""
+        sql = _render("date_diff('day', {[S].[A]}, {[S].[B]})", "postgres")
+        assert "EXTRACT(EPOCH FROM" in sql
+        assert sql.startswith("CAST(TRUNC(")
+
+    def test_postgres_builds_last_day_out_of_date_trunc(self) -> None:
+        sql = _render("last_day({[S].[D]})", "postgres")
+        assert "DATE_TRUNC('month'" in sql
+        assert "INTERVAL '1 month' - INTERVAL '1 day'" in sql
+
+    def test_current_date_drops_its_parens_on_postgres(self) -> None:
+        assert _render("current_date()", "postgres") == "CURRENT_DATE"
+        assert _render("current_date()", "duckdb") == "CURRENT_DATE()"
 
     @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
     def test_truncate_takes_an_explicit_digit_count(self, dialect: str) -> None:

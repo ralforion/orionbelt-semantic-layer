@@ -237,6 +237,20 @@ optional argument.
 | `coalesce(a, b, ...)` | argument | The first argument that is not NULL |
 | `nullif(a, b)` | argument | NULL when `a` equals `b` |
 | `greatest(a, b, ...)` / `least(a, b, ...)` | argument | **NULL propagates**, as for `concat` |
+| `date_trunc(unit, x)` | timestamp | Start of the unit; a **week starts Monday** (ISO 8601) |
+| `date_add(unit, n, x)` | timestamp | Negative `n` subtracts, so there is no `date_sub` |
+| `date_diff(unit, start, end)` | int | **Boundaries crossed**, signed — not complete units elapsed |
+| `extract(unit, x)` | int | **ISO week numbering**; an integer, not a numeric |
+| `last_day(x)` | date | Last day of `x`'s month |
+| `current_date()` | date | Today, per the database session |
+
+The date/time entries take a **literal unit** from a closed vocabulary — `year`,
+`quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be
+a literal, not an expression: every dialect switches on it to render the call at
+all (a keyword on BigQuery and ClickHouse, a quoted string on Snowflake, an
+interval qualifier on MySQL, a different expression per unit on Postgres). A unit
+outside the vocabulary, or one that is not a literal, is rejected with
+`UNKNOWN_TIME_UNIT`.
 
 The pinned meaning is the point. Six of those rules are places where engines
 disagree on the *answer* rather than on the spelling, and OBSL rewrites the call
@@ -257,6 +271,13 @@ so every engine gives the catalog's answer:
   function to switch to, so the call is rewritten arithmetically there.
 - `trunc(-1.9)` is -1. Databricks has no numeric truncation at all (its `trunc`
   takes a date), so it becomes a signed floor of the magnitude.
+- `date_diff('day', TIMESTAMP '2026-08-01 23:00:00', TIMESTAMP '2026-08-02 01:00:00')`
+  is 1, and `date_diff('month', DATE '2026-01-31', DATE '2026-03-01')` is 2:
+  boundaries crossed, not complete units. MySQL's `TIMESTAMPDIFF` answers 0 and 1,
+  so both ends are truncated to the unit before it runs, and Postgres has no such
+  function at all and gets one built out of arithmetic.
+- `extract('week', DATE '2026-08-15')` is 33. MySQL's `WEEK` and BigQuery's `WEEK`
+  are Sunday-based and answer 32, so they render `WEEK(x, 3)` and `ISOWEEK`.
 
 Argument order and shape are rewritten wherever an engine needs it —
 `position(needle, haystack)` becomes `POSITION(needle IN haystack)` on most
@@ -265,7 +286,16 @@ on BigQuery and changes base through `log10` on ClickHouse, which has no
 two-argument logarithm; `div(a, b)` is a function on three engines, an operator
 on three, and a truncated quotient on Snowflake.
 
-Two neighbours are deliberately *not* in the catalog. The single-argument `log`
+Date literals are written `DATE '2026-08-15'` and `TIMESTAMP '2026-08-15 13:45:00'`,
+and compile to a cast, so they mean the same thing on every engine.
+
+Three neighbours are deliberately *not* in the catalog. `current_timestamp` is
+left out because the engines disagree on whether it carries a time zone, and
+pinning that needs a stated stance on session time zones rather than a rewrite —
+`current_date()` has no such ambiguity. `to_date` and `format_date` are left out
+because format strings are strftime-style on Postgres, DuckDB and ClickHouse,
+picture strings on Snowflake and `%`-style on BigQuery, which is its own problem
+rather than a rewrite. The single-argument `log`
 is base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and BigQuery,
 a silent factor of 2.3, so only the explicit `log(base, x)` is admitted. And
 `/` is left to the engine: it is float division everywhere except Postgres,

@@ -32,9 +32,26 @@ from orionbelt.ast.nodes import (
     UnionAll,
     WindowFunction,
 )
-from orionbelt.models.functions import lookup_function
+from orionbelt.models.functions import TIME_UNITS, lookup_function
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+
+def _unit_of(arg: Expr) -> str:
+    """The canonical time unit a literal argument names.
+
+    Only called for a call ``compile_expr`` already checked with
+    :func:`_is_unit_literal`, so the cast is safe.
+    """
+    assert isinstance(arg, Literal) and isinstance(arg.value, str)
+    return arg.value.lower()
+
+
+def _is_unit_literal(arg: Expr) -> bool:
+    """Whether *arg* is a literal naming one of the catalog's time units."""
+    return (
+        isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in TIME_UNITS
+    )
 
 
 class UnsupportedAggregationError(Exception):
@@ -371,6 +388,18 @@ class Dialect(ABC):
                 return self._render_log(args)
             case "greatest" | "least":
                 return self._render_extremum(name, args)
+            case "date_trunc":
+                return self._render_date_trunc(_unit_of(args[0]), args[1])
+            case "date_add":
+                return self._render_date_add(_unit_of(args[0]), args[1], args[2])
+            case "date_diff":
+                return self._render_date_diff(_unit_of(args[0]), args[1], args[2])
+            case "extract":
+                return self._render_extract(_unit_of(args[0]), args[1])
+            case "last_day":
+                return self._render_last_day(args[0])
+            case "current_date":
+                return self._render_current_date()
             case _:
                 return self._render_named_function(name, args)
 
@@ -516,6 +545,50 @@ class Dialect(ABC):
     def _render_log(self, args: list[Expr]) -> str:
         """Default: native ``LOG(base, x)``."""
         return self._render_named_function("log", args)
+
+    # ---- date/time ---------------------------------------------------------
+    #
+    # These take the unit already extracted and lower-cased, because every one
+    # of them has to switch on it: the unit is a keyword on BigQuery and
+    # ClickHouse, a quoted string on Snowflake, an interval qualifier on MySQL,
+    # and a different expression per unit on Postgres. A call whose unit is not
+    # a literal from the vocabulary never reaches here — ``compile_expr``
+    # leaves it to the pass-through path, and the validator reports it.
+
+    _SQL_UNITS: dict[str, str] = {unit: unit.upper() for unit in TIME_UNITS}
+    """Canonical unit → the keyword this dialect spells it with."""
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted."""
+        return f"DATE_TRUNC('{unit}', {self.compile_expr(value)})"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Default: ``x + n * INTERVAL '1 unit'``.
+
+        Multiplication rather than ``INTERVAL n unit`` because *n* is an
+        expression in a real model, and Postgres and DuckDB only accept a
+        constant inside an interval literal.
+        """
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} + {n} * INTERVAL '1 {unit}'"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Default: ``DATE_DIFF('unit', start, end)``, counting boundaries."""
+        return f"DATE_DIFF('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
+    def _render_extract(self, unit: str, value: Expr) -> str:
+        """Default: ANSI ``EXTRACT(UNIT FROM x)``."""
+        return f"EXTRACT({self._SQL_UNITS[unit]} FROM {self.compile_expr(value)})"
+
+    def _render_last_day(self, value: Expr) -> str:
+        """Default: native ``LAST_DAY(x)``."""
+        return f"LAST_DAY({self.compile_expr(value)})"
+
+    def _render_current_date(self) -> str:
+        """Default: ``CURRENT_DATE()``. Postgres rejects the parentheses."""
+        return "CURRENT_DATE()"
 
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Default: native ``GREATEST`` / ``LEAST``, which propagate NULL on
@@ -905,7 +978,12 @@ class Dialect(ABC):
                 # emitting the author's own call keeps the database error
                 # recognisable instead of raising from codegen.
                 spec = lookup_function(fname)
-                if spec is not None and not distinct and spec.accepts(len(args)):
+                if (
+                    spec is not None
+                    and not distinct
+                    and spec.accepts(len(args))
+                    and (spec.unit_argument is None or _is_unit_literal(args[spec.unit_argument]))
+                ):
                     return self._render_function(spec.name, args)
                 # Everything else stays pass-through: removing the escape
                 # hatch would break every model built before the catalog.

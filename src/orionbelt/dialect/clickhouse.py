@@ -280,6 +280,16 @@ class ClickHouseDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """ClickHouse takes the unit as a keyword, not a string: ``date_add('day',
+        …)`` is a type error where ``date_add(DAY, …)`` works.
+        """
+        return f"date_add({unit.upper()}, {self.compile_expr(count)}, {self.compile_expr(value)})"
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """ClickHouse: ``date_diff('unit', start, end)``, counting boundaries."""
+        return f"date_diff('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
     def _render_split_part(self, args: list[Expr]) -> str:
         """ClickHouse has no ``split_part``; ``splitByString`` plus an array
         index is the equivalent, and its argument order is delimiter-first.
