@@ -16,6 +16,7 @@ import re
 import pytest
 
 import orionbelt.dialect  # noqa: F401 -- triggers dialect registration
+from orionbelt.ast.nodes import ColumnRef
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.base import DialectCapabilities, UnsupportedFunctionError
 from orionbelt.dialect.duckdb import DuckDBDialect
@@ -479,12 +480,20 @@ dataObjects:
       Event ID: {{code: id, abstractType: string}}
       Occurred At: {{code: occurred_at, abstractType: {ttype}}}
       Occurred On: {{code: occurred_on, abstractType: date}}
+      Rounded At:
+        abstractType: timestamp
+        expression: "date_trunc('hour', {{Occurred At}})"
 
 dimensions:
   Occurred At: {{dataObject: Events, column: Occurred At, resultType: timestamp}}
   Occurred On: {{dataObject: Events, column: Occurred On, resultType: date}}
+  Rounded At: {{dataObject: Events, column: Rounded At, resultType: timestamp}}
 
 measures:
+  Latest Week:
+    expression: "extract('week', {{[Events].[Occurred At]}})"
+    aggregation: max
+    resultType: int
   Event Count:
     columns: [{{dataObject: Events, column: Event ID}}]
     resultType: int
@@ -534,6 +543,44 @@ class TestQueryTimezone:
         sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp", "Occurred At")
         assert "AT TIME ZONE" not in sql
 
+    def test_a_computed_column_reaches_its_columns_in_the_query_zone(self) -> None:
+        """A computed column is parsed from text, so its refs come from the
+        tokenizer rather than from ``make_column_expr``: without applying the
+        zone there too, one column meant two different instants depending on
+        whether a dimension named it directly or an expression did.
+        """
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", "timestamp", "Rounded At"
+        )
+        assert "DATE_TRUNC('hour', (\"Events\".\"occurred_at\" AT TIME ZONE 'UTC'" in sql
+
+    def test_a_measure_expression_reaches_its_columns_in_the_query_zone(self) -> None:
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(measures=["Latest Week"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert 'EXTRACT(WEEK FROM ("Events"."occurred_at" AT TIME ZONE \'UTC\'' in sql
+
+    def test_a_column_is_never_converted_twice(self) -> None:
+        """The pass is applied at more than one site, so it has to be
+        idempotent: a doubled conversion moves the value twice.
+        """
+        from orionbelt.compiler.resolution import apply_query_timezone
+
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        once = apply_query_timezone(ColumnRef(name="occurred_at", table="Events"), model)
+        assert once == apply_query_timezone(once, model)
+
     def test_a_date_column_is_never_converted(self) -> None:
         """A date has no instant to move between zones."""
         sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred On")
@@ -572,6 +619,47 @@ class TestQueryTimezone:
             dialect,
         )
         assert expected in sql
+
+
+class TestTimeZoneNodeIsWalkable:
+    """A node with a child that the shared walker treats as a leaf loses it.
+
+    ``collect_column_refs`` feeds CFL table ownership and reachability, so a
+    timezone-wrapped ref that the walker cannot see is a column that vanishes
+    from the plan rather than one that renders oddly.
+    """
+
+    def test_the_walker_sees_through_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.compiler.expr_rewrite import collect_column_refs
+
+        found: list[ColumnRef] = []
+        collect_column_refs(
+            InTimeZone(
+                expr=ColumnRef(name="occurred_at", table="Events"),
+                zone="Europe/Zagreb",
+                from_zone="UTC",
+            ),
+            found,
+        )
+        assert found == [ColumnRef(name="occurred_at", table="Events")]
+
+    def test_the_walker_rebuilds_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.compiler.expr_rewrite import map_column_refs
+
+        node = InTimeZone(expr=ColumnRef(name="occurred_at", table="Events"), zone="Europe/Zagreb")
+        rewritten = map_column_refs(node, lambda ref: ColumnRef(name="other", table=ref.table))
+        assert rewritten == InTimeZone(
+            expr=ColumnRef(name="other", table="Events"), zone="Europe/Zagreb"
+        )
+
+    def test_the_visitor_rebuilds_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.ast.visitor import ASTVisitor
+
+        node = InTimeZone(expr=ColumnRef(name="occurred_at", table="Events"), zone="Europe/Zagreb")
+        assert ASTVisitor().visit(node) == node
 
 
 class TestTypedLiterals:

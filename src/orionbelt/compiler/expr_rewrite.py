@@ -23,6 +23,7 @@ from orionbelt.ast.nodes import (
     Expr,
     FunctionCall,
     InList,
+    InTimeZone,
     IsNull,
     OrderByItem,
     RegexMatch,
@@ -97,6 +98,8 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                 high=map_nodes(high, fn),
                 negated=negated,
             )
+        case InTimeZone(expr=inner, zone=zone, from_zone=from_zone):
+            return InTimeZone(expr=map_nodes(inner, fn), zone=zone, from_zone=from_zone)
         case RegexMatch(column=column, pattern=pattern, negated=negated):
             return RegexMatch(
                 column=map_nodes(column, fn),

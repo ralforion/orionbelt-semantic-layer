@@ -24,6 +24,7 @@ from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_measure_expression,
 )
+from orionbelt.compiler.expr_rewrite import map_nodes
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
@@ -86,7 +87,7 @@ def _build_computed_column_expr(
     rewritten = substitute_placeholders(expr_str, _sub)
     try:
         tokens = tokenize_measure_expression(rewritten, model)
-        return parse_expression(tokens)
+        return apply_query_timezone(parse_expression(tokens), model)
     except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
         return ColumnRef(name=column.code or column.name, table=obj.name)
 
@@ -278,6 +279,41 @@ def _in_query_timezone(ref: Expr, column: DataObjectColumn, model: SemanticModel
     if column.abstract_type is DataType.TIMESTAMP and from_zone is None:
         return ref
     return InTimeZone(expr=ref, zone=settings.query_timezone, from_zone=from_zone)
+
+
+def apply_query_timezone(expr: Expr, model: SemanticModel) -> Expr:
+    """Read every timestamp column *expr* names in the model's query zone.
+
+    ``make_column_expr`` converts a column the moment a dimension or filter
+    names one, but an expression body reaches its columns by another road: a
+    computed column and a measure expression are parsed from text, and the
+    tokenizer resolves ``{[Object].[Column]}`` straight to a physical
+    ``ColumnRef``. Without this pass those refs stayed in the warehouse's zone
+    while the model's own dimensions moved to the query zone, so the same
+    column meant two different instants depending on how it was reached - which
+    is exactly the frame the leaf-attachment rule exists to make single.
+
+    A node already converted is returned untouched rather than descended into,
+    so applying this twice cannot wrap a column twice.
+    """
+    settings = model.settings
+    if settings is None or not settings.query_timezone:
+        return expr
+
+    def rewrite(node: Expr) -> Expr | None:
+        if isinstance(node, InTimeZone):
+            return node
+        if not isinstance(node, ColumnRef) or node.table is None:
+            return None
+        obj = model.data_objects.get(node.table)
+        if obj is None:
+            return node
+        column = next((c for c in obj.columns.values() if c.code == node.name), None)
+        if column is None:
+            return node
+        return _in_query_timezone(node, column, model)
+
+    return map_nodes(expr, rewrite)
 
 
 @dataclass
@@ -1217,7 +1253,11 @@ class QueryResolver:
         agg = measure.aggregation.upper()
 
         tokens = tokenize_measure_expression(formula, ctx.model)
-        inner = parse_expression(tokens)
+        # The tokenizer resolves {[Object].[Column]} straight to a physical
+        # ref, so the query zone has to be applied here as it is for a column
+        # a dimension names: otherwise one column means two instants depending
+        # on how the query reached it.
+        inner = apply_query_timezone(parse_expression(tokens), ctx.model)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":
