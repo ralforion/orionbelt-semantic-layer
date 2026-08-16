@@ -287,7 +287,8 @@ class TestTheShapeOfTheSQL:
         the outer query reads one CTE column twice."""
         sql = _sql(["Revenue Share", "Unfiltered Revenue"])
         assert sql.count('"fc_1" AS') == 0
-        assert sql.count('SUM("Sales"."AMOUNT") AS "Unfiltered Revenue"') == 1
+        fc_block = sql.split('"fc_0" AS')[1].split("\n)")[0]
+        assert fc_block.count('AS "Unfiltered Revenue"') == 1
         # ...and read twice: once by the metric, once as its own column.
         assert sql.count('"fc_0"."Unfiltered Revenue"') == 2
 

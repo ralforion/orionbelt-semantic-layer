@@ -17,10 +17,9 @@ than from the resolved expression. The one thing that cannot be rebuilt is a
 from __future__ import annotations
 
 import duckdb
-import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.resolution import QueryResolver, ResolutionError
+from orionbelt.compiler.resolution import QueryResolver
 from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -188,58 +187,32 @@ class TestAMetricOverATotalComponent:
 
 
 class TestFilterContextInAMultiFactPlan:
-    """A ``filterContext`` needs its own filtered scan of the fact. The
-    composite offers neither: its legs applied the query's filters before it
-    existed, and its columns are the projected measures rather than the fact's.
-    """
+    """A filterContext is a differently filtered scan of the measure's fact.
+    The composite offers nothing to scan - its legs applied the query's filters
+    before it existed - so the measure is kept out of the union and planned as
+    the star query it is. See ``test_filter_context_multi_fact`` for what that
+    plan looks like and what it answers."""
 
-    def test_it_is_refused(self) -> None:
-        with pytest.raises(ResolutionError) as exc:
-            _sql(["Unfiltered Sales", "Refund Amount"])
-        message = str(exc.value)
-        assert "Unfiltered Sales" in message
-        assert "filterContext" in message
+    def test_it_compiles(self) -> None:
+        sql = _sql(["Unfiltered Sales", "Refund Amount"])
+        assert '"fc_0" AS' in sql
 
-    def test_the_refusal_names_the_plan_as_the_reason(self) -> None:
-        with pytest.raises(ResolutionError) as exc:
-            _sql(["Unfiltered Sales", "Refund Amount"])
-        assert "UNION ALL" in str(exc.value)
+    def test_the_measure_is_not_in_the_composite(self) -> None:
+        sql = _sql(["Unfiltered Sales", "Sales Amount", "Refund Amount"])
+        assert '"Unfiltered Sales"' not in sql.split('"fc_0" AS')[0]
 
-    @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse", "postgres", "snowflake"])
-    def test_refused_on_every_dialect(self, dialect: str) -> None:
-        """The plan is the reason, not the engine — so no dialect quietly
-        compiles it."""
-        with pytest.raises(ResolutionError):
-            _sql(["Unfiltered Sales", "Refund Amount"], dialect)
+    def test_it_answers_what_it_does_on_its_own(self) -> None:
+        """The isolated measure is projected last either way, after whatever
+        the rest of the query brought."""
+        together = _run(_sql(["Unfiltered Sales", "Refund Amount"]))
+        alone = _run(_sql(["Unfiltered Sales"]))
+        assert [float(r[-1]) for r in together] == [float(r[-1]) for r in alone]
 
-    def test_still_allowed_on_a_single_fact(self) -> None:
+    def test_a_single_fact_query_still_works(self) -> None:
         sql = _sql(["Unfiltered Sales", "Sales Amount"])
         assert "UNION ALL" not in sql
         assert "fc_0" in sql
         assert _run(sql)
-
-
-class TestTheCompositeFlag:
-    """``composite_cte`` says a union was *built*, where ``requires_cfl`` only
-    says one was asked for — the CFL planner delegates back to the star planner
-    whenever the measures turn out to reach a single leg."""
-
-    def test_set_when_the_plan_unions(self) -> None:
-        model = _model()
-        query = QueryObject(
-            select=QuerySelect(dimensions=["Month"], measures=["Sales Amount", "Refund Amount"])
-        )
-        resolved = QueryResolver().resolve(query, model)
-        assert resolved.requires_cfl
-        PIPELINE._cfl_planner.plan(resolved, model, union_by_name=True)
-        assert resolved.composite_cte == "composite_01"
-
-    def test_unset_on_a_star_plan(self) -> None:
-        model = _model()
-        query = QueryObject(select=QuerySelect(dimensions=["Month"], measures=["Sales Amount"]))
-        resolved = QueryResolver().resolve(query, model)
-        PIPELINE._star_planner.plan(resolved, model)
-        assert resolved.composite_cte is None
 
 
 class TestFilterContextReadThroughAMetric:
@@ -267,19 +240,17 @@ class TestFilterContextReadThroughAMetric:
         assert '"fc_0" AS' in sql
         assert '"main"."Sales Amount" / "fc_0"."Unfiltered Sales"' in sql
 
-    def test_refused_alongside_another_fact(self) -> None:
-        with pytest.raises(ResolutionError) as exc:
-            self._sql_filtered(["Filtered Share", "Refund Amount"])
-        assert "Unfiltered Sales" in str(exc.value)
+    def test_it_compiles_alongside_another_fact(self) -> None:
+        """The component is kept out of the union like a selected one, and the
+        metric is rebuilt over the CTEs the wrapper leaves behind."""
+        sql = self._sql_filtered(["Filtered Share", "Refund Amount"])
+        assert '"fc_0" AS' in sql
+        assert '"Unfiltered Sales"' not in sql.split('"fc_0" AS')[0]
 
-    def test_the_refusal_names_the_component_not_the_metric(self) -> None:
-        """The component is what needs the scan, and what the author has to
-        change - naming the metric would point at the wrong declaration."""
-        with pytest.raises(ResolutionError) as exc:
-            self._sql_filtered(["Filtered Share", "Refund Amount"])
-        message = str(exc.value)
-        assert "'Unfiltered Sales'" in message
-        assert "Filtered Share" not in message
+    def test_the_metric_answers_the_same_either_way(self) -> None:
+        together = _run(self._sql_filtered(["Filtered Share", "Refund Amount"]))
+        alone = _run(self._sql_filtered(["Filtered Share"]))
+        assert [round(float(r[1]), 6) for r in together] == [round(float(r[1]), 6) for r in alone]
 
     def test_the_component_still_works_when_selected_directly(self) -> None:
         """Selecting it by name gets its own filtered scan, with the query's

@@ -1636,12 +1636,13 @@ def test_window_over_a_deduplicated_base_measure() -> None:
     assert rows == [1, 2]
 
 
-def test_filter_context_with_a_deduplicated_measure_is_still_refused() -> None:
-    """filterContext re-queries the fact tables under a *different* WHERE.
-
-    It cannot read the dedup output, which has already applied the query's
-    filters and aggregated, so unlike cumulative and window there is no column
-    to take by alias.
+def test_filter_context_composes_with_a_deduplicated_measure() -> None:
+    """It re-queries the fact under a *different* WHERE, which the dedup output
+    cannot serve - that output has already applied the query's filters and
+    aggregated, so there is no column to take by alias. It does not have to:
+    the filterContext measure is planned as a scan of its own, which runs the
+    dedup phase for itself, and this plan no longer counts it among what it has
+    to deduplicate. The two rewrites end up in different CTEs.
     """
     yaml_text = CUMULATIVE_YAML.replace(
         "  Total Stock On Hand:\n",
@@ -1654,16 +1655,49 @@ def test_filter_context_with_a_deduplicated_measure_is_still_refused() -> None:
         "  Total Stock On Hand:\n",
         1,
     )
-    with pytest.raises(GrainDedupUnsupportedError, match="filter_context"):
-        _compile(
-            {
-                "select": {
-                    "dimensions": ["Sale Month"],
-                    "measures": ["Unfiltered Quantity", "Total Stock On Hand"],
-                }
-            },
-            yaml_text,
-        )
+    result = _compile(
+        {
+            "select": {
+                "dimensions": ["Sale Month"],
+                "measures": ["Unfiltered Quantity", "Total Stock On Hand"],
+            }
+        },
+        yaml_text,
+    )
+    rows = sorted(
+        (str(r[0])[:7], int(r[1]), int(r[2]))
+        for r in _cumulative_db().execute(result.sql).fetchall()
+    )
+    # January counts p1's stock once despite two sales, and the quantities are
+    # the same either way here - what matters is that both are computed at all.
+    # The wrapper projects the inline measure first, then the isolated one.
+    assert [(month, stock) for month, stock, _ in rows] == [("2024-01", 100), ("2024-02", 110)]
+
+
+def test_a_deduplicated_filter_context_measure_deduplicates_in_its_own_scan() -> None:
+    """The scan is a query, so it goes through the phase that detects a measure
+    on the *one* side of a replicating join - the one place in the compiler
+    that used to plan a query without it."""
+    yaml_text = CUMULATIVE_YAML.replace(
+        "  Total Stock On Hand:\n",
+        "  Unfiltered Stock:\n"
+        "    resultType: int\n"
+        "    aggregation: sum\n"
+        "    expression: '{[Products].[Stock On Hand]}'\n"
+        "    filterContext:\n"
+        "      mode: FIXED\n"
+        "  Total Stock On Hand:\n",
+        1,
+    )
+    result = _compile(
+        {"select": {"dimensions": ["Sale Month"], "measures": ["Unfiltered Stock"]}},
+        yaml_text,
+    )
+    rows = sorted(
+        (str(r[0])[:7], int(r[1])) for r in _cumulative_db().execute(result.sql).fetchall()
+    )
+    # 100, not 200: p1 is sold twice in January and its stock counts once.
+    assert rows == [("2024-01", 100), ("2024-02", 110)]
 
 
 def test_dedup_path_keeps_the_base_measure_data_type_cast() -> None:

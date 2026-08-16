@@ -19,6 +19,7 @@ Strategy selection per the design doc:
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
@@ -43,8 +44,9 @@ from orionbelt.compiler.resolution import (
     ResolvedQuery,
     make_column_expr,
 )
+from orionbelt.compiler.star import StarSchemaPlanner
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.query import FilterOperator, QueryFilter
+from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import (
     DataObject,
     FilterContext,
@@ -240,12 +242,97 @@ def _component_expr(measure: ResolvedMeasure, resolved: ResolvedQuery) -> Expr:
     return resolved.projected_expressions.get(measure.name, measure.expression)
 
 
+def _measure_source_objects(measure: ResolvedMeasure, model: SemanticModel) -> set[str]:
+    model_measure = model.effective_measures.get(measure.name)
+    return set(model_measure.source_objects) if model_measure else set()
+
+
+def _plan_isolated_scan(
+    measure_group: list[ResolvedMeasure],
+    grain: list[str],
+    filters: list[ResolvedFilter],
+    query: QueryObject,
+    model: SemanticModel,
+    dialect: Dialect,
+    qualify_table: Callable[[DataObject], str],
+    resolved: ResolvedQuery,
+) -> Select:
+    """Plan a filter-contexted measure's scan as a query in its own right.
+
+    Resolved rather than assembled: the base object, the join path to the grain
+    dimensions and the fanout check all have to be derived for *these* measures
+    at *this* grain, and the plan they came from was built for different ones.
+
+    The query is resolved carrying the caller's ``where`` so that resolution
+    joins whatever those filters read - including the ones this context drops,
+    whose joins are then harmless - and its resolved filters are replaced with
+    the effective set afterwards. A context that keeps a filter therefore has
+    the column in scope, and one that drops it does not have to un-join it.
+
+    It then goes through the phases the pipeline runs between resolving and
+    planning, and the wrappers it runs after. Skipping them made this scan the
+    one place in the compiler where a measure on the one side of a replicating
+    join was summed once per row of the many side, and where a combination the
+    single-fact path refuses compiled quietly instead.
+    """
+    sub_query = QueryObject(
+        select=QuerySelect(dimensions=list(grain), measures=[m.name for m in measure_group]),
+        where=list(query.where),
+        use_path_names=list(query.use_path_names),
+        allow_fan_out=query.allow_fan_out,
+    )
+    # Imported here: the pipeline owns the phase order, and importing it at
+    # module scope would be a cycle back through ``compiler.passes``.
+    from orionbelt.compiler.cfl import CFLPlanner
+    from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
+    from orionbelt.compiler.pipeline import CompilationPipeline
+    from orionbelt.compiler.resolution import QueryResolver
+
+    sub_resolved = QueryResolver().resolve(sub_query, model, qualify_table=qualify_table)
+    sub_resolved.where_filters = list(filters)
+    # The context is this scan's own, not something to apply again inside it.
+    sub_resolved.measures = [replace(m, filter_context=None) for m in sub_resolved.measures]
+    CompilationPipeline.detect_replication(sub_resolved, model)
+    # Which planner, decided the way the pipeline decides it. Grouping by fact
+    # leaves only one way here: a single measure whose own arguments span facts
+    # no join reaches, which is a union in its own right.
+    if sub_resolved.requires_cfl:
+        plan = CFLPlanner().plan(
+            sub_resolved,
+            model,
+            qualify_table=qualify_table,
+            union_by_name=dialect.capabilities.supports_union_all_by_name,
+            dialect=dialect,
+        )
+    else:
+        plan = StarSchemaPlanner().plan(
+            sub_resolved, model, qualify_table=qualify_table, dialect=dialect
+        )
+    scan = apply_aggregate_passes(
+        plan.ast,
+        CompileContext(
+            resolved=sub_resolved,
+            model=model,
+            dialect=dialect,
+            qualify_table=qualify_table,
+            query=sub_query,
+        ),
+    )
+    # The scan is planned in its own right, warnings included - and those are
+    # about this query, so they belong to it. Left on the sub-query they went
+    # nowhere: the same measure warned of a fan trap when selected plainly and
+    # said nothing behind a filterContext.
+    resolved.warnings.extend(sub_resolved.warnings)
+    return scan
+
+
 def wrap_with_filter_context(
     ast: Select,
     resolved: ResolvedQuery,
     model: SemanticModel,
     dialect: Dialect,
     qualify_table: Callable[[DataObject], str],
+    query: QueryObject,
 ) -> Select:
     """Wrap planner AST with CTEs for filter-isolated measures.
 
@@ -281,12 +368,17 @@ def wrap_with_filter_context(
 
     query_dim_names = [d.name for d in resolved.dimensions]
 
-    # Group isolated measures by their filter context + grain key
+    # Group isolated measures by their filter context + grain key, and by their
+    # fact: each group becomes one scan planned over what it reads, and measures
+    # on independent facts have no single one to plan against. Sharing a group
+    # across facts projected an aggregate over a table the scan's FROM did not
+    # have.
     groups: dict[tuple[str, ...], list[ResolvedMeasure]] = {}
     for m in isolated:
         assert m.filter_context is not None
         grain = _effective_grain_dims(m, query_dim_names)
         key = _filter_key(m.filter_context, grain)
+        key = (*key, "fact:" + ",".join(sorted(_measure_source_objects(m, model))))
         groups.setdefault(key, []).append(m)
 
     inline_measures = [m for m in resolved.measures if m.filter_context is None]
@@ -403,17 +495,14 @@ def wrap_with_filter_context(
                 cte_group_by.append(gb_col)
 
         cte_name = f"fc_{idx}"
-        cte_query = Select(
-            columns=cte_columns,
-            from_=ast.from_,
-            joins=list(ast.joins),
-            where=_combine_where(all_filters),
-            group_by=cte_group_by,
-            having=None,
-            order_by=[],
-            limit=None,
-            offset=None,
-            ctes=[],
+        # Planned as the query it is, rather than assembled from the plan's own
+        # FROM with a different WHERE. Borrowing that FROM was right only while
+        # the plan was built around the same fact at the same grain, and it
+        # skipped every phase between resolving and planning - which is how a
+        # measure on the one side of a replicating join came back summed once
+        # per row of the many side.
+        cte_query = _plan_isolated_scan(
+            measure_group, grain, all_filters, query, model, dialect, qualify_table, resolved
         )
         all_ctes.append(CTE(name=cte_name, query=cte_query))
         isolated_cte_info.append((cte_name, measure_group, grain))

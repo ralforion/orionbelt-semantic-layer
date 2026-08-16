@@ -582,6 +582,43 @@ def _single_leg_root(
     return None
 
 
+def _dimension_carrying_leg(
+    sources: set[str], resolved: ResolvedQuery, model: SemanticModel
+) -> str | None:
+    """Where a leg covering *sources* has to be rooted to carry the query grain.
+
+    A leg's FROM is not its key but the common root of that key and whatever
+    dimensions the key reaches, so a leg keyed at an object that reaches none of
+    them projects nothing at all and degenerates to ``SELECT *``. A measure on
+    the *one* side of a join is exactly that case: ``Products`` reaches no
+    dimension, and the leg carrying it has to be rooted at the ``Sales`` that
+    reaches both. Returns ``None`` when no root reaches a dimension - the leg
+    would carry nothing and must not be created.
+    """
+    graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
+    dim_objects = {dim.object_name for dim in resolved.dimensions}
+    root = graph.find_common_root(sources | dim_objects) if dim_objects else None
+    if not root:
+        return None
+    reachable = graph.descendants(root) | {root}
+    return root if dim_objects & reachable else None
+
+
+def _measure_objects(
+    planner: CFLPlanner,
+    resolved: ResolvedQuery,
+    model: SemanticModel,
+    measure: ResolvedMeasure,
+) -> set[str]:
+    """The data objects a measure reads, declared or referenced."""
+    model_measure = model.effective_measures.get(measure.name)
+    if model_measure and model_measure.columns:
+        return {f.view for f in model_measure.columns if f.view}
+    objects: set[str] = set()
+    planner._collect_table_refs(measure.expression, objects)
+    return objects
+
+
 def group_measures_by_object(
     planner: CFLPlanner,
     resolved: ResolvedQuery,
@@ -602,6 +639,24 @@ def group_measures_by_object(
     seen: set[str] = set()
 
     for measure in resolved.measures:
+        if measure.filter_context is not None:
+            # A filterContext measure never belonged in the union: it reads one
+            # fact under its own filters, which is a scan of its own, and
+            # ``filter_wrap`` plans it as one. Projected here it got a leg whose
+            # rows the query's filters had already been applied to - the
+            # opposite of what the field asks for - and its value went into the
+            # composite, where the wrapper could not recompute it.
+            #
+            # A leg still stands where this measure's own leg would have, with
+            # no measure of its own: the union is what makes a dimension only
+            # that branch reaches available at all, NULL-padded in the others,
+            # and dropping it left the query unable to group by one.
+            leg = _dimension_carrying_leg(
+                _measure_objects(planner, resolved, model, measure), resolved, model
+            )
+            if leg is not None:
+                groups.setdefault(leg, [])
+            continue
         if measure.component_measures:
             # Metric: add each component measure to its source object, following
             # nested derived metrics — those are expanded into the same formula,
@@ -610,6 +665,13 @@ def group_measures_by_object(
                 if comp.name in seen:
                     continue
                 seen.add(comp.name)
+                if comp.filter_context is not None:
+                    leg = _dimension_carrying_leg(
+                        _measure_objects(planner, resolved, model, comp), resolved, model
+                    )
+                    if leg is not None:
+                        groups.setdefault(leg, [])
+                    continue
                 model_measure = model.effective_measures.get(comp.name)
                 if model_measure and model_measure.columns:
                     comp_objects = {f.view for f in model_measure.columns if f.view}
