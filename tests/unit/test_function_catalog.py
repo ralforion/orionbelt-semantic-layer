@@ -428,6 +428,11 @@ class TestWeekStart:
             'weekStart: ""',
             "weekStart: false",
             "weekStart: 0",
+            # An explicit null, and a key with nothing after it, which YAML
+            # reads as the same thing: the field is a non-nullable enum, so
+            # both are wrong values rather than an unset one.
+            "weekStart: null",
+            "weekStart:",
         ],
     )
     def test_a_rejected_setting_is_a_model_error_not_a_crash(self, setting: str) -> None:

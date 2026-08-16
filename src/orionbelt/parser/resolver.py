@@ -197,9 +197,11 @@ def _parse_settings(
         "default_locale": default_locale,
         "query_timezone": query_timezone,
     }
-    # Only pass a week start when the model states one, so the field's own
-    # default (ISO Monday) applies rather than a None overriding it.
-    if week_start is not None:
+    # Presence again, not truthiness and not "is not None": the field is a
+    # non-nullable enum, so an explicit ``weekStart: null`` is a wrong value and
+    # has to reach Pydantic to be told so. Omitting the key entirely is what
+    # lets the field's own default (ISO Monday) apply.
+    if "weekStart" in raw:
         settings["week_start"] = week_start
     try:
         return ModelSettings(**settings)
