@@ -66,7 +66,11 @@ from orionbelt.models.warnings import WarningCode, warning
 
 
 def _build_computed_column_expr(
-    column: DataObjectColumn, obj: DataObject, model: SemanticModel
+    column: DataObjectColumn,
+    obj: DataObject,
+    model: SemanticModel,
+    *,
+    in_query_timezone: bool = True,
 ) -> Expr:
     """Parse a computed column's ``expression`` into an AST.
 
@@ -87,7 +91,14 @@ def _build_computed_column_expr(
     rewritten = substitute_placeholders(expr_str, _sub)
     try:
         tokens = tokenize_measure_expression(rewritten, model)
-        return apply_query_timezone(parse_expression(tokens), model)
+        parsed = parse_expression(tokens)
+        # A join key opts out for the same reason a plain one does, and it has
+        # to be threaded this far: a computed key converted while the plain key
+        # it is compared against is not would be an asymmetric comparison, and
+        # that changes which rows join rather than merely costing an index.
+        if not in_query_timezone:
+            return parsed
+        return apply_query_timezone(parsed, model)
     except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
         return ColumnRef(name=column.code or column.name, table=obj.name)
 
@@ -252,7 +263,7 @@ def make_column_expr(
     if column is None:
         return ColumnRef(name=column_label, table=object_name)
     if column.expression:
-        return _build_computed_column_expr(column, obj, model)
+        return _build_computed_column_expr(column, obj, model, in_query_timezone=in_query_timezone)
     ref: Expr = ColumnRef(name=column.code, table=object_name)
     if not in_query_timezone:
         return ref

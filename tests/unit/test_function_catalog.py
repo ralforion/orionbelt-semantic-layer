@@ -631,6 +631,60 @@ measures:
         # The same column, selected as a dimension, is still converted.
         assert '("Events"."occurred_at" AT TIME ZONE' in sql
 
+    def test_a_computed_join_key_is_not_converted_either(self) -> None:
+        """The opt-out has to reach the computed branch, not just the plain one.
+
+        A computed key converted while the plain key it is compared against is
+        not would be an asymmetric comparison: that changes which rows join,
+        rather than merely costing an index.
+        """
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Zagreb
+  defaultTimezone: UTC
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {code: id, abstractType: string}
+      Raw At: {code: raw_at, abstractType: timestamp}
+      Local At: {abstractType: timestamp, expression: "{Raw At}"}
+    joins:
+      - joinType: many-to-one
+        joinTo: Windows
+        columnsFrom: [Local At]
+        columnsTo: [Window At]
+  Windows:
+    code: windows
+    columns:
+      Window At: {code: window_at, abstractType: timestamp, primaryKey: true}
+      Window Name: {code: window_name, abstractType: string}
+dimensions:
+  Window Name: {dataObject: Windows, column: Window Name, resultType: string}
+  Local At: {dataObject: Events, column: Local At, resultType: timestamp}
+measures:
+  Event Count:
+    columns: [{dataObject: Events, column: Event ID}]
+    resultType: int
+    aggregation: count
+"""
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Window Name", "Local At"], measures=["Event Count"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        on_clause = next(line for line in sql.splitlines() if line.startswith("LEFT JOIN"))
+        assert "AT TIME ZONE" not in on_clause, on_clause
+        # Both sides bare, so the comparison stays symmetric.
+        assert '"Events"."raw_at" = "Windows"."window_at"' in on_clause
+        # And the same computed column, selected as a dimension, still converts.
+        assert '("Events"."raw_at" AT TIME ZONE' in sql
+
     def test_a_date_column_is_never_converted(self) -> None:
         """A date has no instant to move between zones."""
         sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred On")
