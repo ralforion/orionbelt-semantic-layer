@@ -2,7 +2,62 @@
 
 from __future__ import annotations
 
-OBML_REFERENCE = """\
+from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
+
+
+def _function_catalog_section() -> str:
+    """Render the portable function catalog as markdown, from the catalog.
+
+    Generated rather than written out, because this text is the discovery
+    surface LLM and MCP clients read: a hand-maintained list went stale the
+    moment a group was added to ``models/functions.py``, which is exactly what
+    happened between the string group and the numeric one.
+    """
+    lines = [
+        "## Functions in expressions — the portable catalog",
+        "",
+        "A function call inside any `expression` (computed column, measure, metric)",
+        "is either **in the catalog**, in which case OBSL owns what it means and",
+        "renders it per dialect, or **outside it**, in which case the call is emitted",
+        "verbatim and the model only runs on engines that spell it that way. Names",
+        "are case-insensitive, and `?` marks an optional argument.",
+        "",
+        "Semantics are pinned by the catalog, not by the warehouse: where the engines",
+        "disagreed on the answer, the renderer bends the engine to the rule below.",
+        "The same catalog is served as JSON, with worked examples, at",
+        "`GET /v1/reference/functions`.",
+        "",
+    ]
+    for group in dict.fromkeys(spec.group for spec in FUNCTION_CATALOG.values()):
+        lines.append(f"### {group}")
+        lines.append("")
+        for spec in _group_entries(group):
+            lines.append(f"- `{spec.signature}` — {_markdown(spec.summary)}")
+            if spec.semantics:
+                lines.append(f"  {_markdown(spec.semantics)}")
+        lines.append("")
+    lines.extend(
+        [
+            "Calling a catalog function with the wrong number of arguments is a",
+            "validation error, `WRONG_FUNCTION_ARITY`. Names outside the catalog are",
+            "not checked at all: their arity and meaning belong to the engine.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _group_entries(group: str) -> list[FunctionSpec]:
+    return [spec for spec in FUNCTION_CATALOG.values() if spec.group == group]
+
+
+def _markdown(text: str) -> str:
+    """The catalog's prose is written for Python docstrings; this document is
+    markdown, where ``x`` is a literal pair of backticks rather than code.
+    """
+    return text.replace("``", "`")
+
+
+_OBML_REFERENCE_TEMPLATE = """\
 # OBML (OrionBelt ML) Reference
 
 OBML is a YAML-based semantic model format. A model has four top-level sections:
@@ -292,38 +347,7 @@ customExtensions:
 Each entry has `vendor` (identifier string) and `data` (opaque JSON string).
 OrionBelt preserves these during parsing but does not interpret them.
 
-## Functions in expressions — the portable catalog
-
-A function call inside any `expression` (computed column, measure, metric) is
-either **in the catalog**, in which case OBSL owns what it means and renders it
-per dialect, or **outside it**, in which case the call is emitted verbatim and
-the model only runs on engines that spell it that way. Names are
-case-insensitive.
-
-String group (the full machine-readable catalog, with per-entry semantics and
-worked examples, is `GET /v1/reference/functions`):
-
-```
-substring(x, start, len?)   concat(a, b, ...)        upper(x) / lower(x)
-trim(x) / ltrim(x) / rtrim(x)                        length(x)
-replace(x, from, to)        position(needle, haystack)
-split_part(x, delim, n)     lpad(x, len, fill) / rpad(x, len, fill)
-starts_with(x, prefix)      ends_with(x, suffix)
-```
-
-Semantics are pinned by the catalog, not by the warehouse. Where the engines
-disagreed, the renderer bends the engine to the catalog:
-
-- `concat` propagates NULL: `concat('a', NULL, 'c')` is NULL, including on
-  DuckDB, Postgres and Dremio, whose own `CONCAT` skips NULL arguments. For the
-  skipping behaviour, write it: `concat(coalesce({A}, ''), coalesce({B}, ''))`.
-- `length` counts characters, not bytes (ClickHouse and MySQL count bytes).
-- `position` takes the needle first, then the haystack.
-- `split_part` is 1-based, and an `n` past the last field yields `''`.
-
-Calling a catalog function with the wrong number of arguments is a validation
-error, `WRONG_FUNCTION_ARITY`. Names outside the catalog are not checked at all:
-their arity and meaning belong to the engine.
+{FUNCTION_CATALOG_SECTION}
 
 ## Key Rules
 
@@ -411,3 +435,8 @@ bigquery, clickhouse, databricks, dremio, duckdb, mysql, postgres, snowflake
 2. `describe_model(model_id)` — inspect data objects, dimensions, measures, metrics
 3. `compile_query(model_id, dimensions=[...], measures=[...])` — generate SQL
 """
+
+
+OBML_REFERENCE = _OBML_REFERENCE_TEMPLATE.replace(
+    "{FUNCTION_CATALOG_SECTION}", _function_catalog_section()
+)

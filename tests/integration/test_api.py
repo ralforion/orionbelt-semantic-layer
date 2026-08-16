@@ -1481,6 +1481,22 @@ class TestReferenceEndpoints:
         assert "WRONG_FUNCTION_ARITY" in body
         assert "concat" in body
 
+    async def test_obml_reference_lists_every_catalog_entry(self, client: AsyncClient) -> None:
+        """The section is generated from the catalog rather than written out.
+
+        A hand-maintained list went stale the moment the numeric group landed:
+        the text still said "String group" and named eleven functions while the
+        compiler already rendered thirty-two.
+        """
+        from orionbelt.models.functions import FUNCTION_CATALOG
+
+        r = await client.get("/v1/reference/obml")
+        body = r.json()["reference"]
+        missing = [
+            spec.signature for spec in FUNCTION_CATALOG.values() if spec.signature not in body
+        ]
+        assert not missing, f"OBML reference omits catalog entries: {missing}"
+
     async def test_obml_schema_served(self, client: AsyncClient) -> None:
         r = await client.get("/v1/reference/schemas/obml")
         assert r.status_code == 200
