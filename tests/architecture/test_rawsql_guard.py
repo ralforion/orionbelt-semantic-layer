@@ -29,6 +29,11 @@ APPROVED_RAWSQL: dict[str, int] = {
     "src/orionbelt/dialect/mysql.py": 1,
     # BigQuery DATE_TRUNC date-part keyword (MONTH/ISOWEEK, not a quoted string).
     "src/orionbelt/dialect/bigquery.py": 1,
+    # Week handling: each site re-wraps SQL the dialect just rendered, so that
+    # one weekly floor serves the catalog function, the time-grain dimension
+    # and the period-over-period spine rather than one implementation per
+    # entry point. Nothing user-authored is spliced in.
+    "src/orionbelt/dialect/base.py": 5,
 }
 
 

@@ -53,7 +53,7 @@ class DremioDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -86,6 +86,52 @@ class DremioDialect(Dialect):
         catalog's answer either way.
         """
         return self._render_concat_null_guard(args)
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Dremio: ``CONVERT_TIMEZONE``, three-argument form when the source
+        zone has to be declared, two-argument when the value knows its own.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            return (
+                f"CONVERT_TIMEZONE({self._quote_zone(from_zone)}, "
+                f"{self._quote_zone(zone)}, {rendered})"
+            )
+        return f"CONVERT_TIMEZONE({self._quote_zone(zone)}, {rendered})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Dremio's ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one
+        less, applied with the TIMESTAMPADD this dialect already uses for date
+        arithmetic.
+
+        Stepping back from the start of the day rather than from the value:
+        subtracting days from a timestamp keeps its time, and the start of a
+        week is midnight.
+        """
+        rendered = self.compile_expr(value)
+        return f"TIMESTAMPADD(DAY, -(DAYOFWEEK({rendered}) - 1), DATE_TRUNC('day', {rendered}))"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Dremio: ``TIMESTAMPADD(UNIT, n, x)``, which is already how the
+        relative-date filters render here, and which takes QUARTER and WEEK
+        that its interval qualifiers reject.
+        """
+        return (
+            f"TIMESTAMPADD({unit.upper()}, {self.compile_expr(count)}, {self.compile_expr(value)})"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Dremio: ``TIMESTAMPDIFF(UNIT, start, end)``.
+
+        Whether it counts boundaries or complete units is not something this
+        repo can run and check, so both ends are truncated to the unit first,
+        which makes the two readings identical.
+        """
+        return (
+            f"TIMESTAMPDIFF({unit.upper()}, "
+            f"{self._render_date_trunc(unit, start)}, "
+            f"{self._render_date_trunc(unit, end)})"
+        )
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Dremio spells it ``TRUNCATE`` and documents it as truncating toward
@@ -140,7 +186,7 @@ class DremioDialect(Dialect):
         # the forward spine in render_date_spine_cte_sql).
         return f"CAST(TIMESTAMPADD({unit.upper()}, {count}, {date_sql}) AS DATE)"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC('{grain}', {column_sql})"
 
     def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:

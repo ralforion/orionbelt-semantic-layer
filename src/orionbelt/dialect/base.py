@@ -18,6 +18,7 @@ from orionbelt.ast.nodes import (
     From,
     FunctionCall,
     InList,
+    InTimeZone,
     IsNull,
     Join,
     Literal,
@@ -32,9 +33,26 @@ from orionbelt.ast.nodes import (
     UnionAll,
     WindowFunction,
 )
-from orionbelt.models.functions import lookup_function
-from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.functions import TIME_UNITS, lookup_function
+from orionbelt.models.semantic import TimeGrain, WeekStart
 from orionbelt.models.types import DecimalType, OBMLType
+
+
+def _unit_of(arg: Expr) -> str:
+    """The canonical time unit a literal argument names.
+
+    Only called for a call ``compile_expr`` already checked with
+    :func:`_is_unit_literal`, so the cast is safe.
+    """
+    assert isinstance(arg, Literal) and isinstance(arg.value, str)
+    return arg.value.lower()
+
+
+def _is_unit_literal(arg: Expr) -> bool:
+    """Whether *arg* is a literal naming one of the catalog's time units."""
+    return (
+        isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in TIME_UNITS
+    )
 
 
 class UnsupportedAggregationError(Exception):
@@ -247,9 +265,26 @@ class Dialect(ABC):
     def quote_identifier(self, name: str) -> str:
         """Quote an identifier per dialect rules."""
 
-    @abstractmethod
     def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
-        """Wrap a column expression for the given time grain."""
+        """Wrap a column expression for the given time grain.
+
+        A week is routed through the model's calendar rather than the dialect's
+        own weekly truncation, so a ``timeGrain: week`` dimension, a weekly
+        period-over-period and an explicit ``date_trunc('week', …)`` all bucket
+        the same rows the same way. Left to the dialects, they did not: BigQuery
+        hard-coded ISOWEEK, ClickHouse ``toMonday``, MySQL a ``%Y-%u`` label,
+        and Snowflake a ``DATE_TRUNC('week')`` that follows its WEEK_START
+        session parameter.
+        """
+        if grain is TimeGrain.WEEK:
+            # RawSQL: re-wraps SQL this dialect just rendered, so the weekly
+            # floor has one implementation rather than one per entry point.
+            return RawSQL(sql=self._render_week_floor(column))
+        return self._render_time_grain(column, grain)
+
+    @abstractmethod
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+        """Wrap a column expression for a grain other than a week."""
 
     @abstractmethod
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -263,12 +298,23 @@ class Dialect(ABC):
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         """Return SQL that adds count units to date_sql."""
 
-    @abstractmethod
     def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
-        """Return SQL string that truncates a date/timestamp to the given grain.
+        """Truncate a date/timestamp to the given grain, as a SQL string.
 
-        String-level helper (not AST) for use in raw SQL CTEs like date_range.
+        String-level helper (not AST) for use in raw SQL CTEs like date_range
+        and the period-over-period spine. A week goes through the model's
+        calendar for the same reason it does in ``render_time_grain``: a weekly
+        PoP and a weekly dimension have to agree on where a week starts.
         """
+        if grain == TimeGrain.WEEK.value:
+            # RawSQL: the caller already has SQL text, and the floor is defined
+            # over expressions.
+            return self._render_week_floor(RawSQL(sql=column_sql))
+        return self._render_date_trunc_sql(column_sql, grain)
+
+    @abstractmethod
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        """Truncate to a grain other than a week, as a SQL string."""
 
     @abstractmethod
     def render_date_spine_cte_sql(
@@ -371,6 +417,24 @@ class Dialect(ABC):
                 return self._render_log(args)
             case "greatest" | "least":
                 return self._render_extremum(name, args)
+            case "date_trunc":
+                unit = _unit_of(args[0])
+                if unit == "week":
+                    return self._render_week_floor(args[1])
+                return self._render_date_trunc(unit, args[1])
+            case "date_add":
+                return self._render_date_add(_unit_of(args[0]), args[1], args[2])
+            case "date_diff":
+                unit = _unit_of(args[0])
+                if unit == "week":
+                    return self._render_week_diff(args[1], args[2])
+                return self._render_date_diff(unit, args[1], args[2])
+            case "extract":
+                return self._render_extract(_unit_of(args[0]), args[1])
+            case "last_day":
+                return self._render_last_day(args[0])
+            case "current_date":
+                return self._render_current_date()
             case _:
                 return self._render_named_function(name, args)
 
@@ -516,6 +580,122 @@ class Dialect(ABC):
     def _render_log(self, args: list[Expr]) -> str:
         """Default: native ``LOG(base, x)``."""
         return self._render_named_function("log", args)
+
+    # ---- date/time ---------------------------------------------------------
+    #
+    # These take the unit already extracted and lower-cased, because every one
+    # of them has to switch on it: the unit is a keyword on BigQuery and
+    # ClickHouse, a quoted string on Snowflake, an interval qualifier on MySQL,
+    # and a different expression per unit on Postgres. A call whose unit is not
+    # a literal from the vocabulary never reaches here — ``compile_expr``
+    # leaves it to the pass-through path, and the validator reports it.
+
+    _SQL_UNITS: dict[str, str] = {unit: unit.upper() for unit in TIME_UNITS}
+    """Canonical unit → the keyword this dialect spells it with."""
+
+    week_start: WeekStart = WeekStart.MONDAY
+    """Which day ``date_trunc('week', …)`` rounds down to.
+
+    Set per compile from ``settings.weekStart`` by the pipeline, which builds a
+    fresh dialect for each query, so one model's calendar cannot leak into
+    another's.
+    """
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Default: ANSI ``AT TIME ZONE``, which DuckDB and Postgres share.
+
+        A naive value is first declared to be in *from_zone*, then read in
+        *zone*; an aware one already knows its instant and is only read.
+        """
+        rendered = self.compile_expr(value, _parent_prec=self._PREC_CMP + 1)
+        if from_zone is not None:
+            rendered = f"{rendered} AT TIME ZONE {self._quote_zone(from_zone)}"
+        return self._render_infix(f"{rendered} AT TIME ZONE {self._quote_zone(zone)}")
+
+    @staticmethod
+    def _quote_zone(zone: str) -> str:
+        """A time zone name as a SQL string literal."""
+        return "'" + zone.replace("'", "''") + "'"
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted.
+
+        Only ever called for the model's own week start; a Sunday week is
+        routed to :meth:`_render_week_start_sunday` by the dispatcher, so a
+        dialect overriding this one does not have to remember the calendar.
+        """
+        return f"DATE_TRUNC('{unit}', {self.compile_expr(value)})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Default: step back to the preceding Sunday by the ANSI day-of-week.
+
+        ``EXTRACT(DOW …)`` numbers Sunday as 0 on DuckDB and Postgres, so the
+        offset is the number itself. Engines that number differently, or that
+        have a week-start argument of their own, override.
+        """
+        rendered = self.compile_expr(value)
+        return self._render_infix(
+            f"DATE_TRUNC('day', {rendered}) - EXTRACT(DOW FROM {rendered}) * INTERVAL '1 day'"
+        )
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Default: ``x + n * INTERVAL '1 unit'``.
+
+        Multiplication rather than ``INTERVAL n unit`` because *n* is an
+        expression in a real model, and Postgres and DuckDB only accept a
+        constant inside an interval literal.
+        """
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} + {n} * INTERVAL '1 {unit}'"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Default: ``DATE_DIFF('unit', start, end)``, counting boundaries."""
+        return f"DATE_DIFF('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
+    def _render_week_floor(self, value: Expr) -> str:
+        """The start of *value*'s week, per the model's calendar."""
+        if self.week_start is WeekStart.SUNDAY:
+            return self._render_week_start_sunday(value)
+        return self._render_date_trunc("week", value)
+
+    def _render_week_diff(self, start: Expr, end: Expr) -> str:
+        """Week boundaries crossed, for every dialect and both calendars.
+
+        Not the engine's own week difference, for two reasons. It counts the
+        engine's week boundaries, Monday's on all but BigQuery, so it answers
+        the wrong number as soon as the model says Sunday. And the engines do
+        not even agree on the question: from Sunday 2026-08-09 to Saturday
+        2026-08-15, one Monday apart, ClickHouse, Snowflake and BigQuery count
+        the boundary and answer 1, while DuckDB and MySQL count whole seven-day
+        spans and answer 0, and Postgres has no week difference at all.
+
+        Truncating both ends to the model's week start and dividing the day
+        difference by seven gives the boundary count the catalog documents,
+        through this dialect's own truncation, day difference and integer
+        division rather than an eighth dialect-specific rewrite.
+        """
+        # RawSQL: re-wraps SQL this dialect just rendered so the composition
+        # runs through its own truncation, day difference and integer division
+        # rather than an eighth copy of per-engine week arithmetic. Nothing
+        # user-authored enters here.
+        left = RawSQL(sql=self._render_week_floor(start))
+        right = RawSQL(sql=self._render_week_floor(end))
+        days = RawSQL(sql=self._render_date_diff("day", left, right))
+        return self._render_div([days, Literal.number(7)])
+
+    def _render_extract(self, unit: str, value: Expr) -> str:
+        """Default: ANSI ``EXTRACT(UNIT FROM x)``."""
+        return f"EXTRACT({self._SQL_UNITS[unit]} FROM {self.compile_expr(value)})"
+
+    def _render_last_day(self, value: Expr) -> str:
+        """Default: native ``LAST_DAY(x)``."""
+        return f"LAST_DAY({self.compile_expr(value)})"
+
+    def _render_current_date(self) -> str:
+        """Default: ``CURRENT_DATE()``. Postgres rejects the parentheses."""
+        return "CURRENT_DATE()"
 
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Default: native ``GREATEST`` / ``LEAST``, which propagate NULL on
@@ -905,7 +1085,12 @@ class Dialect(ABC):
                 # emitting the author's own call keeps the database error
                 # recognisable instead of raising from codegen.
                 spec = lookup_function(fname)
-                if spec is not None and not distinct and spec.accepts(len(args)):
+                if (
+                    spec is not None
+                    and not distinct
+                    and spec.accepts(len(args))
+                    and (spec.unit_argument is None or _is_unit_literal(args[spec.unit_argument]))
+                ):
                     return self._render_function(spec.name, args)
                 # Everything else stays pass-through: removing the escape
                 # hatch would break every model built before the catalog.
@@ -960,6 +1145,8 @@ class Dialect(ABC):
                 high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP)
                 sql = f"{inner_sql} {op} {low_sql} AND {high_sql}"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
+            case InTimeZone(expr=inner, zone=zone, from_zone=from_zone):
+                return self._render_in_timezone(inner, zone, from_zone)
             case RegexMatch(column=column, pattern=pattern, negated=negated):
                 return self.compile_regex_match(column, pattern, negated=negated)
             case RelativeDateRange(

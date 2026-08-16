@@ -169,7 +169,7 @@ class MySQLDialect(Dialect):
         escaped = name.replace("`", "``")
         return f"`{escaped}`"
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         """MySQL time grain truncation via DATE_FORMAT or DATE_ADD+MAKEDATE for quarters."""
         grain_format_map: dict[TimeGrain, str | None] = {
             TimeGrain.SECOND: "%Y-%m-%d %H:%i:%s",
@@ -299,6 +299,94 @@ class MySQLDialect(Dialect):
         )
         return f"CASE WHEN {index} > {field_count} THEN '' ELSE {part} END"
 
+    # MySQL's own WEEK() defaults to a Sunday-based numbering that answers 32
+    # where the catalog documents ISO week 33; mode 3 is the ISO one, applied
+    # in ``_render_extract``.
+    _DATE_FORMAT_BY_UNIT: dict[str, str] = {
+        "year": "%Y-01-01",
+        "month": "%Y-%m-01",
+        "day": "%Y-%m-%d",
+        "hour": "%Y-%m-%d %H:00:00",
+        "minute": "%Y-%m-%d %H:%i:00",
+        "second": "%Y-%m-%d %H:%i:%s",
+    }
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """MySQL: ``CONVERT_TZ``, which needs both ends named.
+
+        A value with no declared source zone is read in the session's, which is
+        what MySQL itself does with a TIMESTAMP column; ``@@session.time_zone``
+        names it without assuming which. Applying this twice moves the value
+        twice - measured, 00:30 becoming 02:30 - which is why it attaches to a
+        column rather than wrapping an expression.
+        """
+        rendered = self.compile_expr(value)
+        source = self._quote_zone(from_zone) if from_zone is not None else "@@session.time_zone"
+        return f"CONVERT_TZ({rendered}, {source}, {self._quote_zone(zone)})"
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """MySQL has no DATE_TRUNC at all.
+
+        Most units are a DATE_FORMAT away. A quarter has no format string, so
+        it is built from the first of the year plus whole quarters, and a week
+        is the ISO Monday, which ``WEEKDAY`` numbers from 0.
+        """
+        rendered = self.compile_expr(value)
+        if unit == "quarter":
+            return (
+                f"DATE_ADD(MAKEDATE(YEAR({rendered}), 1), INTERVAL QUARTER({rendered}) - 1 QUARTER)"
+            )
+        if unit == "week":
+            return f"DATE(DATE_SUB({rendered}, INTERVAL WEEKDAY({rendered}) DAY))"
+        pattern = self._DATE_FORMAT_BY_UNIT[unit]
+        formatted = f"DATE_FORMAT({rendered}, '{pattern}')"
+        # DATE_FORMAT returns a string; cast back so the result compares and
+        # sorts as a date rather than lexically.
+        return (
+            f"CAST({formatted} AS {'DATETIME' if unit in ('hour', 'minute', 'second') else 'DATE'})"
+        )
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """MySQL: ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one less.
+
+        Not ``WEEKDAY``, which the Monday form uses and which numbers Monday
+        as 0.
+        """
+        rendered = self.compile_expr(value)
+        return f"DATE(DATE_SUB({rendered}, INTERVAL DAYOFWEEK({rendered}) - 1 DAY))"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """MySQL: ``DATE_ADD(x, INTERVAL n UNIT)``. The qualifier is a keyword,
+        but *n* may be an expression, unlike the interval literals other
+        engines require.
+        """
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        return f"DATE_ADD({self.compile_expr(value)}, INTERVAL {n} {unit.upper()})"
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """MySQL's ``TIMESTAMPDIFF`` counts *complete* units where the catalog
+        counts boundaries crossed: 23:00 to 01:00 the next morning is 0 days
+        here and 1 everywhere else, and 2026-01-31 to 2026-03-01 is 1 month
+        rather than 2.
+
+        Truncating both ends to the unit first turns one into the other, which
+        is what this does.
+        """
+        return (
+            f"TIMESTAMPDIFF({unit.upper()}, "
+            f"{self._render_date_trunc(unit, start)}, "
+            f"{self._render_date_trunc(unit, end)})"
+        )
+
+    def _render_extract(self, unit: str, value: Expr) -> str:
+        """MySQL's ``EXTRACT(WEEK FROM x)`` is Sunday-based and answers 32 for
+        2026-08-15, where the catalog documents ISO week 33. ``WEEK(x, 3)`` is
+        the ISO numbering.
+        """
+        if unit == "week":
+            return f"WEEK({self.compile_expr(value)}, 3)"
+        return super()._render_extract(unit, value)
+
     def _render_trunc(self, args: list[Expr]) -> str:
         """MySQL spells it ``TRUNCATE`` and always requires the digit count,
         where the catalog's second argument is optional.
@@ -359,7 +447,7 @@ class MySQLDialect(Dialect):
             return f"DATE_SUB({date_sql}, INTERVAL {abs(count)} {unit.upper()})"
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit.upper()})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         grain_map = {
             "year": f"DATE_FORMAT({column_sql}, '%Y-01-01')",
             "quarter": (

@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_qualified_refs
@@ -170,21 +171,60 @@ def _parse_settings(
     override_db_tz = raw.get("overrideDatabaseTimezone", False)
     default_dialect = raw.get("defaultDialect")
     default_locale = raw.get("defaultLocale")
-    if (
-        not default_type
-        and not default_tz
-        and not override_db_tz
-        and not default_dialect
-        and not default_locale
+    week_start = raw.get("weekStart")
+    query_timezone = raw.get("queryTimezone")
+    # Presence, not truthiness: ``weekStart: ""`` and ``defaultTimezone: ""``
+    # are wrong values, and testing them for truth dropped the whole block and
+    # let them validate as though the model had said nothing.
+    if not any(
+        key in raw
+        for key in (
+            "defaultNumericDataType",
+            "defaultTimezone",
+            "overrideDatabaseTimezone",
+            "defaultDialect",
+            "defaultLocale",
+            "weekStart",
+            "queryTimezone",
+        )
     ):
         return None
-    return ModelSettings(
-        default_numeric_data_type=default_type,
-        default_timezone=default_tz,
-        override_database_timezone=override_db_tz,
-        default_dialect=default_dialect,
-        default_locale=default_locale,
-    )
+    settings = {
+        "default_numeric_data_type": default_type,
+        "default_timezone": default_tz,
+        "override_database_timezone": override_db_tz,
+        "default_dialect": default_dialect,
+        "default_locale": default_locale,
+        "query_timezone": query_timezone,
+    }
+    # Presence again, not truthiness and not "is not None": the field is a
+    # non-nullable enum, so an explicit ``weekStart: null`` is a wrong value and
+    # has to reach Pydantic to be told so. Omitting the key entirely is what
+    # lets the field's own default (ISO Monday) apply.
+    if "weekStart" in raw:
+        settings["week_start"] = week_start
+    try:
+        return ModelSettings(**settings)
+    except PydanticValidationError as exc:
+        # A rejected value here is a typo in the model, not a system failure:
+        # ``weekStart: Mondey``, an unknown timezone, a non-decimal default
+        # type. Left to propagate it reached the API as a raw pydantic error
+        # and a 500, where every other model mistake is a structured 422.
+        if errors is None:
+            raise
+        for detail in exc.errors():
+            field = str(detail["loc"][0]) if detail["loc"] else ""
+            declared = ModelSettings.model_fields.get(field)
+            alias = (declared.alias if declared else None) or field
+            errors.append(
+                SemanticError(
+                    code="INVALID_SETTING",
+                    message=f"settings.{alias}: {detail['msg']}",
+                    path=f"settings.{alias}",
+                    span=source_map.get("settings") if source_map else None,
+                )
+            )
+        return None
 
 
 def _coerce_filter_value(v: object) -> str | int | float | bool | None:

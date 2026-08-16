@@ -105,6 +105,19 @@ class TimeGrain(StrEnum):
     SECOND = "second"
 
 
+class WeekStart(StrEnum):
+    """Which day a week begins on, for week truncation.
+
+    ISO 8601 says Monday, and that is the default. Retail calendars in the US
+    commonly start on Sunday, and a model pinned to Monday would disagree with
+    every other tool that customer uses, so it is a model-level setting rather
+    than a constant.
+    """
+
+    MONDAY = "monday"
+    SUNDAY = "sunday"
+
+
 class NumClass(StrEnum):
     CATEGORICAL = "categorical"
     ADDITIVE = "additive"
@@ -841,6 +854,30 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    query_timezone: str | None = Field(
+        None,
+        alias="queryTimezone",
+        description=(
+            "IANA zone the model's timestamps are bucketed and reported in. When "
+            "set, a timestamp column is converted to it in the SQL, so which week "
+            "or day a row falls in is the model's decision rather than the "
+            "warehouse session's. A naive column is first read as "
+            "``defaultTimezone``, which is what that setting states it means; a "
+            "column that already carries a zone needs no such hint. Date and time "
+            "columns are never converted: a date has no instant to convert."
+        ),
+    )
+    week_start: WeekStart = Field(
+        WeekStart.MONDAY,
+        alias="weekStart",
+        description=(
+            "Which day a week begins on, for date_trunc('week', ...) and the "
+            "week boundaries date_diff('week', ...) counts. ISO 8601 (Monday) "
+            "by default; 'sunday' for a US retail calendar. Week *numbering* "
+            "from extract('week', ...) stays ISO either way: a Sunday-start "
+            "week number has no definition the engines agree on."
+        ),
+    )
     default_locale: str | None = Field(
         None,
         alias="defaultLocale",
@@ -865,7 +902,7 @@ class ModelSettings(BaseModel):
                 raise ValueError(f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'")
         return v
 
-    @field_validator("default_timezone", mode="before")
+    @field_validator("default_timezone", "query_timezone", mode="before")
     @classmethod
     def _validate_timezone(cls, v: str | None) -> str | None:
         if v is not None:

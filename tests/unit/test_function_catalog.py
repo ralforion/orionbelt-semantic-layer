@@ -16,6 +16,7 @@ import re
 import pytest
 
 import orionbelt.dialect  # noqa: F401 -- triggers dialect registration
+from orionbelt.ast.nodes import ColumnRef
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.base import DialectCapabilities, UnsupportedFunctionError
 from orionbelt.dialect.duckdb import DuckDBDialect
@@ -34,7 +35,7 @@ from orionbelt.models.functions import (
     lookup_function,
 )
 from orionbelt.models.query import QueryObject, QuerySelect
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import SemanticModel, WeekStart
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -93,9 +94,14 @@ class TestCatalogIntegrity:
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_arity_bounds_are_ordered(self, spec: FunctionSpec) -> None:
-        assert spec.min_args >= 1
+        assert spec.min_args >= 0
         if spec.max_args is not None:
             assert spec.max_args >= spec.min_args
+
+    @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
+    def test_a_unit_argument_is_within_the_arity(self, spec: FunctionSpec) -> None:
+        if spec.unit_argument is not None:
+            assert spec.unit_argument < spec.min_args
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_every_entry_carries_an_example(self, spec: FunctionSpec) -> None:
@@ -104,11 +110,17 @@ class TestCatalogIntegrity:
 
     @pytest.mark.parametrize("spec", CATALOG, ids=lambda s: s.name)
     def test_examples_parse_and_match_the_declared_arity(self, spec: FunctionSpec) -> None:
+        """An example calls its own entry, with an arity the entry accepts.
+
+        Usually it is the whole expression; an entry with no constant value of
+        its own (``current_date()``) is pinned by composition instead, so the
+        call is looked for anywhere in the example rather than only at the top.
+        """
         for example in spec.examples:
             calls = find_function_calls(example.call)
-            outer = calls[-1]
-            assert outer.name == spec.name
-            assert spec.accepts(outer.arg_count)
+            own = [call for call in calls if call.name == spec.name]
+            assert own, f"{example.call} never calls {spec.name}"
+            assert all(spec.accepts(call.arg_count) for call in own)
             parse_expression(tokenize_metric_formula(example.call))
 
     def test_lookup_is_case_insensitive(self) -> None:
@@ -123,10 +135,18 @@ class TestCatalogIntegrity:
 class TestFunctionCallScanner:
     """``find_function_calls`` feeds the validator; it must not invent calls."""
 
-    def test_reports_name_and_arity(self) -> None:
+    def test_reports_name_and_arguments(self) -> None:
         assert find_function_calls("substring({Zip}, 1, 5)") == [
-            FunctionCallRef(name="substring", arg_count=3)
+            FunctionCallRef(name="substring", arguments=("{Zip}", "1", "5"))
         ]
+
+    def test_argument_text_is_kept_for_the_unit_check(self) -> None:
+        """The date entries take a literal unit the renderers switch on, so
+        the validator needs the argument as written, not just how many.
+        """
+        call = find_function_calls("date_trunc('month', {Sales Date})")[0]
+        assert call.arguments == ("'month'", "{Sales Date}")
+        assert call.arg_count == 2
 
     def test_nested_calls_are_reported_innermost_first(self) -> None:
         names = [c.name for c in find_function_calls("upper(trim({X}))")]
@@ -251,6 +271,574 @@ class TestArityValidation:
         }
 
 
+class TestTimeUnits:
+    """The date entries take a literal unit, and every dialect switches on it."""
+
+    def test_a_misspelled_unit_is_rejected(self) -> None:
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_trunc('monht', {Zip})")
+
+    def test_an_expression_unit_is_rejected(self) -> None:
+        """It could not be compiled: the unit is a keyword on some engines and
+        a whole different expression per unit on others.
+        """
+        assert "UNKNOWN_TIME_UNIT" in _errors_for("date_trunc({Zip}, {Zip})")
+
+    def test_a_valid_unit_passes(self) -> None:
+        assert _errors_for("date_trunc('month', {Zip})") == []
+
+    def test_the_unit_is_case_insensitive(self) -> None:
+        assert _errors_for("extract('WEEK', {Zip})") == []
+
+    def test_a_rejected_unit_still_compiles_to_the_authors_call(self) -> None:
+        """Codegen does not raise on what the validator reports, for the same
+        reason a wrong arity does not: the database error stays recognisable.
+        """
+        assert _render("date_trunc('monht', {[S].[D]})", "duckdb") == (
+            "date_trunc('monht', \"S].[D\")"
+        )
+
+
+class TestCompilerGeneratedCalls:
+    """The planner builds date_trunc calls of its own, for time grains.
+
+    Those now flow through the catalog like any other call, which is intended:
+    one rendering for one function. What must not happen is the catalog
+    *mangling* them, and BigQuery is where that would show, because its
+    ``render_time_grain`` already emits the engine's own value-first order.
+    """
+
+    def test_a_time_grain_dimension_still_compiles_per_dialect(self) -> None:
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.models.semantic import TimeGrain
+
+        column = ColumnRef(name="salesdate", table="Sales")
+        rendered = {
+            dialect: DialectRegistry.get(dialect).compile_expr(
+                DialectRegistry.get(dialect).render_time_grain(column, TimeGrain.MONTH)
+            )
+            for dialect in DIALECTS
+        }
+        assert rendered["duckdb"] == 'DATE_TRUNC(\'month\', "Sales"."salesdate")'
+        # BigQuery's own order is value-first, so the unit argument is not a
+        # literal and the call is left exactly as the planner built it.
+        assert rendered["bigquery"] == "DATE_TRUNC(`Sales`.`salesdate`, MONTH)"
+        # ClickHouse and MySQL never went through date_trunc at all.
+        assert rendered["clickhouse"] == 'toStartOfMonth("Sales"."salesdate")'
+        assert "DATE_FORMAT" in rendered["mysql"]
+
+
+class TestWeekStart:
+    """``settings.weekStart`` — the one catalog rule a model can change."""
+
+    @staticmethod
+    def _render_with(call: str, dialect: str, week_start: WeekStart) -> str:
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = week_start
+        return engine.compile_expr(parse_expression(tokenize_metric_formula(call)))
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_two_calendars_render_differently(self, dialect: str) -> None:
+        call = "date_trunc('week', {[S].[D]})"
+        assert self._render_with(call, dialect, WeekStart.MONDAY) != self._render_with(
+            call, dialect, WeekStart.SUNDAY
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("clickhouse", 'toStartOfWeek("S].[D", 0)'),
+            ("bigquery", "DATE_TRUNC(`S].[D`, WEEK)"),
+            ("mysql", "DATE(DATE_SUB(`S].[D`, INTERVAL DAYOFWEEK(`S].[D`) - 1 DAY))"),
+            (
+                "snowflake",
+                "DATEADD('day', -(MOD(DAYOFWEEKISO(\"S].[D\"), 7)), DATE_TRUNC('day', \"S].[D\"))",
+            ),
+        ],
+    )
+    def test_sunday_uses_each_engines_own_day_numbering(self, dialect: str, expected: str) -> None:
+        """The day-of-week numbering is the trap: MySQL's WEEKDAY starts at
+        Monday and its DAYOFWEEK at Sunday, and Snowflake's DAYOFWEEK follows a
+        session parameter, so the ISO variant is used there instead.
+        """
+        assert self._render_with("date_trunc('week', {[S].[D]})", dialect, WeekStart.SUNDAY) == (
+            expected
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_week_difference_never_delegates_to_the_engine(self, dialect: str) -> None:
+        """The engines split on what a week difference means, so it is measured.
+
+        From Sunday 2026-08-09 to Saturday 2026-08-15, ClickHouse, Snowflake and
+        BigQuery count the Monday between them and answer 1; DuckDB and MySQL
+        count whole seven-day spans and answer 0; Postgres has no such function.
+        """
+        sql = self._render_with(
+            "date_diff('week', {[S].[A]}, {[S].[B]})", dialect, WeekStart.MONDAY
+        )
+        assert "7" in sql, "the week difference should be a day count divided by seven"
+
+    def test_snowflake_never_consults_its_session_parameter(self) -> None:
+        """Snowflake's DATE_TRUNC('week', ...) follows WEEK_START, so a session
+        set to Sunday would override a model that says Monday. Both calendars
+        are computed from DAYOFWEEKISO, which no session parameter moves.
+        """
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            sql = self._render_with("date_trunc('week', {[S].[D]})", "snowflake", week_start)
+            assert "DAYOFWEEKISO" in sql
+            assert "DATE_TRUNC('week'" not in sql
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("week_start", [WeekStart.MONDAY, WeekStart.SUNDAY])
+    def test_a_week_starts_at_midnight(self, dialect: str, week_start: WeekStart) -> None:
+        """The start of a week is a day boundary, so a rewrite that subtracts
+        days from a timestamp has to subtract them from its day: otherwise
+        13:45 survives into the result. Snowflake and Dremio did that.
+        """
+        sql = self._render_with("date_trunc('week', {[S].[T]})", dialect, week_start)
+        subtracts_days = any(
+            token in sql for token in ("DATEADD", "TIMESTAMPADD", "DATE_SUB", "- ")
+        )
+        if subtracts_days:
+            assert "DATE_TRUNC('day'" in sql or "DATE(" in sql, (
+                f"{dialect} steps back from the value rather than from its day: {sql}"
+            )
+
+    def test_extract_week_is_iso_under_either_calendar(self) -> None:
+        """A Sunday-start week *number* has no portable definition — MySQL
+        alone offers eight numbering modes — so numbering stays ISO and says so.
+        """
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            assert self._render_with("extract('week', {[S].[D]})", "mysql", week_start).endswith(
+                ", 3)"
+            )
+
+    def test_the_default_is_iso(self) -> None:
+        from orionbelt.models.semantic import ModelSettings
+
+        assert ModelSettings().week_start is WeekStart.MONDAY
+        assert DialectRegistry.get("duckdb").week_start is WeekStart.MONDAY
+
+    @pytest.mark.parametrize(
+        "setting",
+        [
+            "weekStart: Mondey",
+            "defaultTimezone: Mars/Olympus",
+            "defaultNumericDataType: banana",
+            # Falsy values were dropped along with the whole settings block, so
+            # a wrong value validated as though the model had said nothing.
+            'weekStart: ""',
+            "weekStart: false",
+            "weekStart: 0",
+            # An explicit null, and a key with nothing after it, which YAML
+            # reads as the same thing: the field is a non-nullable enum, so
+            # both are wrong values rather than an unset one.
+            "weekStart: null",
+            "weekStart:",
+        ],
+    )
+    def test_a_rejected_setting_is_a_model_error_not_a_crash(self, setting: str) -> None:
+        """A typo in settings used to escape as a raw pydantic ValidationError,
+        which the API surfaced as a 500 where every other model mistake is a
+        structured 422.
+        """
+        yaml_text = (
+            "version: 1.0\nsettings:\n  "
+            + setting
+            + "\ndataObjects:\n  O:\n    code: o\n    columns:\n"
+            "      A: {code: a, abstractType: string}\n"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        _model, result = ReferenceResolver().resolve(raw, source_map)
+        assert not result.valid
+        assert [e.code for e in result.errors] == ["INVALID_SETTING"]
+
+    def test_the_pipeline_applies_the_model_setting(self) -> None:
+        """A dialect is built per compile, so the calendar cannot leak."""
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = _ARITY_MODEL_YAML.replace("{EXPRESSION}", "date_trunc('week', {Zip})").replace(
+            "version: 1.0", "version: 1.0\nsettings:\n  weekStart: sunday"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Bad Zip"], measures=["Order Count"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert "EXTRACT(DOW FROM" in sql
+        # And the next compile of a Monday model is unaffected.
+        assert DialectRegistry.get("duckdb").week_start is WeekStart.MONDAY
+
+
+_TZ_MODEL_YAML = """\
+version: 1.0
+settings:
+{settings}
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {{code: id, abstractType: string}}
+      Occurred At: {{code: occurred_at, abstractType: {ttype}}}
+      Occurred On: {{code: occurred_on, abstractType: date}}
+      Rounded At:
+        abstractType: timestamp
+        expression: "date_trunc('hour', {{Occurred At}})"
+
+dimensions:
+  Occurred At: {{dataObject: Events, column: Occurred At, resultType: timestamp}}
+  Occurred On: {{dataObject: Events, column: Occurred On, resultType: date}}
+  Rounded At: {{dataObject: Events, column: Rounded At, resultType: timestamp}}
+
+measures:
+  Latest Week:
+    expression: "extract('week', {{[Events].[Occurred At]}})"
+    aggregation: max
+    resultType: int
+  Event Count:
+    columns: [{{dataObject: Events, column: Event ID}}]
+    resultType: int
+    aggregation: count
+"""
+
+
+def _tz_sql(settings: str, ttype: str, dimension: str, dialect: str = "duckdb") -> str:
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    yaml_text = _TZ_MODEL_YAML.format(settings=settings, ttype=ttype)
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=[dimension], measures=["Event Count"]))
+    return CompilationPipeline().compile(query, model, dialect).sql
+
+
+class TestQueryTimezone:
+    """``settings.queryTimezone`` — which zone a timestamp column is read in.
+
+    Attached to the column rather than around the expressions that use it: a
+    conversion applied twice moves the value twice, and an author's own
+    conversion — catalog or opaque vendor SQL — would be that second
+    application.
+    """
+
+    def test_nothing_changes_when_the_model_does_not_ask(self) -> None:
+        sql = _tz_sql("  defaultDialect: duckdb", "timestamp_tz", "Occurred At")
+        assert "AT TIME ZONE" not in sql
+
+    def test_an_aware_column_is_read_in_the_query_zone(self) -> None:
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred At")
+        assert '("Events"."occurred_at" AT TIME ZONE \'Europe/Zagreb\')' in sql
+
+    def test_a_naive_column_is_declared_before_it_is_converted(self) -> None:
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", "timestamp", "Occurred At"
+        )
+        assert "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'" in sql
+
+    def test_a_naive_column_is_left_alone_when_undeclared(self) -> None:
+        """The session's zone is a fact about the connection, not the data, so
+        an undeclared column is not converted on a guess. The model validator
+        warns rather than leaving it silent.
+        """
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp", "Occurred At")
+        assert "AT TIME ZONE" not in sql
+
+    def test_a_computed_column_reaches_its_columns_in_the_query_zone(self) -> None:
+        """A computed column is parsed from text, so its refs come from the
+        tokenizer rather than from ``make_column_expr``: without applying the
+        zone there too, one column meant two different instants depending on
+        whether a dimension named it directly or an expression did.
+        """
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", "timestamp", "Rounded At"
+        )
+        assert "DATE_TRUNC('hour', (\"Events\".\"occurred_at\" AT TIME ZONE 'UTC'" in sql
+
+    def test_a_measure_expression_reaches_its_columns_in_the_query_zone(self) -> None:
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(measures=["Latest Week"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert 'EXTRACT(WEEK FROM ("Events"."occurred_at" AT TIME ZONE \'UTC\'' in sql
+
+    def test_a_column_is_never_converted_twice(self) -> None:
+        """The pass is applied at more than one site, so it has to be
+        idempotent: a doubled conversion moves the value twice.
+        """
+        from orionbelt.compiler.resolution import apply_query_timezone
+
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        once = apply_query_timezone(ColumnRef(name="occurred_at", table="Events"), model)
+        assert once == apply_query_timezone(once, model)
+
+    def test_a_join_key_is_not_converted(self) -> None:
+        """A join asks whether two rows belong together, which no calendar
+        changes: both sides would convert identically for the same answer, at
+        the cost of wrapping a join key in a function, which is how an index or
+        a partition stops being used.
+        """
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Zagreb
+  defaultTimezone: UTC
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {code: id, abstractType: string}
+      Occurred At: {code: occurred_at, abstractType: timestamp}
+    joins:
+      - joinType: many-to-one
+        joinTo: Windows
+        columnsFrom: [Occurred At]
+        columnsTo: [Window At]
+  Windows:
+    code: windows
+    columns:
+      Window At: {code: window_at, abstractType: timestamp, primaryKey: true}
+      Window Name: {code: window_name, abstractType: string}
+dimensions:
+  Window Name: {dataObject: Windows, column: Window Name, resultType: string}
+  Occurred At: {dataObject: Events, column: Occurred At, resultType: timestamp}
+measures:
+  Event Count:
+    columns: [{dataObject: Events, column: Event ID}]
+    resultType: int
+    aggregation: count
+"""
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Window Name", "Occurred At"], measures=["Event Count"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        on_clause = next(line for line in sql.splitlines() if line.startswith("LEFT JOIN"))
+        assert "AT TIME ZONE" not in on_clause, on_clause
+        # The same column, selected as a dimension, is still converted.
+        assert '("Events"."occurred_at" AT TIME ZONE' in sql
+
+    def test_a_computed_join_key_is_not_converted_either(self) -> None:
+        """The opt-out has to reach the computed branch, not just the plain one.
+
+        A computed key converted while the plain key it is compared against is
+        not would be an asymmetric comparison: that changes which rows join,
+        rather than merely costing an index.
+        """
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Zagreb
+  defaultTimezone: UTC
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {code: id, abstractType: string}
+      Raw At: {code: raw_at, abstractType: timestamp}
+      Local At: {abstractType: timestamp, expression: "{Raw At}"}
+    joins:
+      - joinType: many-to-one
+        joinTo: Windows
+        columnsFrom: [Local At]
+        columnsTo: [Window At]
+  Windows:
+    code: windows
+    columns:
+      Window At: {code: window_at, abstractType: timestamp, primaryKey: true}
+      Window Name: {code: window_name, abstractType: string}
+dimensions:
+  Window Name: {dataObject: Windows, column: Window Name, resultType: string}
+  Local At: {dataObject: Events, column: Local At, resultType: timestamp}
+measures:
+  Event Count:
+    columns: [{dataObject: Events, column: Event ID}]
+    resultType: int
+    aggregation: count
+"""
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Window Name", "Local At"], measures=["Event Count"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        on_clause = next(line for line in sql.splitlines() if line.startswith("LEFT JOIN"))
+        assert "AT TIME ZONE" not in on_clause, on_clause
+        # Both sides bare, so the comparison stays symmetric.
+        assert '"Events"."raw_at" = "Windows"."window_at"' in on_clause
+        # And the same computed column, selected as a dimension, still converts.
+        assert '("Events"."raw_at" AT TIME ZONE' in sql
+
+    def test_a_date_column_is_never_converted(self) -> None:
+        """A date has no instant to move between zones."""
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred On")
+        assert "AT TIME ZONE" not in sql
+
+    def test_the_undeclared_column_is_warned_about(self) -> None:
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        warnings = [e for e in SemanticValidator().validate(model) if e.severity == "warning"]
+        assert [w.code for w in warnings] == ["UNDECLARED_TIMESTAMP_ZONE"]
+        assert "Events.Occurred At" in (warnings[0].context or {})["columns"]
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("duckdb", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
+            ("postgres", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
+            ("clickhouse", "toTimeZone(toDateTime("),
+            ("mysql", "CONVERT_TZ("),
+            ("snowflake", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
+            # BigQuery maps the OBML timestamp type to its own TIMESTAMP, an
+            # instant, so there is no source zone left to declare.
+            ("bigquery", "DATETIME("),
+            ("databricks", "from_utc_timestamp(to_utc_timestamp("),
+            ("dremio", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
+        ],
+    )
+    def test_every_dialect_has_its_own_conversion(self, dialect: str, expected: str) -> None:
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC",
+            "timestamp",
+            "Occurred At",
+            dialect,
+        )
+        assert expected in sql
+
+
+class TestWeeklyGrainFollowsTheCalendar:
+    """Every weekly path buckets the same way, not just the catalog function.
+
+    A ``timeGrain: week`` dimension and a weekly period-over-period went
+    through the dialect's own truncation, which hard-coded Monday on BigQuery
+    (ISOWEEK), ClickHouse (``toMonday``) and MySQL (a ``%Y-%u`` label), and on
+    Snowflake followed the WEEK_START session parameter. So the same model
+    bucketed differently depending on whether a user selected the dimension or
+    wrote the function.
+    """
+
+    @staticmethod
+    def _grain_sql(dialect: str, week_start: WeekStart) -> str:
+        from orionbelt.ast.nodes import ColumnRef as Ref
+        from orionbelt.models.semantic import TimeGrain
+
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = week_start
+        return engine.compile_expr(
+            engine.render_time_grain(Ref(name="occurred_at", table="Events"), TimeGrain.WEEK)
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_dimension_grain_follows_the_setting(self, dialect: str) -> None:
+        assert self._grain_sql(dialect, WeekStart.MONDAY) != self._grain_sql(
+            dialect, WeekStart.SUNDAY
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_dimension_grain_matches_the_catalog_function(self, dialect: str) -> None:
+        """One implementation, so the two entry points cannot disagree."""
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            engine = DialectRegistry.get(dialect)
+            engine.week_start = week_start
+            catalog = engine.compile_expr(
+                parse_expression(tokenize_metric_formula("date_trunc('week', {[Events].[X]})"))
+            ).replace("Events].[X", "occurred_at")
+            assert self._grain_sql(dialect, week_start).replace(
+                '"Events"."occurred_at"', '"occurred_at"'
+            ).replace("`Events`.`occurred_at`", "`occurred_at`") == catalog.replace(
+                '"occurred_at"', '"occurred_at"'
+            ).replace("`occurred_at`", "`occurred_at`")
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_period_over_period_spine_follows_it_too(self, dialect: str) -> None:
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = WeekStart.SUNDAY
+        sunday = engine.render_date_trunc_sql('"ts"', "week")
+        engine.week_start = WeekStart.MONDAY
+        assert sunday != engine.render_date_trunc_sql('"ts"', "week")
+
+    def test_snowflake_weekly_grain_no_longer_reads_its_session(self) -> None:
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            assert "DAYOFWEEKISO" in self._grain_sql("snowflake", week_start)
+
+
+class TestTimeZoneNodeIsWalkable:
+    """A node with a child that the shared walker treats as a leaf loses it.
+
+    ``collect_column_refs`` feeds CFL table ownership and reachability, so a
+    timezone-wrapped ref that the walker cannot see is a column that vanishes
+    from the plan rather than one that renders oddly.
+    """
+
+    def test_the_walker_sees_through_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.compiler.expr_rewrite import collect_column_refs
+
+        found: list[ColumnRef] = []
+        collect_column_refs(
+            InTimeZone(
+                expr=ColumnRef(name="occurred_at", table="Events"),
+                zone="Europe/Zagreb",
+                from_zone="UTC",
+            ),
+            found,
+        )
+        assert found == [ColumnRef(name="occurred_at", table="Events")]
+
+    def test_the_walker_rebuilds_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.compiler.expr_rewrite import map_column_refs
+
+        node = InTimeZone(expr=ColumnRef(name="occurred_at", table="Events"), zone="Europe/Zagreb")
+        rewritten = map_column_refs(node, lambda ref: ColumnRef(name="other", table=ref.table))
+        assert rewritten == InTimeZone(
+            expr=ColumnRef(name="other", table="Events"), zone="Europe/Zagreb"
+        )
+
+    def test_the_visitor_rebuilds_it(self) -> None:
+        from orionbelt.ast.nodes import InTimeZone
+        from orionbelt.ast.visitor import ASTVisitor
+
+        node = InTimeZone(expr=ColumnRef(name="occurred_at", table="Events"), zone="Europe/Zagreb")
+        assert ASTVisitor().visit(node) == node
+
+
+class TestTypedLiterals:
+    """``DATE '2026-08-15'`` — without it the date group could not be written."""
+
+    def test_a_date_literal_parses_and_casts(self) -> None:
+        assert _render("DATE '2026-08-15'", "duckdb") == "CAST('2026-08-15' AS DATE)"
+
+    def test_a_timestamp_literal_parses(self) -> None:
+        assert _render("TIMESTAMP '2026-08-15 13:45:00'", "duckdb") == (
+            "CAST('2026-08-15 13:45:00' AS TIMESTAMP)"
+        )
+
+    def test_a_date_literal_composes_into_a_call(self) -> None:
+        assert _render("date_trunc('month', DATE '2026-08-15')", "duckdb") == (
+            "DATE_TRUNC('month', CAST('2026-08-15' AS DATE))"
+        )
+
+
 class TestPinnedSemantics:
     """The D3 rules: where engines disagree on the answer, the renderer bends.
 
@@ -280,6 +868,23 @@ class TestPinnedSemantics:
         sql = _render("split_part('a,b,c', ',', 9)", "mysql")
         assert sql.startswith("CASE WHEN 9 >")
         assert "THEN '' ELSE SUBSTRING_INDEX(" in sql
+
+    def test_date_diff_counts_boundaries_where_the_engine_counts_whole_units(self) -> None:
+        """MySQL's TIMESTAMPDIFF answers 1 month for 2026-01-31 to 2026-03-01
+        where the catalog documents 2, so both ends are truncated first.
+        """
+        sql = _render("date_diff('month', {[S].[A]}, {[S].[B]})", "mysql")
+        assert sql.startswith("TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(")
+
+    def test_week_is_iso_where_the_engine_numbers_from_sunday(self) -> None:
+        """MySQL and BigQuery answer 32 for 2026-08-15; ISO week 33 is the rule."""
+        assert _render("extract('week', {[S].[D]})", "mysql").startswith("WEEK(")
+        assert _render("extract('week', {[S].[D]})", "mysql").endswith(", 3)")
+        assert "ISOWEEK" in _render("extract('week', {[S].[D]})", "bigquery")
+
+    def test_extract_is_an_integer_where_the_engine_returns_numeric(self) -> None:
+        assert _render("extract('year', {[S].[D]})", "postgres").startswith("CAST(EXTRACT(")
+        assert _render("extract('year', {[S].[D]})", "postgres").endswith("AS INTEGER)")
 
     def test_split_part_past_the_end_is_empty_not_null_on_bigquery(self) -> None:
         assert _render("split_part('a,b,c', ',', 9)", "bigquery") == (
@@ -376,6 +981,61 @@ class TestArgumentRewrites:
         approximation: ``ln(100) / ln(10)`` returns 1.9999999996784485.
         """
         assert _render("log(10, 100)", "clickhouse") == "(log10(100) / log10(10))"
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("duckdb", "(\"S].[D\" + 5 * INTERVAL '1 day')"),
+            ("postgres", "(\"S].[D\" + 5 * INTERVAL '1 day')"),
+            ("mysql", "DATE_ADD(`S].[D`, INTERVAL 5 DAY)"),
+            ("clickhouse", 'date_add(DAY, 5, "S].[D")'),
+            ("snowflake", "DATEADD('day', 5, \"S].[D\")"),
+            ("bigquery", "(`S].[D` + INTERVAL 5 DAY)"),
+            ("databricks", "(`S].[D` + make_interval(0, 0, 0, 5, 0, 0, 0))"),
+            ("dremio", 'TIMESTAMPADD(DAY, 5, "S].[D")'),
+        ],
+    )
+    def test_date_add_is_a_different_shape_on_every_engine(
+        self, dialect: str, expected: str
+    ) -> None:
+        """No engine accepts ``date_add(unit, n, x)``, so all eight render it.
+
+        The interval is never a literal with *n* inside it: Postgres, DuckDB
+        and Spark only accept a constant there, and *n* is an expression in a
+        real model.
+        """
+        assert _render("date_add('day', 5, {[S].[D]})", dialect) == expected
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_an_expression_count_survives_date_add(self, dialect: str) -> None:
+        """The entry promises *n* may be an expression, and Databricks
+        multiplies it by three for a quarter: a bare ``1 + 1`` there rendered
+        as ``1 + 1 * 3``, four months rather than six.
+        """
+        sql = _render("date_add('quarter', 1 + 1, {[S].[D]})", dialect)
+        assert "1 + 1 * 3" not in sql
+        if "* 3" in sql or "* INTERVAL" in sql:
+            assert "(1 + 1)" in sql, f"{dialect} leaves the count unbracketed: {sql}"
+
+    def test_databricks_builds_a_quarter_from_months(self) -> None:
+        assert _render("date_add('quarter', 1 + 1, {[S].[D]})", "databricks") == (
+            "(`S].[D` + make_interval(0, (1 + 1) * 3, 0, 0, 0, 0, 0))"
+        )
+
+    def test_postgres_builds_date_diff_out_of_arithmetic(self) -> None:
+        """Postgres has no date_diff, datediff or TIMESTAMPDIFF in any form."""
+        sql = _render("date_diff('day', {[S].[A]}, {[S].[B]})", "postgres")
+        assert "EXTRACT(EPOCH FROM" in sql
+        assert sql.startswith("CAST(TRUNC(")
+
+    def test_postgres_builds_last_day_out_of_date_trunc(self) -> None:
+        sql = _render("last_day({[S].[D]})", "postgres")
+        assert "DATE_TRUNC('month'" in sql
+        assert "INTERVAL '1 month' - INTERVAL '1 day'" in sql
+
+    def test_current_date_drops_its_parens_on_postgres(self) -> None:
+        assert _render("current_date()", "postgres") == "CURRENT_DATE"
+        assert _render("current_date()", "duckdb") == "CURRENT_DATE()"
 
     @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
     def test_truncate_takes_an_explicit_digit_count(self, dialect: str) -> None:

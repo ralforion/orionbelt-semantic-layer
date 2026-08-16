@@ -113,16 +113,57 @@ CANDIDATES: list[tuple[str, str, str]] = [
     ("conditional", "least", "least(3, 2, 1)"),
     ("conditional", "least NULL", "least(3, NULL, 1)"),
     # -- date/time ------------------------------------------------------------
+    # date_trunc: canonical is unit-first with a string unit.
     ("date", "date_trunc(unit, date)", "date_trunc('month', DATE '2026-08-15')"),
-    ("date", "extract", "extract(year from DATE '2026-08-15')"),
-    ("date", "date_part", "date_part('year', DATE '2026-08-15')"),
+    ("date", "date_trunc(date, UNIT)", "date_trunc(DATE '2026-08-15', MONTH)"),
+    ("date", "date_trunc quarter", "date_trunc('quarter', DATE '2026-08-15')"),
+    ("date", "date_trunc week", "date_trunc('week', DATE '2026-08-15')"),
+    ("date", "date_trunc hour", "date_trunc('hour', TIMESTAMP '2026-08-15 13:45:00')"),
+    ("date", "toStartOfMonth", "toStartOfMonth(toDate('2026-08-15'))"),
+    ("date", "DATE_FORMAT month", "DATE_FORMAT(DATE '2026-08-15', '%Y-%m-01')"),
+    # date_add: canonical is unit-first; no engine accepts it, so every dialect
+    # renders. The interval forms matter twice over, because n is an expression
+    # in a real model, not a literal.
+    ("date", "date_add(unit, n, date)", "date_add('day', 5, DATE '2026-08-01')"),
+    ("date", "date_add(UNIT, n, date)", "date_add(DAY, 5, DATE '2026-08-01')"),
+    ("date", "dateadd('unit', n, date)", "dateadd('day', 5, DATE '2026-08-01')"),
+    ("date", "DATE_ADD(date, INTERVAL)", "DATE_ADD(DATE '2026-08-01', INTERVAL 5 DAY)"),
+    ("date", "date + INTERVAL literal", "DATE '2026-08-01' + INTERVAL '5 day'"),
+    ("date", "date + n * INTERVAL 1", "DATE '2026-08-01' + 5 * INTERVAL '1 day'"),
+    ("date", "date + INTERVAL n DAY", "DATE '2026-08-01' + INTERVAL 5 DAY"),
+    ("date", "TIMESTAMPADD", "TIMESTAMPADD(DAY, 5, DATE '2026-08-01')"),
+    ("date", "date_add(date, days)", "date_add(DATE '2026-08-01', 5)"),
+    ("date", "date_add negative", "date_add('day', -5, DATE '2026-08-01')"),
+    ("date", "date_add month", "date_add('month', 1, DATE '2026-01-31')"),
+    # date_diff: canonical is unit-first, end minus start, signed.
     ("date", "date_diff(unit, s, e)", "date_diff('day', DATE '2026-08-01', DATE '2026-08-15')"),
     ("date", "datediff(unit, s, e)", "datediff('day', DATE '2026-08-01', DATE '2026-08-15')"),
-    ("date", "date_add(unit, n, date)", "date_add('day', 5, DATE '2026-08-01')"),
-    ("date", "dateadd(unit, n, date)", "dateadd('day', 5, DATE '2026-08-01')"),
-    ("date", "date + int", "DATE '2026-08-01' + 5"),
+    ("date", "datediff(e, s)", "datediff(DATE '2026-08-15', DATE '2026-08-01')"),
+    ("date", "DATE_DIFF(e, s, UNIT)", "DATE_DIFF(DATE '2026-08-15', DATE '2026-08-01', DAY)"),
+    (
+        "date",
+        "TIMESTAMPDIFF(UNIT, s, e)",
+        "TIMESTAMPDIFF(DAY, DATE '2026-08-01', DATE '2026-08-15')",
+    ),
+    ("date", "date subtraction", "DATE '2026-08-15' - DATE '2026-08-01'"),
+    ("date", "date_diff month", "date_diff('month', DATE '2026-01-31', DATE '2026-03-01')"),
+    (
+        "date",
+        "date_diff boundary vs whole",
+        "date_diff('day', TIMESTAMP '2026-08-01 23:00:00', TIMESTAMP '2026-08-02 01:00:00')",
+    ),
+    ("date", "date_diff negative", "date_diff('day', DATE '2026-08-15', DATE '2026-08-01')"),
+    # extract and friends
+    ("date", "extract(unit FROM x)", "extract(year from DATE '2026-08-15')"),
+    ("date", "extract quarter", "extract(quarter from DATE '2026-08-15')"),
+    ("date", "extract week", "extract(week from DATE '2026-08-15')"),
+    ("date", "extract dow", "extract(dow from DATE '2026-08-15')"),
+    ("date", "extract dayofweek", "extract(dayofweek from DATE '2026-08-15')"),
+    ("date", "date_part", "date_part('year', DATE '2026-08-15')"),
     ("date", "last_day", "last_day(DATE '2026-08-15')"),
     ("date", "current_date", "current_date"),
+    ("date", "current_date()", "current_date()"),
+    ("date", "current_timestamp", "current_timestamp"),
 ]
 
 

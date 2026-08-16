@@ -102,7 +102,7 @@ class BigQueryDialect(Dialect):
         parts = [database, schema, code]
         return ".".join(self.quote_identifier(p) for p in parts if p)
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         # BigQuery DATE_TRUNC takes a date-part *keyword* (MONTH, ISOWEEK), not a
         # string literal: DATE_TRUNC(col, 'month') raises "A valid date part name
         # is required". RawSQL: emit the bare keyword (matches render_date_trunc_sql).
@@ -170,6 +170,63 @@ class BigQueryDialect(Dialect):
         value = self.compile_expr(args[1])
         return f"LOG({value}, {base})"
 
+    # ``WEEK`` is Sunday-based here and answers 32 where the catalog documents
+    # ISO week 33; ``ISOWEEK`` is the Monday-based numbering.
+    _SQL_UNITS: dict[str, str] = {
+        "year": "YEAR",
+        "quarter": "QUARTER",
+        "month": "MONTH",
+        "week": "ISOWEEK",
+        "day": "DAY",
+        "hour": "HOUR",
+        "minute": "MINUTE",
+        "second": "SECOND",
+    }
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """BigQuery has no ``AT TIME ZONE`` outside EXTRACT: ``DATETIME(x, zone)``
+        reads a TIMESTAMP as wall clock in that zone, which is the same contract
+        and composes with every date function unchanged.
+        """
+        rendered = self.compile_expr(value)
+        # ``from_zone`` is ignored here, and deliberately: this dialect maps the
+        # OBML ``timestamp`` type to BigQuery's TIMESTAMP, which is an instant
+        # rather than a wall clock, so there is no zone left to declare.
+        # ``TIMESTAMP(x, zone)`` takes a DATETIME and rejects a TIMESTAMP
+        # outright ("No matching signature"), which is the loud failure a
+        # genuinely naive DATETIME column would get rather than a wrong number.
+        return f"DATETIME({rendered}, {self._quote_zone(zone)})"
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """BigQuery takes the value first and the unit as a keyword."""
+        return f"DATE_TRUNC({self.compile_expr(value)}, {self._SQL_UNITS[unit]})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """BigQuery is the one engine whose plain ``WEEK`` is already Sunday."""
+        return f"DATE_TRUNC({self.compile_expr(value)}, WEEK)"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """``x + INTERVAL n UNIT``: the interval qualifier is a keyword, and
+        unlike DATE_ADD this form does not have to know whether *x* is a DATE,
+        a DATETIME or a TIMESTAMP.
+
+        BigQuery still refuses a month-or-larger interval on a TIMESTAMP; that
+        surfaces as its own error rather than a wrong answer, and casting the
+        column to DATE or DATETIME is the fix.
+        """
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} "
+            f"+ INTERVAL {n} {self._SQL_UNITS[unit]}"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """BigQuery reverses the operands and takes the unit last."""
+        return (
+            f"DATE_DIFF({self.compile_expr(end)}, {self.compile_expr(start)}, "
+            f"{self._SQL_UNITS[unit]})"
+        )
+
     def _compile_median(self, args: list[Expr]) -> str:
         """BigQuery: PERCENTILE_DISC(col, 0.5) OVER()  — but as an aggregate
         we use APPROX_QUANTILES(col, 2)[OFFSET(1)]."""
@@ -206,7 +263,7 @@ class BigQueryDialect(Dialect):
         unit_sql = unit.upper()
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit_sql})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC({column_sql}, {grain.upper()})"
 
     def render_date_spine_cte_sql(

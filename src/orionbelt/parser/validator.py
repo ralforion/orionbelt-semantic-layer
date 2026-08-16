@@ -14,7 +14,7 @@ from orionbelt.models.expressions import (
     find_placeholders,
     find_qualified_refs,
 )
-from orionbelt.models.functions import lookup_function
+from orionbelt.models.functions import TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -25,6 +25,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
+from orionbelt.models.warnings import WarningCode
 
 
 class SemanticValidator:
@@ -46,6 +47,7 @@ class SemanticValidator:
         errors.extend(self._check_within_group_refs(model))
         errors.extend(self._check_computed_column_refs(model))
         errors.extend(self._check_expression_functions(model))
+        errors.extend(self._check_query_timezone_coverage(model))
         errors.extend(self._check_reference_name_collisions(model))
         errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_join_key_expressions(model))
@@ -751,6 +753,54 @@ class SemanticValidator:
         return errors
 
     @staticmethod
+    def _check_query_timezone_coverage(model: SemanticModel) -> list[SemanticError]:
+        """Warn when a query time zone cannot reach the model's naive columns.
+
+        ``queryTimezone`` converts timestamp columns so the model, not the
+        warehouse session, decides which day or week a row falls in. A column
+        that carries no zone cannot be converted until the model says which
+        zone it was written in, which is what ``defaultTimezone`` states, and
+        the session's own zone is not an answer: it is a fact about the
+        connection rather than about the data, and reading it into the SQL
+        would make the same query mean different things on different
+        connections.
+
+        So those columns are left alone, and this says so rather than leaving
+        a model half-converted in silence.
+        """
+        settings = model.settings
+        if settings is None or not settings.query_timezone or settings.default_timezone:
+            return []
+        naive = [
+            f"{obj_name}.{col_name}"
+            for obj_name, obj in model.data_objects.items()
+            for col_name, col in obj.columns.items()
+            if col.abstract_type is DataType.TIMESTAMP
+        ]
+        if not naive:
+            return []
+        return [
+            SemanticError(
+                code=WarningCode.UNDECLARED_TIMESTAMP_ZONE,
+                message=(
+                    f"settings.queryTimezone is '{settings.query_timezone}', but "
+                    f"{len(naive)} timestamp column(s) carry no time zone and "
+                    f"settings.defaultTimezone does not say which zone they were "
+                    f"written in, so they are read as the warehouse session sees "
+                    f"them: {', '.join(sorted(naive)[:5])}"
+                ),
+                path="settings.queryTimezone",
+                hint=(
+                    "Set settings.defaultTimezone to the zone those columns are "
+                    "stored in, or declare the columns as timestamp_tz if they "
+                    "carry one."
+                ),
+                severity="warning",
+                context={"columns": sorted(naive)},
+            )
+        ]
+
+    @staticmethod
     def _expression_bodies(model: SemanticModel) -> Iterator[tuple[str, str, str]]:
         """``(path, subject, expression)`` for every expression body in *model*.
 
@@ -813,6 +863,57 @@ class SemanticValidator:
                             "function": spec.name,
                             "argCount": call.arg_count,
                             "signature": spec.signature,
+                        },
+                    )
+                )
+        errors.extend(self._check_expression_units(model))
+        return errors
+
+    @staticmethod
+    def _unit_literal(argument: str) -> str | None:
+        """The time unit a source argument names, or ``None`` if it names none."""
+        text = argument.strip()
+        if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+            inner = text[1:-1].lower()
+            if inner in TIME_UNITS:
+                return inner
+        return None
+
+    def _check_expression_units(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a date/time call whose unit is not one of the catalog's.
+
+        The unit cannot be an expression, and not for want of trying: every
+        dialect switches on it to render the call at all, as a keyword on
+        BigQuery and ClickHouse, a quoted string on Snowflake, an interval
+        qualifier on MySQL, and a different expression per unit on Postgres.
+        A misspelling is caught here rather than compiling to a call the
+        engine rejects, or worse, silently accepts as something else.
+        """
+        errors: list[SemanticError] = []
+        for path, subject, expression in self._expression_bodies(model):
+            for call in find_function_calls(expression):
+                spec = lookup_function(call.name)
+                if spec is None or spec.unit_argument is None or not spec.accepts(call.arg_count):
+                    continue
+                argument = call.arguments[spec.unit_argument]
+                if self._unit_literal(argument) is not None:
+                    continue
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_TIME_UNIT",
+                        message=(
+                            f"{subject} calls '{call.name}' with unit {argument}, "
+                            f"which is not one of {', '.join(TIME_UNITS)}"
+                        ),
+                        path=path,
+                        hint=(
+                            "The unit is a quoted literal, not an expression: every "
+                            "dialect renders the call differently per unit."
+                        ),
+                        context={
+                            "function": spec.name,
+                            "unit": argument,
+                            "units": list(TIME_UNITS),
                         },
                     )
                 )

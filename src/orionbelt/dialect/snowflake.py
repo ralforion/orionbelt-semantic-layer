@@ -59,7 +59,7 @@ class SnowflakeDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -75,7 +75,7 @@ class SnowflakeDialect(Dialect):
         unit_sql = unit.lower()
         return f"DATEADD('{unit_sql}', {count}, {date_sql})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC('{grain}', {column_sql})"
 
     def render_date_spine_cte_sql(
@@ -104,6 +104,58 @@ class SnowflakeDialect(Dialect):
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",
     }
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Snowflake: ``CONVERT_TIMEZONE``, whose two-argument form reads an
+        aware value in *zone* and whose three-argument form declares a naive
+        one to be in *from_zone* first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            return (
+                f"CONVERT_TIMEZONE({self._quote_zone(from_zone)}, "
+                f"{self._quote_zone(zone)}, {rendered})"
+            )
+        return f"CONVERT_TIMEZONE({self._quote_zone(zone)}, {rendered})"
+
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """Snowflake's ``DATE_TRUNC('week', …)`` follows the WEEK_START session
+        parameter, so a session set to Sunday would silently override a model
+        that says Monday. Every other unit is unaffected and uses the native
+        call.
+        """
+        if unit == "week":
+            return self._render_week_floor_by_offset("DAYOFWEEKISO({0}) - 1", value)
+        return super()._render_date_trunc(unit, value)
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Sunday, likewise without consulting the session.
+
+        ``DAYOFWEEKISO`` numbers Monday 1 through Sunday 7, which ``% 7`` turns
+        into the days since Sunday; ``DAYOFWEEK`` would have followed
+        WEEK_START.
+        """
+        return self._render_week_floor_by_offset("MOD(DAYOFWEEKISO({0}), 7)", value)
+
+    def _render_week_floor_by_offset(self, offset_template: str, value: Expr) -> str:
+        """Step back *offset* days from the start of *value*'s day.
+
+        From the day rather than from the value itself: subtracting days from a
+        timestamp keeps its time, and the start of a week is midnight.
+        """
+        rendered = self.compile_expr(value)
+        offset = offset_template.format(rendered)
+        return f"DATEADD('day', -({offset}), DATE_TRUNC('day', {rendered}))"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Snowflake: ``DATEADD('unit', n, x)``, quoted unit, value last."""
+        return f"DATEADD('{unit}', {self.compile_expr(count)}, {self.compile_expr(value)})"
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Snowflake spells it ``DATEDIFF`` and counts boundaries, as the
+        catalog documents.
+        """
+        return f"DATEDIFF('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
 
     def _render_div(self, args: list[Expr]) -> str:
         """Snowflake rejects ``DIV`` in every form ("Unsupported feature

@@ -83,6 +83,10 @@ _EXCLUDED_FIELDS = frozenset(
         "defaultDialect",
         "default_locale",
         "defaultLocale",
+        "week_start",
+        "weekStart",
+        "query_timezone",
+        "queryTimezone",
         "settings",
         # ModelFilter (static where injected at compile time, not a
         # modeling concept the ontology surfaces)

@@ -11,6 +11,7 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     FunctionCall,
+    InTimeZone,
     Literal,
     OrderByItem,
 )
@@ -23,6 +24,7 @@ from orionbelt.compiler.expr_parser import (
     parse_expression,
     tokenize_measure_expression,
 )
+from orionbelt.compiler.expr_rewrite import map_nodes
 from orionbelt.compiler.filters import (
     build_measure_filter_condition,
     collect_measure_filter_objects,
@@ -46,6 +48,7 @@ from orionbelt.models.semantic import (
     CumulativeAggType,
     DataObject,
     DataObjectColumn,
+    DataType,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -63,7 +66,11 @@ from orionbelt.models.warnings import WarningCode, warning
 
 
 def _build_computed_column_expr(
-    column: DataObjectColumn, obj: DataObject, model: SemanticModel
+    column: DataObjectColumn,
+    obj: DataObject,
+    model: SemanticModel,
+    *,
+    in_query_timezone: bool = True,
 ) -> Expr:
     """Parse a computed column's ``expression`` into an AST.
 
@@ -84,7 +91,14 @@ def _build_computed_column_expr(
     rewritten = substitute_placeholders(expr_str, _sub)
     try:
         tokens = tokenize_measure_expression(rewritten, model)
-        return parse_expression(tokens)
+        parsed = parse_expression(tokens)
+        # A join key opts out for the same reason a plain one does, and it has
+        # to be threaded this far: a computed key converted while the plain key
+        # it is compared against is not would be an asymmetric comparison, and
+        # that changes which rows join rather than merely costing an index.
+        if not in_query_timezone:
+            return parsed
+        return apply_query_timezone(parsed, model)
     except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
         return ColumnRef(name=column.code or column.name, table=obj.name)
 
@@ -227,7 +241,13 @@ def anchored_conformed_objects(
     return measure.source_objects - reachable
 
 
-def make_column_expr(model: SemanticModel, object_name: str, column_label: str) -> Expr:
+def make_column_expr(
+    model: SemanticModel,
+    object_name: str,
+    column_label: str,
+    *,
+    in_query_timezone: bool = True,
+) -> Expr:
     """Build the AST expression that represents a column reference.
 
     For plain columns, returns ``ColumnRef(name=col.code, table=object_name)``.
@@ -243,8 +263,77 @@ def make_column_expr(model: SemanticModel, object_name: str, column_label: str) 
     if column is None:
         return ColumnRef(name=column_label, table=object_name)
     if column.expression:
-        return _build_computed_column_expr(column, obj, model)
-    return ColumnRef(name=column.code, table=object_name)
+        return _build_computed_column_expr(column, obj, model, in_query_timezone=in_query_timezone)
+    ref: Expr = ColumnRef(name=column.code, table=object_name)
+    if not in_query_timezone:
+        return ref
+    return _in_query_timezone(ref, column, model)
+
+
+#: Timestamp types carry an instant, so which day or week they fall in depends on
+#: the zone they are read in. A DATE has no instant and a TIME no date, so
+#: neither has a week to move between.
+_CONVERTIBLE_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+
+def _in_query_timezone(ref: Expr, column: DataObjectColumn, model: SemanticModel) -> Expr:
+    """Read a timestamp column in the model's query zone, if it states one.
+
+    Attached here, at the column, rather than around the expressions that use
+    it: a conversion applied twice moves the value twice (measured on MySQL,
+    00:30 becoming 02:30), and an author's own conversion — through the
+    function catalog or as opaque vendor SQL the compiler cannot see into —
+    would be exactly that second application. Converting at the leaf makes the
+    query zone the frame every expression starts from, so an author's
+    conversion moves a value within it rather than on top of it.
+    """
+    settings = model.settings
+    if settings is None or not settings.query_timezone:
+        return ref
+    if column.abstract_type not in _CONVERTIBLE_TYPES:
+        return ref
+    # A naive column means nothing until the model says which zone it was
+    # written in, which is what ``defaultTimezone`` states. Without that,
+    # the engine's own reading is left alone rather than guessed at.
+    from_zone = settings.default_timezone if column.abstract_type is DataType.TIMESTAMP else None
+    if column.abstract_type is DataType.TIMESTAMP and from_zone is None:
+        return ref
+    return InTimeZone(expr=ref, zone=settings.query_timezone, from_zone=from_zone)
+
+
+def apply_query_timezone(expr: Expr, model: SemanticModel) -> Expr:
+    """Read every timestamp column *expr* names in the model's query zone.
+
+    ``make_column_expr`` converts a column the moment a dimension or filter
+    names one, but an expression body reaches its columns by another road: a
+    computed column and a measure expression are parsed from text, and the
+    tokenizer resolves ``{[Object].[Column]}`` straight to a physical
+    ``ColumnRef``. Without this pass those refs stayed in the warehouse's zone
+    while the model's own dimensions moved to the query zone, so the same
+    column meant two different instants depending on how it was reached - which
+    is exactly the frame the leaf-attachment rule exists to make single.
+
+    A node already converted is returned untouched rather than descended into,
+    so applying this twice cannot wrap a column twice.
+    """
+    settings = model.settings
+    if settings is None or not settings.query_timezone:
+        return expr
+
+    def rewrite(node: Expr) -> Expr | None:
+        if isinstance(node, InTimeZone):
+            return node
+        if not isinstance(node, ColumnRef) or node.table is None:
+            return None
+        obj = model.data_objects.get(node.table)
+        if obj is None:
+            return node
+        column = next((c for c in obj.columns.values() if c.code == node.name), None)
+        if column is None:
+            return node
+        return _in_query_timezone(node, column, model)
+
+    return map_nodes(expr, rewrite)
 
 
 @dataclass
@@ -1184,7 +1273,11 @@ class QueryResolver:
         agg = measure.aggregation.upper()
 
         tokens = tokenize_measure_expression(formula, ctx.model)
-        inner = parse_expression(tokens)
+        # The tokenizer resolves {[Object].[Column]} straight to a physical
+        # ref, so the query zone has to be applied here as it is for a column
+        # a dimension names: otherwise one column means two instants depending
+        # on how the query reached it.
+        inner = apply_query_timezone(parse_expression(tokens), ctx.model)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":

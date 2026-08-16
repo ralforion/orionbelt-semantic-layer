@@ -1261,6 +1261,16 @@
             "snowflake"
           ]
         },
+        "queryTimezone": {
+          "type": "string",
+          "description": "IANA zone the model's timestamps are bucketed and reported in (e.g. Europe/Zagreb). When set, a timestamp column is converted to it in the generated SQL, so which day or week a row falls in is the model's decision rather than the warehouse session's. A naive timestamp column is first read as defaultTimezone, which is what that setting states it means; a timestamp_tz column already carries a zone and needs no such hint. Date and time columns are never converted."
+        },
+        "weekStart": {
+          "type": "string",
+          "enum": ["monday", "sunday"],
+          "description": "Which day a week begins on, for date_trunc('week', ...) and the week boundaries date_diff('week', ...) counts. ISO 8601 (monday) by default; 'sunday' for a US retail calendar. Week numbering from extract('week', ...) stays ISO either way, because a Sunday-start week number has no definition the engines agree on.",
+          "default": "monday"
+        },
         "defaultLocale": {
           "type": "string",
           "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",

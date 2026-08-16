@@ -1,5 +1,5 @@
 WITH "cumulative_base" AS (
-SELECT date_trunc('day', "Sales"."salesdate") AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
+SELECT DATE_TRUNC('day', "Sales"."salesdate") AS "Sales Date", CAST(SUM("Sales"."salesamount") AS DECIMAL(18, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 GROUP BY ALL
 )

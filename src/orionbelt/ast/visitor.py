@@ -16,6 +16,7 @@ from orionbelt.ast.nodes import (
     From,
     FunctionCall,
     InList,
+    InTimeZone,
     IsNull,
     Join,
     Literal,
@@ -98,6 +99,9 @@ class ASTVisitor:
     def visit_functioncall(self, node: FunctionCall) -> Any:
         args = [self.visit(a) for a in node.args]
         return FunctionCall(name=node.name, args=args, distinct=node.distinct)
+
+    def visit_intimezone(self, node: InTimeZone) -> Any:
+        return InTimeZone(expr=self.visit(node.expr), zone=node.zone, from_zone=node.from_zone)
 
     def visit_binaryop(self, node: BinaryOp) -> Any:
         return BinaryOp(left=self.visit(node.left), op=node.op, right=self.visit(node.right))

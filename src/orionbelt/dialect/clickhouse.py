@@ -94,7 +94,7 @@ class ClickHouseDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         func_name = _GRAIN_FUNCTIONS.get(grain)
         if func_name:
             return FunctionCall(name=func_name, args=[column])
@@ -280,6 +280,29 @@ class ClickHouseDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """ClickHouse: ``toTimeZone``. A naive ``DateTime`` carries the column's
+        own zone, so *from_zone* is declared with ``toDateTime`` first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            rendered = f"toDateTime({rendered}, {self._quote_zone(from_zone)})"
+        return f"toTimeZone({rendered}, {self._quote_zone(zone)})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """ClickHouse: ``toStartOfWeek(x, 0)``, where mode 0 is a Sunday week."""
+        return f"toStartOfWeek({self.compile_expr(value)}, 0)"
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """ClickHouse takes the unit as a keyword, not a string: ``date_add('day',
+        …)`` is a type error where ``date_add(DAY, …)`` works.
+        """
+        return f"date_add({unit.upper()}, {self.compile_expr(count)}, {self.compile_expr(value)})"
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """ClickHouse: ``date_diff('unit', start, end)``, counting boundaries."""
+        return f"date_diff('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
     def _render_split_part(self, args: list[Expr]) -> str:
         """ClickHouse has no ``split_part``; ``splitByString`` plus an array
         index is the equivalent, and its argument order is delimiter-first.
@@ -341,7 +364,7 @@ class ClickHouseDialect(Dialect):
             raise ValueError(f"Unsupported unit '{unit}' for ClickHouse")
         return f"{func}({date_sql}, {count})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         grain_func_map: dict[str, str] = {
             "year": "toStartOfYear",
             "quarter": "toStartOfQuarter",

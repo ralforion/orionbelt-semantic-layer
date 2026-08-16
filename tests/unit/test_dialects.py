@@ -32,7 +32,7 @@ from orionbelt.dialect.mysql import MySQLDialect
 from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.dialect.snowflake import SnowflakeDialect
-from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.semantic import TimeGrain, WeekStart
 
 ALL_DIALECTS = [
     "bigquery",
@@ -294,12 +294,17 @@ class TestBigQueryDialect:
         assert result.name == "DATE_TRUNC"
 
     def test_time_grain_week(self, dialect: BigQueryDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.WEEK)
-        assert isinstance(result, FunctionCall)
-        assert result.name == "DATE_TRUNC"
-        # BigQuery uses ISOWEEK for week truncation
-        sql = dialect.compile_expr(result)
+        """A week follows the model's calendar rather than the dialect, so the
+        assertion is on the SQL rather than the node: ISO by default, and
+        BigQuery's plain WEEK once the model says Sunday.
+        """
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.WEEK))
         assert "ISOWEEK" in sql
+
+        dialect.week_start = WeekStart.SUNDAY
+        sunday = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.WEEK))
+        assert "ISOWEEK" not in sunday
+        assert "WEEK" in sunday
 
     def test_type_map(self, dialect: BigQueryDialect) -> None:
         assert dialect._resolve_type_name("string") == "STRING"
@@ -493,10 +498,20 @@ class TestMySQLDialect:
         assert "%Y-01-01" in sql
 
     def test_time_grain_week(self, dialect: MySQLDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.WEEK)
-        assert isinstance(result, FunctionCall)
-        sql = dialect.compile_expr(result)
-        assert "%Y-%u" in sql
+        """Breaking: a weekly bucket is the week's start date, not a ``%Y-%u``
+        year-week label.
+
+        MySQL was the only dialect labelling the bucket instead of dating it,
+        which made a weekly dimension incomparable with the same model's
+        ``date_trunc('week', ...)`` and with every other engine.
+        """
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.WEEK))
+        assert "%Y-%u" not in sql
+        assert "WEEKDAY(" in sql
+
+        dialect.week_start = WeekStart.SUNDAY
+        sunday = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.WEEK))
+        assert "DAYOFWEEK(" in sunday
 
     def test_compile_listagg(self, dialect: MySQLDialect) -> None:
         expr = FunctionCall(

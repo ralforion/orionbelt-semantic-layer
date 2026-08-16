@@ -21,52 +21,21 @@ Gated by the ``docker`` pytest marker::
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
+from orionbelt.ast.nodes import Cast, InTimeZone, Literal
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
+from orionbelt.models.semantic import TimeGrain, WeekStart
 
+from ._catalog_values import matches as _matches
 from .conftest import VendorTarget
 
 pytestmark = pytest.mark.docker
 
 CATALOG = list(FUNCTION_CATALOG.values())
-
-
-_NUMERIC_TOLERANCE = 1e-9
-"""Relative tolerance for a numeric catalog value.
-
-Not laxity about the answer: the catalog's numeric entries are floating point,
-and an engine is free to deliver 2.35 as ``Decimal('2.3500')`` or the base
-change behind ``log(2, 8)`` as 2.9999999999999996. What the catalog pins is the
-value, so the comparison is numeric rather than a string match, which would
-fail on the scale a driver happened to choose. It is tight enough that a real
-disagreement (2 against 3 for ``round(2.5)``, -3 against -4 for ``div(-7, 2)``)
-still fails.
-"""
-
-
-def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
-    """Whether *actual* is the documented value, across driver type mappings.
-
-    Booleans come back as ``1``/``0`` from MySQL and ClickHouse, numbers as
-    ``Decimal`` or ``float`` depending on the driver, and strings are strings
-    everywhere — so each expected type is compared in its own terms rather than
-    by equality on whatever Python object the driver chose.
-    """
-    if expected is None:
-        return actual is None
-    if actual is None:
-        return False
-    if isinstance(expected, bool):
-        return bool(actual) is expected
-    if isinstance(expected, (int, float)):
-        return abs(float(actual) - expected) <= _NUMERIC_TOLERANCE * max(1.0, abs(expected))
-    return str(actual) == str(expected)
 
 
 def _assert_catalog_values(spec: FunctionSpec, vendor: VendorTarget) -> None:
@@ -132,3 +101,138 @@ def test_bigquery_function_exec(spec: FunctionSpec, vendor_bigquery: VendorTarge
 def test_databricks_function_exec(spec: FunctionSpec, vendor_databricks: VendorTarget) -> None:
     """Live Databricks SQL warehouse."""
     _assert_catalog_values(spec, vendor_databricks)
+
+
+# ---------------------------------------------------------------------------
+# settings.weekStart — the one catalog rule a model can change
+# ---------------------------------------------------------------------------
+
+_WEEK_CASES: list[tuple[str, str, str | int]] = [
+    # 2026-08-15 is a Saturday. Its Monday is the 10th, its Sunday the 9th.
+    ("date_trunc('week', DATE '2026-08-15')", "monday", "2026-08-10"),
+    ("date_trunc('week', DATE '2026-08-15')", "sunday", "2026-08-09"),
+    # 2026-08-09 is a Sunday, so it opens a week under one calendar and closes
+    # the previous one under the other: the difference to the 15th differs.
+    ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "monday", 1),
+    ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "sunday", 0),
+    # A timestamp input: the start of a week is midnight, so a rewrite that
+    # subtracts days from the value rather than from its day keeps 13:45 and
+    # fails here. Snowflake and Dremio did exactly that.
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", "monday", "2026-08-10"),
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", "sunday", "2026-08-09"),
+]
+
+
+def _assert_week_start(vendor: VendorTarget) -> None:
+    """Execute both calendars, rather than trusting either engine's default.
+
+    Covers both roads to a weekly bucket: the catalog function an author
+    writes, and the ``timeGrain: week`` a dimension declares. They render
+    through one implementation, and this is what proves they agree on data.
+    """
+    engine = DialectRegistry.get(vendor.dialect)
+    failures = []
+    for week_start, expected in (("monday", "2026-08-10"), ("sunday", "2026-08-09")):
+        engine.week_start = WeekStart(week_start)
+        grain = engine.render_time_grain(
+            Cast(expr=Literal.string("2026-08-15"), type_name="date"), TimeGrain.WEEK
+        )
+        actual = next(
+            iter(vendor.execute(f"SELECT {engine.compile_expr(grain)} AS c0")[0].values())
+        )
+        if not _matches(expected, actual):
+            failures.append(
+                f"timeGrain week under weekStart={week_start}: {actual!r} != {expected!r}"
+            )
+    for call, week_start, expected in _WEEK_CASES:
+        engine.week_start = WeekStart(week_start)
+        ast = parse_expression(tokenize_metric_formula(call))
+        sql = f"SELECT {engine.compile_expr(ast)} AS c0"
+        actual = next(iter(vendor.execute(sql)[0].values()))
+        if not _matches(expected, actual):
+            failures.append(f"{call} under weekStart={week_start}: {actual!r} != {expected!r}")
+    assert not failures, f"{vendor.name}:\n  " + "\n  ".join(failures)
+
+
+def test_duckdb_week_start(vendor_duckdb: VendorTarget) -> None:
+    _assert_week_start(vendor_duckdb)
+
+
+def test_postgres_week_start(vendor_postgres: VendorTarget) -> None:
+    _assert_week_start(vendor_postgres)
+
+
+def test_mysql_week_start(vendor_mysql: VendorTarget) -> None:
+    _assert_week_start(vendor_mysql)
+
+
+def test_clickhouse_week_start(vendor_clickhouse: VendorTarget) -> None:
+    _assert_week_start(vendor_clickhouse)
+
+
+def test_snowflake_week_start(vendor_snowflake: VendorTarget) -> None:
+    _assert_week_start(vendor_snowflake)
+
+
+def test_bigquery_week_start(vendor_bigquery: VendorTarget) -> None:
+    _assert_week_start(vendor_bigquery)
+
+
+def test_databricks_week_start(vendor_databricks: VendorTarget) -> None:
+    _assert_week_start(vendor_databricks)
+
+
+# ---------------------------------------------------------------------------
+# settings.queryTimezone — the frame every timestamp column is read in
+# ---------------------------------------------------------------------------
+
+# The instant 2026-08-09 22:30 UTC is 00:30 on Monday the 10th in Zagreb, so a
+# conversion that works moves the value across a day *and* a week boundary.
+_TZ_INSTANT = "2026-08-09 22:30:00"
+_TZ_EXPECTED_WALL_CLOCK = "2026-08-10 00:30:00"
+
+
+def _tz_node() -> InTimeZone:
+    return InTimeZone(
+        expr=Cast(expr=Literal.string(_TZ_INSTANT), type_name="timestamp"),
+        zone="Europe/Zagreb",
+        from_zone="UTC",
+    )
+
+
+def _assert_timezone_conversion(vendor: VendorTarget) -> None:
+    """A naive UTC timestamp read in the model's zone, executed."""
+    engine = DialectRegistry.get(vendor.dialect)
+    sql = f"SELECT {engine.compile_expr(_tz_node())} AS c0"
+    actual = next(iter(vendor.execute(sql)[0].values()))
+    # Engines differ on whether the result carries an offset; the wall clock is
+    # what the model asked for.
+    assert str(actual)[:19] == _TZ_EXPECTED_WALL_CLOCK, f"{vendor.name}: {actual!r}\nSQL: {sql}"
+
+
+def test_duckdb_query_timezone(vendor_duckdb: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_duckdb)
+
+
+def test_postgres_query_timezone(vendor_postgres: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_postgres)
+
+
+def test_mysql_query_timezone(vendor_mysql: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_mysql)
+
+
+def test_clickhouse_query_timezone(vendor_clickhouse: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_clickhouse)
+
+
+def test_snowflake_query_timezone(vendor_snowflake: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_snowflake)
+
+
+def test_bigquery_query_timezone(vendor_bigquery: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_bigquery)
+
+
+def test_databricks_query_timezone(vendor_databricks: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_databricks)

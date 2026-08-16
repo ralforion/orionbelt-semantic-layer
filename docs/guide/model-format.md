@@ -237,6 +237,20 @@ optional argument.
 | `coalesce(a, b, ...)` | argument | The first argument that is not NULL |
 | `nullif(a, b)` | argument | NULL when `a` equals `b` |
 | `greatest(a, b, ...)` / `least(a, b, ...)` | argument | **NULL propagates**, as for `concat` |
+| `date_trunc(unit, x)` | timestamp | Start of the unit; a **week starts Monday** (ISO 8601) |
+| `date_add(unit, n, x)` | timestamp | Negative `n` subtracts, so there is no `date_sub` |
+| `date_diff(unit, start, end)` | int | **Boundaries crossed**, signed — not complete units elapsed |
+| `extract(unit, x)` | int | **ISO week numbering**; an integer, not a numeric |
+| `last_day(x)` | date | Last day of `x`'s month |
+| `current_date()` | date | Today, per the database session |
+
+The date/time entries take a **literal unit** from a closed vocabulary — `year`,
+`quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be
+a literal, not an expression: every dialect switches on it to render the call at
+all (a keyword on BigQuery and ClickHouse, a quoted string on Snowflake, an
+interval qualifier on MySQL, a different expression per unit on Postgres). A unit
+outside the vocabulary, or one that is not a literal, is rejected with
+`UNKNOWN_TIME_UNIT`.
 
 The pinned meaning is the point. Six of those rules are places where engines
 disagree on the *answer* rather than on the spelling, and OBSL rewrites the call
@@ -257,6 +271,84 @@ so every engine gives the catalog's answer:
   function to switch to, so the call is rewritten arithmetically there.
 - `trunc(-1.9)` is -1. Databricks has no numeric truncation at all (its `trunc`
   takes a date), so it becomes a signed floor of the magnitude.
+- `date_diff('day', TIMESTAMP '2026-08-01 23:00:00', TIMESTAMP '2026-08-02 01:00:00')`
+  is 1, and `date_diff('month', DATE '2026-01-31', DATE '2026-03-01')` is 2:
+  boundaries crossed, not complete units. MySQL's `TIMESTAMPDIFF` answers 0 and 1,
+  so both ends are truncated to the unit before it runs, and Postgres has no such
+  function at all and gets one built out of arithmetic.
+- `extract('week', DATE '2026-08-15')` is 33. MySQL's `WEEK` and BigQuery's `WEEK`
+  are Sunday-based and answer 32, so they render `WEEK(x, 3)` and `ISOWEEK`. The
+  two are not disagreeing about the date: ISO puts week 1 on the week containing
+  the first Thursday, so 2026-01-01 (a Thursday) is already week 1, while the
+  Sunday convention calls 1–3 January *week 0* and every later week is one lower.
+- `date_diff('week', DATE '2026-08-09', DATE '2026-08-15')` is 1 — one Monday
+  separates that Sunday from that Saturday. ClickHouse, Snowflake and BigQuery
+  agree; DuckDB and MySQL count whole seven-day spans and answer 0, and Postgres
+  has no week difference at all, so the week unit is measured rather than
+  delegated on every engine: both ends are truncated to the week start and the
+  day difference divided by seven.
+
+#### Which time zone a timestamp is read in
+
+Bucketing happens inside the warehouse, and for a column that carries an instant
+(`timestamp_tz`, Snowflake `TIMESTAMP_LTZ`, Postgres `timestamptz`) the answer
+depends on the session's time zone. The same stored instant, read on three
+Snowflake sessions:
+
+```
+TIMEZONE=Europe/Zagreb        2026-08-10 00:30+02:00  ->  week of 2026-08-10
+TIMEZONE=UTC                  2026-08-09 22:30+00:00  ->  week of 2026-08-03
+TIMEZONE=America/Los_Angeles  2026-08-09 15:30-07:00  ->  week of 2026-08-03
+```
+
+`settings.queryTimezone` takes that decision away from the connection:
+
+```yaml
+settings:
+  queryTimezone: Europe/Zagreb   # bucket and report in this zone
+  defaultTimezone: UTC           # what our naive timestamp columns mean
+```
+
+A timestamp column is then converted **at the column**, so every expression
+reading it starts from the same frame — `AT TIME ZONE` on DuckDB and Postgres,
+`toTimeZone` on ClickHouse, `CONVERT_TIMEZONE` on Snowflake and Dremio,
+`CONVERT_TZ` on MySQL, `DATETIME(x, zone)` on BigQuery, `from_utc_timestamp` on
+Databricks. Converting at the column rather than around an expression is what
+keeps a conversion from being applied twice: on MySQL, the same conversion
+applied twice moves 00:30 to 02:30.
+
+Two column kinds are treated differently, because they are different questions:
+
+| Column | Behaviour |
+|---|---|
+| `timestamp_tz` | carries an instant, so it is read in `queryTimezone` directly |
+| `timestamp` (naive) | carries no zone, so it is first read as `defaultTimezone` — and if that is unset it is **left alone**, with an `UNDECLARED_TIMESTAMP_ZONE` warning, rather than guessed at |
+| `date`, `time` | never converted — a date has no instant to move |
+
+The session's own zone is deliberately not used as the fallback: it is a fact
+about the connection, not about the data, and reading it into the SQL would make
+the same query mean different things on different connections.
+
+#### Changing the week start
+
+`date_trunc('week', …)` and `date_diff('week', …)` follow `settings.weekStart`:
+
+```yaml
+settings:
+  weekStart: sunday   # default: monday (ISO 8601)
+```
+
+It governs **every** weekly path, not just the function: a `timeGrain: week`
+dimension, a weekly period-over-period, and an explicit `date_trunc('week', …)`
+all bucket the same rows the same way, because they render through one
+implementation per dialect.
+
+Under `sunday`, `date_trunc('week', DATE '2026-08-15')` is `2026-08-09` rather
+than `2026-08-10`, on every dialect — including the six whose native truncation
+only knows Monday, which are rewritten. `extract('week', …)` is deliberately
+*not* affected: a Sunday-start week *number* has no definition the engines agree
+on (MySQL alone offers eight numbering modes), so week numbering stays ISO and
+says so rather than picking one silently.
 
 Argument order and shape are rewritten wherever an engine needs it —
 `position(needle, haystack)` becomes `POSITION(needle IN haystack)` on most
@@ -265,7 +357,16 @@ on BigQuery and changes base through `log10` on ClickHouse, which has no
 two-argument logarithm; `div(a, b)` is a function on three engines, an operator
 on three, and a truncated quotient on Snowflake.
 
-Two neighbours are deliberately *not* in the catalog. The single-argument `log`
+Date literals are written `DATE '2026-08-15'` and `TIMESTAMP '2026-08-15 13:45:00'`,
+and compile to a cast, so they mean the same thing on every engine.
+
+Three neighbours are deliberately *not* in the catalog. `current_timestamp` is
+left out because the engines disagree on whether it carries a time zone, and
+pinning that needs a stated stance on session time zones rather than a rewrite —
+`current_date()` has no such ambiguity. `to_date` and `format_date` are left out
+because format strings are strftime-style on Postgres, DuckDB and ClickHouse,
+picture strings on Snowflake and `%`-style on BigQuery, which is its own problem
+rather than a rewrite. The single-argument `log`
 is base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and BigQuery,
 a silent factor of 2.3, so only the explicit `log(base, x)` is admitted. And
 `/` is left to the engine: it is float division everywhere except Postgres,
@@ -1153,6 +1254,8 @@ settings:
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 | `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
 | `defaultLocale` | string | — | BCP-47 locale tag (e.g. `en-US`, `de-DE`). Default locale for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. |
+| `queryTimezone` | string | — | IANA zone (e.g. `Europe/Zagreb`) that timestamp columns are read in, so which day or week a row falls in is the model's decision rather than the warehouse session's. See below. |
+| `weekStart` | `monday` \| `sunday` | `monday` | Which day a week begins on, for `date_trunc('week', …)` and the boundaries `date_diff('week', …)` counts. ISO 8601 by default; `sunday` for a US retail calendar. Week *numbering* from `extract('week', …)` stays ISO either way — see below. |
 
 ### Resolution Order
 

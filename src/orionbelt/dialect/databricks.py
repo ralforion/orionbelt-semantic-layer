@@ -55,7 +55,7 @@ class DatabricksDialect(Dialect):
         escaped = name.replace("`", "``")
         return f"`{escaped}`"
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -84,6 +84,51 @@ class DatabricksDialect(Dialect):
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",
     }
+
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Databricks: ``from_utc_timestamp`` reads a value as wall clock in a
+        zone, and ``to_utc_timestamp`` declares a naive one first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            rendered = f"to_utc_timestamp({rendered}, {self._quote_zone(from_zone)})"
+        return f"from_utc_timestamp({rendered}, {self._quote_zone(zone)})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Spark's ``dayofweek`` numbers Sunday as 1, so the offset is one less."""
+        rendered = self.compile_expr(value)
+        return self._render_infix(
+            f"DATE_TRUNC('day', {rendered}) "
+            f"- make_interval(0, 0, 0, dayofweek({rendered}) - 1, 0, 0, 0)"
+        )
+
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Spark's interval literals want a constant, and its ``date_add`` adds
+        days only, so the interval is built with ``make_interval``, whose
+        arguments are ordinary expressions.
+        """
+        # At multiplication precedence, because the quarter slot multiplies:
+        # a bare ``1 + 1`` there rendered as ``1 + 1 * 3``, which is four
+        # months rather than six.
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        slots = {
+            "year": f"{n}, 0, 0, 0, 0, 0, 0",
+            "quarter": f"0, {n} * 3, 0, 0, 0, 0, 0",
+            "month": f"0, {n}, 0, 0, 0, 0, 0",
+            "week": f"0, 0, {n}, 0, 0, 0, 0",
+            "day": f"0, 0, 0, {n}, 0, 0, 0",
+            "hour": f"0, 0, 0, 0, {n}, 0, 0",
+            "minute": f"0, 0, 0, 0, 0, {n}, 0",
+            "second": f"0, 0, 0, 0, 0, 0, {n}",
+        }
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} "
+            f"+ make_interval({slots[unit]})"
+        )
+
+    def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
+        """Databricks: ``date_diff(unit, start, end)`` with a keyword unit."""
+        return f"date_diff({unit.upper()}, {self.compile_expr(start)}, {self.compile_expr(end)})"
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Databricks has no numeric truncation: its ``trunc`` truncates a
@@ -149,7 +194,7 @@ class DatabricksDialect(Dialect):
             return f"add_months({date_sql}, {count * 12})"
         raise ValueError(f"Unsupported unit '{unit}' for Databricks")
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"date_trunc('{grain}', {column_sql})"
 
     def render_date_spine_cte_sql(
