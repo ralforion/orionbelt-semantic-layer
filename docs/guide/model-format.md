@@ -410,8 +410,10 @@ rejected at validation time with `WRONG_FUNCTION_ARITY`, naming the canonical
 signature. Nothing else about the call is checked — argument *types* are not
 modelled.
 
-**The escape hatch.** A function the catalog does not carry is still emitted
-verbatim, so vendor-specific SQL keeps working:
+#### The escape hatch
+
+A function the catalog does not carry is still emitted verbatim, so
+vendor-specific SQL keeps working:
 
 ```yaml
 Zip 5:
@@ -421,6 +423,22 @@ Zip 5:
 
 OBSL cannot know that function's arity or meaning, so it neither checks nor
 rewrites it: the model now depends on the engines that have `regexp_extract`.
+That is a legitimate choice, and the one thing that should not happen is making
+it by accident — so the call is reported as a `NON_PORTABLE_FUNCTION` warning
+naming the function and the expression it appears in.
+
+A model that has to run on any dialect closes the hatch:
+
+```yaml
+settings:
+  expressionMode: portable   # default: permissive
+```
+
+Under `portable` the same call is an **error** rather than a warning, so the
+model cannot acquire an engine dependency without someone deciding to. The mode
+changes nothing about the SQL: it decides whether a model loads, not how it
+compiles.
+
 Where a call has to be non-portable, keeping it in one computed column rather
 than spread across measures is what keeps the port to another vendor to a short
 list of edits.
@@ -1254,6 +1272,7 @@ settings:
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 | `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
 | `defaultLocale` | string | — | BCP-47 locale tag (e.g. `en-US`, `de-DE`). Default locale for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. |
+| `expressionMode` | `permissive` \| `portable` | `permissive` | How function calls in expressions are held to the catalog. See [The escape hatch](#the-escape-hatch). |
 | `queryTimezone` | string | — | IANA zone (e.g. `Europe/Zagreb`) that timestamp columns are read in, so which day or week a row falls in is the model's decision rather than the warehouse session's. See below. |
 | `weekStart` | `monday` \| `sunday` | `monday` | Which day a week begins on, for `date_trunc('week', …)` and the boundaries `date_diff('week', …)` counts. ISO 8601 by default; `sunday` for a US retail calendar. Week *numbering* from `extract('week', …)` stays ISO either way — see below. |
 

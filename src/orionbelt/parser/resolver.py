@@ -173,6 +173,7 @@ def _parse_settings(
     default_locale = raw.get("defaultLocale")
     week_start = raw.get("weekStart")
     query_timezone = raw.get("queryTimezone")
+    expression_mode = raw.get("expressionMode")
     # Presence, not truthiness: ``weekStart: ""`` and ``defaultTimezone: ""``
     # are wrong values, and testing them for truth dropped the whole block and
     # let them validate as though the model had said nothing.
@@ -186,6 +187,7 @@ def _parse_settings(
             "defaultLocale",
             "weekStart",
             "queryTimezone",
+            "expressionMode",
         )
     ):
         return None
@@ -203,6 +205,10 @@ def _parse_settings(
     # lets the field's own default (ISO Monday) apply.
     if "weekStart" in raw:
         settings["week_start"] = week_start
+    # Same rule as weekStart: a non-nullable enum, so an explicit null is a
+    # wrong value rather than an unset one and has to reach Pydantic.
+    if "expressionMode" in raw:
+        settings["expression_mode"] = expression_mode
     try:
         return ModelSettings(**settings)
     except PydanticValidationError as exc:

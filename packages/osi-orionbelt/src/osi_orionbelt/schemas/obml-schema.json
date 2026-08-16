@@ -1261,6 +1261,12 @@
             "snowflake"
           ]
         },
+        "expressionMode": {
+          "type": "string",
+          "enum": ["permissive", "portable"],
+          "description": "How function calls in expressions are held to the portable function catalog (GET /v1/reference/functions). 'permissive' (default) emits a call the catalog does not carry as written and warns with NON_PORTABLE_FUNCTION, keeping vendor SQL available; 'portable' rejects it, so a model that has to run on any dialect cannot acquire a dependency on one engine's SQL by accident.",
+          "default": "permissive"
+        },
         "queryTimezone": {
           "type": "string",
           "description": "IANA zone the model's timestamps are bucketed and reported in (e.g. Europe/Zagreb). When set, a timestamp column is converted to it in the generated SQL, so which day or week a row falls in is the model's decision rather than the warehouse session's. A naive timestamp column is first read as defaultTimezone, which is what that setting states it means; a timestamp_tz column already carries a zone and needs no such hint. Date and time columns are never converted."

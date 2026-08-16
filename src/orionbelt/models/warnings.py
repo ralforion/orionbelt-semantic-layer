@@ -35,6 +35,9 @@ class WarningCode:
     LARGE_RESULT_SET = "LARGE_RESULT_SET"
     CACHE_TTL_FLOOR_HIT = "CACHE_TTL_FLOOR_HIT"
 
+    # An expression calls a function the portable catalog does not carry
+    NON_PORTABLE_FUNCTION = "NON_PORTABLE_FUNCTION"
+
     # A model asks for a query time zone but leaves naive columns undeclared
     UNDECLARED_TIMESTAMP_ZONE = "UNDECLARED_TIMESTAMP_ZONE"
 

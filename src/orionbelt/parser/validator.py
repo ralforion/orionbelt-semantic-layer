@@ -18,6 +18,7 @@ from orionbelt.models.functions import TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
+    ExpressionMode,
     Measure,
     MeasureFilter,
     MeasureFilterGroup,
@@ -844,10 +845,44 @@ class SemanticValidator:
         it does not carry would break every model written before it existed.
         """
         errors: list[SemanticError] = []
+        portable = (
+            model.settings is not None and model.settings.expression_mode is ExpressionMode.PORTABLE
+        )
         for path, subject, expression in self._expression_bodies(model):
+            reported: set[str] = set()
             for call in find_function_calls(expression):
                 spec = lookup_function(call.name)
-                if spec is None or spec.accepts(call.arg_count):
+                if spec is None:
+                    # Outside the catalog: emitted verbatim, so the model runs
+                    # only where that function exists. A warning by default, an
+                    # error when the model has asked to stay portable. Reported
+                    # once per name per expression, since repeating a call is
+                    # not a second problem.
+                    if call.name.lower() in reported:
+                        continue
+                    reported.add(call.name.lower())
+                    errors.append(
+                        SemanticError(
+                            code=WarningCode.NON_PORTABLE_FUNCTION,
+                            message=(
+                                f"{subject} calls '{call.name}', which the portable "
+                                f"function catalog does not carry, so it is emitted "
+                                f"as written and the model runs only on engines "
+                                f"that have it"
+                            ),
+                            path=path,
+                            hint=(
+                                "Use a catalog function (GET /v1/reference/functions) "
+                                "if one fits, or keep this call and accept the "
+                                "dependency. settings.expressionMode: portable turns "
+                                "this into an error."
+                            ),
+                            severity="error" if portable else "warning",
+                            context={"function": call.name},
+                        )
+                    )
+                    continue
+                if spec.accepts(call.arg_count):
                     continue
                 plural = "" if call.arg_count == 1 else "s"
                 errors.append(
