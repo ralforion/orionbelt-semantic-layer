@@ -23,7 +23,11 @@ from sqlglot import exp
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
-from orionbelt.dialect.base import UnsupportedAggregationError, UnsupportedGroupingError
+from orionbelt.dialect.base import (
+    UnsupportedAggregationError,
+    UnsupportedFunctionError,
+    UnsupportedGroupingError,
+)
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
 from orionbelt.models.query import QueryFilter, QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
@@ -120,6 +124,7 @@ def test_having_only_measure_not_in_projection(sales_model: SemanticModel) -> No
 
 _TYPED_UNSUPPORTED = (
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
     UnsupportedDialectError,
     FanoutError,

@@ -19,6 +19,7 @@ from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
 )
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
@@ -78,6 +79,7 @@ def _compile(
     except (
         AmbiguousTableReferenceError,
         UnsupportedAggregationError,
+        UnsupportedFunctionError,
         UnsupportedGroupingError,
     ) as exc:
         raise CliError(str(exc)) from None

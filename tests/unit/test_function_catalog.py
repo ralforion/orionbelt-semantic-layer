@@ -31,6 +31,7 @@ from orionbelt.models.functions import (
     catalog_names,
     lookup_function,
 )
+from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
@@ -327,7 +328,14 @@ class TestEscapeHatch:
 
 
 class _NoSplitPartDialect(DuckDBDialect):
-    """A dialect that declares a catalog function unsupported."""
+    """A dialect that declares a catalog function unsupported.
+
+    No shipped dialect does, so the behaviour has no other way to be tested.
+    """
+
+    @property
+    def name(self) -> str:
+        return "duckdb_without_split_part"
 
     @property
     def capabilities(self) -> DialectCapabilities:
@@ -352,6 +360,41 @@ class TestUnsupportedFunction:
         for dialect in DIALECTS:
             assert DialectRegistry.get(dialect).capabilities.unsupported_functions == []
 
+    def test_the_api_answers_422_not_500(self) -> None:
+        """Every surface that translates the sibling unsupported-* errors has
+        to translate this one, or the first dialect to declare an unsupported
+        function turns a modelling problem into a system error.
+
+        Exercised through a temporarily registered dialect, since no shipped
+        dialect declares one yet — which is exactly why the path would
+        otherwise go untested until the numeric or date group needs it.
+        """
+        from fastapi import HTTPException
+
+        from orionbelt.api.services.query_compilation import compile_query_or_raise
+        from orionbelt.service.model_store import ModelStore
+
+        yaml_text = _ARITY_MODEL_YAML.replace("{EXPRESSION}", "split_part({Zip}, '-', 1)")
+        store = ModelStore()
+        model_id = store.load_model(yaml_text).model_id
+        query = QueryObject(select=QuerySelect(dimensions=["Bad Zip"], measures=["Order Count"]))
+
+        registry = DialectRegistry._dialects
+        registry[_NoSplitPartDialect().name] = _NoSplitPartDialect
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                compile_query_or_raise(
+                    store=store,
+                    model_id=model_id,
+                    query=query,
+                    dialect=_NoSplitPartDialect().name,
+                )
+        finally:
+            registry.pop(_NoSplitPartDialect().name, None)
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail["function"] == "split_part"
+
 
 def test_catalog_functions_survive_a_full_compile() -> None:
     """End to end: a computed column using catalog functions reaches the SQL."""
@@ -362,7 +405,6 @@ def test_catalog_functions_survive_a_full_compile() -> None:
     assert isinstance(model, SemanticModel)
 
     from orionbelt.compiler.pipeline import CompilationPipeline
-    from orionbelt.models.query import QueryObject, QuerySelect
 
     query = QueryObject(select=QuerySelect(dimensions=["Bad Zip"], measures=["Order Count"]))
     sql = CompilationPipeline().compile(query, model, "duckdb").sql

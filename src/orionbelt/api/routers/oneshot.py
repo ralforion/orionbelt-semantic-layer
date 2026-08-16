@@ -58,6 +58,7 @@ from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
@@ -204,6 +205,11 @@ def _compile(
     except UnsupportedGroupingError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_GROUPING",
+            message=str(exc),
+        )
+    except UnsupportedFunctionError as exc:
+        return OneshotBatchQueryError(
+            code="UNSUPPORTED_FUNCTION",
             message=str(exc),
         )
     except AmbiguousTableReferenceError as exc:
