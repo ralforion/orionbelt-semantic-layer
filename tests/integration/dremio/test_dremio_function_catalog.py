@@ -70,6 +70,10 @@ _WEEK_CASES: list[tuple[str, WeekStart, str | int]] = [
     # One Monday separates that Sunday from that Saturday, and no Sunday does.
     ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", WeekStart.MONDAY, 1),
     ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", WeekStart.SUNDAY, 0),
+    # A timestamp input: the start of a week is midnight, so a rewrite that
+    # subtracts days from the value rather than from its day keeps 13:45.
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", WeekStart.MONDAY, "2026-08-10"),
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", WeekStart.SUNDAY, "2026-08-09"),
 ]
 
 

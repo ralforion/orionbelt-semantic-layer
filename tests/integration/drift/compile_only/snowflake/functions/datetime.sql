@@ -6,7 +6,7 @@ DATE_TRUNC('month', CAST('2026-08-15' AS DATE));
 --   date_trunc('quarter', DATE '2026-08-15') = '2026-07-01'
 DATE_TRUNC('quarter', CAST('2026-08-15' AS DATE));
 --   date_trunc('week', DATE '2026-08-15') = '2026-08-10'
-DATE_TRUNC('week', CAST('2026-08-15' AS DATE));
+DATEADD('day', -(DAYOFWEEKISO(CAST('2026-08-15' AS DATE)) - 1), DATE_TRUNC('day', CAST('2026-08-15' AS DATE)));
 --   date_trunc('year', DATE '2026-08-15') = '2026-01-01'
 DATE_TRUNC('year', CAST('2026-08-15' AS DATE));
 
@@ -24,7 +24,7 @@ DATEADD('year', 1, CAST('2026-08-01' AS DATE));
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
 DATEDIFF('day', CAST('2026-08-01' AS DATE), CAST('2026-08-15' AS DATE));
 --   date_diff('week', DATE '2026-08-09', DATE '2026-08-15') = 1
-TRUNC(DATEDIFF('day', DATE_TRUNC('week', CAST('2026-08-09' AS DATE)), DATE_TRUNC('week', CAST('2026-08-15' AS DATE))) / 7);
+TRUNC(DATEDIFF('day', DATEADD('day', -(DAYOFWEEKISO(CAST('2026-08-09' AS DATE)) - 1), DATE_TRUNC('day', CAST('2026-08-09' AS DATE))), DATEADD('day', -(DAYOFWEEKISO(CAST('2026-08-15' AS DATE)) - 1), DATE_TRUNC('day', CAST('2026-08-15' AS DATE)))) / 7);
 --   date_diff('day', DATE '2026-08-15', DATE '2026-08-01') = -14
 DATEDIFF('day', CAST('2026-08-15' AS DATE), CAST('2026-08-01' AS DATE));
 --   date_diff('month', DATE '2026-01-31', DATE '2026-03-01') = 2

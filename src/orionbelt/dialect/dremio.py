@@ -88,12 +88,16 @@ class DremioDialect(Dialect):
         return self._render_concat_null_guard(args)
 
     def _render_week_start_sunday(self, value: Expr) -> str:
-        """Dremio's ``DAYOFWEEK`` numbers Sunday as 1, per its function
-        reference; the offset is one less, applied with the TIMESTAMPADD this
-        dialect already uses for date arithmetic.
+        """Dremio's ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one
+        less, applied with the TIMESTAMPADD this dialect already uses for date
+        arithmetic.
+
+        Stepping back from the start of the day rather than from the value:
+        subtracting days from a timestamp keeps its time, and the start of a
+        week is midnight.
         """
         rendered = self.compile_expr(value)
-        return f"TIMESTAMPADD(DAY, -(DAYOFWEEK({rendered}) - 1), {rendered})"
+        return f"TIMESTAMPADD(DAY, -(DAYOFWEEK({rendered}) - 1), DATE_TRUNC('day', {rendered}))"
 
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Dremio: ``TIMESTAMPADD(UNIT, n, x)``, which is already how the

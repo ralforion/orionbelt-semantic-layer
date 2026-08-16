@@ -348,7 +348,10 @@ class TestWeekStart:
             ("clickhouse", 'toStartOfWeek("S].[D", 0)'),
             ("bigquery", "DATE_TRUNC(`S].[D`, WEEK)"),
             ("mysql", "DATE(DATE_SUB(`S].[D`, INTERVAL DAYOFWEEK(`S].[D`) - 1 DAY))"),
-            ("snowflake", 'DATEADD(\'day\', -MOD(DAYOFWEEKISO("S].[D"), 7), "S].[D")'),
+            (
+                "snowflake",
+                "DATEADD('day', -(MOD(DAYOFWEEKISO(\"S].[D\"), 7)), DATE_TRUNC('day', \"S].[D\"))",
+            ),
         ],
     )
     def test_sunday_uses_each_engines_own_day_numbering(self, dialect: str, expected: str) -> None:
@@ -373,6 +376,32 @@ class TestWeekStart:
         )
         assert "7" in sql, "the week difference should be a day count divided by seven"
 
+    def test_snowflake_never_consults_its_session_parameter(self) -> None:
+        """Snowflake's DATE_TRUNC('week', ...) follows WEEK_START, so a session
+        set to Sunday would override a model that says Monday. Both calendars
+        are computed from DAYOFWEEKISO, which no session parameter moves.
+        """
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            sql = self._render_with("date_trunc('week', {[S].[D]})", "snowflake", week_start)
+            assert "DAYOFWEEKISO" in sql
+            assert "DATE_TRUNC('week'" not in sql
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("week_start", [WeekStart.MONDAY, WeekStart.SUNDAY])
+    def test_a_week_starts_at_midnight(self, dialect: str, week_start: WeekStart) -> None:
+        """The start of a week is a day boundary, so a rewrite that subtracts
+        days from a timestamp has to subtract them from its day: otherwise
+        13:45 survives into the result. Snowflake and Dremio did that.
+        """
+        sql = self._render_with("date_trunc('week', {[S].[T]})", dialect, week_start)
+        subtracts_days = any(
+            token in sql for token in ("DATEADD", "TIMESTAMPADD", "DATE_SUB", "- ")
+        )
+        if subtracts_days:
+            assert "DATE_TRUNC('day'" in sql or "DATE(" in sql, (
+                f"{dialect} steps back from the value rather than from its day: {sql}"
+            )
+
     def test_extract_week_is_iso_under_either_calendar(self) -> None:
         """A Sunday-start week *number* has no portable definition — MySQL
         alone offers eight numbering modes — so numbering stays ISO and says so.
@@ -390,7 +419,16 @@ class TestWeekStart:
 
     @pytest.mark.parametrize(
         "setting",
-        ["weekStart: Mondey", "defaultTimezone: Mars/Olympus", "defaultNumericDataType: banana"],
+        [
+            "weekStart: Mondey",
+            "defaultTimezone: Mars/Olympus",
+            "defaultNumericDataType: banana",
+            # Falsy values were dropped along with the whole settings block, so
+            # a wrong value validated as though the model had said nothing.
+            'weekStart: ""',
+            "weekStart: false",
+            "weekStart: 0",
+        ],
     )
     def test_a_rejected_setting_is_a_model_error_not_a_crash(self, setting: str) -> None:
         """A typo in settings used to escape as a raw pydantic ValidationError,

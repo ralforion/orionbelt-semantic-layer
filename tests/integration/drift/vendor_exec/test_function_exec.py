@@ -114,6 +114,11 @@ _WEEK_CASES: list[tuple[str, str, str | int]] = [
     # the previous one under the other: the difference to the 15th differs.
     ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "monday", 1),
     ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "sunday", 0),
+    # A timestamp input: the start of a week is midnight, so a rewrite that
+    # subtracts days from the value rather than from its day keeps 13:45 and
+    # fails here. Snowflake and Dremio did exactly that.
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", "monday", "2026-08-10"),
+    ("date_trunc('week', TIMESTAMP '2026-08-15 13:45:00')", "sunday", "2026-08-09"),
 ]
 
 

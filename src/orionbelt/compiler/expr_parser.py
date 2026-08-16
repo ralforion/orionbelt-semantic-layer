@@ -381,7 +381,11 @@ def parse_expression(tokens: list[_Token]) -> Expr:
                 following = _peek()
                 if following is not None and following.kind == "string":
                     _advance()
-                    return Cast(expr=Literal.string(following.value), type_name=upper)
+                    # Lower-cased so the cast goes through each dialect's
+                    # abstract-type map rather than naming a SQL type
+                    # literally: MySQL has no TIMESTAMP to cast to, only
+                    # DATETIME, and rejected the literal outright.
+                    return Cast(expr=Literal.string(following.value), type_name=upper.lower())
             # Bare keyword literal — TRUE / FALSE / NULL.
             if upper in _LITERAL_KEYWORDS:
                 lit_val = _LITERAL_KEYWORDS[upper]

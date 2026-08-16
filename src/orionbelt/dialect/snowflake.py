@@ -105,13 +105,34 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_date_trunc(self, unit: str, value: Expr) -> str:
+        """Snowflake's ``DATE_TRUNC('week', …)`` follows the WEEK_START session
+        parameter, so a session set to Sunday would silently override a model
+        that says Monday. Every other unit is unaffected and uses the native
+        call.
+        """
+        if unit == "week":
+            return self._render_week_floor_by_offset("DAYOFWEEKISO({0}) - 1", value)
+        return super()._render_date_trunc(unit, value)
+
     def _render_week_start_sunday(self, value: Expr) -> str:
-        """Snowflake's DAYOFWEEK follows the WEEK_START session parameter, so
-        the ISO variant is used instead and reduced mod 7: it numbers Monday as
-        1 through Sunday as 7, which ``% 7`` turns into the days since Sunday.
+        """Sunday, likewise without consulting the session.
+
+        ``DAYOFWEEKISO`` numbers Monday 1 through Sunday 7, which ``% 7`` turns
+        into the days since Sunday; ``DAYOFWEEK`` would have followed
+        WEEK_START.
+        """
+        return self._render_week_floor_by_offset("MOD(DAYOFWEEKISO({0}), 7)", value)
+
+    def _render_week_floor_by_offset(self, offset_template: str, value: Expr) -> str:
+        """Step back *offset* days from the start of *value*'s day.
+
+        From the day rather than from the value itself: subtracting days from a
+        timestamp keeps its time, and the start of a week is midnight.
         """
         rendered = self.compile_expr(value)
-        return f"DATEADD('day', -MOD(DAYOFWEEKISO({rendered}), 7), {rendered})"
+        offset = offset_template.format(rendered)
+        return f"DATEADD('day', -({offset}), DATE_TRUNC('day', {rendered}))"
 
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Snowflake: ``DATEADD('unit', n, x)``, quoted unit, value last."""

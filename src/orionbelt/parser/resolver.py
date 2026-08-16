@@ -172,13 +172,19 @@ def _parse_settings(
     default_dialect = raw.get("defaultDialect")
     default_locale = raw.get("defaultLocale")
     week_start = raw.get("weekStart")
-    if (
-        not default_type
-        and not default_tz
-        and not override_db_tz
-        and not default_dialect
-        and not default_locale
-        and not week_start
+    # Presence, not truthiness: ``weekStart: ""`` and ``defaultTimezone: ""``
+    # are wrong values, and testing them for truth dropped the whole block and
+    # let them validate as though the model had said nothing.
+    if not any(
+        key in raw
+        for key in (
+            "defaultNumericDataType",
+            "defaultTimezone",
+            "overrideDatabaseTimezone",
+            "defaultDialect",
+            "defaultLocale",
+            "weekStart",
+        )
     ):
         return None
     settings = {
