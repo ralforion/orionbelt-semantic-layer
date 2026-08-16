@@ -62,24 +62,51 @@ class TestDialectsEndpoint:
         assert "dremio" in names
         assert "databricks" in names
 
-    async def test_dialects_unsupported_aggregations(self, client: AsyncClient) -> None:
+    async def test_dialects_supported_aggregations(self, client: AsyncClient) -> None:
+        """The response states what a dialect *can* do.
+
+        A client asking "may I use median here?" would otherwise have to fetch
+        the OBML aggregation vocabulary separately and subtract.
+        """
+        from orionbelt.models.semantic import AggregationType
+
         response = await client.get("/v1/dialects")
-        data = response.json()
-        by_name = {d["name"]: d for d in data["dialects"]}
-        # MySQL and Dremio declare mode as unsupported
-        assert "mode" in by_name["mysql"]["unsupported_aggregations"]
-        assert "mode" in by_name["dremio"]["unsupported_aggregations"]
-        # ``measure`` (Databricks Metric View delegation) is unsupported on
-        # every dialect except Databricks (v2.7.7+, see #92).
+        by_name = {d["name"]: d for d in response.json()["dialects"]}
+        # MySQL and Dremio cannot compute mode.
+        assert "mode" not in by_name["mysql"]["supported_aggregations"]
+        assert "mode" not in by_name["dremio"]["supported_aggregations"]
+        # ``measure`` (Databricks Metric View delegation) is supported on
+        # Databricks alone (v2.7.7+, see #92).
         for name, info in by_name.items():
             if name == "databricks":
-                assert "measure" not in info["unsupported_aggregations"]
+                assert "measure" in info["supported_aggregations"]
             else:
-                assert "measure" in info["unsupported_aggregations"], (
-                    f"{name}: 'measure' must be listed as unsupported"
+                assert "measure" not in info["supported_aggregations"], (
+                    f"{name}: 'measure' must not be listed as supported"
                 )
-        # Postgres has no other unsupported aggregations apart from ``measure``.
-        assert by_name["postgres"]["unsupported_aggregations"] == ["measure"]
+        # Postgres computes everything except ``measure``.
+        assert by_name["postgres"]["supported_aggregations"] == sorted(
+            a.value for a in AggregationType if a.value != "measure"
+        )
+
+    async def test_dialects_supported_functions(self, client: AsyncClient) -> None:
+        """Every dialect renders the whole catalog today: an entry is admitted
+        only once all eight can answer it. The field earns its place when a
+        later group leaves one behind.
+        """
+        from orionbelt.models.functions import FUNCTION_CATALOG
+
+        response = await client.get("/v1/dialects")
+        for info in response.json()["dialects"]:
+            assert info["supported_functions"] == sorted(FUNCTION_CATALOG), info["name"]
+
+    async def test_dialects_capabilities_are_boolean_only(self, client: AsyncClient) -> None:
+        """The lists are their own fields; ``capabilities`` stays feature flags."""
+        response = await client.get("/v1/dialects")
+        for info in response.json()["dialects"]:
+            assert all(isinstance(v, bool) for v in info["capabilities"].values())
+            assert "unsupported_aggregations" not in info
+            assert "unsupported_functions" not in info
 
 
 class TestSettingsEndpoint:

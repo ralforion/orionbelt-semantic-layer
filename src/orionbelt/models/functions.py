@@ -527,6 +527,16 @@ FUNCTION_CATALOG: dict[str, FunctionSpec] = {
 """Every catalog entry, keyed by its canonical (lowercase) name."""
 
 
+def markdown_prose(text: str) -> str:
+    """The catalog's prose reads as a Python docstring, where ``x`` is code.
+
+    Every surface that publishes it — the JSON reference endpoint, the OBML
+    markdown reference — is read as markdown, where the doubled backticks are
+    literal characters. Converted once here so the two cannot disagree.
+    """
+    return text.replace("``", "`")
+
+
 def lookup_function(name: str) -> FunctionSpec | None:
     """The catalog entry *name* refers to, or ``None`` if it is not in the catalog.
 

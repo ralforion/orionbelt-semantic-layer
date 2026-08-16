@@ -272,13 +272,25 @@ class DialectInfo(BaseModel):
     """Information about a supported dialect."""
 
     name: str
-    capabilities: dict[str, bool] = Field(default_factory=dict)
-    unsupported_aggregations: list[str] = Field(default_factory=list)
-    unsupported_functions: list[str] = Field(
+    capabilities: dict[str, bool] = Field(
+        default_factory=dict,
+        description="Structural SQL feature flags (CTEs, QUALIFY, ILIKE, GROUP BY ALL).",
+    )
+    supported_aggregations: list[str] = Field(
         default_factory=list,
         description=(
-            "Portable-catalog scalar functions this dialect cannot render "
-            "(the catalog itself is at /v1/reference/functions)."
+            "Every OBML ``aggregation:`` value this dialect can compute, sorted. "
+            "Stated positively because that is the question a client is asking: "
+            "the answer needs no second call to learn the full vocabulary and "
+            "subtract from it."
+        ),
+    )
+    supported_functions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every portable-catalog scalar function this dialect can render, "
+            "sorted. The catalog's signatures and pinned semantics are at "
+            "/v1/reference/functions."
         ),
     )
 

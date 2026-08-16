@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from orionbelt.models.functions import FUNCTION_CATALOG, catalog_names
+from orionbelt.models.functions import FUNCTION_CATALOG, catalog_names, markdown_prose
 from orionbelt.obml_reference import OBML_REFERENCE
 from orionbelt.obsql_reference import OBSQL_REFERENCE
 from orionbelt.parser.schema_validation import read_schema_text
@@ -185,8 +185,8 @@ async def get_function_reference() -> FunctionReferenceResponse:
                 min_args=spec.min_args,
                 max_args=spec.max_args,
                 result_type=spec.result_type,
-                summary=spec.summary,
-                semantics=spec.semantics,
+                summary=markdown_prose(spec.summary),
+                semantics=markdown_prose(spec.semantics) if spec.semantics else None,
                 examples=[
                     FunctionExampleEntry(call=e.call, expect=e.expect) for e in spec.examples
                 ],

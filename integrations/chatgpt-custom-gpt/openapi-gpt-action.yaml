@@ -40,7 +40,11 @@ paths:
                           type: object
                           additionalProperties:
                             type: boolean
-                        unsupported_aggregations:
+                        supported_aggregations:
+                          type: array
+                          items:
+                            type: string
+                        supported_functions:
                           type: array
                           items:
                             type: string

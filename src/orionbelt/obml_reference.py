@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
+from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec, markdown_prose
 
 
 def _function_catalog_section() -> str:
@@ -32,9 +32,9 @@ def _function_catalog_section() -> str:
         lines.append(f"### {group}")
         lines.append("")
         for spec in _group_entries(group):
-            lines.append(f"- `{spec.signature}` — {_markdown(spec.summary)}")
+            lines.append(f"- `{spec.signature}` — {markdown_prose(spec.summary)}")
             if spec.semantics:
-                lines.append(f"  {_markdown(spec.semantics)}")
+                lines.append(f"  {markdown_prose(spec.semantics)}")
         lines.append("")
     lines.extend(
         [
@@ -48,13 +48,6 @@ def _function_catalog_section() -> str:
 
 def _group_entries(group: str) -> list[FunctionSpec]:
     return [spec for spec in FUNCTION_CATALOG.values() if spec.group == group]
-
-
-def _markdown(text: str) -> str:
-    """The catalog's prose is written for Python docstrings; this document is
-    markdown, where ``x`` is a literal pair of backticks rather than code.
-    """
-    return text.replace("``", "`")
 
 
 _OBML_REFERENCE_TEMPLATE = """\
