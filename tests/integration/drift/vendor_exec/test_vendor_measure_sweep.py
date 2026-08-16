@@ -32,6 +32,7 @@ from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from tests.integration._measure_dimensions import required_dimensions
 
 from .conftest import VendorTarget
 
@@ -44,11 +45,11 @@ _RAW = yaml.safe_load(COMMERCE_MODEL_YAML.read_text()) if COMMERCE_MODEL_YAML.ex
 _METRICS = _RAW.get("metrics") or {}
 
 
-def _measure_names() -> list[str]:
-    """Full queryable measure namespace via ``effective_measures``.
+def _measure_items() -> list[tuple[str, str, list[str]]]:
+    """``(kind, name, dimensions)`` for the full queryable measure namespace.
 
     Includes synthesised row-count measures (``Sales Count`` etc.), not just
-    declared measures. Falls back to the declared list at collection time.
+    declared ones. Falls back to the declared list at collection time.
     """
     if not COMMERCE_MODEL_YAML.exists():
         return []
@@ -56,13 +57,13 @@ def _measure_names() -> list[str]:
         raw, source_map = TrackedLoader().load(COMMERCE_MODEL_YAML)
         model, result = ReferenceResolver().resolve(raw, source_map)
         if result.valid:
-            return list(model.effective_measures.keys())
+            return [
+                ("measure", name, required_dimensions(measure))
+                for name, measure in model.effective_measures.items()
+            ]
     except Exception:  # noqa: BLE001 -- fall back to declared measures at collection time
         pass
-    return list((_RAW.get("measures") or {}).keys())
-
-
-_MEASURES = _measure_names()
+    return [("measure", name, []) for name in (_RAW.get("measures") or {})]
 
 
 def _time_dimension(spec: dict[str, Any]) -> str | None:
@@ -73,7 +74,7 @@ def _time_dimension(spec: dict[str, Any]) -> str | None:
 # metrics with their required time dimension; derived metrics grouped by a
 # plain dimension.
 def _sweep_items() -> list[tuple[str, str, list[str]]]:
-    items: list[tuple[str, str, list[str]]] = [("measure", m, []) for m in _MEASURES]
+    items: list[tuple[str, str, list[str]]] = _measure_items()
     for name, spec in _METRICS.items():
         time_dim = _time_dimension(spec)
         items.append(("metric", name, [time_dim] if time_dim else ["Product Category"]))
