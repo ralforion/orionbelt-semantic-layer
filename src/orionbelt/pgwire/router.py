@@ -38,6 +38,7 @@ from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
@@ -264,6 +265,7 @@ class SemanticRouter:
         except (
             AmbiguousTableReferenceError,
             UnsupportedAggregationError,
+            UnsupportedFunctionError,
             UnsupportedGroupingError,
         ) as exc:
             return protocol.build_error_response(

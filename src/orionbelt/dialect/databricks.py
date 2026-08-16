@@ -78,6 +78,13 @@ class DatabricksDialect(Dialect):
             ),
         )
 
+    # Databricks spells the prefix/suffix tests without the underscore
+    # (``startswith`` / ``endswith``, Databricks Runtime 10.4 LTS and above).
+    _SCALAR_FUNCTION_NAMES: dict[str, str] = {
+        "starts_with": "STARTSWITH",
+        "ends_with": "ENDSWITH",
+    }
+
     def _compile_listagg(
         self,
         args: list[Expr],

@@ -1425,7 +1425,7 @@ class TestReferenceEndpoints:
         r = await client.get("/v1/reference")
         assert r.status_code == 200
         names = {entry["name"] for entry in r.json()["references"]}
-        assert names == {"obml", "obsql", "obml-schema", "query-schema"}
+        assert names == {"obml", "obsql", "functions", "obml-schema", "query-schema"}
 
     async def test_obml_reference_is_markdown(self, client: AsyncClient) -> None:
         r = await client.get("/v1/reference/obml")
@@ -1445,6 +1445,41 @@ class TestReferenceEndpoints:
         assert "raw mode" in body.lower()
         assert "RAW_SQL_REJECTED" in body
         assert "WRITE_OPERATION_REJECTED" in body
+
+    async def test_function_catalog_is_discoverable(self, client: AsyncClient) -> None:
+        """An agent composing an expression has to be able to ask which
+        functions are portable, rather than guess and fail at the warehouse.
+        """
+        r = await client.get("/v1/reference/functions")
+        assert r.status_code == 200
+        body = r.json()
+        by_name = {f["name"]: f for f in body["functions"]}
+        assert {"substring", "concat", "length", "position", "split_part"} <= set(by_name)
+        assert "WRONG_FUNCTION_ARITY" in body["escape_hatch"]
+
+        concat = by_name["concat"]
+        assert concat["signature"] == "concat(a, b, ...)"
+        assert concat["max_args"] is None  # variadic
+        # The pinned semantics are the reason the endpoint exists: NULL
+        # propagation is not what DuckDB or Postgres do on their own.
+        assert "NULL propagates" in (concat["semantics"] or "")
+        assert {"call": "concat('a', NULL, 'c')", "expect": None} in concat["examples"]
+
+    async def test_function_catalog_matches_the_compiler(self, client: AsyncClient) -> None:
+        """The endpoint serves the catalog the dialects render from, not a copy."""
+        from orionbelt.models.functions import FUNCTION_CATALOG
+
+        r = await client.get("/v1/reference/functions")
+        served = {f["name"] for f in r.json()["functions"]}
+        assert served == set(FUNCTION_CATALOG)
+
+    async def test_obml_reference_documents_the_catalog(self, client: AsyncClient) -> None:
+        """MCP and LLM clients read this text rather than the endpoint."""
+        r = await client.get("/v1/reference/obml")
+        body = r.json()["reference"]
+        assert "/v1/reference/functions" in body
+        assert "WRONG_FUNCTION_ARITY" in body
+        assert "concat" in body
 
     async def test_obml_schema_served(self, client: AsyncClient) -> None:
         r = await client.get("/v1/reference/schemas/obml")

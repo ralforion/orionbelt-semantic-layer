@@ -256,6 +256,49 @@ class MySQLDialect(Dialect):
             ),
         )
 
+    # ``LENGTH`` counts bytes on MySQL (``LENGTH('äbcd')`` is 5); the catalog
+    # counts characters, which is ``CHAR_LENGTH``.
+    _SCALAR_FUNCTION_NAMES: dict[str, str] = {"length": "CHAR_LENGTH"}
+
+    def _render_starts_with(self, args: list[Expr]) -> str:
+        """MySQL has no ``STARTS_WITH``; compare the leading characters.
+
+        NULL propagates through both operands: ``CHAR_LENGTH(NULL)`` is NULL,
+        so ``LEFT(x, NULL)`` is NULL and the comparison yields NULL — the same
+        answer the native function gives on the engines that have one.
+        """
+        haystack = self.compile_expr(args[0])
+        prefix = self.compile_expr(args[1])
+        return f"(LEFT({haystack}, CHAR_LENGTH({prefix})) = {prefix})"
+
+    def _render_ends_with(self, args: list[Expr]) -> str:
+        """MySQL has no ``ENDS_WITH``; compare the trailing characters."""
+        haystack = self.compile_expr(args[0])
+        suffix = self.compile_expr(args[1])
+        return f"(RIGHT({haystack}, CHAR_LENGTH({suffix})) = {suffix})"
+
+    def _render_split_part(self, args: list[Expr]) -> str:
+        """MySQL has no ``SPLIT_PART``; ``SUBSTRING_INDEX`` nested twice takes
+        the *n*-th field — but only while *n* is within range.
+
+        Asked for a field past the last one, ``SUBSTRING_INDEX(x, d, n)``
+        returns the whole string and the inner ``-1`` then hands back the
+        *last* field, where the catalog documents an empty string. The guard
+        counts the fields (length minus the length with the delimiters removed,
+        over the delimiter's own length, plus one) and short-circuits.
+        """
+        haystack = self.compile_expr(args[0])
+        delimiter = self.compile_expr(args[1])
+        index = self.compile_expr(args[2], _parent_prec=self._PREC_CMP + 1)
+        field_count = (
+            f"(CHAR_LENGTH({haystack}) - CHAR_LENGTH(REPLACE({haystack}, {delimiter}, ''))) "
+            f"/ CHAR_LENGTH({delimiter}) + 1"
+        )
+        part = (
+            f"SUBSTRING_INDEX(SUBSTRING_INDEX({haystack}, {delimiter}, {index}), {delimiter}, -1)"
+        )
+        return f"CASE WHEN {index} > {field_count} THEN '' ELSE {part} END"
+
     def _compile_median(self, args: list[Expr]) -> str:
         """MySQL does not support MEDIAN aggregation."""
         raise UnsupportedAggregationError("mysql", "median")

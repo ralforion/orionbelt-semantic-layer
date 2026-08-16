@@ -32,6 +32,7 @@ from orionbelt.ast.nodes import (
     UnionAll,
     WindowFunction,
 )
+from orionbelt.models.functions import lookup_function
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
@@ -63,6 +64,26 @@ class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
             f"aggregates (aggregated: {aggregated}, order by: {order_by}). "
             f"Order the measure by its own column, or query it on a dialect "
             f"that supports WITHIN GROUP ordering.",
+        )
+
+
+class UnsupportedFunctionError(Exception):
+    """Raised when a dialect cannot render a catalog scalar function.
+
+    The counterpart of :class:`UnsupportedAggregationError` for the portable
+    function catalog (``models/functions.py``): a function the catalog admits
+    but this engine has no equivalent for, listed in
+    ``capabilities.unsupported_functions``. A domain error rather than a bare
+    ``ValueError`` so routers surface a 422 like every other
+    unsupported-feature case instead of a 500.
+    """
+
+    def __init__(self, dialect: str, function: str) -> None:
+        self.dialect = dialect
+        self.function = function
+        super().__init__(
+            f"Dialect '{dialect}' does not support the '{function}' function. "
+            f"Rewrite the expression, or query it on a dialect that has it."
         )
 
 
@@ -125,6 +146,12 @@ class DialectCapabilities:
     # repeats the full expression. Postgres, MySQL, Dremio do not support it.
     supports_group_by_all: bool = False
     unsupported_aggregations: list[str] = field(default_factory=list)
+    # Canonical names from the portable function catalog
+    # (``models/functions.py``) this engine has no equivalent for. Empty for
+    # every dialect today — the string group renders on all eight — but the
+    # catalog admits a function on the strength of the majority, so a later
+    # group can leave one engine behind without dropping the entry.
+    unsupported_functions: list[str] = field(default_factory=list)
 
 
 class Dialect(ABC):
@@ -289,6 +316,121 @@ class Dialect(ABC):
         Override in subclasses to remap names (e.g. ANY_VALUE → any in ClickHouse).
         """
         return name
+
+    # Canonical catalog name → this dialect's spelling, for entries whose only
+    # difference from the ANSI default is the name (ClickHouse ``lengthUTF8``,
+    # Snowflake ``STARTSWITH``). An entry whose *shape* differs — argument
+    # order, an operator instead of a call — overrides the matching
+    # ``_render_<name>`` method instead.
+    _SCALAR_FUNCTION_NAMES: dict[str, str] = {}
+
+    def _check_function_supported(self, name: str) -> None:
+        """Raise ``UnsupportedFunctionError`` when this dialect has no
+        equivalent for the catalog function *name* (lowercase canonical).
+        """
+        if name in {f.lower() for f in self.capabilities.unsupported_functions}:
+            raise UnsupportedFunctionError(self.name, name)
+
+    def _render_function(self, name: str, args: list[Expr]) -> str:
+        """Render a call to a portable-catalog scalar function.
+
+        *name* is the canonical lowercase catalog name (``models/functions.py``)
+        and *args* are already in canonical order with an arity the entry
+        accepts — ``compile_expr`` only routes a call here once
+        :meth:`FunctionSpec.accepts` holds, so each renderer can index its
+        arguments directly.
+
+        The signature takes arguments rather than just a name because a
+        portable catalog needs more than a rename table: ``position(needle,
+        haystack)`` is ``POSITION(needle IN haystack)`` here and
+        ``STRPOS(haystack, needle)`` on BigQuery, and ``concat`` has to become
+        an operator chain on the engines whose ``CONCAT`` skips NULLs. Renaming
+        is the trivial case, handled by ``_SCALAR_FUNCTION_NAMES``.
+        """
+        self._check_function_supported(name)
+        match name:
+            case "concat":
+                return self._render_concat(args)
+            case "length":
+                return self._render_length(args)
+            case "position":
+                return self._render_position(args)
+            case "split_part":
+                return self._render_split_part(args)
+            case "starts_with":
+                return self._render_starts_with(args)
+            case "ends_with":
+                return self._render_ends_with(args)
+            case _:
+                return self._render_named_function(name, args)
+
+    def _render_named_function(self, name: str, args: list[Expr]) -> str:
+        """Render ``NAME(arg, ...)`` using this dialect's spelling of *name*."""
+        sql_name = self._SCALAR_FUNCTION_NAMES.get(name, name.upper())
+        rendered = ", ".join(self.compile_expr(a) for a in args)
+        return f"{sql_name}({rendered})"
+
+    def _render_concat(self, args: list[Expr]) -> str:
+        """Default: native ``CONCAT``, which propagates NULL on ClickHouse,
+        MySQL, Snowflake, BigQuery and Databricks — the catalog's rule.
+        DuckDB, Postgres and Dremio skip NULL arguments and override.
+        """
+        return self._render_named_function("concat", args)
+
+    def _render_concat_operator_chain(self, args: list[Expr]) -> str:
+        """``(a || b || ...)`` — the NULL-propagating form on engines whose
+        ``CONCAT`` skips NULLs but whose ``||`` does not.
+
+        Operands are rendered one level above ``||``'s own precedence so a
+        child that binds equally loosely keeps its parens: Postgres reads
+        ``'x' || a - b`` as ``('x' || a) - b``. The chain itself is wrapped
+        because ``compile_expr`` treats a function call as an atom and gives
+        the result no parens of its own.
+        """
+        chain = " || ".join(self.compile_expr(a, _parent_prec=self._PREC_ADD + 1) for a in args)
+        return f"({chain})"
+
+    def _render_concat_null_guard(self, args: list[Expr]) -> str:
+        """``CASE WHEN a IS NULL OR ... THEN NULL ELSE CONCAT(a, ...) END``.
+
+        For an engine whose ``CONCAT`` skips NULL arguments and whose ``||``
+        cannot be shown to behave differently. Verbose, but it does not depend
+        on which of the two the engine implements.
+        """
+        guards = " OR ".join(
+            f"{self.compile_expr(a, _parent_prec=self._PREC_CMP)} IS NULL" for a in args
+        )
+        return (
+            f"CASE WHEN {guards} THEN NULL ELSE {self._render_named_function('concat', args)} END"
+        )
+
+    def _render_length(self, args: list[Expr]) -> str:
+        """Default: ``LENGTH``, which counts characters everywhere except
+        ClickHouse and MySQL — both of which override.
+        """
+        return self._render_named_function("length", args)
+
+    def _render_position(self, args: list[Expr]) -> str:
+        """Default: ANSI ``POSITION(needle IN haystack)``.
+
+        Accepted by DuckDB, Postgres, ClickHouse, MySQL, Snowflake, Databricks
+        and Dremio; BigQuery has no ``POSITION`` at all and overrides.
+        """
+        needle = self.compile_expr(args[0])
+        haystack = self.compile_expr(args[1])
+        return f"POSITION({needle} IN {haystack})"
+
+    def _render_split_part(self, args: list[Expr]) -> str:
+        """Default: native ``SPLIT_PART(x, delim, n)``."""
+        return self._render_named_function("split_part", args)
+
+    def _render_starts_with(self, args: list[Expr]) -> str:
+        """Default: native ``STARTS_WITH(x, prefix)``."""
+        return self._render_named_function("starts_with", args)
+
+    def _render_ends_with(self, args: list[Expr]) -> str:
+        """Default: native ``ENDS_WITH(x, suffix)``."""
+        return self._render_named_function("ends_with", args)
 
     def _check_aggregation_supported(self, name: str) -> None:
         """Raise ``UnsupportedAggregationError`` when the dialect doesn't support
@@ -664,6 +806,17 @@ class Dialect(ABC):
                 # (Snowflake overrides to use native multi-arg syntax)
                 if fname.upper() == "COUNT" and len(args) > 1:
                     return self._compile_multi_field_count(args, distinct)
+                # Portable scalar catalog (``models/functions.py``): a call the
+                # catalog defines is rendered per its pinned semantics rather
+                # than passed through. A wrong arity falls through to the
+                # verbatim path below — the model validator reports it, and
+                # emitting the author's own call keeps the database error
+                # recognisable instead of raising from codegen.
+                spec = lookup_function(fname)
+                if spec is not None and not distinct and spec.accepts(len(args)):
+                    return self._render_function(spec.name, args)
+                # Everything else stays pass-through: removing the escape
+                # hatch would break every model built before the catalog.
                 fname = self._map_function_name(fname)
                 args_sql = ", ".join(self.compile_expr(a) for a in args)
                 if distinct:

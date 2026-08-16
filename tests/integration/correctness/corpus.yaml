@@ -92,3 +92,13 @@
   handSql:
     refFile: total_account_balance.sql
     sortKeys: []
+
+- id: 16_total_sales_by_email_domain
+  description: >-
+    Corpus #16 — a computed column built from the portable function catalog
+    (split_part) used as a dimension, so the per-dialect rewrites of that
+    catalog are exercised on real data by the drift and vendor-exec sweeps.
+  lastVerifiedBy: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[16_total_sales_by_email_domain]
+  handSql:
+    refFile: total_sales_by_email_domain.sql
+    sortKeys: [Sales Client Email Domain]

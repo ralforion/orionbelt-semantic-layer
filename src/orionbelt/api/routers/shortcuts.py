@@ -60,6 +60,7 @@ from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
@@ -488,6 +489,16 @@ async def shortcut_compile_query(
                 "grouping": exc.grouping,
             },
         ) from None
+    except UnsupportedFunctionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported function",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "function": exc.function,
+            },
+        ) from None
     except AmbiguousTableReferenceError as exc:
         raise HTTPException(
             status_code=422,
@@ -651,6 +662,16 @@ async def shortcut_execute_query(
                 "message": str(exc),
                 "dialect": exc.dialect,
                 "grouping": exc.grouping,
+            },
+        ) from None
+    except UnsupportedFunctionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported function",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "function": exc.function,
             },
         ) from None
     except AmbiguousTableReferenceError as exc:

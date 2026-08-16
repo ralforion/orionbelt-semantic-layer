@@ -98,6 +98,13 @@ class SnowflakeDialect(Dialect):
             f"WHERE {spine} <= {max_date}"
         )
 
+    # Snowflake spells the prefix/suffix tests without the underscore;
+    # ``STARTS_WITH`` / ``ENDS_WITH`` are not recognised (probe-verified).
+    _SCALAR_FUNCTION_NAMES: dict[str, str] = {
+        "starts_with": "STARTSWITH",
+        "ends_with": "ENDSWITH",
+    }
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Snowflake supports native multi-arg COUNT(col1, col2)."""
         args_sql = ", ".join(self.compile_expr(a) for a in args)

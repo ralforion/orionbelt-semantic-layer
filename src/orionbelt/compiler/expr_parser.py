@@ -47,7 +47,20 @@ from orionbelt.ast.nodes import (
     Literal,
     UnaryOp,
 )
-from orionbelt.models.expressions import substitute_placeholders
+
+# ``BOOLEAN_KEYWORDS`` / ``SQL_KEYWORDS`` are the words this tokenizer emits as
+# ``op`` tokens rather than identifiers, so the parser can treat them uniformly
+# with the symbolic operators. They live in ``models.expressions`` because the
+# validator's function-call scanner has to recognise exactly the same set:
+# a word this tokenizer calls a keyword is a word the scanner must not read as
+# a function name. ``CASE`` tokenizing as an ``ident`` is what made
+# ``_parse_factor`` treat it as a bare string literal (the #77 bug); the
+# scanner holding its own shorter copy was the mirror image of that.
+from orionbelt.models.expressions import (
+    BOOLEAN_KEYWORDS,
+    SQL_KEYWORDS,
+    substitute_placeholders,
+)
 
 if TYPE_CHECKING:
     from orionbelt.models.semantic import SemanticModel
@@ -74,18 +87,6 @@ class _Token:
 # ``<=`` and ``>=`` over ``<`` / ``>``. ``!=`` is accepted as an alias
 # for ``<>``.
 _COMPARISON_OPS: tuple[str, ...] = ("<=", ">=", "<>", "!=", "=", "<", ">")
-
-# Reserved keyword tokens emitted as ``op`` with the uppercased name so
-# the parser can treat them uniformly with the symbolic operators.
-_BOOLEAN_KEYWORDS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
-
-# Predicate / control-flow keywords also emitted as ``op`` tokens so the
-# parser can branch on them. Without this, ``CASE`` would tokenize as an
-# ``ident`` and ``_parse_factor`` would silently treat it as a bare
-# string literal (the #77 bug). Keep uppercase for one-lookup matching.
-_SQL_KEYWORDS: frozenset[str] = frozenset(
-    {"CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN", "LIKE"}
-)
 
 # Bare-identifier literals — emitted as their typed ``Literal`` node by
 # the parser. Keep uppercase so case-insensitive matching is one lookup.
@@ -171,7 +172,7 @@ def _tokenize_common(formula: str, tokens: list[_Token], start: int) -> int:
     if m:
         ident = m.group(0)
         upper = ident.upper()
-        if upper in _BOOLEAN_KEYWORDS or upper in _SQL_KEYWORDS:
+        if upper in BOOLEAN_KEYWORDS or upper in SQL_KEYWORDS:
             tokens.append(_Token(kind="op", value=upper))
         else:
             tokens.append(_Token(kind="ident", value=ident))

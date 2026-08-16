@@ -1,0 +1,20 @@
+last_verified_by: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[16_total_sales_by_email_domain]
+sql: 'SELECT SPLIT_PART("Clients"."clientemail", ''@'', 2) AS "Sales Client Email Domain", CAST(SUM("Sales"."salesamount")
+  AS DECIMAL(18, 2)) AS "Total Sales"
+
+  FROM "orionbelt_1"."sales" AS "Sales"
+
+  LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
+
+  GROUP BY ALL
+
+  '
+rows:
+- - demo.io
+  - '4367661.76'
+- - example.com
+  - '8071835.50'
+- - mail.test
+  - '23245812.91'
+- - sample.org
+  - '6773199.44'

@@ -65,6 +65,13 @@ class DuckDBDialect(Dialect):
             ),
         )
 
+    def _render_concat(self, args: list[Expr]) -> str:
+        """DuckDB's ``CONCAT`` skips NULL arguments (``concat('a', NULL, 'c')``
+        is ``'ac'``); the catalog says NULL propagates, and ``||`` propagates
+        it here. Both probe-verified — see ``scripts/probe_functions.py``.
+        """
+        return self._render_concat_operator_chain(args)
+
     def _compile_median(self, args: list[Expr]) -> str:
         """DuckDB: MEDIAN(col) — native support."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"

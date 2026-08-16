@@ -295,6 +295,19 @@ dataObjects:
       Client Email:
         code: clientemail
         abstractType: string
+      # Computed columns written with the portable function catalog
+      # (docs/guide/model-format.md): canonical, snake_case names whose
+      # meaning is pinned by OBSL, so this model compiles unchanged on
+      # every dialect. ``split_part`` is native on DuckDB, Postgres,
+      # Snowflake and Databricks, and is rewritten to an array index on
+      # ClickHouse, a SPLIT/SAFE_OFFSET on BigQuery, and a guarded
+      # SUBSTRING_INDEX on MySQL.
+      Client Email Domain:
+        abstractType: string
+        expression: "split_part({Client Email}, '@', 2)"
+      Client Initial:
+        abstractType: string
+        expression: "upper(substring({Client Name}, 1, 1))"
       Client Country ID:
         code: clientcountryid
         abstractType: string
@@ -334,6 +347,12 @@ dataObjects:
       Currency:
         code: curr
         abstractType: string
+      # ``concat`` propagates NULL here by definition, even on the engines
+      # whose own CONCAT quietly skips a NULL argument — a product with no
+      # category is labelled NULL rather than "(EUR)".
+      Product Label:
+        abstractType: string
+        expression: "concat({Product Category}, ' (', {Currency}, ')')"
       Units In Stock:
         code: unitsinstock
         abstractType: float
@@ -497,6 +516,16 @@ dimensions:
   Client Email:
     dataObject: Clients
     column: Client Email
+    resultType: string
+  # Computed columns are dimensions like any other — the expression is
+  # rendered per dialect, not stored.
+  Client Email Domain:
+    dataObject: Clients
+    column: Client Email Domain
+    resultType: string
+  Client Initial:
+    dataObject: Clients
+    column: Client Initial
     resultType: string
   Country Name:
     dataObject: Countries
@@ -666,6 +695,11 @@ dimensions:
     column: Client Gender
     resultType: string
     via: Client Complaints
+  Sales Client Email Domain:
+    dataObject: Clients
+    column: Client Email Domain
+    resultType: string
+    via: Sales
 
   # ── Role-playing: Country/Region (reached through Clients — same fan-trap) ──
   Sales Country Name:
@@ -697,6 +731,10 @@ dimensions:
   Product Category:
     dataObject: Products
     column: Product Category
+    resultType: string
+  Product Label:
+    dataObject: Products
+    column: Product Label
     resultType: string
   Supplier Name:
     dataObject: Suppliers

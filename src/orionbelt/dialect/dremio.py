@@ -76,6 +76,17 @@ class DremioDialect(Dialect):
             ),
         )
 
+    def _render_concat(self, args: list[Expr]) -> str:
+        """Dremio's ``CONCAT`` ignores NULL arguments, where the catalog says
+        NULL propagates.
+
+        The NULL-guard form rather than a ``||`` chain: Dremio documents
+        ``CONCAT`` as NULL-ignoring and says nothing about ``||``, and there is
+        no Dremio instance in the test matrix to settle it. The guard gives the
+        catalog's answer either way.
+        """
+        return self._render_concat_null_guard(args)
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")

@@ -25,6 +25,7 @@ from orionbelt.compiler.validator import format_sql
 from orionbelt.dialect.base import (
     AmbiguousTableReferenceError,
     UnsupportedAggregationError,
+    UnsupportedFunctionError,
     UnsupportedGroupingError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
@@ -127,6 +128,16 @@ def compile_query_or_raise(*, store: ModelStore, model_id: str, query: Any, dial
                 "grouping": exc.grouping,
             },
         ) from None
+    except UnsupportedFunctionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported function",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "function": exc.function,
+            },
+        ) from None
     except AmbiguousTableReferenceError as exc:
         raise HTTPException(
             status_code=422,
@@ -227,6 +238,19 @@ def compile_query_for_plan(
                     severity="error",
                     message=str(exc),
                     context={"dialect": exc.dialect, "aggregation": exc.aggregation},
+                )
+            ],
+            would_compile=False,
+        )
+    except UnsupportedFunctionError as exc:
+        return None, QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="UNSUPPORTED_FUNCTION",
+                    severity="error",
+                    message=str(exc),
+                    context={"dialect": exc.dialect, "function": exc.function},
                 )
             ],
             would_compile=False,

@@ -84,6 +84,25 @@ class PostgresDialect(Dialect):
             ),
         )
 
+    def _render_concat(self, args: list[Expr]) -> str:
+        """Postgres's ``CONCAT`` skips NULL arguments (``concat('a', NULL,
+        'c')`` is ``'ac'``); ``||`` propagates NULL as the catalog requires.
+        Both probe-verified — see ``scripts/probe_functions.py``.
+        """
+        return self._render_concat_operator_chain(args)
+
+    def _render_ends_with(self, args: list[Expr]) -> str:
+        """Postgres has ``starts_with`` (since 11) but no ``ends_with``.
+
+        ``RIGHT(x, LENGTH(suffix)) = suffix`` is the equivalent: it is NULL
+        when either side is NULL, true for an empty suffix, and — unlike
+        ``LIKE '%' || suffix`` — treats ``%`` and ``_`` in the suffix as
+        ordinary characters.
+        """
+        haystack = self.compile_expr(args[0])
+        suffix = self.compile_expr(args[1])
+        return f"(RIGHT({haystack}, LENGTH({suffix})) = {suffix})"
+
     def _compile_median(self, args: list[Expr]) -> str:
         """PostgreSQL: PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY col)."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"
