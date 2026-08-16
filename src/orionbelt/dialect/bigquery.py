@@ -187,6 +187,10 @@ class BigQueryDialect(Dialect):
         """BigQuery takes the value first and the unit as a keyword."""
         return f"DATE_TRUNC({self.compile_expr(value)}, {self._SQL_UNITS[unit]})"
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """BigQuery is the one engine whose plain ``WEEK`` is already Sunday."""
+        return f"DATE_TRUNC({self.compile_expr(value)}, WEEK)"
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """``x + INTERVAL n UNIT``: the interval qualifier is a keyword, and
         unlike DATE_ADD this form does not have to know whether *x* is a DATE,

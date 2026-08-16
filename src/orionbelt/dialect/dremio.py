@@ -87,6 +87,14 @@ class DremioDialect(Dialect):
         """
         return self._render_concat_null_guard(args)
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Dremio's ``DAYOFWEEK`` numbers Sunday as 1, per its function
+        reference; the offset is one less, applied with the TIMESTAMPADD this
+        dialect already uses for date arithmetic.
+        """
+        rendered = self.compile_expr(value)
+        return f"TIMESTAMPADD(DAY, -(DAYOFWEEK({rendered}) - 1), {rendered})"
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Dremio: ``TIMESTAMPADD(UNIT, n, x)``, which is already how the
         relative-date filters render here, and which takes QUARTER and WEEK

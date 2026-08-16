@@ -30,6 +30,7 @@ import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
+from orionbelt.models.semantic import WeekStart
 
 from .conftest import VendorTarget
 
@@ -154,3 +155,60 @@ def test_bigquery_function_exec(spec: FunctionSpec, vendor_bigquery: VendorTarge
 def test_databricks_function_exec(spec: FunctionSpec, vendor_databricks: VendorTarget) -> None:
     """Live Databricks SQL warehouse."""
     _assert_catalog_values(spec, vendor_databricks)
+
+
+# ---------------------------------------------------------------------------
+# settings.weekStart — the one catalog rule a model can change
+# ---------------------------------------------------------------------------
+
+_WEEK_CASES: list[tuple[str, str, str | int]] = [
+    # 2026-08-15 is a Saturday. Its Monday is the 10th, its Sunday the 9th.
+    ("date_trunc('week', DATE '2026-08-15')", "monday", "2026-08-10"),
+    ("date_trunc('week', DATE '2026-08-15')", "sunday", "2026-08-09"),
+    # 2026-08-09 is a Sunday, so it opens a week under one calendar and closes
+    # the previous one under the other: the difference to the 15th differs.
+    ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "monday", 1),
+    ("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", "sunday", 0),
+]
+
+
+def _assert_week_start(vendor: VendorTarget) -> None:
+    """Execute both calendars, rather than trusting either engine's default."""
+    engine = DialectRegistry.get(vendor.dialect)
+    failures = []
+    for call, week_start, expected in _WEEK_CASES:
+        engine.week_start = WeekStart(week_start)
+        ast = parse_expression(tokenize_metric_formula(call))
+        sql = f"SELECT {engine.compile_expr(ast)} AS c0"
+        actual = next(iter(vendor.execute(sql)[0].values()))
+        if not _matches(expected, actual):
+            failures.append(f"{call} under weekStart={week_start}: {actual!r} != {expected!r}")
+    assert not failures, f"{vendor.name}:\n  " + "\n  ".join(failures)
+
+
+def test_duckdb_week_start(vendor_duckdb: VendorTarget) -> None:
+    _assert_week_start(vendor_duckdb)
+
+
+def test_postgres_week_start(vendor_postgres: VendorTarget) -> None:
+    _assert_week_start(vendor_postgres)
+
+
+def test_mysql_week_start(vendor_mysql: VendorTarget) -> None:
+    _assert_week_start(vendor_mysql)
+
+
+def test_clickhouse_week_start(vendor_clickhouse: VendorTarget) -> None:
+    _assert_week_start(vendor_clickhouse)
+
+
+def test_snowflake_week_start(vendor_snowflake: VendorTarget) -> None:
+    _assert_week_start(vendor_snowflake)
+
+
+def test_bigquery_week_start(vendor_bigquery: VendorTarget) -> None:
+    _assert_week_start(vendor_bigquery)
+
+
+def test_databricks_week_start(vendor_databricks: VendorTarget) -> None:
+    _assert_week_start(vendor_databricks)

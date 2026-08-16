@@ -280,6 +280,10 @@ class ClickHouseDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """ClickHouse: ``toStartOfWeek(x, 0)``, where mode 0 is a Sunday week."""
+        return f"toStartOfWeek({self.compile_expr(value)}, 0)"
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """ClickHouse takes the unit as a keyword, not a string: ``date_add('day',
         …)`` is a type error where ``date_add(DAY, …)`` works.

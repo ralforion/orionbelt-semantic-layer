@@ -33,7 +33,7 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.models.functions import TIME_UNITS, lookup_function
-from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.semantic import TimeGrain, WeekStart
 from orionbelt.models.types import DecimalType, OBMLType
 
 
@@ -389,11 +389,17 @@ class Dialect(ABC):
             case "greatest" | "least":
                 return self._render_extremum(name, args)
             case "date_trunc":
-                return self._render_date_trunc(_unit_of(args[0]), args[1])
+                unit = _unit_of(args[0])
+                if unit == "week":
+                    return self._render_week_floor(args[1])
+                return self._render_date_trunc(unit, args[1])
             case "date_add":
                 return self._render_date_add(_unit_of(args[0]), args[1], args[2])
             case "date_diff":
-                return self._render_date_diff(_unit_of(args[0]), args[1], args[2])
+                unit = _unit_of(args[0])
+                if unit == "week":
+                    return self._render_week_diff(args[1], args[2])
+                return self._render_date_diff(unit, args[1], args[2])
             case "extract":
                 return self._render_extract(_unit_of(args[0]), args[1])
             case "last_day":
@@ -558,9 +564,34 @@ class Dialect(ABC):
     _SQL_UNITS: dict[str, str] = {unit: unit.upper() for unit in TIME_UNITS}
     """Canonical unit → the keyword this dialect spells it with."""
 
+    week_start: WeekStart = WeekStart.MONDAY
+    """Which day ``date_trunc('week', …)`` rounds down to.
+
+    Set per compile from ``settings.weekStart`` by the pipeline, which builds a
+    fresh dialect for each query, so one model's calendar cannot leak into
+    another's.
+    """
+
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
-        """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted."""
+        """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted.
+
+        Only ever called for the model's own week start; a Sunday week is
+        routed to :meth:`_render_week_start_sunday` by the dispatcher, so a
+        dialect overriding this one does not have to remember the calendar.
+        """
         return f"DATE_TRUNC('{unit}', {self.compile_expr(value)})"
+
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Default: step back to the preceding Sunday by the ANSI day-of-week.
+
+        ``EXTRACT(DOW …)`` numbers Sunday as 0 on DuckDB and Postgres, so the
+        offset is the number itself. Engines that number differently, or that
+        have a week-start argument of their own, override.
+        """
+        rendered = self.compile_expr(value)
+        return self._render_infix(
+            f"DATE_TRUNC('day', {rendered}) - EXTRACT(DOW FROM {rendered}) * INTERVAL '1 day'"
+        )
 
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Default: ``x + n * INTERVAL '1 unit'``.
@@ -577,6 +608,37 @@ class Dialect(ABC):
     def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
         """Default: ``DATE_DIFF('unit', start, end)``, counting boundaries."""
         return f"DATE_DIFF('{unit}', {self.compile_expr(start)}, {self.compile_expr(end)})"
+
+    def _render_week_floor(self, value: Expr) -> str:
+        """The start of *value*'s week, per the model's calendar."""
+        if self.week_start is WeekStart.SUNDAY:
+            return self._render_week_start_sunday(value)
+        return self._render_date_trunc("week", value)
+
+    def _render_week_diff(self, start: Expr, end: Expr) -> str:
+        """Week boundaries crossed, for every dialect and both calendars.
+
+        Not the engine's own week difference, for two reasons. It counts the
+        engine's week boundaries, Monday's on all but BigQuery, so it answers
+        the wrong number as soon as the model says Sunday. And the engines do
+        not even agree on the question: from Sunday 2026-08-09 to Saturday
+        2026-08-15, one Monday apart, ClickHouse, Snowflake and BigQuery count
+        the boundary and answer 1, while DuckDB and MySQL count whole seven-day
+        spans and answer 0, and Postgres has no week difference at all.
+
+        Truncating both ends to the model's week start and dividing the day
+        difference by seven gives the boundary count the catalog documents,
+        through this dialect's own truncation, day difference and integer
+        division rather than an eighth dialect-specific rewrite.
+        """
+        # RawSQL: re-wraps SQL this dialect just rendered so the composition
+        # runs through its own truncation, day difference and integer division
+        # rather than an eighth copy of per-engine week arithmetic. Nothing
+        # user-authored enters here.
+        left = RawSQL(sql=self._render_week_floor(start))
+        right = RawSQL(sql=self._render_week_floor(end))
+        days = RawSQL(sql=self._render_date_diff("day", left, right))
+        return self._render_div([days, Literal.number(7)])
 
     def _render_extract(self, unit: str, value: Expr) -> str:
         """Default: ANSI ``EXTRACT(UNIT FROM x)``."""

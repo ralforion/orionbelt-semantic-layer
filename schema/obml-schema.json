@@ -1261,6 +1261,12 @@
             "snowflake"
           ]
         },
+        "weekStart": {
+          "type": "string",
+          "enum": ["monday", "sunday"],
+          "description": "Which day a week begins on, for date_trunc('week', ...) and the week boundaries date_diff('week', ...) counts. ISO 8601 (monday) by default; 'sunday' for a US retail calendar. Week numbering from extract('week', ...) stays ISO either way, because a Sunday-start week number has no definition the engines agree on.",
+          "default": "monday"
+        },
         "defaultLocale": {
           "type": "string",
           "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",

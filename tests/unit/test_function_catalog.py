@@ -34,7 +34,7 @@ from orionbelt.models.functions import (
     lookup_function,
 )
 from orionbelt.models.query import QueryObject, QuerySelect
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import SemanticModel, WeekStart
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -324,6 +324,105 @@ class TestCompilerGeneratedCalls:
         # ClickHouse and MySQL never went through date_trunc at all.
         assert rendered["clickhouse"] == 'toStartOfMonth("Sales"."salesdate")'
         assert "DATE_FORMAT" in rendered["mysql"]
+
+
+class TestWeekStart:
+    """``settings.weekStart`` — the one catalog rule a model can change."""
+
+    @staticmethod
+    def _render_with(call: str, dialect: str, week_start: WeekStart) -> str:
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = week_start
+        return engine.compile_expr(parse_expression(tokenize_metric_formula(call)))
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_two_calendars_render_differently(self, dialect: str) -> None:
+        call = "date_trunc('week', {[S].[D]})"
+        assert self._render_with(call, dialect, WeekStart.MONDAY) != self._render_with(
+            call, dialect, WeekStart.SUNDAY
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("clickhouse", 'toStartOfWeek("S].[D", 0)'),
+            ("bigquery", "DATE_TRUNC(`S].[D`, WEEK)"),
+            ("mysql", "DATE(DATE_SUB(`S].[D`, INTERVAL DAYOFWEEK(`S].[D`) - 1 DAY))"),
+            ("snowflake", 'DATEADD(\'day\', -MOD(DAYOFWEEKISO("S].[D"), 7), "S].[D")'),
+        ],
+    )
+    def test_sunday_uses_each_engines_own_day_numbering(self, dialect: str, expected: str) -> None:
+        """The day-of-week numbering is the trap: MySQL's WEEKDAY starts at
+        Monday and its DAYOFWEEK at Sunday, and Snowflake's DAYOFWEEK follows a
+        session parameter, so the ISO variant is used there instead.
+        """
+        assert self._render_with("date_trunc('week', {[S].[D]})", dialect, WeekStart.SUNDAY) == (
+            expected
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_week_difference_never_delegates_to_the_engine(self, dialect: str) -> None:
+        """The engines split on what a week difference means, so it is measured.
+
+        From Sunday 2026-08-09 to Saturday 2026-08-15, ClickHouse, Snowflake and
+        BigQuery count the Monday between them and answer 1; DuckDB and MySQL
+        count whole seven-day spans and answer 0; Postgres has no such function.
+        """
+        sql = self._render_with(
+            "date_diff('week', {[S].[A]}, {[S].[B]})", dialect, WeekStart.MONDAY
+        )
+        assert "7" in sql, "the week difference should be a day count divided by seven"
+
+    def test_extract_week_is_iso_under_either_calendar(self) -> None:
+        """A Sunday-start week *number* has no portable definition — MySQL
+        alone offers eight numbering modes — so numbering stays ISO and says so.
+        """
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            assert self._render_with("extract('week', {[S].[D]})", "mysql", week_start).endswith(
+                ", 3)"
+            )
+
+    def test_the_default_is_iso(self) -> None:
+        from orionbelt.models.semantic import ModelSettings
+
+        assert ModelSettings().week_start is WeekStart.MONDAY
+        assert DialectRegistry.get("duckdb").week_start is WeekStart.MONDAY
+
+    @pytest.mark.parametrize(
+        "setting",
+        ["weekStart: Mondey", "defaultTimezone: Mars/Olympus", "defaultNumericDataType: banana"],
+    )
+    def test_a_rejected_setting_is_a_model_error_not_a_crash(self, setting: str) -> None:
+        """A typo in settings used to escape as a raw pydantic ValidationError,
+        which the API surfaced as a 500 where every other model mistake is a
+        structured 422.
+        """
+        yaml_text = (
+            "version: 1.0\nsettings:\n  "
+            + setting
+            + "\ndataObjects:\n  O:\n    code: o\n    columns:\n"
+            "      A: {code: a, abstractType: string}\n"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        _model, result = ReferenceResolver().resolve(raw, source_map)
+        assert not result.valid
+        assert [e.code for e in result.errors] == ["INVALID_SETTING"]
+
+    def test_the_pipeline_applies_the_model_setting(self) -> None:
+        """A dialect is built per compile, so the calendar cannot leak."""
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = _ARITY_MODEL_YAML.replace("{EXPRESSION}", "date_trunc('week', {Zip})").replace(
+            "version: 1.0", "version: 1.0\nsettings:\n  weekStart: sunday"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(select=QuerySelect(dimensions=["Bad Zip"], measures=["Order Count"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert "EXTRACT(DOW FROM" in sql
+        # And the next compile of a Monday model is unaffected.
+        assert DialectRegistry.get("duckdb").week_start is WeekStart.MONDAY
 
 
 class TestTypedLiterals:

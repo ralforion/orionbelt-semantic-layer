@@ -105,6 +105,19 @@ class TimeGrain(StrEnum):
     SECOND = "second"
 
 
+class WeekStart(StrEnum):
+    """Which day a week begins on, for week truncation.
+
+    ISO 8601 says Monday, and that is the default. Retail calendars in the US
+    commonly start on Sunday, and a model pinned to Monday would disagree with
+    every other tool that customer uses, so it is a model-level setting rather
+    than a constant.
+    """
+
+    MONDAY = "monday"
+    SUNDAY = "sunday"
+
+
 class NumClass(StrEnum):
     CATEGORICAL = "categorical"
     ADDITIVE = "additive"
@@ -841,6 +854,17 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    week_start: WeekStart = Field(
+        WeekStart.MONDAY,
+        alias="weekStart",
+        description=(
+            "Which day a week begins on, for date_trunc('week', ...) and the "
+            "week boundaries date_diff('week', ...) counts. ISO 8601 (Monday) "
+            "by default; 'sunday' for a US retail calendar. Week *numbering* "
+            "from extract('week', ...) stays ISO either way: a Sunday-start "
+            "week number has no definition the engines agree on."
+        ),
+    )
     default_locale: str | None = Field(
         None,
         alias="defaultLocale",

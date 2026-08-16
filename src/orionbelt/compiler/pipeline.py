@@ -204,6 +204,10 @@ class CompilationPipeline:
         # ``qualify_table`` — the EXISTS filter operator needs it during
         # resolution to render the correlated subquery's FROM clause.
         dialect = DialectRegistry.get(dialect_name)
+        # The registry hands out a fresh dialect per compile, so the model's
+        # calendar can be set on it without leaking into another query.
+        if model.settings is not None:
+            dialect.week_start = model.settings.week_start
         qualify_table = lambda obj: dialect.format_table_ref(  # noqa: E731
             obj.database, obj.schema_name, obj.code
         )

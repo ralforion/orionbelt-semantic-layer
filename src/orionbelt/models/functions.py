@@ -605,10 +605,17 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "months. DuckDB, ClickHouse, Snowflake and BigQuery agree; MySQL's "
             "TIMESTAMPDIFF counts complete units (0 and 1 for those cases) and is "
             "rewritten by truncating both ends to the unit first, and Postgres has "
-            "no such function at all. An *end* before *start* gives a negative."
+            "no such function at all. An *end* before *start* gives a negative.\n\n"
+            "The week unit is measured rather than delegated on every engine: from "
+            "Sunday 2026-08-09 to Saturday 2026-08-15, one Monday apart, ClickHouse, "
+            "Snowflake and BigQuery count the boundary and answer 1 while DuckDB and "
+            "MySQL count whole seven-day spans and answer 0. Both ends are truncated "
+            "to the model's week start, so the answer follows "
+            "``settings.weekStart`` rather than the engine's own calendar."
         ),
         examples=(
             FunctionExample("date_diff('day', DATE '2026-08-01', DATE '2026-08-15')", 14),
+            FunctionExample("date_diff('week', DATE '2026-08-09', DATE '2026-08-15')", 1),
             FunctionExample("date_diff('day', DATE '2026-08-15', DATE '2026-08-01')", -14),
             FunctionExample("date_diff('month', DATE '2026-01-31', DATE '2026-03-01')", 2),
             FunctionExample("date_diff('year', DATE '2026-12-31', DATE '2027-01-01')", 1),

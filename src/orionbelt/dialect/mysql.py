@@ -333,6 +333,15 @@ class MySQLDialect(Dialect):
             f"CAST({formatted} AS {'DATETIME' if unit in ('hour', 'minute', 'second') else 'DATE'})"
         )
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """MySQL: ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one less.
+
+        Not ``WEEKDAY``, which the Monday form uses and which numbers Monday
+        as 0.
+        """
+        rendered = self.compile_expr(value)
+        return f"DATE(DATE_SUB({rendered}, INTERVAL DAYOFWEEK({rendered}) - 1 DAY))"
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """MySQL: ``DATE_ADD(x, INTERVAL n UNIT)``. The qualifier is a keyword,
         but *n* may be an expression, unlike the interval literals other

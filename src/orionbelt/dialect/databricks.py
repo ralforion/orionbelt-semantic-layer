@@ -85,6 +85,14 @@ class DatabricksDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Spark's ``dayofweek`` numbers Sunday as 1, so the offset is one less."""
+        rendered = self.compile_expr(value)
+        return self._render_infix(
+            f"DATE_TRUNC('day', {rendered}) "
+            f"- make_interval(0, 0, 0, dayofweek({rendered}) - 1, 0, 0, 0)"
+        )
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Spark's interval literals want a constant, and its ``date_add`` adds
         days only, so the interval is built with ``make_interval``, whose

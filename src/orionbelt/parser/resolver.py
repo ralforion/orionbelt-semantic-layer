@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from orionbelt.models.errors import SemanticError, ValidationResult
 from orionbelt.models.expressions import find_qualified_refs
@@ -170,21 +171,49 @@ def _parse_settings(
     override_db_tz = raw.get("overrideDatabaseTimezone", False)
     default_dialect = raw.get("defaultDialect")
     default_locale = raw.get("defaultLocale")
+    week_start = raw.get("weekStart")
     if (
         not default_type
         and not default_tz
         and not override_db_tz
         and not default_dialect
         and not default_locale
+        and not week_start
     ):
         return None
-    return ModelSettings(
-        default_numeric_data_type=default_type,
-        default_timezone=default_tz,
-        override_database_timezone=override_db_tz,
-        default_dialect=default_dialect,
-        default_locale=default_locale,
-    )
+    settings = {
+        "default_numeric_data_type": default_type,
+        "default_timezone": default_tz,
+        "override_database_timezone": override_db_tz,
+        "default_dialect": default_dialect,
+        "default_locale": default_locale,
+    }
+    # Only pass a week start when the model states one, so the field's own
+    # default (ISO Monday) applies rather than a None overriding it.
+    if week_start is not None:
+        settings["week_start"] = week_start
+    try:
+        return ModelSettings(**settings)
+    except PydanticValidationError as exc:
+        # A rejected value here is a typo in the model, not a system failure:
+        # ``weekStart: Mondey``, an unknown timezone, a non-decimal default
+        # type. Left to propagate it reached the API as a raw pydantic error
+        # and a 500, where every other model mistake is a structured 422.
+        if errors is None:
+            raise
+        for detail in exc.errors():
+            field = str(detail["loc"][0]) if detail["loc"] else ""
+            declared = ModelSettings.model_fields.get(field)
+            alias = (declared.alias if declared else None) or field
+            errors.append(
+                SemanticError(
+                    code="INVALID_SETTING",
+                    message=f"settings.{alias}: {detail['msg']}",
+                    path=f"settings.{alias}",
+                    span=source_map.get("settings") if source_map else None,
+                )
+            )
+        return None
 
 
 def _coerce_filter_value(v: object) -> str | int | float | bool | None:

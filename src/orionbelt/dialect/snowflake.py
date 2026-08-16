@@ -105,6 +105,14 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_week_start_sunday(self, value: Expr) -> str:
+        """Snowflake's DAYOFWEEK follows the WEEK_START session parameter, so
+        the ISO variant is used instead and reduced mod 7: it numbers Monday as
+        1 through Sunday as 7, which ``% 7`` turns into the days since Sunday.
+        """
+        rendered = self.compile_expr(value)
+        return f"DATEADD('day', -MOD(DAYOFWEEKISO({rendered}), 7), {rendered})"
+
     def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
         """Snowflake: ``DATEADD('unit', n, x)``, quoted unit, value last."""
         return f"DATEADD('{unit}', {self.compile_expr(count)}, {self.compile_expr(value)})"

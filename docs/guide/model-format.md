@@ -277,7 +277,32 @@ so every engine gives the catalog's answer:
   so both ends are truncated to the unit before it runs, and Postgres has no such
   function at all and gets one built out of arithmetic.
 - `extract('week', DATE '2026-08-15')` is 33. MySQL's `WEEK` and BigQuery's `WEEK`
-  are Sunday-based and answer 32, so they render `WEEK(x, 3)` and `ISOWEEK`.
+  are Sunday-based and answer 32, so they render `WEEK(x, 3)` and `ISOWEEK`. The
+  two are not disagreeing about the date: ISO puts week 1 on the week containing
+  the first Thursday, so 2026-01-01 (a Thursday) is already week 1, while the
+  Sunday convention calls 1–3 January *week 0* and every later week is one lower.
+- `date_diff('week', DATE '2026-08-09', DATE '2026-08-15')` is 1 — one Monday
+  separates that Sunday from that Saturday. ClickHouse, Snowflake and BigQuery
+  agree; DuckDB and MySQL count whole seven-day spans and answer 0, and Postgres
+  has no week difference at all, so the week unit is measured rather than
+  delegated on every engine: both ends are truncated to the week start and the
+  day difference divided by seven.
+
+#### Changing the week start
+
+`date_trunc('week', …)` and `date_diff('week', …)` follow `settings.weekStart`:
+
+```yaml
+settings:
+  weekStart: sunday   # default: monday (ISO 8601)
+```
+
+Under `sunday`, `date_trunc('week', DATE '2026-08-15')` is `2026-08-09` rather
+than `2026-08-10`, on every dialect — including the six whose native truncation
+only knows Monday, which are rewritten. `extract('week', …)` is deliberately
+*not* affected: a Sunday-start week *number* has no definition the engines agree
+on (MySQL alone offers eight numbering modes), so week numbering stays ISO and
+says so rather than picking one silently.
 
 Argument order and shape are rewritten wherever an engine needs it —
 `position(needle, haystack)` becomes `POSITION(needle IN haystack)` on most
@@ -1183,6 +1208,7 @@ settings:
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 | `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
 | `defaultLocale` | string | — | BCP-47 locale tag (e.g. `en-US`, `de-DE`). Default locale for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. |
+| `weekStart` | `monday` \| `sunday` | `monday` | Which day a week begins on, for `date_trunc('week', …)` and the boundaries `date_diff('week', …)` counts. ISO 8601 by default; `sunday` for a US retail calendar. Week *numbering* from `extract('week', …)` stays ISO either way — see below. |
 
 ### Resolution Order
 

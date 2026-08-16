@@ -23,6 +23,8 @@ DATE_TRUNC('year', CAST('2026-08-15' AS DATE));
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
 date_diff(DAY, CAST('2026-08-01' AS DATE), CAST('2026-08-15' AS DATE));
+--   date_diff('week', DATE '2026-08-09', DATE '2026-08-15') = 1
+(date_diff(DAY, DATE_TRUNC('week', CAST('2026-08-09' AS DATE)), DATE_TRUNC('week', CAST('2026-08-15' AS DATE))) div 7);
 --   date_diff('day', DATE '2026-08-15', DATE '2026-08-01') = -14
 date_diff(DAY, CAST('2026-08-15' AS DATE), CAST('2026-08-01' AS DATE));
 --   date_diff('month', DATE '2026-01-31', DATE '2026-03-01') = 2
