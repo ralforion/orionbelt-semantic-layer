@@ -21,9 +21,6 @@ Gated by the ``docker`` pytest marker::
 
 from __future__ import annotations
 
-import re
-from typing import Any
-
 import pytest
 
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
@@ -32,64 +29,12 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
 from orionbelt.models.semantic import WeekStart
 
+from ._catalog_values import matches as _matches
 from .conftest import VendorTarget
 
 pytestmark = pytest.mark.docker
 
 CATALOG = list(FUNCTION_CATALOG.values())
-
-
-_NUMERIC_TOLERANCE = 1e-9
-"""Relative tolerance for a numeric catalog value.
-
-Not laxity about the answer: the catalog's numeric entries are floating point,
-and an engine is free to deliver 2.35 as ``Decimal('2.3500')`` or the base
-change behind ``log(2, 8)`` as 2.9999999999999996. What the catalog pins is the
-value, so the comparison is numeric rather than a string match, which would
-fail on the scale a driver happened to choose. It is tight enough that a real
-disagreement (2 against 3 for ``round(2.5)``, -3 against -4 for ``div(-7, 2)``)
-still fails.
-"""
-
-
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-
-def _matches_date(expected: str, actual: Any) -> bool:
-    """Whether a date-valued entry returned the documented calendar day.
-
-    ``date_trunc`` comes back as a DATE on ClickHouse, Snowflake and MySQL and
-    as a TIMESTAMP at midnight on DuckDB and Postgres. The catalog pins the
-    instant, not which of the two an engine chose, so the day is compared and a
-    time component is required to be midnight rather than ignored.
-    """
-    if not hasattr(actual, "isoformat"):
-        return False
-    if actual.isoformat()[:10] != expected:
-        return False
-    time = getattr(actual, "time", None)
-    return time is None or time().isoformat().startswith("00:00:00")
-
-
-def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
-    """Whether *actual* is the documented value, across driver type mappings.
-
-    Booleans come back as ``1``/``0`` from MySQL and ClickHouse, numbers as
-    ``Decimal`` or ``float`` depending on the driver, and strings are strings
-    everywhere — so each expected type is compared in its own terms rather than
-    by equality on whatever Python object the driver chose.
-    """
-    if expected is None:
-        return actual is None
-    if actual is None:
-        return False
-    if isinstance(expected, bool):
-        return bool(actual) is expected
-    if isinstance(expected, (int, float)):
-        return abs(float(actual) - expected) <= _NUMERIC_TOLERANCE * max(1.0, abs(expected))
-    if isinstance(expected, str) and _ISO_DATE.fullmatch(expected):
-        return _matches_date(expected, actual)
-    return str(actual) == str(expected)
 
 
 def _assert_catalog_values(spec: FunctionSpec, vendor: VendorTarget) -> None:
