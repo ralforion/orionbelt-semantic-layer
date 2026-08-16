@@ -11,6 +11,7 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     FunctionCall,
+    InTimeZone,
     Literal,
     OrderByItem,
 )
@@ -46,6 +47,7 @@ from orionbelt.models.semantic import (
     CumulativeAggType,
     DataObject,
     DataObjectColumn,
+    DataType,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -244,7 +246,38 @@ def make_column_expr(model: SemanticModel, object_name: str, column_label: str) 
         return ColumnRef(name=column_label, table=object_name)
     if column.expression:
         return _build_computed_column_expr(column, obj, model)
-    return ColumnRef(name=column.code, table=object_name)
+    return _in_query_timezone(ColumnRef(name=column.code, table=object_name), column, model)
+
+
+#: Timestamp types carry an instant, so which day or week they fall in depends on
+#: the zone they are read in. A DATE has no instant and a TIME no date, so
+#: neither has a week to move between.
+_CONVERTIBLE_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+
+def _in_query_timezone(ref: Expr, column: DataObjectColumn, model: SemanticModel) -> Expr:
+    """Read a timestamp column in the model's query zone, if it states one.
+
+    Attached here, at the column, rather than around the expressions that use
+    it: a conversion applied twice moves the value twice (measured on MySQL,
+    00:30 becoming 02:30), and an author's own conversion — through the
+    function catalog or as opaque vendor SQL the compiler cannot see into —
+    would be exactly that second application. Converting at the leaf makes the
+    query zone the frame every expression starts from, so an author's
+    conversion moves a value within it rather than on top of it.
+    """
+    settings = model.settings
+    if settings is None or not settings.query_timezone:
+        return ref
+    if column.abstract_type not in _CONVERTIBLE_TYPES:
+        return ref
+    # A naive column means nothing until the model says which zone it was
+    # written in, which is what ``defaultTimezone`` states. Without that,
+    # the engine's own reading is left alone rather than guessed at.
+    from_zone = settings.default_timezone if column.abstract_type is DataType.TIMESTAMP else None
+    if column.abstract_type is DataType.TIMESTAMP and from_zone is None:
+        return ref
+    return InTimeZone(expr=ref, zone=settings.query_timezone, from_zone=from_zone)
 
 
 @dataclass

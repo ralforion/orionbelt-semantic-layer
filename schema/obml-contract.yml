@@ -930,6 +930,12 @@ classes:
         json_schema: true
         ontology_property: null
         osi_roundtrip: true
+      query_timezone:
+        alias: queryTimezone
+        type: "str | None"
+        json_schema: true
+        ontology_property: null
+        osi_roundtrip: true
       week_start:
         alias: weekStart
         type: "WeekStart"

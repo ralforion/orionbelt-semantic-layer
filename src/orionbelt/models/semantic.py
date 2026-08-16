@@ -854,6 +854,19 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    query_timezone: str | None = Field(
+        None,
+        alias="queryTimezone",
+        description=(
+            "IANA zone the model's timestamps are bucketed and reported in. When "
+            "set, a timestamp column is converted to it in the SQL, so which week "
+            "or day a row falls in is the model's decision rather than the "
+            "warehouse session's. A naive column is first read as "
+            "``defaultTimezone``, which is what that setting states it means; a "
+            "column that already carries a zone needs no such hint. Date and time "
+            "columns are never converted: a date has no instant to convert."
+        ),
+    )
     week_start: WeekStart = Field(
         WeekStart.MONDAY,
         alias="weekStart",
@@ -889,7 +902,7 @@ class ModelSettings(BaseModel):
                 raise ValueError(f"defaultNumericDataType must be a decimal(p, s) type, got '{v}'")
         return v
 
-    @field_validator("default_timezone", mode="before")
+    @field_validator("default_timezone", "query_timezone", mode="before")
     @classmethod
     def _validate_timezone(cls, v: str | None) -> str | None:
         if v is not None:

@@ -280,6 +280,15 @@ class ClickHouseDialect(Dialect):
         """
         return self._render_null_guard(self._render_named_function(name, args), args)
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """ClickHouse: ``toTimeZone``. A naive ``DateTime`` carries the column's
+        own zone, so *from_zone* is declared with ``toDateTime`` first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            rendered = f"toDateTime({rendered}, {self._quote_zone(from_zone)})"
+        return f"toTimeZone({rendered}, {self._quote_zone(zone)})"
+
     def _render_week_start_sunday(self, value: Expr) -> str:
         """ClickHouse: ``toStartOfWeek(x, 0)``, where mode 0 is a Sunday week."""
         return f"toStartOfWeek({self.compile_expr(value)}, 0)"

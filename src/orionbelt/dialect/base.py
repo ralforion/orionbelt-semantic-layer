@@ -18,6 +18,7 @@ from orionbelt.ast.nodes import (
     From,
     FunctionCall,
     InList,
+    InTimeZone,
     IsNull,
     Join,
     Literal,
@@ -572,6 +573,22 @@ class Dialect(ABC):
     another's.
     """
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Default: ANSI ``AT TIME ZONE``, which DuckDB and Postgres share.
+
+        A naive value is first declared to be in *from_zone*, then read in
+        *zone*; an aware one already knows its instant and is only read.
+        """
+        rendered = self.compile_expr(value, _parent_prec=self._PREC_CMP + 1)
+        if from_zone is not None:
+            rendered = f"{rendered} AT TIME ZONE {self._quote_zone(from_zone)}"
+        return self._render_infix(f"{rendered} AT TIME ZONE {self._quote_zone(zone)}")
+
+    @staticmethod
+    def _quote_zone(zone: str) -> str:
+        """A time zone name as a SQL string literal."""
+        return "'" + zone.replace("'", "''") + "'"
+
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted.
 
@@ -1100,6 +1117,8 @@ class Dialect(ABC):
                 high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP)
                 sql = f"{inner_sql} {op} {low_sql} AND {high_sql}"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
+            case InTimeZone(expr=inner, zone=zone, from_zone=from_zone):
+                return self._render_in_timezone(inner, zone, from_zone)
             case RegexMatch(column=column, pattern=pattern, negated=negated):
                 return self.compile_regex_match(column, pattern, negated=negated)
             case RelativeDateRange(

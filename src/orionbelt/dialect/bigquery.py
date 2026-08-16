@@ -183,6 +183,20 @@ class BigQueryDialect(Dialect):
         "second": "SECOND",
     }
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """BigQuery has no ``AT TIME ZONE`` outside EXTRACT: ``DATETIME(x, zone)``
+        reads a TIMESTAMP as wall clock in that zone, which is the same contract
+        and composes with every date function unchanged.
+        """
+        rendered = self.compile_expr(value)
+        # ``from_zone`` is ignored here, and deliberately: this dialect maps the
+        # OBML ``timestamp`` type to BigQuery's TIMESTAMP, which is an instant
+        # rather than a wall clock, so there is no zone left to declare.
+        # ``TIMESTAMP(x, zone)`` takes a DATETIME and rejects a TIMESTAMP
+        # outright ("No matching signature"), which is the loud failure a
+        # genuinely naive DATETIME column would get rather than a wrong number.
+        return f"DATETIME({rendered}, {self._quote_zone(zone)})"
+
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """BigQuery takes the value first and the unit as a keyword."""
         return f"DATE_TRUNC({self.compile_expr(value)}, {self._SQL_UNITS[unit]})"

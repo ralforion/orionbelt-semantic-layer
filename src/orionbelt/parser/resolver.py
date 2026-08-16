@@ -172,6 +172,7 @@ def _parse_settings(
     default_dialect = raw.get("defaultDialect")
     default_locale = raw.get("defaultLocale")
     week_start = raw.get("weekStart")
+    query_timezone = raw.get("queryTimezone")
     # Presence, not truthiness: ``weekStart: ""`` and ``defaultTimezone: ""``
     # are wrong values, and testing them for truth dropped the whole block and
     # let them validate as though the model had said nothing.
@@ -184,6 +185,7 @@ def _parse_settings(
             "defaultDialect",
             "defaultLocale",
             "weekStart",
+            "queryTimezone",
         )
     ):
         return None
@@ -193,6 +195,7 @@ def _parse_settings(
         "override_database_timezone": override_db_tz,
         "default_dialect": default_dialect,
         "default_locale": default_locale,
+        "query_timezone": query_timezone,
     }
     # Only pass a week start when the model states one, so the field's own
     # default (ISO Monday) applies rather than a None overriding it.

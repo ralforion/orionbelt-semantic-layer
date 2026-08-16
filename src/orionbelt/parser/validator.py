@@ -25,6 +25,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
+from orionbelt.models.warnings import WarningCode
 
 
 class SemanticValidator:
@@ -46,6 +47,7 @@ class SemanticValidator:
         errors.extend(self._check_within_group_refs(model))
         errors.extend(self._check_computed_column_refs(model))
         errors.extend(self._check_expression_functions(model))
+        errors.extend(self._check_query_timezone_coverage(model))
         errors.extend(self._check_reference_name_collisions(model))
         errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_join_key_expressions(model))
@@ -749,6 +751,54 @@ class SemanticValidator:
                             )
                         )
         return errors
+
+    @staticmethod
+    def _check_query_timezone_coverage(model: SemanticModel) -> list[SemanticError]:
+        """Warn when a query time zone cannot reach the model's naive columns.
+
+        ``queryTimezone`` converts timestamp columns so the model, not the
+        warehouse session, decides which day or week a row falls in. A column
+        that carries no zone cannot be converted until the model says which
+        zone it was written in, which is what ``defaultTimezone`` states, and
+        the session's own zone is not an answer: it is a fact about the
+        connection rather than about the data, and reading it into the SQL
+        would make the same query mean different things on different
+        connections.
+
+        So those columns are left alone, and this says so rather than leaving
+        a model half-converted in silence.
+        """
+        settings = model.settings
+        if settings is None or not settings.query_timezone or settings.default_timezone:
+            return []
+        naive = [
+            f"{obj_name}.{col_name}"
+            for obj_name, obj in model.data_objects.items()
+            for col_name, col in obj.columns.items()
+            if col.abstract_type is DataType.TIMESTAMP
+        ]
+        if not naive:
+            return []
+        return [
+            SemanticError(
+                code=WarningCode.UNDECLARED_TIMESTAMP_ZONE,
+                message=(
+                    f"settings.queryTimezone is '{settings.query_timezone}', but "
+                    f"{len(naive)} timestamp column(s) carry no time zone and "
+                    f"settings.defaultTimezone does not say which zone they were "
+                    f"written in, so they are read as the warehouse session sees "
+                    f"them: {', '.join(sorted(naive)[:5])}"
+                ),
+                path="settings.queryTimezone",
+                hint=(
+                    "Set settings.defaultTimezone to the zone those columns are "
+                    "stored in, or declare the columns as timestamp_tz if they "
+                    "carry one."
+                ),
+                severity="warning",
+                context={"columns": sorted(naive)},
+            )
+        ]
 
     @staticmethod
     def _expression_bodies(model: SemanticModel) -> Iterator[tuple[str, str, str]]:

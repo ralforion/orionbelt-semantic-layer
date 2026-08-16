@@ -91,3 +91,21 @@ def test_dremio_week_start(run_dremio_sql: RunSql) -> None:
                 f"{call} under weekStart={week_start.value}: {actual!r} != {expected!r}"
             )
     assert not failures, "Dremio:\n  " + "\n  ".join(failures)
+
+
+def test_dremio_query_timezone(run_dremio_sql: RunSql) -> None:
+    """``settings.queryTimezone`` on the engine the vendor matrix cannot reach.
+
+    The instant 2026-08-09 22:30 UTC is 00:30 on Monday the 10th in Zagreb, so
+    a conversion that works moves the value across a day and a week boundary.
+    """
+    from orionbelt.ast.nodes import Cast, InTimeZone, Literal
+
+    node = InTimeZone(
+        expr=Cast(expr=Literal.string("2026-08-09 22:30:00"), type_name="timestamp"),
+        zone="Europe/Zagreb",
+        from_zone="UTC",
+    )
+    sql = f"SELECT {DialectRegistry.get('dremio').compile_expr(node)} AS c0"
+    actual = run_dremio_sql(sql)[0][0]
+    assert str(actual)[:19].replace("T", " ") == "2026-08-10 00:30:00", f"{actual!r}\nSQL: {sql}"

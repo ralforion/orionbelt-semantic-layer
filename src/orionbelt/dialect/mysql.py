@@ -311,6 +311,19 @@ class MySQLDialect(Dialect):
         "second": "%Y-%m-%d %H:%i:%s",
     }
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """MySQL: ``CONVERT_TZ``, which needs both ends named.
+
+        A value with no declared source zone is read in the session's, which is
+        what MySQL itself does with a TIMESTAMP column; ``@@session.time_zone``
+        names it without assuming which. Applying this twice moves the value
+        twice - measured, 00:30 becoming 02:30 - which is why it attaches to a
+        column rather than wrapping an expression.
+        """
+        rendered = self.compile_expr(value)
+        source = self._quote_zone(from_zone) if from_zone is not None else "@@session.time_zone"
+        return f"CONVERT_TZ({rendered}, {source}, {self._quote_zone(zone)})"
+
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """MySQL has no DATE_TRUNC at all.
 

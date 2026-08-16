@@ -1261,6 +1261,10 @@
             "snowflake"
           ]
         },
+        "queryTimezone": {
+          "type": "string",
+          "description": "IANA zone the model's timestamps are bucketed and reported in (e.g. Europe/Zagreb). When set, a timestamp column is converted to it in the generated SQL, so which day or week a row falls in is the model's decision rather than the warehouse session's. A naive timestamp column is first read as defaultTimezone, which is what that setting states it means; a timestamp_tz column already carries a zone and needs no such hint. Date and time columns are never converted."
+        },
         "weekStart": {
           "type": "string",
           "enum": ["monday", "sunday"],

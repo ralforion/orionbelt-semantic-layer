@@ -87,6 +87,18 @@ class DremioDialect(Dialect):
         """
         return self._render_concat_null_guard(args)
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Dremio: ``CONVERT_TIMEZONE``, three-argument form when the source
+        zone has to be declared, two-argument when the value knows its own.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            return (
+                f"CONVERT_TIMEZONE({self._quote_zone(from_zone)}, "
+                f"{self._quote_zone(zone)}, {rendered})"
+            )
+        return f"CONVERT_TIMEZONE({self._quote_zone(zone)}, {rendered})"
+
     def _render_week_start_sunday(self, value: Expr) -> str:
         """Dremio's ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one
         less, applied with the TIMESTAMPADD this dialect already uses for date

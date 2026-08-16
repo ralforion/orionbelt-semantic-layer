@@ -288,6 +288,47 @@ so every engine gives the catalog's answer:
   delegated on every engine: both ends are truncated to the week start and the
   day difference divided by seven.
 
+#### Which time zone a timestamp is read in
+
+Bucketing happens inside the warehouse, and for a column that carries an instant
+(`timestamp_tz`, Snowflake `TIMESTAMP_LTZ`, Postgres `timestamptz`) the answer
+depends on the session's time zone. The same stored instant, read on three
+Snowflake sessions:
+
+```
+TIMEZONE=Europe/Zagreb        2026-08-10 00:30+02:00  ->  week of 2026-08-10
+TIMEZONE=UTC                  2026-08-09 22:30+00:00  ->  week of 2026-08-03
+TIMEZONE=America/Los_Angeles  2026-08-09 15:30-07:00  ->  week of 2026-08-03
+```
+
+`settings.queryTimezone` takes that decision away from the connection:
+
+```yaml
+settings:
+  queryTimezone: Europe/Zagreb   # bucket and report in this zone
+  defaultTimezone: UTC           # what our naive timestamp columns mean
+```
+
+A timestamp column is then converted **at the column**, so every expression
+reading it starts from the same frame — `AT TIME ZONE` on DuckDB and Postgres,
+`toTimeZone` on ClickHouse, `CONVERT_TIMEZONE` on Snowflake and Dremio,
+`CONVERT_TZ` on MySQL, `DATETIME(x, zone)` on BigQuery, `from_utc_timestamp` on
+Databricks. Converting at the column rather than around an expression is what
+keeps a conversion from being applied twice: on MySQL, the same conversion
+applied twice moves 00:30 to 02:30.
+
+Two column kinds are treated differently, because they are different questions:
+
+| Column | Behaviour |
+|---|---|
+| `timestamp_tz` | carries an instant, so it is read in `queryTimezone` directly |
+| `timestamp` (naive) | carries no zone, so it is first read as `defaultTimezone` — and if that is unset it is **left alone**, with an `UNDECLARED_TIMESTAMP_ZONE` warning, rather than guessed at |
+| `date`, `time` | never converted — a date has no instant to move |
+
+The session's own zone is deliberately not used as the fallback: it is a fact
+about the connection, not about the data, and reading it into the SQL would make
+the same query mean different things on different connections.
+
 #### Changing the week start
 
 `date_trunc('week', …)` and `date_diff('week', …)` follow `settings.weekStart`:
@@ -1208,6 +1249,7 @@ settings:
 | `overrideDatabaseTimezone` | boolean | `false` | If true, use `defaultTimezone` instead of the auto-detected database session timezone |
 | `defaultDialect` | string | — | One of the 8 registered dialects (`bigquery`, `clickhouse`, `databricks`, `dremio`, `duckdb`, `mysql`, `postgres`, `snowflake`). Used by `/v1/query/{sql,execute}` when the request omits `dialect`. Resolution order at request time: explicit `dialect` → `settings.defaultDialect` → `DB_VENDOR` env → `postgres`. |
 | `defaultLocale` | string | — | BCP-47 locale tag (e.g. `en-US`, `de-DE`). Default locale for result value formatting (thousand/decimal separators) on `/v1/query/execute?format_values=true`. Resolution order at request time: explicit `?locale=` → `settings.defaultLocale` → `DEFAULT_LOCALE` env. |
+| `queryTimezone` | string | — | IANA zone (e.g. `Europe/Zagreb`) that timestamp columns are read in, so which day or week a row falls in is the model's decision rather than the warehouse session's. See below. |
 | `weekStart` | `monday` \| `sunday` | `monday` | Which day a week begins on, for `date_trunc('week', …)` and the boundaries `date_diff('week', …)` counts. ISO 8601 by default; `sunday` for a US retail calendar. Week *numbering* from `extract('week', …)` stays ISO either way — see below. |
 
 ### Resolution Order

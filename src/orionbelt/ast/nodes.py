@@ -180,6 +180,26 @@ class RegexMatch:
 
 
 @dataclass(frozen=True)
+class InTimeZone:
+    """Read *expr* as wall clock in *zone*. Each dialect renders its own form.
+
+    ``AT TIME ZONE`` on DuckDB and Postgres, ``toTimeZone`` on ClickHouse,
+    ``CONVERT_TIMEZONE`` on Snowflake and Dremio, ``CONVERT_TZ`` on MySQL,
+    ``DATETIME(x, zone)`` on BigQuery, ``from_utc_timestamp`` on Databricks.
+
+    ``from_zone`` is set when the value carries no zone of its own: a naive
+    timestamp only means something once the model says which zone it was
+    written in. An engine converting an already-aware value needs no such
+    hint, and giving it one would convert twice - measured on MySQL, where
+    applying the same conversion twice moves 00:30 to 02:30.
+    """
+
+    expr: Expr
+    zone: str
+    from_zone: str | None = None
+
+
+@dataclass(frozen=True)
 class RelativeDateRange:
     """Relative date range predicate on a column (half-open interval)."""
 
@@ -230,6 +250,7 @@ Expr = (
     | Between
     | RegexMatch
     | RelativeDateRange
+    | InTimeZone
     | WindowFunction
 )
 

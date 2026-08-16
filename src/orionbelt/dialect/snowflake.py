@@ -105,6 +105,19 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Snowflake: ``CONVERT_TIMEZONE``, whose two-argument form reads an
+        aware value in *zone* and whose three-argument form declares a naive
+        one to be in *from_zone* first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            return (
+                f"CONVERT_TIMEZONE({self._quote_zone(from_zone)}, "
+                f"{self._quote_zone(zone)}, {rendered})"
+            )
+        return f"CONVERT_TIMEZONE({self._quote_zone(zone)}, {rendered})"
+
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """Snowflake's ``DATE_TRUNC('week', …)`` follows the WEEK_START session
         parameter, so a session set to Sunday would silently override a model

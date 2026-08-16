@@ -35,6 +35,9 @@ class WarningCode:
     LARGE_RESULT_SET = "LARGE_RESULT_SET"
     CACHE_TTL_FLOOR_HIT = "CACHE_TTL_FLOOR_HIT"
 
+    # A model asks for a query time zone but leaves naive columns undeclared
+    UNDECLARED_TIMESTAMP_ZONE = "UNDECLARED_TIMESTAMP_ZONE"
+
     # Compile-time, post-codegen SQL validator emissions
     SQL_VALIDATION = "SQL_VALIDATION"
 

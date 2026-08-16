@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
+from orionbelt.ast.nodes import Cast, InTimeZone, Literal
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
@@ -162,3 +163,59 @@ def test_bigquery_week_start(vendor_bigquery: VendorTarget) -> None:
 
 def test_databricks_week_start(vendor_databricks: VendorTarget) -> None:
     _assert_week_start(vendor_databricks)
+
+
+# ---------------------------------------------------------------------------
+# settings.queryTimezone — the frame every timestamp column is read in
+# ---------------------------------------------------------------------------
+
+# The instant 2026-08-09 22:30 UTC is 00:30 on Monday the 10th in Zagreb, so a
+# conversion that works moves the value across a day *and* a week boundary.
+_TZ_INSTANT = "2026-08-09 22:30:00"
+_TZ_EXPECTED_WALL_CLOCK = "2026-08-10 00:30:00"
+
+
+def _tz_node() -> InTimeZone:
+    return InTimeZone(
+        expr=Cast(expr=Literal.string(_TZ_INSTANT), type_name="timestamp"),
+        zone="Europe/Zagreb",
+        from_zone="UTC",
+    )
+
+
+def _assert_timezone_conversion(vendor: VendorTarget) -> None:
+    """A naive UTC timestamp read in the model's zone, executed."""
+    engine = DialectRegistry.get(vendor.dialect)
+    sql = f"SELECT {engine.compile_expr(_tz_node())} AS c0"
+    actual = next(iter(vendor.execute(sql)[0].values()))
+    # Engines differ on whether the result carries an offset; the wall clock is
+    # what the model asked for.
+    assert str(actual)[:19] == _TZ_EXPECTED_WALL_CLOCK, f"{vendor.name}: {actual!r}\nSQL: {sql}"
+
+
+def test_duckdb_query_timezone(vendor_duckdb: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_duckdb)
+
+
+def test_postgres_query_timezone(vendor_postgres: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_postgres)
+
+
+def test_mysql_query_timezone(vendor_mysql: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_mysql)
+
+
+def test_clickhouse_query_timezone(vendor_clickhouse: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_clickhouse)
+
+
+def test_snowflake_query_timezone(vendor_snowflake: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_snowflake)
+
+
+def test_bigquery_query_timezone(vendor_bigquery: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_bigquery)
+
+
+def test_databricks_query_timezone(vendor_databricks: VendorTarget) -> None:
+    _assert_timezone_conversion(vendor_databricks)

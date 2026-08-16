@@ -85,6 +85,15 @@ class DatabricksDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
+        """Databricks: ``from_utc_timestamp`` reads a value as wall clock in a
+        zone, and ``to_utc_timestamp`` declares a naive one first.
+        """
+        rendered = self.compile_expr(value)
+        if from_zone is not None:
+            rendered = f"to_utc_timestamp({rendered}, {self._quote_zone(from_zone)})"
+        return f"from_utc_timestamp({rendered}, {self._quote_zone(zone)})"
+
     def _render_week_start_sunday(self, value: Expr) -> str:
         """Spark's ``dayofweek`` numbers Sunday as 1, so the offset is one less."""
         rendered = self.compile_expr(value)

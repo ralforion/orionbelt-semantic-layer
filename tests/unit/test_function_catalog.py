@@ -463,6 +463,112 @@ class TestWeekStart:
         assert DialectRegistry.get("duckdb").week_start is WeekStart.MONDAY
 
 
+_TZ_MODEL_YAML = """\
+version: 1.0
+settings:
+{settings}
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {{code: id, abstractType: string}}
+      Occurred At: {{code: occurred_at, abstractType: {ttype}}}
+      Occurred On: {{code: occurred_on, abstractType: date}}
+
+dimensions:
+  Occurred At: {{dataObject: Events, column: Occurred At, resultType: timestamp}}
+  Occurred On: {{dataObject: Events, column: Occurred On, resultType: date}}
+
+measures:
+  Event Count:
+    columns: [{{dataObject: Events, column: Event ID}}]
+    resultType: int
+    aggregation: count
+"""
+
+
+def _tz_sql(settings: str, ttype: str, dimension: str, dialect: str = "duckdb") -> str:
+    from orionbelt.compiler.pipeline import CompilationPipeline
+
+    yaml_text = _TZ_MODEL_YAML.format(settings=settings, ttype=ttype)
+    raw, source_map = TrackedLoader().load_string(yaml_text)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject(select=QuerySelect(dimensions=[dimension], measures=["Event Count"]))
+    return CompilationPipeline().compile(query, model, dialect).sql
+
+
+class TestQueryTimezone:
+    """``settings.queryTimezone`` — which zone a timestamp column is read in.
+
+    Attached to the column rather than around the expressions that use it: a
+    conversion applied twice moves the value twice, and an author's own
+    conversion — catalog or opaque vendor SQL — would be that second
+    application.
+    """
+
+    def test_nothing_changes_when_the_model_does_not_ask(self) -> None:
+        sql = _tz_sql("  defaultDialect: duckdb", "timestamp_tz", "Occurred At")
+        assert "AT TIME ZONE" not in sql
+
+    def test_an_aware_column_is_read_in_the_query_zone(self) -> None:
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred At")
+        assert '("Events"."occurred_at" AT TIME ZONE \'Europe/Zagreb\')' in sql
+
+    def test_a_naive_column_is_declared_before_it_is_converted(self) -> None:
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC", "timestamp", "Occurred At"
+        )
+        assert "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'" in sql
+
+    def test_a_naive_column_is_left_alone_when_undeclared(self) -> None:
+        """The session's zone is a fact about the connection, not the data, so
+        an undeclared column is not converted on a guess. The model validator
+        warns rather than leaving it silent.
+        """
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp", "Occurred At")
+        assert "AT TIME ZONE" not in sql
+
+    def test_a_date_column_is_never_converted(self) -> None:
+        """A date has no instant to move between zones."""
+        sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred On")
+        assert "AT TIME ZONE" not in sql
+
+    def test_the_undeclared_column_is_warned_about(self) -> None:
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: Europe/Zagreb", ttype="timestamp"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        warnings = [e for e in SemanticValidator().validate(model) if e.severity == "warning"]
+        assert [w.code for w in warnings] == ["UNDECLARED_TIMESTAMP_ZONE"]
+        assert "Events.Occurred At" in (warnings[0].context or {})["columns"]
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("duckdb", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
+            ("postgres", "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Zagreb'"),
+            ("clickhouse", "toTimeZone(toDateTime("),
+            ("mysql", "CONVERT_TZ("),
+            ("snowflake", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
+            # BigQuery maps the OBML timestamp type to its own TIMESTAMP, an
+            # instant, so there is no source zone left to declare.
+            ("bigquery", "DATETIME("),
+            ("databricks", "from_utc_timestamp(to_utc_timestamp("),
+            ("dremio", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
+        ],
+    )
+    def test_every_dialect_has_its_own_conversion(self, dialect: str, expected: str) -> None:
+        sql = _tz_sql(
+            "  queryTimezone: Europe/Zagreb\n  defaultTimezone: UTC",
+            "timestamp",
+            "Occurred At",
+            dialect,
+        )
+        assert expected in sql
+
+
 class TestTypedLiterals:
     """``DATE '2026-08-15'`` — without it the date group could not be written."""
 
