@@ -44,11 +44,11 @@ ROUND(2.345, 2);
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1
-SIGN(1.9) * FLOOR(ABS(1.9));
+(SIGN(1.9) * FLOOR(ABS(1.9)));
 --   trunc(-1.9) = -1
-SIGN(-1.9) * FLOOR(ABS(-1.9));
+(SIGN(-1.9) * FLOOR(ABS(-1.9)));
 --   trunc(2.345, 2) = 2.34
-SIGN(2.345) * FLOOR(ABS(2.345) * POWER(10, 2)) / POWER(10, 2);
+(SIGN(2.345) * FLOOR(ABS(2.345) * POWER(10, 2)) / POWER(10, 2));
 
 -- mod(a, b)
 --   mod(7, 3) = 1

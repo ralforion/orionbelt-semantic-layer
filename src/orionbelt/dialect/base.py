@@ -387,6 +387,22 @@ class Dialect(ABC):
         """
         return self._render_named_function("concat", args)
 
+    def _render_infix(self, sql: str) -> str:
+        """Parenthesise a rewrite that emits an infix operator.
+
+        ``compile_expr`` hands a ``FunctionCall``'s rendering straight to the
+        surrounding expression and treats it as an atom, so a renderer that
+        expands a call into ``a * b`` or ``a / b`` has to bracket itself or the
+        surrounding operators bind into it: ``10 / trunc(2.5)`` on Databricks
+        would compile to ``10 / SIGN(2.5) * FLOOR(ABS(2.5))``, which is 20
+        rather than 5, and ``10 / log(2, 8)`` on Dremio to
+        ``10 / LOG10(8) / LOG10(2)``.
+
+        A call that stays a call needs nothing; this is only for the rewrites
+        that do not.
+        """
+        return f"({sql})"
+
     def _render_concat_operator_chain(self, args: list[Expr]) -> str:
         """``(a || b || ...)`` — the NULL-propagating form on engines whose
         ``CONCAT`` skips NULLs but whose ``||`` does not.
@@ -459,18 +475,21 @@ class Dialect(ABC):
         return self._render_named_function("trunc", args)
 
     def _render_trunc_by_floor(self, args: list[Expr]) -> str:
-        """``sign(x) * floor(abs(x) * 10^n) / 10^n`` — truncation for an engine
-        with no numeric truncation of its own.
+        """``(sign(x) * floor(abs(x) * 10^n) / 10^n)`` — truncation for an
+        engine with no numeric truncation of its own.
 
         Via the absolute value so the result goes toward zero rather than down:
         ``floor(-1.9)`` is -2 where the catalog documents -1. ``sign(0)`` is 0,
         which keeps zero at zero.
+
+        Wrapped, like every rewrite that emits an infix operator: see
+        :meth:`_render_infix`.
         """
         value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
         if len(args) == 1:
-            return f"SIGN({value}) * FLOOR(ABS({value}))"
+            return self._render_infix(f"SIGN({value}) * FLOOR(ABS({value}))")
         scale = f"POWER(10, {self.compile_expr(args[1])})"
-        return f"SIGN({value}) * FLOOR(ABS({value}) * {scale}) / {scale}"
+        return self._render_infix(f"SIGN({value}) * FLOOR(ABS({value}) * {scale}) / {scale}")
 
     def _render_div(self, args: list[Expr]) -> str:
         """Default: native ``DIV(a, b)`` (BigQuery, Postgres)."""

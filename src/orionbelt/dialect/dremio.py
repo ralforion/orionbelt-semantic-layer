@@ -106,7 +106,7 @@ class DremioDialect(Dialect):
         left = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
         right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
         quotient = f"({left} * 1.0 / {right})"
-        return f"SIGN({quotient}) * FLOOR(ABS({quotient}))"
+        return self._render_infix(f"SIGN({quotient}) * FLOOR(ABS({quotient}))")
 
     def _render_log(self, args: list[Expr]) -> str:
         """Dremio's ``LOG`` accepts a base, but its reference does not state
@@ -116,7 +116,7 @@ class DremioDialect(Dialect):
         """
         base = self.compile_expr(args[0])
         value = self.compile_expr(args[1])
-        return f"LOG10({value}) / LOG10({base})"
+        return self._render_infix(f"LOG10({value}) / LOG10({base})")
 
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Dremio's NULL handling in ``GREATEST`` / ``LEAST`` is unverified

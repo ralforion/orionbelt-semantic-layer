@@ -250,9 +250,9 @@ class ClickHouseDialect(Dialect):
         """
         value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
         if len(args) == 1:
-            return f"sign({value}) * floor(abs({value}) + 0.5)"
+            return self._render_infix(f"sign({value}) * floor(abs({value}) + 0.5)")
         scale = f"pow(10, {self.compile_expr(args[1])})"
-        return f"sign({value}) * floor(abs({value}) * {scale} + 0.5) / {scale}"
+        return self._render_infix(f"sign({value}) * floor(abs({value}) * {scale} + 0.5) / {scale}")
 
     def _render_div(self, args: list[Expr]) -> str:
         """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which
@@ -272,7 +272,7 @@ class ClickHouseDialect(Dialect):
         """
         base = self.compile_expr(args[0])
         value = self.compile_expr(args[1])
-        return f"log10({value}) / log10({base})"
+        return self._render_infix(f"log10({value}) / log10({base})")
 
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """ClickHouse's ``greatest`` / ``least`` skip NULL arguments; the

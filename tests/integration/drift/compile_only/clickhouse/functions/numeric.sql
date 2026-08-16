@@ -34,13 +34,13 @@ POWER(2, 10);
 
 -- round(x, n?)
 --   round(2.5) = 3
-sign(2.5) * floor(abs(2.5) + 0.5);
+(sign(2.5) * floor(abs(2.5) + 0.5));
 --   round(-2.5) = -3
-sign(-2.5) * floor(abs(-2.5) + 0.5);
+(sign(-2.5) * floor(abs(-2.5) + 0.5));
 --   round(0.5) = 1
-sign(0.5) * floor(abs(0.5) + 0.5);
+(sign(0.5) * floor(abs(0.5) + 0.5));
 --   round(2.345, 2) = 2.35
-sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2);
+(sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2));
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1
@@ -64,6 +64,6 @@ intDiv(-7, 2);
 
 -- log(base, x)
 --   log(10, 100) = 2
-log10(100) / log10(10);
+(log10(100) / log10(10));
 --   log(2, 8) = 3
-log10(8) / log10(2);
+(log10(8) / log10(2));

@@ -11,6 +11,8 @@ executed values in ``tests/integration/drift/vendor_exec/test_function_exec.py``
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import orionbelt.dialect  # noqa: F401 -- triggers dialect registration
@@ -39,6 +41,36 @@ from orionbelt.parser.validator import SemanticValidator
 
 CATALOG = list(FUNCTION_CATALOG.values())
 DIALECTS = sorted(DialectRegistry.available())
+
+
+_CALL_START = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\(")
+_INDEX_SUFFIX = re.compile(r"^(\[[^\]]*\])?$")
+
+
+def _is_atomic(sql: str) -> bool:
+    """Whether *sql* can be dropped into a larger expression unbracketed.
+
+    Three shapes qualify: a parenthesised expression, a single function call
+    (optionally with an array index, as ClickHouse's ``split_part`` rewrite
+    has), and a ``CASE ... END``, which is self-delimiting. Anything else
+    reaches its parent as a bare infix expression.
+    """
+    text = sql.strip()
+    if text.startswith("CASE ") and text.endswith(" END"):
+        return True
+    starts_call = bool(_CALL_START.match(text))
+    if not text.startswith("(") and not starts_call:
+        return False
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                tail = text[index + 1 :]
+                return bool(_INDEX_SUFFIX.match(tail))
+    return False
 
 
 def _render(call: str, dialect: str) -> str:
@@ -256,16 +288,16 @@ class TestPinnedSemantics:
 
     def test_round_ties_go_away_from_zero_where_the_engine_rounds_to_even(self) -> None:
         """ClickHouse's ROUND is half-to-even, so 2.5 would come back as 2."""
-        assert _render("round(2.5)", "clickhouse") == "sign(2.5) * floor(abs(2.5) + 0.5)"
+        assert _render("round(2.5)", "clickhouse") == "(sign(2.5) * floor(abs(2.5) + 0.5))"
         assert _render("round(2.345, 2)", "clickhouse") == (
-            "sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2)"
+            "(sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2))"
         )
         # Every other engine already rounds away from zero.
         assert _render("round(2.5)", "duckdb") == "ROUND(2.5)"
 
     def test_trunc_goes_toward_zero_where_the_engine_has_no_truncation(self) -> None:
         """Databricks has no numeric trunc, and a plain FLOOR would give -2."""
-        assert _render("trunc(-1.9)", "databricks") == "SIGN(-1.9) * FLOOR(ABS(-1.9))"
+        assert _render("trunc(-1.9)", "databricks") == "(SIGN(-1.9) * FLOOR(ABS(-1.9)))"
 
     def test_extremum_propagates_null_where_the_engine_skips_it(self) -> None:
         """MySQL, Snowflake and BigQuery already answer NULL; four do not."""
@@ -343,7 +375,7 @@ class TestArgumentRewrites:
         """ClickHouse has no two-argument log, and its ``ln`` is a fast
         approximation: ``ln(100) / ln(10)`` returns 1.9999999996784485.
         """
-        assert _render("log(10, 100)", "clickhouse") == "log10(100) / log10(10)"
+        assert _render("log(10, 100)", "clickhouse") == "(log10(100) / log10(10))"
 
     @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
     def test_truncate_takes_an_explicit_digit_count(self, dialect: str) -> None:
@@ -372,6 +404,46 @@ class TestRenderingInvariants:
         sql = _render("upper(concat('a', 'b'))", dialect)
         assert sql.startswith("UPPER(")
         assert sql.endswith(")")
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_every_rendering_is_atomic(self, dialect: str) -> None:
+        """Every entry, on every dialect, must render as something the
+        surrounding expression can treat as one operand.
+
+        ``compile_expr`` hands a function call's rendering straight to its
+        parent and never parenthesises it, so a rewrite that expands to
+        ``a * b`` silently rebinds: ``10 / trunc(2.5)`` on Databricks became
+        ``10 / SIGN(2.5) * FLOOR(ABS(2.5))``, which is 20 rather than 5. The
+        property is checked for the whole catalog rather than the entries that
+        happen to rewrite today, because the next group adds more of them.
+        """
+        offenders = [
+            f"{example.call} -> {_render(example.call, dialect)}"
+            for spec in CATALOG
+            for example in spec.examples
+            if not _is_atomic(_render(example.call, dialect))
+        ]
+        assert not offenders, (
+            f"{dialect} renders these as bare infix expressions, which the "
+            f"surrounding operators will bind into:\n  " + "\n  ".join(offenders)
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect", "call", "expected"),
+        [
+            ("databricks", "trunc(2.5)", "10 / (SIGN(2.5) * FLOOR(ABS(2.5)))"),
+            ("dremio", "log(2, 8)", "10 / (LOG10(8) / LOG10(2))"),
+            ("clickhouse", "round(2.5)", "(sign(2.5) * floor(abs(2.5) + 0.5))"),
+        ],
+    )
+    def test_a_rewrite_used_as_a_divisor_keeps_its_parens(
+        self, dialect: str, call: str, expected: str
+    ) -> None:
+        """The concrete shape of the bug: a rewritten call on the right of a
+        division. ClickHouse wraps both operands in a decimal CAST of its own,
+        so only the rewrite's own parens are asserted there.
+        """
+        assert expected in _render(f"10 / {call}", dialect)
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     def test_reference_arguments_are_quoted_per_dialect(self, dialect: str) -> None:
