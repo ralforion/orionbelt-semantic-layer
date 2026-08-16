@@ -32,6 +32,7 @@ import yaml
 
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from tests.integration._measure_dimensions import required_dimensions
 from tests.integration.dremio.conftest import OBSL_MODEL_NAME
 
 pytestmark = pytest.mark.dremio
@@ -50,12 +51,14 @@ SOURCE_MODEL_YAML = REPO_ROOT / "examples" / "orionbelt_1_commerce.yaml"
 _MODEL_NOT_SERVED = ("not found", "does not exist", "no such", "unknown model", "no model")
 
 
-def _load() -> tuple[list[str], dict[str, Any]]:
+def _load() -> tuple[list[tuple[str, list[str]]], dict[str, Any]]:
     """Resolve the model and return its full queryable measure namespace.
 
     Uses ``SemanticModel.effective_measures`` so *synthesised* row-count
     measures (``Sales Count`` etc.) are swept too, not just declared measures.
-    Falls back to the declared list if resolution is unavailable at collection.
+    Each measure carries the dimensions it cannot be queried without, which for
+    a grain-fixed measure is its own grain. Falls back to the declared list if
+    resolution is unavailable at collection.
     """
     if not SOURCE_MODEL_YAML.exists():
         return [], {}
@@ -65,10 +68,13 @@ def _load() -> tuple[list[str], dict[str, Any]]:
         raw, source_map = TrackedLoader().load(SOURCE_MODEL_YAML)
         model, result = ReferenceResolver().resolve(raw, source_map)
         if result.valid:
-            return list(model.effective_measures.keys()), metrics
+            return [
+                (name, required_dimensions(measure))
+                for name, measure in model.effective_measures.items()
+            ], metrics
     except Exception:  # noqa: BLE001 -- fall back to declared measures at collection time
         pass
-    return list((raw_dict.get("measures") or {}).keys()), metrics
+    return [(name, []) for name in (raw_dict.get("measures") or {})], metrics
 
 
 _MEASURES, _METRICS = _load()
@@ -111,7 +117,7 @@ def pgwire_cursor():  # type: ignore[no-untyped-def]
         # error must fail loudly rather than masquerade as a skip (that is the
         # regression coverage this suite exists to provide).
         try:
-            cur.execute(_sql(_MEASURES[0], []))
+            cur.execute(_sql(_MEASURES[0][0], _MEASURES[0][1]))
             cur.fetchall()
         except Exception as exc:
             conn.rollback()
@@ -124,10 +130,15 @@ def pgwire_cursor():  # type: ignore[no-untyped-def]
         yield cur
 
 
-@pytest.mark.parametrize("measure", _MEASURES)
-def test_measure_executes_on_dremio(pgwire_cursor, measure: str) -> None:  # type: ignore[no-untyped-def]
-    """Every measure must execute (grand total) against live Dremio."""
-    pgwire_cursor.execute(_sql(measure, []))
+@pytest.mark.parametrize("measure,dims", _MEASURES, ids=[name for name, _ in _MEASURES])
+def test_measure_executes_on_dremio(pgwire_cursor, measure: str, dims: list[str]) -> None:  # type: ignore[no-untyped-def]
+    """Every measure must execute against live Dremio.
+
+    As a grand total, except for a measure whose grain is fixed to a dimension
+    list: that one is asked at its own grain, since a dimensionless query is a
+    question it cannot answer rather than one Dremio gets wrong.
+    """
+    pgwire_cursor.execute(_sql(measure, dims))
     pgwire_cursor.fetchall()  # raises on a Dremio execution error
 
 

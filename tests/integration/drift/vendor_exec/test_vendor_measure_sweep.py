@@ -29,9 +29,10 @@ import yaml
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.models.query import QueryObject
-from orionbelt.models.semantic import GrainMode, SemanticModel
+from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from tests.integration._measure_dimensions import required_dimensions
 
 from .conftest import VendorTarget
 
@@ -42,21 +43,6 @@ COMMERCE_MODEL_YAML = REPO_ROOT / "examples" / "orionbelt_1_commerce.yaml"
 
 _RAW = yaml.safe_load(COMMERCE_MODEL_YAML.read_text()) if COMMERCE_MODEL_YAML.exists() else {}
 _METRICS = _RAW.get("metrics") or {}
-
-
-def _required_dimensions(measure: Any) -> list[str]:
-    """The dimensions a measure cannot be queried without.
-
-    A grain fixed to a dimension list is one: resolution refuses to aggregate at
-    a grain the query does not group by, because that is what multiplies rows
-    (``grain ['Country Name'] is not a subset of query dimensions []``). Asking
-    for it as a grand total is therefore a bad question, not a vendor bug, so
-    the sweep asks the right one instead of skipping the measure.
-    """
-    grain = getattr(measure, "grain", None)
-    if grain is None or grain.mode != GrainMode.FIXED:
-        return []
-    return [*grain.include, *grain.keep_only]
 
 
 def _measure_items() -> list[tuple[str, str, list[str]]]:
@@ -72,7 +58,7 @@ def _measure_items() -> list[tuple[str, str, list[str]]]:
         model, result = ReferenceResolver().resolve(raw, source_map)
         if result.valid:
             return [
-                ("measure", name, _required_dimensions(measure))
+                ("measure", name, required_dimensions(measure))
                 for name, measure in model.effective_measures.items()
             ]
     except Exception:  # noqa: BLE001 -- fall back to declared measures at collection time
