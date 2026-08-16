@@ -96,7 +96,23 @@ class FunctionCallRef:
     arg_count: int
 
 
-_KEYWORDS_BEFORE_PAREN: frozenset[str] = frozenset({"IN", "NOT", "AND", "OR", "CASE", "WHEN"})
+BOOLEAN_KEYWORDS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
+"""Logical operators, spelled as words."""
+
+SQL_KEYWORDS: frozenset[str] = frozenset(
+    {"CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN", "LIKE"}
+)
+"""Predicate and control-flow keywords the expression grammar recognises.
+
+Kept here rather than in ``compiler/expr_parser.py`` for the reason the whole
+module exists: the tokenizer and the function-call scanner have to agree on
+what a keyword is. While the scanner held its own shorter copy,
+``CASE WHEN {A} > 1 THEN (2 + 3) ELSE (4) END`` was read as calls to ``THEN``
+and ``ELSE`` — invisible while only catalog names are checked, and a rejected
+model as soon as a mode rejects names the catalog does not carry.
+"""
+
+_KEYWORDS_BEFORE_PAREN: frozenset[str] = BOOLEAN_KEYWORDS | SQL_KEYWORDS
 """Words that can precede ``(`` without being a function call.
 
 ``x IN (1, 2)`` would otherwise read as a two-argument call to ``IN``, and the
@@ -119,10 +135,11 @@ def find_function_calls(expression: str) -> list[FunctionCallRef]:
     """Every function call *expression* makes, with the number of arguments.
 
     Ordered by closing parenthesis, so a nested call is reported before the one
-    that contains it. The scan is deliberately independent of
-    ``compiler/expr_parser.py``: ``parser/validator.py`` must not import from
-    ``compiler``, and the check this feeds — name and arity against the
-    portable function catalog — needs no parse tree, only the call shapes.
+    that contains it. A scan rather than a parse: ``parser/validator.py`` must
+    not import from ``compiler``, where the real expression parser lives, and
+    the check this feeds — name and arity against the portable function catalog
+    — needs no parse tree, only the call shapes. What the two must agree on is
+    :data:`SQL_KEYWORDS`, which they now share.
 
     Braces and string literals are skipped whole, so a delimiter inside a
     literal (``split_part({Path}, ',', 2)``) is not counted as an argument

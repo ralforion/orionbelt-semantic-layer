@@ -19,7 +19,12 @@ from orionbelt.dialect.base import DialectCapabilities, UnsupportedFunctionError
 from orionbelt.dialect.duckdb import DuckDBDialect
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
-from orionbelt.models.expressions import FunctionCallRef, find_function_calls
+from orionbelt.models.expressions import (
+    BOOLEAN_KEYWORDS,
+    SQL_KEYWORDS,
+    FunctionCallRef,
+    find_function_calls,
+)
 from orionbelt.models.functions import (
     FUNCTION_CATALOG,
     FunctionSpec,
@@ -108,6 +113,31 @@ class TestFunctionCallScanner:
 
     def test_grouping_parens_are_not_calls(self) -> None:
         assert find_function_calls("({A} + {B}) * 2") == []
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "CASE WHEN {A} > 1 THEN (2 + 3) ELSE (4) END",
+            "{A} BETWEEN (1) AND (2)",
+            "{A} LIKE ('x')",
+            "NOT ({A} IS NULL)",
+        ],
+    )
+    def test_no_grammar_keyword_is_read_as_a_call(self, expression: str) -> None:
+        """A keyword followed by ``(`` is not a function, whichever keyword.
+
+        The scanner and the tokenizer share one keyword set for this reason:
+        while the scanner held its own shorter copy, ``THEN (2 + 3)`` was
+        reported as a one-argument call to ``THEN``.
+        """
+        assert find_function_calls(expression) == []
+
+    def test_the_scanner_and_the_tokenizer_agree_on_keywords(self) -> None:
+        """Anything the tokenizer emits as an operator is not a call name."""
+        for keyword in BOOLEAN_KEYWORDS | SQL_KEYWORDS:
+            assert find_function_calls(f"{keyword} ({{A}})") == []
+            tokens = tokenize_metric_formula(keyword)
+            assert [t.kind for t in tokens] == ["op"]
 
 
 _ARITY_MODEL_YAML = """\
