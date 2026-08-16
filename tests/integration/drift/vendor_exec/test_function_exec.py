@@ -37,13 +37,26 @@ pytestmark = pytest.mark.docker
 CATALOG = list(FUNCTION_CATALOG.values())
 
 
+_NUMERIC_TOLERANCE = 1e-9
+"""Relative tolerance for a numeric catalog value.
+
+Not laxity about the answer: the catalog's numeric entries are floating point,
+and an engine is free to deliver 2.35 as ``Decimal('2.3500')`` or the base
+change behind ``log(2, 8)`` as 2.9999999999999996. What the catalog pins is the
+value, so the comparison is numeric rather than a string match, which would
+fail on the scale a driver happened to choose. It is tight enough that a real
+disagreement (2 against 3 for ``round(2.5)``, -3 against -4 for ``div(-7, 2)``)
+still fails.
+"""
+
+
 def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
     """Whether *actual* is the documented value, across driver type mappings.
 
-    Booleans come back as ``1``/``0`` from MySQL and ClickHouse, integers as
-    ``Decimal`` from several drivers, and strings are strings everywhere — so
-    each expected type is compared in its own terms rather than by equality on
-    whatever Python object the driver chose.
+    Booleans come back as ``1``/``0`` from MySQL and ClickHouse, numbers as
+    ``Decimal`` or ``float`` depending on the driver, and strings are strings
+    everywhere — so each expected type is compared in its own terms rather than
+    by equality on whatever Python object the driver chose.
     """
     if expected is None:
         return actual is None
@@ -51,8 +64,8 @@ def _matches(expected: str | int | float | bool | None, actual: Any) -> bool:
         return False
     if isinstance(expected, bool):
         return bool(actual) is expected
-    if isinstance(expected, int):
-        return int(actual) == expected
+    if isinstance(expected, (int, float)):
+        return abs(float(actual) - expected) <= _NUMERIC_TOLERANCE * max(1.0, abs(expected))
     return str(actual) == str(expected)
 
 

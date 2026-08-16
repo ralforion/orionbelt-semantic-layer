@@ -299,6 +299,20 @@ class MySQLDialect(Dialect):
         )
         return f"CASE WHEN {index} > {field_count} THEN '' ELSE {part} END"
 
+    def _render_trunc(self, args: list[Expr]) -> str:
+        """MySQL spells it ``TRUNCATE`` and always requires the digit count,
+        where the catalog's second argument is optional.
+        """
+        value = self.compile_expr(args[0])
+        digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
+        return f"TRUNCATE({value}, {digits})"
+
+    def _render_div(self, args: list[Expr]) -> str:
+        """MySQL's integer division is the ``DIV`` operator, which truncates
+        toward zero (``-7 DIV 2`` is -3). Probe-verified.
+        """
+        return self._render_div_operator(args, "DIV")
+
     def _compile_median(self, args: list[Expr]) -> str:
         """MySQL does not support MEDIAN aggregation."""
         raise UnsupportedAggregationError("mysql", "median")

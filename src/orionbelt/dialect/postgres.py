@@ -103,6 +103,13 @@ class PostgresDialect(Dialect):
         suffix = self.compile_expr(args[1])
         return f"(RIGHT({haystack}, LENGTH({suffix})) = {suffix})"
 
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """Postgres's ``GREATEST`` / ``LEAST`` skip NULL arguments; the catalog
+        propagates NULL. ``div`` needs no override: Postgres has it natively
+        and it truncates toward zero.
+        """
+        return self._render_null_guard(self._render_named_function(name, args), args)
+
     def _compile_median(self, args: list[Expr]) -> str:
         """PostgreSQL: PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY col)."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"

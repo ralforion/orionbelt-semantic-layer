@@ -161,6 +161,15 @@ class BigQueryDialect(Dialect):
             return str(index.value - 1)
         return f"{self.compile_expr(index, _parent_prec=self._PREC_ADD + 1)} - 1"
 
+    def _render_log(self, args: list[Expr]) -> str:
+        """BigQuery's ``LOG`` takes the value first and the base second, the
+        opposite of everyone else's. Probe-verified: ``LOG(10, 100)`` is 0.5
+        here and 2 on DuckDB, Postgres, MySQL and Snowflake.
+        """
+        base = self.compile_expr(args[0])
+        value = self.compile_expr(args[1])
+        return f"LOG({value}, {base})"
+
     def _compile_median(self, args: list[Expr]) -> str:
         """BigQuery: PERCENTILE_DISC(col, 0.5) OVER()  — but as an aggregate
         we use APPROX_QUANTILES(col, 2)[OFFSET(1)]."""

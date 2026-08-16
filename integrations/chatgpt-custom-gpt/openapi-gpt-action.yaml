@@ -18,8 +18,9 @@ paths:
       summary: List supported SQL dialects
       description: >
         Returns all 8 supported SQL dialects (bigquery, clickhouse, databricks, dremio,
-        duckdb, mysql, postgres, snowflake) with their capabilities and any unsupported
-        aggregation types.
+        duckdb, mysql, postgres, snowflake) with their capability flags, the aggregation
+        types each one can compute, and the portable expression functions each one can
+        render.
       responses:
         "200":
           description: List of dialects
@@ -40,7 +41,11 @@ paths:
                           type: object
                           additionalProperties:
                             type: boolean
-                        unsupported_aggregations:
+                        supported_aggregations:
+                          type: array
+                          items:
+                            type: string
+                        supported_functions:
                           type: array
                           items:
                             type: string

@@ -1266,42 +1266,59 @@ The endpoint never probes the database — `database` is `null` until a query ha
 
 ### `GET /v1/dialects`
 
-List all available SQL dialects and their capability flags.
+List all available SQL dialects, their capability flags, and the vocabulary each one supports.
+
+`capabilities` are structural SQL feature flags. `supported_aggregations` lists the OBML
+`aggregation:` values the dialect can compute, and `supported_functions` the entries of the
+[portable function catalog](../guide/model-format.md#portable-functions-in-expressions) it can
+render — both stated positively, so a client needs no second call to learn the full vocabulary
+and subtract from it. Signatures, arity and pinned semantics for the functions are at
+[`GET /v1/reference/functions`](#get-v1referencefunctions).
 
 **Response (200):**
 
 ```json
 {
- "dialects": [
- {
- "name": "bigquery",
- "capabilities": {
- "supports_cte": true,
- "supports_qualify": true,
- "supports_arrays": true,
- "supports_window_filters": true,
- "supports_ilike": false,
- "supports_time_travel": false,
- "supports_semi_structured": true
- }
- },
- { "name": "clickhouse", "capabilities": { "..." : true } },
- { "name": "databricks", "capabilities": { "..." : true } },
- { "name": "dremio", "capabilities": { "..." : true } },
- {
- "name": "duckdb",
- "capabilities": {
- "supports_cte": true,
- "supports_qualify": true,
- "supports_arrays": true,
- "supports_window_filters": true,
- "supports_ilike": true,
- "supports_time_travel": false,
- "supports_semi_structured": false
- }
- },
- { "name": "postgres", "capabilities": { "..." : true } },
- { "name": "snowflake", "capabilities": { "..." : true } }
- ]
+  "dialects": [
+    {
+      "name": "bigquery",
+      "capabilities": {
+        "supports_cte": true,
+        "supports_qualify": true,
+        "supports_arrays": true,
+        "supports_window_filters": true,
+        "supports_ilike": false,
+        "supports_time_travel": false,
+        "supports_semi_structured": true,
+        "supports_union_all_by_name": false,
+        "supports_group_by_all": true
+      },
+      "supported_aggregations": [
+        "any_value", "avg", "corr", "count", "count_distinct", "covar_pop",
+        "covar_samp", "listagg", "max", "median", "min", "mode", "stddev",
+        "stddev_pop", "sum", "var_pop", "variance"
+      ],
+      "supported_functions": [
+        "abs", "ceil", "coalesce", "concat", "div", "ends_with", "exp", "floor",
+        "greatest", "least", "length", "ln", "log", "lower", "lpad", "ltrim",
+        "mod", "nullif", "position", "power", "replace", "round", "rpad",
+        "rtrim", "sign", "split_part", "sqrt", "starts_with", "substring",
+        "trim", "trunc", "upper"
+      ]
+    },
+    { "name": "clickhouse", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "databricks", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "dremio", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "duckdb", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "mysql", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "postgres", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] },
+    { "name": "snowflake", "capabilities": { "...": true }, "supported_aggregations": ["..."], "supported_functions": ["..."] }
+  ]
 }
 ```
+
+An aggregation absent from `supported_aggregations` is refused at compile time with a 422 rather
+than emitted and failed at the warehouse: MySQL has no `median`, `mode`, `corr`, `covar_pop`,
+`covar_samp`, `regr_slope` or `regr_intercept`, and `measure` is Databricks-only. Every dialect
+renders the whole function catalog today, since an entry is admitted only once all eight can
+answer it.

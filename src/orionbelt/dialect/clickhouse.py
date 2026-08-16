@@ -239,6 +239,47 @@ class ClickHouseDialect(Dialect):
         "ends_with": "endsWith",
     }
 
+    def _render_round(self, args: list[Expr]) -> str:
+        """ClickHouse rounds ties to even: ``round(2.5)`` is 2 and
+        ``round(0.5)`` is 0, where the catalog rounds away from zero.
+
+        There is no half-up rounding function to switch to (``roundBankers`` is
+        the explicit form of the behaviour we are avoiding), so the call is
+        rewritten arithmetically: shift by the digit count, add a half, floor
+        the magnitude, restore the sign.
+        """
+        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        if len(args) == 1:
+            return self._render_infix(f"sign({value}) * floor(abs({value}) + 0.5)")
+        scale = f"pow(10, {self.compile_expr(args[1])})"
+        return self._render_infix(f"sign({value}) * floor(abs({value}) * {scale} + 0.5) / {scale}")
+
+    def _render_div(self, args: list[Expr]) -> str:
+        """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which
+        ClickHouse reads as a line comment (``-7 // 2`` returns -7).
+        """
+        left = self.compile_expr(args[0])
+        right = self.compile_expr(args[1])
+        return f"intDiv({left}, {right})"
+
+    def _render_log(self, args: list[Expr]) -> str:
+        """ClickHouse has no two-argument ``log`` (its one-argument form is the
+        natural logarithm), so the base change is written out.
+
+        Via ``log10`` rather than ``ln``: ClickHouse's ``ln`` is a fast
+        approximation, and ``ln(100) / ln(10)`` returns 1.9999999996784485
+        where ``log10(100) / log10(10)`` returns exactly 2.
+        """
+        base = self.compile_expr(args[0])
+        value = self.compile_expr(args[1])
+        return self._render_infix(f"log10({value}) / log10({base})")
+
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """ClickHouse's ``greatest`` / ``least`` skip NULL arguments; the
+        catalog propagates NULL.
+        """
+        return self._render_null_guard(self._render_named_function(name, args), args)
+
     def _render_split_part(self, args: list[Expr]) -> str:
         """ClickHouse has no ``split_part``; ``splitByString`` plus an array
         index is the equivalent, and its argument order is delimiter-first.

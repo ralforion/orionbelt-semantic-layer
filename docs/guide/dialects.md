@@ -395,10 +395,31 @@ curl http://127.0.0.1:8000/v1/dialects
         "supports_window_filters": true,
         "supports_ilike": false,
         "supports_time_travel": false,
-        "supports_semi_structured": true
-      }
+        "supports_semi_structured": true,
+        "supports_union_all_by_name": false,
+        "supports_group_by_all": true
+      },
+      "supported_aggregations": [
+        "any_value", "avg", "corr", "count", "count_distinct", "covar_pop",
+        "covar_samp", "listagg", "max", "median", "min", "mode", "stddev",
+        "stddev_pop", "sum", "var_pop", "variance"
+      ],
+      "supported_functions": [
+        "abs", "ceil", "coalesce", "concat", "div", "ends_with", "exp", "floor",
+        "greatest", "least", "length", "ln", "log", "lower", "lpad", "ltrim",
+        "mod", "nullif", "position", "power", "replace", "round", "rpad",
+        "rtrim", "sign", "split_part", "sqrt", "starts_with", "substring",
+        "trim", "trunc", "upper"
+      ]
     },
     ...
   ]
 }
 ```
+
+`capabilities` are structural SQL features. The two lists are the vocabulary: every OBML
+`aggregation:` value this dialect can compute, and every entry of the
+[portable function catalog](model-format.md#portable-functions-in-expressions) it can render.
+Both are stated positively, so answering "may I use `median` on this warehouse?" needs no second
+call. Anything absent is refused at compile time with a 422 rather than emitted and failed at the
+database — MySQL, for instance, lists neither `median` nor `mode`.

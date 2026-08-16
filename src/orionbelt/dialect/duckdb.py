@@ -72,6 +72,19 @@ class DuckDBDialect(Dialect):
         """
         return self._render_concat_operator_chain(args)
 
+    def _render_div(self, args: list[Expr]) -> str:
+        """DuckDB has no ``div`` function; ``//`` is its integer division, and
+        it truncates toward zero (``-7 // 2`` is -3), which is the catalog's
+        rule. Probe-verified.
+        """
+        return self._render_div_operator(args, "//")
+
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """DuckDB's ``GREATEST`` / ``LEAST`` skip NULL arguments; the catalog
+        propagates NULL, as it does for ``concat``.
+        """
+        return self._render_null_guard(self._render_named_function(name, args), args)
+
     def _compile_median(self, args: list[Expr]) -> str:
         """DuckDB: MEDIAN(col) — native support."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"
