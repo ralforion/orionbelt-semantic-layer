@@ -305,11 +305,52 @@ The compilation pipeline handles grain and filter context in two phases:
 
 ### CTE Structure for Filter Context
 
-Measures with `filterContext` are grouped by their effective filter+grain combination. Each group gets its own CTE:
+Measures with `filterContext` are grouped by their effective filter + grain
+combination, and by the fact they read. Each group gets its own CTE:
 
 - **`main`** CTE: the original query with inline measures (no filter context)
-- **`fc_0`, `fc_1`, ...** CTEs: isolated queries with modified WHERE clauses
+- **`fc_0`, `fc_1`, ...** CTEs: the isolated scans
 - **Outer SELECT**: joins all CTEs together (LEFT JOIN on shared dimensions, CROSS JOIN for scalar)
+
+An isolated scan is **planned as a query in its own right**, not assembled from
+the main query's `FROM` with a different `WHERE`. It resolves its own base
+object, its own join path to the grain dimensions, and runs the same
+fanout and deduplication phases any query runs. That is what lets it read a
+fact the rest of the query does not, and what makes a measure on the *one* side
+of a join count once rather than once per row of the many side.
+
+Two consequences worth knowing:
+
+- The scan joins whatever its own filters need. An `include:` filter on a
+  column nothing else in the query reads still gets its join.
+- A filterContext measure does not decide the main query's base object, since
+  it is not planned there. Removing it from that decision can leave the rest of
+  the query single-fact where it used to be multi-fact -- the same answer,
+  planned more directly.
+
+## What Composes
+
+| Combination | Result |
+|---|---|
+| Read through a metric (`{[Revenue]} / {[Unfiltered Revenue]}`) | Works. The component is computed in the same CTE a selected measure gets, and the formula is rebuilt in the outer query over the CTEs' columns. |
+| `total: true` or a `grain` override on the same measure | Works. `total: true` is read as the empty grain it is, so the scan groups by nothing and reports a grand total. |
+| A query spanning facts that cannot be joined | Works. The measure is kept out of the UNION ALL and its scan reads its own fact. |
+| `HAVING` on the measure, or on a metric reading it | Works. The predicate moves to the outer query, where the value is a column. |
+| `ORDER BY` on the measure | Works. It reads whichever CTE computed the value. |
+| Several contexts, over one fact or several | Works. One scan per (context, grain, fact). |
+| A **cumulative** metric over the measure | Works. The running total accumulates the context's values, not the query-filtered ones. |
+
+## What Is Refused
+
+Each of these is refused, with a message naming what is wrong and what to
+change, rather than compiled into a number that looks right:
+
+| Combination | Why |
+|---|---|
+| An **averaged** `total: true` measure in the same query | A total average is rebuilt from the `SUM` and `COUNT` of the aggregate's argument. Once the filter context has been computed, that argument is a value already averaged. Total a sum instead. |
+| A **period-over-period** metric in the same query | PoP rebuilds the query's `FROM` from a date spine, which cannot read the isolated scan and regroups the query to its own grain. |
+| A measure whose own arguments span facts no join reaches | There is no single fact to plan the scan against. |
+| A grain dimension the measure's fact cannot reach | The scan has to group by the dimensions it joins back on. Reported as an unreachable object, by the same rule that governs any query asking for one. |
 
 ## Constraints
 
@@ -317,7 +358,7 @@ Measures with `filterContext` are grouped by their effective filter+grain combin
     - The effective grain must be a subset of the query dimensions (superset/disjoint grains are rejected to prevent fanout).
     - `total: true` and `grain` are mutually exclusive on the same measure.
     - `mode: FIXED` cannot be combined with `exclude` on either `grain` or `filterContext`.
-    - Grain and filter context overrides are not combined with period-over-period or cumulative metrics in the same query. A warning is emitted if attempted.
+    - Grain overrides are not combined with period-over-period or cumulative metrics in the same query. A warning is emitted if attempted.
 
 ## Dialect Support
 

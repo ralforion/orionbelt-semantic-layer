@@ -299,6 +299,18 @@ below) and the query plans as an ordinary star.
     total. Queries that trigger this rewrite carry a `FAN_TRAP_RISK` warning
     saying so. Query the measure at its own grain for a total that adds up.
 
+!!! note "Not available in a multi-fact plan"
+    This rewrite needs a grain to deduplicate at. A multi-fact query is a
+    `UNION ALL` whose legs *project* the values to aggregate rather than
+    aggregating them, so there is none, and a one-side measure would be summed
+    once per row of the many side inside its leg. Asking for one alongside a
+    measure from a fact it cannot be joined to is refused rather than answered.
+
+    Three ways forward, in the order worth trying: query the measure without
+    the other fact; give it a `filterContext`, whose scan is planned as a query
+    in its own right and so deduplicates normally; or declare
+    `allowFanOut: true` on the measure if the duplication is what you want.
+
 A `total: true` measure is deduplicated at **no** grain: one row per source
 object row across the whole query, in its own `dedup_total_N` CTE that is
 `CROSS JOIN`ed in. It cannot be a window over this pass's output, because those
