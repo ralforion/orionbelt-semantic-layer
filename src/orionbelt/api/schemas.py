@@ -274,6 +274,13 @@ class DialectInfo(BaseModel):
     name: str
     capabilities: dict[str, bool] = Field(default_factory=dict)
     unsupported_aggregations: list[str] = Field(default_factory=list)
+    unsupported_functions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Portable-catalog scalar functions this dialect cannot render "
+            "(see /v1/reference for the catalog)."
+        ),
+    )
 
 
 class DialectListResponse(BaseModel):

@@ -129,6 +129,38 @@ class BigQueryDialect(Dialect):
             ),
         )
 
+    def _render_position(self, args: list[Expr]) -> str:
+        """BigQuery has no ``POSITION`` in either form; ``STRPOS`` is the
+        equivalent and takes the haystack first.
+        """
+        needle = self.compile_expr(args[0])
+        haystack = self.compile_expr(args[1])
+        return f"STRPOS({haystack}, {needle})"
+
+    def _render_split_part(self, args: list[Expr]) -> str:
+        """BigQuery has no ``SPLIT_PART``; ``SPLIT`` returns an array, indexed
+        from 0, so the catalog's 1-based *n* becomes ``SAFE_OFFSET(n - 1)``.
+
+        ``SAFE_OFFSET`` yields NULL rather than raising when *n* runs past the
+        last field; ``IFNULL`` turns that into the empty string the catalog
+        documents.
+        """
+        haystack = self.compile_expr(args[0])
+        delimiter = self.compile_expr(args[1])
+        offset = self._zero_based_offset_sql(args[2])
+        return f"IFNULL(SPLIT({haystack}, {delimiter})[SAFE_OFFSET({offset})], '')"
+
+    def _zero_based_offset_sql(self, index: Expr) -> str:
+        """Render a 1-based index expression as a 0-based one.
+
+        A literal is decremented in place — ``SAFE_OFFSET(1)`` rather than
+        ``SAFE_OFFSET(2 - 1)`` — because a constant offset is what the SQL is
+        read as; anything else gets the subtraction.
+        """
+        if isinstance(index, Literal) and type(index.value) is int:
+            return str(index.value - 1)
+        return f"{self.compile_expr(index, _parent_prec=self._PREC_ADD + 1)} - 1"
+
     def _compile_median(self, args: list[Expr]) -> str:
         """BigQuery: PERCENTILE_DISC(col, 0.5) OVER()  — but as an aggregate
         we use APPROX_QUANTILES(col, 2)[OFFSET(1)]."""

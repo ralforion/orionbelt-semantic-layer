@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 
 import networkx as nx
 
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import (
     QUALIFIED_COLUMN_REF,
+    find_function_calls,
     find_placeholders,
     find_qualified_refs,
 )
+from orionbelt.models.functions import lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -42,6 +45,7 @@ class SemanticValidator:
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         errors.extend(self._check_computed_column_refs(model))
+        errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_reference_name_collisions(model))
         errors.extend(self._check_no_cyclic_computed_columns(model))
         errors.extend(self._check_join_key_expressions(model))
@@ -744,6 +748,74 @@ class SemanticValidator:
                                 path=path,
                             )
                         )
+        return errors
+
+    @staticmethod
+    def _expression_bodies(model: SemanticModel) -> Iterator[tuple[str, str, str]]:
+        """``(path, subject, expression)`` for every expression body in *model*.
+
+        The three places an author can write one: a computed column, a measure
+        expression, and a metric formula.
+        """
+        for obj_name, obj in model.data_objects.items():
+            for col_name, col in obj.columns.items():
+                if col.expression:
+                    yield (
+                        f"dataObjects.{obj_name}.columns.{col_name}.expression",
+                        f"Computed column '{col_name}' in data object '{obj_name}'",
+                        col.expression,
+                    )
+        for measure_name, measure in model.measures.items():
+            if measure.expression:
+                yield (
+                    f"measures.{measure_name}.expression",
+                    f"Measure '{measure_name}'",
+                    measure.expression,
+                )
+        for metric_name, metric in model.metrics.items():
+            if metric.expression:
+                yield (
+                    f"metrics.{metric_name}.expression",
+                    f"Metric '{metric_name}'",
+                    metric.expression,
+                )
+
+    def _check_expression_functions(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a portable-catalog function called with the wrong arity.
+
+        Expression bodies used to be pass-through in both directions: any
+        ``IDENT(`` became a function call and every dialect emitted it
+        verbatim, so ``substring({Zip}, 1, 5, 9)`` validated clean and failed
+        at the database — on whichever engine the query happened to run.
+
+        Only functions the catalog defines (``models/functions.py``) are
+        checked. Everything else stays the escape hatch it has always been:
+        the catalog cannot know a vendor function's arity, and rejecting names
+        it does not carry would break every model written before it existed.
+        """
+        errors: list[SemanticError] = []
+        for path, subject, expression in self._expression_bodies(model):
+            for call in find_function_calls(expression):
+                spec = lookup_function(call.name)
+                if spec is None or spec.accepts(call.arg_count):
+                    continue
+                plural = "" if call.arg_count == 1 else "s"
+                errors.append(
+                    SemanticError(
+                        code="WRONG_FUNCTION_ARITY",
+                        message=(
+                            f"{subject} calls '{call.name}' with {call.arg_count} "
+                            f"argument{plural}, but it takes {spec.arity_text}"
+                        ),
+                        path=path,
+                        hint=f"Canonical signature: {spec.signature}.",
+                        context={
+                            "function": spec.name,
+                            "argCount": call.arg_count,
+                            "signature": spec.signature,
+                        },
+                    )
+                )
         return errors
 
     def _check_reference_name_collisions(self, model: SemanticModel) -> list[SemanticError]:

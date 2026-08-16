@@ -230,6 +230,28 @@ class ClickHouseDialect(Dialect):
     def _map_function_name(self, name: str) -> str:
         return self._FUNCTION_NAME_MAP.get(name.upper(), name)
 
+    # ``length`` counts bytes on ClickHouse (``length('äbcd')`` is 5), and
+    # ``startsWith`` / ``endsWith`` are the camelCase-only spellings — unlike
+    # ``substring`` or ``upper``, which have case-insensitive ANSI aliases.
+    _SCALAR_FUNCTION_NAMES: dict[str, str] = {
+        "length": "lengthUTF8",
+        "starts_with": "startsWith",
+        "ends_with": "endsWith",
+    }
+
+    def _render_split_part(self, args: list[Expr]) -> str:
+        """ClickHouse has no ``split_part``; ``splitByString`` plus an array
+        index is the equivalent, and its argument order is delimiter-first.
+
+        Indexing past the end of a ``Array(String)`` yields ``''`` on
+        ClickHouse, which is what the catalog documents for an out-of-range
+        part.
+        """
+        haystack = self.compile_expr(args[0])
+        delimiter = self.compile_expr(args[1])
+        index = self.compile_expr(args[2])
+        return f"splitByString({delimiter}, {haystack})[{index}]"
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """ClickHouse: topK(1)(col)[1] — returns the most frequent value."""
         col_sql = self.compile_expr(args[0]) if args else "NULL"

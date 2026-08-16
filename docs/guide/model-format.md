@@ -182,7 +182,7 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 **Constraints:**
 
 - `expression` and `code` are mutually exclusive on a single column.
-- The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node, so dialect-specific functions are dialect-portable only insofar as they appear in OBML's expression grammar (arithmetic, `CASE WHEN`, function calls).
+- The expression is parsed and rendered through the dialect's `compile_expr` like any other AST node. Arithmetic, comparisons, `CASE WHEN`, `IN`, `BETWEEN` and `LIKE` are part of OBML's own grammar and therefore portable; function calls are portable when the function is in the [portable function catalog](#portable-functions-in-expressions) below, and passed through to the database verbatim when it is not.
 - Every `{Column}` placeholder must name a sibling column of the same data object. An unresolvable placeholder is rejected at validation time with `UNKNOWN_COLUMN_IN_EXPRESSION` — it is not silently dropped, so a typo cannot reach the database as a string literal.
 - A column of a *different* data object is referenced with the qualified `{[DataObject].[Column]}` form. This is what makes a column-to-column comparison across objects expressible — the thing query filters cannot do, since they compare a column to a literal:
 
@@ -202,6 +202,84 @@ ORDER BY (("Date"."d_year" * 100) + "Date"."d_moy") ASC
 - Both halves of a column reference are required wherever one appears (`dimensions`, a measure's `columns`, `withinGroup`, measure filters). Omitting `dataObject` or `column` is rejected with `INCOMPLETE_COLUMN_REF`, because an omitted half would otherwise reach SQL as an empty identifier.
 - A computed column must carry its own guards. Filters do not protect it: engines are free to evaluate the projection before, or regardless of, a predicate that would have made it safe. `({Dependent Count} * 1.000) / {Vehicle Count}` alongside a `Vehicle Count > 0` filter is tolerated by DuckDB and raises `Division by zero` on ClickHouse. Write the guard into the expression — `CASE WHEN {Vehicle Count} > 0 THEN ... ELSE NULL END`, or `NULLIF({Vehicle Count}, 0)` as the divisor — and it holds everywhere.
 - ORDER BY on a computed column works correctly — the planner emits the inlined expression, not the alias, in `ORDER BY` (the recent compiler fix in the [Compilation guide](compilation.md)).
+
+### Portable functions in expressions
+
+A function call inside an `expression` — a computed column, a measure expression,
+a metric formula — is either **in the catalog**, in which case OBSL owns what it
+means and renders it per dialect, or **outside it**, in which case the call is
+emitted verbatim and the model is pinned to whatever engines happen to spell it
+that way.
+
+Canonical names are lowercase and snake_case; OBML is case-insensitive about
+them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
+optional argument.
+
+| Signature | Result | Pinned meaning |
+|---|---|---|
+| `substring(x, start, len?)` | string | 1-based; omitting `len` runs to the end |
+| `concat(a, b, ...)` | string | **NULL propagates** — any NULL argument makes the result NULL |
+| `upper(x)` / `lower(x)` | string | Case mapping of non-ASCII follows the engine's collation |
+| `trim(x)` / `ltrim(x)` / `rtrim(x)` | string | Whitespace only |
+| `length(x)` | int | **Characters, not bytes** |
+| `replace(x, from, to)` | string | All occurrences |
+| `position(needle, haystack)` | int | 1-based, `0` when absent; needle first |
+| `split_part(x, delim, n)` | string | 1-based; an `n` past the last field yields `''` |
+| `lpad(x, len, fill)` / `rpad(x, len, fill)` | string | Longer input is truncated to `len` |
+| `starts_with(x, prefix)` / `ends_with(x, suffix)` | boolean | Case-sensitive |
+
+The pinned meaning is the point. Three of those rules are places where engines
+disagree on the *answer* rather than on the spelling, and OBSL rewrites the call
+so every engine gives the catalog's answer:
+
+- `concat('a', NULL, 'c')` is NULL. DuckDB, Postgres and Dremio skip NULL
+  arguments in their own `CONCAT`, so on those dialects the call is rendered as
+  a `||` chain (DuckDB, Postgres) or a NULL-guarded `CASE` (Dremio).
+- `length('äbcd')` is 4. ClickHouse and MySQL count bytes in `LENGTH`, so they
+  render `lengthUTF8` and `CHAR_LENGTH`.
+- `split_part('a,b,c', ',', 9)` is `''`. MySQL's `SUBSTRING_INDEX` would hand
+  back the *last* field and BigQuery's `SPLIT` would return NULL, so both get a
+  guard.
+
+Argument order and shape are rewritten wherever an engine needs it —
+`position(needle, haystack)` becomes `POSITION(needle IN haystack)` on most
+dialects and `STRPOS(haystack, needle)` on BigQuery; ClickHouse gets
+`splitByString(delim, x)[n]` for `split_part`.
+
+```yaml
+Clients:
+  columns:
+    Client Email: { code: clientemail, abstractType: string }
+    Client Email Domain:
+      abstractType: string
+      expression: "split_part({Client Email}, '@', 2)"
+```
+
+That column compiles to `SPLIT_PART(...)` on DuckDB, Postgres, Snowflake and
+Databricks, `splitByString(...)[2]` on ClickHouse, `IFNULL(SPLIT(...)[SAFE_OFFSET(1)], '')`
+on BigQuery, and a guarded `SUBSTRING_INDEX` on MySQL — same model, same values.
+The bundled `examples/orionbelt_1_commerce.yaml` carries this column plus
+`Client Initial` (`upper(substring(...))`) and `Product Label` (`concat(...)`).
+
+**Validation.** A catalog function called with the wrong number of arguments is
+rejected at validation time with `WRONG_FUNCTION_ARITY`, naming the canonical
+signature. Nothing else about the call is checked — argument *types* are not
+modelled.
+
+**The escape hatch.** A function the catalog does not carry is still emitted
+verbatim, so vendor-specific SQL keeps working:
+
+```yaml
+Zip 5:
+  abstractType: string
+  expression: "regexp_extract({Zip}, '[0-9]{5}')"
+```
+
+OBSL cannot know that function's arity or meaning, so it neither checks nor
+rewrites it: the model now depends on the engines that have `regexp_extract`.
+Where a call has to be non-portable, keeping it in one computed column rather
+than spread across measures is what keeps the port to another vendor to a short
+list of edits.
 
 ### Joins
 

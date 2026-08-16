@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 COMPUTED_PLACEHOLDER = re.compile(r"\{(\w[^}]*)\}")
 """``{ColumnName}`` placeholder inside a computed-column expression body.
@@ -85,6 +86,110 @@ def find_placeholders(expression: str) -> list[str]:
             if not _REGEX_QUANTIFIER.match(name):
                 names.append(name)
     return names
+
+
+@dataclass(frozen=True)
+class FunctionCallRef:
+    """A ``name(...)`` call found in an expression body, with its arity."""
+
+    name: str
+    arg_count: int
+
+
+_KEYWORDS_BEFORE_PAREN: frozenset[str] = frozenset({"IN", "NOT", "AND", "OR", "CASE", "WHEN"})
+"""Words that can precede ``(`` without being a function call.
+
+``x IN (1, 2)`` would otherwise read as a two-argument call to ``IN``, and the
+catalog check would answer for a function nobody wrote.
+"""
+
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+
+
+@dataclass
+class _OpenParen:
+    """An open parenthesis during the scan — a call when it carries a name."""
+
+    name: str | None
+    commas: int = 0
+    has_content: bool = False
+
+
+def find_function_calls(expression: str) -> list[FunctionCallRef]:
+    """Every function call *expression* makes, with the number of arguments.
+
+    Ordered by closing parenthesis, so a nested call is reported before the one
+    that contains it. The scan is deliberately independent of
+    ``compiler/expr_parser.py``: ``parser/validator.py`` must not import from
+    ``compiler``, and the check this feeds — name and arity against the
+    portable function catalog — needs no parse tree, only the call shapes.
+
+    Braces and string literals are skipped whole, so a delimiter inside a
+    literal (``split_part({Path}, ',', 2)``) is not counted as an argument
+    separator and a column name containing a comma is not counted at all.
+    """
+    calls: list[FunctionCallRef] = []
+    stack: list[_OpenParen] = []
+    pos = 0
+    length = len(expression)
+
+    def mark_content() -> None:
+        if stack:
+            stack[-1].has_content = True
+
+    while pos < length:
+        char = expression[pos]
+        if char.isspace():
+            pos += 1
+            continue
+        if char == "'":
+            literal = SQL_STRING_LITERAL.match(expression, pos)
+            mark_content()
+            # An unterminated literal swallows the rest — the parser reports it.
+            pos = literal.end() if literal else length
+            continue
+        if char == "{":
+            end = expression.find("}", pos)
+            mark_content()
+            pos = length if end == -1 else end + 1
+            continue
+        identifier = _IDENTIFIER.match(expression, pos)
+        if identifier:
+            after = pos + len(identifier.group(0))
+            while after < length and expression[after].isspace():
+                after += 1
+            mark_content()
+            if after < length and expression[after] == "(":
+                name = identifier.group(0)
+                is_call = name.upper() not in _KEYWORDS_BEFORE_PAREN
+                stack.append(_OpenParen(name=name if is_call else None))
+                pos = after + 1
+                continue
+            pos = after
+            continue
+        if char == "(":
+            mark_content()
+            stack.append(_OpenParen(name=None))
+            pos += 1
+            continue
+        if char == ")":
+            if stack:
+                frame = stack.pop()
+                if frame.name is not None:
+                    arg_count = frame.commas + 1 if frame.has_content else 0
+                    calls.append(FunctionCallRef(name=frame.name, arg_count=arg_count))
+            mark_content()
+            pos += 1
+            continue
+        if char == ",":
+            if stack:
+                stack[-1].commas += 1
+                stack[-1].has_content = True
+            pos += 1
+            continue
+        mark_content()
+        pos += 1
+    return calls
 
 
 def find_qualified_refs(expression: str) -> list[tuple[str, str]]:

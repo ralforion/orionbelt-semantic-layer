@@ -21,12 +21,16 @@ async def list_dialects() -> DialectListResponse:
     for name in DialectRegistry.available():
         dialect = DialectRegistry.get(name)
         caps = asdict(dialect.capabilities)
+        # The list-valued capabilities are their own response fields;
+        # ``capabilities`` carries the boolean flags only.
         unsupported_aggs = caps.pop("unsupported_aggregations", [])
+        unsupported_funcs = caps.pop("unsupported_functions", [])
         dialects.append(
             DialectInfo(
                 name=name,
                 capabilities=caps,
                 unsupported_aggregations=unsupported_aggs,
+                unsupported_functions=unsupported_funcs,
             )
         )
     return DialectListResponse(dialects=dialects)
