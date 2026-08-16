@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -99,6 +101,35 @@ class TestDialectsEndpoint:
         response = await client.get("/v1/dialects")
         for info in response.json()["dialects"]:
             assert info["supported_functions"] == sorted(FUNCTION_CATALOG), info["name"]
+
+    async def test_published_examples_match_the_response_shape(self) -> None:
+        """The docs and the GPT action spec show this endpoint's response.
+
+        Renaming a field and leaving the examples behind is how a published
+        contract becomes a lie: the response fields were replaced by their
+        positive counterparts and three surfaces went on showing the old ones.
+        """
+        import yaml
+
+        from orionbelt.api.schemas import DialectInfo
+
+        repo_root = Path(__file__).resolve().parents[2]
+        fields = set(DialectInfo.model_fields)
+        retired = {"unsupported_aggregations", "unsupported_functions"}
+
+        spec = yaml.safe_load(
+            (repo_root / "integrations/chatgpt-custom-gpt/openapi-gpt-action.yaml").read_text()
+        )
+        documented = spec["paths"]["/v1/dialects"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]["properties"]["dialects"]["items"]["properties"]
+        assert set(documented) == fields
+
+        for doc in ("docs/api/endpoints.md", "docs/guide/dialects.md"):
+            text = (repo_root / doc).read_text()
+            assert not (retired & set(text.split())), f"{doc} still shows a retired field"
+            for field in fields - {"name"}:
+                assert field in text, f"{doc} omits '{field}' from the documented response"
 
     async def test_dialects_capabilities_are_boolean_only(self, client: AsyncClient) -> None:
         """The lists are their own fields; ``capabilities`` stays feature flags."""
