@@ -647,6 +647,22 @@ class TestArgumentRewrites:
         """
         assert _render("date_add('day', 5, {[S].[D]})", dialect) == expected
 
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_an_expression_count_survives_date_add(self, dialect: str) -> None:
+        """The entry promises *n* may be an expression, and Databricks
+        multiplies it by three for a quarter: a bare ``1 + 1`` there rendered
+        as ``1 + 1 * 3``, four months rather than six.
+        """
+        sql = _render("date_add('quarter', 1 + 1, {[S].[D]})", dialect)
+        assert "1 + 1 * 3" not in sql
+        if "* 3" in sql or "* INTERVAL" in sql:
+            assert "(1 + 1)" in sql, f"{dialect} leaves the count unbracketed: {sql}"
+
+    def test_databricks_builds_a_quarter_from_months(self) -> None:
+        assert _render("date_add('quarter', 1 + 1, {[S].[D]})", "databricks") == (
+            "(`S].[D` + make_interval(0, (1 + 1) * 3, 0, 0, 0, 0, 0))"
+        )
+
     def test_postgres_builds_date_diff_out_of_arithmetic(self) -> None:
         """Postgres has no date_diff, datediff or TIMESTAMPDIFF in any form."""
         sql = _render("date_diff('day', {[S].[A]}, {[S].[B]})", "postgres")

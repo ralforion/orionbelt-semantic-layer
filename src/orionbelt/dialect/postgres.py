@@ -143,6 +143,22 @@ class PostgresDialect(Dialect):
         """Postgres rejects ``CURRENT_DATE()``; the keyword takes no parens."""
         return "CURRENT_DATE"
 
+    def _render_date_add(self, unit: str, count: Expr, value: Expr) -> str:
+        """Postgres's interval parser rejects ``quarter``: ``INTERVAL '1
+        quarter'`` is "invalid input syntax for type interval".
+
+        Three months is the same interval and is accepted, which is what
+        ``_interval_parts`` already does for the relative-date filters. Every
+        other unit takes the shared form.
+        """
+        if unit != "quarter":
+            return super()._render_date_add(unit, count, value)
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        return self._render_infix(
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} + "
+            f"{n} * 3 * INTERVAL '1 month'"
+        )
+
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Postgres's ``GREATEST`` / ``LEAST`` skip NULL arguments; the catalog
         propagates NULL. ``div`` needs no override: Postgres has it natively

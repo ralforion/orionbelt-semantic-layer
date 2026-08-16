@@ -19,6 +19,8 @@ DATE_ADD(CAST('2026-08-01' AS DATE), INTERVAL -5 DAY);
 DATE_ADD(CAST('2026-01-31' AS DATE), INTERVAL 1 MONTH);
 --   date_add('year', 1, DATE '2026-08-01') = '2027-08-01'
 DATE_ADD(CAST('2026-08-01' AS DATE), INTERVAL 1 YEAR);
+--   date_add('quarter', 1 + 1, DATE '2026-01-01') = '2026-07-01'
+DATE_ADD(CAST('2026-01-01' AS DATE), INTERVAL (1 + 1) QUARTER);
 
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14

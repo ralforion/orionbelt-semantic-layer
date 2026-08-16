@@ -19,6 +19,8 @@ TIMESTAMPADD(DAY, -5, CAST('2026-08-01' AS DATE));
 TIMESTAMPADD(MONTH, 1, CAST('2026-01-31' AS DATE));
 --   date_add('year', 1, DATE '2026-08-01') = '2027-08-01'
 TIMESTAMPADD(YEAR, 1, CAST('2026-08-01' AS DATE));
+--   date_add('quarter', 1 + 1, DATE '2026-01-01') = '2026-07-01'
+TIMESTAMPADD(QUARTER, 1 + 1, CAST('2026-01-01' AS DATE));
 
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14

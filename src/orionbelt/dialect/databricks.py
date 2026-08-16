@@ -98,7 +98,10 @@ class DatabricksDialect(Dialect):
         days only, so the interval is built with ``make_interval``, whose
         arguments are ordinary expressions.
         """
-        n = self.compile_expr(count)
+        # At multiplication precedence, because the quarter slot multiplies:
+        # a bare ``1 + 1`` there rendered as ``1 + 1 * 3``, which is four
+        # months rather than six.
+        n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
         slots = {
             "year": f"{n}, 0, 0, 0, 0, 0, 0",
             "quarter": f"0, {n} * 3, 0, 0, 0, 0, 0",

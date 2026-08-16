@@ -588,6 +588,10 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("date_add('day', -5, DATE '2026-08-01')", "2026-07-27"),
             FunctionExample("date_add('month', 1, DATE '2026-01-31')", "2026-02-28"),
             FunctionExample("date_add('year', 1, DATE '2026-08-01')", "2027-08-01"),
+            # An expression count, which the entry promises and every other
+            # example quietly avoided: Databricks multiplies it by three for a
+            # quarter, and rendered ``1 + 1 * 3`` until this example existed.
+            FunctionExample("date_add('quarter', 1 + 1, DATE '2026-01-01')", "2026-07-01"),
         ),
         unit_argument=0,
     ),
