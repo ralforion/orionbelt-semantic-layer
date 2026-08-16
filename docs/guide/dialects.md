@@ -196,6 +196,25 @@ OrionBelt automatically wraps aggregate expressions with `CAST` based on resolve
 | Snowflake, DuckDB, Databricks, Dremio | 38 |
 | BigQuery | 38 |
 
+!!! warning "ClickHouse: decimal division keeps the operand's scale"
+
+    Dividing two decimals on ClickHouse produces a result at the *operands'*
+    scale rather than widening it, so a ratio built from `decimal(18, 2)`
+    columns is truncated to two places:
+
+    ```sql
+    SELECT toDecimal64(4254, 2) / toDecimal64(10000, 2)   -- 0.42
+    SELECT toDecimal64(4254, 4) / toDecimal64(10000, 4)   -- 0.4254
+    ```
+
+    Every other supported dialect widens the scale for you. If a metric divides
+    decimal measures and you need the precision, declare the metric's
+    `dataType` with the scale you want, or give the measures a `float`
+    `resultType` so the division happens in floating point. This is a
+    ClickHouse arithmetic rule, not something OrionBelt applies -- it is
+    documented here because a ratio that reads `0.42` on one engine and
+    `0.4254` on another looks like a compiler bug and is not.
+
 === "BigQuery / Databricks / Dremio / DuckDB / MySQL / Postgres / Snowflake"
 
     ```sql
