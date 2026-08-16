@@ -261,6 +261,23 @@ on BigQuery, and a guarded `SUBSTRING_INDEX` on MySQL — same model, same value
 The bundled `examples/orionbelt_1_commerce.yaml` carries this column plus
 `Client Initial` (`upper(substring(...))`) and `Product Label` (`concat(...)`).
 
+!!! warning "Behaviour change for models written before the catalog"
+
+    A call the catalog carries is now rendered per the catalog's meaning
+    rather than passed to the engine, so three expressions changed their
+    answer on the engines that disagreed. Everything else renders as before,
+    and several calls that used to fail now work.
+
+    | Expression | Dialects | Before | Now |
+    |---|---|---|---|
+    | `concat('a', NULL, 'c')` | DuckDB, Postgres, Dremio | `'ac'` | `NULL` |
+    | `length('äbcd')` | ClickHouse, MySQL | `5` (bytes) | `4` (characters) |
+    | `position('cd', 'abcd')` | ClickHouse | `0` (haystack first) | `3` (needle first) |
+
+    To keep NULL-skipping concatenation, say it in the expression:
+    `concat(coalesce({A}, ''), coalesce({B}, ''))` means the same thing on
+    every engine.
+
 **Validation.** A catalog function called with the wrong number of arguments is
 rejected at validation time with `WRONG_FUNCTION_ARITY`, naming the canonical
 signature. Nothing else about the call is checked — argument *types* are not
