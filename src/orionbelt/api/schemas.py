@@ -432,6 +432,29 @@ class ModelSettingsInfo(BaseModel):
         alias="defaultDialect",
         description="SQL dialect used when callers omit `dialect` on query requests",
     )
+    default_locale: str | None = Field(
+        default=None,
+        alias="defaultLocale",
+        description="BCP-47 locale used to format result values when a request omits ?locale=",
+    )
+    query_timezone: str | None = Field(
+        default=None,
+        alias="queryTimezone",
+        description="IANA zone timestamp columns are converted to before bucketing",
+    )
+    week_start: str | None = Field(
+        default=None,
+        alias="weekStart",
+        description="Day a week begins on for weekly truncation: 'monday' (ISO) or 'sunday'",
+    )
+    expression_mode: str | None = Field(
+        default=None,
+        alias="expressionMode",
+        description=(
+            "Whether a function outside the portable catalog is a warning "
+            "('permissive') or an error ('portable')"
+        ),
+    )
 
 
 class TimezoneResolutionInfo(BaseModel):

@@ -1249,7 +1249,7 @@ Return public configuration for API clients (UI, MCP, etc.).
 | `timezone` | object \| null | Timezone resolution chain (single-model mode) |
 | `dialect` | object | SQL dialect resolution chain (always present) |
 
-**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultTimezone`, `defaultDialect`, `overrideDatabaseTimezone`, `defaultNumericDataType`. Any key the model omits is also omitted from the response.
+**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultNumericDataType`, `defaultTimezone`, `overrideDatabaseTimezone`, `defaultDialect`, `defaultLocale`, `queryTimezone`, `weekStart`, `expressionMode`. Any key the model omits is also omitted from the response. A test asserts this mirror carries every field `ModelSettings` declares, so a setting cannot be added to the model and go missing here.
 
 **`timezone`** is the chain `db_executor.resolve_timezone()` walks at execute time. Always present so clients can show the wall clock even without a loaded model:
 
