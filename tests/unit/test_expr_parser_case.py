@@ -10,7 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.ast.nodes import Between, BinaryOp, CaseExpr, InList, IsNull, Literal
+from orionbelt.ast.nodes import (
+    Between,
+    BinaryOp,
+    CaseExpr,
+    InList,
+    IsNull,
+    Literal,
+    UnaryOp,
+)
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_measure_expression
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.parser.loader import TrackedLoader
@@ -285,3 +293,54 @@ class TestDialectRendering:
         assert "CASE" in sql
         assert "WHEN" in sql
         assert "END" in sql
+
+
+class TestUnarySign:
+    """A leading ``-`` or ``+`` on an operand (v2.25+).
+
+    The grammar had no unary sign at all, so ``round(-2.5)`` and
+    ``{Amount} * -1`` both died on "Unexpected token '-' (op) in expression":
+    ``-`` was only ever read as subtraction *between* two operands, which made
+    a negative number impossible to write anywhere in an OBML expression.
+    """
+
+    @staticmethod
+    def _parse(expression: str):
+        model = _load_model()
+        return parse_expression(tokenize_measure_expression(expression, model))
+
+    def test_negative_literal_folds_into_the_number(self) -> None:
+        """``- 2.5`` as SQL is the same value, but the constant the author
+        wrote is what should appear.
+        """
+        assert self._parse("-2.5") == Literal(value=-2.5)
+
+    def test_leading_plus_is_dropped(self) -> None:
+        assert self._parse("+5") == Literal(value=5)
+
+    def test_negation_of_an_expression_stays_an_operator(self) -> None:
+        node = self._parse("-(1 + 2)")
+        assert isinstance(node, UnaryOp)
+        assert node.op == "-"
+
+    def test_binds_tighter_than_multiplication(self) -> None:
+        node = self._parse("2 * -1")
+        assert isinstance(node, BinaryOp)
+        assert node.op == "*"
+        assert node.right == Literal(value=-1)
+
+    def test_subtraction_of_a_negative_still_parses(self) -> None:
+        node = self._parse("5 - -3")
+        assert isinstance(node, BinaryOp)
+        assert node.op == "-"
+        assert node.right == Literal(value=-3)
+
+    def test_negative_argument_renders_without_a_comment(self) -> None:
+        """``5 - -3`` must keep the space: ``5 --3`` is a line comment in
+        every dialect that supports ``--``.
+        """
+        from orionbelt.dialect.registry import DialectRegistry
+
+        sql = DialectRegistry.get("duckdb").compile_expr(self._parse("5 - -3"))
+        assert sql == "5 - -3"
+        assert "--" not in sql

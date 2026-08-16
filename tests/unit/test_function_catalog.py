@@ -254,6 +254,35 @@ class TestPinnedSemantics:
             "IFNULL(SPLIT('a,b,c', ',')[SAFE_OFFSET(8)], '')"
         )
 
+    def test_round_ties_go_away_from_zero_where_the_engine_rounds_to_even(self) -> None:
+        """ClickHouse's ROUND is half-to-even, so 2.5 would come back as 2."""
+        assert _render("round(2.5)", "clickhouse") == "sign(2.5) * floor(abs(2.5) + 0.5)"
+        assert _render("round(2.345, 2)", "clickhouse") == (
+            "sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2)"
+        )
+        # Every other engine already rounds away from zero.
+        assert _render("round(2.5)", "duckdb") == "ROUND(2.5)"
+
+    def test_trunc_goes_toward_zero_where_the_engine_has_no_truncation(self) -> None:
+        """Databricks has no numeric trunc, and a plain FLOOR would give -2."""
+        assert _render("trunc(-1.9)", "databricks") == "SIGN(-1.9) * FLOOR(ABS(-1.9))"
+
+    def test_extremum_propagates_null_where_the_engine_skips_it(self) -> None:
+        """MySQL, Snowflake and BigQuery already answer NULL; four do not."""
+        for dialect in ("duckdb", "postgres", "clickhouse", "databricks"):
+            sql = _render("greatest(1, NULL, 3)", dialect)
+            assert sql.startswith("CASE WHEN 1 IS NULL OR NULL IS NULL OR 3 IS NULL THEN NULL")
+        assert _render("greatest(1, NULL, 3)", "mysql") == "GREATEST(1, NULL, 3)"
+
+    def test_the_single_argument_log_is_not_in_the_catalog(self) -> None:
+        """It is base 10 on DuckDB and natural on ClickHouse: a silent factor
+        of 2.3, so only the explicit two-argument form is admitted and the
+        one-argument call falls through to pass-through.
+        """
+        assert lookup_function("log") is not None
+        assert not FUNCTION_CATALOG["log"].accepts(1)
+        assert _render("log(100)", "clickhouse") == "log(100)"
+
 
 class TestArgumentRewrites:
     """D4: a catalog entry is not a rename table."""
@@ -285,6 +314,43 @@ class TestArgumentRewrites:
     def test_underscoreless_spelling(self, dialect: str) -> None:
         assert _render("starts_with('abcd', 'ab')", dialect) == "STARTSWITH('abcd', 'ab')"
         assert _render("ends_with('abcd', 'cd')", dialect) == "ENDSWITH('abcd', 'cd')"
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("duckdb", "(-7 // 2)"),
+            ("postgres", "DIV(-7, 2)"),
+            ("mysql", "(-7 DIV 2)"),
+            ("clickhouse", "intDiv(-7, 2)"),
+            ("snowflake", "TRUNC(-7 / 2)"),
+            ("bigquery", "DIV(-7, 2)"),
+            ("databricks", "(-7 div 2)"),
+        ],
+    )
+    def test_integer_division_is_spelled_differently_on_every_engine(
+        self, dialect: str, expected: str
+    ) -> None:
+        """``div`` is an OBSL name no engine shares: a function on three, an
+        operator on three, and a truncated quotient on Snowflake.
+        """
+        assert _render("div(-7, 2)", dialect) == expected
+
+    def test_log_base_comes_first_and_bigquery_reverses_it(self) -> None:
+        assert _render("log(10, 100)", "duckdb") == "LOG(10, 100)"
+        assert _render("log(10, 100)", "bigquery") == "LOG(100, 10)"
+
+    def test_clickhouse_log_changes_base_through_log10(self) -> None:
+        """ClickHouse has no two-argument log, and its ``ln`` is a fast
+        approximation: ``ln(100) / ln(10)`` returns 1.9999999996784485.
+        """
+        assert _render("log(10, 100)", "clickhouse") == "log10(100) / log10(10)"
+
+    @pytest.mark.parametrize("dialect", ["mysql", "dremio"])
+    def test_truncate_takes_an_explicit_digit_count(self, dialect: str) -> None:
+        """Both spell it TRUNCATE and require the second argument, which the
+        catalog leaves optional.
+        """
+        assert _render("trunc(1.9)", dialect) == "TRUNCATE(1.9, 0)"
 
 
 class TestRenderingInvariants:

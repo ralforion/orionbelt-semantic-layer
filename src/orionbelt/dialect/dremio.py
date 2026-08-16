@@ -87,6 +87,44 @@ class DremioDialect(Dialect):
         """
         return self._render_concat_null_guard(args)
 
+    def _render_trunc(self, args: list[Expr]) -> str:
+        """Dremio spells it ``TRUNCATE`` and documents it as truncating toward
+        zero; it has no ``TRUNC``.
+        """
+        value = self.compile_expr(args[0])
+        digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
+        return f"TRUNCATE({value}, {digits})"
+
+    def _render_div(self, args: list[Expr]) -> str:
+        """Dremio has no integer-division function or operator.
+
+        The quotient is promoted to a float first, because whether Dremio reads
+        ``7 / 2`` as integer division is not something this repo can run and
+        check, and a floored integer division could not be corrected
+        afterwards. With the promotion the rewrite is right either way.
+        """
+        left = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
+        quotient = f"({left} * 1.0 / {right})"
+        return f"SIGN({quotient}) * FLOOR(ABS({quotient}))"
+
+    def _render_log(self, args: list[Expr]) -> str:
+        """Dremio's ``LOG`` accepts a base, but its reference does not state
+        which argument carries it, and there is no Dremio in the execution
+        matrix to settle it. The base change through ``LOG10`` depends on no
+        argument order at all.
+        """
+        base = self.compile_expr(args[0])
+        value = self.compile_expr(args[1])
+        return f"LOG10({value}) / LOG10({base})"
+
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """Dremio's NULL handling in ``GREATEST`` / ``LEAST`` is unverified
+        here, and its ``CONCAT`` already skips NULLs, so the guard applies the
+        catalog's rule without depending on which behaviour it has.
+        """
+        return self._render_null_guard(self._render_named_function(name, args), args)
+
     def _compile_mode(self, args: list[Expr]) -> str:
         """Dremio does not support MODE aggregation."""
         raise UnsupportedAggregationError("dremio", "mode")

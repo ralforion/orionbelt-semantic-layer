@@ -361,6 +361,16 @@ class Dialect(ABC):
                 return self._render_starts_with(args)
             case "ends_with":
                 return self._render_ends_with(args)
+            case "round":
+                return self._render_round(args)
+            case "trunc":
+                return self._render_trunc(args)
+            case "div":
+                return self._render_div(args)
+            case "log":
+                return self._render_log(args)
+            case "greatest" | "least":
+                return self._render_extremum(name, args)
             case _:
                 return self._render_named_function(name, args)
 
@@ -390,19 +400,25 @@ class Dialect(ABC):
         chain = " || ".join(self.compile_expr(a, _parent_prec=self._PREC_ADD + 1) for a in args)
         return f"({chain})"
 
-    def _render_concat_null_guard(self, args: list[Expr]) -> str:
-        """``CASE WHEN a IS NULL OR ... THEN NULL ELSE CONCAT(a, ...) END``.
+    def _render_null_guard(self, inner_sql: str, args: list[Expr]) -> str:
+        """``CASE WHEN a IS NULL OR ... THEN NULL ELSE <inner_sql> END``.
 
-        For an engine whose ``CONCAT`` skips NULL arguments and whose ``||``
-        cannot be shown to behave differently. Verbose, but it does not depend
-        on which of the two the engine implements.
+        The portable way to make a NULL-skipping function propagate NULL: used
+        by ``concat`` on Dremio and by ``greatest`` / ``least`` on the four
+        engines that skip. Verbose, but it does not depend on the engine having
+        a NULL-aware alternative, and it is type-agnostic where a sentinel
+        value (a negative infinity for a numeric ``greatest``) would not be.
         """
         guards = " OR ".join(
             f"{self.compile_expr(a, _parent_prec=self._PREC_CMP)} IS NULL" for a in args
         )
-        return (
-            f"CASE WHEN {guards} THEN NULL ELSE {self._render_named_function('concat', args)} END"
-        )
+        return f"CASE WHEN {guards} THEN NULL ELSE {inner_sql} END"
+
+    def _render_concat_null_guard(self, args: list[Expr]) -> str:
+        """``concat`` for an engine whose ``CONCAT`` skips NULL arguments and
+        whose ``||`` cannot be shown to behave differently.
+        """
+        return self._render_null_guard(self._render_named_function("concat", args), args)
 
     def _render_length(self, args: list[Expr]) -> str:
         """Default: ``LENGTH``, which counts characters everywhere except
@@ -431,6 +447,63 @@ class Dialect(ABC):
     def _render_ends_with(self, args: list[Expr]) -> str:
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
+
+    def _render_round(self, args: list[Expr]) -> str:
+        """Default: native ``ROUND``, which rounds ties away from zero on every
+        engine but ClickHouse, where ties go to even.
+        """
+        return self._render_named_function("round", args)
+
+    def _render_trunc(self, args: list[Expr]) -> str:
+        """Default: native ``TRUNC(x[, n])``, truncating toward zero."""
+        return self._render_named_function("trunc", args)
+
+    def _render_trunc_by_floor(self, args: list[Expr]) -> str:
+        """``sign(x) * floor(abs(x) * 10^n) / 10^n`` — truncation for an engine
+        with no numeric truncation of its own.
+
+        Via the absolute value so the result goes toward zero rather than down:
+        ``floor(-1.9)`` is -2 where the catalog documents -1. ``sign(0)`` is 0,
+        which keeps zero at zero.
+        """
+        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        if len(args) == 1:
+            return f"SIGN({value}) * FLOOR(ABS({value}))"
+        scale = f"POWER(10, {self.compile_expr(args[1])})"
+        return f"SIGN({value}) * FLOOR(ABS({value}) * {scale}) / {scale}"
+
+    def _render_div(self, args: list[Expr]) -> str:
+        """Default: native ``DIV(a, b)`` (BigQuery, Postgres)."""
+        return self._render_named_function("div", args)
+
+    def _render_div_by_truncation(self, args: list[Expr]) -> str:
+        """``TRUNC(a / b)`` — integer division for an engine with no operator
+        or function of its own, and whose ``/`` is float division.
+        """
+        left = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
+        return f"TRUNC({left} / {right})"
+
+    def _render_div_operator(self, args: list[Expr], operator: str) -> str:
+        """``(a <op> b)`` for the engines whose integer division is an operator.
+
+        Wrapped because ``compile_expr`` treats a function call as an atom and
+        gives the result no parens of its own.
+        """
+        left = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
+        return f"({left} {operator} {right})"
+
+    def _render_log(self, args: list[Expr]) -> str:
+        """Default: native ``LOG(base, x)``."""
+        return self._render_named_function("log", args)
+
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """Default: native ``GREATEST`` / ``LEAST``, which propagate NULL on
+        MySQL, Snowflake and BigQuery — the catalog's rule. DuckDB, Postgres,
+        ClickHouse and Databricks skip NULL arguments and override.
+        """
+        return self._render_named_function(name, args)
 
     def _check_aggregation_supported(self, name: str) -> None:
         """Raise ``UnsupportedAggregationError`` when the dialect doesn't support

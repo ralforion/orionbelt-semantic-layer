@@ -105,6 +105,13 @@ class SnowflakeDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_div(self, args: list[Expr]) -> str:
+        """Snowflake rejects ``DIV`` in every form ("Unsupported feature
+        'DIV'"), but its ``/`` is float division even on integers, so
+        truncating the quotient gives the catalog's answer.
+        """
+        return self._render_div_by_truncation(args)
+
     def _compile_multi_field_count(self, args: list[Expr], distinct: bool) -> str:
         """Snowflake supports native multi-arg COUNT(col1, col2)."""
         args_sql = ", ".join(self.compile_expr(a) for a in args)

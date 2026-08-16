@@ -227,24 +227,50 @@ optional argument.
 | `split_part(x, delim, n)` | string | 1-based; an `n` past the last field yields `''` |
 | `lpad(x, len, fill)` / `rpad(x, len, fill)` | string | Longer input is truncated to `len` |
 | `starts_with(x, prefix)` / `ends_with(x, suffix)` | boolean | Case-sensitive |
+| `abs(x)`, `sign(x)`, `floor(x)`, `ceil(x)`, `sqrt(x)`, `ln(x)`, `exp(x)` | numeric | `sign` is -1, 0 or 1 |
+| `power(base, exponent)` | float | |
+| `round(x, n?)` | float | **Ties round away from zero** — 2.5 is 3, -2.5 is -3 |
+| `trunc(x, n?)` | float | **Toward zero** — -1.9 is -1, where floor gives -2 |
+| `mod(a, b)` | numeric | The result takes the sign of the dividend |
+| `div(a, b)` | int | **Integer division, truncating toward zero** — the only way to ask for it |
+| `log(base, x)` | float | **Base first**; use `ln(x)` for the natural logarithm |
+| `coalesce(a, b, ...)` | argument | The first argument that is not NULL |
+| `nullif(a, b)` | argument | NULL when `a` equals `b` |
+| `greatest(a, b, ...)` / `least(a, b, ...)` | argument | **NULL propagates**, as for `concat` |
 
-The pinned meaning is the point. Three of those rules are places where engines
+The pinned meaning is the point. Six of those rules are places where engines
 disagree on the *answer* rather than on the spelling, and OBSL rewrites the call
 so every engine gives the catalog's answer:
 
 - `concat('a', NULL, 'c')` is NULL. DuckDB, Postgres and Dremio skip NULL
   arguments in their own `CONCAT`, so on those dialects the call is rendered as
   a `||` chain (DuckDB, Postgres) or a NULL-guarded `CASE` (Dremio).
+- `greatest(1, NULL, 3)` is NULL, for the same reason and by the same guard on
+  DuckDB, Postgres, ClickHouse and Databricks. To take the largest of the
+  values that are *present*, say so: `greatest(coalesce({A}, 0), coalesce({B}, 0))`.
 - `length('äbcd')` is 4. ClickHouse and MySQL count bytes in `LENGTH`, so they
   render `lengthUTF8` and `CHAR_LENGTH`.
 - `split_part('a,b,c', ',', 9)` is `''`. MySQL's `SUBSTRING_INDEX` would hand
   back the *last* field and BigQuery's `SPLIT` would return NULL, so both get a
   guard.
+- `round(2.5)` is 3. ClickHouse rounds ties to even, and has no half-up
+  function to switch to, so the call is rewritten arithmetically there.
+- `trunc(-1.9)` is -1. Databricks has no numeric truncation at all (its `trunc`
+  takes a date), so it becomes a signed floor of the magnitude.
 
 Argument order and shape are rewritten wherever an engine needs it —
 `position(needle, haystack)` becomes `POSITION(needle IN haystack)` on most
-dialects and `STRPOS(haystack, needle)` on BigQuery; ClickHouse gets
-`splitByString(delim, x)[n]` for `split_part`.
+dialects and `STRPOS(haystack, needle)` on BigQuery; `log(base, x)` is reversed
+on BigQuery and changes base through `log10` on ClickHouse, which has no
+two-argument logarithm; `div(a, b)` is a function on three engines, an operator
+on three, and a truncated quotient on Snowflake.
+
+Two neighbours are deliberately *not* in the catalog. The single-argument `log`
+is base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and BigQuery,
+a silent factor of 2.3, so only the explicit `log(base, x)` is admitted. And
+`/` is left to the engine: it is float division everywhere except Postgres,
+where `7 / 2` is 3, so ask for integer division with `div(a, b)` and write
+`{A} * 1.0 / {B}` when you mean the float.
 
 ```yaml
 Clients:

@@ -38,7 +38,9 @@ checked against a literal — arity and semantics are what the validator and the
 renderers actually need. ``result_type`` is carried because it documents the
 catalog for readers and for the reference surface.
 
-Groups ship in phases; this module currently holds the string group.
+Groups ship in phases; this module currently holds the string, numeric and
+conditional groups. Date/time is next, and is the one where every dialect needs
+a renderer rather than a few.
 """
 
 from __future__ import annotations
@@ -47,6 +49,8 @@ from dataclasses import dataclass, field
 
 # Function groups, in the order they are presented to readers.
 GROUP_STRING = "string"
+GROUP_NUMERIC = "numeric"
+GROUP_CONDITIONAL = "conditional"
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,13 @@ class FunctionSpec:
     min_args: int
     max_args: int | None
     result_type: str
+    """OBML abstract type of the result, or one of two words for the entries
+    whose result type is not fixed: ``numeric`` (int or float, following the
+    argument) and ``argument`` (whatever the arguments are, including strings
+    and dates). The *value* is what the catalog pins; the SQL type an engine
+    delivers it in is its own business, and ``sign`` alone comes back as an
+    integer on DuckDB, a numeric on Postgres and a float on BigQuery."""
+
     summary: str
     semantics: str | None = None
     examples: tuple[FunctionExample, ...] = field(default_factory=tuple)
@@ -296,7 +307,223 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
 )
 
 
-FUNCTION_CATALOG: dict[str, FunctionSpec] = {spec.name: spec for spec in _STRING_FUNCTIONS}
+def _simple_numeric(
+    name: str, summary: str, example: FunctionExample, *, result_type: str = "float"
+) -> FunctionSpec:
+    """A single-argument numeric entry every engine spells the same way.
+
+    Seven of the numeric entries differ in nothing but their name, and writing
+    each out in full buried the four that carry real per-dialect behaviour.
+    """
+    return FunctionSpec(
+        name=name,
+        signature=f"{name}(x)",
+        group=GROUP_NUMERIC,
+        min_args=1,
+        max_args=1,
+        result_type=result_type,
+        summary=summary,
+        examples=(example,),
+    )
+
+
+_NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
+    _simple_numeric(
+        "abs",
+        "Absolute value of *x*.",
+        FunctionExample("abs(-3)", 3),
+        result_type="numeric",
+    ),
+    _simple_numeric(
+        "sign",
+        "-1, 0 or 1 as *x* is negative, zero or positive.",
+        FunctionExample("sign(-3)", -1),
+        result_type="int",
+    ),
+    _simple_numeric(
+        "floor", "Largest integer not greater than *x*.", FunctionExample("floor(-1.2)", -2)
+    ),
+    _simple_numeric("ceil", "Smallest integer not less than *x*.", FunctionExample("ceil(1.2)", 2)),
+    _simple_numeric("sqrt", "Square root of *x*.", FunctionExample("sqrt(4)", 2)),
+    _simple_numeric("ln", "Natural logarithm of *x*.", FunctionExample("ln(1)", 0)),
+    _simple_numeric("exp", "*e* raised to the power of *x*.", FunctionExample("exp(0)", 1)),
+    FunctionSpec(
+        name="power",
+        signature="power(base, exponent)",
+        group=GROUP_NUMERIC,
+        min_args=2,
+        max_args=2,
+        result_type="float",
+        summary="*base* raised to the power of *exponent*.",
+        examples=(FunctionExample("power(2, 10)", 1024),),
+    ),
+    FunctionSpec(
+        name="round",
+        signature="round(x, n?)",
+        group=GROUP_NUMERIC,
+        min_args=1,
+        max_args=2,
+        result_type="float",
+        summary="Round *x* to *n* decimal places, or to a whole number.",
+        semantics=(
+            "Ties round away from zero: 2.5 is 3 and -2.5 is -3. ClickHouse "
+            "rounds ties to even (2.5 is 2), so its renderer rewrites the call "
+            "arithmetically rather than using the native ROUND."
+        ),
+        examples=(
+            FunctionExample("round(2.5)", 3),
+            FunctionExample("round(-2.5)", -3),
+            FunctionExample("round(0.5)", 1),
+            FunctionExample("round(2.345, 2)", 2.35),
+        ),
+    ),
+    FunctionSpec(
+        name="trunc",
+        signature="trunc(x, n?)",
+        group=GROUP_NUMERIC,
+        min_args=1,
+        max_args=2,
+        result_type="float",
+        summary="Truncate *x* to *n* decimal places, or to a whole number.",
+        semantics=(
+            "Toward zero, so -1.9 truncates to -1 where floor would give -2. "
+            "MySQL and Dremio spell it TRUNCATE and require the digit count; "
+            "Databricks has no numeric truncation at all and gets a rewrite."
+        ),
+        examples=(
+            FunctionExample("trunc(1.9)", 1),
+            FunctionExample("trunc(-1.9)", -1),
+            FunctionExample("trunc(2.345, 2)", 2.34),
+        ),
+    ),
+    FunctionSpec(
+        name="mod",
+        signature="mod(a, b)",
+        group=GROUP_NUMERIC,
+        min_args=2,
+        max_args=2,
+        result_type="numeric",
+        summary="Remainder of *a* divided by *b*.",
+        semantics="The result takes the sign of the dividend: mod(-7, 3) is -1.",
+        examples=(
+            FunctionExample("mod(7, 3)", 1),
+            FunctionExample("mod(-7, 3)", -1),
+        ),
+    ),
+    FunctionSpec(
+        name="div",
+        signature="div(a, b)",
+        group=GROUP_NUMERIC,
+        min_args=2,
+        max_args=2,
+        result_type="int",
+        summary="Integer division of *a* by *b*.",
+        semantics=(
+            "Truncates toward zero, so div(-7, 2) is -3 rather than -4. This is "
+            "the only way to ask for integer division: ``/`` is left to the "
+            "engine, and Postgres alone reads 7 / 2 as 3. No engine spells this "
+            "``div(a, b)`` and DuckDB has no such function at all, so the name is "
+            "an OBSL one that every dialect renders: ``a // b`` on DuckDB, "
+            "``intDiv`` on ClickHouse, the ``DIV`` operator on MySQL and "
+            "Databricks, ``TRUNC(a / b)`` on Snowflake."
+        ),
+        examples=(
+            FunctionExample("div(7, 2)", 3),
+            FunctionExample("div(-7, 2)", -3),
+        ),
+    ),
+    FunctionSpec(
+        name="log",
+        signature="log(base, x)",
+        group=GROUP_NUMERIC,
+        min_args=2,
+        max_args=2,
+        result_type="float",
+        summary="Logarithm of *x* in the given *base*.",
+        semantics=(
+            "Base first. BigQuery's own LOG takes them the other way round and "
+            "ClickHouse has no two-argument form, so both are rewritten. The "
+            "single-argument ``log`` is deliberately not in the catalog: it is "
+            "base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and "
+            "BigQuery, which is a silent factor of 2.3. Use ``ln(x)`` for the "
+            "natural logarithm."
+        ),
+        examples=(
+            FunctionExample("log(10, 100)", 2),
+            FunctionExample("log(2, 8)", 3),
+        ),
+    ),
+)
+
+
+_CONDITIONAL_FUNCTIONS: tuple[FunctionSpec, ...] = (
+    FunctionSpec(
+        name="coalesce",
+        signature="coalesce(a, b, ...)",
+        group=GROUP_CONDITIONAL,
+        min_args=2,
+        max_args=None,
+        result_type="argument",
+        summary="The first argument that is not NULL, or NULL if none is.",
+        examples=(
+            FunctionExample("coalesce(NULL, 'x')", "x"),
+            FunctionExample("coalesce(NULL, NULL)", None),
+        ),
+    ),
+    FunctionSpec(
+        name="nullif",
+        signature="nullif(a, b)",
+        group=GROUP_CONDITIONAL,
+        min_args=2,
+        max_args=2,
+        result_type="argument",
+        summary="NULL when *a* equals *b*, otherwise *a*.",
+        examples=(
+            FunctionExample("nullif('a', 'a')", None),
+            FunctionExample("nullif('a', 'b')", "a"),
+        ),
+    ),
+    FunctionSpec(
+        name="greatest",
+        signature="greatest(a, b, ...)",
+        group=GROUP_CONDITIONAL,
+        min_args=2,
+        max_args=None,
+        result_type="argument",
+        summary="The largest argument.",
+        semantics=(
+            "NULL propagates, as it does for ``concat``: a NULL argument makes "
+            "the result NULL rather than being skipped. The engines split four "
+            "to three on this, with DuckDB, Postgres, ClickHouse and Databricks "
+            "skipping NULLs, so those four are rewritten with a guard. To take "
+            "the largest of the values that are present, say so: "
+            "``greatest(coalesce(a, 0), coalesce(b, 0))``."
+        ),
+        examples=(
+            FunctionExample("greatest(1, 2, 3)", 3),
+            FunctionExample("greatest(1, NULL, 3)", None),
+        ),
+    ),
+    FunctionSpec(
+        name="least",
+        signature="least(a, b, ...)",
+        group=GROUP_CONDITIONAL,
+        min_args=2,
+        max_args=None,
+        result_type="argument",
+        summary="The smallest argument.",
+        semantics="NULL propagates, exactly as for ``greatest``.",
+        examples=(
+            FunctionExample("least(3, 2, 1)", 1),
+            FunctionExample("least(3, NULL, 1)", None),
+        ),
+    ),
+)
+
+
+FUNCTION_CATALOG: dict[str, FunctionSpec] = {
+    spec.name: spec for spec in (*_STRING_FUNCTIONS, *_NUMERIC_FUNCTIONS, *_CONDITIONAL_FUNCTIONS)
+}
 """Every catalog entry, keyed by its canonical (lowercase) name."""
 
 

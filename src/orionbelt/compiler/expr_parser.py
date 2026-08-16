@@ -19,6 +19,7 @@ Both share the same grammar:
     add_expr  → mul_expr (('+' | '-') mul_expr)*
     mul_expr  → factor (('*' | '/') factor)*
     factor → '(' expr ')'
+           | ('-' | '+') factor      -- unary sign
            | case_expr
            | NUMBER
            | STRING
@@ -340,6 +341,21 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             return node
         if tok.kind == "op" and tok.value == "CASE":
             return _parse_case()
+        if tok.kind == "op" and tok.value in ("-", "+"):
+            # Unary sign. Without this the grammar had no way to write a
+            # negative number at all: ``round(-2.5)`` and ``{Amount} * -1``
+            # both died on "Unexpected token '-'", since ``-`` was only ever
+            # read as subtraction between two operands.
+            _advance()
+            operand = _parse_factor()
+            if tok.value == "+":
+                return operand
+            # Fold the sign into a numeric literal rather than emitting
+            # ``- 2.5``: the SQL is the same value and reads as the constant
+            # the author wrote.
+            if isinstance(operand, Literal) and type(operand.value) in (int, float):
+                return Literal.number(-operand.value)  # type: ignore[operator]
+            return UnaryOp(op="-", operand=operand)
         if tok.kind == "number":
             _advance()
             val = float(tok.value) if "." in tok.value else int(tok.value)

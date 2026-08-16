@@ -85,6 +85,28 @@ class DatabricksDialect(Dialect):
         "ends_with": "ENDSWITH",
     }
 
+    def _render_trunc(self, args: list[Expr]) -> str:
+        """Databricks has no numeric truncation: its ``trunc`` truncates a
+        *date* to a format, so ``trunc(1.9)`` is a type error rather than 1.
+
+        ``floor`` takes an optional target scale here, so the rewrite is the
+        floor of the magnitude with the sign restored, which goes toward zero
+        the way the catalog documents.
+        """
+        return self._render_trunc_by_floor(args)
+
+    def _render_div(self, args: list[Expr]) -> str:
+        """Databricks: the ``div`` operator, "the integral part of the
+        division", per the SQL function reference.
+        """
+        return self._render_div_operator(args, "div")
+
+    def _render_extremum(self, name: str, args: list[Expr]) -> str:
+        """Spark's ``greatest`` / ``least`` skip NULL arguments ("skipping null
+        values"); the catalog propagates NULL.
+        """
+        return self._render_null_guard(self._render_named_function(name, args), args)
+
     def _compile_listagg(
         self,
         args: list[Expr],
