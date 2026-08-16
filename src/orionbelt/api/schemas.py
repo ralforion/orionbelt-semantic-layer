@@ -278,7 +278,7 @@ class DialectInfo(BaseModel):
         default_factory=list,
         description=(
             "Portable-catalog scalar functions this dialect cannot render "
-            "(see /v1/reference for the catalog)."
+            "(the catalog itself is at /v1/reference/functions)."
         ),
     )
 
