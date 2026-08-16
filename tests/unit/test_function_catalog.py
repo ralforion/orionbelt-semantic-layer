@@ -581,6 +581,56 @@ class TestQueryTimezone:
         once = apply_query_timezone(ColumnRef(name="occurred_at", table="Events"), model)
         assert once == apply_query_timezone(once, model)
 
+    def test_a_join_key_is_not_converted(self) -> None:
+        """A join asks whether two rows belong together, which no calendar
+        changes: both sides would convert identically for the same answer, at
+        the cost of wrapping a join key in a function, which is how an index or
+        a partition stops being used.
+        """
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Zagreb
+  defaultTimezone: UTC
+dataObjects:
+  Events:
+    code: events
+    columns:
+      Event ID: {code: id, abstractType: string}
+      Occurred At: {code: occurred_at, abstractType: timestamp}
+    joins:
+      - joinType: many-to-one
+        joinTo: Windows
+        columnsFrom: [Occurred At]
+        columnsTo: [Window At]
+  Windows:
+    code: windows
+    columns:
+      Window At: {code: window_at, abstractType: timestamp, primaryKey: true}
+      Window Name: {code: window_name, abstractType: string}
+dimensions:
+  Window Name: {dataObject: Windows, column: Window Name, resultType: string}
+  Occurred At: {dataObject: Events, column: Occurred At, resultType: timestamp}
+measures:
+  Event Count:
+    columns: [{dataObject: Events, column: Event ID}]
+    resultType: int
+    aggregation: count
+"""
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Window Name", "Occurred At"], measures=["Event Count"])
+        )
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        on_clause = next(line for line in sql.splitlines() if line.startswith("LEFT JOIN"))
+        assert "AT TIME ZONE" not in on_clause, on_clause
+        # The same column, selected as a dimension, is still converted.
+        assert '("Events"."occurred_at" AT TIME ZONE' in sql
+
     def test_a_date_column_is_never_converted(self) -> None:
         """A date has no instant to move between zones."""
         sql = _tz_sql("  queryTimezone: Europe/Zagreb", "timestamp_tz", "Occurred On")
@@ -619,6 +669,62 @@ class TestQueryTimezone:
             dialect,
         )
         assert expected in sql
+
+
+class TestWeeklyGrainFollowsTheCalendar:
+    """Every weekly path buckets the same way, not just the catalog function.
+
+    A ``timeGrain: week`` dimension and a weekly period-over-period went
+    through the dialect's own truncation, which hard-coded Monday on BigQuery
+    (ISOWEEK), ClickHouse (``toMonday``) and MySQL (a ``%Y-%u`` label), and on
+    Snowflake followed the WEEK_START session parameter. So the same model
+    bucketed differently depending on whether a user selected the dimension or
+    wrote the function.
+    """
+
+    @staticmethod
+    def _grain_sql(dialect: str, week_start: WeekStart) -> str:
+        from orionbelt.ast.nodes import ColumnRef as Ref
+        from orionbelt.models.semantic import TimeGrain
+
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = week_start
+        return engine.compile_expr(
+            engine.render_time_grain(Ref(name="occurred_at", table="Events"), TimeGrain.WEEK)
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_dimension_grain_follows_the_setting(self, dialect: str) -> None:
+        assert self._grain_sql(dialect, WeekStart.MONDAY) != self._grain_sql(
+            dialect, WeekStart.SUNDAY
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_dimension_grain_matches_the_catalog_function(self, dialect: str) -> None:
+        """One implementation, so the two entry points cannot disagree."""
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            engine = DialectRegistry.get(dialect)
+            engine.week_start = week_start
+            catalog = engine.compile_expr(
+                parse_expression(tokenize_metric_formula("date_trunc('week', {[Events].[X]})"))
+            ).replace("Events].[X", "occurred_at")
+            assert self._grain_sql(dialect, week_start).replace(
+                '"Events"."occurred_at"', '"occurred_at"'
+            ).replace("`Events`.`occurred_at`", "`occurred_at`") == catalog.replace(
+                '"occurred_at"', '"occurred_at"'
+            ).replace("`occurred_at`", "`occurred_at`")
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_period_over_period_spine_follows_it_too(self, dialect: str) -> None:
+        engine = DialectRegistry.get(dialect)
+        engine.week_start = WeekStart.SUNDAY
+        sunday = engine.render_date_trunc_sql('"ts"', "week")
+        engine.week_start = WeekStart.MONDAY
+        assert sunday != engine.render_date_trunc_sql('"ts"', "week")
+
+    def test_snowflake_weekly_grain_no_longer_reads_its_session(self) -> None:
+        for week_start in (WeekStart.MONDAY, WeekStart.SUNDAY):
+            assert "DAYOFWEEKISO" in self._grain_sql("snowflake", week_start)
 
 
 class TestTimeZoneNodeIsWalkable:

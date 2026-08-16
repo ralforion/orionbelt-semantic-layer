@@ -169,7 +169,7 @@ class MySQLDialect(Dialect):
         escaped = name.replace("`", "``")
         return f"`{escaped}`"
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         """MySQL time grain truncation via DATE_FORMAT or DATE_ADD+MAKEDATE for quarters."""
         grain_format_map: dict[TimeGrain, str | None] = {
             TimeGrain.SECOND: "%Y-%m-%d %H:%i:%s",
@@ -447,7 +447,7 @@ class MySQLDialect(Dialect):
             return f"DATE_SUB({date_sql}, INTERVAL {abs(count)} {unit.upper()})"
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit.upper()})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         grain_map = {
             "year": f"DATE_FORMAT({column_sql}, '%Y-01-01')",
             "quarter": (

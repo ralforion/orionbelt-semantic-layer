@@ -53,7 +53,7 @@ class DremioDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -186,7 +186,7 @@ class DremioDialect(Dialect):
         # the forward spine in render_date_spine_cte_sql).
         return f"CAST(TIMESTAMPADD({unit.upper()}, {count}, {date_sql}) AS DATE)"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC('{grain}', {column_sql})"
 
     def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:

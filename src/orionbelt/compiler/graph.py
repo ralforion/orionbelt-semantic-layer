@@ -448,6 +448,13 @@ class JoinGraph:
         inlines its template body. Without this, a join on a computed
         key would render ``"obj"."" = "other"."key"`` and the database
         would error on the zero-length identifier.
+
+        The model's query time zone is deliberately *not* applied here. A join
+        asks whether two rows belong together, which no calendar changes: both
+        sides would convert identically and the answer would be the same, at
+        the cost of wrapping a join key in a function, which is how an index or
+        a partition stops being used. Conversion exists so that bucketing and
+        display happen in the model's frame, and an ON clause is neither.
         """
         from orionbelt.compiler.resolution import make_column_expr
 
@@ -456,11 +463,15 @@ class JoinGraph:
             from_obj = self._model.data_objects.get(step.from_object)
             to_obj = self._model.data_objects.get(step.to_object)
             if from_obj and from_c in from_obj.columns:
-                left_expr: Expr = make_column_expr(self._model, step.from_object, from_c)
+                left_expr: Expr = make_column_expr(
+                    self._model, step.from_object, from_c, in_query_timezone=False
+                )
             else:
                 left_expr = ColumnRef(name=from_c, table=step.from_object)
             if to_obj and to_c in to_obj.columns:
-                right_expr: Expr = make_column_expr(self._model, step.to_object, to_c)
+                right_expr: Expr = make_column_expr(
+                    self._model, step.to_object, to_c, in_query_timezone=False
+                )
             else:
                 right_expr = ColumnRef(name=to_c, table=step.to_object)
             conditions.append(BinaryOp(left=left_expr, op="=", right=right_expr))

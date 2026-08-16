@@ -230,7 +230,13 @@ def anchored_conformed_objects(
     return measure.source_objects - reachable
 
 
-def make_column_expr(model: SemanticModel, object_name: str, column_label: str) -> Expr:
+def make_column_expr(
+    model: SemanticModel,
+    object_name: str,
+    column_label: str,
+    *,
+    in_query_timezone: bool = True,
+) -> Expr:
     """Build the AST expression that represents a column reference.
 
     For plain columns, returns ``ColumnRef(name=col.code, table=object_name)``.
@@ -247,7 +253,10 @@ def make_column_expr(model: SemanticModel, object_name: str, column_label: str) 
         return ColumnRef(name=column_label, table=object_name)
     if column.expression:
         return _build_computed_column_expr(column, obj, model)
-    return _in_query_timezone(ColumnRef(name=column.code, table=object_name), column, model)
+    ref: Expr = ColumnRef(name=column.code, table=object_name)
+    if not in_query_timezone:
+        return ref
+    return _in_query_timezone(ref, column, model)
 
 
 #: Timestamp types carry an instant, so which day or week they fall in depends on

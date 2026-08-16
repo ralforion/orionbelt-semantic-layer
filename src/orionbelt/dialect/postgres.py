@@ -65,7 +65,7 @@ class PostgresDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -209,7 +209,7 @@ class PostgresDialect(Dialect):
         n, u = self._interval_parts(unit, count)
         return f"{date_sql} + INTERVAL '{n} {u}'"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"date_trunc('{grain}', {column_sql})"
 
     def render_date_spine_cte_sql(

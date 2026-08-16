@@ -83,6 +83,23 @@ def test_dremio_week_start(run_dremio_sql: RunSql) -> None:
     numbering Sunday 1, and the Sunday rewrite depends on that being true.
     """
     failures = []
+    for week_start, expected in (
+        (WeekStart.MONDAY, "2026-08-10"),
+        (WeekStart.SUNDAY, "2026-08-09"),
+    ):
+        from orionbelt.ast.nodes import Cast, Literal
+        from orionbelt.models.semantic import TimeGrain
+
+        engine = DialectRegistry.get("dremio")
+        engine.week_start = week_start
+        grain = engine.render_time_grain(
+            Cast(expr=Literal.string("2026-08-15"), type_name="date"), TimeGrain.WEEK
+        )
+        actual = run_dremio_sql(f"SELECT {engine.compile_expr(grain)} AS c0")[0][0]
+        if not matches(expected, actual):
+            failures.append(
+                f"timeGrain week under weekStart={week_start.value}: {actual!r} != {expected!r}"
+            )
     for call, week_start, expected in _WEEK_CASES:
         sql = f"SELECT {_render(call, week_start)} AS c0"
         actual = run_dremio_sql(sql)[0][0]

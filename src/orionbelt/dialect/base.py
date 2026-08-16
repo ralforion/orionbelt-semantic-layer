@@ -265,9 +265,26 @@ class Dialect(ABC):
     def quote_identifier(self, name: str) -> str:
         """Quote an identifier per dialect rules."""
 
-    @abstractmethod
     def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
-        """Wrap a column expression for the given time grain."""
+        """Wrap a column expression for the given time grain.
+
+        A week is routed through the model's calendar rather than the dialect's
+        own weekly truncation, so a ``timeGrain: week`` dimension, a weekly
+        period-over-period and an explicit ``date_trunc('week', …)`` all bucket
+        the same rows the same way. Left to the dialects, they did not: BigQuery
+        hard-coded ISOWEEK, ClickHouse ``toMonday``, MySQL a ``%Y-%u`` label,
+        and Snowflake a ``DATE_TRUNC('week')`` that follows its WEEK_START
+        session parameter.
+        """
+        if grain is TimeGrain.WEEK:
+            # RawSQL: re-wraps SQL this dialect just rendered, so the weekly
+            # floor has one implementation rather than one per entry point.
+            return RawSQL(sql=self._render_week_floor(column))
+        return self._render_time_grain(column, grain)
+
+    @abstractmethod
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+        """Wrap a column expression for a grain other than a week."""
 
     @abstractmethod
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -281,12 +298,23 @@ class Dialect(ABC):
     def date_add_sql(self, date_sql: str, unit: str, count: int) -> str:
         """Return SQL that adds count units to date_sql."""
 
-    @abstractmethod
     def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
-        """Return SQL string that truncates a date/timestamp to the given grain.
+        """Truncate a date/timestamp to the given grain, as a SQL string.
 
-        String-level helper (not AST) for use in raw SQL CTEs like date_range.
+        String-level helper (not AST) for use in raw SQL CTEs like date_range
+        and the period-over-period spine. A week goes through the model's
+        calendar for the same reason it does in ``render_time_grain``: a weekly
+        PoP and a weekly dimension have to agree on where a week starts.
         """
+        if grain == TimeGrain.WEEK.value:
+            # RawSQL: the caller already has SQL text, and the floor is defined
+            # over expressions.
+            return self._render_week_floor(RawSQL(sql=column_sql))
+        return self._render_date_trunc_sql(column_sql, grain)
+
+    @abstractmethod
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        """Truncate to a grain other than a week, as a SQL string."""
 
     @abstractmethod
     def render_date_spine_cte_sql(

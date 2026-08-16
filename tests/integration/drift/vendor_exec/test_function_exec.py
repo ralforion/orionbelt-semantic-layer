@@ -28,7 +28,7 @@ from orionbelt.ast.nodes import Cast, InTimeZone, Literal
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
-from orionbelt.models.semantic import WeekStart
+from orionbelt.models.semantic import TimeGrain, WeekStart
 
 from ._catalog_values import matches as _matches
 from .conftest import VendorTarget
@@ -124,9 +124,26 @@ _WEEK_CASES: list[tuple[str, str, str | int]] = [
 
 
 def _assert_week_start(vendor: VendorTarget) -> None:
-    """Execute both calendars, rather than trusting either engine's default."""
+    """Execute both calendars, rather than trusting either engine's default.
+
+    Covers both roads to a weekly bucket: the catalog function an author
+    writes, and the ``timeGrain: week`` a dimension declares. They render
+    through one implementation, and this is what proves they agree on data.
+    """
     engine = DialectRegistry.get(vendor.dialect)
     failures = []
+    for week_start, expected in (("monday", "2026-08-10"), ("sunday", "2026-08-09")):
+        engine.week_start = WeekStart(week_start)
+        grain = engine.render_time_grain(
+            Cast(expr=Literal.string("2026-08-15"), type_name="date"), TimeGrain.WEEK
+        )
+        actual = next(
+            iter(vendor.execute(f"SELECT {engine.compile_expr(grain)} AS c0")[0].values())
+        )
+        if not _matches(expected, actual):
+            failures.append(
+                f"timeGrain week under weekStart={week_start}: {actual!r} != {expected!r}"
+            )
     for call, week_start, expected in _WEEK_CASES:
         engine.week_start = WeekStart(week_start)
         ast = parse_expression(tokenize_metric_formula(call))

@@ -338,6 +338,11 @@ settings:
   weekStart: sunday   # default: monday (ISO 8601)
 ```
 
+It governs **every** weekly path, not just the function: a `timeGrain: week`
+dimension, a weekly period-over-period, and an explicit `date_trunc('week', …)`
+all bucket the same rows the same way, because they render through one
+implementation per dialect.
+
 Under `sunday`, `date_trunc('week', DATE '2026-08-15')` is `2026-08-09` rather
 than `2026-08-10`, on every dialect — including the six whose native truncation
 only knows Monday, which are rewritten. `extract('week', …)` is deliberately

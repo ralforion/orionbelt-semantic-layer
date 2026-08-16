@@ -94,7 +94,7 @@ class ClickHouseDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         func_name = _GRAIN_FUNCTIONS.get(grain)
         if func_name:
             return FunctionCall(name=func_name, args=[column])
@@ -364,7 +364,7 @@ class ClickHouseDialect(Dialect):
             raise ValueError(f"Unsupported unit '{unit}' for ClickHouse")
         return f"{func}({date_sql}, {count})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         grain_func_map: dict[str, str] = {
             "year": "toStartOfYear",
             "quarter": "toStartOfQuarter",

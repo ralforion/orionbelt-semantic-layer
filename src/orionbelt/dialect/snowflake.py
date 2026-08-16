@@ -59,7 +59,7 @@ class SnowflakeDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -75,7 +75,7 @@ class SnowflakeDialect(Dialect):
         unit_sql = unit.lower()
         return f"DATEADD('{unit_sql}', {count}, {date_sql})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC('{grain}', {column_sql})"
 
     def render_date_spine_cte_sql(

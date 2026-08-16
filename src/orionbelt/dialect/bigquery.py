@@ -102,7 +102,7 @@ class BigQueryDialect(Dialect):
         parts = [database, schema, code]
         return ".".join(self.quote_identifier(p) for p in parts if p)
 
-    def render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
+    def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         # BigQuery DATE_TRUNC takes a date-part *keyword* (MONTH, ISOWEEK), not a
         # string literal: DATE_TRUNC(col, 'month') raises "A valid date part name
         # is required". RawSQL: emit the bare keyword (matches render_date_trunc_sql).
@@ -263,7 +263,7 @@ class BigQueryDialect(Dialect):
         unit_sql = unit.upper()
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit_sql})"
 
-    def render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+    def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
         return f"DATE_TRUNC({column_sql}, {grain.upper()})"
 
     def render_date_spine_cte_sql(
