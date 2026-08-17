@@ -338,6 +338,11 @@ class CFLPlanner:
         return cfl_projection.is_multi_field(measure)
 
     @staticmethod
+    def _leaves_union_untyped(measure: ResolvedMeasure, model: SemanticModel) -> bool:
+        """Whether both sides of the union carry *measure* with no cast."""
+        return cfl_projection.leaves_union_untyped(measure, model)
+
+    @staticmethod
     def _resolve_union_alignment_type(
         measure: ResolvedMeasure,
         model: SemanticModel,
@@ -594,9 +599,10 @@ class CFLPlanner:
                     # every one before the outer SUM sees it. The NULL pads
                     # below use the same resolver, so the legs still agree,
                     # which is what the cast was for.
-                    own_type_name = self._resolve_union_alignment_type(m, model, dialect)
-                    if own_type_name:
-                        own_expr = Cast(expr=own_expr, type_name=own_type_name)
+                    if not self._leaves_union_untyped(m, model):
+                        own_type_name = self._resolve_union_alignment_type(m, model, dialect)
+                        if own_type_name:
+                            own_expr = Cast(expr=own_expr, type_name=own_type_name)
                     leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))
                     # An ordered aggregate's sort key rides along as its own
                     # column so the outer re-aggregation can order by it.
@@ -607,9 +613,11 @@ class CFLPlanner:
                         )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
-                    null_type_name = self._resolve_union_alignment_type(m, model, dialect)
-                    if null_type_name is None and model_measure:
-                        null_type_name = model_measure.result_type.value
+                    null_type_name = None
+                    if not self._leaves_union_untyped(m, model):
+                        null_type_name = self._resolve_union_alignment_type(m, model, dialect)
+                        if null_type_name is None and model_measure:
+                            null_type_name = model_measure.result_type.value
                     null_expr = (
                         Cast(Literal.null(), type_name=null_type_name)
                         if null_type_name

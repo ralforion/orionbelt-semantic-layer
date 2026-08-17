@@ -206,6 +206,44 @@ _ACCUMULATING_AGGREGATIONS = frozenset(
 )
 
 
+# These pick a value out of the rows rather than combining them, so the leg
+# should hand the outer aggregate the stored value untouched.
+_SELECTING_AGGREGATIONS = frozenset({"min", "max", "any_value", "median", "mode"})
+
+
+def leaves_union_untyped(measure: ResolvedMeasure, model: SemanticModel) -> bool:
+    """Whether both sides of the union should carry *measure* with no cast.
+
+    A selecting aggregate hands the outer ``MIN``/``MAX``/... a value to choose
+    from, so any cast on the leg is applied to the stored value itself. Casting
+    to the measure's ``result_type`` meant a ``DECIMAL(38, 15)`` column reached
+    the aggregate as ``FLOAT``, and ``MIN`` then selected from already-degraded
+    values: 1.000000000000400 became 1.0 the moment a measure from another fact
+    joined the query. Issue #311.
+
+    Leaving both sides untyped works because the *padding* is what forced the
+    cast in the first place. A typed NULL that disagrees with the own column is
+    what builds ClickHouse's ``Variant(Decimal, Float64)``; an untyped ``NULL``
+    unifies with whatever the column is. Measured on ClickHouse, Postgres,
+    MySQL, DuckDB, BigQuery and Snowflake, each returning the exact stored
+    value where the cast returned a degraded one.
+
+    Restricted to numeric sources. A text or temporal column is not damaged by
+    its abstract type, and the existing padding for those is well covered.
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if not model_measure:
+        return False
+    if (model_measure.aggregation or "").lower() not in _SELECTING_AGGREGATIONS:
+        return False
+    if len(model_measure.columns) != 1:
+        return False
+    ref = model_measure.columns[0]
+    obj = model.data_objects.get(ref.view) if ref.view else None
+    column = obj.columns.get(ref.column) if obj and ref.column else None
+    return column is not None and column.abstract_type.value in ("int", "float")
+
+
 def resolve_union_alignment_type(
     measure: ResolvedMeasure,
     model: SemanticModel,

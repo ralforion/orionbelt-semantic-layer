@@ -54,6 +54,7 @@ dataObjects:
     columns:
       Day: {code: day, abstractType: int}
       Amount: {code: amount, abstractType: float}
+      Label: {code: label, abstractType: string}
     joins:
       - joinType: many-to-one
         joinTo: Days
@@ -90,6 +91,10 @@ measures:
     columns: [{dataObject: Charges, column: Amount}]
     resultType: float
     aggregation: min
+  Charged Label Min:
+    columns: [{dataObject: Charges, column: Label}]
+    resultType: string
+    aggregation: min
   Charged:
     columns: [{dataObject: Charges, column: Amount}]
     resultType: float
@@ -118,11 +123,11 @@ def _model() -> SemanticModel:
 def _seeded() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(":memory:")
     con.execute("CREATE TABLE days (day INTEGER)")
-    con.execute("CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6))")
+    con.execute("CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), label VARCHAR)")
     con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
     con.execute(f"INSERT INTO days SELECT * FROM range(1, {ROWS + 1})")
-    for table in ("charges", "invoices"):
-        con.execute(f"INSERT INTO {table} SELECT r, 1 + {FRACTION} FROM range(1, {ROWS + 1}) t(r)")
+    con.execute(f"INSERT INTO charges SELECT r, 1 + {FRACTION}, 'x' FROM range(1, {ROWS + 1}) t(r)")
+    con.execute(f"INSERT INTO invoices SELECT r, 1 + {FRACTION} FROM range(1, {ROWS + 1}) t(r)")
     return con
 
 
@@ -229,10 +234,9 @@ class TestWhatIsAndIsNotWidened:
         from 1.000000000000400 to 1.000000000000 - so they keep the existing
         alignment.
 
-        This asserts the leg is not widened rather than asserting a value:
-        those aggregates have a separate, older precision problem of their own
-        (the leg casts a wide decimal to FLOAT), which this change neither
-        causes nor fixes.
+        They are also not narrowed: a selecting aggregate hands the outer
+        ``MIN`` a value to choose from, so the leg carries the stored value
+        with no cast at all. See ``TestSelectingAggregatesKeepTheStoredValue``.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
@@ -270,3 +274,74 @@ class TestWhatIsAndIsNotWidened:
         assert "DECIMAL(18, 3)" not in leg, (
             f"a statistical aggregate narrowed its rows to the result scale: {leg}"
         )
+
+
+class TestSelectingAggregatesKeepTheStoredValue:
+    """A leg hands MIN/MAX a value to choose from, so it must not touch it.
+
+    Casting the leg to the measure's ``result_type`` meant a wide decimal
+    reached the aggregate as ``FLOAT``, and ``MIN`` selected from already
+    degraded values. Issue #311.
+    """
+
+    def test_a_min_answers_the_same_multi_fact_as_alone(self) -> None:
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("CREATE TABLE days (day INTEGER)")
+            con.execute("CREATE TABLE charges (day INTEGER, amount DECIMAL(38, 15), label VARCHAR)")
+            con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+            con.execute("INSERT INTO days VALUES (1), (2)")
+            con.execute("INSERT INTO charges VALUES (1, 1.000000000000400, 'x'), (2, 2.5, 'y')")
+            con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
+            star = _run(con, ["Charged Min"])[0][0]
+            cfl = _run(con, ["Charged Min", "Invoiced"])[0][0]
+        finally:
+            con.close()
+        assert Decimal(str(star)) == Decimal("1.000000000000400")
+        assert Decimal(str(cfl)) == Decimal(str(star)), (
+            "MIN selected from values the leg had already degraded"
+        )
+
+    def test_the_leg_carries_the_column_uncast(self) -> None:
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
+            _model(),
+            "duckdb",
+        ).sql
+        assert '"Charges"."amount" AS "Charged Min"' in sql, (
+            f"the leg should hand MIN the stored value, uncast:\n{sql}"
+        )
+
+    def test_the_padding_is_an_untyped_null(self) -> None:
+        """A typed NULL is what forced the cast; an untyped one unifies.
+
+        ClickHouse builds a ``Variant(Decimal, Float64)`` from a typed pad that
+        disagrees with the own column and then refuses to aggregate it. A bare
+        ``NULL`` takes whatever type the column has, measured on ClickHouse,
+        Postgres, MySQL, DuckDB, BigQuery and Snowflake.
+        """
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=["Day"], measures=["Charged Min", "Invoiced"])
+            ),
+            _model(),
+            "clickhouse",
+        ).sql
+        assert 'NULL AS "Charged Min"' in sql, f"expected an untyped pad:\n{sql}"
+
+    def test_a_non_numeric_source_is_left_as_it_was(self) -> None:
+        """Only numeric sources were being damaged.
+
+        A text column is not degraded by its abstract type, and the existing
+        padding for those is well covered, so the change is scoped to where the
+        harm was rather than applied on principle.
+        """
+        sql = PIPELINE.compile(
+            QueryObject(
+                select=QuerySelect(dimensions=[], measures=["Charged Label Min", "Invoiced"])
+            ),
+            _model(),
+            "duckdb",
+        ).sql
+        leg = next(line for line in sql.splitlines() if '"Charged Label Min"' in line)
+        assert "CAST" in leg, f"a text source should keep its existing padding:\n{leg}"
