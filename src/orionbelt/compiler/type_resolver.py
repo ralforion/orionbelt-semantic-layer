@@ -86,8 +86,13 @@ def resolve_measure_data_type(
     # needs a per-dialect rewrite; tracked in #316.
     #
     # So widening AVG would trade a loud overflow for a quietly wrong number,
-    # on exactly the engines where the number is wrong. It keeps the default,
-    # and a model that needs a large integer average declares ``dataType``.
+    # on exactly the engines where the number is wrong. It keeps the default.
+    #
+    # Declaring ``dataType`` is *not* an escape hatch here either - it widens
+    # this same cast, so on DuckDB it turns the error back into
+    # 1000000000000000000.00 for a true average of ...003.00. Nothing chosen at
+    # this layer can help; only a different aggregate expression can, which is
+    # what #316 is for.
     if measure.result_type == DataType.INT and agg == "SUM":
         return SimpleType(name="bigint")
 

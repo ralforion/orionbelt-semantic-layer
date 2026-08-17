@@ -1176,14 +1176,8 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     a perfectly legal figure. A measure declaring `resultType: int` therefore
     infers `bigint` for `SUM`, which is exact on every dialect.
 
-    **`AVG` is deliberately not widened.** The precision is lost inside the
-    aggregate, before any cast, and only on some engines: `AVG` over a
-    `BIGINT` is exact on PostgreSQL (`numeric`) and MySQL (`decimal`), but
-    floating point on DuckDB and ClickHouse. On DuckDB no rewrite recovers it,
-    since every division returns `DOUBLE`. Widening the cast would therefore
-    hide an overflow behind a quietly wrong average on exactly the engines
-    where the average is wrong. Declare `dataType` on the measure to ask for a
-    wider average explicitly.
+    **`AVG` is deliberately not widened**, because on some engines a wider cast
+    would not make the average right. See the warning below.
 
 !!! warning "`AVG` above ~15 significant digits on DuckDB and ClickHouse"
 
@@ -1193,10 +1187,28 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     `9223372036854775807.12` and `...807.24` returns `9.223372036854776e+18`
     rather than `9223372036854775807.18`, while `SUM` over the same column
     stays exact. This is [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829),
-    closed as not planned.
+    closed as not planned. PostgreSQL (`numeric`) and MySQL (`decimal`) are
+    exact.
+
+    **Declaring `dataType` does not fix this**, and on these two engines it
+    makes the failure worse rather than better. The loss happens inside the
+    aggregate, before the cast, so a wider `dataType` only lets the wrong
+    number through:
+
+    ```yaml
+    Qty Avg:
+      aggregation: avg
+      dataType: "decimal(21, 2)"   # emits CAST(AVG(qty) AS DECIMAL(21, 2))
+    ```
+
+    On DuckDB that returns `1000000000000000000.00` where the true average is
+    `1000000000000000003.00`. Left at the default the same query *fails*, which
+    is the better outcome: an error you can see beats a plausible wrong figure.
 
     Ordinary money-sized values are unaffected. If your averages can reach that
-    magnitude, aggregate on PostgreSQL or MySQL, which are exact, or track
+    magnitude, aggregate on PostgreSQL or MySQL, express the average as a
+    metric over an exact `SUM` and a `COUNT` and accept the division's own
+    limits, or track
     [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316).
 
     A measure over a large-valued **non-integer** column also still takes the

@@ -428,6 +428,40 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
             con.execute(sql).fetchall()
         con.close()
 
+    def test_declaring_a_data_type_does_not_rescue_avg_on_duckdb(self) -> None:
+        """The escape hatch that is not one, pinned so the guidance cannot drift.
+
+        It is tempting to tell users "declare ``dataType`` if you need a wider
+        average". On DuckDB and ClickHouse that is actively harmful advice: the
+        loss is inside the aggregate, so a wider dataType only widens this same
+        cast and lets the wrong number through instead of failing. An error you
+        can see beats a plausible wrong figure.
+
+        Asserted as an inequality rather than by pinning the wrong value, so
+        this reads as "still lossy" rather than as an endorsement of it.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        yaml = _BIGINT_YAML.replace(
+            "Qty Avg: {columns: [{dataObject: Charges, column: Qty}], "
+            "resultType: int, aggregation: avg}",
+            "Qty Avg: {columns: [{dataObject: Charges, column: Qty}], "
+            'resultType: int, aggregation: avg, dataType: "decimal(21, 2)"}',
+        )
+        from orionbelt.parser import ReferenceResolver, TrackedLoader
+
+        raw, sm = TrackedLoader().load_string(yaml)
+        model, _ = ReferenceResolver().resolve(raw, sm)
+        con = _bigint_table(duckdb)
+        query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=["Qty Avg"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert "DECIMAL(21, 2)" in sql, sql
+        value = Decimal(str(con.execute(sql).fetchall()[0][1]))
+        con.close()
+        assert value != Decimal("1000000000000000001.50"), (
+            "DuckDB averaged exactly - see #316; if this now passes, the docs and "
+            "the type_resolver comment both need updating"
+        )
+
 
 _BIGINT_YAML = """
 version: "1.0"
