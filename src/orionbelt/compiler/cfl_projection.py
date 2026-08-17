@@ -39,7 +39,7 @@ from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
     SemanticModel,
 )
-from orionbelt.models.types import DecimalType
+from orionbelt.models.types import DecimalType, parse_data_type
 
 if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
@@ -258,7 +258,7 @@ def resolve_union_alignment_type(
     # the declared resultType. It projects a pre-aggregation expression exactly
     # as a column measure projects a column, and was missed twice by cuts that
     # keyed on having exactly one column.
-    if not model_measure.columns and model_measure.result_type.value not in ("int", "float"):
+    if not model_measure.columns and model_measure.result_type.value != "float":
         return resolve_null_type_for_field(measure, 0, model, dialect)
 
     column = None
@@ -266,8 +266,20 @@ def resolve_union_alignment_type(
         ref = model_measure.columns[0]
         obj = model.data_objects.get(ref.view) if ref.view else None
         column = obj.columns.get(ref.column) if obj and ref.column else None
-        if column is not None and column.abstract_type.value not in ("int", "float"):
-            # A non-numeric source keeps its own type; widening it is nonsense.
+        if column is not None and column.abstract_type.value == "int":
+            # An integer has no fractional digits to lose, so the decimal
+            # widening buys nothing and costs two things: DECIMAL(38, 20)
+            # leaves 18 integer digits, which a BIGINT can exceed outright -
+            # DuckDB refuses to cast 1000000000000000000 - and it changes an
+            # integer measure's type the moment another fact joins the query.
+            #
+            # It still needs widening of its own kind. ``abstractType: int``
+            # renders as a 32-bit INTEGER, so a BIGINT column reached the leg
+            # as CAST(qty AS INTEGER) and failed on any value past 2^31. The
+            # 64-bit integer is the alignment that cannot lose.
+            return dialect.render_obml_type(parse_data_type("bigint"))
+        if column is not None and column.abstract_type.value != "float":
+            # Text and temporal: their own type is already the alignment.
             return resolve_null_type_for_field(measure, 0, model, dialect)
 
     if column is not None and column.sql_precision is not None:

@@ -54,6 +54,7 @@ dataObjects:
     columns:
       Day: {code: day, abstractType: int}
       Amount: {code: amount, abstractType: float}
+      Qty: {code: qty, abstractType: int}
     joins:
       - joinType: many-to-one
         joinTo: Days
@@ -76,6 +77,10 @@ dimensions:
   Day: {dataObject: Days, column: Day, resultType: int}
 
 measures:
+  Qty Min:
+    columns: [{dataObject: Charges, column: Qty}]
+    resultType: int
+    aggregation: min
   Charged Stddev:
     columns: [{dataObject: Charges, column: Amount}]
     resultType: float
@@ -267,10 +272,16 @@ class TestWhatIsAndIsNotWidened:
         con = duckdb.connect(":memory:")
         try:
             con.execute("CREATE TABLE days (day INTEGER)")
-            con.execute("CREATE TABLE charges (day INTEGER, amount DECIMAL(38, 15), label VARCHAR)")
+            con.execute(
+                "CREATE TABLE charges (day INTEGER, amount DECIMAL(38, 15), "
+                "label VARCHAR, qty BIGINT)"
+            )
             con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
             con.execute("INSERT INTO days VALUES (1), (2)")
-            con.execute("INSERT INTO charges VALUES (1, 1.000000000000400, 'x'), (2, 2.5, 'y')")
+            con.execute(
+                "INSERT INTO charges VALUES "
+                "(1, 1.000000000000400, 'x', 1000000000000000001), (2, 2.5, 'y', 2)"
+            )
             con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
             star = _run(con, ["Charged Min"])[0][0]
             cfl = _run(con, ["Charged Min", "Invoiced"])[0][0]
@@ -373,3 +384,49 @@ class TestStarAndCflAgreeAcrossTheMatrix:
         assert not disagreements, (
             "a measure changed answer under a multi-fact plan:\n  " + "\n  ".join(disagreements)
         )
+
+
+class TestIntegersAreNotWidenedIntoDecimals:
+    """An integer has no fractional digits, so the decimal widening is all cost.
+
+    ``DECIMAL(38, 20)`` leaves 18 integer digits, which a BIGINT exceeds
+    outright: DuckDB refuses to cast 1000000000000000000. It would also change
+    an integer measure's type the moment another fact joined the query.
+
+    They still need an alignment of their own. ``abstractType: int`` renders as
+    a 32-bit INTEGER, so a BIGINT column reached the leg as
+    ``CAST(qty AS INTEGER)`` and failed on any value past 2^31 - a defect that
+    predates the widening and that a CFL query hit on its own.
+    """
+
+    def test_a_bigint_survives_a_multi_fact_query(self) -> None:
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("CREATE TABLE days (day INTEGER)")
+            con.execute(
+                "CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), "
+                "label VARCHAR, qty BIGINT)"
+            )
+            con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+            con.execute("INSERT INTO days VALUES (1), (2)")
+            con.execute(
+                "INSERT INTO charges VALUES "
+                "(1, 1.5, 'x', 1000000000000000000), (2, 2.5, 'y', 2000000000000000000)"
+            )
+            con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
+            star = _run(con, ["Qty Min"])[0][0]
+            cfl = _run(con, ["Qty Min", "Invoiced"])[0][0]
+        finally:
+            con.close()
+        assert int(star) == 1000000000000000000
+        assert int(cfl) == int(star), "a BIGINT did not survive the CFL leg"
+
+    def test_the_leg_aligns_on_a_64_bit_integer(self) -> None:
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=[], measures=["Qty Min", "Invoiced"])),
+            _model(),
+            "duckdb",
+        ).sql
+        leg = next(line for line in sql.splitlines() if '"Qty Min"' in line and "CAST" in line)
+        assert "BIGINT" in leg, f"an integer column should align on the 64-bit integer: {leg}"
+        assert "DECIMAL" not in leg, f"an integer column should not be widened to a decimal: {leg}"
