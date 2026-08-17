@@ -350,6 +350,10 @@ class TestStarAndCflAgreeAcrossTheMatrix:
     A matrix cannot be written that way. It covers the product of source shape,
     source kind and aggregation, so a clause that handles one cell and forgets
     its neighbour fails here rather than in review.
+
+    The declaration axis is here for the same reason. ``sqlPrecision`` and
+    ``sqlScale`` are independently optional, and narrowing on a precision whose
+    scale was merely assumed to be 0 reintroduced the original rounding bug.
     """
 
     SOURCES = {
@@ -357,6 +361,10 @@ class TestStarAndCflAgreeAcrossTheMatrix:
         ("expression", "float"): '    expression: "{[Charges].[Wide]} * 1"',
         ("columns", "int"): "    columns: [{dataObject: Charges, column: Big}]",
         ("expression", "int"): '    expression: "{[Charges].[Big]} * 1"',
+        # Declared width, both halves and each half alone.
+        ("declared-both", "float"): "    columns: [{dataObject: Charges, column: DeclBoth}]",
+        ("declared-precision", "float"): ("    columns: [{dataObject: Charges, column: DeclPrec}]"),
+        ("declared-scale", "float"): "    columns: [{dataObject: Charges, column: DeclScale}]",
     }
     AGGREGATIONS = ["sum", "avg", "stddev", "variance", "min", "max", "any_value"]
 
@@ -373,7 +381,11 @@ class TestStarAndCflAgreeAcrossTheMatrix:
             "      Amount: {code: amount, abstractType: float}",
             "      Amount: {code: amount, abstractType: float}\n"
             "      Wide: {code: wide, abstractType: float}\n"
-            "      Big: {code: big, abstractType: int}",
+            "      Big: {code: big, abstractType: int}\n"
+            "      DeclBoth: {code: wide, abstractType: float, "
+            "sqlPrecision: 38, sqlScale: 15}\n"
+            "      DeclPrec: {code: wide, abstractType: float, sqlPrecision: 38}\n"
+            "      DeclScale: {code: wide, abstractType: float, sqlScale: 15}",
             1,
         )
         raw, source_map = TrackedLoader().load_string(yaml)

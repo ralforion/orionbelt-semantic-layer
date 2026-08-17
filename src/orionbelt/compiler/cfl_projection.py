@@ -286,11 +286,15 @@ def resolve_union_alignment_type(
     if kind == "int":
         return dialect.render_obml_type(parse_data_type("bigint"))
 
-    # A model that declares the source column's own precision is taken at its
-    # word; otherwise the fallback width applies.
-    if column is not None and column.sql_precision is not None:
-        precision = column.sql_precision
-        scale = column.sql_scale if column.sql_scale is not None else 0
+    # A model that declares the source column's own width is taken at its word,
+    # but only when it declares **both** halves of it. sqlPrecision and sqlScale
+    # are independently optional, so defaulting a missing scale to 0 turned
+    # sqlPrecision: 18 over a DECIMAL(18, 6) source into DECIMAL(18, 0) and
+    # rounded every row before the aggregate - the original defect, reached
+    # through a different door. A precision alone says nothing about scale, so
+    # it is not enough to narrow on.
+    if column is not None and column.sql_precision is not None and column.sql_scale is not None:
+        precision, scale = column.sql_precision, column.sql_scale
     else:
         precision, scale = _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
     return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
