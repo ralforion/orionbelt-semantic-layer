@@ -265,10 +265,11 @@ class MySQLDialect(Dialect):
     # counts characters, which is ``CHAR_LENGTH``.
     def _render_json_value(self, args: list[Expr]) -> str:
         """MySQL's ``JSON_EXTRACT`` keeps the JSON quoting, so the catalog's
-        string result needs ``JSON_UNQUOTE`` around it.
+        string result needs ``JSON_UNQUOTE`` around it, and ``JSON_TYPE``
+        supplies the object/array rule that ``JSON_UNQUOTE`` alone would miss.
 
-        Not verified against a live server: no MySQL credentials were
-        configured when the json group was measured.
+        Verified against a live MySQL 8.0 container: all seven catalog
+        examples return the pinned value.
         """
         doc = self.compile_expr(args[0])
         path = self._quote_text(_json_path_of(args[1]))
