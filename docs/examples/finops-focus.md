@@ -231,9 +231,9 @@ orderBy: [{field: Effective Cost, direction: desc}]
 
 The fourth row is the point. **16% of spend carries no tags at all** and cannot be charged to anyone. Untagged spend is the number a FinOps practitioner actually chases, which is why the generator leaves a slice of rows untagged rather than tagging everything.
 
-### The same model, seven dialects
+### The same model, eight dialects
 
-The expression is written once. Each dialect renders it into its own JSON access, and these are emphatically not spelling variants (identifier quoting elided for width):
+The expression is written once. All eight dialects render it into their own JSON access, and these are emphatically not spelling variants (identifier quoting elided for width):
 
 | Dialect | Generated |
 |---|---|
@@ -241,20 +241,22 @@ The expression is written once. Each dialect renders it into its own JSON access
 | ClickHouse | `nullIf(JSON_VALUE(Tags, '$.team'), '')` |
 | Databricks | `try_variant_get(parse_json(Tags), '$.team', 'string')` |
 | DuckDB | `CASE WHEN json_type(Tags, '$.team') IN ('OBJECT','ARRAY') THEN NULL ELSE json_extract_string(Tags, '$.team') END` |
+| MySQL | `CASE WHEN JSON_TYPE(JSON_EXTRACT(Tags, '$.team')) IN ('OBJECT','ARRAY') THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT(Tags, '$.team')) END` |
 | Postgres | `CASE WHEN json_typeof(json_extract_path(Tags::json, 'team')) IN ('object','array') THEN NULL ELSE json_extract_path_text(Tags::json, 'team') END` |
 | Snowflake | `CASE WHEN TYPEOF(GET_PATH(PARSE_JSON(Tags), 'team')) IN ('OBJECT','ARRAY') THEN NULL ELSE JSON_EXTRACT_PATH_TEXT(Tags, 'team') END` |
-| Dremio | *unsupported* |
+| Dremio | `(TRY_CONVERT_FROM(Tags AS ROW("team" VARCHAR))."team")` |
 
 Four things differ, and each was measured rather than assumed:
 
 - **Postgres** takes the path segments as *separate arguments*; **Snowflake** takes them dotted without the `$`, and bracketed for array subscripts — it rejects `arr.0` outright.
 - **ClickHouse** returns the *empty string* rather than NULL for an absent path, so it is wrapped in `nullIf`.
 - **DuckDB, Postgres, Snowflake and MySQL** return the *serialized JSON* for a path landing on an object or array, so each carries a type guard to honour the catalog's NULL rule. That is where the `CASE` comes from.
-- **Databricks** is the only engine that gets the contract for free: `try_variant_get(…, 'string')` answers NULL when the value will not cast, which is the object/array rule and the absent-path rule at once.
+- **Databricks and Dremio** get the contract from a cast that declines rather than fails: `try_variant_get(…, 'string')` and `TRY_CONVERT_FROM(x AS ROW(… VARCHAR))`, whose innermost `VARCHAR` will not accept an object or an array.
+- **Dremio** is also the only one that puts the path in *identifier* position rather than inside a string literal, so its member names are quoted and its row type is built from the literal path at compile time.
 
 That spread is why the path must be a literal, and why `json_value` earns its place in the catalog rather than being hand-written per model.
 
-Dremio is the exception: no JSONPath scalar function, so it reports the call unsupported at compile time rather than mis-rendering it. A model that allocates by tag is pinned to the other seven engines, and says so.
+All eight engines answer it, so a model that allocates by tag is not pinned to any subset. That took measuring rather than reading: Dremio's obvious route, `CONVERT_FROM` with field access, raises "Unable to find the referenced field" for a tag a charge does not carry, which is the common case here rather than an edge one.
 
 The model sets `expressionMode: portable`, so an uncatalogued function would be an error rather than a silent engine dependency. It validates, which is the assertion that every expression here is portable.
 
