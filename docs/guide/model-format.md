@@ -215,12 +215,10 @@ Canonical names are lowercase and snake_case; OBML is case-insensitive about
 them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
-Every entry renders on all eight dialects except where noted. `json_value` is
-the first exception: Dremio has no JSONPath scalar function, so it reports the
-call unsupported rather than meaning something different there. A model that
-needs it is pinned to the other seven engines. On Databricks it reads through
-`try_variant_get`, which is available on Databricks SQL and on Runtime 15.3 or
-above.
+Every entry renders on all eight dialects. On Databricks `json_value` reads
+through `try_variant_get`, available on Databricks SQL and on Runtime 15.3 or
+above; on Dremio through `TRY_CONVERT_FROM(x AS ROW(...))`, whose row type is
+built from the literal path at compile time.
 
 | Signature | Result | Pinned meaning |
 |---|---|---|
@@ -266,9 +264,10 @@ A path resolving to an **object or array** is NULL, and that rule is enforced
 rather than inherited: DuckDB, Postgres, Snowflake and MySQL all return the
 *serialized JSON* for a non-scalar path, so each is wrapped in a type guard
 (`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`). BigQuery and ClickHouse
-already answer NULL, and Databricks gets it from the cast itself —
-`try_variant_get(..., 'string')` returns NULL rather than raising when the value
-will not cast. Reach an array element with a subscript instead —
+already answer NULL. Databricks and Dremio get it from a cast that declines
+rather than fails: `try_variant_get(…, 'string')` and
+`TRY_CONVERT_FROM(x AS ROW(… VARCHAR))`, whose innermost `VARCHAR` will not
+accept an object or an array. Reach an array element with a subscript instead —
 `json_value(x, '$.arr[0]')`.
 
 ClickHouse is the one remaining deviation: it returns the empty string for an

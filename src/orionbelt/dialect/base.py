@@ -95,6 +95,27 @@ def _json_path_segments(path: str) -> list[tuple[str, bool]]:
     ]
 
 
+def _dremio_row_type(path: str) -> str:
+    """``$.a[0].b`` -> ``ROW(a LIST(ROW(b VARCHAR)))``.
+
+    Dremio needs the shape declared up front rather than discovered, and the
+    catalog's literal-path rule is what makes that possible: the type is built
+    from the segments at compile time. Innermost is always VARCHAR, which is
+    what turns a non-scalar into NULL under ``TRY_CONVERT_FROM``.
+    """
+    rendered = "VARCHAR"
+    for value, is_index in reversed(_json_path_segments(path)):
+        rendered = f"LIST({rendered})" if is_index else f"ROW({value} {rendered})"
+    return rendered
+
+
+def _dremio_access(path: str) -> str:
+    """``$.a[0].b`` -> ``.a[0].b``, the field walk over the converted row."""
+    return "".join(
+        f"[{value}]" if is_index else f".{value}" for value, is_index in _json_path_segments(path)
+    )
+
+
 def _snowflake_path(path: str) -> str:
     """``$.a[0].b`` -> ``a[0].b``, Snowflake's extraction-path spelling."""
     out = ""

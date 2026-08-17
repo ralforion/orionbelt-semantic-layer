@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal
-from orionbelt.dialect.base import Dialect, DialectCapabilities, UnsupportedAggregationError
+from orionbelt.dialect.base import (
+    Dialect,
+    DialectCapabilities,
+    UnsupportedAggregationError,
+    _dremio_access,
+    _dremio_row_type,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -26,12 +33,6 @@ class DremioDialect(Dialect):
             supports_ilike=False,
             # ``measure`` is Databricks Metric View specific.
             unsupported_aggregations=["mode", "measure"],
-            # Dremio has no equivalent of the catalog's ``json_value``: it
-            # reaches into semi-structured data through positional field
-            # access on a parsed column rather than a JSONPath scalar
-            # function, which the entry's literal-path contract cannot
-            # express. Reported as unsupported rather than mis-rendered.
-            unsupported_functions=["json_value"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
@@ -228,3 +229,33 @@ class DremioDialect(Dialect):
             f"  WHERE TIMESTAMPADD({grain_upper}, n, {min_date}) <= {max_date}\n"
             f") AS spine"
         )
+
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """``TRY_CONVERT_FROM(x AS ROW(...))`` honours the whole contract.
+
+        Declaring the innermost field as VARCHAR is what does the work: a path
+        landing on an object or array will not convert to VARCHAR, and the
+        ``TRY_`` form answers NULL rather than failing, which is the catalog's
+        object/array rule. A field absent from the document is NULL for the
+        same reason. Both measured against a live Dremio OSS container.
+
+        The alternatives do not work. ``CONVERT_FROM(x, 'JSON')`` with field
+        access raises "Unable to find the referenced field" for a path that is
+        not present, and that is the common case in tag allocation, not an edge
+        one; it also returns the struct itself for an object rather than NULL.
+        ``TRY_VARIANT_GET`` would be the natural fit and is what Databricks
+        uses, but VARIANT is Dremio Cloud only - ``PARSE_JSON`` does not exist
+        on Dremio Software, verified as "No match found for function
+        signature".
+
+        The ROW type has to be built rather than discovered, which the
+        catalog's literal-path rule makes possible.
+
+        Parenthesised because the rendering ends in a field access rather than
+        a closing paren, so it is not self-delimiting: the catalog requires
+        every entry to drop into a surrounding expression as one operand.
+        """
+        doc = self.compile_expr(args[0])
+        path = _json_path_of(args[1])
+        row_type = _dremio_row_type(path)
+        return f"(TRY_CONVERT_FROM({doc} AS {row_type}){_dremio_access(path)})"
