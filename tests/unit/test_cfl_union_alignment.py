@@ -54,6 +54,7 @@ dataObjects:
     columns:
       Day: {code: day, abstractType: int}
       Amount: {code: amount, abstractType: float}
+      Qty: {code: qty, abstractType: int}
     joins:
       - joinType: many-to-one
         joinTo: Days
@@ -76,6 +77,10 @@ dimensions:
   Day: {dataObject: Days, column: Day, resultType: int}
 
 measures:
+  Qty Min:
+    columns: [{dataObject: Charges, column: Qty}]
+    resultType: int
+    aggregation: min
   Charged Stddev:
     columns: [{dataObject: Charges, column: Amount}]
     resultType: float
@@ -126,6 +131,33 @@ def _seeded() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _outcome(con: duckdb.DuckDBPyConnection, model: SemanticModel, measures: list[str]) -> str:
+    """What *measures* does on *con*: a normalised value, or "failed".
+
+    Failing is an outcome, not an absence of one. The property under test is
+    that adding a measure from an independent fact does not change the answer,
+    and turning a query that worked into one that raises is exactly that kind
+    of change. Comparing values alone would miss it, and treating any raise as
+    a failure would flag cases where both paths are equally and legitimately
+    out of range - a SUM over a BIGINT whose measure resolves to the
+    decimal(18, 2) numeric default overflows on both, which is a default-type
+    problem rather than a CFL one.
+    """
+    try:
+        value = _first(con, model, measures)
+    except Exception:  # noqa: BLE001 - the outcome is the point
+        return "failed"
+    return str(Decimal(str(value)).normalize())
+
+
+def _first(con: duckdb.DuckDBPyConnection, model: SemanticModel, measures: list[str]) -> object:
+    """First cell of *measures* compiled against *model* and run on *con*."""
+    sql = PIPELINE.compile(
+        QueryObject(select=QuerySelect(dimensions=[], measures=measures)), model, "duckdb"
+    ).sql
+    return con.execute(sql).fetchall()[0][0]
+
+
 def _run(con: duckdb.DuckDBPyConnection, measures: list[str]) -> list[tuple]:
     sql = PIPELINE.compile(
         QueryObject(select=QuerySelect(dimensions=[], measures=measures)),
@@ -156,22 +188,26 @@ class TestUnionAlignmentPreservesInput:
             "the same measure answered differently under a multi-fact plan"
         )
 
-    def test_the_legs_align_on_a_wider_type_than_the_result(self) -> None:
-        """Rows are carried wide; only the aggregate narrows to the declared type.
+    def test_the_owning_leg_carries_the_column_uncast(self) -> None:
+        """Rows are carried in the source's own type; only the aggregate narrows.
 
-        Asserted on the shape rather than the exact spelling, since the width
-        is a fallback the model can override with ``sqlPrecision``/``sqlScale``.
+        The owning leg projects the column with no cast at all. That is what
+        makes the narrowing impossible rather than merely wide: there is no
+        second type for a row to be squeezed through on its way to the
+        aggregate. The NULL pads still carry one, which is what settles the
+        union.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged", "Invoiced"])),
             _model(),
             "duckdb",
         ).sql
-        leg_casts = re.findall(r'CAST\("(?:Charges|Invoices)"\."amount" AS ([A-Z0-9_(), ]+)\)', sql)
-        assert leg_casts, f"expected a leg cast on the source column:\n{sql}"
-        for rendered in leg_casts:
-            scale = int(re.search(r",\s*(\d+)\)", rendered).group(1))
-            assert scale > 2, f"leg narrowed rows to the result's scale: {rendered}"
+        assert re.search(r'"(?:Charges|Invoices)"\."amount" AS "(?:Charged|Invoiced)"', sql), (
+            f"the owning leg should project the source column uncast:\n{sql}"
+        )
+        assert not re.search(r'CAST\("(?:Charges|Invoices)"\."amount" AS', sql), (
+            f"the owning leg should not cast the source column at all:\n{sql}"
+        )
         assert re.search(r"CAST\(SUM\(.*?\) AS DECIMAL\(18, 2\)\)", sql), (
             f"the aggregate should still narrow to the declared dataType:\n{sql}"
         )
@@ -220,30 +256,58 @@ class TestWhatIsAndIsNotWidened:
             "an expression measure answered differently under a multi-fact plan"
         )
 
-    def test_a_selecting_aggregate_is_left_alone(self) -> None:
-        """MIN picks a value rather than combining values, so nothing compounds.
+    def test_a_selecting_aggregate_is_treated_the_same_way(self) -> None:
+        """One mechanism, not two: MIN is carried the same way SUM is.
 
-        ``resolve_measure_data_type`` treats MIN, MAX, ANY_VALUE, MEDIAN and
-        MODE as no-cast pass-through. Routing them through the widening changed
-        both the value and its type - MIN over a fifteen-decimal column went
-        from 1.000000000000400 to 1.000000000000 - so they keep the existing
-        alignment.
+        This asserted several different things over its life, each matching
+        whatever the implementation happened to do. MIN was first left
+        unwidened, because widening it at scale 12 turned 1.000000000000400
+        into 1.000000000000; then widened along with everything else once the
+        width grew.
 
-        This asserts the leg is not widened rather than asserting a value:
-        those aggregates have a separate, older precision problem of their own
-        (the leg casts a wide decimal to FLOAT), which this change neither
-        causes nor fixes.
+        Both were workarounds for casting the owning leg at all. Nothing about
+        a selecting aggregate needs its own rule now: the column arrives in its
+        own type because no cast is applied to it.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
             _model(),
             "duckdb",
         ).sql
-        min_leg = next(
-            line for line in sql.splitlines() if '"Charged Min"' in line and "CAST" in line
+        min_leg = next(line for line in sql.splitlines() if '"Charged Min"' in line)
+        assert "CAST" not in min_leg, (
+            f"a selecting aggregate should reach the union uncast, like any other: {min_leg}"
         )
-        assert "DECIMAL(38, 12)" not in min_leg, (
-            f"a selecting aggregate was widened as though it accumulated: {min_leg}"
+
+    def test_the_width_carries_a_source_wider_than_the_old_default(self) -> None:
+        """A DECIMAL(38, 15) source is the case the previous width lost.
+
+        Twelve places was a guess and it was too small; twenty carries
+        realistic money and rate columns, measured exact on Postgres, DuckDB,
+        ClickHouse, Snowflake and BigQuery. It is still a guess, and a model
+        that declares sqlPrecision/sqlScale is taken at its word instead.
+        """
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("CREATE TABLE days (day INTEGER)")
+            con.execute(
+                "CREATE TABLE charges (day INTEGER, amount DECIMAL(38, 15), "
+                "label VARCHAR, qty BIGINT)"
+            )
+            con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+            con.execute("INSERT INTO days VALUES (1), (2)")
+            con.execute(
+                "INSERT INTO charges VALUES "
+                "(1, 1.000000000000400, 'x', 1000000000000000001), (2, 2.5, 'y', 2)"
+            )
+            con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
+            star = _run(con, ["Charged Min"])[0][0]
+            cfl = _run(con, ["Charged Min", "Invoiced"])[0][0]
+        finally:
+            con.close()
+        assert Decimal(str(star)) == Decimal("1.000000000000400")
+        assert Decimal(str(cfl)) == Decimal(str(star)), (
+            "the alignment width was too narrow for the source column"
         )
 
     def test_a_statistical_aggregate_accumulates_too(self) -> None:
@@ -264,9 +328,99 @@ class TestWhatIsAndIsNotWidened:
             _model(),
             "duckdb",
         ).sql
-        leg = next(
-            line for line in sql.splitlines() if '"Charged Stddev"' in line and "CAST" in line
+        leg = next(line for line in sql.splitlines() if '"Charged Stddev"' in line)
+        assert "CAST" not in leg, (
+            f"a statistical aggregate narrowed its rows before aggregating: {leg}"
         )
-        assert "DECIMAL(18, 3)" not in leg, (
-            f"a statistical aggregate narrowed its rows to the result scale: {leg}"
+
+
+class TestStarAndCflAgreeAcrossTheMatrix:
+    """The property, asserted over every shape rather than case by case.
+
+    This function was wrong three times running, each time for ``expression:``
+    measures and each time in a different clause: missed by the accumulating
+    widening, then by an attempt to leave the union untyped, then by the
+    integer alignment. Every one was found by review rather than by a test,
+    because the tests were written per case and the cases were the ones already
+    known to be broken.
+
+    A matrix cannot be written that way. It covers the product of source shape,
+    source kind and aggregation, so a clause that handles one cell and forgets
+    its neighbour fails here rather than in review.
+
+    The declaration axis is here for the same reason. ``sqlPrecision`` and
+    ``sqlScale`` are independently optional, and narrowing on a precision whose
+    scale was merely assumed to be 0 reintroduced the original rounding bug.
+    """
+
+    SOURCES = {
+        ("columns", "float"): "    columns: [{dataObject: Charges, column: Wide}]",
+        ("expression", "float"): '    expression: "{[Charges].[Wide]} * 1"',
+        ("columns", "int"): "    columns: [{dataObject: Charges, column: Big}]",
+        ("expression", "int"): '    expression: "{[Charges].[Big]} * 1"',
+        # Declared width, both halves and each half alone.
+        ("declared-both", "float"): "    columns: [{dataObject: Charges, column: DeclBoth}]",
+        ("declared-precision", "float"): ("    columns: [{dataObject: Charges, column: DeclPrec}]"),
+        ("declared-scale", "float"): "    columns: [{dataObject: Charges, column: DeclScale}]",
+    }
+    AGGREGATIONS = ["sum", "avg", "stddev", "variance", "min", "max", "any_value"]
+
+    def _model_for(self, key: tuple[str, str], agg: str) -> SemanticModel:
+        result_type = key[1]
+        yaml = MODEL_YAML.replace(
+            "measures:",
+            "measures:\n  Probe:\n"
+            f"{self.SOURCES[key]}\n"
+            f"    resultType: {result_type}\n"
+            f"    aggregation: {agg}\n",
+            1,
+        ).replace(
+            "      Amount: {code: amount, abstractType: float}",
+            "      Amount: {code: amount, abstractType: float}\n"
+            "      Wide: {code: wide, abstractType: float}\n"
+            "      Big: {code: big, abstractType: int}\n"
+            "      DeclBoth: {code: wide, abstractType: float, "
+            "sqlPrecision: 38, sqlScale: 15}\n"
+            "      DeclPrec: {code: wide, abstractType: float, sqlPrecision: 38}\n"
+            "      DeclScale: {code: wide, abstractType: float, sqlScale: 15}",
+            1,
+        )
+        raw, source_map = TrackedLoader().load_string(yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def test_every_shape_answers_the_same_alone_and_multi_fact(self) -> None:
+        disagreements = []
+        for key in self.SOURCES:
+            for agg in self.AGGREGATIONS:
+                model = self._model_for(key, agg)
+                con = duckdb.connect(":memory:")
+                try:
+                    con.execute("CREATE TABLE days (day INTEGER)")
+                    con.execute(
+                        "CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), "
+                        "label VARCHAR, qty BIGINT, wide DECIMAL(38, 15), big BIGINT)"
+                    )
+                    con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+                    con.execute("INSERT INTO days VALUES (1), (2), (3)")
+                    con.execute(
+                        "INSERT INTO charges VALUES "
+                        "(1, 1.0004, 'x', 1, 1.000000000000400, 1000000000000000001), "
+                        "(2, 1.0005, 'y', 2, 2.000000000000500, 1000000000000000002), "
+                        # A DECIMAL(38, 15) using its full integer range. Any
+                        # fixed-width decimal alignment either rounds the
+                        # fraction off this or overflows on the integer part.
+                        "(3, 1.0006, 'z', 3, 1000000000000000000.000000000000001, "
+                        "1000000000000000003)"
+                    )
+                    con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5), (3, 5.5)")
+                    star = _outcome(con, model, ["Probe"])
+                    cfl = _outcome(con, model, ["Probe", "Invoiced"])
+                finally:
+                    con.close()
+                if star != cfl:
+                    disagreements.append(f"{key[0]}/{key[1]}/{agg}: star={star} cfl={cfl}")
+        assert not disagreements, (
+            "a measure changed answer under a multi-fact plan:\n  " + "\n  ".join(disagreements)
         )

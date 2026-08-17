@@ -346,6 +346,14 @@ class CFLPlanner:
         """The type every UNION leg agrees on for *measure*'s column."""
         return cfl_projection.resolve_union_alignment_type(measure, model, dialect)
 
+    def _resolve_owning_leg_cast_type(
+        self,
+        measure: ResolvedMeasure,
+        model: SemanticModel,
+        dialect: Dialect | None = None,
+    ) -> str | None:
+        return cfl_projection.resolve_owning_leg_cast_type(measure, model, dialect)
+
     @staticmethod
     def _resolve_null_type_for_field(
         measure: ResolvedMeasure,
@@ -588,13 +596,27 @@ class CFLPlanner:
                         if m.name in conformed_exprs
                         else m
                     )
-                    # Align on a type that preserves the input, not on the
-                    # measure's declared *output* type: these are
-                    # pre-aggregation rows, and narrowing them here rounds
-                    # every one before the outer SUM sees it. The NULL pads
-                    # below use the same resolver, so the legs still agree,
-                    # which is what the cast was for.
-                    own_type_name = self._resolve_union_alignment_type(m, model, dialect)
+                    # The leg that owns the measure projects it **uncast**, in
+                    # the source's own type, exactly as the star path does.
+                    #
+                    # Only the NULL pads below carry a declared type, and that
+                    # is enough to settle the union: measured on DuckDB,
+                    # Postgres and ClickHouse, a typed pad beside an uncast
+                    # column resolves to the *column's* type, in any leg order.
+                    # Casting this side as well is what rounded pre-aggregation
+                    # rows to the declared output type (#305), and then, once
+                    # the alignment was widened to carry the scale, overflowed
+                    # a value the source column held quite legally: a
+                    # DECIMAL(38, 20) leaves only 18 integer digits, so a
+                    # DECIMAL(38, 15) source failed on Postgres and DuckDB
+                    # under CFL while succeeding alone (#311). Not casting
+                    # cannot do either, because there is no second type.
+                    #
+                    # The exception is an alignment that *converts* rather than
+                    # widens - LISTAGG over an integer column pads with text -
+                    # where an uncast leg would meet a pad of another type and
+                    # Postgres would refuse the union.
+                    own_type_name = self._resolve_owning_leg_cast_type(m, model, dialect)
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
                     leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))

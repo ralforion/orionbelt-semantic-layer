@@ -37,9 +37,11 @@ from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
+    DataObjectColumn,
+    Measure,
     SemanticModel,
 )
-from orionbelt.models.types import DecimalType
+from orionbelt.models.types import DecimalType, parse_data_type
 
 if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
@@ -187,23 +189,57 @@ def resolve_null_type_for_field(
 
 
 # Scale used to align a numeric aggregate's UNION legs when the model has not
-# declared the source column's own scale. Wide enough that a money column is
-# carried exactly, while leaving 26 integer digits at precision 38.
-_ALIGNMENT_SCALE = 12
+# declared the source column's own scale, leaving 18 integer digits at
+# precision 38.
+#
+# It is a guess, and unavoidably so: ``abstractType: float`` says nothing about
+# a DECIMAL(38, 15) column behind it, and every fixed width is wrong for some
+# source. A first cut used 12 and lost anything past twelve places, measured on
+# Postgres, DuckDB, ClickHouse and Snowflake alike. 20 carries realistic money
+# and rate columns exactly. A model that declares ``sqlPrecision``/``sqlScale``
+# is taken at its word and needs no guess at all, which is the only exact
+# answer available without introspecting the warehouse.
+_ALIGNMENT_SCALE = 20
 _ALIGNMENT_PRECISION = 38
 
-# Only these combine values across rows, so only these compound a
-# pre-aggregation rounding error. Everything else either selects a value
-# (MIN/MAX/ANY_VALUE/MEDIAN/MODE) or projects the raw column (COUNT, LISTAGG).
-#
-# The statistical aggregates belong here for the same reason SUM does, and were
-# missed by a first cut that listed only the obvious two: STDDEV over 1.0004 and
-# 1.0005 declared decimal(18, 3) answered 0.000 alone and 0.001 beside a measure
-# from another fact. The two-column ones (CORR, COVAR_*, REGR_*) never reach
-# this path - a multi-field measure pads per slot and keeps each slot's type.
-_ACCUMULATING_AGGREGATIONS = frozenset(
-    {"sum", "avg", "stddev", "stddev_pop", "variance", "var_pop"}
-)
+
+# These project the raw column rather than a value to be combined, so their
+# alignment is the column's own type.
+_RAW_COLUMN_AGGREGATIONS = frozenset({"count", "count_distinct", "listagg"})
+
+
+def _alignment_source(
+    model_measure: Measure, model: SemanticModel
+) -> tuple[str | None, DataObjectColumn | None]:
+    """The numeric kind a measure's legs carry, and its source column if any.
+
+    One place decides this for **both** shapes a measure can take. Keeping the
+    ``columns:`` and ``expression:`` cases in separate branches is what caused
+    this function to be wrong three times in a row, each time for expression
+    measures and each time in a different clause: they were missed by the
+    accumulating widening, then by an attempt to leave the union untyped, then
+    by the integer alignment. They project a pre-aggregation value exactly as a
+    column measure does, so they belong on the same path.
+
+    Returns ``("int" | "float", column | None)``, or ``(None, None)`` when the
+    measure's legs should keep whatever :func:`resolve_null_type_for_field`
+    gives them.
+    """
+    if len(model_measure.columns) > 1:
+        # A multi-field aggregate pads per slot; each slot keeps its own type.
+        return None, None
+    if not model_measure.columns:
+        # An expression has no source column, so its kind is the declared
+        # resultType.
+        kind = model_measure.result_type.value
+        return (kind if kind in ("int", "float") else None), None
+    ref = model_measure.columns[0]
+    obj = model.data_objects.get(ref.view) if ref.view else None
+    column = obj.columns.get(ref.column) if obj and ref.column else None
+    if column is None:
+        return None, None
+    kind = column.abstract_type.value
+    return (kind if kind in ("int", "float") else None), column
 
 
 def resolve_union_alignment_type(
@@ -217,56 +253,84 @@ def resolve_union_alignment_type(
     the whole point. That one answers "what type does the *result* have", which
     is right for the outer ``CAST(SUM(...) AS ...)`` and wrong here: the legs
     carry **pre-aggregation rows**, so aligning them on the declared output
-    type rounds every row before it is summed. A measure declared
+    type rounds every row before the aggregate sees it. A measure declared
     ``decimal(18, 2)`` over a six-decimal column lost up to 0.005 per row.
 
-    The alignment still has to be a single concrete type, because a strict
-    engine will not union columns whose types disagree: ClickHouse produces
-    ``Variant(Decimal, Float64)`` and then refuses to ``SUM`` it.
+    The alignment has to be a single concrete type. A strict engine will not
+    union columns whose types disagree - ClickHouse produces
+    ``Variant(Decimal, Float64)`` and refuses to ``SUM`` it - and leaving both
+    sides untyped instead was measured to break two more: Postgres resolves a
+    column whose first occurrences are untyped NULLs as text, and DuckDB
+    unifies to the pad's type rather than the column's. So the only question is
+    the width.
 
-    Widening applies only to the aggregations that **accumulate** across rows,
-    which is where pre-aggregation rounding compounds. ``MIN``, ``MAX``,
-    ``ANY_VALUE``, ``MEDIAN`` and ``MODE`` select a value rather than combining
-    values, and ``resolve_measure_data_type`` treats them as no-cast
-    pass-through; widening them changed both the value and its type, turning
-    ``MIN`` over a fifteen-decimal column from 1.000000000000400 into
-    1.000000000000. ``COUNT`` and ``LISTAGG`` project the raw column, whose own
-    type is already the right alignment.
+    **Fractional sources** align on a wide decimal. **Integer sources** align
+    on the 64-bit integer instead: an integer has no fractional digits to lose,
+    a ``DECIMAL(38, 20)`` leaves only 18 integer digits where a BIGINT needs
+    19, and ``abstractType: int`` renders as a 32-bit ``INTEGER`` that a BIGINT
+    column overflows on its own.
 
-    An **expression** measure has no ``columns`` and is covered: it projects a
-    pre-aggregation expression exactly as a column measure projects a column,
-    so it suffered the same rounding and was missed by an earlier version of
-    this that keyed on having exactly one column.
-
-    A model that declares the source column's ``sqlPrecision``/``sqlScale`` is
-    taken at its word. Otherwise the fallback widens to ``decimal(38, 12)``,
-    which carries any realistic money or rate column exactly and still leaves
-    26 integer digits.
+    ``COUNT`` and ``LISTAGG`` project the raw column, whose own type is already
+    the alignment, and text or temporal sources keep theirs for the same
+    reason.
     """
     model_measure = model.effective_measures.get(measure.name)
     if not model_measure or dialect is None:
         return resolve_null_type_for_field(measure, 0, model, dialect)
-    if (model_measure.aggregation or "").lower() not in _ACCUMULATING_AGGREGATIONS:
-        return resolve_null_type_for_field(measure, 0, model, dialect)
-    # A multi-field aggregate pads per slot; each slot keeps its own type.
-    if len(model_measure.columns) > 1:
+    if (model_measure.aggregation or "").lower() in _RAW_COLUMN_AGGREGATIONS:
         return resolve_null_type_for_field(measure, 0, model, dialect)
 
-    column = None
-    if len(model_measure.columns) == 1:
-        ref = model_measure.columns[0]
-        obj = model.data_objects.get(ref.view) if ref.view else None
-        column = obj.columns.get(ref.column) if obj and ref.column else None
-        if column is not None and column.abstract_type.value not in ("int", "float"):
-            # A non-numeric source keeps its own type; widening it is nonsense.
-            return resolve_null_type_for_field(measure, 0, model, dialect)
+    kind, column = _alignment_source(model_measure, model)
+    if kind is None:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+    if kind == "int":
+        return dialect.render_obml_type(parse_data_type("bigint"))
 
-    if column is not None and column.sql_precision is not None:
-        precision = column.sql_precision
-        scale = column.sql_scale if column.sql_scale is not None else 0
+    # A model that declares the source column's own width is taken at its word,
+    # but only when it declares **both** halves of it. sqlPrecision and sqlScale
+    # are independently optional, so defaulting a missing scale to 0 turned
+    # sqlPrecision: 18 over a DECIMAL(18, 6) source into DECIMAL(18, 0) and
+    # rounded every row before the aggregate - the original defect, reached
+    # through a different door. A precision alone says nothing about scale, so
+    # it is not enough to narrow on.
+    if column is not None and column.sql_precision is not None and column.sql_scale is not None:
+        precision, scale = column.sql_precision, column.sql_scale
     else:
         precision, scale = _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
     return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
+
+
+def resolve_owning_leg_cast_type(
+    measure: ResolvedMeasure,
+    model: SemanticModel,
+    dialect: Dialect | None = None,
+) -> str | None:
+    """The cast for the leg that *owns* a measure, or ``None`` to leave it be.
+
+    The NULL pads always carry a type; this side usually should not. A typed
+    pad beside an uncast column resolves to the **column's** type on DuckDB,
+    Postgres and ClickHouse, in any leg order, so the union is already settled
+    and casting here can only lose: to the declared output type it rounded
+    pre-aggregation rows (#305), and to a fixed wide decimal it overflowed
+    values the source held legally, since ``DECIMAL(38, 20)`` keeps just 18
+    integer digits (#311).
+
+    It is kept where the alignment is a **conversion** rather than a widening.
+    ``LISTAGG`` over an integer column aligns the pads on text, and an uncast
+    integer leg meeting a text pad is a union Postgres refuses outright. Those
+    measures are exactly the ones :func:`resolve_union_alignment_type` answers
+    from the column's own type, so the rule is: cast when the alignment is not
+    the numeric widening.
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if (
+        model_measure is not None
+        and dialect is not None
+        and (model_measure.aggregation or "").lower() not in _RAW_COLUMN_AGGREGATIONS
+        and _alignment_source(model_measure, model)[0] is not None
+    ):
+        return None
+    return resolve_union_alignment_type(measure, model, dialect)
 
 
 def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:

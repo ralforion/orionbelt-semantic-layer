@@ -1,8 +1,8 @@
 WITH "composite_01" AS (
-SELECT CAST("Sales"."salesamount" AS DECIMAL(38, 12)) AS "Total Sales"
+SELECT "Sales"."salesamount" AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 UNION ALL BY NAME
-SELECT CAST("Purchases"."purchaseamount" AS DECIMAL(38, 12)) AS "Total Purchases"
+SELECT "Purchases"."purchaseamount" AS "Total Purchases"
 FROM "orionbelt_1"."purchases" AS "Purchases"
 )
 SELECT CAST(SUM("composite_01"."Total Sales") AS DECIMAL(18, 2)) AS "Total Sales", CAST(SUM("composite_01"."Total Purchases") AS DECIMAL(18, 2)) AS "Total Purchases"

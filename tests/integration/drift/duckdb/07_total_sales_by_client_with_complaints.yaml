@@ -1,7 +1,7 @@
 last_verified_by: tests/integration/correctness/test_hand_sql_reference.py::test_obsl_matches_hand_sql[07_total_sales_by_client_with_complaints]
 sql: 'WITH "composite_01" AS (
 
-  SELECT "Clients"."clientname" AS "Sales Client Name", CAST("Sales"."salesamount" AS DECIMAL(38, 12)) AS "Total Sales"
+  SELECT "Clients"."clientname" AS "Sales Client Name", "Sales"."salesamount" AS "Total Sales"
 
   FROM "orionbelt_1"."sales" AS "Sales"
 

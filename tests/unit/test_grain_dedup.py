@@ -2132,7 +2132,7 @@ def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> No
     # the input rather than the declared result type, and that is the subject
     # of test_cfl_union_alignment, not of this test.
     assert re.search(
-        r'CAST\("Sales"\."amount" AS [A-Z0-9_(), ]+\) AS "Return List__wg"', result.sql
+        r'"Sales"\."amount"(?: AS [A-Z0-9_(), ]+\))? AS "Return List__wg"', result.sql
     ), result.sql
     # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
     assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
@@ -2369,7 +2369,7 @@ def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() ->
         CFL_FIELD_CLASH_YAML,
     )
     assert re.search(
-        r'CAST\("Sales"\."amount" AS [A-Z0-9_(), ]+\) AS "Return Pairs__f0"', result.sql
+        r'"Sales"\."amount"(?: AS [A-Z0-9_(), ]+\))? AS "Return Pairs__f0"', result.sql
     ), result.sql
     assert '"Returns"."id" AS "Return Pairs__f0_"' in result.sql
     assert '"composite_01"."Return Pairs__f0_"' in result.sql
