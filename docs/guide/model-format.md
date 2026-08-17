@@ -1179,16 +1179,23 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     **`AVG` is deliberately not widened**, because on some engines a wider cast
     would not make the average right. See the warning below.
 
-!!! warning "`AVG` above ~15 significant digits on DuckDB and ClickHouse"
+!!! warning "`AVG` above ~15 significant digits on DuckDB, ClickHouse and BigQuery"
 
-    Both engines compute `AVG` in floating point **whatever the input type**,
+    These engines compute `AVG` in floating point **whatever the input type**,
     so this is not limited to integer columns: a wide `DECIMAL` measure drifts
     once its average exceeds a `double` mantissa. On DuckDB, averaging
     `9223372036854775807.12` and `...807.24` returns `9.223372036854776e+18`
     rather than `9223372036854775807.18`, while `SUM` over the same column
     stays exact. This is [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829),
-    closed as not planned. PostgreSQL (`numeric`) and MySQL (`decimal`) are
-    exact.
+    closed as not planned.
+
+    Measured per dialect, averaging two values around 10^18:
+
+    | exact | floating point |
+    | --- | --- |
+    | PostgreSQL (`numeric`), MySQL (`decimal`), Snowflake | DuckDB, ClickHouse, BigQuery |
+
+    Databricks and Dremio are not yet verified for this case.
 
     **Declaring `dataType` does not fix this**, and on these two engines it
     makes the failure worse rather than better. The loss happens inside the
@@ -1206,7 +1213,7 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     is the better outcome: an error you can see beats a plausible wrong figure.
 
     Ordinary money-sized values are unaffected. If your averages can reach that
-    magnitude, aggregate on PostgreSQL or MySQL, express the average as a
+    magnitude, aggregate on PostgreSQL, MySQL or Snowflake, express the average as a
     metric over an exact `SUM` and a `COUNT` and accept the division's own
     limits, or track
     [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316).

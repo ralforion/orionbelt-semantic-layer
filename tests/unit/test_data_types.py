@@ -388,15 +388,18 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
 
         Widening its cast would clear the overflow without making the average
         right, because the loss happens in the aggregate before any cast. AVG
-        over BIGINT is exact on Postgres (numeric) and MySQL (decimal) but
-        floating point on DuckDB and ClickHouse, and on DuckDB no formulation
-        recovers it: casting the input, casting both operands, and rewriting as
-        SUM/COUNT were each measured to come back DOUBLE, because every route
-        through ``/`` is float division there.
+        over a 64-bit magnitude is exact on Postgres (numeric), MySQL (decimal)
+        and Snowflake, but floating point on DuckDB, ClickHouse and BigQuery.
+        On DuckDB no formulation recovers it: casting the input, casting both
+        operands, and rewriting as SUM/COUNT were each measured to come back
+        DOUBLE, because every route through ``/`` is float division there.
 
         So a widened AVG would trade a loud overflow for a quietly wrong
-        number, on exactly the engines where the number is wrong. Declaring
-        ``dataType`` is the supported way to ask for a wider average.
+        number, on exactly the engines where the number is wrong. Note that
+        declaring ``dataType`` is **not** a way around this - it widens this
+        same cast, so it reintroduces the quiet wrong number. See
+        ``test_declaring_a_data_type_does_not_rescue_avg_on_duckdb`` below, and
+        #316 for the per-dialect rewrite that would actually fix it.
         """
         m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
         assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT
@@ -432,7 +435,8 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         """The escape hatch that is not one, pinned so the guidance cannot drift.
 
         It is tempting to tell users "declare ``dataType`` if you need a wider
-        average". On DuckDB and ClickHouse that is actively harmful advice: the
+        average". On DuckDB, ClickHouse and BigQuery that is actively harmful advice:
+        the
         loss is inside the aggregate, so a wider dataType only widens this same
         cast and lets the wrong number through instead of failing. An error you
         can see beats a plausible wrong figure.

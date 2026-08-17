@@ -73,14 +73,14 @@ def resolve_measure_data_type(
     # AVG deliberately does **not** get the same treatment. Widening its cast
     # would clear the overflow without making the average right, because the
     # loss happens in the aggregate, before any cast: measured, AVG over BIGINT
-    # returns numeric on Postgres and decimal on MySQL (exact) but Float64 on
-    # ClickHouse and DOUBLE on DuckDB, where 1000000000000000002 and
-    # ...004 average to 1000000000000000000. Nor can the loss be arranged away:
-    # on DuckDB every route through ``/`` is float division, so casting the
-    # input, casting the operands and rewriting as SUM/COUNT were each measured
-    # to come back DOUBLE.
+    # is exact on Postgres (numeric), MySQL (decimal) and Snowflake, but
+    # floating point on ClickHouse, BigQuery and DuckDB, where
+    # 1000000000000000002 and ...004 average to 1000000000000000000. Nor can
+    # the loss be arranged away on DuckDB: every route through ``/`` is float
+    # division there, so casting the input, casting the operands and rewriting
+    # as SUM/COUNT were each measured to come back DOUBLE.
     #
-    # Both engines average in floating point whatever the input type, so the
+    # Those three average in floating point whatever the input type, so the
     # boundary is magnitude rather than declared type and a wide decimal drifts
     # too - duckdb/duckdb#6829, closed as not planned. Recovering exactness
     # needs a per-dialect rewrite; tracked in #316.
