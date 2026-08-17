@@ -39,6 +39,7 @@ from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
     SemanticModel,
 )
+from orionbelt.models.types import DecimalType
 
 if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
@@ -183,6 +184,66 @@ def resolve_null_type_for_field(
             return dialect.render_obml_type(resolved)
     # Fallback to measure result_type.
     return model_measure.result_type.value
+
+
+# Scale used to align a numeric aggregate's UNION legs when the model has not
+# declared the source column's own scale. Wide enough that a money column is
+# carried exactly, while leaving 26 integer digits at precision 38.
+_ALIGNMENT_SCALE = 12
+_ALIGNMENT_PRECISION = 38
+
+
+def resolve_union_alignment_type(
+    measure: ResolvedMeasure,
+    model: SemanticModel,
+    dialect: Dialect | None = None,
+) -> str | None:
+    """The type every UNION leg agrees on for *measure*'s column.
+
+    Distinct from :func:`resolve_null_type_for_field`, and the distinction is
+    the whole point. That one answers "what type does the *result* have", which
+    is right for the outer ``CAST(SUM(...) AS ...)`` and wrong here: the legs
+    carry **pre-aggregation rows**, so aligning them on the declared output
+    type rounds every row before it is summed. A measure declared
+    ``decimal(18, 2)`` over a ``DECIMAL(18, 6)`` column lost up to 0.005 per
+    row, which is invisible on one row and material on fifteen thousand.
+
+    The alignment still has to be a single concrete type, because a strict
+    engine will not union columns whose types disagree: ClickHouse produces
+    ``Variant(Decimal, Float64)`` and then refuses to ``SUM`` it. So the answer
+    is a type that is common across legs *and* preserves the input, rather than
+    the narrower of the two.
+
+    A model that declares the source column's ``sqlPrecision``/``sqlScale`` is
+    taken at its word. Otherwise the fallback widens to
+    ``decimal(38, 12)``, which carries any realistic money or rate column
+    exactly and still leaves 26 integer digits.
+
+    Non-numeric aggregates keep the existing behaviour: COUNT and LISTAGG
+    project the raw column, whose type is already the right alignment.
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if not model_measure:
+        return None
+    agg = (model_measure.aggregation or "").lower()
+    if agg in ("count", "count_distinct", "listagg") or len(model_measure.columns) != 1:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+    if dialect is None:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+
+    ref = model_measure.columns[0]
+    obj = model.data_objects.get(ref.view) if ref.view else None
+    column = obj.columns.get(ref.column) if obj and ref.column else None
+    if column is not None and column.abstract_type.value not in ("int", "float"):
+        # A non-numeric source keeps its own type; widening it makes no sense.
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+
+    if column is not None and column.sql_precision is not None:
+        precision = column.sql_precision
+        scale = column.sql_scale if column.sql_scale is not None else 0
+    else:
+        precision, scale = _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
+    return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
 
 
 def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
