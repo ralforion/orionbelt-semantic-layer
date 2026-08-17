@@ -1,8 +1,8 @@
 WITH "composite_01" AS (
-SELECT CAST("Returns"."returnamount" AS NUMBER(38, 20)) AS "Total Returns"
+SELECT "Returns"."returnamount" AS "Total Returns"
 FROM "orionbelt_1"."returns" AS "Returns"
 UNION ALL BY NAME
-SELECT CAST("Sales"."salesamount" AS NUMBER(38, 20)) AS "Total Sales"
+SELECT "Sales"."salesamount" AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 )
 SELECT CAST(SUM("composite_01"."Total Returns") / NULLIF(SUM("composite_01"."Total Sales"), 0) AS NUMBER(18, 4)) AS "Return Rate"

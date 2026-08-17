@@ -300,6 +300,39 @@ def resolve_union_alignment_type(
     return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
 
 
+def resolve_owning_leg_cast_type(
+    measure: ResolvedMeasure,
+    model: SemanticModel,
+    dialect: Dialect | None = None,
+) -> str | None:
+    """The cast for the leg that *owns* a measure, or ``None`` to leave it be.
+
+    The NULL pads always carry a type; this side usually should not. A typed
+    pad beside an uncast column resolves to the **column's** type on DuckDB,
+    Postgres and ClickHouse, in any leg order, so the union is already settled
+    and casting here can only lose: to the declared output type it rounded
+    pre-aggregation rows (#305), and to a fixed wide decimal it overflowed
+    values the source held legally, since ``DECIMAL(38, 20)`` keeps just 18
+    integer digits (#311).
+
+    It is kept where the alignment is a **conversion** rather than a widening.
+    ``LISTAGG`` over an integer column aligns the pads on text, and an uncast
+    integer leg meeting a text pad is a union Postgres refuses outright. Those
+    measures are exactly the ones :func:`resolve_union_alignment_type` answers
+    from the column's own type, so the rule is: cast when the alignment is not
+    the numeric widening.
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if (
+        model_measure is not None
+        and dialect is not None
+        and (model_measure.aggregation or "").lower() not in _RAW_COLUMN_AGGREGATIONS
+        and _alignment_source(model_measure, model)[0] is not None
+    ):
+        return None
+    return resolve_union_alignment_type(measure, model, dialect)
+
+
 def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
     """The SQL aggregate name and ``DISTINCT`` flag to re-apply outside the union.
 

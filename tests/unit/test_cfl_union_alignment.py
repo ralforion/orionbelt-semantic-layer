@@ -188,22 +188,26 @@ class TestUnionAlignmentPreservesInput:
             "the same measure answered differently under a multi-fact plan"
         )
 
-    def test_the_legs_align_on_a_wider_type_than_the_result(self) -> None:
-        """Rows are carried wide; only the aggregate narrows to the declared type.
+    def test_the_owning_leg_carries_the_column_uncast(self) -> None:
+        """Rows are carried in the source's own type; only the aggregate narrows.
 
-        Asserted on the shape rather than the exact spelling, since the width
-        is a fallback the model can override with ``sqlPrecision``/``sqlScale``.
+        The owning leg projects the column with no cast at all. That is what
+        makes the narrowing impossible rather than merely wide: there is no
+        second type for a row to be squeezed through on its way to the
+        aggregate. The NULL pads still carry one, which is what settles the
+        union.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged", "Invoiced"])),
             _model(),
             "duckdb",
         ).sql
-        leg_casts = re.findall(r'CAST\("(?:Charges|Invoices)"\."amount" AS ([A-Z0-9_(), ]+)\)', sql)
-        assert leg_casts, f"expected a leg cast on the source column:\n{sql}"
-        for rendered in leg_casts:
-            scale = int(re.search(r",\s*(\d+)\)", rendered).group(1))
-            assert scale > 2, f"leg narrowed rows to the result's scale: {rendered}"
+        assert re.search(r'"(?:Charges|Invoices)"\."amount" AS "(?:Charged|Invoiced)"', sql), (
+            f"the owning leg should project the source column uncast:\n{sql}"
+        )
+        assert not re.search(r'CAST\("(?:Charges|Invoices)"\."amount" AS', sql), (
+            f"the owning leg should not cast the source column at all:\n{sql}"
+        )
         assert re.search(r"CAST\(SUM\(.*?\) AS DECIMAL\(18, 2\)\)", sql), (
             f"the aggregate should still narrow to the declared dataType:\n{sql}"
         )
@@ -252,32 +256,27 @@ class TestWhatIsAndIsNotWidened:
             "an expression measure answered differently under a multi-fact plan"
         )
 
-    def test_a_selecting_aggregate_is_widened_too(self) -> None:
-        """One mechanism, not two: MIN aligns the same way SUM does.
+    def test_a_selecting_aggregate_is_treated_the_same_way(self) -> None:
+        """One mechanism, not two: MIN is carried the same way SUM is.
 
-        This asserted the opposite for a while. MIN was left unwidened because
-        widening it at scale 12 turned 1.000000000000400 into
-        1.000000000000, and an attempt to leave both sides of the union
-        untyped instead was measured to break two engines: Postgres resolves a
-        column whose first two occurrences are untyped NULLs as text and then
-        refuses to match numeric, and DuckDB unifies to the pad's type rather
-        than the column's.
+        This asserted several different things over its life, each matching
+        whatever the implementation happened to do. MIN was first left
+        unwidened, because widening it at scale 12 turned 1.000000000000400
+        into 1.000000000000; then widened along with everything else once the
+        width grew.
 
-        Both constraints say the same thing. Every leg has to carry one
-        concrete type, so the only question was ever the width, and at a
-        sufficient width a selecting aggregate is preserved exactly like any
-        other.
+        Both were workarounds for casting the owning leg at all. Nothing about
+        a selecting aggregate needs its own rule now: the column arrives in its
+        own type because no cast is applied to it.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
             _model(),
             "duckdb",
         ).sql
-        min_leg = next(
-            line for line in sql.splitlines() if '"Charged Min"' in line and "CAST" in line
-        )
-        assert "DECIMAL(38, 20)" in min_leg, (
-            f"a selecting aggregate should align on the same wide type: {min_leg}"
+        min_leg = next(line for line in sql.splitlines() if '"Charged Min"' in line)
+        assert "CAST" not in min_leg, (
+            f"a selecting aggregate should reach the union uncast, like any other: {min_leg}"
         )
 
     def test_the_width_carries_a_source_wider_than_the_old_default(self) -> None:
@@ -329,11 +328,9 @@ class TestWhatIsAndIsNotWidened:
             _model(),
             "duckdb",
         ).sql
-        leg = next(
-            line for line in sql.splitlines() if '"Charged Stddev"' in line and "CAST" in line
-        )
-        assert "DECIMAL(18, 3)" not in leg, (
-            f"a statistical aggregate narrowed its rows to the result scale: {leg}"
+        leg = next(line for line in sql.splitlines() if '"Charged Stddev"' in line)
+        assert "CAST" not in leg, (
+            f"a statistical aggregate narrowed its rows before aggregating: {leg}"
         )
 
 
@@ -411,7 +408,11 @@ class TestStarAndCflAgreeAcrossTheMatrix:
                         "INSERT INTO charges VALUES "
                         "(1, 1.0004, 'x', 1, 1.000000000000400, 1000000000000000001), "
                         "(2, 1.0005, 'y', 2, 2.000000000000500, 1000000000000000002), "
-                        "(3, 1.0006, 'z', 3, 3.000000000000600, 1000000000000000003)"
+                        # A DECIMAL(38, 15) using its full integer range. Any
+                        # fixed-width decimal alignment either rounds the
+                        # fraction off this or overflows on the integer part.
+                        "(3, 1.0006, 'z', 3, 1000000000000000000.000000000000001, "
+                        "1000000000000000003)"
                     )
                     con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5), (3, 5.5)")
                     star = _outcome(con, model, ["Probe"])

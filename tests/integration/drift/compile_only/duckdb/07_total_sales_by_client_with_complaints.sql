@@ -1,5 +1,5 @@
 WITH "composite_01" AS (
-SELECT "Clients"."clientname" AS "Sales Client Name", CAST("Sales"."salesamount" AS DECIMAL(38, 20)) AS "Total Sales"
+SELECT "Clients"."clientname" AS "Sales Client Name", "Sales"."salesamount" AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 UNION ALL BY NAME

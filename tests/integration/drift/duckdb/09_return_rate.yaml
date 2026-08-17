@@ -1,13 +1,13 @@
 last_verified_by: tests/integration/correctness/test_metric_algebra.py::test_return_rate_equals_returns_over_sales
 sql: 'WITH "composite_01" AS (
 
-  SELECT CAST("Returns"."returnamount" AS DECIMAL(38, 20)) AS "Total Returns"
+  SELECT "Returns"."returnamount" AS "Total Returns"
 
   FROM "orionbelt_1"."returns" AS "Returns"
 
   UNION ALL BY NAME
 
-  SELECT CAST("Sales"."salesamount" AS DECIMAL(38, 20)) AS "Total Sales"
+  SELECT "Sales"."salesamount" AS "Total Sales"
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
