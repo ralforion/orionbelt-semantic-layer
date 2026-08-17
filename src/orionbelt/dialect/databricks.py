@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import CrossColumnOrderNotSupportedError, Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    CrossColumnOrderNotSupportedError,
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -80,6 +85,31 @@ class DatabricksDialect(Dialect):
 
     # Databricks spells the prefix/suffix tests without the underscore
     # (``startswith`` / ``endswith``, Databricks Runtime 10.4 LTS and above).
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """``try_variant_get`` honours the catalog's contract natively.
+
+        Asking for ``'string'`` makes the object/array rule fall out of the
+        cast: a path resolving to an object or array cannot be cast to STRING,
+        and the ``try_`` form answers NULL rather than raising
+        ``INVALID_VARIANT_CAST``. A missing path is NULL for the same reason.
+        No CASE guard is needed, unlike every other engine here.
+
+        ``get_json_object`` and the ``:`` operator both return the JSON *text*
+        for a non-scalar path, so neither can express the contract.
+
+        Available on **Databricks SQL** unconditionally, which is the surface
+        OrionBelt connects to, and on Databricks Runtime 15.3 and above. The
+        version floor applies only to the Runtime path; the published "Applies
+        to" badge carries no qualifier next to Databricks SQL.
+
+        Not verified against a live warehouse: the SQL warehouse would not
+        start on any attempt while the json group was measured, so this
+        rendering comes from the published function reference.
+        """
+        doc = self.compile_expr(args[0])
+        path = self._quote_text(_json_path_of(args[1]))
+        return f"try_variant_get(parse_json({doc}), {path}, 'string')"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",

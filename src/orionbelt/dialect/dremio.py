@@ -26,6 +26,12 @@ class DremioDialect(Dialect):
             supports_ilike=False,
             # ``measure`` is Databricks Metric View specific.
             unsupported_aggregations=["mode", "measure"],
+            # Dremio has no equivalent of the catalog's ``json_value``: it
+            # reaches into semi-structured data through positional field
+            # access on a parsed column rather than a JSONPath scalar
+            # function, which the entry's literal-path contract cannot
+            # express. Reported as unsupported rather than mis-rendered.
+            unsupported_functions=["json_value"],
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, UnionAll
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -45,6 +49,19 @@ class DuckDBDialect(Dialect):
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
+
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """DuckDB has ``JSON_VALUE`` but it leaves the result quoted (``'"x"'``),
+        so ``json_extract_string`` is the one that matches the catalog.
+        """
+        doc = self.compile_expr(args[0])
+        path = self._quote_text(_json_path_of(args[1]))
+        # json_extract_string returns the serialized JSON for an object or
+        # array path; json_type supplies the catalog's NULL rule.
+        return (
+            f"CASE WHEN json_type({doc}, {path}) IN ('OBJECT', 'ARRAY') "
+            f"THEN NULL ELSE json_extract_string({doc}, {path}) END"
+        )
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])

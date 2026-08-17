@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+    _snowflake_path,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
@@ -100,6 +105,26 @@ class SnowflakeDialect(Dialect):
 
     # Snowflake spells the prefix/suffix tests without the underscore;
     # ``STARTS_WITH`` / ``ENDS_WITH`` are not recognised (probe-verified).
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """``JSON_EXTRACT_PATH_TEXT`` takes the path without the leading ``$``
+        and accepts a VARCHAR document directly, so no ``PARSE_JSON`` wrapper is
+        needed for the extraction itself.
+
+        Array subscripts keep bracket notation: Snowflake rejects ``arr.0``
+        with "Invalid extraction path", so a dotted join is a hard error rather
+        than a wrong value.
+
+        ``TYPEOF(GET_PATH(...))`` supplies the catalog's object/array rule,
+        which the bare call does not: it returns the serialized JSON for a
+        non-scalar path.
+        """
+        doc = self.compile_expr(args[0])
+        path = self._quote_text(_snowflake_path(_json_path_of(args[1])))
+        return (
+            f"CASE WHEN TYPEOF(GET_PATH(PARSE_JSON({doc}), {path})) IN ('OBJECT', 'ARRAY') "
+            f"THEN NULL ELSE JSON_EXTRACT_PATH_TEXT({doc}, {path}) END"
+        )
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",

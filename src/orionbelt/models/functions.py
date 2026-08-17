@@ -38,12 +38,13 @@ checked against a literal — arity and semantics are what the validator and the
 renderers actually need. ``result_type`` is carried because it documents the
 catalog for readers and for the reference surface.
 
-Groups ship in phases; this module holds the string, numeric, conditional and
-date/time groups.
+Groups ship in phases; this module holds the string, numeric, conditional,
+date/time and json groups.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Function groups, in the order they are presented to readers.
@@ -51,6 +52,23 @@ GROUP_STRING = "string"
 GROUP_NUMERIC = "numeric"
 GROUP_CONDITIONAL = "conditional"
 GROUP_DATETIME = "datetime"
+GROUP_JSON = "json"
+
+JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])+$")
+"""The JSONPath subset ``json_value`` accepts: object member access and array
+subscripts rooted at ``$``, at least one of them. Filters and wildcards are
+excluded because the engines diverge on them and a catalog entry has to pin one
+meaning.
+
+The bare root ``$`` is excluded too, for a different reason. It is not a path to
+a scalar: the root of a document is an object or an array, which the entry
+already answers NULL for, so supporting it would buy a guaranteed NULL in
+exchange for per-dialect root handling. Postgres has no zero-argument
+``json_extract_path_text`` and rejects the call outright, and Snowflake would be
+handed an empty extraction path.
+
+It lives here rather than in a dialect because both the model validator and
+codegen have to agree on it, exactly as they do on :data:`TIME_UNITS`."""
 
 TIME_UNITS: tuple[str, ...] = (
     "year",
@@ -110,6 +128,16 @@ class FunctionSpec:
     examples: tuple[FunctionExample, ...] = field(default_factory=tuple)
     unit_argument: int | None = None
     """Index of an argument that must be a literal from :data:`TIME_UNITS`."""
+
+    path_argument: int | None = None
+    """Index of an argument that must be a literal JSONPath.
+
+    Same contract as :attr:`unit_argument` and for the same reason: the engines
+    do not merely spell the call differently, they take the path apart
+    differently. Postgres wants the segments as separate arguments, Snowflake
+    wants them dotted without the ``$``, the rest want the JSONPath verbatim.
+    None of that is derivable from a runtime value, so the path is pinned to a
+    literal and a non-literal falls through to the pass-through path."""
 
     def accepts(self, arg_count: int) -> bool:
         """Whether *arg_count* satisfies this entry's arity."""
@@ -690,6 +718,52 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
 )
 
 
+_JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
+    FunctionSpec(
+        name="json_value",
+        signature="json_value(x, path)",
+        group=GROUP_JSON,
+        min_args=2,
+        max_args=2,
+        result_type="string",
+        path_argument=1,
+        summary="The scalar at *path* in JSON document *x*, as a string.",
+        semantics=(
+            "*path* is a literal JSONPath limited to object member access and "
+            "array subscripts: ``$.a``, ``$.a.b``, ``$.a[0]``. The result is the "
+            "scalar rendered as a string, so ``1`` comes back as ``'1'``; an "
+            "absent path is NULL, and so is a path resolving to an object or "
+            "array rather than a scalar.\n\n"
+            "Measured, not assumed. DuckDB's own ``JSON_VALUE`` returns the "
+            "value still quoted (``'\"x\"'``), so it renders as "
+            "``json_extract_string`` there. Postgres takes the segments as "
+            "separate arguments and Snowflake takes them dotted without the "
+            "``$``, which is why the path has to be a literal.\n\n"
+            "ClickHouse is the one deviation from the NULL rule: it returns the "
+            "empty string for an absent path, so the call is wrapped in "
+            "``nullIf(..., '')``. That restores NULL for the common case but "
+            "cannot distinguish an absent path from a genuine empty-string "
+            "value - both come back NULL there. Databricks needs no guard at all: "
+            "`try_variant_get(..., 'string')` answers NULL when the value will "
+            "not cast, which is the object/array rule and the absent-path rule "
+            "at once. Dremio has no JSONPath scalar function and reports the "
+            "entry unsupported rather than mis-rendering it."
+        ),
+        examples=(
+            FunctionExample("""json_value('{"a": "x"}', '$.a')""", "x"),
+            FunctionExample("""json_value('{"o": {"b": "y"}}', '$.o.b')""", "y"),
+            FunctionExample("""json_value('{"n": 1}', '$.n')""", "1"),
+            FunctionExample("""json_value('{"a": "x"}', '$.zz')""", None),
+            # The object/array rule is the one the engines disagree on, so it
+            # is pinned by example on every one of them rather than asserted.
+            FunctionExample("""json_value('{"o": {"b": "y"}}', '$.o')""", None),
+            FunctionExample("""json_value('{"arr": ["z"]}', '$.arr')""", None),
+            FunctionExample("""json_value('{"arr": ["z"]}', '$.arr[0]')""", "z"),
+        ),
+    ),
+)
+
+
 FUNCTION_CATALOG: dict[str, FunctionSpec] = {
     spec.name: spec
     for spec in (
@@ -697,6 +771,7 @@ FUNCTION_CATALOG: dict[str, FunctionSpec] = {
         *_NUMERIC_FUNCTIONS,
         *_CONDITIONAL_FUNCTIONS,
         *_DATETIME_FUNCTIONS,
+        *_JSON_FUNCTIONS,
     )
 }
 """Every catalog entry, keyed by its canonical (lowercase) name."""

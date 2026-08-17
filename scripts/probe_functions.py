@@ -33,6 +33,122 @@ from collections.abc import Callable, Iterator
 # (group, label, SQL expression). The expression is spliced into ``SELECT ...``
 # verbatim, so it must be a scalar expression needing no FROM clause.
 CANDIDATES: list[tuple[str, str, str]] = [
+    ("jsonedge", "CH nullIf missing", """nullIf(JSON_VALUE('{"a": "x", "e": ""}', '$.zz'), '')"""),
+    (
+        "jsonedge",
+        "CH nullIf empty-string value",
+        """nullIf(JSON_VALUE('{"a": "x", "e": ""}', '$.e'), '')""",
+    ),
+    ("jsonedge", "CH value present", """nullIf(JSON_VALUE('{"a": "x", "e": ""}', '$.a'), '')"""),
+    (
+        "jsonedge",
+        "PG cast + path_text",
+        """json_extract_path_text('{"a": "x", "o": {"b": "y"}}'::json, 'a')""",
+    ),
+    (
+        "jsonedge",
+        "PG cast + nested",
+        """json_extract_path_text('{"a": "x", "o": {"b": "y"}}'::json, 'o', 'b')""",
+    ),
+    (
+        "jsonedge",
+        "PG cast + missing",
+        """json_extract_path_text('{"a": "x", "o": {"b": "y"}}'::json, 'zz')""",
+    ),
+    (
+        "jsonedge",
+        "SF nested dotted",
+        """JSON_EXTRACT_PATH_TEXT('{"a": "x", "o": {"b": "y"}}', 'o.b')""",
+    ),
+    ("jsonedge", "SF missing", """JSON_EXTRACT_PATH_TEXT('{"a": "x", "o": {"b": "y"}}', 'zz')"""),
+    ("jsonedge", "BQ missing", """JSON_VALUE('{"a": "x", "o": {"b": "y"}}', '$.zz')"""),
+    ("jsonedge", "DDB missing", """json_extract_string('{"a": "x", "o": {"b": "y"}}', '$.zz')"""),
+    # -- json: candidate spellings for the nested-access group ---------------
+    # J is the same object everywhere so the answers are comparable:
+    #   {"a": "x", "n": 1, "o": {"b": "y"}}
+    ("json", "JSON_VALUE $.a", """JSON_VALUE('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.a')"""),
+    ("json", "JSON_VALUE $.o.b", """JSON_VALUE('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.o.b')"""),
+    (
+        "json",
+        "JSON_VALUE $.n (number)",
+        """JSON_VALUE('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.n')""",
+    ),
+    (
+        "json",
+        "JSON_VALUE $.zz (missing)",
+        """JSON_VALUE('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.zz')""",
+    ),
+    (
+        "json",
+        "json_extract_string",
+        """json_extract_string('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.a')""",
+    ),
+    (
+        "json",
+        "json_extract_string nested",
+        """json_extract_string('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.o.b')""",
+    ),
+    (
+        "json",
+        "json_extract_string number",
+        """json_extract_string('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.n')""",
+    ),
+    (
+        "json",
+        "get_json_object",
+        """get_json_object('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.a')""",
+    ),
+    (
+        "json",
+        "get_json_object number",
+        """get_json_object('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.n')""",
+    ),
+    (
+        "json",
+        "JSON_UNQUOTE(JSON_EXTRACT)",
+        """JSON_UNQUOTE(JSON_EXTRACT('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.a'))""",
+    ),
+    (
+        "json",
+        "JSONExtractString",
+        """JSONExtractString('{"a": "x", "n": 1, "o": {"b": "y"}}', 'a')""",
+    ),
+    (
+        "json",
+        "JSONExtractString number",
+        """JSONExtractString('{"a": "x", "n": 1, "o": {"b": "y"}}', 'n')""",
+    ),
+    (
+        "json",
+        "JSONExtractRaw number",
+        """JSONExtractRaw('{"a": "x", "n": 1, "o": {"b": "y"}}', 'n')""",
+    ),
+    ("json", "jsonb #>> path", """('{"a": "x", "n": 1, "o": {"b": "y"}}'::jsonb #>> '{a}')"""),
+    ("json", "jsonb #>> nested", """('{"a": "x", "n": 1, "o": {"b": "y"}}'::jsonb #>> '{o,b}')"""),
+    ("json", "jsonb #>> number", """('{"a": "x", "n": 1, "o": {"b": "y"}}'::jsonb #>> '{n}')"""),
+    ("json", "jsonb #>> missing", """('{"a": "x", "n": 1, "o": {"b": "y"}}'::jsonb #>> '{zz}')"""),
+    (
+        "json",
+        "PARSE_JSON path text",
+        """JSON_EXTRACT_PATH_TEXT(PARSE_JSON('{"a": "x", "n": 1, "o": {"b": "y"}}'), 'a')""",
+    ),
+    (
+        "json",
+        "PARSE_JSON path text nested",
+        """JSON_EXTRACT_PATH_TEXT(PARSE_JSON('{"a": "x", "n": 1, "o": {"b": "y"}}'), 'o.b')""",
+    ),
+    (
+        "json",
+        "JSON_EXTRACT_PATH_TEXT raw str",
+        """JSON_EXTRACT_PATH_TEXT('{"a": "x", "n": 1, "o": {"b": "y"}}', 'a')""",
+    ),
+    ("json", "JSON_QUERY subtree", """JSON_QUERY('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.o')"""),
+    (
+        "json",
+        "json_extract subtree",
+        """json_extract('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.o')""",
+    ),
+    ("json", "JSON_EXISTS", """JSON_EXISTS('{"a": "x", "n": 1, "o": {"b": "y"}}', '$.a')"""),
     # -- string: canonical forms and the rewrites they may need ---------------
     ("string", "substring(3-arg)", "substring('abcdef', 2, 3)"),
     ("string", "substring(2-arg)", "substring('abcdef', 2)"),

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import CrossColumnOrderNotSupportedError, Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    CrossColumnOrderNotSupportedError,
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
@@ -233,6 +238,17 @@ class ClickHouseDialect(Dialect):
     # ``length`` counts bytes on ClickHouse (``length('äbcd')`` is 5), and
     # ``startsWith`` / ``endsWith`` are the camelCase-only spellings — unlike
     # ``substring`` or ``upper``, which have case-insensitive ANSI aliases.
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """ClickHouse returns the empty string for an absent path, not NULL.
+
+        Measured, not assumed. ``nullIf(..., '')`` restores the catalog's NULL
+        rule for the common case, at the cost of not distinguishing an absent
+        path from a genuine empty-string value: both come back NULL here.
+        """
+        doc = self.compile_expr(args[0])
+        path = _json_path_of(args[1])
+        return f"nullIf(JSON_VALUE({doc}, {self._quote_text(path)}), '')"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "length": "lengthUTF8",
         "starts_with": "startsWith",

@@ -215,6 +215,13 @@ Canonical names are lowercase and snake_case; OBML is case-insensitive about
 them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
+Every entry renders on all eight dialects except where noted. `json_value` is
+the first exception: Dremio has no JSONPath scalar function, so it reports the
+call unsupported rather than meaning something different there. A model that
+needs it is pinned to the other seven engines. On Databricks it reads through
+`try_variant_get`, which is available on Databricks SQL and on Runtime 15.3 or
+above.
+
 | Signature | Result | Pinned meaning |
 |---|---|---|
 | `substring(x, start, len?)` | string | 1-based; omitting `len` runs to the end |
@@ -243,6 +250,37 @@ optional argument.
 | `extract(unit, x)` | int | **ISO week numbering**; an integer, not a numeric |
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
+| `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
+
+`json_value`'s `path` must be a **literal**, not an expression: the engines do
+not merely spell the call differently, they take the path apart differently.
+Postgres wants the segments as separate arguments, Snowflake wants them dotted
+without the `$`, and the rest take the JSONPath verbatim. The accepted subset is
+object member access and array subscripts rooted at `$` — `$.a`, `$.a.b`,
+`$.a[0]`, at least one of them. The bare root `$` is not accepted: it is not a
+path to a scalar, and the entry already answers NULL for an object or array.
+
+The scalar comes back as a string, so `1` reads as `'1'`.
+
+A path resolving to an **object or array** is NULL, and that rule is enforced
+rather than inherited: DuckDB, Postgres, Snowflake and MySQL all return the
+*serialized JSON* for a non-scalar path, so each is wrapped in a type guard
+(`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`). BigQuery and ClickHouse
+already answer NULL, and Databricks gets it from the cast itself —
+`try_variant_get(..., 'string')` returns NULL rather than raising when the value
+will not cast. Reach an array element with a subscript instead —
+`json_value(x, '$.arr[0]')`.
+
+ClickHouse is the one remaining deviation: it returns the empty string for an
+absent path, so the call is wrapped in `nullIf(..., '')`. That restores NULL for
+the common case but cannot distinguish an absent path from a genuine
+empty-string value — both are NULL there.
+
+A path that is not a literal from the accepted subset is rejected with
+`INVALID_JSON_PATH`. Without that check the call would still compile, falling
+through to the pass-through path and emitting verbatim SQL, which would slip
+past both `expressionMode: portable` and a dialect's unsupported-function
+guard.
 
 The date/time entries take a **literal unit** from a closed vocabulary — `year`,
 `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be

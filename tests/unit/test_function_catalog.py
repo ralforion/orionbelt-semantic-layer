@@ -41,7 +41,19 @@ from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
 
 CATALOG = list(FUNCTION_CATALOG.values())
+CATALOG_BY_NAME = dict(FUNCTION_CATALOG)
 DIALECTS = sorted(DialectRegistry.available())
+
+
+def _is_unsupported(function: str, dialect: str) -> bool:
+    """Whether *dialect* declares *function* unsupported.
+
+    The rendering invariants below hold for every entry an engine can answer;
+    one it has declared it cannot is expected to raise, and skipping it here is
+    what keeps that a deliberate declaration rather than a broken renderer.
+    """
+    declared = DialectRegistry.get(dialect).capabilities.unsupported_functions
+    return function in {name.lower() for name in declared}
 
 
 _CALL_START = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\(")
@@ -275,6 +287,48 @@ class TestArityValidation:
             "argCount": 2,
             "signature": "length(x)",
         }
+
+
+class TestJsonPaths:
+    """``json_value`` takes a literal path, and the dialects take it apart."""
+
+    def test_an_expression_path_is_rejected(self) -> None:
+        """Without this the call compiles to verbatim SQL, which is worse than
+        an error: it slips past ``expressionMode: portable`` and past a
+        dialect's unsupported-function guard, so a model acquires an engine
+        dependency exactly where it asked not to.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, {Zip})")
+
+    def test_a_wildcard_path_is_rejected(self) -> None:
+        """Filters and wildcards are outside the accepted subset: the engines
+        diverge on them and a catalog entry has to pin one meaning.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, '$.*')")
+
+    def test_a_path_without_a_root_is_rejected(self) -> None:
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, 'a.b')")
+
+    def test_the_bare_root_is_rejected(self) -> None:
+        """``$`` is not a path to a scalar, and it does not render: Postgres has
+        no zero-argument ``json_extract_path_text`` and rejects the call, and
+        Snowflake would be handed an empty extraction path.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, '$')")
+
+    def test_member_and_subscript_paths_pass(self) -> None:
+        assert _errors_for("json_value({Zip}, '$.a')") == []
+        assert _errors_for("json_value({Zip}, '$.a.b')") == []
+        assert _errors_for("json_value({Zip}, '$.arr[0]')") == []
+
+    def test_the_object_array_rule_is_pinned_by_example(self) -> None:
+        """The rule the engines disagree on is the one that needs examples:
+        DuckDB, Postgres, Snowflake and MySQL return the serialized JSON for a
+        non-scalar path unless guarded.
+        """
+        spec = CATALOG_BY_NAME["json_value"]
+        non_scalar = [e for e in spec.examples if e.expect is None and "zz" not in e.call]
+        assert len(non_scalar) >= 2, "object and array paths must both be pinned"
 
 
 class TestTimeUnits:
@@ -1057,6 +1111,8 @@ class TestRenderingInvariants:
     @pytest.mark.parametrize("dialect", DIALECTS)
     def test_every_example_renders(self, dialect: str) -> None:
         for spec in CATALOG:
+            if _is_unsupported(spec.name, dialect):
+                continue
             for example in spec.examples:
                 assert _render(example.call, dialect)
 
@@ -1086,6 +1142,7 @@ class TestRenderingInvariants:
         offenders = [
             f"{example.call} -> {_render(example.call, dialect)}"
             for spec in CATALOG
+            if not _is_unsupported(spec.name, dialect)
             for example in spec.examples
             if not _is_atomic(_render(example.call, dialect))
         ]
@@ -1241,10 +1298,23 @@ class TestUnsupportedFunction:
         ast = parse_expression(tokenize_metric_formula("upper('a')"))
         assert _NoSplitPartDialect().compile_expr(ast) == "UPPER('a')"
 
-    def test_no_dialect_declares_one_today(self) -> None:
-        """The string group renders on all eight engines; nothing is dropped."""
-        for dialect in DIALECTS:
-            assert DialectRegistry.get(dialect).capabilities.unsupported_functions == []
+    def test_every_declared_unsupported_name_is_a_catalog_entry(self) -> None:
+        """A declaration is only meaningful if it names a real entry.
+
+        This replaces an assertion that no dialect declared one at all, which
+        held until the json group: Dremio has no JSONPath scalar function, so
+        it drops ``json_value`` rather than mis-rendering it. A typo here would
+        silently un-drop the function, so the names are checked against the
+        catalog.
+        """
+        declared = {
+            dialect: DialectRegistry.get(dialect).capabilities.unsupported_functions
+            for dialect in DIALECTS
+        }
+        for dialect, names in declared.items():
+            unknown = [n for n in names if n not in CATALOG_BY_NAME]
+            assert not unknown, f"{dialect} declares unknown function(s) {unknown}"
+        assert declared["dremio"] == ["json_value"]
 
     def test_the_api_answers_422_not_500(self) -> None:
         """Every surface that translates the sibling unsupported-* errors has
