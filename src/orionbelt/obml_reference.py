@@ -39,8 +39,12 @@ def _function_catalog_section() -> str:
     lines.extend(
         [
             "Calling a catalog function with the wrong number of arguments is a",
-            "validation error, `WRONG_FUNCTION_ARITY`. Names outside the catalog are",
-            "not checked at all: their arity and meaning belong to the engine.",
+            "validation error, `WRONG_FUNCTION_ARITY`. A name outside the catalog is",
+            "emitted as written, since its arity and meaning belong to the engine,",
+            "and reported as a `NON_PORTABLE_FUNCTION` warning so the dependency is",
+            "visible. A model that has to run anywhere sets",
+            "`settings.expressionMode: portable`, which turns that warning into an",
+            "error.",
         ]
     )
     return "\n".join(lines)

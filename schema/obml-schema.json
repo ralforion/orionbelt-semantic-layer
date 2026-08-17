@@ -216,7 +216,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``{[Data Object].[Column]}`` references a column of another data object, which the compiler joins into any query reading this column \u2014 that is how a column-to-column comparison across data objects is expressed. ``code`` becomes optional when ``expression`` is set. Function calls are portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), whose entries OBSL renders per dialect and whose semantics it pins: ``concat`` propagates NULL, ``length`` counts characters, ``position`` takes the needle first. Calling one with the wrong number of arguments is rejected with ``WRONG_FUNCTION_ARITY``. A function outside the catalog is emitted verbatim and unchecked, so the model then only runs on engines that have it."
+          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``{[Data Object].[Column]}`` references a column of another data object, which the compiler joins into any query reading this column \u2014 that is how a column-to-column comparison across data objects is expressed. ``code`` becomes optional when ``expression`` is set. Function calls are portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), whose entries OBSL renders per dialect and whose semantics it pins: ``concat`` propagates NULL, ``length`` counts characters, ``position`` takes the needle first. Calling one with the wrong number of arguments is rejected with ``WRONG_FUNCTION_ARITY``. A function outside the catalog is emitted verbatim, so the model then only runs on engines that have it; its arity and meaning stay the engine's business, but the call is reported as a ``NON_PORTABLE_FUNCTION`` warning, or an error when ``settings.expressionMode`` is ``portable``."
         },
         "synonyms": {
           "type": "array",
@@ -733,7 +733,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "Template string with {[DataObject].[Column]} placeholders for a measure expression. Function calls follow the same rule as a computed column's: portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), emitted verbatim and unchecked otherwise."
+          "description": "Template string with {[DataObject].[Column]} placeholders for a measure expression. Function calls follow the same rule as a computed column's: portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), and emitted verbatim otherwise, with a ``NON_PORTABLE_FUNCTION`` warning that ``settings.expressionMode: portable`` turns into an error."
         },
         "description": {
           "type": "string",
@@ -1260,6 +1260,12 @@
             "postgres",
             "snowflake"
           ]
+        },
+        "expressionMode": {
+          "type": "string",
+          "enum": ["permissive", "portable"],
+          "description": "How function calls in expressions are held to the portable function catalog (GET /v1/reference/functions). 'permissive' (default) emits a call the catalog does not carry as written and warns with NON_PORTABLE_FUNCTION, keeping vendor SQL available; 'portable' rejects it, so a model that has to run on any dialect cannot acquire a dependency on one engine's SQL by accident.",
+          "default": "permissive"
         },
         "queryTimezone": {
           "type": "string",

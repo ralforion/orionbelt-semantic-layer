@@ -87,6 +87,8 @@ _EXCLUDED_FIELDS = frozenset(
         "weekStart",
         "query_timezone",
         "queryTimezone",
+        "expression_mode",
+        "expressionMode",
         "settings",
         # ModelFilter (static where injected at compile time, not a
         # modeling concept the ontology surfaces)

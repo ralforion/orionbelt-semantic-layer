@@ -1476,6 +1476,84 @@ class TestModelFileRemovalWarning:
         assert not any("MODEL_FILE" in rec.message for rec in caplog.records)
 
 
+class TestModelSettingsSurface:
+    """``/v1/settings`` mirrors the model's ``settings:`` block by hand.
+
+    A hand-written mirror drifts: it was four fields behind by the time anyone
+    checked, having missed ``defaultLocale`` long ago and then ``queryTimezone``,
+    ``weekStart`` and ``expressionMode`` as each landed. Pydantic drops an
+    unknown key silently, so a model could set one and the API would answer as
+    though it had not.
+    """
+
+    def test_the_mirror_carries_every_model_setting(self) -> None:
+        """The check that was missing, rather than the four fields that were."""
+        from orionbelt.api.schemas import ModelSettingsInfo
+        from orionbelt.models.semantic import ModelSettings
+
+        mirrored = {f.alias or name for name, f in ModelSettingsInfo.model_fields.items()}
+        declared = {f.alias or name for name, f in ModelSettings.model_fields.items()}
+        assert declared - mirrored == set(), "settings missing from GET /v1/settings"
+        assert mirrored - declared == set(), "GET /v1/settings invents settings"
+
+    def test_the_mirror_carries_the_same_defaults(self) -> None:
+        """Matching names are not enough: matching defaults are the answer.
+
+        The response drops nulls, so a mirror field defaulting to None while
+        the model's defaults to 'monday' makes the same setting present or
+        absent depending on whether the YAML happened to write a ``settings:``
+        block at all -- the model's own defaults fill it in once the block
+        exists. Reporting the settings in force means reporting them always.
+        """
+        from pydantic import BaseModel
+
+        from orionbelt.api.schemas import ModelSettingsInfo
+        from orionbelt.models.semantic import ModelSettings
+
+        def defaults(model: type[BaseModel]) -> dict[str, object]:
+            return {
+                field.alias or name: getattr(field.default, "value", field.default)
+                for name, field in model.model_fields.items()
+            }
+
+        assert defaults(ModelSettingsInfo) == defaults(ModelSettings)
+
+    async def test_the_new_settings_reach_the_response(self, client: AsyncClient) -> None:
+        model_yaml = """\
+version: 1.0
+settings:
+  queryTimezone: Europe/Zagreb
+  weekStart: sunday
+  expressionMode: portable
+  defaultLocale: de-DE
+dataObjects:
+  Orders:
+    code: o
+    columns:
+      Order ID: {code: id, abstractType: string}
+dimensions:
+  Order ID: {dataObject: Orders, column: Order ID, resultType: string}
+measures:
+  Order Count:
+    columns: [{dataObject: Orders, column: Order ID}]
+    resultType: int
+    aggregation: count
+"""
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        loaded = await client.post(
+            f"/v1/sessions/{session}/models", json={"model_yaml": model_yaml}
+        )
+        assert loaded.status_code in (200, 201), loaded.text
+
+        response = await client.get(f"/v1/settings?session_id={session}")
+        assert response.status_code == 200
+        settings = response.json()["model_settings"]
+        assert settings["queryTimezone"] == "Europe/Zagreb"
+        assert settings["weekStart"] == "sunday"
+        assert settings["expressionMode"] == "portable"
+        assert settings["defaultLocale"] == "de-DE"
+
+
 class TestReferenceEndpoints:
     """GET /v1/reference and friends — agent / LLM discovery surface."""
 

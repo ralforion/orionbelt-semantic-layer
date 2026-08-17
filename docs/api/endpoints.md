@@ -1249,7 +1249,7 @@ Return public configuration for API clients (UI, MCP, etc.).
 | `timezone` | object \| null | Timezone resolution chain (single-model mode) |
 | `dialect` | object | SQL dialect resolution chain (always present) |
 
-**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultTimezone`, `defaultDialect`, `overrideDatabaseTimezone`, `defaultNumericDataType`. Any key the model omits is also omitted from the response.
+**`model_settings`** mirrors the OBML `settings:` block in camelCase — `defaultNumericDataType`, `defaultTimezone`, `overrideDatabaseTimezone`, `defaultDialect`, `defaultLocale`, `queryTimezone`, `weekStart`, `expressionMode`. It reports the settings **in force**, not the keys the YAML wrote: a setting with a default (`overrideDatabaseTimezone`, `weekStart`, `expressionMode`) reports that default whether the model stated it or not, because a client asking which calendar or expression mode applies wants the answer, and an absent key cannot distinguish "unset" from "unsupported by this server". Settings with no default (`defaultTimezone`, `defaultDialect`, `defaultLocale`, `defaultNumericDataType`, `queryTimezone`) are absent when unset. A test asserts this mirror carries every field `ModelSettings` declares, with the same defaults, so a setting cannot be added to the model and go missing or disagree here.
 
 **`timezone`** is the chain `db_executor.resolve_timezone()` walks at execute time. Always present so clients can show the wall clock even without a loaded model:
 

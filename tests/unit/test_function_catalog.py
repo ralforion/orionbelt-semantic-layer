@@ -255,9 +255,15 @@ class TestArityValidation:
     def test_variadic_entry_accepts_more_arguments(self) -> None:
         assert _errors_for("concat({Zip}, {Zip}, {Zip}, {Zip})") == []
 
-    def test_uncatalogued_function_is_not_checked(self) -> None:
-        """The escape hatch: a vendor function's arity is not ours to know."""
-        assert _errors_for("regexp_extract({Zip}, '[0-9]{5}', 1, 2, 3)") == []
+    def test_an_uncatalogued_function_keeps_its_own_arity(self) -> None:
+        """A vendor function's arity is not ours to know, so it is not checked.
+
+        It is still *reported* as non-portable (see ``TestExpressionMode``);
+        what must not happen is OBSL inventing an arity rule for it.
+        """
+        assert _errors_for("regexp_extract({Zip}, '[0-9]{5}', 1, 2, 3)") == [
+            "NON_PORTABLE_FUNCTION"
+        ]
 
     def test_error_names_the_signature(self) -> None:
         errors = _validate("length({Zip}, 2)")
@@ -1110,6 +1116,88 @@ class TestRenderingInvariants:
         ast = parse_expression(tokenize_metric_formula("upper({[Total Sales]})"))
         dia = DialectRegistry.get(dialect)
         assert dia.quote_identifier("Total Sales") in dia.compile_expr(ast)
+
+
+class TestExpressionMode:
+    """The escape hatch, and the switch that closes it.
+
+    A model may depend on one engine's SQL deliberately; what it should not do
+    is acquire that dependency without noticing. So an uncatalogued call is
+    reported either way, and the mode decides whether that stops the load.
+    """
+
+    _MODEL = """\
+version: 1.0
+{settings}dataObjects:
+  Orders:
+    code: o
+    columns:
+      Zip: {{code: zip, abstractType: string}}
+      Zip 5:
+        abstractType: string
+        expression: "{expression}"
+"""
+
+    def _validate(self, expression: str, settings: str = "") -> list[SemanticError]:
+        yaml_text = self._MODEL.format(settings=settings, expression=expression)
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return SemanticValidator().validate(model)
+
+    def test_a_catalog_call_says_nothing(self) -> None:
+        assert self._validate("substring({Zip}, 1, 5)") == []
+
+    def test_an_uncatalogued_call_warns_by_default(self) -> None:
+        [reported] = self._validate("regexp_extract({Zip}, '[0-9]')")
+        assert reported.code == "NON_PORTABLE_FUNCTION"
+        assert reported.severity == "warning"
+        assert reported.context == {"function": "regexp_extract"}
+        assert "regexp_extract" in reported.message
+
+    def test_portable_mode_rejects_it(self) -> None:
+        [reported] = self._validate(
+            "regexp_extract({Zip}, '[0-9]')",
+            settings="settings:\n  expressionMode: portable\n",
+        )
+        assert reported.code == "NON_PORTABLE_FUNCTION"
+        assert reported.severity == "error"
+
+    def test_portable_mode_still_allows_the_catalog(self) -> None:
+        assert (
+            self._validate(
+                "upper(substring({Zip}, 1, 5))",
+                settings="settings:\n  expressionMode: portable\n",
+            )
+            == []
+        )
+
+    def test_one_report_per_function_per_expression(self) -> None:
+        """Repeating a call is not a second problem."""
+        reported = self._validate("concat(regexp_extract({Zip}, 'a'), regexp_extract({Zip}, 'b'))")
+        assert len(reported) == 1
+
+    def test_two_different_functions_are_two_reports(self) -> None:
+        reported = self._validate("concat(regexp_extract({Zip}, 'a'), md5({Zip}))")
+        assert sorted(r.context["function"] for r in reported if r.context) == [
+            "md5",
+            "regexp_extract",
+        ]
+
+    @pytest.mark.parametrize("mode", ["permissive", "portable"])
+    def test_the_mode_does_not_change_the_sql(self, mode: str) -> None:
+        """Portable mode refuses to load a model; it does not rewrite one."""
+        assert _render("regexp_extract('abc', '[a-z]')", "duckdb") == (
+            "regexp_extract('abc', '[a-z]')"
+        )
+
+    def test_a_rejected_mode_value_is_a_model_error(self) -> None:
+        yaml_text = self._MODEL.format(
+            settings="settings:\n  expressionMode: strict\n", expression="upper({Zip})"
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        _model, result = ReferenceResolver().resolve(raw, source_map)
+        assert [e.code for e in result.errors] == ["INVALID_SETTING"]
 
 
 class TestEscapeHatch:

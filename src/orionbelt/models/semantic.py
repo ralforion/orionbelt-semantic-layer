@@ -105,6 +105,19 @@ class TimeGrain(StrEnum):
     SECOND = "second"
 
 
+class ExpressionMode(StrEnum):
+    """How strictly an expression's function calls are held to the catalog.
+
+    ``permissive`` is the default and keeps the escape hatch open: a function
+    the catalog does not carry is emitted verbatim, with a warning naming it,
+    so an author can see what ties the model to a particular engine. A model
+    that has to run anywhere sets ``portable`` and those calls become errors.
+    """
+
+    PERMISSIVE = "permissive"
+    PORTABLE = "portable"
+
+
 class WeekStart(StrEnum):
     """Which day a week begins on, for week truncation.
 
@@ -854,6 +867,17 @@ class ModelSettings(BaseModel):
     default_timezone: str | None = Field(None, alias="defaultTimezone")
     override_database_timezone: bool = Field(False, alias="overrideDatabaseTimezone")
     default_dialect: str | None = Field(None, alias="defaultDialect")
+    expression_mode: ExpressionMode = Field(
+        ExpressionMode.PERMISSIVE,
+        alias="expressionMode",
+        description=(
+            "How function calls in expressions are held to the portable "
+            "catalog (GET /v1/reference/functions). 'permissive' (default) "
+            "emits an uncatalogued call verbatim and warns with "
+            "NON_PORTABLE_FUNCTION; 'portable' rejects it, so the model cannot "
+            "acquire a dependency on one engine's SQL by accident."
+        ),
+    )
     query_timezone: str | None = Field(
         None,
         alias="queryTimezone",

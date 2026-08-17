@@ -1836,10 +1836,16 @@ dimensions:
 
 
 def _computed_column_errors(resolver: ReferenceResolver, extra_columns: str) -> list[str]:
+    """Blocking codes for a model whose computed columns are *extra_columns*.
+
+    Warnings are filtered out: these tests are about references that cannot
+    resolve, and a model using a vendor function also draws a
+    ``NON_PORTABLE_FUNCTION`` warning, which is a different question.
+    """
     yaml_content = _COMPUTED_COLUMN_MODEL.format(extra_columns=extra_columns)
     raw, source_map = TrackedLoader().load_string(yaml_content)
     model, _ = resolver.resolve(raw, source_map)
-    return [e.code for e in SemanticValidator().validate(model)]
+    return [e.code for e in SemanticValidator().validate(model) if e.severity != "warning"]
 
 
 class TestComputedColumnRefs:

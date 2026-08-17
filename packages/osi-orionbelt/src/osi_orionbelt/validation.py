@@ -161,13 +161,21 @@ def validate_obml(obml_dict: dict[str, Any], schema_path: Path | None = None) ->
         for warn in resolve_result.warnings:
             result.semantic_warnings.append(f"[{warn.code}] {warn.message}")
 
-        # Run SemanticValidator only if resolution produced a usable model
+        # Run SemanticValidator only if resolution produced a usable model.
+        # It returns advisories alongside errors — a call to a function outside
+        # the portable catalog, a query time zone that cannot reach an
+        # undeclared column — so severity decides which list they land in.
+        # Flattening them all into errors reported a model invalid that the
+        # semantic layer itself accepts.
         if resolve_result.valid:
             sem_validator = SemanticValidator()
-            sem_errors = sem_validator.validate(model)
-            for err in sem_errors:
-                path_info = f" (at {err.path})" if err.path else ""
-                result.semantic_errors.append(f"[{err.code}] {err.message}{path_info}")
+            for reported in sem_validator.validate(model):
+                path_info = f" (at {reported.path})" if reported.path else ""
+                entry = f"[{reported.code}] {reported.message}{path_info}"
+                if reported.severity == "warning":
+                    result.semantic_warnings.append(entry)
+                else:
+                    result.semantic_errors.append(entry)
 
     return result
 
