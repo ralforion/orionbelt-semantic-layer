@@ -1162,11 +1162,65 @@ OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consis
 The effective data type for a measure or metric is resolved in this order (first match wins):
 
 1. **Explicit declaration** — `dataType` on the measure or metric
-2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure with `resultType: int` aggregated with SUM → `bigint`
 3. **Model-level default** — `settings.defaultNumericDataType`
 4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
 
 Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
+
+!!! note "Large integer measures"
+
+    The built-in default holds only 16 integer digits, but a 64-bit column
+    needs 19. Left to default, `SUM` over a `BIGINT` produced a value the
+    engine computed correctly and then failed to cast, so the query errored on
+    a perfectly legal figure. A measure declaring `resultType: int` therefore
+    infers `bigint` for `SUM`, which is exact on every dialect.
+
+    **`AVG` is deliberately not widened**, because on some engines a wider cast
+    would not make the average right. See the warning below.
+
+!!! warning "`AVG` above ~15 significant digits on DuckDB, ClickHouse and BigQuery"
+
+    These engines compute `AVG` in floating point **whatever the input type**,
+    so this is not limited to integer columns: a wide `DECIMAL` measure drifts
+    once its average exceeds a `double` mantissa. On DuckDB, averaging
+    `9223372036854775807.12` and `...807.24` returns `9.223372036854776e+18`
+    rather than `9223372036854775807.18`, while `SUM` over the same column
+    stays exact. This is [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829),
+    closed as not planned.
+
+    Measured per dialect, averaging two values around 10^18:
+
+    | exact | floating point |
+    | --- | --- |
+    | PostgreSQL (`numeric`), MySQL (`decimal`), Snowflake | DuckDB, ClickHouse, BigQuery |
+
+    Databricks and Dremio are not yet verified for this case.
+
+    **Declaring `dataType` does not fix this**, and on these two engines it
+    makes the failure worse rather than better. The loss happens inside the
+    aggregate, before the cast, so a wider `dataType` only lets the wrong
+    number through:
+
+    ```yaml
+    Qty Avg:
+      aggregation: avg
+      dataType: "decimal(21, 2)"   # emits CAST(AVG(qty) AS DECIMAL(21, 2))
+    ```
+
+    On DuckDB that returns `1000000000000000000.00` where the true average is
+    `1000000000000000003.00`. Left at the default the same query *fails*, which
+    is the better outcome: an error you can see beats a plausible wrong figure.
+
+    Ordinary money-sized values are unaffected. If your averages can reach that
+    magnitude, aggregate on PostgreSQL, MySQL or Snowflake, express the average as a
+    metric over an exact `SUM` and a `COUNT` and accept the division's own
+    limits, or track
+    [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316).
+
+    A measure over a large-valued **non-integer** column also still takes the
+    built-in default, so pin `dataType` (or `settings.defaultNumericDataType`)
+    if its total can exceed 16 digits.
 
 ### Explicit Data Type
 

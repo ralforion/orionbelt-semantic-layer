@@ -695,7 +695,7 @@ def test_having_splits_between_the_grouped_query_and_the_wrapper() -> None:
             ],
         }
     )
-    assert 'HAVING CAST(SUM("Sales"."quantity") AS DECIMAL(18, 2)) > 5' in result.sql
+    assert 'HAVING CAST(SUM("Sales"."quantity") AS BIGINT) > 5' in result.sql
     assert 'WHERE "__ob_dedup_0"."Total Stock On Hand" > 250' in result.sql
 
     rows = [(r[0], int(r[1]), int(r[2])) for r in _sales_db().execute(result.sql).fetchall()]

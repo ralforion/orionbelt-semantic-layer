@@ -7,10 +7,47 @@ from pathlib import Path
 
 import pytest
 
+import orionbelt
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.service.session_manager import SessionManager
+
+
+def _assert_testing_this_checkout() -> None:
+    """Fail loudly if ``orionbelt`` was imported from somewhere else.
+
+    ``uv sync`` installs this package editable, pointing at the main working
+    directory. Run the suite from a **git worktree** and the tests are the
+    worktree's while the code under test is the main checkout's, so a
+    regression test written against an old commit silently exercises the fixed
+    code and passes. That happened while fixing #311 and very nearly retired a
+    test as "does not catch the bug".
+
+    ``pythonpath = ["src"]`` in ``pyproject.toml`` is what prevents it. This is
+    the assertion that the prevention is working, because the failure it guards
+    against is invisible: everything passes, which is exactly the wrong answer.
+    """
+    if os.environ.get("ORIONBELT_ALLOW_FOREIGN_PACKAGE"):
+        return
+    checkout_src = Path(__file__).resolve().parent.parent / "src" / "orionbelt"
+    if not checkout_src.is_dir():
+        # Not a source checkout (installed-wheel run); nothing to compare to.
+        return
+    imported = Path(orionbelt.__file__).resolve().parent
+    if imported != checkout_src:
+        raise RuntimeError(
+            "tests would run against a different copy of orionbelt than this checkout:\n"
+            f"  tests come from: {checkout_src.parent.parent}\n"
+            f"  orionbelt is:    {imported}\n"
+            "Every result would describe that other copy. This usually means pytest ran "
+            "in a git worktree while the venv's editable install still points at the main "
+            "working directory. Set ORIONBELT_ALLOW_FOREIGN_PACKAGE=1 to test an installed "
+            "copy on purpose."
+        )
+
+
+_assert_testing_this_checkout()
 
 # ``Settings`` reads the developer's ``.env``, so a machine that runs the pgwire
 # server for real (``PGWIRE_ENABLED=true``) makes the tests that start a full

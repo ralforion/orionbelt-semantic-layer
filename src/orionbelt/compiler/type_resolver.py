@@ -2,9 +2,13 @@
 
 Resolution order (first match wins):
 1. Explicit declaration on the measure/metric
-2. Structural inference from expression shape
+2. Structural inference from expression shape and result type
 3. Model-level default (settings.defaultNumericDataType)
 4. Built-in default: decimal(18, 2)
+
+Note that the built-in default holds only 16 integer digits, so anything that
+can carry a 64-bit value has to be inferred rather than defaulted, or the cast
+describing the result overflows on values the source held quite legally.
 
 Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 """
@@ -12,6 +16,7 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 from __future__ import annotations
 
 from orionbelt.models.semantic import (
+    DataType,
     Measure,
     Metric,
     ModelSettings,
@@ -55,6 +60,41 @@ def resolve_measure_data_type(
     # 2. Structural inference: division in expression → decimal(18, 6)
     if measure.expression and "/" in measure.expression:
         return DIVISION_DEFAULT
+
+    # 2. Structural inference: an integer SUM is an integer
+    #
+    # The numeric default carries 16 integer digits, and a 64-bit source needs
+    # 19. So SUM over a BIGINT column overflowed the very cast that was meant
+    # to describe it: the engine computed 2000000000000000003 quite happily and
+    # then failed converting it, on the plain star path as much as under CFL.
+    # ``bigint`` is the same inference COUNT already gets, and what every
+    # engine does natively for a sum of integers - exact everywhere.
+    #
+    # AVG deliberately does **not** get the same treatment. Widening its cast
+    # would clear the overflow without making the average right, because the
+    # loss happens in the aggregate, before any cast: measured, AVG over BIGINT
+    # is exact on Postgres (numeric), MySQL (decimal) and Snowflake, but
+    # floating point on ClickHouse, BigQuery and DuckDB, where
+    # 1000000000000000002 and ...004 average to 1000000000000000000. Nor can
+    # the loss be arranged away on DuckDB: every route through ``/`` is float
+    # division there, so casting the input, casting the operands and rewriting
+    # as SUM/COUNT were each measured to come back DOUBLE.
+    #
+    # Those three average in floating point whatever the input type, so the
+    # boundary is magnitude rather than declared type and a wide decimal drifts
+    # too - duckdb/duckdb#6829, closed as not planned. Recovering exactness
+    # needs a per-dialect rewrite; tracked in #316.
+    #
+    # So widening AVG would trade a loud overflow for a quietly wrong number,
+    # on exactly the engines where the number is wrong. It keeps the default.
+    #
+    # Declaring ``dataType`` is *not* an escape hatch here either - it widens
+    # this same cast, so on DuckDB it turns the error back into
+    # 1000000000000000000.00 for a true average of ...003.00. Nothing chosen at
+    # this layer can help; only a different aggregate expression can, which is
+    # what #316 is for.
+    if measure.result_type == DataType.INT and agg == "SUM":
+        return SimpleType(name="bigint")
 
     # 3. Numeric aggregation (SUM, AVG) → default
     if agg in _NUMERIC_AGGREGATIONS:
