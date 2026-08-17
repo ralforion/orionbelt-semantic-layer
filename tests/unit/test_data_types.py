@@ -191,6 +191,15 @@ class TestDialectRendering:
         # spill to BIGNUMERIC above precision 38.
         assert d.render_obml_type(DecimalType(18, 2)) == "NUMERIC"
         assert d.render_obml_type(DecimalType(76, 10)) == "BIGNUMERIC"
+        # Scale decides as much as precision does. NUMERIC is (38, 9), so a
+        # request for more scale than that has to spill too: measured on
+        # BigQuery, CAST(1.000000000004 AS NUMERIC) returns 1 while BIGNUMERIC
+        # returns the value, so answering NUMERIC here dropped the digits
+        # silently for every caller, not only the CFL leg alignment that
+        # surfaced it.
+        assert d.render_obml_type(DecimalType(38, 9)) == "NUMERIC"
+        assert d.render_obml_type(DecimalType(38, 12)) == "BIGNUMERIC"
+        assert d.render_obml_type(DecimalType(18, 12)) == "BIGNUMERIC"
 
     def test_precision_clamping(self) -> None:
         d = SnowflakeDialect()

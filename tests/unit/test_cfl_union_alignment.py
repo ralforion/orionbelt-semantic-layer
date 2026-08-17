@@ -76,6 +76,11 @@ dimensions:
   Day: {dataObject: Days, column: Day, resultType: int}
 
 measures:
+  Charged Stddev:
+    columns: [{dataObject: Charges, column: Amount}]
+    resultType: float
+    aggregation: stddev
+    dataType: "decimal(18, 3)"
   Charged Expr:
     expression: "{[Charges].[Amount]} * 1"
     resultType: float
@@ -239,4 +244,29 @@ class TestWhatIsAndIsNotWidened:
         )
         assert "DECIMAL(38, 12)" not in min_leg, (
             f"a selecting aggregate was widened as though it accumulated: {min_leg}"
+        )
+
+    def test_a_statistical_aggregate_accumulates_too(self) -> None:
+        """STDDEV combines values across rows, so it rounds the same way SUM does.
+
+        A first cut listed only SUM and AVG, on the reasoning that they were
+        the obvious accumulating pair. STDDEV, STDDEV_POP, VARIANCE and VAR_POP
+        are single-column aggregates over the same pre-aggregation rows and
+        compound the same error: over 1.0004 and 1.0005 declared
+        ``decimal(18, 3)``, STDDEV answered 0.000 alone and 0.001 beside a
+        measure from another fact.
+
+        The two-column statistics (CORR, COVAR_*, REGR_*) never reach this
+        path: a multi-field measure pads per slot and keeps each slot's type.
+        """
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Stddev", "Invoiced"])),
+            _model(),
+            "duckdb",
+        ).sql
+        leg = next(
+            line for line in sql.splitlines() if '"Charged Stddev"' in line and "CAST" in line
+        )
+        assert "DECIMAL(18, 3)" not in leg, (
+            f"a statistical aggregate narrowed its rows to the result scale: {leg}"
         )

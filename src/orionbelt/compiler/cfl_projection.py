@@ -195,7 +195,15 @@ _ALIGNMENT_PRECISION = 38
 # Only these combine values across rows, so only these compound a
 # pre-aggregation rounding error. Everything else either selects a value
 # (MIN/MAX/ANY_VALUE/MEDIAN/MODE) or projects the raw column (COUNT, LISTAGG).
-_ACCUMULATING_AGGREGATIONS = frozenset({"sum", "avg"})
+#
+# The statistical aggregates belong here for the same reason SUM does, and were
+# missed by a first cut that listed only the obvious two: STDDEV over 1.0004 and
+# 1.0005 declared decimal(18, 3) answered 0.000 alone and 0.001 beside a measure
+# from another fact. The two-column ones (CORR, COVAR_*, REGR_*) never reach
+# this path - a multi-field measure pads per slot and keeps each slot's type.
+_ACCUMULATING_AGGREGATIONS = frozenset(
+    {"sum", "avg", "stddev", "stddev_pop", "variance", "var_pop"}
+)
 
 
 def resolve_union_alignment_type(
