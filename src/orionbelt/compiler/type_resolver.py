@@ -80,6 +80,11 @@ def resolve_measure_data_type(
     # input, casting the operands and rewriting as SUM/COUNT were each measured
     # to come back DOUBLE.
     #
+    # Both engines average in floating point whatever the input type, so the
+    # boundary is magnitude rather than declared type and a wide decimal drifts
+    # too - duckdb/duckdb#6829, closed as not planned. Recovering exactness
+    # needs a per-dialect rewrite; tracked in #316.
+    #
     # So widening AVG would trade a loud overflow for a quietly wrong number,
     # on exactly the engines where the number is wrong. It keeps the default,
     # and a model that needs a large integer average declares ``dataType``.

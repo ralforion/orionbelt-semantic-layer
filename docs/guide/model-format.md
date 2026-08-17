@@ -1185,6 +1185,20 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     where the average is wrong. Declare `dataType` on the measure to ask for a
     wider average explicitly.
 
+!!! warning "`AVG` above ~15 significant digits on DuckDB and ClickHouse"
+
+    Both engines compute `AVG` in floating point **whatever the input type**,
+    so this is not limited to integer columns: a wide `DECIMAL` measure drifts
+    once its average exceeds a `double` mantissa. On DuckDB, averaging
+    `9223372036854775807.12` and `...807.24` returns `9.223372036854776e+18`
+    rather than `9223372036854775807.18`, while `SUM` over the same column
+    stays exact. This is [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829),
+    closed as not planned.
+
+    Ordinary money-sized values are unaffected. If your averages can reach that
+    magnitude, aggregate on PostgreSQL or MySQL, which are exact, or track
+    [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316).
+
     A measure over a large-valued **non-integer** column also still takes the
     built-in default, so pin `dataType` (or `settings.defaultNumericDataType`)
     if its total can exceed 16 digits.
