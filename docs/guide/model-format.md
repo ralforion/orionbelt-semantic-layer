@@ -1162,22 +1162,30 @@ OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consis
 The effective data type for a measure or metric is resolved in this order (first match wins):
 
 1. **Explicit declaration** — `dataType` on the measure or metric
-2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure with `resultType: int` → `bigint` for SUM, and the default's scale widened to hold a 64-bit integer part for AVG
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure with `resultType: int` aggregated with SUM → `bigint`
 3. **Model-level default** — `settings.defaultNumericDataType`
 4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
 
 Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
 
-!!! note "Why integer measures are inferred rather than defaulted"
+!!! note "Large integer measures"
 
     The built-in default holds only 16 integer digits, but a 64-bit column
     needs 19. Left to default, `SUM` over a `BIGINT` produced a value the
     engine computed correctly and then failed to cast, so the query errored on
-    a perfectly legal figure. Declaring `resultType: int` gets an integer type
-    for `SUM`; `AVG` stays fixed-point, keeping the number of decimal places
-    the default asked for and only gaining the range it was missing.
+    a perfectly legal figure. A measure declaring `resultType: int` therefore
+    infers `bigint` for `SUM`, which is exact on every dialect.
 
-    A measure over a large-valued **non-integer** column still takes the
+    **`AVG` is deliberately not widened.** The precision is lost inside the
+    aggregate, before any cast, and only on some engines: `AVG` over a
+    `BIGINT` is exact on PostgreSQL (`numeric`) and MySQL (`decimal`), but
+    floating point on DuckDB and ClickHouse. On DuckDB no rewrite recovers it,
+    since every division returns `DOUBLE`. Widening the cast would therefore
+    hide an overflow behind a quietly wrong average on exactly the engines
+    where the average is wrong. Declare `dataType` on the measure to ask for a
+    wider average explicitly.
+
+    A measure over a large-valued **non-integer** column also still takes the
     built-in default, so pin `dataType` (or `settings.defaultNumericDataType`)
     if its total can exceed 16 digits.
 

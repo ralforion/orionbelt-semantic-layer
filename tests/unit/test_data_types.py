@@ -370,21 +370,6 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         m = Measure(name="Qty Sum", aggregation="sum", result_type=DataType.INT)
         assert resolve_measure_data_type(m, None) == SimpleType("bigint")
 
-    def test_avg_of_an_integer_measure_keeps_its_scale_and_gains_range(self) -> None:
-        """AVG is not integral, so it stays a decimal and only gets wider."""
-        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
-        assert resolve_measure_data_type(m, None) == DecimalType(21, 2)
-
-    def test_a_pinned_model_default_keeps_the_places_it_asked_for(self) -> None:
-        settings = ModelSettings(default_numeric_data_type="decimal(18, 6)")
-        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
-        assert resolve_measure_data_type(m, settings) == DecimalType(25, 6)
-
-    def test_an_already_wide_default_is_left_alone(self) -> None:
-        settings = ModelSettings(default_numeric_data_type="decimal(38, 2)")
-        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
-        assert resolve_measure_data_type(m, settings) == DecimalType(38, 2)
-
     def test_an_explicit_data_type_still_wins(self) -> None:
         m = Measure(
             name="Qty Sum",
@@ -398,10 +383,53 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         m = Measure(name="Revenue", aggregation="sum", result_type=DataType.FLOAT)
         assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT
 
+    def test_avg_deliberately_keeps_the_default(self) -> None:
+        """AVG is not widened, and the reason is not an oversight.
+
+        Widening its cast would clear the overflow without making the average
+        right, because the loss happens in the aggregate before any cast. AVG
+        over BIGINT is exact on Postgres (numeric) and MySQL (decimal) but
+        floating point on DuckDB and ClickHouse, and on DuckDB no formulation
+        recovers it: casting the input, casting both operands, and rewriting as
+        SUM/COUNT were each measured to come back DOUBLE, because every route
+        through ``/`` is float division there.
+
+        So a widened AVG would trade a loud overflow for a quietly wrong
+        number, on exactly the engines where the number is wrong. Declaring
+        ``dataType`` is the supported way to ask for a wider average.
+        """
+        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
+        assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT
+
     def test_a_bigint_sum_survives_execution(self) -> None:
         """The end of the story, run rather than asserted on the SQL."""
         duckdb = pytest.importorskip("duckdb")
-        yaml = """
+        model = _bigint_model()
+        con = _bigint_table(duckdb)
+        query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=["Qty Sum"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert Decimal(str(con.execute(sql).fetchall()[0][1])) == Decimal("2000000000000000003")
+        con.close()
+
+    def test_a_bigint_avg_fails_loudly_rather_than_rounding_silently(self) -> None:
+        """The limit, pinned so it cannot regress into a silent wrong answer.
+
+        This is the behaviour a widened cast would have replaced: DuckDB
+        averages in DOUBLE, so the value that reaches the cast is already
+        1000000000000000000 rather than ...003. Overflowing the default is the
+        honest outcome; quietly returning the rounded figure is not.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        model = _bigint_model()
+        con = _bigint_table(duckdb)
+        query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=["Qty Avg"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        with pytest.raises(duckdb.ConversionException):
+            con.execute(sql).fetchall()
+        con.close()
+
+
+_BIGINT_YAML = """
 version: "1.0"
 name: bigint_sum
 dataObjects:
@@ -416,18 +444,18 @@ measures:
   Qty Sum: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: sum}
   Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
 """
-        from orionbelt.parser import ReferenceResolver, TrackedLoader
 
-        raw, sm = TrackedLoader().load_string(yaml)
-        model, _ = ReferenceResolver().resolve(raw, sm)
 
-        con = duckdb.connect(":memory:")
-        con.execute("CREATE TABLE charges (day INTEGER, qty BIGINT)")
-        con.execute("INSERT INTO charges VALUES (1, 1000000000000000001), (1, 1000000000000000002)")
-        pipeline = CompilationPipeline()
-        for name, expected in [("Qty Sum", "2000000000000000003"), ("Qty Avg", "1E+18")]:
-            query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=[name]))
-            sql = pipeline.compile(query, model, "duckdb").sql
-            value = con.execute(sql).fetchall()[0][1]
-            assert Decimal(str(value)) == Decimal(expected), f"{name} came back {value}"
-        con.close()
+def _bigint_model() -> SemanticModel:
+    from orionbelt.parser import ReferenceResolver, TrackedLoader
+
+    raw, sm = TrackedLoader().load_string(_BIGINT_YAML)
+    model, _ = ReferenceResolver().resolve(raw, sm)
+    return model
+
+
+def _bigint_table(duckdb):  # type: ignore[no-untyped-def]
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE charges (day INTEGER, qty BIGINT)")
+    con.execute("INSERT INTO charges VALUES (1, 1000000000000000001), (1, 1000000000000000002)")
+    return con

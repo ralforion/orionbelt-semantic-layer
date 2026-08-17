@@ -25,7 +25,6 @@ from orionbelt.models.semantic import (
 from orionbelt.models.types import (
     BUILTIN_DEFAULT,
     DIVISION_DEFAULT,
-    DecimalType,
     OBMLType,
     SimpleType,
     parse_data_type,
@@ -34,11 +33,6 @@ from orionbelt.models.types import (
 _NUMERIC_AGGREGATIONS = frozenset({"SUM", "AVG"})
 _COUNT_AGGREGATIONS = frozenset({"COUNT", "COUNT_DISTINCT"})
 _PASSTHROUGH_AGGREGATIONS = frozenset({"MIN", "MAX", "ANY_VALUE", "MEDIAN", "MODE", "LISTAGG"})
-
-# Digits in the largest 64-bit integer (9223372036854775807), and the widest
-# precision every supported dialect accepts.
-_INT64_DIGITS = 19
-_MAX_DECIMAL_PRECISION = 38
 
 
 def resolve_measure_data_type(
@@ -67,22 +61,30 @@ def resolve_measure_data_type(
     if measure.expression and "/" in measure.expression:
         return DIVISION_DEFAULT
 
-    # 2. Structural inference: an integer measure is not a decimal(18, 2)
+    # 2. Structural inference: an integer SUM is an integer
     #
     # The numeric default carries 16 integer digits, and a 64-bit source needs
     # 19. So SUM over a BIGINT column overflowed the very cast that was meant
     # to describe it: the engine computed 2000000000000000003 quite happily and
     # then failed converting it, on the plain star path as much as under CFL.
+    # ``bigint`` is the same inference COUNT already gets, and what every
+    # engine does natively for a sum of integers - exact everywhere.
     #
-    # SUM of integers is an integer, so it takes ``bigint`` - the same
-    # inference COUNT already gets, and what every engine does natively. AVG is
-    # not integral, so it stays a decimal and only gains the room it was
-    # missing: the default's scale, at the width a 64-bit value needs.
-    if measure.result_type == DataType.INT:
-        if agg == "SUM":
-            return SimpleType(name="bigint")
-        if agg == "AVG":
-            return _widen_to_integer_range(_get_default(settings))
+    # AVG deliberately does **not** get the same treatment. Widening its cast
+    # would clear the overflow without making the average right, because the
+    # loss happens in the aggregate, before any cast: measured, AVG over BIGINT
+    # returns numeric on Postgres and decimal on MySQL (exact) but Float64 on
+    # ClickHouse and DOUBLE on DuckDB, where 1000000000000000002 and
+    # ...004 average to 1000000000000000000. Nor can the loss be arranged away:
+    # on DuckDB every route through ``/`` is float division, so casting the
+    # input, casting the operands and rewriting as SUM/COUNT were each measured
+    # to come back DOUBLE.
+    #
+    # So widening AVG would trade a loud overflow for a quietly wrong number,
+    # on exactly the engines where the number is wrong. It keeps the default,
+    # and a model that needs a large integer average declares ``dataType``.
+    if measure.result_type == DataType.INT and agg == "SUM":
+        return SimpleType(name="bigint")
 
     # 3. Numeric aggregation (SUM, AVG) → default
     if agg in _NUMERIC_AGGREGATIONS:
@@ -90,22 +92,6 @@ def resolve_measure_data_type(
 
     # 4. Unknown aggregation → pass-through
     return None
-
-
-def _widen_to_integer_range(default: OBMLType) -> OBMLType:
-    """The default's scale, widened to hold any 64-bit integer part.
-
-    Only the precision moves, so a model that pinned ``defaultNumericDataType``
-    keeps the number of decimal places it asked for; it just stops overflowing
-    on values the source column holds legally. A default that is already wide
-    enough, or is not a decimal at all, is left alone.
-    """
-    if not isinstance(default, DecimalType):
-        return default
-    needed = _INT64_DIGITS + default.scale
-    if default.precision >= needed:
-        return default
-    return DecimalType(precision=min(needed, _MAX_DECIMAL_PRECISION), scale=default.scale)
 
 
 # PoP comparisons whose result is a ratio rather than a value in the base
