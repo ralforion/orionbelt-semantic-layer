@@ -187,6 +187,12 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Import ``orionbelt`` from *this* checkout, ahead of whatever the venv has
+# installed. Without it, a run inside a git worktree silently imports the
+# editable install - which points at the main working directory - so a
+# regression test written against an old commit exercises the fixed code and
+# passes. Resolved relative to rootdir, so each worktree gets its own source.
+pythonpath = ["src"]
 markers = [
     "docker: requires Docker (testcontainers); run with: pytest -m docker",
     "adbc: requires a reachable PostgreSQL via ADBC; run with: pytest -m adbc",
