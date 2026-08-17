@@ -1,9 +1,9 @@
 WITH "composite_01" AS (
-SELECT "Clients"."clientname" AS "Sales Client Name", CAST(NULL AS Nullable(String)) AS "Complaint Client Name", CAST(round("Sales"."salesamount", 12) AS Nullable(Decimal(38, 12))) AS "Total Sales", CAST(NULL AS Nullable(Int32)) AS "Client Complaints Count"
+SELECT "Clients"."clientname" AS "Sales Client Name", CAST(NULL AS Nullable(String)) AS "Complaint Client Name", CAST(round("Sales"."salesamount", 20) AS Nullable(Decimal(38, 20))) AS "Total Sales", CAST(NULL AS Nullable(Int32)) AS "Client Complaints Count"
 FROM "orionbelt_1"."sales" AS "Sales"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Sales"."salesclient" = "Clients"."clientid"
 UNION ALL
-SELECT CAST(NULL AS Nullable(String)) AS "Sales Client Name", "Clients"."clientname" AS "Complaint Client Name", CAST(round(NULL, 12) AS Nullable(Decimal(38, 12))) AS "Total Sales", CAST(1 AS Nullable(Int32)) AS "Client Complaints Count"
+SELECT CAST(NULL AS Nullable(String)) AS "Sales Client Name", "Clients"."clientname" AS "Complaint Client Name", CAST(round(NULL, 20) AS Nullable(Decimal(38, 20))) AS "Total Sales", CAST(1 AS Nullable(Int32)) AS "Client Complaints Count"
 FROM "orionbelt_1"."clientcomplaints" AS "Client Complaints"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Client Complaints"."complclientid" = "Clients"."clientid"
 )

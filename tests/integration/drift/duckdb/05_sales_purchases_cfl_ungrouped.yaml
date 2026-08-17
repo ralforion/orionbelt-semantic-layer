@@ -1,13 +1,13 @@
 last_verified_by: tests/integration/correctness/test_cfl_split.py::test_sales_purchases_cfl_split_ungrouped
 sql: 'WITH "composite_01" AS (
 
-  SELECT CAST("Sales"."salesamount" AS DECIMAL(38, 12)) AS "Total Sales"
+  SELECT CAST("Sales"."salesamount" AS DECIMAL(38, 20)) AS "Total Sales"
 
   FROM "orionbelt_1"."sales" AS "Sales"
 
   UNION ALL BY NAME
 
-  SELECT CAST("Purchases"."purchaseamount" AS DECIMAL(38, 12)) AS "Total Purchases"
+  SELECT CAST("Purchases"."purchaseamount" AS DECIMAL(38, 20)) AS "Total Purchases"
 
   FROM "orionbelt_1"."purchases" AS "Purchases"
 

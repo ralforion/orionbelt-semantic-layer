@@ -187,23 +187,23 @@ def resolve_null_type_for_field(
 
 
 # Scale used to align a numeric aggregate's UNION legs when the model has not
-# declared the source column's own scale. Wide enough that a money column is
-# carried exactly, while leaving 26 integer digits at precision 38.
-_ALIGNMENT_SCALE = 12
+# declared the source column's own scale, leaving 18 integer digits at
+# precision 38.
+#
+# It is a guess, and unavoidably so: ``abstractType: float`` says nothing about
+# a DECIMAL(38, 15) column behind it, and every fixed width is wrong for some
+# source. A first cut used 12 and lost anything past twelve places, measured on
+# Postgres, DuckDB, ClickHouse and Snowflake alike. 20 carries realistic money
+# and rate columns exactly. A model that declares ``sqlPrecision``/``sqlScale``
+# is taken at its word and needs no guess at all, which is the only exact
+# answer available without introspecting the warehouse.
+_ALIGNMENT_SCALE = 20
 _ALIGNMENT_PRECISION = 38
 
-# Only these combine values across rows, so only these compound a
-# pre-aggregation rounding error. Everything else either selects a value
-# (MIN/MAX/ANY_VALUE/MEDIAN/MODE) or projects the raw column (COUNT, LISTAGG).
-#
-# The statistical aggregates belong here for the same reason SUM does, and were
-# missed by a first cut that listed only the obvious two: STDDEV over 1.0004 and
-# 1.0005 declared decimal(18, 3) answered 0.000 alone and 0.001 beside a measure
-# from another fact. The two-column ones (CORR, COVAR_*, REGR_*) never reach
-# this path - a multi-field measure pads per slot and keeps each slot's type.
-_ACCUMULATING_AGGREGATIONS = frozenset(
-    {"sum", "avg", "stddev", "stddev_pop", "variance", "var_pop"}
-)
+
+# These project the raw column rather than a value to be combined, so their
+# alignment is the column's own type.
+_RAW_COLUMN_AGGREGATIONS = frozenset({"count", "count_distinct", "listagg"})
 
 
 def resolve_union_alignment_type(
@@ -246,10 +246,19 @@ def resolve_union_alignment_type(
     model_measure = model.effective_measures.get(measure.name)
     if not model_measure or dialect is None:
         return resolve_null_type_for_field(measure, 0, model, dialect)
-    if (model_measure.aggregation or "").lower() not in _ACCUMULATING_AGGREGATIONS:
+    if (model_measure.aggregation or "").lower() in _RAW_COLUMN_AGGREGATIONS:
+        # COUNT and LISTAGG project the raw column, whose own type is already
+        # the right alignment.
         return resolve_null_type_for_field(measure, 0, model, dialect)
     # A multi-field aggregate pads per slot; each slot keeps its own type.
     if len(model_measure.columns) > 1:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+
+    # An expression measure has no source column, so numeric-ness comes from
+    # the declared resultType. It projects a pre-aggregation expression exactly
+    # as a column measure projects a column, and was missed twice by cuts that
+    # keyed on having exactly one column.
+    if not model_measure.columns and model_measure.result_type.value not in ("int", "float"):
         return resolve_null_type_for_field(measure, 0, model, dialect)
 
     column = None

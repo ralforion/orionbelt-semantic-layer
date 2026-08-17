@@ -126,6 +126,14 @@ def _seeded() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _first(con: duckdb.DuckDBPyConnection, model: SemanticModel, measures: list[str]) -> object:
+    """First cell of *measures* compiled against *model* and run on *con*."""
+    sql = PIPELINE.compile(
+        QueryObject(select=QuerySelect(dimensions=[], measures=measures)), model, "duckdb"
+    ).sql
+    return con.execute(sql).fetchall()[0][0]
+
+
 def _run(con: duckdb.DuckDBPyConnection, measures: list[str]) -> list[tuple]:
     sql = PIPELINE.compile(
         QueryObject(select=QuerySelect(dimensions=[], measures=measures)),
@@ -220,19 +228,21 @@ class TestWhatIsAndIsNotWidened:
             "an expression measure answered differently under a multi-fact plan"
         )
 
-    def test_a_selecting_aggregate_is_left_alone(self) -> None:
-        """MIN picks a value rather than combining values, so nothing compounds.
+    def test_a_selecting_aggregate_is_widened_too(self) -> None:
+        """One mechanism, not two: MIN aligns the same way SUM does.
 
-        ``resolve_measure_data_type`` treats MIN, MAX, ANY_VALUE, MEDIAN and
-        MODE as no-cast pass-through. Routing them through the widening changed
-        both the value and its type - MIN over a fifteen-decimal column went
-        from 1.000000000000400 to 1.000000000000 - so they keep the existing
-        alignment.
+        This asserted the opposite for a while. MIN was left unwidened because
+        widening it at scale 12 turned 1.000000000000400 into
+        1.000000000000, and an attempt to leave both sides of the union
+        untyped instead was measured to break two engines: Postgres resolves a
+        column whose first two occurrences are untyped NULLs as text and then
+        refuses to match numeric, and DuckDB unifies to the pad's type rather
+        than the column's.
 
-        This asserts the leg is not widened rather than asserting a value:
-        those aggregates have a separate, older precision problem of their own
-        (the leg casts a wide decimal to FLOAT), which this change neither
-        causes nor fixes.
+        Both constraints say the same thing. Every leg has to carry one
+        concrete type, so the only question was ever the width, and at a
+        sufficient width a selecting aggregate is preserved exactly like any
+        other.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
@@ -242,8 +252,33 @@ class TestWhatIsAndIsNotWidened:
         min_leg = next(
             line for line in sql.splitlines() if '"Charged Min"' in line and "CAST" in line
         )
-        assert "DECIMAL(38, 12)" not in min_leg, (
-            f"a selecting aggregate was widened as though it accumulated: {min_leg}"
+        assert "DECIMAL(38, 20)" in min_leg, (
+            f"a selecting aggregate should align on the same wide type: {min_leg}"
+        )
+
+    def test_the_width_carries_a_source_wider_than_the_old_default(self) -> None:
+        """A DECIMAL(38, 15) source is the case the previous width lost.
+
+        Twelve places was a guess and it was too small; twenty carries
+        realistic money and rate columns, measured exact on Postgres, DuckDB,
+        ClickHouse, Snowflake and BigQuery. It is still a guess, and a model
+        that declares sqlPrecision/sqlScale is taken at its word instead.
+        """
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("CREATE TABLE days (day INTEGER)")
+            con.execute("CREATE TABLE charges (day INTEGER, amount DECIMAL(38, 15), label VARCHAR)")
+            con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+            con.execute("INSERT INTO days VALUES (1), (2)")
+            con.execute("INSERT INTO charges VALUES (1, 1.000000000000400, 'x'), (2, 2.5, 'y')")
+            con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
+            star = _run(con, ["Charged Min"])[0][0]
+            cfl = _run(con, ["Charged Min", "Invoiced"])[0][0]
+        finally:
+            con.close()
+        assert Decimal(str(star)) == Decimal("1.000000000000400")
+        assert Decimal(str(cfl)) == Decimal(str(star)), (
+            "the alignment width was too narrow for the source column"
         )
 
     def test_a_statistical_aggregate_accumulates_too(self) -> None:
@@ -269,4 +304,72 @@ class TestWhatIsAndIsNotWidened:
         )
         assert "DECIMAL(18, 3)" not in leg, (
             f"a statistical aggregate narrowed its rows to the result scale: {leg}"
+        )
+
+
+class TestStarAndCflAgreeAcrossTheMatrix:
+    """The property, asserted over every shape rather than case by case.
+
+    This file was built one shape at a time and missed ``expression:`` measures
+    twice, in the same way and the same place, then missed that a selecting
+    aggregate needed the same treatment as an accumulating one. A per-case test
+    cannot catch that. A matrix can, and it also covers shapes nobody has
+    thought to break yet.
+    """
+
+    SOURCES = {
+        "columns": "    columns: [{dataObject: Charges, column: Wide}]",
+        "expression": '    expression: "{[Charges].[Wide]} * 1"',
+    }
+    AGGREGATIONS = ["sum", "avg", "stddev", "variance", "min", "max", "any_value"]
+
+    def _model_for(self, source: str, agg: str) -> SemanticModel:
+        yaml = MODEL_YAML.replace(
+            "measures:",
+            "measures:\n  Probe:\n"
+            f"{self.SOURCES[source]}\n"
+            "    resultType: float\n"
+            f"    aggregation: {agg}\n",
+            1,
+        ).replace(
+            "      Amount: {code: amount, abstractType: float}",
+            "      Amount: {code: amount, abstractType: float}\n"
+            "      Wide: {code: wide, abstractType: float}",
+            1,
+        )
+        raw, source_map = TrackedLoader().load_string(yaml)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def test_every_shape_answers_the_same_alone_and_multi_fact(self) -> None:
+        disagreements = []
+        for source in self.SOURCES:
+            for agg in self.AGGREGATIONS:
+                model = self._model_for(source, agg)
+                con = duckdb.connect(":memory:")
+                try:
+                    con.execute("CREATE TABLE days (day INTEGER)")
+                    con.execute(
+                        "CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), "
+                        "label VARCHAR, wide DECIMAL(38, 15))"
+                    )
+                    con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
+                    con.execute("INSERT INTO days VALUES (1), (2), (3)")
+                    con.execute(
+                        "INSERT INTO charges VALUES "
+                        "(1, 1.0004, 'x', 1.000000000000400), "
+                        "(2, 1.0005, 'y', 2.000000000000500), "
+                        "(3, 1.0006, 'z', 3.000000000000600)"
+                    )
+                    con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5), (3, 5.5)")
+
+                    star = _first(con, model, ["Probe"])
+                    cfl = _first(con, model, ["Probe", "Invoiced"])
+                finally:
+                    con.close()
+                if Decimal(str(star)) != Decimal(str(cfl)):
+                    disagreements.append(f"{source}/{agg}: star={star} cfl={cfl}")
+        assert not disagreements, (
+            "a measure changed answer under a multi-fact plan:\n  " + "\n  ".join(disagreements)
         )
