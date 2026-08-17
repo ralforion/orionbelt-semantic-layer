@@ -97,9 +97,14 @@ class DatabricksDialect(Dialect):
         ``get_json_object`` and the ``:`` operator both return the JSON *text*
         for a non-scalar path, so neither can express the contract.
 
-        Requires Databricks Runtime 15.3 or above, which is where VARIANT and
-        this function landed. Not verified against a live warehouse: the SQL
-        warehouse would not start while the json group was measured.
+        Available on **Databricks SQL** unconditionally, which is the surface
+        OrionBelt connects to, and on Databricks Runtime 15.3 and above. The
+        version floor applies only to the Runtime path; the published "Applies
+        to" badge carries no qualifier next to Databricks SQL.
+
+        Not verified against a live warehouse: the SQL warehouse would not
+        start on any attempt while the json group was measured, so this
+        rendering comes from the published function reference.
         """
         doc = self.compile_expr(args[0])
         path = self._quote_text(_json_path_of(args[1]))

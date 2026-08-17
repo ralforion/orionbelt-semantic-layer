@@ -218,8 +218,9 @@ optional argument.
 Every entry renders on all eight dialects except where noted. `json_value` is
 the first exception: Dremio has no JSONPath scalar function, so it reports the
 call unsupported rather than meaning something different there. A model that
-needs it is pinned to the other seven engines, and on Databricks to Runtime 15.3
-or above, where `try_variant_get` landed.
+needs it is pinned to the other seven engines. On Databricks it reads through
+`try_variant_get`, which is available on Databricks SQL and on Runtime 15.3 or
+above.
 
 | Signature | Result | Pinned meaning |
 |---|---|---|
