@@ -309,6 +309,13 @@ class TestJsonPaths:
     def test_a_path_without_a_root_is_rejected(self) -> None:
         assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, 'a.b')")
 
+    def test_the_bare_root_is_rejected(self) -> None:
+        """``$`` is not a path to a scalar, and it does not render: Postgres has
+        no zero-argument ``json_extract_path_text`` and rejects the call, and
+        Snowflake would be handed an empty extraction path.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, '$')")
+
     def test_member_and_subscript_paths_pass(self) -> None:
         assert _errors_for("json_value({Zip}, '$.a')") == []
         assert _errors_for("json_value({Zip}, '$.a.b')") == []

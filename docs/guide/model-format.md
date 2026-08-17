@@ -216,10 +216,10 @@ them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
 Every entry renders on all eight dialects except where noted. `json_value` is
-the first exception: Dremio has no JSONPath scalar function and Spark SQL has no
-JSON type function, so Dremio and Databricks report the call unsupported rather
-than meaning something different there. A model that needs it is pinned to the
-other six engines.
+the first exception: Dremio has no JSONPath scalar function, so it reports the
+call unsupported rather than meaning something different there. A model that
+needs it is pinned to the other seven engines, and on Databricks to Runtime 15.3
+or above, where `try_variant_get` landed.
 
 | Signature | Result | Pinned meaning |
 |---|---|---|
@@ -256,8 +256,8 @@ not merely spell the call differently, they take the path apart differently.
 Postgres wants the segments as separate arguments, Snowflake wants them dotted
 without the `$`, and the rest take the JSONPath verbatim. The accepted subset is
 object member access and array subscripts rooted at `$` — `$.a`, `$.a.b`,
-`$.a[0]`. A non-literal path falls through to the pass-through path, where the
-call is emitted as written.
+`$.a[0]`, at least one of them. The bare root `$` is not accepted: it is not a
+path to a scalar, and the entry already answers NULL for an object or array.
 
 The scalar comes back as a string, so `1` reads as `'1'`.
 
@@ -265,7 +265,9 @@ A path resolving to an **object or array** is NULL, and that rule is enforced
 rather than inherited: DuckDB, Postgres, Snowflake and MySQL all return the
 *serialized JSON* for a non-scalar path, so each is wrapped in a type guard
 (`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`). BigQuery and ClickHouse
-already answer NULL. Reach an array element with a subscript instead —
+already answer NULL, and Databricks gets it from the cast itself —
+`try_variant_get(..., 'string')` returns NULL rather than raising when the value
+will not cast. Reach an array element with a subscript instead —
 `json_value(x, '$.arr[0]')`.
 
 ClickHouse is the one remaining deviation: it returns the empty string for an

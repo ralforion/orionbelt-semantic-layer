@@ -97,9 +97,8 @@ class TestDialectsEndpoint:
         This used to assert every dialect rendered the whole catalog, on the
         grounds that an entry was admitted only once all eight could answer it,
         and noted that the field would earn its place when a later group left
-        one behind. The json group did: Dremio has no JSONPath scalar function
-        and Spark SQL has no JSON type function, so neither Dremio nor
-        Databricks can honour ``json_value``.
+        one behind. The json group did: Dremio has no JSONPath scalar function,
+        so it cannot honour ``json_value``.
 
         Asserting the subtraction rather than a hard-coded list keeps the test
         honest as further entries are dropped, while still failing if the route
@@ -122,8 +121,10 @@ class TestDialectsEndpoint:
 
         by_name = {d["name"]: d for d in payload}
         assert "json_value" not in by_name["dremio"]["supported_functions"]
-        assert "json_value" not in by_name["databricks"]["supported_functions"]
         assert "json_value" in by_name["duckdb"]["supported_functions"]
+        # Databricks reads it through try_variant_get rather than the ``:``
+        # operator, so it stays supported.
+        assert "json_value" in by_name["databricks"]["supported_functions"]
 
     async def test_published_examples_match_the_response_shape(self) -> None:
         """The docs and the GPT action spec show this endpoint's response.

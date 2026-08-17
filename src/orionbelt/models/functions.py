@@ -54,10 +54,18 @@ GROUP_CONDITIONAL = "conditional"
 GROUP_DATETIME = "datetime"
 GROUP_JSON = "json"
 
-JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])*$")
+JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])+$")
 """The JSONPath subset ``json_value`` accepts: object member access and array
-subscripts rooted at ``$``. Filters and wildcards are excluded because the
-engines diverge on them and a catalog entry has to pin one meaning.
+subscripts rooted at ``$``, at least one of them. Filters and wildcards are
+excluded because the engines diverge on them and a catalog entry has to pin one
+meaning.
+
+The bare root ``$`` is excluded too, for a different reason. It is not a path to
+a scalar: the root of a document is an object or an array, which the entry
+already answers NULL for, so supporting it would buy a guaranteed NULL in
+exchange for per-dialect root handling. Postgres has no zero-argument
+``json_extract_path_text`` and rejects the call outright, and Snowflake would be
+handed an empty extraction path.
 
 It lives here rather than in a dialect because both the model validator and
 codegen have to agree on it, exactly as they do on :data:`TIME_UNITS`."""
@@ -735,8 +743,11 @@ _JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "empty string for an absent path, so the call is wrapped in "
             "``nullIf(..., '')``. That restores NULL for the common case but "
             "cannot distinguish an absent path from a genuine empty-string "
-            "value - both come back NULL there. Dremio has no equivalent and "
-            "reports the entry unsupported."
+            "value - both come back NULL there. Databricks needs no guard at all: "
+            "`try_variant_get(..., 'string')` answers NULL when the value will "
+            "not cast, which is the object/array rule and the absent-path rule "
+            "at once. Dremio has no JSONPath scalar function and reports the "
+            "entry unsupported rather than mis-rendering it."
         ),
         examples=(
             FunctionExample("""json_value('{"a": "x"}', '$.a')""", "x"),

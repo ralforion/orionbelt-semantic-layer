@@ -7,6 +7,7 @@ from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
     Dialect,
     DialectCapabilities,
+    _json_path_of,
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
@@ -53,11 +54,6 @@ class DatabricksDialect(Dialect):
             supports_window_filters=False,
             supports_ilike=False,
             supports_group_by_all=True,
-            # Spark SQL has no JSON type function, so the catalog's rule that a
-            # path resolving to an object or array yields NULL cannot be honoured:
-            # get_json_object returns the serialized JSON instead. Reported as
-            # unsupported rather than silently meaning something else here.
-            unsupported_functions=["json_value"],
         )
 
     def quote_identifier(self, name: str) -> str:
@@ -89,6 +85,26 @@ class DatabricksDialect(Dialect):
 
     # Databricks spells the prefix/suffix tests without the underscore
     # (``startswith`` / ``endswith``, Databricks Runtime 10.4 LTS and above).
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """``try_variant_get`` honours the catalog's contract natively.
+
+        Asking for ``'string'`` makes the object/array rule fall out of the
+        cast: a path resolving to an object or array cannot be cast to STRING,
+        and the ``try_`` form answers NULL rather than raising
+        ``INVALID_VARIANT_CAST``. A missing path is NULL for the same reason.
+        No CASE guard is needed, unlike every other engine here.
+
+        ``get_json_object`` and the ``:`` operator both return the JSON *text*
+        for a non-scalar path, so neither can express the contract.
+
+        Requires Databricks Runtime 15.3 or above, which is where VARIANT and
+        this function landed. Not verified against a live warehouse: the SQL
+        warehouse would not start while the json group was measured.
+        """
+        doc = self.compile_expr(args[0])
+        path = self._quote_text(_json_path_of(args[1]))
+        return f"try_variant_get(parse_json({doc}), {path}, 'string')"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",
