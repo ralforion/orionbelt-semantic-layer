@@ -1162,11 +1162,24 @@ OrionBelt automatically wraps aggregate expressions with `CAST` to ensure consis
 The effective data type for a measure or metric is resolved in this order (first match wins):
 
 1. **Explicit declaration** — `dataType` on the measure or metric
-2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`
+2. **Structural inference** — COUNT/COUNT_DISTINCT → `bigint`; division in expression → `decimal(18, 6)`; a measure with `resultType: int` → `bigint` for SUM, and the default's scale widened to hold a 64-bit integer part for AVG
 3. **Model-level default** — `settings.defaultNumericDataType`
 4. **Built-in default** — `decimal(18, 2)` for SUM/AVG aggregations
 
 Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
+
+!!! note "Why integer measures are inferred rather than defaulted"
+
+    The built-in default holds only 16 integer digits, but a 64-bit column
+    needs 19. Left to default, `SUM` over a `BIGINT` produced a value the
+    engine computed correctly and then failed to cast, so the query errored on
+    a perfectly legal figure. Declaring `resultType: int` gets an integer type
+    for `SUM`; `AVG` stays fixed-point, keeping the number of decimal places
+    the default asked for and only gaining the range it was missing.
+
+    A measure over a large-valued **non-integer** column still takes the
+    built-in default, so pin `dataType` (or `settings.defaultNumericDataType`)
+    if its total can exceed 16 digits.
 
 ### Explicit Data Type
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -15,6 +17,7 @@ from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.snowflake import SnowflakeDialect
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import (
+    DataType,
     Measure,
     Metric,
     ModelSettings,
@@ -352,3 +355,79 @@ measures:
         query = QueryObject(select=QuerySelect(dimensions=["Dim"], measures=["Total"]))
         result = pipeline.compile(query, model, "postgres")
         assert "DECIMAL(18, 4)" in result.sql
+
+
+class TestAnIntegerMeasureIsNotTheNumericDefault:
+    """The numeric default cannot describe a 64-bit result.
+
+    ``decimal(18, 2)`` carries 16 integer digits and a BIGINT needs 19, so the
+    cast meant to describe the result overflowed on values the source column
+    held quite legally. The engine computed the sum and then failed converting
+    it - on the plain star path, not only under a multi-fact plan.
+    """
+
+    def test_sum_of_an_integer_measure_infers_bigint(self) -> None:
+        m = Measure(name="Qty Sum", aggregation="sum", result_type=DataType.INT)
+        assert resolve_measure_data_type(m, None) == SimpleType("bigint")
+
+    def test_avg_of_an_integer_measure_keeps_its_scale_and_gains_range(self) -> None:
+        """AVG is not integral, so it stays a decimal and only gets wider."""
+        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
+        assert resolve_measure_data_type(m, None) == DecimalType(21, 2)
+
+    def test_a_pinned_model_default_keeps_the_places_it_asked_for(self) -> None:
+        settings = ModelSettings(default_numeric_data_type="decimal(18, 6)")
+        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
+        assert resolve_measure_data_type(m, settings) == DecimalType(25, 6)
+
+    def test_an_already_wide_default_is_left_alone(self) -> None:
+        settings = ModelSettings(default_numeric_data_type="decimal(38, 2)")
+        m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
+        assert resolve_measure_data_type(m, settings) == DecimalType(38, 2)
+
+    def test_an_explicit_data_type_still_wins(self) -> None:
+        m = Measure(
+            name="Qty Sum",
+            aggregation="sum",
+            result_type=DataType.INT,
+            data_type="decimal(18, 2)",
+        )
+        assert resolve_measure_data_type(m, None) == DecimalType(18, 2)
+
+    def test_a_float_measure_is_untouched(self) -> None:
+        m = Measure(name="Revenue", aggregation="sum", result_type=DataType.FLOAT)
+        assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT
+
+    def test_a_bigint_sum_survives_execution(self) -> None:
+        """The end of the story, run rather than asserted on the SQL."""
+        duckdb = pytest.importorskip("duckdb")
+        yaml = """
+version: "1.0"
+name: bigint_sum
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      Day: {code: day, abstractType: int}
+      Qty: {code: qty, abstractType: int}
+dimensions:
+  Day: {dataObject: Charges, column: Day}
+measures:
+  Qty Sum: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: sum}
+  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
+"""
+        from orionbelt.parser import ReferenceResolver, TrackedLoader
+
+        raw, sm = TrackedLoader().load_string(yaml)
+        model, _ = ReferenceResolver().resolve(raw, sm)
+
+        con = duckdb.connect(":memory:")
+        con.execute("CREATE TABLE charges (day INTEGER, qty BIGINT)")
+        con.execute("INSERT INTO charges VALUES (1, 1000000000000000001), (1, 1000000000000000002)")
+        pipeline = CompilationPipeline()
+        for name, expected in [("Qty Sum", "2000000000000000003"), ("Qty Avg", "1E+18")]:
+            query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=[name]))
+            sql = pipeline.compile(query, model, "duckdb").sql
+            value = con.execute(sql).fetchall()[0][1]
+            assert Decimal(str(value)) == Decimal(expected), f"{name} came back {value}"
+        con.close()
