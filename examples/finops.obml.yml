@@ -37,6 +37,10 @@ version: 1.0
 settings:
   defaultNumericDataType: "decimal(18, 2)"
   defaultDialect: duckdb
+  # Every expression in this model is in the portable function catalog,
+  # including the json_value calls that read the Tags column, so an
+  # uncatalogued call is an error rather than a silent engine dependency.
+  expressionMode: portable
 
 dataObjects:
   # ── Conformed root ─────────────────────────────────────────────────
@@ -279,6 +283,24 @@ dataObjects:
       Charge Commitment Status:
         code: CommitmentDiscountStatus
         abstractType: string
+      # FOCUS defines Tags as a standard key-value column. Real exports carry
+      # it as JSON (Azure), a MAP (Databricks) or an ARRAY<STRUCT> (Google
+      # Cloud); JSON is the shape the portable `json_value` catalog entry
+      # reads. The computed columns below are the whole point: cost allocation
+      # by tag is the first question anyone asks of a billing model, and
+      # without a portable accessor it needs a hand-written view per tag key.
+      Tags:
+        code: Tags
+        abstractType: json
+      Team Tag:
+        expression: "json_value({Tags}, '$.team')"
+        abstractType: string
+      Environment Tag:
+        expression: "json_value({Tags}, '$.env')"
+        abstractType: string
+      Cost Center Tag:
+        expression: "json_value({Tags}, '$.cost_center')"
+        abstractType: string
     joins:
       - joinType: many-to-one
         joinTo: Billing Periods
@@ -438,6 +460,25 @@ dimensions:
   Consumed Unit:
     dataObject: Charges
     column: Consumed Unit Code
+    resultType: string
+
+  # Allocation dimensions, read out of the FOCUS Tags column. A NULL here is
+  # unallocated spend, which is the number the showback conversation is
+  # actually about.
+  Team:
+    dataObject: Charges
+    column: Team Tag
+    resultType: string
+    synonyms: [owner, squad]
+    description: From Tags.team. NULL where the charge carries no tags.
+  Environment:
+    dataObject: Charges
+    column: Environment Tag
+    resultType: string
+    synonyms: [env, stage]
+  Cost Center:
+    dataObject: Charges
+    column: Cost Center Tag
     resultType: string
 
   Commitment:

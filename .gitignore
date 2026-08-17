@@ -12,6 +12,9 @@ venv/
 .env
 *.db
 *.duckdb
+# Generated FOCUS export (20 MB); rebuilt by scripts/build_finops_duckdb.py.
+# The committed excerpt is examples/finops_charges_sample.json.
+examples/finops_data/
 *.sqlite3
 .mypy_cache/
 .ruff_cache/

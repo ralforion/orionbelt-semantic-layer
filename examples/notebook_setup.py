@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 # Step 0: Create TPC-H database
 # ---------------------------------------------------------------------------
 
+
 def create_tpch_database(db_path: str = "tpch.duckdb", scale: float = 0.01) -> None:
     """Create a DuckDB TPC-H database (removes stale file first)."""
     _pip_map = {
@@ -30,8 +31,15 @@ def create_tpch_database(db_path: str = "tpch.duckdb", scale: float = 0.01) -> N
             __import__(pkg)
         except ImportError:
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "-q",
-                 "--disable-pip-version-check", pip_name],
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "--disable-pip-version-check",
+                    pip_name,
+                ],
             )
 
     import duckdb
@@ -63,11 +71,35 @@ _api_base: str = ""
 _api_process: subprocess.Popen | None = None  # type: ignore[type-arg]
 
 
+def create_finops_database(db_path: str = "finops.duckdb") -> None:
+    """Build the FOCUS FinOps DuckDB by running the repo's generator.
+
+    Unlike ``create_tpch_database`` this shells out rather than inlining the
+    DDL: the generator is committed at ``scripts/build_finops_duckdb.py`` and
+    is the single source of truth for the dataset, so duplicating it here would
+    be one more thing to drift.
+    """
+    repo_root = os.path.abspath("..")
+    script = os.path.join(repo_root, "scripts", "build_finops_duckdb.py")
+    subprocess.check_call([sys.executable, script], cwd=repo_root)
+    built = os.path.join(repo_root, "examples", "finops.duckdb")
+    if not os.path.exists(built):
+        raise RuntimeError(f"generator did not produce {built}")
+    print(f"FinOps database ready: {built}")
+
+
 def start_api(
     port: int = 8099,
     timeout: int = 120,
+    db_file: str = "tpch.duckdb",
+    model_file: str = "tpch.obml.yml",
 ) -> tuple[str, str]:
-    """Start the OrionBelt API and return ``(session_id, model_id)``."""
+    """Start the OrionBelt API and return ``(session_id, model_id)``.
+
+    *db_file* and *model_file* are names under ``examples/``. They default to
+    the TPC-H pair so the quickstart notebook is unaffected; the FinOps
+    notebook passes its own.
+    """
     global _api_base, _api_process  # noqa: PLW0603
 
     repo_root = os.path.abspath("..")
@@ -81,7 +113,8 @@ def start_api(
     # Kill leftover process on the port (survives kernel restart)
     try:
         pids = subprocess.check_output(
-            ["lsof", "-ti", f":{port}"], text=True,
+            ["lsof", "-ti", f":{port}"],
+            text=True,
         ).strip()
         for pid in pids.splitlines():
             os.kill(int(pid), signal.SIGTERM)
@@ -93,17 +126,20 @@ def start_api(
         **os.environ,
         "QUERY_EXECUTE": "true",
         "DB_VENDOR": "duckdb",
-        "DUCKDB_DATABASE": os.path.join(repo_root, "examples", "tpch.duckdb"),
+        "DUCKDB_DATABASE": os.path.join(repo_root, "examples", db_file),
         # ``MODEL_FILE`` was removed in v2.7.0 — use ``MODEL_FILES``
         # (comma-separated, single-entry list is the direct equivalent).
-        "MODEL_FILES": os.path.join(repo_root, "examples", "tpch.obml.yml"),
+        "MODEL_FILES": os.path.join(repo_root, "examples", model_file),
         "API_SERVER_PORT": str(port),
     }
 
     log = open("api.log", "w")  # noqa: SIM115
     _api_process = subprocess.Popen(
         ["uv", "run", "--extra", "flight", "orionbelt-api"],
-        cwd=repo_root, env=env, stdout=log, stderr=log,
+        cwd=repo_root,
+        env=env,
+        stdout=log,
+        stderr=log,
     )
     atexit.register(_api_process.terminate)
 
@@ -111,8 +147,7 @@ def start_api(
         if _api_process.poll() is not None:
             log.flush()
             raise RuntimeError(
-                f"API exited with code {_api_process.returncode}\n"
-                + open("api.log").read()[-2000:]
+                f"API exited with code {_api_process.returncode}\n" + open("api.log").read()[-2000:]
             )
         try:
             urllib.request.urlopen(f"{_api_base}/health", timeout=2)
@@ -123,9 +158,7 @@ def start_api(
     else:
         _api_process.terminate()
         log.flush()
-        raise RuntimeError(
-            "API did not start in time\n" + open("api.log").read()[-2000:]
-        )
+        raise RuntimeError("API did not start in time\n" + open("api.log").read()[-2000:])
 
     # MODEL_FILES triggers admin-curated mode: each YAML loads into its
     # own named protected session (addressed by filename stem or the OBML
@@ -167,6 +200,7 @@ def api(method: str, path: str, body: dict | str | None = None) -> dict | list |
 # ---------------------------------------------------------------------------
 # Display helpers — syntax-highlighted SQL/YAML + styled result tables
 # ---------------------------------------------------------------------------
+
 
 class _pg:
     """Lazy-initialized pygments + sqlparse state."""
@@ -269,14 +303,16 @@ class _pg:
             out: list[str] = []
             for line in lines:
                 stripped = line.lstrip()
-                if stripped.upper().startswith(("LEFT JOIN", "RIGHT JOIN",
-                    "INNER JOIN", "CROSS JOIN", "FULL JOIN", "JOIN ")):
+                if stripped.upper().startswith(
+                    ("LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "CROSS JOIN", "FULL JOIN", "JOIN ")
+                ):
                     out.append("  " + line)
                 else:
                     out.append(line)
             return "\n".join(out)
 
         cls.format_sql = staticmethod(fmt)
+
 
 # VS Code Dark+ inspired palette
 _HEADER_BG = "#252526"
@@ -290,7 +326,7 @@ _LABEL_FG = "#569cd6"
 
 def _section_label(text: str) -> str:
     return (
-        f'<div style="font-family:\'Cascadia Code\',\'Fira Code\',Consolas,monospace;'
+        f"<div style=\"font-family:'Cascadia Code','Fira Code',Consolas,monospace;"
         f" font-size:11px; font-weight:600; color:{_LABEL_FG};"
         f' margin:14px 0 4px 0; text-transform:uppercase; letter-spacing:1.5px;">'
         f"{text}</div>"
@@ -321,12 +357,14 @@ def show_yaml(yaml_str: str) -> str:
     _pg.init()
     data = _yaml.safe_load(yaml_str)
     block = _yaml.dump(
-        data, Dumper=_IndentedDumper,
-        default_flow_style=False, sort_keys=False, allow_unicode=True,
+        data,
+        Dumper=_IndentedDumper,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
     )
-    return (
-        _section_label("OBML Query")
-        + _pg.highlight(block.strip(), _pg.yaml_lexer, _pg.formatter)
+    return _section_label("OBML Query") + _pg.highlight(
+        block.strip(), _pg.yaml_lexer, _pg.formatter
     )
 
 
