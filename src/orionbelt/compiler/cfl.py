@@ -338,6 +338,15 @@ class CFLPlanner:
         return cfl_projection.is_multi_field(measure)
 
     @staticmethod
+    def _resolve_union_alignment_type(
+        measure: ResolvedMeasure,
+        model: SemanticModel,
+        dialect: Dialect | None = None,
+    ) -> str | None:
+        """The type every UNION leg agrees on for *measure*'s column."""
+        return cfl_projection.resolve_union_alignment_type(measure, model, dialect)
+
+    @staticmethod
     def _resolve_null_type_for_field(
         measure: ResolvedMeasure,
         field_idx: int,
@@ -579,7 +588,13 @@ class CFLPlanner:
                         if m.name in conformed_exprs
                         else m
                     )
-                    own_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
+                    # Align on a type that preserves the input, not on the
+                    # measure's declared *output* type: these are
+                    # pre-aggregation rows, and narrowing them here rounds
+                    # every one before the outer SUM sees it. The NULL pads
+                    # below use the same resolver, so the legs still agree,
+                    # which is what the cast was for.
+                    own_type_name = self._resolve_union_alignment_type(m, model, dialect)
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
                     leg_builder.select(AliasedExpr(expr=own_expr, alias=m.name))
@@ -592,7 +607,7 @@ class CFLPlanner:
                         )
                 elif not union_by_name:
                     model_measure = model.measures.get(m.name)
-                    null_type_name = self._resolve_null_type_for_field(m, 0, model, dialect)
+                    null_type_name = self._resolve_union_alignment_type(m, model, dialect)
                     if null_type_name is None and model_measure:
                         null_type_name = model_measure.result_type.value
                     null_expr = (

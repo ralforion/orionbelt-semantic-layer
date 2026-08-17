@@ -12,6 +12,9 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
+# BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
+_NUMERIC_MAX_SCALE = 9
+
 
 @DialectRegistry.register
 class BigQueryDialect(Dialect):
@@ -33,11 +36,17 @@ class BigQueryDialect(Dialect):
             # BigQuery rejects parameterized types in CAST expressions
             # ("Parameterized types are not allowed in CAST expressions"),
             # so emit a bare NUMERIC / BIGNUMERIC and let BigQuery default
-            # the precision/scale. NUMERIC covers precision ≤ 38; spill
-            # over to BIGNUMERIC for higher precision OBML decimals. The
-            # user-specified scale is honoured separately by
-            # ``cast_to_obml_type`` which wraps the CAST in ROUND.
-            if obml_type.precision > 38:
+            # the precision/scale. The user-specified scale is honoured
+            # separately by ``cast_to_obml_type``, which wraps the CAST in
+            # ROUND.
+            #
+            # NUMERIC is (38, 9) and BIGNUMERIC is (76, 38), so *scale* decides
+            # as much as precision does: a request for scale 12 came back as
+            # NUMERIC and silently dropped the digits, measured on BigQuery as
+            # ``CAST(1.000000000004 AS NUMERIC)`` returning 1 where BIGNUMERIC
+            # returns the value. A model declaring the usual two decimal places
+            # is unaffected.
+            if obml_type.precision > 38 or obml_type.scale > _NUMERIC_MAX_SCALE:
                 return "BIGNUMERIC"
             return "NUMERIC"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())

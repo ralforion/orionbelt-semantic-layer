@@ -1,8 +1,8 @@
 WITH "composite_01" AS (
-SELECT CAST("Sales"."salesamount" AS NUMBER(18, 2)) AS "Total Sales"
+SELECT CAST("Sales"."salesamount" AS NUMBER(38, 12)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 UNION ALL BY NAME
-SELECT CAST("Purchases"."purchaseamount" AS NUMBER(18, 2)) AS "Total Purchases"
+SELECT CAST("Purchases"."purchaseamount" AS NUMBER(38, 12)) AS "Total Purchases"
 FROM "orionbelt_1"."purchases" AS "Purchases"
 )
 SELECT CAST(SUM("composite_01"."Total Sales") AS NUMBER(18, 2)) AS "Total Sales", CAST(SUM("composite_01"."Total Purchases") AS NUMBER(18, 2)) AS "Total Purchases"

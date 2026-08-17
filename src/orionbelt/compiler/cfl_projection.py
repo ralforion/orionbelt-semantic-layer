@@ -39,6 +39,7 @@ from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
     SemanticModel,
 )
+from orionbelt.models.types import DecimalType
 
 if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
@@ -183,6 +184,89 @@ def resolve_null_type_for_field(
             return dialect.render_obml_type(resolved)
     # Fallback to measure result_type.
     return model_measure.result_type.value
+
+
+# Scale used to align a numeric aggregate's UNION legs when the model has not
+# declared the source column's own scale. Wide enough that a money column is
+# carried exactly, while leaving 26 integer digits at precision 38.
+_ALIGNMENT_SCALE = 12
+_ALIGNMENT_PRECISION = 38
+
+# Only these combine values across rows, so only these compound a
+# pre-aggregation rounding error. Everything else either selects a value
+# (MIN/MAX/ANY_VALUE/MEDIAN/MODE) or projects the raw column (COUNT, LISTAGG).
+#
+# The statistical aggregates belong here for the same reason SUM does, and were
+# missed by a first cut that listed only the obvious two: STDDEV over 1.0004 and
+# 1.0005 declared decimal(18, 3) answered 0.000 alone and 0.001 beside a measure
+# from another fact. The two-column ones (CORR, COVAR_*, REGR_*) never reach
+# this path - a multi-field measure pads per slot and keeps each slot's type.
+_ACCUMULATING_AGGREGATIONS = frozenset(
+    {"sum", "avg", "stddev", "stddev_pop", "variance", "var_pop"}
+)
+
+
+def resolve_union_alignment_type(
+    measure: ResolvedMeasure,
+    model: SemanticModel,
+    dialect: Dialect | None = None,
+) -> str | None:
+    """The type every UNION leg agrees on for *measure*'s column.
+
+    Distinct from :func:`resolve_null_type_for_field`, and the distinction is
+    the whole point. That one answers "what type does the *result* have", which
+    is right for the outer ``CAST(SUM(...) AS ...)`` and wrong here: the legs
+    carry **pre-aggregation rows**, so aligning them on the declared output
+    type rounds every row before it is summed. A measure declared
+    ``decimal(18, 2)`` over a six-decimal column lost up to 0.005 per row.
+
+    The alignment still has to be a single concrete type, because a strict
+    engine will not union columns whose types disagree: ClickHouse produces
+    ``Variant(Decimal, Float64)`` and then refuses to ``SUM`` it.
+
+    Widening applies only to the aggregations that **accumulate** across rows,
+    which is where pre-aggregation rounding compounds. ``MIN``, ``MAX``,
+    ``ANY_VALUE``, ``MEDIAN`` and ``MODE`` select a value rather than combining
+    values, and ``resolve_measure_data_type`` treats them as no-cast
+    pass-through; widening them changed both the value and its type, turning
+    ``MIN`` over a fifteen-decimal column from 1.000000000000400 into
+    1.000000000000. ``COUNT`` and ``LISTAGG`` project the raw column, whose own
+    type is already the right alignment.
+
+    An **expression** measure has no ``columns`` and is covered: it projects a
+    pre-aggregation expression exactly as a column measure projects a column,
+    so it suffered the same rounding and was missed by an earlier version of
+    this that keyed on having exactly one column.
+
+    A model that declares the source column's ``sqlPrecision``/``sqlScale`` is
+    taken at its word. Otherwise the fallback widens to ``decimal(38, 12)``,
+    which carries any realistic money or rate column exactly and still leaves
+    26 integer digits.
+    """
+    model_measure = model.effective_measures.get(measure.name)
+    if not model_measure or dialect is None:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+    if (model_measure.aggregation or "").lower() not in _ACCUMULATING_AGGREGATIONS:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+    # A multi-field aggregate pads per slot; each slot keeps its own type.
+    if len(model_measure.columns) > 1:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+
+    column = None
+    if len(model_measure.columns) == 1:
+        ref = model_measure.columns[0]
+        obj = model.data_objects.get(ref.view) if ref.view else None
+        column = obj.columns.get(ref.column) if obj and ref.column else None
+        if column is not None and column.abstract_type.value not in ("int", "float"):
+            # A non-numeric source keeps its own type; widening it is nonsense.
+            return resolve_null_type_for_field(measure, 0, model, dialect)
+
+    if column is not None and column.sql_precision is not None:
+        precision = column.sql_precision
+        scale = column.sql_scale if column.sql_scale is not None else 0
+    else:
+        precision, scale = _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
+    return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
 
 
 def outer_aggregation(measure: ResolvedMeasure) -> tuple[str, bool]:
