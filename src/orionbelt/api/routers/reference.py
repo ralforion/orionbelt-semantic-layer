@@ -161,10 +161,14 @@ class FunctionReferenceResponse(BaseModel):
 
 
 _ESCAPE_HATCH = (
-    "A function outside the catalog is emitted verbatim and neither checked nor "
-    "rewritten, so vendor SQL keeps working — at the cost of pinning the model to "
-    "the engines that spell it that way. A catalog function called with the wrong "
-    "number of arguments is rejected at model validation with WRONG_FUNCTION_ARITY."
+    "A function outside the catalog is emitted verbatim and not rewritten, so "
+    "vendor SQL keeps working — at the cost of pinning the model to the engines "
+    "that spell it that way. Its arity and meaning are still not checked, since "
+    "they belong to the engine, but the call itself is reported: a "
+    "NON_PORTABLE_FUNCTION warning by default, and an error when the model sets "
+    "settings.expressionMode to 'portable', so the dependency cannot be acquired "
+    "by accident. A catalog function called with the wrong number of arguments is "
+    "rejected at model validation with WRONG_FUNCTION_ARITY."
 )
 
 

@@ -1496,6 +1496,28 @@ class TestModelSettingsSurface:
         assert declared - mirrored == set(), "settings missing from GET /v1/settings"
         assert mirrored - declared == set(), "GET /v1/settings invents settings"
 
+    def test_the_mirror_carries_the_same_defaults(self) -> None:
+        """Matching names are not enough: matching defaults are the answer.
+
+        The response drops nulls, so a mirror field defaulting to None while
+        the model's defaults to 'monday' makes the same setting present or
+        absent depending on whether the YAML happened to write a ``settings:``
+        block at all -- the model's own defaults fill it in once the block
+        exists. Reporting the settings in force means reporting them always.
+        """
+        from pydantic import BaseModel
+
+        from orionbelt.api.schemas import ModelSettingsInfo
+        from orionbelt.models.semantic import ModelSettings
+
+        def defaults(model: type[BaseModel]) -> dict[str, object]:
+            return {
+                field.alias or name: getattr(field.default, "value", field.default)
+                for name, field in model.model_fields.items()
+            }
+
+        assert defaults(ModelSettingsInfo) == defaults(ModelSettings)
+
     async def test_the_new_settings_reach_the_response(self, client: AsyncClient) -> None:
         model_yaml = """\
 version: 1.0

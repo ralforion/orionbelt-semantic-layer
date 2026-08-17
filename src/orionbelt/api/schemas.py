@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from orionbelt.models.query import QueryObject
+from orionbelt.models.semantic import ExpressionMode, WeekStart
 
 
 class StructuredWarning(BaseModel):
@@ -408,7 +409,14 @@ class FlightSettingsInfo(BaseModel):
 
 
 class ModelSettingsInfo(BaseModel):
-    """Model-level ``settings:`` block from the loaded OBML model."""
+    """The settings in force for the loaded model, not the keys it wrote.
+
+    A setting with a default reports that default, whether the model stated it
+    or not: a client asking which calendar or expression mode applies wants the
+    answer, and an absent key cannot distinguish "unset" from "unsupported by
+    this server". Only settings with no default — a timezone, a dialect — are
+    absent when unset, since there is nothing to report.
+    """
 
     model_config = {"populate_by_name": True}
 
@@ -443,12 +451,12 @@ class ModelSettingsInfo(BaseModel):
         description="IANA zone timestamp columns are converted to before bucketing",
     )
     week_start: str | None = Field(
-        default=None,
+        default=WeekStart.MONDAY.value,
         alias="weekStart",
         description="Day a week begins on for weekly truncation: 'monday' (ISO) or 'sunday'",
     )
     expression_mode: str | None = Field(
-        default=None,
+        default=ExpressionMode.PERMISSIVE.value,
         alias="expressionMode",
         description=(
             "Whether a function outside the portable catalog is a warning "
