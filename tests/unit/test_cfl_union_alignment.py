@@ -76,6 +76,15 @@ dimensions:
   Day: {dataObject: Days, column: Day, resultType: int}
 
 measures:
+  Charged Expr:
+    expression: "{[Charges].[Amount]} * 1"
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 2)"
+  Charged Min:
+    columns: [{dataObject: Charges, column: Amount}]
+    resultType: float
+    aggregation: min
   Charged:
     columns: [{dataObject: Charges, column: Amount}]
     resultType: float
@@ -183,4 +192,51 @@ class TestUnionAlignmentPreservesInput:
         assert len(types) == 1, f"legs disagree on the union type: {types}\n{legs}"
         assert re.search(r"CAST\(round\(SUM\(.*?\), 2\) AS Nullable\(Decimal\(18, 2\)\)\)", sql), (
             f"the outer aggregate should still narrow to the declared type:\n{sql}"
+        )
+
+
+class TestWhatIsAndIsNotWidened:
+    """Widening follows what an aggregation *does*, not what it is over."""
+
+    def test_an_expression_measure_is_covered_too(self) -> None:
+        """It has no ``columns``, and projects a pre-aggregation expression.
+
+        An earlier version keyed on having exactly one column, so every
+        ``expression:`` measure kept the original bug while the tests, which
+        only covered ``columns:`` measures, stayed green.
+        """
+        con = _seeded()
+        try:
+            star = _run(con, ["Charged Expr"])[0][0]
+            cfl = _run(con, ["Charged Expr", "Invoiced"])[0][0]
+        finally:
+            con.close()
+        assert Decimal(str(cfl)) == Decimal(str(star)), (
+            "an expression measure answered differently under a multi-fact plan"
+        )
+
+    def test_a_selecting_aggregate_is_left_alone(self) -> None:
+        """MIN picks a value rather than combining values, so nothing compounds.
+
+        ``resolve_measure_data_type`` treats MIN, MAX, ANY_VALUE, MEDIAN and
+        MODE as no-cast pass-through. Routing them through the widening changed
+        both the value and its type - MIN over a fifteen-decimal column went
+        from 1.000000000000400 to 1.000000000000 - so they keep the existing
+        alignment.
+
+        This asserts the leg is not widened rather than asserting a value:
+        those aggregates have a separate, older precision problem of their own
+        (the leg casts a wide decimal to FLOAT), which this change neither
+        causes nor fixes.
+        """
+        sql = PIPELINE.compile(
+            QueryObject(select=QuerySelect(dimensions=[], measures=["Charged Min", "Invoiced"])),
+            _model(),
+            "duckdb",
+        ).sql
+        min_leg = next(
+            line for line in sql.splitlines() if '"Charged Min"' in line and "CAST" in line
+        )
+        assert "DECIMAL(38, 12)" not in min_leg, (
+            f"a selecting aggregate was widened as though it accumulated: {min_leg}"
         )

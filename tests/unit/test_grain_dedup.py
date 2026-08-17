@@ -13,6 +13,7 @@ data where the two answers differ.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 import duckdb
@@ -2126,8 +2127,13 @@ def test_cfl_sort_key_alias_steps_aside_for_a_measure_that_owns_the_name() -> No
         {"select": {"dimensions": ["Year"], "measures": ["Return List__wg", "Return List"]}},
         CFL_ALIAS_CLASH_YAML,
     )
-    # The declared measure keeps the name it asked for...
-    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return List__wg"' in result.sql
+    # The declared measure keeps the name it asked for. The cast width is
+    # deliberately not pinned here: a CFL leg aligns on a type that preserves
+    # the input rather than the declared result type, and that is the subject
+    # of test_cfl_union_alignment, not of this test.
+    assert re.search(
+        r'CAST\("Sales"\."amount" AS [A-Z0-9_(), ]+\) AS "Return List__wg"', result.sql
+    ), result.sql
     # ...and the sort key moves out of its way, in the leg and in the outer ORDER BY.
     assert '"Calendar"."month" AS "Return List__wg_"' in result.sql
     assert 'ORDER BY "composite_01"."Return List__wg_"' in result.sql
@@ -2362,7 +2368,9 @@ def test_cfl_multi_field_alias_steps_aside_for_a_measure_that_owns_the_name() ->
         {"select": {"dimensions": ["Year"], "measures": ["Return Pairs__f0", "Return Pairs"]}},
         CFL_FIELD_CLASH_YAML,
     )
-    assert '"Sales"."amount" AS DECIMAL(18, 2)) AS "Return Pairs__f0"' in result.sql
+    assert re.search(
+        r'CAST\("Sales"\."amount" AS [A-Z0-9_(), ]+\) AS "Return Pairs__f0"', result.sql
+    ), result.sql
     assert '"Returns"."id" AS "Return Pairs__f0_"' in result.sql
     assert '"composite_01"."Return Pairs__f0_"' in result.sql
 

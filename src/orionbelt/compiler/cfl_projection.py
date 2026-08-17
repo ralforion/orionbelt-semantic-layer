@@ -192,6 +192,11 @@ def resolve_null_type_for_field(
 _ALIGNMENT_SCALE = 12
 _ALIGNMENT_PRECISION = 38
 
+# Only these combine values across rows, so only these compound a
+# pre-aggregation rounding error. Everything else either selects a value
+# (MIN/MAX/ANY_VALUE/MEDIAN/MODE) or projects the raw column (COUNT, LISTAGG).
+_ACCUMULATING_AGGREGATIONS = frozenset({"sum", "avg"})
+
 
 def resolve_union_alignment_type(
     measure: ResolvedMeasure,
@@ -205,38 +210,48 @@ def resolve_union_alignment_type(
     is right for the outer ``CAST(SUM(...) AS ...)`` and wrong here: the legs
     carry **pre-aggregation rows**, so aligning them on the declared output
     type rounds every row before it is summed. A measure declared
-    ``decimal(18, 2)`` over a ``DECIMAL(18, 6)`` column lost up to 0.005 per
-    row, which is invisible on one row and material on fifteen thousand.
+    ``decimal(18, 2)`` over a six-decimal column lost up to 0.005 per row.
 
     The alignment still has to be a single concrete type, because a strict
     engine will not union columns whose types disagree: ClickHouse produces
-    ``Variant(Decimal, Float64)`` and then refuses to ``SUM`` it. So the answer
-    is a type that is common across legs *and* preserves the input, rather than
-    the narrower of the two.
+    ``Variant(Decimal, Float64)`` and then refuses to ``SUM`` it.
+
+    Widening applies only to the aggregations that **accumulate** across rows,
+    which is where pre-aggregation rounding compounds. ``MIN``, ``MAX``,
+    ``ANY_VALUE``, ``MEDIAN`` and ``MODE`` select a value rather than combining
+    values, and ``resolve_measure_data_type`` treats them as no-cast
+    pass-through; widening them changed both the value and its type, turning
+    ``MIN`` over a fifteen-decimal column from 1.000000000000400 into
+    1.000000000000. ``COUNT`` and ``LISTAGG`` project the raw column, whose own
+    type is already the right alignment.
+
+    An **expression** measure has no ``columns`` and is covered: it projects a
+    pre-aggregation expression exactly as a column measure projects a column,
+    so it suffered the same rounding and was missed by an earlier version of
+    this that keyed on having exactly one column.
 
     A model that declares the source column's ``sqlPrecision``/``sqlScale`` is
-    taken at its word. Otherwise the fallback widens to
-    ``decimal(38, 12)``, which carries any realistic money or rate column
-    exactly and still leaves 26 integer digits.
-
-    Non-numeric aggregates keep the existing behaviour: COUNT and LISTAGG
-    project the raw column, whose type is already the right alignment.
+    taken at its word. Otherwise the fallback widens to ``decimal(38, 12)``,
+    which carries any realistic money or rate column exactly and still leaves
+    26 integer digits.
     """
     model_measure = model.effective_measures.get(measure.name)
-    if not model_measure:
-        return None
-    agg = (model_measure.aggregation or "").lower()
-    if agg in ("count", "count_distinct", "listagg") or len(model_measure.columns) != 1:
+    if not model_measure or dialect is None:
         return resolve_null_type_for_field(measure, 0, model, dialect)
-    if dialect is None:
+    if (model_measure.aggregation or "").lower() not in _ACCUMULATING_AGGREGATIONS:
+        return resolve_null_type_for_field(measure, 0, model, dialect)
+    # A multi-field aggregate pads per slot; each slot keeps its own type.
+    if len(model_measure.columns) > 1:
         return resolve_null_type_for_field(measure, 0, model, dialect)
 
-    ref = model_measure.columns[0]
-    obj = model.data_objects.get(ref.view) if ref.view else None
-    column = obj.columns.get(ref.column) if obj and ref.column else None
-    if column is not None and column.abstract_type.value not in ("int", "float"):
-        # A non-numeric source keeps its own type; widening it makes no sense.
-        return resolve_null_type_for_field(measure, 0, model, dialect)
+    column = None
+    if len(model_measure.columns) == 1:
+        ref = model_measure.columns[0]
+        obj = model.data_objects.get(ref.view) if ref.view else None
+        column = obj.columns.get(ref.column) if obj and ref.column else None
+        if column is not None and column.abstract_type.value not in ("int", "float"):
+            # A non-numeric source keeps its own type; widening it is nonsense.
+            return resolve_null_type_for_field(measure, 0, model, dialect)
 
     if column is not None and column.sql_precision is not None:
         precision = column.sql_precision
