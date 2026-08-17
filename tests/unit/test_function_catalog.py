@@ -41,7 +41,19 @@ from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
 
 CATALOG = list(FUNCTION_CATALOG.values())
+CATALOG_BY_NAME = dict(FUNCTION_CATALOG)
 DIALECTS = sorted(DialectRegistry.available())
+
+
+def _is_unsupported(function: str, dialect: str) -> bool:
+    """Whether *dialect* declares *function* unsupported.
+
+    The rendering invariants below hold for every entry an engine can answer;
+    one it has declared it cannot is expected to raise, and skipping it here is
+    what keeps that a deliberate declaration rather than a broken renderer.
+    """
+    declared = DialectRegistry.get(dialect).capabilities.unsupported_functions
+    return function in {name.lower() for name in declared}
 
 
 _CALL_START = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\(")
@@ -1057,6 +1069,8 @@ class TestRenderingInvariants:
     @pytest.mark.parametrize("dialect", DIALECTS)
     def test_every_example_renders(self, dialect: str) -> None:
         for spec in CATALOG:
+            if _is_unsupported(spec.name, dialect):
+                continue
             for example in spec.examples:
                 assert _render(example.call, dialect)
 
@@ -1086,6 +1100,7 @@ class TestRenderingInvariants:
         offenders = [
             f"{example.call} -> {_render(example.call, dialect)}"
             for spec in CATALOG
+            if not _is_unsupported(spec.name, dialect)
             for example in spec.examples
             if not _is_atomic(_render(example.call, dialect))
         ]
@@ -1241,10 +1256,23 @@ class TestUnsupportedFunction:
         ast = parse_expression(tokenize_metric_formula("upper('a')"))
         assert _NoSplitPartDialect().compile_expr(ast) == "UPPER('a')"
 
-    def test_no_dialect_declares_one_today(self) -> None:
-        """The string group renders on all eight engines; nothing is dropped."""
-        for dialect in DIALECTS:
-            assert DialectRegistry.get(dialect).capabilities.unsupported_functions == []
+    def test_every_declared_unsupported_name_is_a_catalog_entry(self) -> None:
+        """A declaration is only meaningful if it names a real entry.
+
+        This replaces an assertion that no dialect declared one at all, which
+        held until the json group: Dremio has no JSONPath scalar function, so
+        it drops ``json_value`` rather than mis-rendering it. A typo here would
+        silently un-drop the function, so the names are checked against the
+        catalog.
+        """
+        declared = {
+            dialect: DialectRegistry.get(dialect).capabilities.unsupported_functions
+            for dialect in DIALECTS
+        }
+        for dialect, names in declared.items():
+            unknown = [n for n in names if n not in CATALOG_BY_NAME]
+            assert not unknown, f"{dialect} declares unknown function(s) {unknown}"
+        assert declared["dremio"] == ["json_value"]
 
     def test_the_api_answers_422_not_500(self) -> None:
         """Every surface that translates the sibling unsupported-* errors has

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import CrossColumnOrderNotSupportedError, Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    CrossColumnOrderNotSupportedError,
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -80,6 +85,17 @@ class DatabricksDialect(Dialect):
 
     # Databricks spells the prefix/suffix tests without the underscore
     # (``startswith`` / ``endswith``, Databricks Runtime 10.4 LTS and above).
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """Spark SQL spells it ``get_json_object`` and takes the JSONPath
+        verbatim.
+
+        Not verified against a live warehouse: the Databricks SQL warehouse
+        would not start when the catalog's json group was measured.
+        """
+        doc = self.compile_expr(args[0])
+        path = _json_path_of(args[1])
+        return f"get_json_object({doc}, {self._quote_text(path)})"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",

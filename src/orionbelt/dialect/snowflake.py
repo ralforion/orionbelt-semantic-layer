@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll
-from orionbelt.dialect.base import Dialect, DialectCapabilities
+from orionbelt.dialect.base import (
+    Dialect,
+    DialectCapabilities,
+    _json_path_of,
+    _json_path_segments,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
@@ -100,6 +105,15 @@ class SnowflakeDialect(Dialect):
 
     # Snowflake spells the prefix/suffix tests without the underscore;
     # ``STARTS_WITH`` / ``ENDS_WITH`` are not recognised (probe-verified).
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """Snowflake's ``JSON_EXTRACT_PATH_TEXT`` takes the path dotted and
+        without the leading ``$``, and accepts a VARCHAR document directly, so
+        no ``PARSE_JSON`` wrapper is needed.
+        """
+        doc = self.compile_expr(args[0])
+        segments = _json_path_segments(_json_path_of(args[1]))
+        return f"JSON_EXTRACT_PATH_TEXT({doc}, {self._quote_text('.'.join(segments))})"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",

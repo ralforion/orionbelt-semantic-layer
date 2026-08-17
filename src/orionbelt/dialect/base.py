@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -53,6 +54,42 @@ def _is_unit_literal(arg: Expr) -> bool:
     return (
         isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in TIME_UNITS
     )
+
+
+_JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])*$")
+_JSON_SEGMENT_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)|\[([0-9]+)\]")
+
+
+def _is_json_path_literal(arg: Expr) -> bool:
+    """Whether *arg* is a literal holding a JSONPath the catalog accepts.
+
+    The accepted subset is object member access and array subscripts rooted at
+    ``$``. Filters and wildcards are excluded deliberately: the engines diverge
+    on them, and a catalog entry has to pin one meaning.
+    """
+    return (
+        isinstance(arg, Literal)
+        and isinstance(arg.value, str)
+        and _JSON_PATH_RE.match(arg.value) is not None
+    )
+
+
+def _json_path_of(arg: Expr) -> str:
+    """The JSONPath text a literal argument holds.
+
+    Only called once :func:`_is_json_path_literal` holds, so the cast is safe.
+    """
+    assert isinstance(arg, Literal) and isinstance(arg.value, str)
+    return arg.value
+
+
+def _json_path_segments(path: str) -> list[str]:
+    """``$.a.b[0]`` -> ``["a", "b", "0"]``.
+
+    Postgres wants the segments as separate arguments and Snowflake wants them
+    dotted, so both need the path taken apart rather than passed through.
+    """
+    return [name or index for name, index in _JSON_SEGMENT_RE.findall(path)]
 
 
 class UnsupportedAggregationError(Exception):
@@ -435,8 +472,27 @@ class Dialect(ABC):
                 return self._render_last_day(args[0])
             case "current_date":
                 return self._render_current_date()
+            case "json_value":
+                return self._render_json_value(args)
             case _:
                 return self._render_named_function(name, args)
+
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """Default: ANSI ``JSON_VALUE(x, path)``, taking the path verbatim.
+
+        Correct as measured on BigQuery. ClickHouse accepts the same spelling
+        but returns the empty string rather than NULL for an absent path, and
+        DuckDB's ``JSON_VALUE`` leaves the result quoted, so both override, as
+        do Postgres, Snowflake, Databricks and MySQL, which have no
+        ``JSON_VALUE`` at all.
+        """
+        doc = self.compile_expr(args[0])
+        path = _json_path_of(args[1])
+        return f"JSON_VALUE({doc}, {self._quote_text(path)})"
+
+    def _quote_text(self, text: str) -> str:
+        """A string literal carrying *text*, escaped for this dialect."""
+        return self.compile_expr(Literal.string(text))
 
     def _render_named_function(self, name: str, args: list[Expr]) -> str:
         """Render ``NAME(arg, ...)`` using this dialect's spelling of *name*."""
@@ -1090,6 +1146,10 @@ class Dialect(ABC):
                     and not distinct
                     and spec.accepts(len(args))
                     and (spec.unit_argument is None or _is_unit_literal(args[spec.unit_argument]))
+                    and (
+                        spec.path_argument is None
+                        or _is_json_path_literal(args[spec.path_argument])
+                    )
                 ):
                     return self._render_function(spec.name, args)
                 # Everything else stays pass-through: removing the escape

@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
-from orionbelt.dialect.base import Dialect, DialectCapabilities, UnsupportedAggregationError
+from orionbelt.dialect.base import (
+    Dialect,
+    DialectCapabilities,
+    UnsupportedAggregationError,
+    _json_path_of,
+)
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 
@@ -258,6 +263,17 @@ class MySQLDialect(Dialect):
 
     # ``LENGTH`` counts bytes on MySQL (``LENGTH('äbcd')`` is 5); the catalog
     # counts characters, which is ``CHAR_LENGTH``.
+    def _render_json_value(self, args: list[Expr]) -> str:
+        """MySQL's ``JSON_EXTRACT`` keeps the JSON quoting, so the catalog's
+        string result needs ``JSON_UNQUOTE`` around it.
+
+        Not verified against a live server: no MySQL credentials were
+        configured when the json group was measured.
+        """
+        doc = self.compile_expr(args[0])
+        path = _json_path_of(args[1])
+        return f"JSON_UNQUOTE(JSON_EXTRACT({doc}, {self._quote_text(path)}))"
+
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {"length": "CHAR_LENGTH"}
 
     def _render_starts_with(self, args: list[Expr]) -> str:

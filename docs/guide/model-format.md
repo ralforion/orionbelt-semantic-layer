@@ -215,6 +215,11 @@ Canonical names are lowercase and snake_case; OBML is case-insensitive about
 them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
+Every entry renders on all eight dialects except where noted. `json_value` is
+the first exception: Dremio has no JSONPath scalar function, so it reports the
+call unsupported rather than mis-rendering it, and a model that needs the
+function is pinned to the other seven engines.
+
 | Signature | Result | Pinned meaning |
 |---|---|---|
 | `substring(x, start, len?)` | string | 1-based; omitting `len` runs to the end |
@@ -243,6 +248,21 @@ optional argument.
 | `extract(unit, x)` | int | **ISO week numbering**; an integer, not a numeric |
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
+| `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
+
+`json_value`'s `path` must be a **literal**, not an expression: the engines do
+not merely spell the call differently, they take the path apart differently.
+Postgres wants the segments as separate arguments, Snowflake wants them dotted
+without the `$`, and the rest take the JSONPath verbatim. The accepted subset is
+object member access and array subscripts rooted at `$` — `$.a`, `$.a.b`,
+`$.a[0]`. A non-literal path falls through to the pass-through path, where the
+call is emitted as written.
+
+The scalar comes back as a string, so `1` reads as `'1'`. ClickHouse is the one
+deviation from the NULL rule: it returns the empty string for an absent path, so
+the call is wrapped in `nullIf(..., '')`. That restores NULL for the common case
+but cannot distinguish an absent path from a genuine empty-string value — both
+are NULL there.
 
 The date/time entries take a **literal unit** from a closed vocabulary — `year`,
 `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be
