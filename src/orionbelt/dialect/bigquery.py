@@ -34,10 +34,18 @@ class BigQueryDialect(Dialect):
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """Casting the input is enough here; the aggregate itself is exact.
 
-        ``AVG(INT64)`` returns FLOAT64 and drifts, but ``AVG`` over NUMERIC is
-        exact, measured: 1000000000000000002 and ...004 average to
-        1000000000000000003 rather than 1e+18. NUMERIC is (38, 9), so its 29
-        integer digits comfortably hold any 64-bit value.
+        ``AVG(INT64)`` returns FLOAT64 and drifts, but ``AVG`` over a decimal
+        type is exact, measured: 1000000000000000002 and ...004 average to
+        1000000000000000003 rather than 1e+18. Empty groups still come back
+        NULL and a sum past 64 bits is carried fine, both measured, so nothing
+        else is needed.
+
+        **Which** decimal type matters. NUMERIC is (38, 9), so it caps the
+        quotient at nine decimal places - averaging 1, 2, 2 gives 1.666666667
+        where BIGNUMERIC (76, 38) gives 1.66666666666666666666666666666666666667.
+        A result asking for more scale than NUMERIC can carry therefore has to
+        aggregate in BIGNUMERIC, or the extra digits the caller asked for would
+        be zeros.
 
         This is the cheapest of the three exact routes and, notably, the one
         that does *not* transfer: casting the input leaves DuckDB and
@@ -45,7 +53,9 @@ class BigQueryDialect(Dialect):
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        return FunctionCall(name="AVG", args=[Cast(expr=arg, type_name="NUMERIC")])
+        wide = obml_type.scale > _NUMERIC_MAX_SCALE or obml_type.precision > 38
+        target = "BIGNUMERIC" if wide else "NUMERIC"
+        return FunctionCall(name="AVG", args=[Cast(expr=arg, type_name=target)])
 
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):

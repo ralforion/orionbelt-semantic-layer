@@ -192,3 +192,79 @@ def test_every_dialect_is_accounted_for() -> None:
     assert set(DialectRegistry.available()) == known, (
         f"unclassified dialects: {set(DialectRegistry.available()) ^ known}"
     )
+
+
+class TestTheHazardsAPlainAvgHandlesAndARewriteMustToo:
+    """Three ways a naive rewrite answers where ``AVG`` would have been right.
+
+    Each was found by review rather than by the first round of tests, and each
+    is a case where the rewrite is not merely less precise but *wrong* - which
+    is worse than the drift it was written to fix. They are asserted on the
+    emitted SQL here; the values they produce are checked against live engines
+    in the vendor suites.
+    """
+
+    def test_clickhouse_guards_an_empty_group(self) -> None:
+        """``divideDecimal`` by zero raises where ``AVG`` returns NULL.
+
+        A multi-fact plan hits this routinely: a group carrying only another
+        fact's rows has no values for this measure, so the count is zero.
+        ClickHouse answers ILLEGAL_DIVISION (code 153) rather than NULL.
+        """
+        sql = _sql("Qty Avg", "clickhouse")
+        assert "if(COUNT(" in sql and "= 0" in sql, sql
+
+    @pytest.mark.parametrize(
+        ("dialect", "inner"),
+        [("clickhouse", "SUM(toDecimal128("), ("dremio", "SUM(CAST(")],
+    )
+    def test_the_widening_cast_goes_inside_the_sum(self, dialect: str, inner: str) -> None:
+        """Otherwise the accumulator overflows before anything widens it.
+
+        ``SUM`` over a 64-bit column accumulates in 64 bits on both engines:
+        two rows of 9000000000000000000 summed to -446744073709551616, and
+        casting that afterwards only widens a number that had already wrapped.
+        On Dremio this is a case where the engine's own ``AVG`` is wrong too,
+        so the rewrite fixes more than the drift it was written for.
+        """
+        assert inner in _sql("Qty Avg", dialect), _sql("Qty Avg", dialect)
+
+    def test_bigquery_aggregates_in_bignumeric_when_the_scale_needs_it(self) -> None:
+        """NUMERIC is (38, 9), so it caps the quotient at nine places.
+
+        Averaging 1, 2 and 2 in NUMERIC gives 1.666666667 where BIGNUMERIC
+        gives 1.66666666666666666666666666666666666667. Asking for more scale
+        than NUMERIC carries and aggregating in it anyway would hand back the
+        extra digits as zeros.
+        """
+        assert "AS NUMERIC" in _sql("Qty Avg", "bigquery")
+        assert "AS BIGNUMERIC" in _sql_with_default("Qty Avg", "bigquery", "decimal(38, 20)")
+
+    def test_dremio_keeps_integer_room_for_the_running_total(self) -> None:
+        """A sum is as many digits as its rows make it.
+
+        38 digits cannot hold both a large total and a long fraction, so the
+        intermediate scale is capped rather than tracking the result's. At a
+        declared scale of 19 the total would have had 19 integer digits, and
+        two rows of 9000000000000000000 need 20.
+        """
+        sql = _sql_with_default("Qty Avg", "dremio", "decimal(38, 20)")
+        assert "AS DECIMAL(38, 14))" in sql, sql
+        assert "AS DECIMAL(38, 19))" in sql, sql
+
+
+def _sql_with_default(measure: str, dialect: str, numeric_default: str) -> str:
+    yaml = MODEL_YAML.replace(
+        "name: exact_avg",
+        f'name: exact_avg\nsettings: {{defaultNumericDataType: "{numeric_default}"}}',
+    )
+    raw, sm = TrackedLoader().load_string(yaml)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    assert result.valid, result.errors
+    return (
+        CompilationPipeline()
+        .compile(
+            QueryObject(select=QuerySelect(dimensions=["Day"], measures=[measure])), model, dialect
+        )
+        .sql
+    )
