@@ -310,6 +310,31 @@ class Dialect(ABC):
         """
         return Cast(expr=expr, type_name=self.render_obml_type(obml_type))
 
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
+
+        ``AVG`` is a floating-point aggregate on several engines whatever the
+        input type, so it drifts once the average passes a ``double`` mantissa,
+        around fifteen significant digits. That is not a defect any of them is
+        likely to change - duckdb/duckdb#6829 was closed as not planned - and
+        no output cast repairs it, because the loss is already inside the
+        aggregate.
+
+        Dialects that offer exact arithmetic override this to say how. The
+        three that do are all different: BigQuery only needs its **input** cast
+        to NUMERIC, Dremio divides decimals exactly so ``SUM``/``COUNT``
+        works, and ClickHouse needs its own ``divideDecimal``. Returning
+        ``None`` - the default - keeps the plain ``AVG``, which is right both
+        for the engines that are already exact (Postgres, MySQL, Snowflake) and
+        for DuckDB, where no formulation is exact and a widened result would
+        only convert a loud overflow into a quiet wrong number (#316).
+
+        ``obml_type`` is the type the result will be cast to, already widened
+        to hold a 64-bit integer part, and carries the scale an engine needs
+        when it wants one explicitly.
+        """
+        return None
+
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.
 

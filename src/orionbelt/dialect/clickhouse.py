@@ -42,6 +42,37 @@ class ClickHouseDialect(Dialect):
         "boolean": "Bool",
     }
 
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """ClickHouse needs its own function: ``divideDecimal``.
+
+        ``avg`` returns Float64, and ordinary ``/`` on Decimals is no help
+        either - it preserves the operand scale and pre-scales the numerator,
+        which is the overflow ``render_decimal_division_sql`` below exists to
+        dodge. ``divideDecimal(a, b, scale)`` is exact, measured:
+        1000000000000000003 rather than 1000000000000000000, with negatives
+        correct (``[-3, 2]`` -> -0.5).
+
+        It takes the scale explicitly, which is why this hook is handed the
+        result type and not just the argument. The operands go through
+        ``toDecimal128`` at scale 0: both are integral, a sum and a count, and
+        128-bit carries 38 digits.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        zero = Literal.number(0)
+        return FunctionCall(
+            name="divideDecimal",
+            args=[
+                FunctionCall(
+                    name="toDecimal128", args=[FunctionCall(name="SUM", args=[arg]), zero]
+                ),
+                FunctionCall(
+                    name="toDecimal128", args=[FunctionCall(name="COUNT", args=[arg]), zero]
+                ),
+                Literal.number(obml_type.scale),
+            ],
+        )
+
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
             p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)

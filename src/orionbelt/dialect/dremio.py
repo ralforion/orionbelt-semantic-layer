@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal
+from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -13,6 +13,11 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
+
+# Widest decimal every supported engine accepts; the running total needs more
+# integer room than the average it divides down to.
+_SUM_PRECISION = 38
 
 
 @DialectRegistry.register
@@ -33,6 +38,31 @@ class DremioDialect(Dialect):
             supports_ilike=False,
             # ``measure`` is Databricks Metric View specific.
             unsupported_aggregations=["mode", "measure"],
+        )
+
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """Dremio divides decimals exactly, so SUM/COUNT is all it takes.
+
+        Measured: ``CAST(SUM(v) AS DECIMAL(38, 2)) / COUNT(v)`` returns
+        1000000000000000003.000000 where ``AVG(v)`` returns 1e+18. This is the
+        textbook rewrite, and worth noting that it is *not* available on
+        DuckDB, where every division returns DOUBLE whatever the operands.
+
+        The SUM is cast at full precision rather than the result's, because a
+        total needs more integer room than the average it produces: at the
+        result width, a few thousand rows of a large value would overflow the
+        cast before the division ever happened.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        wide = DecimalType(precision=_SUM_PRECISION, scale=obml_type.scale)
+        return BinaryOp(
+            left=Cast(
+                expr=FunctionCall(name="SUM", args=[arg]),
+                type_name=self.render_obml_type(wide),
+            ),
+            op="/",
+            right=FunctionCall(name="COUNT", args=[arg]),
         )
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
