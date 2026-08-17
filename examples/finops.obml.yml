@@ -1,0 +1,698 @@
+# yaml-language-server: $schema=../schema/obml-schema.json
+#
+# FOCUS FinOps Semantic Model for OrionBelt
+#
+# FOCUS is the FinOps Open Cost and Usage Specification (https://focus.finops.org),
+# the FinOps Foundation's vendor-neutral schema for technology cost and usage
+# data. AWS, Microsoft Azure, Google Cloud and OCI all publish FOCUS exports.
+#
+# FOCUS standardises the *physical* schema: column names, data types, allowed
+# values, requirement levels. It does not define metrics, dimensional
+# hierarchies, or how its datasets join. That semantic layer is what this model
+# supplies.
+#
+# Since FOCUS 1.4 the specification is multi-dataset. This model reproduces the
+# shape that matters:
+#
+#     Billing Periods  <-- Charges           (usage, daily grain)
+#           ^
+#           +---------- Invoice Details      (invoice lines, monthly grain)
+#
+# Charges and Invoice Details are independent facts. Nothing joins one to the
+# other; they only meet at Billing Periods. So asking for cost and invoiced
+# amount together is a genuine multi-fact query, and OrionBelt answers it
+# through the composite fact layer rather than fanning the rows out. That is
+# invoice reconciliation, FOCUS 1.4's headline use case.
+#
+# Build the data first:
+#     uv run python scripts/build_finops_duckdb.py
+#
+# Every column below is a standard FOCUS column, and every one is scalar - which
+# is true of the specification itself. Provider-specific extensions (the "x_"
+# columns in a real Google Cloud export) are nested and are deliberately out of
+# scope here.
+
+version: 1.0
+
+settings:
+  defaultNumericDataType: "decimal(18, 2)"
+  defaultDialect: duckdb
+
+dataObjects:
+  # ── Conformed root ─────────────────────────────────────────────────
+  # The only object both facts can reach. JoinGraph.find_common_root()
+  # resolves to this for any cross-fact query.
+
+  Billing Periods:
+    code: billing_periods
+    schema: focus
+    description: One row per billing account per billing period (month).
+    columns:
+      Period Start:
+        code: BillingPeriodStart
+        abstractType: timestamp
+        primaryKey: true
+      Period End:
+        code: BillingPeriodEnd
+        abstractType: timestamp
+      Period Key:
+        code: BillingPeriodKey
+        abstractType: string
+      Period Year:
+        code: BillingPeriodYear
+        abstractType: int
+        numClass: categorical
+      Period Month:
+        code: BillingPeriodMonth
+        abstractType: int
+        numClass: categorical
+      Period Label:
+        code: BillingPeriodLabel
+        abstractType: string
+      Account Id:
+        code: BillingAccountId
+        abstractType: string
+      Account Name:
+        code: BillingAccountName
+        abstractType: string
+      Period Currency:
+        code: BillingCurrency
+        abstractType: string
+
+  # ── Second conformed dimension ─────────────────────────────────────
+  # Provider is the other thing both facts have in common. It has to be its own
+  # object for a cross-fact query to group by it: left as a plain column on each
+  # fact, it would populate on the Charges leg and come back NULL on the
+  # Invoice Details leg, quietly splitting every reconciliation row in two.
+
+  Providers:
+    code: providers
+    schema: focus
+    description: Cloud providers, conformed across both facts.
+    columns:
+      Provider Name:
+        code: ProviderName
+        abstractType: string
+        primaryKey: true
+      Provider Publisher:
+        code: PublisherName
+        abstractType: string
+      Provider Invoice Issuer:
+        code: InvoiceIssuerName
+        abstractType: string
+
+  # ── Contract Commitment dataset ────────────────────────────────────
+
+  Commitments:
+    code: commitments
+    schema: focus
+    description: >-
+      Savings plans, reserved instances and committed use discounts. FOCUS 1.4
+      grew this dataset from 13 to 30 columns; the subset here is what a
+      coverage or utilisation question actually needs.
+    columns:
+      Commitment Id:
+        code: CommitmentDiscountId
+        abstractType: string
+        primaryKey: true
+      Commitment Name:
+        code: CommitmentDiscountName
+        abstractType: string
+      Commitment Type Code:
+        code: CommitmentDiscountType
+        abstractType: string
+      Commitment Category Code:
+        code: CommitmentDiscountCategory
+        abstractType: string
+      Commitment Status Code:
+        code: CommitmentDiscountStatus
+        abstractType: string
+      Commitment Provider:
+        code: ProviderName
+        abstractType: string
+      Commitment Service Category:
+        code: ServiceCategory
+        abstractType: string
+      Commitment Start:
+        code: CommitmentStart
+        abstractType: timestamp
+      Commitment End:
+        code: CommitmentEnd
+        abstractType: timestamp
+      Committed Amount Value:
+        code: CommittedAmount
+        abstractType: float
+      Commitment Currency:
+        code: BillingCurrency
+        abstractType: string
+
+  # ── Charges dataset (fact 1) ───────────────────────────────────────
+
+  Charges:
+    code: charges
+    schema: focus
+    description: >-
+      One row per resource per SKU per charge period. The core FOCUS dataset.
+    columns:
+      Charge Account Id:
+        code: BillingAccountId
+        abstractType: string
+      Charge Account Name:
+        code: BillingAccountName
+        abstractType: string
+      Sub Account Id:
+        code: SubAccountId
+        abstractType: string
+      Sub Account Name:
+        code: SubAccountName
+        abstractType: string
+      Charge Billing Period Start:
+        code: BillingPeriodStart
+        abstractType: timestamp
+      Charge Billing Period End:
+        code: BillingPeriodEnd
+        abstractType: timestamp
+      Charge Period Start:
+        code: ChargePeriodStart
+        abstractType: timestamp
+      Charge Period End:
+        code: ChargePeriodEnd
+        abstractType: timestamp
+      Provider:
+        code: ProviderName
+        abstractType: string
+      Publisher:
+        code: PublisherName
+        abstractType: string
+      Charge Invoice Issuer:
+        code: InvoiceIssuerName
+        abstractType: string
+      Service:
+        code: ServiceName
+        abstractType: string
+      Service Category Code:
+        code: ServiceCategory
+        abstractType: string
+      Sku:
+        code: SkuId
+        abstractType: string
+      Sku Price Id:
+        code: SkuPriceId
+        abstractType: string
+      Resource Id:
+        code: ResourceId
+        abstractType: string
+      Resource Name:
+        code: ResourceName
+        abstractType: string
+      Resource Type Code:
+        code: ResourceType
+        abstractType: string
+      Region Id:
+        code: RegionId
+        abstractType: string
+      Region Name:
+        code: RegionName
+        abstractType: string
+      Availability Zone Code:
+        code: AvailabilityZone
+        abstractType: string
+      Charge Category Code:
+        code: ChargeCategory
+        abstractType: string
+      Charge Class Code:
+        code: ChargeClass
+        abstractType: string
+      Charge Description:
+        code: ChargeDescription
+        abstractType: string
+      Charge Frequency Code:
+        code: ChargeFrequency
+        abstractType: string
+      Pricing Category Code:
+        code: PricingCategory
+        abstractType: string
+      Pricing Quantity Value:
+        code: PricingQuantity
+        abstractType: float
+      Pricing Unit Code:
+        code: PricingUnit
+        abstractType: string
+      Consumed Quantity Value:
+        code: ConsumedQuantity
+        abstractType: float
+      Consumed Unit Code:
+        code: ConsumedUnit
+        abstractType: string
+      List Unit Price Value:
+        code: ListUnitPrice
+        abstractType: float
+        numClass: non-additive
+      Contracted Unit Price Value:
+        code: ContractedUnitPrice
+        abstractType: float
+        numClass: non-additive
+      List Cost Value:
+        code: ListCost
+        abstractType: float
+      Contracted Cost Value:
+        code: ContractedCost
+        abstractType: float
+      Billed Cost Value:
+        code: BilledCost
+        abstractType: float
+      Effective Cost Value:
+        code: EffectiveCost
+        abstractType: float
+      Charge Currency:
+        code: BillingCurrency
+        abstractType: string
+      Charge Commitment Id:
+        code: CommitmentDiscountId
+        abstractType: string
+      Charge Commitment Type:
+        code: CommitmentDiscountType
+        abstractType: string
+      Charge Commitment Category:
+        code: CommitmentDiscountCategory
+        abstractType: string
+      Charge Commitment Status:
+        code: CommitmentDiscountStatus
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Billing Periods
+        columnsFrom:
+          - Charge Billing Period Start
+        columnsTo:
+          - Period Start
+      - joinType: many-to-one
+        joinTo: Commitments
+        columnsFrom:
+          - Charge Commitment Id
+        columnsTo:
+          - Commitment Id
+      - joinType: many-to-one
+        joinTo: Providers
+        columnsFrom:
+          - Provider
+        columnsTo:
+          - Provider Name
+
+  # ── Invoice Detail dataset (fact 2) ────────────────────────────────
+
+  Invoice Details:
+    code: invoice_details
+    schema: focus
+    description: >-
+      One row per invoice line. Added in FOCUS 1.4 to close the loop from
+      commitment to consumption to invoice. Independent of Charges: it shares
+      only the billing period, which is precisely why reconciling the two is a
+      multi-fact query.
+    columns:
+      Invoice Id:
+        code: InvoiceId
+        abstractType: string
+      Invoice Line Number:
+        code: InvoiceLineNumber
+        abstractType: int
+        numClass: categorical
+      Invoice Issuer:
+        code: InvoiceIssuerName
+        abstractType: string
+      Invoice Provider:
+        code: ProviderName
+        abstractType: string
+      Invoice Account Id:
+        code: BillingAccountId
+        abstractType: string
+      Invoice Billing Period Start:
+        code: BillingPeriodStart
+        abstractType: timestamp
+      Invoice Billing Period End:
+        code: BillingPeriodEnd
+        abstractType: timestamp
+      Invoice Line Detail:
+        code: InvoiceLineDetail
+        abstractType: string
+      Invoiced Amount Value:
+        code: InvoicedAmount
+        abstractType: float
+      Invoice Tax Value:
+        code: InvoiceTaxAmount
+        abstractType: float
+      Invoice Total Value:
+        code: InvoiceTotalAmount
+        abstractType: float
+      Invoice Currency:
+        code: BillingCurrency
+        abstractType: string
+    joins:
+      - joinType: many-to-one
+        joinTo: Billing Periods
+        columnsFrom:
+          - Invoice Billing Period Start
+        columnsTo:
+          - Period Start
+      - joinType: many-to-one
+        joinTo: Providers
+        columnsFrom:
+          - Invoice Provider
+        columnsTo:
+          - Provider Name
+
+# ── Dimensions ───────────────────────────────────────────────────────
+
+dimensions:
+  Billing Period:
+    dataObject: Billing Periods
+    column: Period Label
+    resultType: string
+    description: Human-readable billing month, e.g. "March 2026".
+  Billing Month:
+    dataObject: Billing Periods
+    column: Period Start
+    resultType: timestamp
+    description: Billing period start, for time-series and period-over-period.
+  Billing Account:
+    dataObject: Billing Periods
+    column: Account Name
+    resultType: string
+
+  Charge Date:
+    dataObject: Charges
+    column: Charge Period Start
+    resultType: timestamp
+    description: Start of the charge period. Daily grain in this dataset.
+  Provider:
+    dataObject: Providers
+    column: Provider Name
+    resultType: string
+    synonyms: [cloud, vendor, cloud provider]
+    description: Conformed across Charges and Invoice Details, so it survives a cross-fact query.
+  Publisher:
+    dataObject: Providers
+    column: Provider Publisher
+    resultType: string
+  Service:
+    dataObject: Charges
+    column: Service
+    resultType: string
+  Service Category:
+    dataObject: Charges
+    column: Service Category Code
+    resultType: string
+    description: FOCUS ServiceCategory, e.g. Compute, Storage, Databases.
+  Sub Account:
+    dataObject: Charges
+    column: Sub Account Name
+    resultType: string
+    synonyms: [project, subscription, account]
+    description: The cost-allocation unit - AWS account, Azure subscription, Google Cloud project.
+  Region:
+    dataObject: Charges
+    column: Region Name
+    resultType: string
+  Resource:
+    dataObject: Charges
+    column: Resource Name
+    resultType: string
+  Resource Type:
+    dataObject: Charges
+    column: Resource Type Code
+    resultType: string
+  Sku Id:
+    dataObject: Charges
+    column: Sku
+    resultType: string
+  Charge Category:
+    dataObject: Charges
+    column: Charge Category Code
+    resultType: string
+    description: FOCUS ChargeCategory, e.g. Usage, Purchase, Tax, Credit.
+  Pricing Category:
+    dataObject: Charges
+    column: Pricing Category Code
+    resultType: string
+    description: FOCUS PricingCategory, e.g. Standard, Committed, Dynamic.
+  Consumed Unit:
+    dataObject: Charges
+    column: Consumed Unit Code
+    resultType: string
+
+  Commitment:
+    dataObject: Commitments
+    column: Commitment Name
+    resultType: string
+  Commitment Type:
+    dataObject: Commitments
+    column: Commitment Type Code
+    resultType: string
+    description: Savings Plan, Reserved Instance, Committed Use Discount.
+  Commitment Category:
+    dataObject: Commitments
+    column: Commitment Category Code
+    resultType: string
+    description: FOCUS CommitmentDiscountCategory - Spend or Usage.
+
+  Invoice:
+    dataObject: Invoice Details
+    column: Invoice Id
+    resultType: string
+  Invoice Issuer:
+    dataObject: Invoice Details
+    column: Invoice Issuer
+    resultType: string
+
+# ── Measures ─────────────────────────────────────────────────────────
+#
+# Monetary measures are declared at the source columns' precision,
+# decimal(18, 6), and rely on `format` for display. This is deliberate: cloud
+# billing has genuine sub-cent line items (AWS Lambda bills GB-seconds at
+# ~0.0000167 each), so rounding every row to 2dp before aggregating loses real
+# money at scale. Declare the compute precision here; round for the reader.
+
+measures:
+  # Charges fact
+  Billed Cost:
+    columns:
+      - dataObject: Charges
+        column: Billed Cost Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    synonyms: [spend, cost, charges]
+    description: Cash cost as charged by the provider.
+
+  Effective Cost:
+    columns:
+      - dataObject: Charges
+        column: Effective Cost Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    synonyms: [amortized cost, true cost]
+    description: >-
+      Cost with commitment purchases amortised over the period they cover. The
+      number a FinOps practitioner uses for showback and unit economics.
+
+  List Cost:
+    columns:
+      - dataObject: Charges
+        column: List Cost Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    description: What the usage would have cost at published on-demand rates.
+
+  Contracted Cost:
+    columns:
+      - dataObject: Charges
+        column: Contracted Cost Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    description: Cost at negotiated rates, before commitment amortisation.
+
+  Consumed Quantity:
+    columns:
+      - dataObject: Charges
+        column: Consumed Quantity Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 4)"
+    format: "#,##0.0000"
+
+  Resource Count:
+    columns:
+      - dataObject: Charges
+        column: Resource Id
+    resultType: int
+    aggregation: count_distinct
+    dataType: bigint
+    format: "#,##0"
+
+  Total Effective Cost:
+    columns:
+      - dataObject: Charges
+        column: Effective Cost Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    grain:
+      mode: FIXED
+    description: Effective cost across all dimensions, for share-of-spend.
+
+  # Invoice Details fact
+  Invoiced Amount:
+    columns:
+      - dataObject: Invoice Details
+        column: Invoiced Amount Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    description: Net amount on the invoice, before tax.
+
+  Invoice Tax:
+    columns:
+      - dataObject: Invoice Details
+        column: Invoice Tax Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+
+  Invoice Total:
+    columns:
+      - dataObject: Invoice Details
+        column: Invoice Total Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+
+  # Commitments
+  Committed Amount:
+    columns:
+      - dataObject: Commitments
+        column: Committed Amount Value
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    description: Contract value of the commitment over its whole term.
+
+# ── Metrics ──────────────────────────────────────────────────────────
+
+metrics:
+  Effective Savings Rate:
+    expression: "1 - {[Effective Cost]} / {[List Cost]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: >-
+      Share of on-demand list price avoided through negotiated rates and
+      commitments. The headline FinOps rate-optimisation metric.
+
+  Commitment Savings Rate:
+    expression: "1 - {[Effective Cost]} / {[Contracted Cost]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Savings attributable to commitments alone, excluding negotiated rates.
+
+  Negotiated Discount Rate:
+    expression: "1 - {[Contracted Cost]} / {[List Cost]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: Savings from negotiated rates alone, before commitments.
+
+  Unit Cost:
+    expression: "{[Effective Cost]} / {[Consumed Quantity]}"
+    dataType: "decimal(18, 6)"
+    format: "#,##0.000000"
+    description: Effective cost per consumed unit. Only meaningful within one Consumed Unit.
+
+  Cost per Resource:
+    expression: "{[Effective Cost]} / {[Resource Count]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+
+  Pct of Total Spend:
+    expression: "{[Effective Cost]} / {[Total Effective Cost]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+
+  Commitment Utilization:
+    expression: "{[Effective Cost]} / {[Committed Amount]}"
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
+    description: >-
+      Amortised cost drawn against the commitment's contract value. Under 100%
+      means committed spend is going to waste.
+
+  # ── Cross-fact: the reconciliation pair ───────────────────────────
+  # Billed Cost lives on Charges, Invoiced Amount on Invoice Details. Nothing
+  # joins those two objects, so these metrics force the composite fact layer.
+  # A BI tool that joins both facts to the billing period in one query instead
+  # multiplies charge rows by invoice lines and silently overstates both.
+
+  Invoice Variance:
+    expression: "{[Billed Cost]} - {[Invoiced Amount]}"
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    description: >-
+      Charged minus invoiced. Should be near zero; a drift means credits,
+      rounding or late-landing usage. FOCUS 1.4's invoice reconciliation case.
+
+  Invoice Variance Pct:
+    expression: "({[Billed Cost]} - {[Invoiced Amount]}) / {[Invoiced Amount]}"
+    dataType: "decimal(8, 6)"
+    format: "0.0000%"
+
+  # ── Cumulative ────────────────────────────────────────────────────
+  Running Effective Cost:
+    type: cumulative
+    measure: Effective Cost
+    timeDimension: Charge Date
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    description: Running total of amortised cost over time.
+
+  Rolling 3m Effective Cost:
+    type: cumulative
+    measure: Effective Cost
+    timeDimension: Charge Date
+    cumulativeType: sum
+    window: 3
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    description: Three-month rolling spend, the usual smoothing for a spend trend.
+
+  # ── Period over period ────────────────────────────────────────────
+  Effective Cost MoM Change:
+    type: period_over_period
+    expression: "{[Effective Cost]}"
+    periodOverPeriod:
+      timeDimension: Charge Date
+      grain: month
+      offsetGrain: month
+      comparison: difference
+    dataType: "decimal(18, 2)"
+    format: "#,##0.00"
+    description: Absolute month-over-month spend change. The anomaly-detection metric.
+
+  Effective Cost MoM Growth:
+    type: period_over_period
+    expression: "{[Effective Cost]}"
+    periodOverPeriod:
+      timeDimension: Charge Date
+      grain: month
+      offsetGrain: month
+      comparison: percentChange
+    dataType: "decimal(5, 4)"
+    format: "0.00%"
