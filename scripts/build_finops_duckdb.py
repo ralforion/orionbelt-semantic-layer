@@ -18,6 +18,17 @@ Only standard FOCUS columns are generated - every column here is scalar, which
 is true of the specification itself. Provider-specific extensions (the ``x_``
 columns in a real Google Cloud export) are nested and are not modelled here.
 
+The dataset is written as **raw JSONL first**, one JSON object per line under
+``examples/finops_data/``, and only then loaded into DuckDB. That ordering is
+the point: a FOCUS export is a file you receive, not a table someone hands you,
+and the files stay on disk afterwards so they can be opened, grepped and diffed
+before anything is modelled.
+
+``charges.jsonl`` carries ``Tags`` as a **nested JSON object**, which is what a
+real export looks like. The load flattens it back to JSON text so the model's
+``json_value`` calls can read it; keeping it a DuckDB STRUCT would need the
+nested-column support that does not exist yet.
+
 Run:
     uv run python scripts/build_finops_duckdb.py
 
@@ -27,8 +38,11 @@ The generated .duckdb file is gitignored and rebuilt on demand, matching how
 
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -38,6 +52,12 @@ import duckdb
 # caller's working directory.
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "examples" / "finops.duckdb"
+# Raw export files, kept after the load so they can be inspected.
+DATA_DIR = REPO / "examples" / "finops_data"
+# A handful of pretty-printed charge records, committed so the shape of the
+# export is visible in the repository without running the generator. The full
+# JSONL is 20 MB and is gitignored.
+SAMPLE = REPO / "examples" / "finops_charges_sample.json"
 # Database is the domain (finops), schema is the specification the tables
 # conform to (focus). Keeping them distinct also avoids DuckDB refusing a schema
 # whose name collides with the catalog name taken from the file.
@@ -110,11 +130,50 @@ SUB_ACCOUNTS = [
     ("sub-1005", "corp-shared-services"),
 ]
 
+# FOCUS defines Tags as a standard key-value column. Real exports carry it as
+# JSON (Azure), a MAP (Databricks) or an ARRAY<STRUCT> (Google Cloud); JSON is
+# the shape the portable json_value catalog entry reads, so that is what the
+# generator writes. Tags are keyed off the sub-account so cost allocation by
+# team actually reconciles with allocation by sub-account.
+SUB_ACCOUNT_TAGS = {
+    "sub-1001": {"team": "platform", "env": "prod", "cost_center": "cc-1200"},
+    "sub-1002": {"team": "platform", "env": "staging", "cost_center": "cc-1200"},
+    "sub-1003": {"team": "data", "env": "prod", "cost_center": "cc-1310"},
+    "sub-1004": {"team": "ml", "env": "dev", "cost_center": "cc-1450"},
+    "sub-1005": {"team": "shared", "env": "prod", "cost_center": "cc-1000"},
+}
+
+# A slice of rows carries no tags at all. Untagged spend is the number a FinOps
+# practitioner actually chases, so a showcase that tags everything hides the
+# one finding the query exists to surface.
+UNTAGGED_RATE = 0.12
+
 BILLING_ACCOUNT_ID = "acct-0001"
 BILLING_ACCOUNT_NAME = "Contoso Group"
 
 # Six months of billing periods.
 PERIODS = [(2026, m) for m in range(3, 9)]
+
+
+def _stable_id(*parts: str) -> int:
+    """A five-digit id derived from *parts*, stable across processes.
+
+    Not ``hash()``: Python salts string hashing per process unless
+    PYTHONHASHSEED is pinned, so the same provider/service/region produced a
+    different SKU on every run. That made the dataset irreproducible and, since
+    the generator also rewrites the committed sample, dirtied the checkout
+    every time the notebook was run.
+    """
+    digest = hashlib.sha256("\x00".join(parts).encode()).digest()
+    return int.from_bytes(digest[:4], "big") % 90000 + 10000
+
+
+def tags_for(sub_account_id: str) -> str | None:
+    """The FOCUS Tags value for a sub-account, or None for an untagged row."""
+    if random.random() < UNTAGGED_RATE:
+        return None
+    tags = SUB_ACCOUNT_TAGS.get(sub_account_id)
+    return json.dumps(tags, separators=(",", ":")) if tags else None
 
 
 def month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -198,7 +257,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                         f"-{region_id}-{r:02d}"
                     ).replace(" ", "")
                     resource_name = f"{service_name} {r + 1}"
-                    sku_id = f"SKU-{abs(hash((provider, service_name, region_id))) % 90000 + 10000}"
+                    sku_id = f"SKU-{_stable_id(provider, service_name, region_id)}"
                     sku_price_id = f"{sku_id}-P{r % 3 + 1}"
 
                     commitment_id = by_provider.get((provider, service_cat))
@@ -280,6 +339,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                                 ctype,
                                 ccat,
                                 cstatus,
+                                tags_for(sub_id),
                             )
                         )
 
@@ -326,6 +386,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                     tax,
                     tax,
                     CURRENCY,
+                    None,
                     None,
                     None,
                     None,
@@ -459,6 +520,123 @@ def build_billing_periods() -> list[tuple]:
 # Build
 # ---------------------------------------------------------------------------
 
+# Column names in DDL order, so a row tuple can be zipped into a JSON object
+# without a second source of truth. A mismatch here surfaces immediately as a
+# DuckDB bind error on load rather than as silently shifted columns.
+COLUMNS: dict[str, tuple[str, ...]] = {
+    "providers": ("ProviderName", "PublisherName", "InvoiceIssuerName"),
+    "billing_periods": (
+        "BillingPeriodStart",
+        "BillingPeriodEnd",
+        "BillingPeriodKey",
+        "BillingPeriodYear",
+        "BillingPeriodMonth",
+        "BillingPeriodLabel",
+        "BillingAccountId",
+        "BillingAccountName",
+        "BillingCurrency",
+    ),
+    "commitments": (
+        "CommitmentDiscountId",
+        "CommitmentDiscountName",
+        "CommitmentDiscountType",
+        "CommitmentDiscountCategory",
+        "CommitmentDiscountStatus",
+        "ProviderName",
+        "ServiceCategory",
+        "CommitmentStart",
+        "CommitmentEnd",
+        "CommittedAmount",
+        "BillingCurrency",
+    ),
+    "charges": (
+        "BillingAccountId",
+        "BillingAccountName",
+        "SubAccountId",
+        "SubAccountName",
+        "BillingPeriodStart",
+        "BillingPeriodEnd",
+        "ChargePeriodStart",
+        "ChargePeriodEnd",
+        "ProviderName",
+        "PublisherName",
+        "InvoiceIssuerName",
+        "ServiceName",
+        "ServiceCategory",
+        "SkuId",
+        "SkuPriceId",
+        "ResourceId",
+        "ResourceName",
+        "ResourceType",
+        "RegionId",
+        "RegionName",
+        "AvailabilityZone",
+        "ChargeCategory",
+        "ChargeClass",
+        "ChargeDescription",
+        "ChargeFrequency",
+        "PricingCategory",
+        "PricingQuantity",
+        "PricingUnit",
+        "ConsumedQuantity",
+        "ConsumedUnit",
+        "ListUnitPrice",
+        "ContractedUnitPrice",
+        "ListCost",
+        "ContractedCost",
+        "BilledCost",
+        "EffectiveCost",
+        "BillingCurrency",
+        "CommitmentDiscountId",
+        "CommitmentDiscountType",
+        "CommitmentDiscountCategory",
+        "CommitmentDiscountStatus",
+        "Tags",
+    ),
+    "invoice_details": (
+        "InvoiceId",
+        "InvoiceLineNumber",
+        "InvoiceIssuerName",
+        "ProviderName",
+        "BillingAccountId",
+        "BillingPeriodStart",
+        "BillingPeriodEnd",
+        "InvoiceLineDetail",
+        "InvoicedAmount",
+        "InvoiceTaxAmount",
+        "InvoiceTotalAmount",
+        "BillingCurrency",
+    ),
+}
+
+
+def _jsonable(value: object) -> object:
+    """Render a row value in the form a real JSON export would carry."""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def write_jsonl(table: str, rows: list[tuple]) -> Path:
+    """Write *rows* as one JSON object per line and return the path.
+
+    ``Tags`` is emitted as a nested object rather than an escaped string: the
+    file is meant to be read by a person, and a real export nests it.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / f"{table}.jsonl"
+    names = COLUMNS[table]
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            record = {n: _jsonable(v) for n, v in zip(names, row, strict=True)}
+            if record.get("Tags"):
+                record["Tags"] = json.loads(record["Tags"])
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
 DDL = f"""
 CREATE SCHEMA IF NOT EXISTS {SCHEMA};
 
@@ -541,7 +719,8 @@ CREATE TABLE {SCHEMA}.charges (
     CommitmentDiscountId        VARCHAR,
     CommitmentDiscountType      VARCHAR,
     CommitmentDiscountCategory  VARCHAR,
-    CommitmentDiscountStatus    VARCHAR
+    CommitmentDiscountStatus    VARCHAR,
+    Tags                        VARCHAR
 );
 
 CREATE TABLE {SCHEMA}.invoice_details (
@@ -579,15 +758,50 @@ def main() -> None:
     # period. Giving it its own table makes it a conformed dimension, so a
     # cross-fact query can group by it; left inline on each fact it would only
     # populate on whichever leg happened to own the column.
-    con.executemany(f"INSERT INTO {SCHEMA}.providers VALUES (?,?,?)", list(PROVIDERS))
-    con.executemany(f"INSERT INTO {SCHEMA}.billing_periods VALUES ({','.join(['?'] * 9)})", periods)
-    con.executemany(
-        f"INSERT INTO {SCHEMA}.commitments VALUES ({','.join(['?'] * 11)})", commitments
-    )
-    con.executemany(f"INSERT INTO {SCHEMA}.charges VALUES ({','.join(['?'] * 41)})", charges)
-    con.executemany(
-        f"INSERT INTO {SCHEMA}.invoice_details VALUES ({','.join(['?'] * 12)})", invoices
-    )
+    tables = {
+        "providers": [tuple(r) for r in PROVIDERS],
+        "billing_periods": periods,
+        "commitments": commitments,
+        "charges": charges,
+        "invoice_details": invoices,
+    }
+
+    # Stage 1: write the raw export. These files are the artefact a user reads.
+    for table, rows in tables.items():
+        path = write_jsonl(table, rows)
+        size = path.stat().st_size
+        print(f"  wrote {path.relative_to(REPO)}  ({len(rows):,} rows, {size / 1024:,.0f} KB)")
+
+    # A committed excerpt, so a reader who has not run the generator can still
+    # see what the raw export looks like.
+    with (DATA_DIR / "charges.jsonl").open(encoding="utf-8") as fh:
+        excerpt = [json.loads(next(fh)) for _ in range(3)]
+    SAMPLE.write_text(json.dumps(excerpt, indent=2) + "\n", encoding="utf-8")
+    print(f"  wrote {SAMPLE.relative_to(REPO)}  (3-record excerpt, committed)")
+
+    # Stage 2: load the export into DuckDB. INSERT ... BY NAME matches on
+    # column name rather than position, so the JSON key order cannot silently
+    # shift a column, and DuckDB casts each value into the declared type.
+    #
+    # Tags is the exception: it is a nested object in the file and has to land
+    # as JSON *text* for the model's json_value calls to read it. A DuckDB
+    # STRUCT would need nested-column support that does not exist yet.
+    print()
+    for table in tables:
+        src = DATA_DIR / f"{table}.jsonl"
+        if table == "charges":
+            projected = ", ".join(
+                "to_json(Tags) AS Tags" if c == "Tags" else c for c in COLUMNS[table]
+            )
+            con.execute(
+                f"INSERT INTO {SCHEMA}.{table} BY NAME "
+                f"SELECT {projected} FROM read_json_auto('{src.as_posix()}')"
+            )
+        else:
+            con.execute(
+                f"INSERT INTO {SCHEMA}.{table} BY NAME "
+                f"SELECT * FROM read_json_auto('{src.as_posix()}')"
+            )
 
     print(f"providers       : {len(PROVIDERS):>8,}")
     print(f"billing_periods : {len(periods):>8,}")
