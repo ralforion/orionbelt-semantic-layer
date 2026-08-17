@@ -271,8 +271,13 @@ class MySQLDialect(Dialect):
         configured when the json group was measured.
         """
         doc = self.compile_expr(args[0])
-        path = _json_path_of(args[1])
-        return f"JSON_UNQUOTE(JSON_EXTRACT({doc}, {self._quote_text(path)}))"
+        path = self._quote_text(_json_path_of(args[1]))
+        # JSON_TYPE supplies the catalog's object/array rule; JSON_UNQUOTE
+        # alone would return the serialized JSON for a non-scalar path.
+        return (
+            f"CASE WHEN JSON_TYPE(JSON_EXTRACT({doc}, {path})) IN ('OBJECT', 'ARRAY') "
+            f"THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT({doc}, {path})) END"
+        )
 
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {"length": "CHAR_LENGTH"}
 

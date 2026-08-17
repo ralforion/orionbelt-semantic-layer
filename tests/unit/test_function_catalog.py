@@ -289,6 +289,41 @@ class TestArityValidation:
         }
 
 
+class TestJsonPaths:
+    """``json_value`` takes a literal path, and the dialects take it apart."""
+
+    def test_an_expression_path_is_rejected(self) -> None:
+        """Without this the call compiles to verbatim SQL, which is worse than
+        an error: it slips past ``expressionMode: portable`` and past a
+        dialect's unsupported-function guard, so a model acquires an engine
+        dependency exactly where it asked not to.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, {Zip})")
+
+    def test_a_wildcard_path_is_rejected(self) -> None:
+        """Filters and wildcards are outside the accepted subset: the engines
+        diverge on them and a catalog entry has to pin one meaning.
+        """
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, '$.*')")
+
+    def test_a_path_without_a_root_is_rejected(self) -> None:
+        assert "INVALID_JSON_PATH" in _errors_for("json_value({Zip}, 'a.b')")
+
+    def test_member_and_subscript_paths_pass(self) -> None:
+        assert _errors_for("json_value({Zip}, '$.a')") == []
+        assert _errors_for("json_value({Zip}, '$.a.b')") == []
+        assert _errors_for("json_value({Zip}, '$.arr[0]')") == []
+
+    def test_the_object_array_rule_is_pinned_by_example(self) -> None:
+        """The rule the engines disagree on is the one that needs examples:
+        DuckDB, Postgres, Snowflake and MySQL return the serialized JSON for a
+        non-scalar path unless guarded.
+        """
+        spec = CATALOG_BY_NAME["json_value"]
+        non_scalar = [e for e in spec.examples if e.expect is None and "zz" not in e.call]
+        assert len(non_scalar) >= 2, "object and array paths must both be pinned"
+
+
 class TestTimeUnits:
     """The date entries take a literal unit, and every dialect switches on it."""
 

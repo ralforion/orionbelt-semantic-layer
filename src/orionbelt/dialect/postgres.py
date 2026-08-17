@@ -77,8 +77,15 @@ class PostgresDialect(Dialect):
         """
         doc = self.compile_expr(args[0])
         segments = _json_path_segments(_json_path_of(args[1]))
-        rendered = "".join(f", {self._quote_text(s)}" for s in segments)
-        return f"json_extract_path_text({doc}::json{rendered})"
+        # An array subscript is just another text element of the path here.
+        rendered = "".join(f", {self._quote_text(value)}" for value, _ in segments)
+        # json_extract_path_text returns the serialized JSON for an object or
+        # array path; json_typeof supplies the catalog's NULL rule.
+        return (
+            f"CASE WHEN json_typeof(json_extract_path({doc}::json{rendered})) "
+            f"IN ('object', 'array') THEN NULL "
+            f"ELSE json_extract_path_text({doc}::json{rendered}) END"
+        )
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])

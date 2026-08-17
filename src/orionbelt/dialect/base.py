@@ -34,7 +34,7 @@ from orionbelt.ast.nodes import (
     UnionAll,
     WindowFunction,
 )
-from orionbelt.models.functions import TIME_UNITS, lookup_function
+from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import TimeGrain, WeekStart
 from orionbelt.models.types import DecimalType, OBMLType
 
@@ -56,7 +56,6 @@ def _is_unit_literal(arg: Expr) -> bool:
     )
 
 
-_JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])*$")
 _JSON_SEGMENT_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)|\[([0-9]+)\]")
 
 
@@ -70,7 +69,7 @@ def _is_json_path_literal(arg: Expr) -> bool:
     return (
         isinstance(arg, Literal)
         and isinstance(arg.value, str)
-        and _JSON_PATH_RE.match(arg.value) is not None
+        and JSON_PATH_RE.match(arg.value) is not None
     )
 
 
@@ -83,13 +82,28 @@ def _json_path_of(arg: Expr) -> str:
     return arg.value
 
 
-def _json_path_segments(path: str) -> list[str]:
-    """``$.a.b[0]`` -> ``["a", "b", "0"]``.
+def _json_path_segments(path: str) -> list[tuple[str, bool]]:
+    """``$.a.b[0]`` -> ``[("a", False), ("b", False), ("0", True)]``.
 
-    Postgres wants the segments as separate arguments and Snowflake wants them
-    dotted, so both need the path taken apart rather than passed through.
+    Each segment carries whether it was an array subscript, because the engines
+    that take a path apart also spell the two kinds differently. Snowflake wants
+    ``a[0]`` and rejects ``a.0`` outright with "Invalid extraction path", so
+    flattening the distinction away is a hard error there, not a wrong value.
     """
-    return [name or index for name, index in _JSON_SEGMENT_RE.findall(path)]
+    return [
+        (index, True) if index else (name, False) for name, index in _JSON_SEGMENT_RE.findall(path)
+    ]
+
+
+def _snowflake_path(path: str) -> str:
+    """``$.a[0].b`` -> ``a[0].b``, Snowflake's extraction-path spelling."""
+    out = ""
+    for value, is_index in _json_path_segments(path):
+        if is_index:
+            out += f"[{value}]"
+        else:
+            out += value if not out else f".{value}"
+    return out
 
 
 class UnsupportedAggregationError(Exception):

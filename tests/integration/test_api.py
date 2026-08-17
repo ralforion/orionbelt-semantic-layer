@@ -92,15 +92,38 @@ class TestDialectsEndpoint:
         )
 
     async def test_dialects_supported_functions(self, client: AsyncClient) -> None:
-        """Every dialect renders the whole catalog today: an entry is admitted
-        only once all eight can answer it. The field earns its place when a
-        later group leaves one behind.
+        """Each dialect lists the catalog minus what it declares unsupported.
+
+        This used to assert every dialect rendered the whole catalog, on the
+        grounds that an entry was admitted only once all eight could answer it,
+        and noted that the field would earn its place when a later group left
+        one behind. The json group did: Dremio has no JSONPath scalar function
+        and Spark SQL has no JSON type function, so neither Dremio nor
+        Databricks can honour ``json_value``.
+
+        Asserting the subtraction rather than a hard-coded list keeps the test
+        honest as further entries are dropped, while still failing if the route
+        stops subtracting at all.
         """
+        import orionbelt.dialect  # noqa: F401  -- triggers registration
+        from orionbelt.dialect.registry import DialectRegistry
         from orionbelt.models.functions import FUNCTION_CATALOG
 
         response = await client.get("/v1/dialects")
-        for info in response.json()["dialects"]:
-            assert info["supported_functions"] == sorted(FUNCTION_CATALOG), info["name"]
+        payload = response.json()["dialects"]
+        assert payload, "no dialects returned"
+        for info in payload:
+            unsupported = {
+                f.lower()
+                for f in DialectRegistry.get(info["name"]).capabilities.unsupported_functions
+            }
+            expected = sorted(n for n in FUNCTION_CATALOG if n.lower() not in unsupported)
+            assert info["supported_functions"] == expected, info["name"]
+
+        by_name = {d["name"]: d for d in payload}
+        assert "json_value" not in by_name["dremio"]["supported_functions"]
+        assert "json_value" not in by_name["databricks"]["supported_functions"]
+        assert "json_value" in by_name["duckdb"]["supported_functions"]
 
     async def test_published_examples_match_the_response_shape(self) -> None:
         """The docs and the GPT action spec show this endpoint's response.

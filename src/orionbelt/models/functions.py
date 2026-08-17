@@ -44,6 +44,7 @@ date/time and json groups.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Function groups, in the order they are presented to readers.
@@ -52,6 +53,14 @@ GROUP_NUMERIC = "numeric"
 GROUP_CONDITIONAL = "conditional"
 GROUP_DATETIME = "datetime"
 GROUP_JSON = "json"
+
+JSON_PATH_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])*$")
+"""The JSONPath subset ``json_value`` accepts: object member access and array
+subscripts rooted at ``$``. Filters and wildcards are excluded because the
+engines diverge on them and a catalog entry has to pin one meaning.
+
+It lives here rather than in a dialect because both the model validator and
+codegen have to agree on it, exactly as they do on :data:`TIME_UNITS`."""
 
 TIME_UNITS: tuple[str, ...] = (
     "year",
@@ -734,6 +743,11 @@ _JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("""json_value('{"o": {"b": "y"}}', '$.o.b')""", "y"),
             FunctionExample("""json_value('{"n": 1}', '$.n')""", "1"),
             FunctionExample("""json_value('{"a": "x"}', '$.zz')""", None),
+            # The object/array rule is the one the engines disagree on, so it
+            # is pinned by example on every one of them rather than asserted.
+            FunctionExample("""json_value('{"o": {"b": "y"}}', '$.o')""", None),
+            FunctionExample("""json_value('{"arr": ["z"]}', '$.arr')""", None),
+            FunctionExample("""json_value('{"arr": ["z"]}', '$.arr[0]')""", "z"),
         ),
     ),
 )

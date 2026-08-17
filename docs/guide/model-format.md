@@ -216,9 +216,10 @@ them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
 Every entry renders on all eight dialects except where noted. `json_value` is
-the first exception: Dremio has no JSONPath scalar function, so it reports the
-call unsupported rather than mis-rendering it, and a model that needs the
-function is pinned to the other seven engines.
+the first exception: Dremio has no JSONPath scalar function and Spark SQL has no
+JSON type function, so Dremio and Databricks report the call unsupported rather
+than meaning something different there. A model that needs it is pinned to the
+other six engines.
 
 | Signature | Result | Pinned meaning |
 |---|---|---|
@@ -258,11 +259,25 @@ object member access and array subscripts rooted at `$` — `$.a`, `$.a.b`,
 `$.a[0]`. A non-literal path falls through to the pass-through path, where the
 call is emitted as written.
 
-The scalar comes back as a string, so `1` reads as `'1'`. ClickHouse is the one
-deviation from the NULL rule: it returns the empty string for an absent path, so
-the call is wrapped in `nullIf(..., '')`. That restores NULL for the common case
-but cannot distinguish an absent path from a genuine empty-string value — both
-are NULL there.
+The scalar comes back as a string, so `1` reads as `'1'`.
+
+A path resolving to an **object or array** is NULL, and that rule is enforced
+rather than inherited: DuckDB, Postgres, Snowflake and MySQL all return the
+*serialized JSON* for a non-scalar path, so each is wrapped in a type guard
+(`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`). BigQuery and ClickHouse
+already answer NULL. Reach an array element with a subscript instead —
+`json_value(x, '$.arr[0]')`.
+
+ClickHouse is the one remaining deviation: it returns the empty string for an
+absent path, so the call is wrapped in `nullIf(..., '')`. That restores NULL for
+the common case but cannot distinguish an absent path from a genuine
+empty-string value — both are NULL there.
+
+A path that is not a literal from the accepted subset is rejected with
+`INVALID_JSON_PATH`. Without that check the call would still compile, falling
+through to the pass-through path and emitting verbatim SQL, which would slip
+past both `expressionMode: portable` and a dialect's unsupported-function
+guard.
 
 The date/time entries take a **literal unit** from a closed vocabulary — `year`,
 `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second` — and it has to be

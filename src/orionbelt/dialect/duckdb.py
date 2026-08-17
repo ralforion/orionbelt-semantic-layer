@@ -55,8 +55,13 @@ class DuckDBDialect(Dialect):
         so ``json_extract_string`` is the one that matches the catalog.
         """
         doc = self.compile_expr(args[0])
-        path = _json_path_of(args[1])
-        return f"json_extract_string({doc}, {self._quote_text(path)})"
+        path = self._quote_text(_json_path_of(args[1]))
+        # json_extract_string returns the serialized JSON for an object or
+        # array path; json_type supplies the catalog's NULL rule.
+        return (
+            f"CASE WHEN json_type({doc}, {path}) IN ('OBJECT', 'ARRAY') "
+            f"THEN NULL ELSE json_extract_string({doc}, {path}) END"
+        )
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])

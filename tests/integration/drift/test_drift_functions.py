@@ -44,6 +44,12 @@ def test_function_compile_matrix(group: str, dialect: str) -> None:
     for spec in _specs_in(group):
         lines.append("")
         lines.append(f"-- {spec.signature}")
+        # An entry the dialect declares unsupported is recorded in the snapshot
+        # rather than skipped: the declaration is itself a fact worth diffing,
+        # so silently dropping an engine later shows up as drift.
+        if spec.name.lower() in {f.lower() for f in engine.capabilities.unsupported_functions}:
+            lines.append(f"--   unsupported on {dialect}")
+            continue
         for example in spec.examples:
             ast = parse_expression(tokenize_metric_formula(example.call))
             lines.append(f"--   {example.call} = {example.expect!r}")

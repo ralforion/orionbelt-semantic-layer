@@ -7,7 +7,6 @@ from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
     Dialect,
     DialectCapabilities,
-    _json_path_of,
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
@@ -54,6 +53,11 @@ class DatabricksDialect(Dialect):
             supports_window_filters=False,
             supports_ilike=False,
             supports_group_by_all=True,
+            # Spark SQL has no JSON type function, so the catalog's rule that a
+            # path resolving to an object or array yields NULL cannot be honoured:
+            # get_json_object returns the serialized JSON instead. Reported as
+            # unsupported rather than silently meaning something else here.
+            unsupported_functions=["json_value"],
         )
 
     def quote_identifier(self, name: str) -> str:
@@ -85,17 +89,6 @@ class DatabricksDialect(Dialect):
 
     # Databricks spells the prefix/suffix tests without the underscore
     # (``startswith`` / ``endswith``, Databricks Runtime 10.4 LTS and above).
-    def _render_json_value(self, args: list[Expr]) -> str:
-        """Spark SQL spells it ``get_json_object`` and takes the JSONPath
-        verbatim.
-
-        Not verified against a live warehouse: the Databricks SQL warehouse
-        would not start when the catalog's json group was measured.
-        """
-        doc = self.compile_expr(args[0])
-        path = _json_path_of(args[1])
-        return f"get_json_object({doc}, {self._quote_text(path)})"
-
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
         "ends_with": "ENDSWITH",

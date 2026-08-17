@@ -14,7 +14,7 @@ from orionbelt.models.expressions import (
     find_placeholders,
     find_qualified_refs,
 )
-from orionbelt.models.functions import TIME_UNITS, lookup_function
+from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -902,6 +902,7 @@ class SemanticValidator:
                     )
                 )
         errors.extend(self._check_expression_units(model))
+        errors.extend(self._check_expression_json_paths(model))
         return errors
 
     @staticmethod
@@ -913,6 +914,64 @@ class SemanticValidator:
             if inner in TIME_UNITS:
                 return inner
         return None
+
+    @staticmethod
+    def _json_path_literal(argument: str) -> str | None:
+        """The JSONPath a source argument names, or ``None`` if it names none.
+
+        The accepted subset is object member access and array subscripts rooted
+        at ``$``. Filters and wildcards are excluded because the engines diverge
+        on them and a catalog entry has to pin one meaning.
+        """
+        text = argument.strip()
+        if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+            inner = text[1:-1]
+            if JSON_PATH_RE.match(inner):
+                return inner
+        return None
+
+    def _check_expression_json_paths(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a json call whose path is not a literal the catalog accepts.
+
+        The path cannot be an expression, and for a sharper reason than the
+        time unit: the engines take it *apart* differently. Postgres wants the
+        segments as separate arguments and Snowflake wants array subscripts
+        bracketed, rejecting ``arr.0`` outright. None of that is derivable from
+        a runtime value.
+
+        Without this the call still compiles - codegen falls through to the
+        pass-through path and emits it verbatim - which is worse than an error:
+        it slips past ``expressionMode: portable`` and past a dialect's
+        unsupported-function guard, so a model can acquire an engine dependency
+        precisely where it asked not to.
+        """
+        errors: list[SemanticError] = []
+        for path, subject, expression in self._expression_bodies(model):
+            for call in find_function_calls(expression):
+                spec = lookup_function(call.name)
+                if spec is None or spec.path_argument is None or not spec.accepts(call.arg_count):
+                    continue
+                argument = call.arguments[spec.path_argument]
+                if self._json_path_literal(argument) is not None:
+                    continue
+                errors.append(
+                    SemanticError(
+                        code="INVALID_JSON_PATH",
+                        message=(
+                            f"{subject} calls '{call.name}' with path {argument}, "
+                            f"which is not a literal JSONPath"
+                        ),
+                        path=path,
+                        hint=(
+                            "The path is a quoted literal such as '$.a', '$.a.b' or "
+                            "'$.a[0]': the dialects take it apart differently, so it "
+                            "cannot come from an expression. Filters and wildcards "
+                            "are not supported."
+                        ),
+                        context={"function": spec.name, "path": argument},
+                    )
+                )
+        return errors
 
     def _check_expression_units(self, model: SemanticModel) -> list[SemanticError]:
         """Reject a date/time call whose unit is not one of the catalog's.
