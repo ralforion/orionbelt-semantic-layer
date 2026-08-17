@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import (
@@ -93,6 +94,38 @@ def _json_path_segments(path: str) -> list[tuple[str, bool]]:
     return [
         (index, True) if index else (name, False) for name, index in _JSON_SEGMENT_RE.findall(path)
     ]
+
+
+def _dremio_row_type(path: str, quote: Callable[[str], str]) -> str:
+    """``$.a[0].b`` -> ``ROW("a" LIST(ROW("b" VARCHAR)))``.
+
+    Dremio needs the shape declared up front rather than discovered, and the
+    catalog's literal-path rule is what makes that possible: the type is built
+    from the segments at compile time. Innermost is always VARCHAR, which is
+    what turns a non-scalar into NULL under ``TRY_CONVERT_FROM``.
+
+    Member names are **quoted**. Dremio puts them in identifier position, unlike
+    every other dialect where the path rides inside a string literal, so a
+    member named ``select`` or ``date`` is a parse error unquoted. Measured on a
+    live container: ``ROW(select VARCHAR)`` fails with ``Encountered "select"
+    ... Was expecting <IDENTIFIER>``, while the quoted form returns the value.
+    Quoting a name that is not reserved is harmless.
+    """
+    rendered = "VARCHAR"
+    for value, is_index in reversed(_json_path_segments(path)):
+        rendered = f"LIST({rendered})" if is_index else f"ROW({quote(value)} {rendered})"
+    return rendered
+
+
+def _dremio_access(path: str, quote: Callable[[str], str]) -> str:
+    """``$.a[0].b`` -> ``."a"[0]."b"``, the field walk over the converted row.
+
+    Quoted for the same reason as the row type: these are identifiers.
+    """
+    return "".join(
+        f"[{value}]" if is_index else f".{quote(value)}"
+        for value, is_index in _json_path_segments(path)
+    )
 
 
 def _snowflake_path(path: str) -> str:

@@ -15,3 +15,5 @@ try_variant_get(parse_json('{"o": {"b": "y"}}'), '$.o', 'string');
 try_variant_get(parse_json('{"arr": ["z"]}'), '$.arr', 'string');
 --   json_value('{"arr": ["z"]}', '$.arr[0]') = 'z'
 try_variant_get(parse_json('{"arr": ["z"]}'), '$.arr[0]', 'string');
+--   json_value('{"select": "x"}', '$.select') = 'x'
+try_variant_get(parse_json('{"select": "x"}'), '$.select', 'string');

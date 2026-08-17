@@ -15,3 +15,5 @@ JSON_VALUE('{"o": {"b": "y"}}', '$.o');
 JSON_VALUE('{"arr": ["z"]}', '$.arr');
 --   json_value('{"arr": ["z"]}', '$.arr[0]') = 'z'
 JSON_VALUE('{"arr": ["z"]}', '$.arr[0]');
+--   json_value('{"select": "x"}', '$.select') = 'x'
+JSON_VALUE('{"select": "x"}', '$.select');

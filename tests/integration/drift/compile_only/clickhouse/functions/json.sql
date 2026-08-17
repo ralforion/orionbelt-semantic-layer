@@ -15,3 +15,5 @@ nullIf(JSON_VALUE('{"o": {"b": "y"}}', '$.o'), '');
 nullIf(JSON_VALUE('{"arr": ["z"]}', '$.arr'), '');
 --   json_value('{"arr": ["z"]}', '$.arr[0]') = 'z'
 nullIf(JSON_VALUE('{"arr": ["z"]}', '$.arr[0]'), '');
+--   json_value('{"select": "x"}', '$.select') = 'x'
+nullIf(JSON_VALUE('{"select": "x"}', '$.select'), '');
