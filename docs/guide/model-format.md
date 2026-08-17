@@ -218,7 +218,8 @@ optional argument.
 Every entry renders on all eight dialects. On Databricks `json_value` reads
 through `try_variant_get`, available on Databricks SQL and on Runtime 15.3 or
 above; on Dremio through `TRY_CONVERT_FROM(x AS ROW(...))`, whose row type is
-built from the literal path at compile time.
+built from the literal path at compile time and whose member names are quoted,
+since Dremio is the one dialect that puts them in identifier position.
 
 | Signature | Result | Pinned meaning |
 |---|---|---|

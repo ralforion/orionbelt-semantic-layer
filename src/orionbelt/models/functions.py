@@ -761,6 +761,11 @@ _JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("""json_value('{"o": {"b": "y"}}', '$.o')""", None),
             FunctionExample("""json_value('{"arr": ["z"]}', '$.arr')""", None),
             FunctionExample("""json_value('{"arr": ["z"]}', '$.arr[0]')""", "z"),
+            # A member named for a reserved word. Dremio is the one dialect
+            # that puts path segments in identifier position, where `select`
+            # is a parse error unquoted; everywhere else the path rides inside
+            # a string literal and this is unremarkable.
+            FunctionExample("""json_value('{"select": "x"}', '$.select')""", "x"),
         ),
     ),
 )

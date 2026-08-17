@@ -1315,11 +1315,14 @@ class TestUnsupportedFunction:
         for dialect, names in declared.items():
             unknown = [n for n in names if n not in CATALOG_BY_NAME]
             assert not unknown, f"{dialect} declares unknown function(s) {unknown}"
-        # No dialect drops anything today. Asserted as a property of the
-        # declarations rather than a hard-coded list, so this keeps working
-        # when one does.
-        for dialect, names in declared.items():
-            assert isinstance(names, list), dialect
+        # No dialect drops anything today, and that is the assertion. An
+        # earlier version of this checked only isinstance(names, list), which
+        # would have passed while a shipped dialect quietly dropped a working
+        # entry.
+        assert all(not names for names in declared.values()), (
+            f"a dialect declares a catalog entry unsupported: "
+            f"{ {d: n for d, n in declared.items() if n} }"
+        )
 
     def test_the_api_answers_422_not_500(self) -> None:
         """Every surface that translates the sibling unsupported-* errors has

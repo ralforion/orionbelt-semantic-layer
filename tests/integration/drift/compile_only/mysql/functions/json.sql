@@ -15,3 +15,5 @@ CASE WHEN JSON_TYPE(JSON_EXTRACT('{"o": {"b": "y"}}', '$.o')) IN ('OBJECT', 'ARR
 CASE WHEN JSON_TYPE(JSON_EXTRACT('{"arr": ["z"]}', '$.arr')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT('{"arr": ["z"]}', '$.arr')) END;
 --   json_value('{"arr": ["z"]}', '$.arr[0]') = 'z'
 CASE WHEN JSON_TYPE(JSON_EXTRACT('{"arr": ["z"]}', '$.arr[0]')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT('{"arr": ["z"]}', '$.arr[0]')) END;
+--   json_value('{"select": "x"}', '$.select') = 'x'
+CASE WHEN JSON_TYPE(JSON_EXTRACT('{"select": "x"}', '$.select')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT('{"select": "x"}', '$.select')) END;

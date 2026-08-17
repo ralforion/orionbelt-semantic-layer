@@ -257,5 +257,6 @@ class DremioDialect(Dialect):
         """
         doc = self.compile_expr(args[0])
         path = _json_path_of(args[1])
-        row_type = _dremio_row_type(path)
-        return f"(TRY_CONVERT_FROM({doc} AS {row_type}){_dremio_access(path)})"
+        row_type = _dremio_row_type(path, self.quote_identifier)
+        access = _dremio_access(path, self.quote_identifier)
+        return f"(TRY_CONVERT_FROM({doc} AS {row_type}){access})"

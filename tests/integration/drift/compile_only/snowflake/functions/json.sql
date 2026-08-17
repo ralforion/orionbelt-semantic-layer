@@ -15,3 +15,5 @@ CASE WHEN TYPEOF(GET_PATH(PARSE_JSON('{"o": {"b": "y"}}'), 'o')) IN ('OBJECT', '
 CASE WHEN TYPEOF(GET_PATH(PARSE_JSON('{"arr": ["z"]}'), 'arr')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_EXTRACT_PATH_TEXT('{"arr": ["z"]}', 'arr') END;
 --   json_value('{"arr": ["z"]}', '$.arr[0]') = 'z'
 CASE WHEN TYPEOF(GET_PATH(PARSE_JSON('{"arr": ["z"]}'), 'arr[0]')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_EXTRACT_PATH_TEXT('{"arr": ["z"]}', 'arr[0]') END;
+--   json_value('{"select": "x"}', '$.select') = 'x'
+CASE WHEN TYPEOF(GET_PATH(PARSE_JSON('{"select": "x"}'), 'select')) IN ('OBJECT', 'ARRAY') THEN NULL ELSE JSON_EXTRACT_PATH_TEXT('{"select": "x"}', 'select') END;
