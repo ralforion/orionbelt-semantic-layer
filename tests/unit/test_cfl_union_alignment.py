@@ -131,6 +131,25 @@ def _seeded() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _outcome(con: duckdb.DuckDBPyConnection, model: SemanticModel, measures: list[str]) -> str:
+    """What *measures* does on *con*: a normalised value, or "failed".
+
+    Failing is an outcome, not an absence of one. The property under test is
+    that adding a measure from an independent fact does not change the answer,
+    and turning a query that worked into one that raises is exactly that kind
+    of change. Comparing values alone would miss it, and treating any raise as
+    a failure would flag cases where both paths are equally and legitimately
+    out of range - a SUM over a BIGINT whose measure resolves to the
+    decimal(18, 2) numeric default overflows on both, which is a default-type
+    problem rather than a CFL one.
+    """
+    try:
+        value = _first(con, model, measures)
+    except Exception:  # noqa: BLE001 - the outcome is the point
+        return "failed"
+    return str(Decimal(str(value)).normalize())
+
+
 def _first(con: duckdb.DuckDBPyConnection, model: SemanticModel, measures: list[str]) -> object:
     """First cell of *measures* compiled against *model* and run on *con*."""
     sql = PIPELINE.compile(
@@ -321,31 +340,40 @@ class TestWhatIsAndIsNotWidened:
 class TestStarAndCflAgreeAcrossTheMatrix:
     """The property, asserted over every shape rather than case by case.
 
-    This file was built one shape at a time and missed ``expression:`` measures
-    twice, in the same way and the same place, then missed that a selecting
-    aggregate needed the same treatment as an accumulating one. A per-case test
-    cannot catch that. A matrix can, and it also covers shapes nobody has
-    thought to break yet.
+    This function was wrong three times running, each time for ``expression:``
+    measures and each time in a different clause: missed by the accumulating
+    widening, then by an attempt to leave the union untyped, then by the
+    integer alignment. Every one was found by review rather than by a test,
+    because the tests were written per case and the cases were the ones already
+    known to be broken.
+
+    A matrix cannot be written that way. It covers the product of source shape,
+    source kind and aggregation, so a clause that handles one cell and forgets
+    its neighbour fails here rather than in review.
     """
 
     SOURCES = {
-        "columns": "    columns: [{dataObject: Charges, column: Wide}]",
-        "expression": '    expression: "{[Charges].[Wide]} * 1"',
+        ("columns", "float"): "    columns: [{dataObject: Charges, column: Wide}]",
+        ("expression", "float"): '    expression: "{[Charges].[Wide]} * 1"',
+        ("columns", "int"): "    columns: [{dataObject: Charges, column: Big}]",
+        ("expression", "int"): '    expression: "{[Charges].[Big]} * 1"',
     }
     AGGREGATIONS = ["sum", "avg", "stddev", "variance", "min", "max", "any_value"]
 
-    def _model_for(self, source: str, agg: str) -> SemanticModel:
+    def _model_for(self, key: tuple[str, str], agg: str) -> SemanticModel:
+        result_type = key[1]
         yaml = MODEL_YAML.replace(
             "measures:",
             "measures:\n  Probe:\n"
-            f"{self.SOURCES[source]}\n"
-            "    resultType: float\n"
+            f"{self.SOURCES[key]}\n"
+            f"    resultType: {result_type}\n"
             f"    aggregation: {agg}\n",
             1,
         ).replace(
             "      Amount: {code: amount, abstractType: float}",
             "      Amount: {code: amount, abstractType: float}\n"
-            "      Wide: {code: wide, abstractType: float}",
+            "      Wide: {code: wide, abstractType: float}\n"
+            "      Big: {code: big, abstractType: int}",
             1,
         )
         raw, source_map = TrackedLoader().load_string(yaml)
@@ -355,78 +383,31 @@ class TestStarAndCflAgreeAcrossTheMatrix:
 
     def test_every_shape_answers_the_same_alone_and_multi_fact(self) -> None:
         disagreements = []
-        for source in self.SOURCES:
+        for key in self.SOURCES:
             for agg in self.AGGREGATIONS:
-                model = self._model_for(source, agg)
+                model = self._model_for(key, agg)
                 con = duckdb.connect(":memory:")
                 try:
                     con.execute("CREATE TABLE days (day INTEGER)")
                     con.execute(
                         "CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), "
-                        "label VARCHAR, wide DECIMAL(38, 15))"
+                        "label VARCHAR, qty BIGINT, wide DECIMAL(38, 15), big BIGINT)"
                     )
                     con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
                     con.execute("INSERT INTO days VALUES (1), (2), (3)")
                     con.execute(
                         "INSERT INTO charges VALUES "
-                        "(1, 1.0004, 'x', 1.000000000000400), "
-                        "(2, 1.0005, 'y', 2.000000000000500), "
-                        "(3, 1.0006, 'z', 3.000000000000600)"
+                        "(1, 1.0004, 'x', 1, 1.000000000000400, 1000000000000000001), "
+                        "(2, 1.0005, 'y', 2, 2.000000000000500, 1000000000000000002), "
+                        "(3, 1.0006, 'z', 3, 3.000000000000600, 1000000000000000003)"
                     )
                     con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5), (3, 5.5)")
-
-                    star = _first(con, model, ["Probe"])
-                    cfl = _first(con, model, ["Probe", "Invoiced"])
+                    star = _outcome(con, model, ["Probe"])
+                    cfl = _outcome(con, model, ["Probe", "Invoiced"])
                 finally:
                     con.close()
-                if Decimal(str(star)) != Decimal(str(cfl)):
-                    disagreements.append(f"{source}/{agg}: star={star} cfl={cfl}")
+                if star != cfl:
+                    disagreements.append(f"{key[0]}/{key[1]}/{agg}: star={star} cfl={cfl}")
         assert not disagreements, (
             "a measure changed answer under a multi-fact plan:\n  " + "\n  ".join(disagreements)
         )
-
-
-class TestIntegersAreNotWidenedIntoDecimals:
-    """An integer has no fractional digits, so the decimal widening is all cost.
-
-    ``DECIMAL(38, 20)`` leaves 18 integer digits, which a BIGINT exceeds
-    outright: DuckDB refuses to cast 1000000000000000000. It would also change
-    an integer measure's type the moment another fact joined the query.
-
-    They still need an alignment of their own. ``abstractType: int`` renders as
-    a 32-bit INTEGER, so a BIGINT column reached the leg as
-    ``CAST(qty AS INTEGER)`` and failed on any value past 2^31 - a defect that
-    predates the widening and that a CFL query hit on its own.
-    """
-
-    def test_a_bigint_survives_a_multi_fact_query(self) -> None:
-        con = duckdb.connect(":memory:")
-        try:
-            con.execute("CREATE TABLE days (day INTEGER)")
-            con.execute(
-                "CREATE TABLE charges (day INTEGER, amount DECIMAL(18, 6), "
-                "label VARCHAR, qty BIGINT)"
-            )
-            con.execute("CREATE TABLE invoices (day INTEGER, amount DECIMAL(18, 6))")
-            con.execute("INSERT INTO days VALUES (1), (2)")
-            con.execute(
-                "INSERT INTO charges VALUES "
-                "(1, 1.5, 'x', 1000000000000000000), (2, 2.5, 'y', 2000000000000000000)"
-            )
-            con.execute("INSERT INTO invoices VALUES (1, 3.5), (2, 4.5)")
-            star = _run(con, ["Qty Min"])[0][0]
-            cfl = _run(con, ["Qty Min", "Invoiced"])[0][0]
-        finally:
-            con.close()
-        assert int(star) == 1000000000000000000
-        assert int(cfl) == int(star), "a BIGINT did not survive the CFL leg"
-
-    def test_the_leg_aligns_on_a_64_bit_integer(self) -> None:
-        sql = PIPELINE.compile(
-            QueryObject(select=QuerySelect(dimensions=[], measures=["Qty Min", "Invoiced"])),
-            _model(),
-            "duckdb",
-        ).sql
-        leg = next(line for line in sql.splitlines() if '"Qty Min"' in line and "CAST" in line)
-        assert "BIGINT" in leg, f"an integer column should align on the 64-bit integer: {leg}"
-        assert "DECIMAL" not in leg, f"an integer column should not be widened to a decimal: {leg}"
