@@ -71,13 +71,17 @@ _api_base: str = ""
 _api_process: subprocess.Popen | None = None  # type: ignore[type-arg]
 
 
-def create_finops_database(db_path: str = "finops.duckdb") -> None:
+def create_finops_database() -> None:
     """Build the FOCUS FinOps DuckDB by running the repo's generator.
 
     Unlike ``create_tpch_database`` this shells out rather than inlining the
     DDL: the generator is committed at ``scripts/build_finops_duckdb.py`` and
     is the single source of truth for the dataset, so duplicating it here would
     be one more thing to drift.
+
+    Takes no path. It used to accept ``db_path`` and ignore it, which is worse
+    than not offering the choice: the generator writes to a fixed location and
+    a caller passing something else silently got the default.
     """
     repo_root = os.path.abspath("..")
     script = os.path.join(repo_root, "scripts", "build_finops_duckdb.py")

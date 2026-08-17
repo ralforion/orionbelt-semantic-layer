@@ -38,6 +38,7 @@ The generated .duckdb file is gitignored and rebuilt on demand, matching how
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from datetime import date, datetime, timedelta
@@ -154,6 +155,19 @@ BILLING_ACCOUNT_NAME = "Contoso Group"
 PERIODS = [(2026, m) for m in range(3, 9)]
 
 
+def _stable_id(*parts: str) -> int:
+    """A five-digit id derived from *parts*, stable across processes.
+
+    Not ``hash()``: Python salts string hashing per process unless
+    PYTHONHASHSEED is pinned, so the same provider/service/region produced a
+    different SKU on every run. That made the dataset irreproducible and, since
+    the generator also rewrites the committed sample, dirtied the checkout
+    every time the notebook was run.
+    """
+    digest = hashlib.sha256("\x00".join(parts).encode()).digest()
+    return int.from_bytes(digest[:4], "big") % 90000 + 10000
+
+
 def tags_for(sub_account_id: str) -> str | None:
     """The FOCUS Tags value for a sub-account, or None for an untagged row."""
     if random.random() < UNTAGGED_RATE:
@@ -243,7 +257,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                         f"-{region_id}-{r:02d}"
                     ).replace(" ", "")
                     resource_name = f"{service_name} {r + 1}"
-                    sku_id = f"SKU-{abs(hash((provider, service_name, region_id))) % 90000 + 10000}"
+                    sku_id = f"SKU-{_stable_id(provider, service_name, region_id)}"
                     sku_price_id = f"{sku_id}-P{r % 3 + 1}"
 
                     commitment_id = by_provider.get((provider, service_cat))
