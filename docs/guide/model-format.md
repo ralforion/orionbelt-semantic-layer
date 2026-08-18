@@ -1198,12 +1198,22 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     | dialect | `AVG` over a 64-bit value | what OBSL emits |
     | --- | --- | --- |
     | PostgreSQL, MySQL, Snowflake | already exact | plain `AVG` |
-    | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))` |
-    | Dremio | DOUBLE, drifts | `CAST(SUM(x) AS DECIMAL(38, s)) / COUNT(x)` |
-    | Databricks | drifts | `CAST(SUM(x) AS DECIMAL(38, s)) / COUNT(x)` |
-    | ClickHouse | Float64, drifts | `divideDecimal(SUM(x), COUNT(x), s)` |
+    | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))`, BIGNUMERIC above scale 9 |
+    | Dremio, Databricks | drift | `CAST(SUM(CAST(x AS DECIMAL(38, 0))) AS DECIMAL(38, s)) / COUNT(x)` |
+    | ClickHouse | Float64, drifts | `divideDecimal(SUM(toDecimal128(x, 0)), toDecimal128(COUNT(x), 0), s)`, guarded against a zero count |
     | DuckDB | DOUBLE, drifts | plain `AVG` - no exact route exists |
-    
+
+    **The inner cast is the load-bearing part** of the Dremio and Databricks
+    form, and of the ClickHouse one. `SUM` over a 64-bit column accumulates in
+    64 bits, so widening afterwards only widens a number that has already
+    overflowed: two rows of 9000000000000000000 summed to
+    -446744073709551616 on Dremio and ClickHouse, silently, and raise
+    `ARITHMETIC_OVERFLOW` on Databricks. Casting the argument first is what
+    makes the running total exact.
+
+    The divisor is also NULLIF-guarded, as every division is - see
+    [Division by Zero](#division-by-zero) above.
+
     The rewritten result also carries a wider type than the `decimal(18, 2)`
     default, since an exact average of 64-bit values needs 19 integer digits.
     An explicit `dataType` is respected as declared.
