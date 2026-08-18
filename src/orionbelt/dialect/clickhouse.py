@@ -42,6 +42,8 @@ class ClickHouseDialect(Dialect):
         "boolean": "Bool",
     }
 
+    unions_resolve_leg_types = False
+
     def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over Int64 accumulates in Int64 here, and wraps.
 
@@ -253,9 +255,16 @@ class ClickHouseDialect(Dialect):
         if not nullable.startswith("Nullable("):
             nullable = f"Nullable({resolved_type})"
         inner_sql = self.compile_expr(inner)
-        # Detect Decimal(P, S) targets and round to scale S first.
+        # Detect Decimal(P, S) targets and round to scale S first. A NULL
+        # literal is exempt: rounding it is a no-op - measured, ``round(NULL,
+        # 20)`` is NULL typed ``Nullable(Nothing)`` and casts cleanly - and
+        # every CFL NULL pad carries a decimal type, so the rule as written put
+        # ``round(NULL, 20)`` in every union leg for nothing.
         upper = resolved_type.upper()
-        if upper.startswith("DECIMAL") or upper.startswith("NULLABLE(DECIMAL"):
+        is_null_literal = isinstance(inner, Literal) and inner.value is None
+        if not is_null_literal and (
+            upper.startswith("DECIMAL") or upper.startswith("NULLABLE(DECIMAL")
+        ):
             scale_token = resolved_type.split(",")[-1].rstrip(") ")
             scale = int(scale_token.strip())
             inner_sql = f"round({inner_sql}, {scale})"

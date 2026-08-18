@@ -588,12 +588,13 @@ class CFLPlanner:
                             )
                             leg_builder.select(AliasedExpr(expr=null_expr, alias=alias))
                 elif m.name in this_measure_names:
-                    # Cast the own-measure column to the same type used for
-                    # NULL padding in sibling legs, so every leg's column
-                    # agrees on a single type. Without this, strict-typed
-                    # engines (ClickHouse with UNION ALL) produce a Variant
-                    # type that SUM can't aggregate ("ILLEGAL_TYPE_OF_ARGUMENT
-                    # Variant(Decimal, Float64)").
+                    # Whether this leg casts the measure it owns is
+                    # ``resolve_owning_leg_cast_type``'s decision, and it turns
+                    # on whether the engine resolves a union's legs to a common
+                    # type. This comment used to assert the cast unconditional;
+                    # #313 made it conditional and left the claim standing,
+                    # which is how ClickHouse spent a month unable to run a CFL
+                    # query while every snapshot stayed green (#339).
                     own_expr: Expr = self._unwrap_aggregation(
                         replace(m, expression=conformed_exprs[m.name])
                         if m.name in conformed_exprs

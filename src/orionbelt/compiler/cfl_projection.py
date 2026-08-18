@@ -296,8 +296,32 @@ def resolve_union_alignment_type(
     if column is not None and column.sql_precision is not None and column.sql_scale is not None:
         precision, scale = column.sql_precision, column.sql_scale
     else:
-        precision, scale = _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
+        precision, scale = _fallback_alignment(dialect)
     return dialect.render_obml_type(DecimalType(precision=precision, scale=scale))
+
+
+def _fallback_alignment(dialect: Dialect) -> tuple[int, int]:
+    """The guessed width, widened to whatever the engine can express.
+
+    38 leaves 18 integer digits at scale 20, which is enough for an engine that
+    unifies the union itself: nothing is cast there, so nothing can overflow,
+    and the pad's width does not constrain the column beside it - measured, a
+    ``numeric(38, 20)`` pad on Postgres resolves the column to plain
+    ``numeric`` and carries a 21-integer-digit value through.
+
+    An engine that cannot unify has its owning leg cast to this type, and there
+    the same width is a hazard: measured on ClickHouse, casting a
+    21-integer-digit value to ``Decimal(38, 20)`` returns 955136920807833575.50
+    rather than raising. Its own maximum is 76, which leaves 56 integer digits
+    and puts the overflow out of reach of any source a model does not declare.
+
+    Widened only for those engines, not as a general rule. Postgres reports a
+    maximum of 131072 and would take the pad with it, which it will not accept
+    in a type declaration at all.
+    """
+    if dialect.unions_resolve_leg_types:
+        return _ALIGNMENT_PRECISION, _ALIGNMENT_SCALE
+    return max(_ALIGNMENT_PRECISION, dialect.max_decimal_precision), _ALIGNMENT_SCALE
 
 
 def resolve_owning_leg_cast_type(
@@ -307,25 +331,34 @@ def resolve_owning_leg_cast_type(
 ) -> str | None:
     """The cast for the leg that *owns* a measure, or ``None`` to leave it be.
 
-    The NULL pads always carry a type; this side usually should not. A typed
-    pad beside an uncast column resolves to the **column's** type on DuckDB,
-    Postgres and ClickHouse, in any leg order, so the union is already settled
-    and casting here can only lose: to the declared output type it rounded
-    pre-aggregation rows (#305), and to a fixed wide decimal it overflowed
-    values the source held legally, since ``DECIMAL(38, 20)`` keeps just 18
-    integer digits (#311).
+    The NULL pads always carry a type; this side usually should not. Where the
+    engine resolves a union's legs to a common type, a typed pad beside an
+    uncast column settles it already, and casting here can only lose: to the
+    declared output type it rounded pre-aggregation rows (#305), and to a fixed
+    wide decimal it overflowed values the source held legally, since
+    ``DECIMAL(38, 20)`` keeps just 18 integer digits (#311).
 
-    It is kept where the alignment is a **conversion** rather than a widening.
-    ``LISTAGG`` over an integer column aligns the pads on text, and an uncast
-    integer leg meeting a text pad is a union Postgres refuses outright. Those
-    measures are exactly the ones :func:`resolve_union_alignment_type` answers
-    from the column's own type, so the rule is: cast when the alignment is not
-    the numeric widening.
+    ``unions_resolve_leg_types`` is the measured limit of that. It holds on
+    Postgres, which widens the column to plain ``numeric``, and on DuckDB. It
+    does not hold on ClickHouse, which builds ``Variant(Decimal, Float64)`` and
+    refuses to ``SUM`` it - so #313 left four CFL queries unrunnable there for
+    a month, and the compile-only snapshots could not see it because the SQL is
+    well formed (#339). That engine gets the cast, and its alignment carries
+    the headroom to make it safe; see :func:`_fallback_alignment`.
+
+    The cast is kept everywhere when the alignment is a **conversion** rather
+    than a widening. ``LISTAGG`` over an integer column aligns the pads on
+    text, and an uncast integer leg meeting a text pad is a union Postgres
+    refuses outright. Those measures are exactly the ones
+    :func:`resolve_union_alignment_type` answers from the column's own type, so
+    the rule is: cast when the alignment is not the numeric widening, or when
+    the engine will not settle the union on its own.
     """
     model_measure = model.effective_measures.get(measure.name)
     if (
         model_measure is not None
         and dialect is not None
+        and dialect.unions_resolve_leg_types
         and (model_measure.aggregation or "").lower() not in _RAW_COLUMN_AGGREGATIONS
         and _alignment_source(model_measure, model)[0] is not None
     ):
