@@ -50,6 +50,8 @@ class PostgresDialect(Dialect):
             return self.quote_identifier(code)
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
+    avg_over_integers_is_exact = True
+
     @property
     def name(self) -> str:
         return "postgres"

@@ -73,10 +73,13 @@ REWRITTEN = {
     # here too. #318 had left it unrewritten on an assumption (#322).
     "databricks": "/ NULLIF(COUNT(",
 }
-# Postgres, MySQL and Snowflake are already exact; DuckDB has no exact
-# division at all, so a rewrite there would only trade a loud overflow for a
-# quiet wrong number (#316).
+# Postgres, MySQL and Snowflake are already exact, so their *expression* is
+# left alone - but their result type is still widened (#330), because an exact
+# average the declared type cannot hold is no better than an inexact one.
+# DuckDB has no exact division at all, so a rewrite there would only trade a
+# loud overflow for a quiet wrong number (#316).
 LEFT_ALONE = ["duckdb", "postgres", "mysql", "snowflake"]
+NATIVELY_EXACT = ["postgres", "mysql", "snowflake"]
 
 
 def _model():
@@ -271,3 +274,37 @@ def _sql_with_default(measure: str, dialect: str, numeric_default: str) -> str:
         )
         .sql
     )
+
+
+class TestTheResultTypeIsWidenedWhereverTheAverageIsExact:
+    """Not only where it is rewritten (#330).
+
+    Postgres, MySQL and Snowflake compute the average exactly and then had it
+    cast to the ``decimal(18, 2)`` default, which carries 16 integer digits
+    where a 64-bit value needs 19. Measured, MySQL saturated a true
+    1000000000000000003 to 9999999999999999.99 **with no warning**, and
+    Postgres raised. Being exact in the aggregate bought nothing if the type
+    could not carry the result.
+    """
+
+    @pytest.mark.parametrize("dialect", NATIVELY_EXACT)
+    def test_a_natively_exact_dialect_widens_its_result(self, dialect: str) -> None:
+        sql = _sql("Qty Avg", dialect)
+        assert "(21, 2)" in sql, sql
+        assert "(18, 2)" not in sql, sql
+
+    def test_duckdb_keeps_the_default_so_the_overflow_stays_loud(self) -> None:
+        """The one engine where widening would hide the problem.
+
+        Its average is not exact and cannot be made so, so a wider type would
+        let a rounded value through instead of failing on it (#316).
+        """
+        assert "DECIMAL(18, 2)" in _sql("Qty Avg", "duckdb")
+
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_every_dialect_is_classified_for_exactness(self, dialect: str) -> None:
+        """A new dialect cannot default into "exact" without someone measuring."""
+        native = DialectRegistry.get(dialect).avg_over_integers_is_exact
+        assert native is (dialect in NATIVELY_EXACT), (
+            f"{dialect} claims avg_over_integers_is_exact={native}; measure it before changing"
+        )

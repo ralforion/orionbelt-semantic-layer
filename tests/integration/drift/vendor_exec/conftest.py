@@ -93,6 +93,35 @@ class VendorTarget:
     name: str
     dialect: str
     execute: Callable[[str], list[dict[str, Any]]]
+    # How this engine spells "these literal values, as a table" (#330). The
+    # corpus seed is the right source for almost everything, but an aggregate
+    # that only misbehaves past a double mantissa needs values the seed does
+    # not contain, and every engine spells an inline row set differently.
+    # Defaults to the UNION ALL form, which six of the eight accept.
+    literal_rows: Callable[[str, str, list[int | None]], str] | None = None
+
+    def rows_of(self, alias: str, column: str, values: list[int | None]) -> str:
+        """A FROM-able source of one integer column holding *values*."""
+        if self.literal_rows is not None:
+            return self.literal_rows(alias, column, values)
+        return _union_all_rows(alias, column, values, self.dialect)
+
+
+def _cast_int(value: int | None, dialect: str) -> str:
+    """A 64-bit integer literal, spelled for *dialect*."""
+    # The 64-bit integer type is spelled differently per engine, and the NULL
+    # case has to use the same spelling or the UNION legs disagree.
+    type_name = {
+        "clickhouse": "Nullable(Int64)",
+        "bigquery": "INT64",
+        "mysql": "SIGNED",
+    }.get(dialect, "BIGINT")
+    return f"CAST({'NULL' if value is None else value} AS {type_name})"
+
+
+def _union_all_rows(alias: str, column: str, values: list[int | None], dialect: str) -> str:
+    legs = " UNION ALL ".join(f"SELECT {_cast_int(v, dialect)} AS {column}" for v in values)
+    return f"({legs}) {alias}"
 
 
 # ---------------------------------------------------------------------------

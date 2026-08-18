@@ -1198,7 +1198,7 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
 
     | dialect | `AVG` over a 64-bit value | what OBSL emits |
     | --- | --- | --- |
-    | PostgreSQL, MySQL, Snowflake | already exact | plain `AVG` |
+    | PostgreSQL, MySQL, Snowflake | already exact | plain `AVG`, widened result type |
     | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))`, BIGNUMERIC above scale 9 |
     | Dremio, Databricks | drift | `CAST(SUM(CAST(x AS DECIMAL(38, 0))) AS DECIMAL(38, s)) / COUNT(x)` |
     | ClickHouse | Float64, drifts | `divideDecimal(SUM(toDecimal128(x, 0)), toDecimal128(COUNT(x), 0), s)`, guarded against a zero count |
@@ -1215,9 +1215,17 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     The divisor is also NULLIF-guarded, as every division is - see
     [Division by Zero](#division-by-zero) above.
 
-    The rewritten result also carries a wider type than the `decimal(18, 2)`
-    default, since an exact average of 64-bit values needs 19 integer digits.
-    An explicit `dataType` is respected as declared.
+    **The result type is widened wherever the average is exact**, whether it
+    got there natively or by rewrite, since an exact average the declared type
+    cannot hold is no better than an inexact one. `decimal(18, 2)` carries 16
+    integer digits and a 64-bit value needs 19. Measured, the default made
+    MySQL saturate a true `1000000000000000003` to `9999999999999999.99` **with
+    no warning**, and made PostgreSQL raise. An explicit `dataType` is
+    respected as declared.
+
+    DuckDB is the exception in both halves: its average is not exact and cannot
+    be made so, so widening there would only convert a loud overflow into a
+    quiet wrong number. It keeps the default.
 
     **DuckDB is the exception**, tracked in
     [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316):

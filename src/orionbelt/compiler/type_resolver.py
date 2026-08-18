@@ -197,9 +197,19 @@ def rewrite_exact_integer_avg(
         return None
     target = resolved if measure.data_type else _widen_to_integer_range(resolved)
     exact = dialect.exact_integer_avg(expr.args[0], target)
-    if exact is None:
-        return None
-    return exact, target
+    if exact is not None:
+        return exact, target
+    if dialect.avg_over_integers_is_exact:
+        # No rewrite needed, but the result type still is. The aggregate is
+        # already exact here; it is the declared decimal(18, 2) that cannot
+        # hold what it produces - measured, MySQL saturates a true
+        # 1000000000000000003 to 9999999999999999.99 with no warning, and
+        # Postgres raises. Widening lets an exact average through intact.
+        return expr, target
+    # Neither exact nor rewritable: DuckDB alone. It keeps the default so the
+    # overflow stays loud, rather than trading it for a quiet wrong number
+    # (#316).
+    return None
 
 
 def _widen_to_integer_range(default: DecimalType) -> DecimalType:
