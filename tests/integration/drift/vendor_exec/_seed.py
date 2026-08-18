@@ -122,10 +122,16 @@ class VendorSpec:
     # four container-tested engines coerce plain strings happily and are
     # left as-is; the cloud engines are stricter.
     date_literals: bool = False
-    # GoogleSQL (BigQuery) escapes a single quote inside a string literal with a
-    # backslash (``\'``); the SQL-standard doubling (``''``) parses there as two
-    # adjacent literals ("O''Brien" -> 'O' 'Brien') and errors. Every other
-    # dialect here accepts ``''``. Set True to switch to backslash escaping.
+    # GoogleSQL (BigQuery) and Spark SQL (Databricks) escape a single quote
+    # inside a string literal with a backslash (``\'``). The SQL-standard
+    # doubling (``''``) fails on both, and they fail *differently*: BigQuery
+    # parses it as two adjacent literals and errors, while Spark silently drops
+    # the character - measured, ``SELECT 'O''Brien'`` returns ``OBrien``, six
+    # characters, with no complaint. That silence is why the Databricks seed
+    # carried corrupted names for as long as it did.
+    #
+    # Verified that Postgres, MySQL, ClickHouse, DuckDB, Snowflake and Dremio
+    # all accept ``''``; Snowflake accepts either form.
     backslash_escape: bool = False
     notes: tuple[str, ...] = ()
 
@@ -199,6 +205,7 @@ _SPECS: dict[str, VendorSpec] = {
         name="databricks",
         types={"VARCHAR": "STRING", "DATE": "DATE", "DOUBLE": "DECIMAL(18, 2)"},
         quote="`",
+        backslash_escape=True,
         container="SCHEMA",
         executed=False,
         table_opts=lambda _cols: " USING DELTA",
@@ -236,8 +243,8 @@ def _lit(v: Any, *, date_literals: bool = False, backslash_escape: bool = False)
     if isinstance(v, date):
         return f"DATE '{v.isoformat()}'" if date_literals else f"'{v.isoformat()}'"
     s = str(v)
-    # GoogleSQL escapes a quote as ``\'``; every other dialect doubles it as
-    # ``''``. In the backslash path, escape backslashes first so they don't
+    # GoogleSQL and Spark SQL escape a quote as ``\'``; the others double it
+    # as ``''``. In the backslash path, escape backslashes first so they don't
     # consume the quote escape.
     s = s.replace("\\", "\\\\").replace("'", "\\'") if backslash_escape else s.replace("'", "''")
     return f"'{s}'"
