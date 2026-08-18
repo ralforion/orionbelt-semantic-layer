@@ -1169,6 +1169,28 @@ The effective data type for a measure or metric is resolved in this order (first
 
 Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `listagg`.
 
+!!! note "A column declared wider than the default"
+
+    The built-in default carries 16 integer digits. If a column declares both
+    `sqlPrecision` and `sqlScale`, and that width holds more integer digits
+    than the default, the inferred type widens to fit - the precision moves,
+    the scale stays, since the scale is the rounding the model asked for.
+
+    ```yaml
+    Wide: {code: amt, abstractType: float, sqlPrecision: 38, sqlScale: 15}
+    # a SUM over this emits DECIMAL(25, 2), not DECIMAL(18, 2)
+    ```
+
+    Both halves are required. `sqlPrecision` alone says nothing about scale,
+    and assuming zero there rounds every row before the aggregate sees it.
+
+    An **undeclared** column cannot be widened, because nothing in the model
+    says how large its values are. A total that outgrows `decimal(18, 2)` then
+    fails on PostgreSQL, DuckDB and ClickHouse - and **saturates silently on
+    MySQL**, returning `9999999999999999.99` for a true
+    `100000000000000001.10` with no warning. Declare the column width, or pin
+    the measure's `dataType`, if your totals can reach 16 digits.
+
 !!! note "Large integer measures"
 
     The built-in default holds only 16 integer digits, but a 64-bit column

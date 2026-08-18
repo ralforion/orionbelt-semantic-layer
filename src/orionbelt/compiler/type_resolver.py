@@ -19,12 +19,14 @@ from collections.abc import Callable
 
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import Dialect
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     DataType,
     Measure,
     Metric,
     ModelSettings,
     PeriodOverPeriodComparison,
+    SemanticModel,
 )
 from orionbelt.models.types import (
     BUILTIN_DEFAULT,
@@ -161,6 +163,7 @@ def rewrite_exact_integer_avg(
     settings: ModelSettings | None,
     dialect: Dialect | None,
     expr: Expr,
+    model: SemanticModel | None = None,
 ) -> tuple[Expr, OBMLType] | None:
     """An exact ``AVG`` and the type to cast it to, or ``None`` to leave both.
 
@@ -198,7 +201,7 @@ def rewrite_exact_integer_avg(
     resolved = resolve_measure_data_type(measure, settings)
     if not isinstance(resolved, DecimalType):
         return None
-    target = resolved if measure.data_type else _widen_to_integer_range(resolved)
+    target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
     exact = dialect.exact_integer_avg(aggregate.args[0], target)
     if exact is not None:
         return rebuild(exact), target
@@ -213,6 +216,101 @@ def rewrite_exact_integer_avg(
     # overflow stays loud, rather than trading it for a quiet wrong number
     # (#316).
     return None
+
+
+def _is_integer_avg(measure: Measure) -> bool:
+    return measure.aggregation.upper() == "AVG" and measure.result_type == DataType.INT
+
+
+def _integer_avg_target(
+    measure: Measure,
+    resolved: DecimalType,
+    model: SemanticModel | None,
+) -> DecimalType:
+    """The type an exact integer average is cast to.
+
+    Both widenings apply and they are not the same one. A 64-bit source needs
+    19 integer digits whatever the model says, and a source the model declares
+    wider needs whatever it declared - a ``decimal(38, 0)`` column averaged to
+    ``decimal(21, 2)`` still overflows, since 21 minus 2 is nineteen digits and
+    the column holds thirty-eight.
+
+    Only ever reached for a dialect whose average is exact. Widening an
+    inexact one is the trade #315 refused: it turns a loud overflow into a
+    quietly rounded answer, which is how DuckDB briefly came to return
+    1000000000000000000 for a true 1000000000000000002.
+    """
+    return _widen_for_declared_source(measure, _widen_to_integer_range(resolved), model)
+
+
+def _widen_for_declared_source(
+    measure: Measure,
+    resolved: DecimalType,
+    model: SemanticModel | None,
+) -> DecimalType:
+    """Widen an inferred type that the source column is declared to outgrow.
+
+    The default carries 16 integer digits. A model that says its column is
+    ``decimal(38, 15)`` has said, in the only vocabulary OBML has for it, that
+    the column holds values with up to 23 - so casting its total to the default
+    cannot work. Measured, that overflows on DuckDB, Postgres and ClickHouse
+    and **saturates silently on MySQL**: a true 100000000000000001.10 comes
+    back as 9999999999999999.99, no warning.
+
+    Only the precision moves; the scale is the rounding the model asked for and
+    is left alone. Both halves of the declared width must be present, per #313 -
+    ``sqlPrecision`` alone says nothing about scale, and assuming zero there
+    reintroduced a rounding bug.
+
+    An **undeclared** column is not covered and cannot be: nothing in the model
+    says how large its values are. Those still overflow, and still saturate on
+    MySQL, which is tracked separately as a cross-engine consistency defect
+    rather than a typing one.
+    """
+    if model is None:
+        return resolved
+    declared_integer_digits = _widest_declared_source(measure, model)
+    if declared_integer_digits <= resolved.precision - resolved.scale:
+        return resolved
+    needed = declared_integer_digits + resolved.scale
+    if needed <= _MAX_DECIMAL_PRECISION:
+        return DecimalType(precision=needed, scale=resolved.scale)
+    # Past what any engine accepts, so the scale gives way rather than the
+    # integer part. A source declared decimal(38, 0) holds 38 integer digits;
+    # keeping the default's two decimals would leave 36 and overflow on a value
+    # the column holds quite legally. Dropping fractional places the source
+    # never had is the smaller loss.
+    return DecimalType(
+        precision=_MAX_DECIMAL_PRECISION,
+        scale=max(0, _MAX_DECIMAL_PRECISION - declared_integer_digits),
+    )
+
+
+def _widest_declared_source(measure: Measure, model: SemanticModel) -> int:
+    """Integer digits of the widest column this measure reads, or 0 if unknown.
+
+    Reads ``columns`` **and** an ``expression``. Keying on ``len(columns) == 1``
+    skipped every expression measure, which is the third time that exact cut
+    has hidden a bug - the CFL leg alignment made it twice (#305, #311). An
+    expression measure aggregates a formula over the same physical columns and
+    has the same reason to outgrow the default.
+
+    Only a fully declared width counts, per #313: ``sqlPrecision`` alone says
+    nothing about scale.
+    """
+    refs: list[tuple[str, str]] = [
+        (ref.view, ref.column) for ref in measure.columns if ref.view and ref.column
+    ]
+    if measure.expression:
+        refs.extend(find_qualified_refs(measure.expression))
+    widest = 0
+    for obj_name, col_name in refs:
+        obj = model.data_objects.get(obj_name)
+        column = obj.columns.get(col_name) if obj else None
+        if column is None or column.sql_precision is None or column.sql_scale is None:
+            continue
+        widest = max(widest, column.sql_precision - column.sql_scale)
+    return widest
 
 
 def _widen_to_integer_range(default: DecimalType) -> DecimalType:
@@ -239,6 +337,7 @@ def cast_measure_to_resolved_type(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> Expr:
     """Cast a built measure expression to the type it resolves to.
 
@@ -256,11 +355,11 @@ def cast_measure_to_resolved_type(
     """
     if dialect is None:
         return expr
-    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
-    resolved = resolve_measure_cast_type(measure, settings, dialect)
+    resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
         return expr
     return dialect.cast_to_obml_type(expr, resolved)
@@ -286,6 +385,7 @@ def apply_exact_integer_avg(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> Expr:
     """The rewrite alone, without the cast.
 
@@ -298,7 +398,7 @@ def apply_exact_integer_avg(
     """
     if dialect is None:
         return expr
-    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     return expr if exact is None else exact[0]
 
 
@@ -306,6 +406,7 @@ def resolve_measure_cast_type(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> OBMLType | None:
     """The type a measure is cast to, decided without looking at its expression.
 
@@ -323,12 +424,15 @@ def resolve_measure_cast_type(
     point in the plan.
     """
     resolved = resolve_measure_data_type(measure, settings)
-    if dialect is None or measure.data_type or not isinstance(resolved, DecimalType):
+    if measure.data_type or not isinstance(resolved, DecimalType):
         return resolved
-    if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
+    if not _is_integer_avg(measure):
+        # Every other aggregate is exact on every engine, so a source declared
+        # wider than the default simply gets a type that fits.
+        return _widen_for_declared_source(measure, resolved, model)
+    if dialect is None or not dialect.integer_avg_is_exact():
+        # DuckDB alone: the average is not exact, so **no** widening applies -
+        # not the 64-bit room and not the declared source width. A wider type
+        # would let a rounded value through instead of failing on it (#316).
         return resolved
-    if not dialect.integer_avg_is_exact():
-        # DuckDB alone: the average is not exact, so a wider type would let a
-        # rounded value through instead of failing on it (#316).
-        return resolved
-    return _widen_to_integer_range(resolved)
+    return _integer_avg_target(measure, resolved, model)

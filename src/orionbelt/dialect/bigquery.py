@@ -14,6 +14,9 @@ from orionbelt.models.types import DecimalType, OBMLType
 
 # BigQuery NUMERIC is (38, 9); anything wider needs BIGNUMERIC.
 _NUMERIC_MAX_SCALE = 9
+# NUMERIC is (38, 9), so 29 integer digits - BigQuery states the rule as
+# ``P <= S + 29``.
+_NUMERIC_MAX_INTEGER_DIGITS = 29
 
 
 @DialectRegistry.register
@@ -53,9 +56,14 @@ class BigQueryDialect(Dialect):
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        wide = obml_type.scale > _NUMERIC_MAX_SCALE or obml_type.precision > 38
-        target = "BIGNUMERIC" if wide else "NUMERIC"
-        return FunctionCall(name="AVG", args=[Cast(expr=arg, type_name=target)])
+        # The same decision as every other decimal here, so the two cannot
+        # disagree: this had its own copy of the rule, and when the rule gained
+        # the integer-digit limit the copy kept the old one - emitting
+        # AVG(CAST(x AS NUMERIC)) under a BIGNUMERIC result for a source the
+        # model declares as 38 integer digits.
+        return FunctionCall(
+            name="AVG", args=[Cast(expr=arg, type_name=self.render_obml_type(obml_type))]
+        )
 
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
@@ -72,7 +80,16 @@ class BigQueryDialect(Dialect):
             # ``CAST(1.000000000004 AS NUMERIC)`` returning 1 where BIGNUMERIC
             # returns the value. A model declaring the usual two decimal places
             # is unaffected.
-            if obml_type.precision > 38 or obml_type.scale > _NUMERIC_MAX_SCALE:
+            #
+            # The integer half matters as much: BigQuery documents NUMERIC as
+            # ``P <= S + 29``, so it carries 29 integer digits however the
+            # precision is spelled. ``decimal(38, 0)`` trips neither of the
+            # checks above - precision is not past 38, scale is not past 9 -
+            # and needs 38, which NUMERIC refuses outright: measured, a 38-digit
+            # value returns "400 numeric out of range" as NUMERIC and comes back
+            # intact as BIGNUMERIC.
+            integer_digits = obml_type.precision - obml_type.scale
+            if obml_type.scale > _NUMERIC_MAX_SCALE or integer_digits > _NUMERIC_MAX_INTEGER_DIGITS:
                 return "BIGNUMERIC"
             return "NUMERIC"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())

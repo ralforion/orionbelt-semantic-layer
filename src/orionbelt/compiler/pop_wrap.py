@@ -96,7 +96,7 @@ def _apply_measure_cast(
     measure = model.effective_measures.get(measure_name)
     if measure is None:
         return expr
-    return cast_measure_to_resolved_type(expr, measure, model.settings, dialect)
+    return cast_measure_to_resolved_type(expr, measure, model.settings, dialect, model)
 
 
 def _apply_base_measure_rewrite(
@@ -122,7 +122,7 @@ def _apply_base_measure_rewrite(
     base = model.effective_measures.get(base_name)
     if base is None:
         return expr
-    return apply_exact_integer_avg(expr, base, model.settings, dialect)
+    return apply_exact_integer_avg(expr, base, model.settings, dialect, model)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:

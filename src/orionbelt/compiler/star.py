@@ -184,7 +184,9 @@ class StarSchemaPlanner:
                 expr = conformed_exprs.get(measure.name, measure.expression)
                 model_measure = model.effective_measures.get(measure.name)
                 if model_measure and dialect:
-                    expr = cast_measure_to_resolved_type(expr, model_measure, settings, dialect)
+                    expr = cast_measure_to_resolved_type(
+                        expr, model_measure, settings, dialect, model
+                    )
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             measure_exprs[measure.name] = expr
 
