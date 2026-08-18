@@ -36,7 +36,7 @@ class DremioDialect(Dialect):
             unsupported_aggregations=["mode", "measure"],
         )
 
-    def exact_integer_sum(self, arg: Expr) -> tuple[Expr, OBMLType] | None:
+    def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over BIGINT accumulates in 64 bits here, and wraps.
 
         Measured against Dremio OSS: two rows of 9000000000000000000 sum to

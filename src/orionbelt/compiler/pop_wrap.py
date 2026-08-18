@@ -36,6 +36,7 @@ from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     apply_exact_integer_avg,
+    apply_exact_integer_sum,
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
@@ -112,6 +113,12 @@ def _apply_base_measure_rewrite(
     cast is deliberately withheld here - it would truncate the window's input -
     but the rewrite is not, and withholding both is what left an integer AVG
     reaching the window as a raw floating average on the rewrite-only dialects.
+
+    Both rewrites apply. Only the average was applied at first, so a query
+    selecting a period-over-period metric *and* a cumulative one over the same
+    integer ``SUM`` put a raw ``SUM(qty)`` in ``pop_base`` for the cumulative
+    placeholder - the 64-bit accumulator this exists to avoid, reached by
+    composing two wrappers rather than by using either alone.
     """
     if model is None or dialect is None:
         return expr
@@ -122,7 +129,8 @@ def _apply_base_measure_rewrite(
     base = model.effective_measures.get(base_name)
     if base is None:
         return expr
-    return apply_exact_integer_avg(expr, base, model.settings, dialect, model)
+    expr = apply_exact_integer_avg(expr, base, model.settings, dialect, model)
+    return apply_exact_integer_sum(expr, base, dialect)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:

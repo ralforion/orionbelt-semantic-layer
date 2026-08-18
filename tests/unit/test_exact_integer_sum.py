@@ -37,8 +37,10 @@ from __future__ import annotations
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.type_resolver import resolve_measure_cast_type
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.types import DecimalType, SimpleType
 from orionbelt.parser import ReferenceResolver, TrackedLoader
 
 MODEL_YAML = """
@@ -68,6 +70,18 @@ metrics:
     measure: Qty Sum
     timeDimension: Charge Month
     dataType: "decimal(38, 0)"
+  Qty Running Untyped:
+    type: cumulative
+    measure: Qty Sum
+    timeDimension: Charge Month
+  Qty MoM:
+    type: period_over_period
+    expression: "{[Qty Sum]}"
+    periodOverPeriod:
+      timeDimension: Charge Month
+      grain: month
+      offsetGrain: month
+      comparison: difference
 """
 
 # The two whose accumulator wraps. Every other engine either answers exactly or
@@ -77,14 +91,21 @@ DIALECTS = sorted(DialectRegistry.available())
 UNAFFECTED = [d for d in DIALECTS if d not in WRAPS]
 
 
-def _sql(measure: str, dialect: str, dimensions: list[str] | None = None) -> str:
+def _sql(
+    measure: str,
+    dialect: str,
+    dimensions: list[str] | None = None,
+    extra: list[str] | None = None,
+) -> str:
     raw, sm = TrackedLoader().load_string(MODEL_YAML)
     model, result = ReferenceResolver().resolve(raw, sm)
     assert result.valid, result.errors
     return (
         CompilationPipeline()
         .compile(
-            QueryObject(select=QuerySelect(dimensions=dimensions or [], measures=[measure])),
+            QueryObject(
+                select=QuerySelect(dimensions=dimensions or [], measures=[*(extra or []), measure])
+            ),
             model,
             dialect,
         )
@@ -152,3 +173,74 @@ class TestWhatIsNotRewritten:
         sql = _sql("Qty Running", dialect, ["Charge Month"])
         assert "OVER (" in sql, sql
         assert sql.count("SUM(toDecimal128(") + sql.count("SUM(CAST(") == 1, sql
+
+
+class TestTheTypeIsDecidedWithoutLookingAtTheExpression:
+    """The half of this that a rewrite alone cannot reach.
+
+    ``resolve_measure_cast_type`` answers from the measure and the dialect,
+    never from the shape the expression happens to have. Keying on "is this a
+    bare SUM" would be right for *rewriting* and wrong for *typing*: once a
+    wrapper composes, what it holds is a CTE alias, no rewrite fires, and the
+    cast fell back to the inferred ``bigint`` - narrowing an exact 128-bit
+    total straight back into the 64 bits the rewrite escaped.
+
+    The AVG path learned this in #330 and its own resolver says so; the SUM
+    path had to learn it again from a review of #340.
+    """
+
+    @pytest.mark.parametrize("dialect", WRAPS)
+    def test_a_wrapper_alias_is_typed_wide_not_bigint(self, dialect: str) -> None:
+        sql = _sql("Qty Running", dialect, ["Charge Month"])
+        assert "Int64" not in sql and "BIGINT" not in sql, sql
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_widened_type_follows_the_rewrite_and_nothing_else(self, dialect: str) -> None:
+        """Asserted on the resolved type rather than the rendered SQL, because
+        the spellings collide: Snowflake renders plain ``bigint`` as
+        ``NUMBER(38, 0)``, which looks exactly like the widened type and is not
+        one.
+        """
+        raw, sm = TrackedLoader().load_string(MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        resolved = resolve_measure_cast_type(
+            model.effective_measures["Qty Sum"],
+            model.settings,
+            DialectRegistry.get(dialect),
+            model,
+        )
+        expected = DecimalType(precision=38, scale=0) if dialect in WRAPS else SimpleType("bigint")
+        assert resolved == expected, f"{dialect}: {resolved}"
+
+
+class TestTwoWrappersComposed:
+    """A period-over-period metric and a cumulative one over the same measure.
+
+    PoP runs first and hosts the cumulative metric's placeholder inside
+    ``pop_base``. That placeholder holds the base measure's aggregate, so it
+    needs the rewrite as much as any other site - and got only the ``AVG`` one,
+    so a raw ``SUM(qty)`` reached the 64-bit accumulator by composing two
+    wrappers where neither alone would have. Found in review of #340.
+    """
+
+    @pytest.mark.parametrize("dialect", WRAPS)
+    def test_the_placeholder_inside_pop_base_is_rewritten(self, dialect: str) -> None:
+        sql = _sql("Qty Running", dialect, ["Charge Month"], extra=["Qty MoM"])
+        raw = [
+            line
+            for line in sql.splitlines()
+            if "SUM(" in line and "toDecimal128" not in line and "SUM(CAST(" not in line
+        ]
+        # The one legitimate bare SUM is the window over the CTE column, which
+        # is already 128-bit by then.
+        assert len(raw) == 1 and "OVER (" in raw[0], sql
+
+    @pytest.mark.parametrize("dialect", WRAPS)
+    def test_the_alias_recast_between_them_stays_wide(self, dialect: str) -> None:
+        """``cumulative_base`` re-casts the alias ``pop_compare`` carries. It
+        was ``Nullable(Int64)``, which re-wrapped the value the rewrite had
+        just made exact.
+        """
+        sql = _sql("Qty Running Untyped", dialect, ["Charge Month"], extra=["Qty MoM"])
+        assert "Int64" not in sql and "BIGINT" not in sql, sql

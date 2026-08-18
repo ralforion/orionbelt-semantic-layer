@@ -42,7 +42,7 @@ class ClickHouseDialect(Dialect):
         "boolean": "Bool",
     }
 
-    def exact_integer_sum(self, arg: Expr) -> tuple[Expr, OBMLType] | None:
+    def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over Int64 accumulates in Int64 here, and wraps.
 
         The same overflow ``exact_integer_avg`` below already dodges inside its
@@ -57,16 +57,14 @@ class ClickHouseDialect(Dialect):
         one that hands back a plausible wrong number, which is why it is the
         only override (#338).
 
-        ``Decimal(38, 0)`` rather than Decimal128's full 38-digit-plus range:
-        it is what every supported engine can express, so a total ClickHouse
-        now returns is one a portable model could have carried. A sum of
-        integers has no fractional part, so the scale is zero.
+        The result type moves with it, to ``PORTABLE_DECIMAL_PRECISION`` rather
+        than this engine's own 76: a total the rewrite lets through should be
+        one every supported engine could carry. That is decided by
+        ``integer_sum_is_widened`` rather than returned here, so it holds
+        inside a wrapper too, where no aggregate is visible to key on.
         """
-        return (
-            FunctionCall(
-                name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])]
-            ),
-            DecimalType(precision=38, scale=0),
+        return FunctionCall(
+            name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])]
         )
 
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
