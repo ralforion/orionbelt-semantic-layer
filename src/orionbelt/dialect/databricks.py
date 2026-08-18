@@ -124,13 +124,29 @@ class DatabricksDialect(Dialect):
         version floor applies only to the Runtime path; the published "Applies
         to" badge carries no qualifier next to Databricks SQL.
 
-        Not verified against a live warehouse: the SQL warehouse would not
-        start on any attempt while the json group was measured, so this
-        rendering comes from the published function reference.
+        **That claim was wrong**, and it was documentation-derived: the
+        warehouse would not start while the json group was measured, so nobody
+        ran it. Measured once it came back, ``try_variant_get(..., 'string')``
+        does *not* refuse a non-scalar - it returns the serialized JSON, the
+        same as ``get_json_object``:
+
+            $.o  on {"o": {"b": "y"}}  ->  {"b":"y"}   contract says NULL
+            $.arr on {"arr": ["z"]}    ->  ["z"]       contract says NULL
+
+        So it needs the same guard the other four engines carry, spelled with
+        ``schema_of_variant``, which answers ``STRING`` for a scalar,
+        ``OBJECT<...>`` or ``ARRAY<...>`` for a non-scalar, and NULL for an
+        absent path. Matching on the prefix keeps the scalar types open, since
+        a number or boolean is a legitimate scalar the catalog returns as text.
         """
         doc = self.compile_expr(args[0])
         path = self._quote_text(_json_path_of(args[1]))
-        return f"try_variant_get(parse_json({doc}), {path}, 'string')"
+        value = f"try_variant_get(parse_json({doc}), {path}, 'string')"
+        schema = f"schema_of_variant(try_variant_get(parse_json({doc}), {path}))"
+        return (
+            f"CASE WHEN {schema} LIKE 'OBJECT%' OR {schema} LIKE 'ARRAY%' "
+            f"THEN NULL ELSE {value} END"
+        )
 
     _SCALAR_FUNCTION_NAMES: dict[str, str] = {
         "starts_with": "STARTSWITH",
@@ -178,9 +194,34 @@ class DatabricksDialect(Dialect):
             f"+ make_interval({slots[unit]})"
         )
 
+    # Calendar units where Databricks counts whole elapsed units rather than
+    # boundaries crossed, which is what the catalog pins.
+    _BOUNDARY_UNITS = frozenset({"month", "quarter", "year"})
+
     def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
-        """Databricks: ``date_diff(unit, start, end)`` with a keyword unit."""
-        return f"date_diff({unit.upper()}, {self.compile_expr(start)}, {self.compile_expr(end)})"
+        """``date_diff(unit, start, end)``, with the calendar units corrected.
+
+        Databricks counts **whole elapsed units** for the calendar grains,
+        where the catalog pins **boundaries crossed**. Measured, the two
+        disagree wherever the range starts late in a unit::
+
+            date_diff(MONTH,   2026-01-31, 2026-03-01)  ->  1, catalog says 2
+            date_diff(YEAR,    2026-12-31, 2027-01-01)  ->  0, catalog says 1
+            date_diff(QUARTER, 2026-03-31, 2026-04-01)  ->  0, catalog says 1
+
+        Truncating both ends to the unit first makes the two definitions
+        coincide, which is the same correction Postgres applies for the same
+        reason. Day and smaller grains already agree and are left alone, as is
+        the week grain, which the catalog routes through
+        ``_render_week_diff`` rather than here.
+        """
+        left, right = start, end
+        if unit.lower() in self._BOUNDARY_UNITS:
+            return (
+                f"date_diff({unit.upper()}, {self._render_date_trunc(unit, left)}, "
+                f"{self._render_date_trunc(unit, right)})"
+            )
+        return f"date_diff({unit.upper()}, {self.compile_expr(left)}, {self.compile_expr(right)})"
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Databricks has no numeric truncation: its ``trunc`` truncates a

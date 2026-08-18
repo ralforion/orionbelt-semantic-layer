@@ -669,6 +669,9 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("date_diff('day', DATE '2026-08-15', DATE '2026-08-01')", -14),
             FunctionExample("date_diff('month', DATE '2026-01-31', DATE '2026-03-01')", 2),
             FunctionExample("date_diff('year', DATE '2026-12-31', DATE '2027-01-01')", 1),
+            # Quarter had no example while three engines disagreed about the
+            # calendar grains, so nothing pinned it (#328).
+            FunctionExample("date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01')", 1),
         ),
         unit_argument=0,
     ),

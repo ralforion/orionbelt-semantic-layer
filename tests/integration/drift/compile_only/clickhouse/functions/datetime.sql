@@ -33,6 +33,8 @@ date_diff('day', CAST('2026-08-15' AS Nullable(Date)), CAST('2026-08-01' AS Null
 date_diff('month', CAST('2026-01-31' AS Nullable(Date)), CAST('2026-03-01' AS Nullable(Date)));
 --   date_diff('year', DATE '2026-12-31', DATE '2027-01-01') = 1
 date_diff('year', CAST('2026-12-31' AS Nullable(Date)), CAST('2027-01-01' AS Nullable(Date)));
+--   date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01') = 1
+date_diff('quarter', CAST('2026-03-31' AS Nullable(Date)), CAST('2026-04-01' AS Nullable(Date)));
 
 -- extract(unit, x)
 --   extract('year', DATE '2026-08-15') = 2026
