@@ -475,11 +475,16 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "``div(a, b)`` and DuckDB has no such function at all, so the name is "
             "an OBSL one that every dialect renders: ``a // b`` on DuckDB, "
             "``intDiv`` on ClickHouse, the ``DIV`` operator on MySQL and "
-            "Databricks, ``TRUNC(a / b)`` on Snowflake."
+            "Databricks, ``TRUNC(a / b)`` on Snowflake.\n\n"
+            "A divisor of zero yields NULL, matching the ``/`` operator. The "
+            "engines do not agree on their own: measured, div(7, 0) returns "
+            "NULL on DuckDB and MySQL and raises on Postgres, BigQuery, "
+            "Snowflake and ClickHouse, so the divisor is wrapped in nullif."
         ),
         examples=(
             FunctionExample("div(7, 2)", 3),
             FunctionExample("div(-7, 2)", -3),
+            FunctionExample("div(7, 0)", None),
         ),
     ),
     FunctionSpec(
@@ -496,11 +501,24 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "single-argument ``log`` is deliberately not in the catalog: it is "
             "base 10 on DuckDB and Postgres and natural on ClickHouse, MySQL and "
             "BigQuery, which is a silent factor of 2.3. Use ``ln(x)`` for the "
-            "natural logarithm."
+            "natural logarithm.\n\n"
+            "Outside its domain the result is NULL: a base of 0 or 1, or a "
+            "value of 0 or less. The engines had four different answers here "
+            "and one of them was silent - measured, Postgres, DuckDB, BigQuery "
+            "and Snowflake raise, MySQL returns NULL, and ClickHouse returns a "
+            "number: inf for a base of 1, -0.0 for a base of 0, -inf for a "
+            "value of 0 and nan for a negative one."
         ),
         examples=(
             FunctionExample("log(10, 100)", 2),
             FunctionExample("log(2, 8)", 3),
+            # All four undefined cases, not two: the ClickHouse answers differ
+            # per case (inf, -0.0, -inf, nan), so pinning half would leave the
+            # other half free to drift.
+            FunctionExample("log(1, 8)", None),
+            FunctionExample("log(0, 8)", None),
+            FunctionExample("log(2, 0)", None),
+            FunctionExample("log(2, -8)", None),
         ),
     ),
 )

@@ -521,9 +521,9 @@ class Dialect(ABC):
             case "trunc":
                 return self._render_trunc(args)
             case "div":
-                return self._render_div(args)
+                return self._render_div(self._with_guarded_divisor(args))
             case "log":
-                return self._render_log(args)
+                return self._guard_log_domain(args)
             case "greatest" | "least":
                 return self._render_extremum(name, args)
             case "date_trunc":
@@ -682,6 +682,60 @@ class Dialect(ABC):
             return self._render_infix(f"SIGN({value}) * FLOOR(ABS({value}))")
         scale = f"POWER(10, {self.compile_expr(args[1])})"
         return self._render_infix(f"SIGN({value}) * FLOOR(ABS({value}) * {scale}) / {scale}")
+
+    def _with_guarded_divisor(self, args: list[Expr]) -> list[Expr]:
+        """``div(a, b)`` with its divisor wrapped so a zero yields NULL.
+
+        ``div`` is a named function, so it never reaches the guard the ``/``
+        operator gets (#319), and the engines disagree just as widely: measured,
+        ``div(7, 0)`` returns NULL on DuckDB and MySQL and raises on PostgreSQL,
+        BigQuery, Snowflake and ClickHouse.
+
+        Guarded by rewriting the **argument** rather than the rendering, because
+        every dialect spells this function differently - ``a // b``, ``DIV(a,
+        b)``, ``intDiv``, ``a DIV b``, ``TRUNC(a / b)`` - and a guard applied to
+        the argument is carried by all of them. ``nullif`` is itself a catalog
+        entry, so it renders per dialect too.
+
+        Applied at the dispatch site rather than inside ``_render_div``, so a
+        dialect that overrides the rendering cannot drop the guard by doing so.
+        The internal caller in ``_render_days_to_weeks`` divides by a literal 7
+        and goes straight to ``_render_div``, unguarded, which is right.
+        """
+        if len(args) != 2:
+            return args
+        return [args[0], FunctionCall(name="nullif", args=[args[1], Literal.number(0)])]
+
+    def _guard_log_domain(self, args: list[Expr]) -> str:
+        """``log(base, x)`` outside its domain yields NULL rather than nonsense.
+
+        The catalog exists to pin one meaning per function, and this one had
+        four. Measured, for every undefined input - base of 1, base of 0, x of
+        0, negative x - PostgreSQL, DuckDB, BigQuery and Snowflake raise, MySQL
+        answers NULL, and **ClickHouse returns a number**: ``inf``, ``-0.0``,
+        ``-inf`` and ``nan`` respectively. A silent ``inf`` flowing into an
+        aggregate is the worst of the three, and the same reason #319 chose NULL
+        for a zero divisor.
+
+        Guarding only the base of 1 - the case that is literally a zero divisor,
+        since ClickHouse and Dremio rewrite this as ``log10(x) / log10(base)`` -
+        would leave its three neighbours silently wrong on the same engine, so
+        the whole undefined domain is guarded together.
+
+        A ``CASE`` is used rather than NULLIF-ing the arguments because the
+        domain is not just "not zero": a negative ``x`` has no logarithm either.
+        Verified that the guard holds for literal arguments too, on PostgreSQL,
+        DuckDB and ClickHouse - constant folding does not evaluate the ``ELSE``
+        branch and raise before the ``WHEN`` is considered.
+        """
+        rendered = self._render_log(args)
+        if len(args) != 2:
+            return rendered
+        base = self.compile_expr(args[0])
+        value = self.compile_expr(args[1])
+        return self._render_infix(
+            f"CASE WHEN {base} <= 0 OR {base} = 1 OR {value} <= 0 THEN NULL ELSE {rendered} END"
+        )
 
     def _render_div(self, args: list[Expr]) -> str:
         """Default: native ``DIV(a, b)`` (BigQuery, Postgres)."""

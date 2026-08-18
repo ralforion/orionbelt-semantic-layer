@@ -1263,13 +1263,20 @@ Rate:
   expression: "{[S].[Amt]} / {[S].[Qty]}"   # emits  amt / NULLIF(qty, 0)
 ```
 
-!!! note "Named division functions are not covered"
+!!! note "Named division functions follow the same rule"
 
-    This applies to the `/` operator. The catalog's `div(a, b)` function and
-    `log(x, base)` (which divides by `LOG10(base)`, zero when the base is 1)
-    keep whatever their engine does, because a catalog function's semantics are
-    pinned per entry rather than by this rule. Guard those with `nullif`
-    explicitly if a zero or a base of 1 is reachable in your data.
+    The two catalog functions that divide internally are covered too, each by
+    its own entry rather than by this one:
+
+    - `div(a, b)` yields NULL when `b` is zero.
+    - `log(base, x)` yields NULL outside its domain: a base of 0 or 1, or a
+      value of 0 or less. A base of 1 is the subtle case, since `LOG10(1)` is
+      zero and two dialects rewrite the call as `log10(x) / log10(base)`.
+
+    They needed pinning for the same reason the operator did. Measured, `div(7,
+    0)` returned NULL on two engines and raised on four, and `log` outside its
+    domain had four different answers - including `inf`, `-0.0`, `-inf` and
+    `nan` on ClickHouse, which is the silent case NULL exists to remove.
 
 ### Explicit Data Type
 
