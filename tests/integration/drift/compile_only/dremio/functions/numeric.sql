@@ -58,12 +58,18 @@ MOD(-7, 3);
 
 -- div(a, b)
 --   div(7, 2) = 3
-(SIGN((7 * 1.0 / 2)) * FLOOR(ABS((7 * 1.0 / 2))));
+(SIGN((7 * 1.0 / NULLIF(2, 0))) * FLOOR(ABS((7 * 1.0 / NULLIF(2, 0)))));
 --   div(-7, 2) = -3
-(SIGN((-7 * 1.0 / 2)) * FLOOR(ABS((-7 * 1.0 / 2))));
+(SIGN((-7 * 1.0 / NULLIF(2, 0))) * FLOOR(ABS((-7 * 1.0 / NULLIF(2, 0)))));
+--   div(7, 0) = None
+(SIGN((7 * 1.0 / NULLIF(0, 0))) * FLOOR(ABS((7 * 1.0 / NULLIF(0, 0)))));
 
 -- log(base, x)
 --   log(10, 100) = 2
-(LOG10(100) / LOG10(10));
+(CASE WHEN 10 <= 0 OR 10 = 1 OR 100 <= 0 THEN NULL ELSE (LOG10(100) / LOG10(10)) END);
 --   log(2, 8) = 3
-(LOG10(8) / LOG10(2));
+(CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 THEN NULL ELSE (LOG10(8) / LOG10(2)) END);
+--   log(1, 8) = None
+(CASE WHEN 1 <= 0 OR 1 = 1 OR 8 <= 0 THEN NULL ELSE (LOG10(8) / LOG10(1)) END);
+--   log(2, 0) = None
+(CASE WHEN 2 <= 0 OR 2 = 1 OR 0 <= 0 THEN NULL ELSE (LOG10(0) / LOG10(2)) END);
