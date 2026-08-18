@@ -13,9 +13,15 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
 _MYSQL_CAST_CHAR_MAX = 255
+
+# The widest decimal precision every supported engine accepts. A measure cast
+# is widened to at least this on MySQL, and deliberately no further - see
+# ``cast_to_obml_type`` (#336).
+_PORTABLE_DECIMAL_PRECISION = 38
 
 
 @DialectRegistry.register
@@ -211,6 +217,59 @@ class MySQLDialect(Dialect):
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
+
+    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+        """MySQL: a measure's decimal cast carries at least 38 digits.
+
+        Every other supported engine refuses a value the target type cannot
+        hold - "Conversion Error" on DuckDB, "numeric field overflow" on
+        Postgres, code 407 on ClickHouse. MySQL saturates instead and returns
+        the largest value the type can express as an ordinary row: measured,
+        ``CAST(SUM(amt) AS DECIMAL(18, 2))`` over a true 100000000000000001.10
+        gives 9999999999999999.99. It attaches warning 1264, but a warning is
+        not an error and no driver on this stack surfaces one, so what reaches
+        a dashboard is a plausible wrong number (#336).
+
+        Nothing here can make MySQL raise. There is no SELECT-time strictness
+        to switch on - ``STRICT_ALL_TABLES``, ``STRICT_TRANS_TABLES`` and
+        ``TRADITIONAL`` were each measured saturating exactly as the default
+        does - and a range check around every measure cast buys the NULL at the
+        cost of a ``CASE`` on one dialect and no other.
+
+        So the cast is widened rather than guarded, and the overflow stops
+        being reachable instead of being caught. Only the **precision** moves;
+        the scale is what shapes the value and is left exactly as declared, so
+        ``decimal(18, 2)`` still rounds to two places and only stops refusing
+        totals the source holds legally.
+
+        Widened to 38 and no further on purpose, though MySQL itself allows 65:
+        38 is what every other supported engine accepts, so a value MySQL now
+        returns is one a portable model could have carried anyway. Going to 65
+        would let this one engine answer where the other seven cannot, which is
+        the divergence this is meant to remove rather than reverse. A model
+        that declares more than 38 keeps what it declared.
+
+        This puts MySQL where BigQuery already sits, which returns the true
+        value for the same query because its ``NUMERIC`` is (38, 9).
+        """
+        return Cast(expr=expr, type_name=self.render_obml_type(self._widened(obml_type)))
+
+    @staticmethod
+    def _widened(obml_type: OBMLType) -> OBMLType:
+        """The declared type with room for a total the source holds legally.
+
+        The scale is carried through untouched, so a large declared scale still
+        limits the integer digits available inside the precision - a
+        ``decimal(38, 20)`` leaves 18 either way. That is the same trade
+        ``_widen_to_integer_range`` makes in the type resolver, and widening
+        the precision cannot fix it without changing the rounding the model
+        asked for.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return obml_type
+        if obml_type.precision >= _PORTABLE_DECIMAL_PRECISION:
+            return obml_type
+        return DecimalType(precision=_PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
 
     def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """MySQL's ``div_precision_increment`` defaults to 4, capping

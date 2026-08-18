@@ -284,15 +284,22 @@ class TestTheResultTypeIsWidenedWhereverTheAverageIsExact:
     Postgres, MySQL and Snowflake compute the average exactly and then had it
     cast to the ``decimal(18, 2)`` default, which carries 16 integer digits
     where a 64-bit value needs 19. Measured, MySQL saturated a true
-    1000000000000000003 to 9999999999999999.99 **with no warning**, and
-    Postgres raised. Being exact in the aggregate bought nothing if the type
-    could not carry the result.
+    1000000000000000003 to 9999999999999999.99, and Postgres raised. Being
+    exact in the aggregate bought nothing if the type could not carry the
+    result.
     """
+
+    #: MySQL floors a measure's decimal cast at 38 digits of its own, because
+    #: it saturates an overflow where the others raise (#336). The resolver
+    #: still has to widen 18 to 21 - a resolved type that stayed at the default
+    #: would show up as a narrower cast on the other two - so what is asserted
+    #: per dialect is the width that reaches the SQL.
+    WIDENED = {"postgres": "(21, 2)", "snowflake": "(21, 2)", "mysql": "(38, 2)"}
 
     @pytest.mark.parametrize("dialect", NATIVELY_EXACT)
     def test_a_natively_exact_dialect_widens_its_result(self, dialect: str) -> None:
         sql = _sql("Qty Avg", dialect)
-        assert "(21, 2)" in sql, sql
+        assert self.WIDENED[dialect] in sql, sql
         assert "(18, 2)" not in sql, sql
 
     def test_duckdb_keeps_the_default_so_the_overflow_stays_loud(self) -> None:

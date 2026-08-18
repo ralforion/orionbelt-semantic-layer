@@ -7,7 +7,7 @@ SELECT CAST(NULL AS CHAR(255)) AS `Sales Client Name`, `Clients`.`clientname` AS
 FROM `orionbelt_1`.`clientcomplaints` AS `Client Complaints`
 LEFT JOIN `orionbelt_1`.`clients` AS `Clients` ON `Client Complaints`.`complclientid` = `Clients`.`clientid`
 )
-SELECT COALESCE(`Sales Client Name`, `Complaint Client Name`) AS `Client`, CAST(SUM(`composite_01`.`Total Sales`) AS DECIMAL(18, 2)) AS `Total Sales`, CAST(COUNT(`composite_01`.`Client Complaints Count`) AS SIGNED) AS `Client Complaints Count`
+SELECT COALESCE(`Sales Client Name`, `Complaint Client Name`) AS `Client`, CAST(SUM(`composite_01`.`Total Sales`) AS DECIMAL(38, 2)) AS `Total Sales`, CAST(COUNT(`composite_01`.`Client Complaints Count`) AS SIGNED) AS `Client Complaints Count`
 FROM `composite_01` AS `composite_01`
 GROUP BY COALESCE(`Sales Client Name`, `Complaint Client Name`)
 HAVING CAST(COUNT(`composite_01`.`Client Complaints Count`) AS SIGNED) > 0
