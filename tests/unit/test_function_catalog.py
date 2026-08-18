@@ -1154,8 +1154,12 @@ class TestRenderingInvariants:
     @pytest.mark.parametrize(
         ("dialect", "call", "expected"),
         [
-            ("databricks", "trunc(2.5)", "10 / (SIGN(2.5) * FLOOR(ABS(2.5)))"),
-            ("dremio", "log(2, 8)", "10 / (LOG10(8) / LOG10(2))"),
+            (
+                "databricks",
+                "trunc(2.5)",
+                "10 / NULLIF((SIGN(2.5) * FLOOR(ABS(2.5))), 0)",
+            ),
+            ("dremio", "log(2, 8)", "10 / NULLIF((LOG10(8) / LOG10(2)), 0)"),
             ("clickhouse", "round(2.5)", "(sign(2.5) * floor(abs(2.5) + 0.5))"),
         ],
     )
@@ -1165,6 +1169,10 @@ class TestRenderingInvariants:
         """The concrete shape of the bug: a rewritten call on the right of a
         division. ClickHouse wraps both operands in a decimal CAST of its own,
         so only the rewrite's own parens are asserted there.
+
+        The divisor now sits inside a ``NULLIF`` guard (#319), which does not
+        change what this test is for: the rewrite must still carry its own
+        parens, or the surrounding operators bind into it.
         """
         assert expected in _render(f"10 / {call}", dialect)
 

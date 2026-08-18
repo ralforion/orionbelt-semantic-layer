@@ -68,7 +68,7 @@ dimensions:
 REWRITTEN = {
     "bigquery": "AVG(CAST(",
     "clickhouse": "divideDecimal(",
-    "dremio": "/ COUNT(",
+    "dremio": "/ NULLIF(COUNT(",
 }
 # Postgres, MySQL and Snowflake are already exact; DuckDB has no exact
 # division at all, so a rewrite there would only trade a loud overflow for a
@@ -113,7 +113,7 @@ class TestWhichDialectsAreRewritten:
         """
         sql = _sql("Qty Avg", dialect)
         assert "AVG(" in sql.upper(), sql
-        assert "divideDecimal" not in sql and "/ COUNT(" not in sql, sql
+        assert "divideDecimal" not in sql and "NULLIF(COUNT(" not in sql, sql
 
 
 class TestWhatIsAndIsNotEligible:
@@ -127,19 +127,19 @@ class TestWhatIsAndIsNotEligible:
         one silent error for another. The rewrite is for integer sources only.
         """
         sql = _sql("Amount Avg", dialect)
-        assert "divideDecimal" not in sql and "/ COUNT(" not in sql, sql
+        assert "divideDecimal" not in sql and "NULLIF(COUNT(" not in sql, sql
         assert "AVG(CAST(" not in sql, sql
 
     @pytest.mark.parametrize("dialect", sorted(REWRITTEN))
     def test_a_distinct_average_is_untouched(self, dialect: str) -> None:
         """``SUM``/``COUNT`` over DISTINCT is not the same average."""
         sql = _sql("Qty Avg Distinct", dialect)
-        assert "divideDecimal" not in sql and "/ COUNT(" not in sql, sql
+        assert "divideDecimal" not in sql and "NULLIF(COUNT(" not in sql, sql
 
     @pytest.mark.parametrize("dialect", sorted(REWRITTEN))
     def test_a_sum_is_not_an_average(self, dialect: str) -> None:
         sql = _sql("Qty Sum", dialect)
-        assert "divideDecimal" not in sql and "/ COUNT(" not in sql, sql
+        assert "divideDecimal" not in sql and "NULLIF(COUNT(" not in sql, sql
 
 
 class TestTheResultTypeMovesWithTheExpression:
@@ -156,7 +156,7 @@ class TestTheResultTypeMovesWithTheExpression:
         """An explicit ``dataType`` wins, as the resolution order promises."""
         sql = _sql("Qty Avg Declared", "dremio")
         assert "DECIMAL(30, 4)" in sql, sql
-        assert "/ COUNT(" in sql, sql
+        assert "/ NULLIF(COUNT(" in sql, sql
 
 
 class TestWidening:

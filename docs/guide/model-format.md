@@ -1230,6 +1230,47 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     plain `AVG` everywhere: BigQuery's `NUMERIC` is (38, 9), so casting a float
     column with more decimals would trade one silent error for another.
 
+### Division by Zero
+
+**A zero divisor yields NULL, on every dialect.** Every division OBSL compiles
+gets its divisor wrapped in `NULLIF(..., 0)` - in a metric expression, in a
+measure expression, and in the divisions OBSL generates itself (such as an
+`AVG` with `total: true`).
+
+This exists because the engines disagree completely. Measured on
+`SUM(amt) / SUM(qty)` with a zero divisor:
+
+| dialect | without the guard |
+| --- | --- |
+| DuckDB | `inf` |
+| MySQL | `NULL` |
+| PostgreSQL | raises `division by zero` |
+| BigQuery | raises `400 division by zero` |
+| ClickHouse | raises code 153 |
+
+The same model and the same query would otherwise return a number on one
+warehouse, NULL on another, and fail outright on three. NULL was chosen because
+it reads naturally as "no value" in a BI tool, it matches what MySQL already
+did, and it removes DuckDB's `inf` - the only outcome that can flow on into
+downstream aggregation and formatting rather than stopping.
+
+A literal divisor that is plainly not zero is left unwrapped:
+
+```yaml
+Halved:
+  expression: "{[S].[Amt]} / 2"     # emits  amt / 2, no guard
+Rate:
+  expression: "{[S].[Amt]} / {[S].[Qty]}"   # emits  amt / NULLIF(qty, 0)
+```
+
+!!! note "Named division functions are not covered"
+
+    This applies to the `/` operator. The catalog's `div(a, b)` function and
+    `log(x, base)` (which divides by `LOG10(base)`, zero when the base is 1)
+    keep whatever their engine does, because a catalog function's semantics are
+    pinned per entry rather than by this rule. Guard those with `nullif`
+    explicitly if a zero or a base of 1 is reachable in your data.
+
 ### Explicit Data Type
 
 ```yaml

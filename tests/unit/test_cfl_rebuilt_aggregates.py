@@ -238,7 +238,7 @@ class TestFilterContextReadThroughAMetric:
     def test_it_compiles_on_a_single_fact_plan(self) -> None:
         sql = self._sql_filtered(["Filtered Share"])
         assert '"fc_0" AS' in sql
-        assert '"main"."Sales Amount" / "fc_0"."Unfiltered Sales"' in sql
+        assert '"main"."Sales Amount" / NULLIF("fc_0"."Unfiltered Sales", 0)' in sql
 
     def test_it_compiles_alongside_another_fact(self) -> None:
         """The component is kept out of the union like a selected one, and the

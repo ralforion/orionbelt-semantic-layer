@@ -5,5 +5,5 @@ UNION ALL
 SELECT CAST(round(NULL, 20) AS Nullable(Decimal(38, 20))) AS "Total Returns", "Sales"."salesamount" AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 )
-SELECT CAST(round(CAST(SUM("composite_01"."Total Returns") AS Nullable(Decimal(38, 14))) / CAST(NULLIF(SUM("composite_01"."Total Sales"), 0) AS Nullable(Decimal(38, 14))), 4) AS Nullable(Decimal(18, 4))) AS "Return Rate"
+SELECT CAST(round(CAST(SUM("composite_01"."Total Returns") AS Nullable(Decimal(38, 14))) / NULLIF(CAST(NULLIF(SUM("composite_01"."Total Sales"), 0) AS Nullable(Decimal(38, 14))), 0), 4) AS Nullable(Decimal(18, 4))) AS "Return Rate"
 FROM "composite_01" AS "composite_01"

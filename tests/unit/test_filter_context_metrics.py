@@ -269,7 +269,7 @@ class TestTheShapeOfTheSQL:
         inlined as two aggregates over one filtered scan."""
         sql = _sql(["Revenue Share"])
         outer = sql.rsplit("\nSELECT ", 1)[1]
-        assert '"main"."Revenue" / "fc_0"."Unfiltered Revenue"' in outer
+        assert '"main"."Revenue" / NULLIF("fc_0"."Unfiltered Revenue", 0)' in outer
         assert "SUM(" not in outer
 
     def test_two_contexts_get_two_ctes(self) -> None:
