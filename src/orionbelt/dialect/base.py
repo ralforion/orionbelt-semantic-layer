@@ -962,15 +962,63 @@ class Dialect(ABC):
         else:
             left_sql = self.compile_expr(left, _parent_prec=self_prec)
             right_sql = self.compile_expr(right, _parent_prec=self_prec + 1)
+        if op.strip() == "/":
+            # NULLIF is an atom, so the divisor no longer needs its own parens.
+            right_sql = self.guard_zero_divisor(right, self.compile_expr(right))
         return f"{left_sql} {op} {right_sql}"
+
+    def guard_zero_divisor(self, right: Expr | None, right_sql: str) -> str:
+        """Wrap a divisor so that dividing by zero yields NULL, not chaos.
+
+        Left alone, the same ratio means five different things across the
+        supported engines: measured, ``SUM(a) / SUM(b)`` with a zero divisor
+        returns ``inf`` on DuckDB, NULL on MySQL, and raises on PostgreSQL,
+        BigQuery and ClickHouse. A semantic layer cannot promise that a measure
+        means one thing everywhere and then hand back a number, a null and an
+        error depending on the warehouse behind it.
+
+        NULL is the answer chosen (#319). It reads naturally as "no value" in a
+        BI tool, it is what MySQL already does, and it removes DuckDB's
+        ``inf`` - the only one of the three outcomes that can silently corrupt
+        a downstream figure rather than stopping.
+
+        Applied where divisions are *compiled* rather than where they are
+        built, so it covers a modeller's expression, the divisions OBSL
+        generates itself, and all eight dialects without being remembered at
+        each site. ``NULLIF`` renders identically everywhere, verified.
+
+        A literal divisor that is plainly not zero is left unwrapped - there is
+        nothing to guard, and the noise would show up in every snapshot.
+        """
+        if right is not None and isinstance(right, Literal):
+            value = right.value
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value != 0:
+                return right_sql
+        return f"NULLIF({right_sql}, 0)"
 
     def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
         """Render ``left / right`` for decimal-typed operands, given raw SQL.
 
         Used by code paths that build division as string SQL (e.g. PoP
-        comparison CTEs) rather than as ``BinaryOp`` AST nodes. Default
-        is plain SQL division; ClickHouse overrides to widen both sides
-        to ``Decimal(38, 10)`` first so ratio precision survives.
+        comparison CTEs) rather than as ``BinaryOp`` AST nodes.
+
+        **Do not override this** - override :meth:`_render_decimal_division`
+        instead. This method exists to apply the zero-divisor guard (#319) in
+        one place that a dialect cannot forget. It was overridden directly by
+        ClickHouse and MySQL for operand widening, and when the guard moved
+        here from ``pop_wrap`` those two overrides silently dropped it: a
+        period-over-period ratio against a zero previous value went from NULL
+        back to ILLEGAL_DIVISION on ClickHouse. Splitting the two concerns
+        makes the guard structural rather than remembered.
+        """
+        return self._render_decimal_division(left_sql, self.guard_zero_divisor(None, right_sql))
+
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
+        """The division itself, for dialects that need the operands widened.
+
+        Default is plain SQL division; ClickHouse and MySQL override to widen
+        both sides first so ratio precision survives. The divisor arrives
+        already guarded.
         """
         return f"{left_sql} / {right_sql}"
 

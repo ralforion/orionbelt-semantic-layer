@@ -493,7 +493,10 @@ def test_metric_component_is_computed_from_the_deduplicated_value() -> None:
     )
     # The component's aggregate is no longer inlined into the metric column.
     assert 'SUM("Products"."stock_on_hand") / SUM' not in result.sql
-    assert '"__ob_dedup_0"."Total Stock On Hand" / "__ob_main"."Sold Quantity"' in result.sql
+    assert (
+        '"__ob_dedup_0"."Total Stock On Hand" / NULLIF("__ob_main"."Sold Quantity", 0)'
+        in result.sql
+    )
 
     rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
     # north: 210 / 7, not the flattened 310 / 7. south: 300 / 8.
@@ -585,7 +588,10 @@ def test_a_nested_derived_metric_splits_the_same_way() -> None:
             "orderBy": [{"field": "Region"}],
         }
     )
-    assert '"__ob_dedup_0"."Total Stock On Hand" / "__ob_main"."Sold Quantity"' in result.sql
+    assert (
+        '"__ob_dedup_0"."Total Stock On Hand" / NULLIF("__ob_main"."Sold Quantity", 0)'
+        in result.sql
+    )
 
     rows = [(r[0], float(r[1])) for r in _sales_db().execute(result.sql).fetchall()]
     # Twice the per-region price per unit: 30 and 37.5 deduplicated.

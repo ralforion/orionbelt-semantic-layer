@@ -161,7 +161,7 @@ class ClickHouseDialect(Dialect):
             return f"GROUP BY {groups} WITH CUBE"
         return super().compile_group_by(group_by, grouping)
 
-    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """Widen operands for raw-SQL decimal division — same fix as the
         BinaryOp override but applied where SQL is built as text (e.g.
         the PoP comparison CTE).
@@ -201,7 +201,10 @@ class ClickHouseDialect(Dialect):
             # no risk of the children needing a higher parent prec here.
             l_sql = f"CAST({self.compile_expr(left)} AS {wide})"
             r_sql = f"CAST({self.compile_expr(right)} AS {wide})"
-            return f"{l_sql} / {r_sql}"
+            # Guarded after widening, not before: ClickHouse is the engine that
+            # raises on a zero decimal divisor, so the widening is exactly what
+            # turns an inert 0 into ILLEGAL_DIVISION (#319).
+            return f"{l_sql} / {self.guard_zero_divisor(right, r_sql)}"
         return super()._compile_binary_op(left, op, right)
 
     def _compile_cast(self, inner: Expr, type_name: str) -> str:

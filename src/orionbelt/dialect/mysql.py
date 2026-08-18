@@ -210,7 +210,7 @@ class MySQLDialect(Dialect):
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
 
-    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """MySQL's ``div_precision_increment`` defaults to 4, capping
         ratio results at the operand scale plus 4 fractional digits.
         For ``DECIMAL(18, 2) / DECIMAL(18, 2)`` that's 6 dp — too few

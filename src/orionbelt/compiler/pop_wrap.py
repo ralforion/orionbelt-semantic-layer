@@ -672,16 +672,15 @@ def _build_pop_compare_sql(
         alias = alias_by_key[(m.pop_offset, m.pop_offset_grain)]
         current = f"{base_cte}.{q_base}"
         prev = f"{alias}.{q_base}"
-        nullif_prev = f"NULLIF({prev}, 0)"
 
         if m.pop_comparison == PeriodOverPeriodComparison.RATIO:
-            expr = dialect.render_decimal_division_sql(current, nullif_prev)
+            expr = dialect.render_decimal_division_sql(current, prev)
         elif m.pop_comparison == PeriodOverPeriodComparison.DIFFERENCE:
             expr = f"{current} - {prev}"
         elif m.pop_comparison == PeriodOverPeriodComparison.PREVIOUS_VALUE:
             expr = dialect.render_pop_previous_value_sql(prev, current)
         elif m.pop_comparison == PeriodOverPeriodComparison.PERCENT_CHANGE:
-            expr = dialect.render_decimal_division_sql(current, nullif_prev) + " - 1"
+            expr = dialect.render_decimal_division_sql(current, prev) + " - 1"
         else:
             raise ResolutionError(
                 [

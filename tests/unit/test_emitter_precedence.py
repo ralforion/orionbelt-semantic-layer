@@ -117,9 +117,11 @@ class TestPrecedenceWrapping:
         assert pg.compile_expr(ast) == '"t"."a" - "t"."b" - "t"."c"'
 
     def test_division_right_wraps(self, pg):
-        # a / (b / c) — non-associative
+        # a / (b / c) — non-associative. Every divisor is zero-guarded (#319),
+        # and the guard doubles as the grouping: NULLIF brings its own
+        # delimiters, so the inner division needs no parens of its own.
         ast = _bop(_col("a"), "/", _bop(_col("b"), "/", _col("c")))
-        assert pg.compile_expr(ast) == '"t"."a" / ("t"."b" / "t"."c")'
+        assert pg.compile_expr(ast) == '"t"."a" / NULLIF("t"."b" / NULLIF("t"."c", 0), 0)'
 
 
 class TestComparisonChaining:
