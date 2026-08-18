@@ -308,3 +308,64 @@ class TestTheResultTypeIsWidenedWhereverTheAverageIsExact:
         assert native is (dialect in NATIVELY_EXACT), (
             f"{dialect} claims avg_over_integers_is_exact={native}; measure it before changing"
         )
+
+
+class TestEveryPathThatCastsAMeasureAgrees:
+    """A measure must not change type by being wrapped in a metric.
+
+    ``star`` and ``cfl`` applied the exact-AVG handling; the cumulative,
+    period-over-period and window wrappers called ``resolve_measure_data_type``
+    alone. So the same integer AVG emitted ``DECIMAL(21, 2)`` queried directly
+    and ``DECIMAL(18, 2)`` inside a PoP metric - the type that saturates on
+    MySQL and overflows on Postgres.
+
+    All five now share ``cast_measure_to_resolved_type``, which is the point:
+    the previous shape let a fix land on two paths and be forgotten on three.
+    """
+
+    WRAPPED_YAML = (
+        MODEL_YAML.replace(
+            "dimensions:\n  Day: {dataObject: Charges, column: Day}",
+            "dimensions:\n"
+            "  Day: {dataObject: Charges, column: Day}\n"
+            "  Sale Month: {dataObject: Charges, column: When, timeGrain: month}",
+        ).replace(
+            "      Amount: {code: amount, abstractType: float}",
+            "      Amount: {code: amount, abstractType: float}\n"
+            "      When: {code: when, abstractType: date}",
+        )
+        + """
+metrics:
+  Qty Avg Cumul:
+    type: cumulative
+    measure: Qty Avg
+    timeDimension: Sale Month
+    cumulativeType: sum
+  Qty Avg PoP:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+    )
+
+    @pytest.mark.parametrize("measure", ["Qty Avg", "Qty Avg Cumul", "Qty Avg PoP"])
+    def test_the_widened_type_survives_every_wrapper(self, measure: str) -> None:
+        raw, sm = TrackedLoader().load_string(self.WRAPPED_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=[measure])),
+                model,
+                "postgres",
+            )
+            .sql
+        )
+        assert "DECIMAL(21, 2)" in sql, sql
+        assert "DECIMAL(18, 2)" not in sql, f"{measure} kept the saturating default:\n{sql}"

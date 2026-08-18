@@ -36,9 +36,8 @@ from orionbelt.compiler.resolution import (
 )
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import (
-    resolve_measure_data_type,
+    cast_measure_to_resolved_type,
     resolve_metric_data_type,
-    rewrite_exact_integer_avg,
 )
 from orionbelt.dialect.base import Dialect, UnsupportedAggregationError
 from orionbelt.models.errors import SemanticError
@@ -850,17 +849,10 @@ class CFLPlanner:
             # declared count measures).
             model_measure = model.effective_measures.get(m.name)
             if model_measure and dialect:
-                # Same exact-AVG rewrite as the star path. Here the argument is
-                # the union column rather than the source, which is still the
-                # right thing to average: the legs project pre-aggregation rows.
-                exact = rewrite_exact_integer_avg(model_measure, settings, dialect, agg_expr)
-                if exact is not None:
-                    agg_expr, exact_type = exact
-                    agg_expr = dialect.cast_to_obml_type(agg_expr, exact_type)
-                else:
-                    resolved_type = resolve_measure_data_type(model_measure, settings)
-                    if resolved_type:
-                        agg_expr = dialect.cast_to_obml_type(agg_expr, resolved_type)
+                # Same path as the star planner. Here the argument is the union
+                # column rather than the source, which is still the right thing
+                # to average: the legs project pre-aggregation rows.
+                agg_expr = cast_measure_to_resolved_type(agg_expr, model_measure, settings, dialect)
             if m.name in requested_measure_names:
                 outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
             outer_measure_exprs[m.name] = agg_expr

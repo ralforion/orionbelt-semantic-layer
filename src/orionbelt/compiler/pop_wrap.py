@@ -35,7 +35,7 @@ from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
-    resolve_measure_data_type,
+    cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
 from orionbelt.models.errors import SemanticError
@@ -95,10 +95,7 @@ def _apply_measure_cast(
     measure = model.effective_measures.get(measure_name)
     if measure is None:
         return expr
-    resolved_type = resolve_measure_data_type(measure, model.settings)
-    if resolved_type is None:
-        return expr
-    return dialect.cast_to_obml_type(expr, resolved_type)
+    return cast_measure_to_resolved_type(expr, measure, model.settings, dialect)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:

@@ -229,3 +229,35 @@ def _widen_to_integer_range(default: DecimalType) -> DecimalType:
     return DecimalType(
         precision=_MAX_DECIMAL_PRECISION, scale=_MAX_DECIMAL_PRECISION - _INT64_DIGITS
     )
+
+
+def cast_measure_to_resolved_type(
+    expr: Expr,
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Cast a built measure expression to the type it resolves to.
+
+    The single place that decides how a measure aggregate is typed, so the
+    exact-AVG handling cannot be applied on some paths and forgotten on others.
+    It was: ``star`` and ``cfl`` rewrote an integer AVG and widened its type,
+    while the cumulative, period-over-period and window wrappers called
+    :func:`resolve_measure_data_type` alone. A direct query therefore emitted
+    ``CAST(AVG(x) AS DECIMAL(21, 2))`` and the same measure inside a PoP metric
+    emitted ``DECIMAL(18, 2)``, which is the type that saturates on MySQL and
+    overflows on Postgres (#330).
+
+    Returns *expr* unchanged when the measure is pass-through, which is what a
+    ``None`` resolved type means.
+    """
+    if dialect is None:
+        return expr
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    if exact is not None:
+        rewritten, target = exact
+        return dialect.cast_to_obml_type(rewritten, target)
+    resolved = resolve_measure_data_type(measure, settings)
+    if resolved is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved)

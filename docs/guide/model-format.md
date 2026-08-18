@@ -1223,9 +1223,6 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     no warning**, and made PostgreSQL raise. An explicit `dataType` is
     respected as declared.
 
-    DuckDB is the exception in both halves: its average is not exact and cannot
-    be made so, so widening there would only convert a loud overflow into a
-    quiet wrong number. It keeps the default.
 
     **DuckDB is the exception**, tracked in
     [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316):

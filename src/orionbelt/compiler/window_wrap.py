@@ -31,7 +31,7 @@ from orionbelt.compiler.metric_expansion import (
 )
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
-    resolve_measure_data_type,
+    cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
 from orionbelt.models.semantic import WindowFunctionKind
@@ -157,10 +157,7 @@ def _apply_measure_cast(
     base_meas = model.effective_measures.get(measure_name)
     if base_meas is None:
         return expr
-    resolved_type = resolve_measure_data_type(base_meas, model.settings)
-    if resolved_type is None:
-        return expr
-    return dialect.cast_to_obml_type(expr, resolved_type)
+    return cast_measure_to_resolved_type(expr, base_meas, model.settings, dialect)
 
 
 def _get_alias(expr: Expr) -> str | None:
