@@ -1015,13 +1015,15 @@ class TestArgumentRewrites:
     @pytest.mark.parametrize(
         ("dialect", "expected"),
         [
-            ("duckdb", "(-7 // 2)"),
-            ("postgres", "DIV(-7, 2)"),
-            ("mysql", "(-7 DIV 2)"),
-            ("clickhouse", "intDiv(-7, 2)"),
-            ("snowflake", "TRUNC(-7 / 2)"),
-            ("bigquery", "DIV(-7, 2)"),
-            ("databricks", "(-7 div 2)"),
+            # The divisor is wrapped so a zero yields NULL (#321) - the
+            # spelling of the division itself is what this test is about.
+            ("duckdb", "(-7 // NULLIF(2, 0))"),
+            ("postgres", "DIV(-7, NULLIF(2, 0))"),
+            ("mysql", "(-7 DIV NULLIF(2, 0))"),
+            ("clickhouse", "intDiv(-7, NULLIF(2, 0))"),
+            ("snowflake", "TRUNC(-7 / NULLIF(2, 0))"),
+            ("bigquery", "DIV(-7, NULLIF(2, 0))"),
+            ("databricks", "(-7 div NULLIF(2, 0))"),
         ],
     )
     def test_integer_division_is_spelled_differently_on_every_engine(
@@ -1033,14 +1035,16 @@ class TestArgumentRewrites:
         assert _render("div(-7, 2)", dialect) == expected
 
     def test_log_base_comes_first_and_bigquery_reverses_it(self) -> None:
-        assert _render("log(10, 100)", "duckdb") == "LOG(10, 100)"
-        assert _render("log(10, 100)", "bigquery") == "LOG(100, 10)"
+        # Asserted as a substring: the call now sits inside a domain guard
+        # (#321), and the argument order is what this test is about.
+        assert "LOG(10, 100)" in _render("log(10, 100)", "duckdb")
+        assert "LOG(100, 10)" in _render("log(10, 100)", "bigquery")
 
     def test_clickhouse_log_changes_base_through_log10(self) -> None:
         """ClickHouse has no two-argument log, and its ``ln`` is a fast
         approximation: ``ln(100) / ln(10)`` returns 1.9999999996784485.
         """
-        assert _render("log(10, 100)", "clickhouse") == "(log10(100) / log10(10))"
+        assert "(log10(100) / log10(10))" in _render("log(10, 100)", "clickhouse")
 
     @pytest.mark.parametrize(
         ("dialect", "expected"),
@@ -1159,7 +1163,12 @@ class TestRenderingInvariants:
                 "trunc(2.5)",
                 "10 / NULLIF((SIGN(2.5) * FLOOR(ABS(2.5))), 0)",
             ),
-            ("dremio", "log(2, 8)", "10 / NULLIF((LOG10(8) / LOG10(2)), 0)"),
+            (
+                "dremio",
+                "log(2, 8)",
+                "10 / NULLIF((CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 "
+                "THEN NULL ELSE (LOG10(8) / LOG10(2)) END), 0)",
+            ),
             ("clickhouse", "round(2.5)", "(sign(2.5) * floor(abs(2.5) + 0.5))"),
         ],
     )
