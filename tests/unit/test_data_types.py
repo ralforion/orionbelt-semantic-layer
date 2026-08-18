@@ -494,3 +494,48 @@ def _bigint_table(duckdb):  # type: ignore[no-untyped-def]
     con.execute("CREATE TABLE charges (day INTEGER, qty BIGINT)")
     con.execute("INSERT INTO charges VALUES (1, 1000000000000000001), (1, 1000000000000000002)")
     return con
+
+
+class TestBigQueryNumericSpill:
+    """NUMERIC is (38, 9), so it carries 29 integer digits however spelled.
+
+    BigQuery documents the rule as ``P <= S + 29``. Checking only ``precision >
+    38 or scale > 9`` let ``decimal(38, 0)`` through as NUMERIC, which needs 38
+    integer digits - measured, a 38-digit value returns "400 numeric out of
+    range" as NUMERIC and comes back intact as BIGNUMERIC. ``decimal(38, 2)``
+    was wrong the same way, at 36.
+    """
+
+    @pytest.mark.parametrize(
+        ("precision", "scale", "expected"),
+        [
+            (18, 2, "NUMERIC"),
+            (21, 2, "NUMERIC"),
+            (25, 2, "NUMERIC"),
+            (38, 9, "NUMERIC"),  # the boundary: 29 integer digits exactly
+            (38, 2, "BIGNUMERIC"),  # 36 integer digits
+            (38, 0, "BIGNUMERIC"),  # 38
+            (38, 15, "BIGNUMERIC"),  # scale past 9
+            (76, 10, "BIGNUMERIC"),
+        ],
+    )
+    def test_the_spill_follows_bigquery_own_rule(
+        self, precision: int, scale: int, expected: str
+    ) -> None:
+        assert BigQueryDialect().render_obml_type(DecimalType(precision, scale)) == expected
+
+    def test_the_exact_avg_input_cast_uses_the_same_rule(self) -> None:
+        """It had its own copy, and the copy kept the old rule.
+
+        That emitted ``AVG(CAST(x AS NUMERIC))`` under a BIGNUMERIC result for
+        a source declared as 38 integer digits - the inner cast failing before
+        the outer one could help.
+        """
+        from orionbelt.ast.nodes import ColumnRef
+
+        dia = BigQueryDialect()
+        rendered = dia.compile_expr(
+            dia.exact_integer_avg(ColumnRef(name="amt", table="t"), DecimalType(38, 0))
+        )
+        assert "BIGNUMERIC" in rendered, rendered
+        assert "NUMERIC)" not in rendered.replace("BIGNUMERIC)", ""), rendered
