@@ -15,6 +15,8 @@ here is the decision and the SQL.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -73,10 +75,13 @@ REWRITTEN = {
     # here too. #318 had left it unrewritten on an assumption (#322).
     "databricks": "/ NULLIF(COUNT(",
 }
-# Postgres, MySQL and Snowflake are already exact; DuckDB has no exact
-# division at all, so a rewrite there would only trade a loud overflow for a
-# quiet wrong number (#316).
+# Postgres, MySQL and Snowflake are already exact, so their *expression* is
+# left alone - but their result type is still widened (#330), because an exact
+# average the declared type cannot hold is no better than an inexact one.
+# DuckDB has no exact division at all, so a rewrite there would only trade a
+# loud overflow for a quiet wrong number (#316).
 LEFT_ALONE = ["duckdb", "postgres", "mysql", "snowflake"]
+NATIVELY_EXACT = ["postgres", "mysql", "snowflake"]
 
 
 def _model():
@@ -271,3 +276,288 @@ def _sql_with_default(measure: str, dialect: str, numeric_default: str) -> str:
         )
         .sql
     )
+
+
+class TestTheResultTypeIsWidenedWhereverTheAverageIsExact:
+    """Not only where it is rewritten (#330).
+
+    Postgres, MySQL and Snowflake compute the average exactly and then had it
+    cast to the ``decimal(18, 2)`` default, which carries 16 integer digits
+    where a 64-bit value needs 19. Measured, MySQL saturated a true
+    1000000000000000003 to 9999999999999999.99 **with no warning**, and
+    Postgres raised. Being exact in the aggregate bought nothing if the type
+    could not carry the result.
+    """
+
+    @pytest.mark.parametrize("dialect", NATIVELY_EXACT)
+    def test_a_natively_exact_dialect_widens_its_result(self, dialect: str) -> None:
+        sql = _sql("Qty Avg", dialect)
+        assert "(21, 2)" in sql, sql
+        assert "(18, 2)" not in sql, sql
+
+    def test_duckdb_keeps_the_default_so_the_overflow_stays_loud(self) -> None:
+        """The one engine where widening would hide the problem.
+
+        Its average is not exact and cannot be made so, so a wider type would
+        let a rounded value through instead of failing on it (#316).
+        """
+        assert "DECIMAL(18, 2)" in _sql("Qty Avg", "duckdb")
+
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_every_dialect_is_classified_for_exactness(self, dialect: str) -> None:
+        """A new dialect cannot default into "exact" without someone measuring."""
+        native = DialectRegistry.get(dialect).avg_over_integers_is_exact
+        assert native is (dialect in NATIVELY_EXACT), (
+            f"{dialect} claims avg_over_integers_is_exact={native}; measure it before changing"
+        )
+
+
+class TestEveryPathThatCastsAMeasureAgrees:
+    """A measure must not change type by being wrapped in a metric.
+
+    ``star`` and ``cfl`` applied the exact-AVG handling; the cumulative,
+    period-over-period and window wrappers called ``resolve_measure_data_type``
+    alone. So the same integer AVG emitted ``DECIMAL(21, 2)`` queried directly
+    and ``DECIMAL(18, 2)`` inside a PoP metric - the type that saturates on
+    MySQL and overflows on Postgres.
+
+    All five now share ``cast_measure_to_resolved_type``, which is the point:
+    the previous shape let a fix land on two paths and be forgotten on three.
+    """
+
+    WRAPPED_YAML = (
+        MODEL_YAML.replace(
+            "dimensions:\n  Day: {dataObject: Charges, column: Day}",
+            "dimensions:\n"
+            "  Day: {dataObject: Charges, column: Day}\n"
+            "  Sale Month: {dataObject: Charges, column: When, timeGrain: month}",
+        ).replace(
+            "      Amount: {code: amount, abstractType: float}",
+            "      Amount: {code: amount, abstractType: float}\n"
+            "      When: {code: when, abstractType: date}",
+        )
+        + """
+metrics:
+  Qty Avg Cumul:
+    type: cumulative
+    measure: Qty Avg
+    timeDimension: Sale Month
+    cumulativeType: sum
+  Qty Avg PoP:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+    )
+
+    @pytest.mark.parametrize("measure", ["Qty Avg", "Qty Avg Cumul", "Qty Avg PoP"])
+    def test_the_widened_type_survives_every_wrapper(self, measure: str) -> None:
+        raw, sm = TrackedLoader().load_string(self.WRAPPED_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=[measure])),
+                model,
+                "postgres",
+            )
+            .sql
+        )
+        assert "DECIMAL(21, 2)" in sql, sql
+        assert "DECIMAL(18, 2)" not in sql, f"{measure} kept the saturating default:\n{sql}"
+
+
+class TestComposedWrappersKeepTheWidenedType:
+    """A second wrapper holds a CTE alias, not the aggregate.
+
+    ``rewrite_exact_integer_avg`` can only fire on a bare ``AVG(x)`` - it needs
+    the argument to rewrite. That is the right test for rewriting and the wrong
+    one for typing: once a window or cumulative metric wraps a
+    period-over-period, the later wrapper is casting a column reference into
+    the earlier CTE, so the rewrite declined and the cast fell back to
+    ``decimal(18, 2)`` - saturating on MySQL, overflowing on Postgres - even
+    though the value in that CTE had already been computed exactly.
+
+    The type now follows the measure and the dialect, which are known at every
+    site, rather than the shape the expression happens to have.
+    """
+
+    COMPOSED_YAML = """
+version: "1.0"
+name: composed
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      When: {code: when, abstractType: date}
+      Qty: {code: qty, abstractType: int}
+dimensions:
+  Sale Month: {dataObject: Charges, column: When, timeGrain: month}
+measures:
+  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
+metrics:
+  Qty Avg Prior:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: previousValue
+  Qty Avg Lag:
+    type: window
+    measure: Qty Avg
+    windowFunction: lag
+    offset: 1
+    timeDimension: Sale Month
+  Running Qty Avg:
+    type: cumulative
+    measure: Qty Avg
+    timeDimension: Sale Month
+    cumulativeType: sum
+"""
+
+    def _compile(self, measures: list[str], dialect: str) -> str:
+        raw, sm = TrackedLoader().load_string(self.COMPOSED_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        return (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=measures)),
+                model,
+                dialect,
+            )
+            .sql
+        )
+
+    @pytest.mark.parametrize(
+        "measures",
+        [
+            ["Qty Avg Prior"],
+            ["Qty Avg Prior", "Qty Avg Lag"],
+            ["Qty Avg Prior", "Running Qty Avg"],
+        ],
+        ids=["pop", "pop+window", "pop+cumulative"],
+    )
+    def test_no_wrapper_falls_back_to_the_narrow_default(self, measures: list[str]) -> None:
+        sql = self._compile(measures, "postgres")
+        assert "DECIMAL(18, 2)" not in sql, sql
+        assert "DECIMAL(21, 2)" in sql, sql
+
+    def test_duckdb_still_keeps_the_default_through_composition(self) -> None:
+        """The exception has to survive composition too, or #316 leaks back."""
+        sql = self._compile(["Qty Avg Prior", "Qty Avg Lag"], "duckdb")
+        assert "DECIMAL(18, 2)" in sql, sql
+        assert "DECIMAL(21, 2)" not in sql, sql
+
+
+@pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+def test_exactness_is_detected_without_a_second_flag(dialect: str) -> None:
+    """A dialect that overrides the rewrite cannot forget to declare itself.
+
+    ``integer_avg_is_exact`` reads the override rather than a parallel boolean,
+    so the two cannot disagree.
+    """
+    from orionbelt.dialect.base import Dialect
+
+    dia = DialectRegistry.get(dialect)
+    overrides = type(dia).exact_integer_avg is not Dialect.exact_integer_avg
+    assert dia.integer_avg_is_exact() == (dia.avg_over_integers_is_exact or overrides)
+
+
+class TestNoPathLeavesARawFloatingAverage:
+    """The invariant that makes shape-independent widening safe.
+
+    ``resolve_measure_cast_type`` widens whenever the dialect can be exact,
+    without inspecting the expression - which is only sound if every path that
+    *builds* an integer AVG rewrites it. Two did not, and each left a raw
+    floating average with a widened cast around it, which is worse than the
+    narrow cast it replaced: the drift became invisible instead of loud.
+
+    - ``defaultValue`` emits ``COALESCE(AVG(x), 0)``, so what reached the
+      rewrite was not a bare ``AVG``.
+    - A window or cumulative metric's placeholder deliberately skips the
+      *cast*, because casting to the metric's own type would truncate the
+      window's input - and skipped the rewrite along with it.
+    """
+
+    REWRITE_ONLY = ["bigquery", "clickhouse", "dremio", "databricks"]
+
+    SHAPES = {
+        "plain": ["Qty Avg"],
+        "defaultValue": ["Qty Avg Def"],
+        "pop": ["Qty Avg Prior"],
+        "window": ["Qty Avg Lag"],
+        "pop+window": ["Qty Avg Prior", "Qty Avg Lag"],
+    }
+
+    YAML = """
+version: "1.0"
+name: raw_avg
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      When: {code: when, abstractType: date}
+      Qty: {code: qty, abstractType: int}
+dimensions:
+  Sale Month: {dataObject: Charges, column: When, timeGrain: month}
+measures:
+  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
+  Qty Avg Def:
+    columns: [{dataObject: Charges, column: Qty}]
+    resultType: int
+    aggregation: avg
+    defaultValue: 0
+metrics:
+  Qty Avg Prior:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: previousValue
+  Qty Avg Lag:
+    type: window
+    measure: Qty Avg
+    windowFunction: lag
+    offset: 1
+    timeDimension: Sale Month
+"""
+
+    @pytest.mark.parametrize("dialect", REWRITE_ONLY)
+    @pytest.mark.parametrize("shape", sorted(SHAPES), ids=sorted(SHAPES))
+    def test_the_aggregate_is_always_rewritten(self, dialect: str, shape: str) -> None:
+        raw, sm = TrackedLoader().load_string(self.YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Sale Month"], measures=self.SHAPES[shape])
+                ),
+                model,
+                dialect,
+            )
+            .sql
+        )
+        raw_avgs = [
+            m.group(0)
+            for m in re.finditer(r"\b(?:AVG|avg)\(([^()]*)\)", sql)
+            if "CAST" not in m.group(1).upper() and "toDecimal" not in m.group(1)
+        ]
+        assert not raw_avgs, (
+            f"{dialect}/{shape} leaves a raw floating average under a widened cast: "
+            f"{raw_avgs}\n{sql}"
+        )

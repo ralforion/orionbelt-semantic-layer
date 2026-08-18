@@ -364,6 +364,39 @@ class Dialect(ABC):
             right=FunctionCall(name="COUNT", args=[arg]),
         )
 
+    #: Whether ``AVG`` over a 64-bit integer column is exact natively.
+    #:
+    #: True on Postgres (``numeric``), MySQL (``decimal``) and Snowflake, which
+    #: need no rewrite - but still need the **result type** widened, because an
+    #: exact average the declared type cannot hold is no better than an
+    #: inexact one. Measured on MySQL, ``CAST(AVG(qty) AS DECIMAL(18, 2))``
+    #: returns 9999999999999999.99 for a true 1000000000000000003, saturating
+    #: silently with no warning at all; Postgres raises instead.
+    #:
+    #: False where the aggregate itself drifts. Those either get an exact
+    #: rewrite (:meth:`exact_integer_avg`) or, on DuckDB alone, keep the
+    #: default so the overflow stays loud rather than becoming a quiet wrong
+    #: number (#316).
+    avg_over_integers_is_exact: bool = False
+
+    def integer_avg_is_exact(self) -> bool:
+        """Whether an integer ``AVG`` ends up exact here, natively or rewritten.
+
+        Deliberately independent of any expression. The **type** a measure is
+        cast to has to be decided the same way wherever the cast happens, and
+        by the time a wrapper composes - a window over a period-over-period,
+        say - the expression it holds is a CTE alias rather than the aggregate.
+        Asking "is this a bare AVG I can rewrite?" answers no there, and the
+        cast fell back to the narrow default even though the value inside the
+        CTE had already been computed exactly.
+
+        Detected by introspection rather than a second flag, so a dialect that
+        overrides :meth:`exact_integer_avg` cannot forget to declare it.
+        """
+        return self.avg_over_integers_is_exact or (
+            type(self).exact_integer_avg is not Dialect.exact_integer_avg
+        )
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
 

@@ -72,6 +72,8 @@ class MySQLDialect(Dialect):
         "boolean": "TINYINT(1)",
     }
 
+    avg_over_integers_is_exact = True
+
     @property
     def name(self) -> str:
         return "mysql"

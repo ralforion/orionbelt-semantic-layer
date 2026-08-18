@@ -20,9 +20,8 @@ from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
 from orionbelt.compiler.type_resolver import (
-    resolve_measure_data_type,
+    cast_measure_to_resolved_type,
     resolve_metric_data_type,
-    rewrite_exact_integer_avg,
 )
 from orionbelt.models.query import NullsPosition
 from orionbelt.models.semantic import DataObject, SemanticModel
@@ -185,18 +184,7 @@ class StarSchemaPlanner:
                 expr = conformed_exprs.get(measure.name, measure.expression)
                 model_measure = model.effective_measures.get(measure.name)
                 if model_measure and dialect:
-                    # An integer AVG is rewritten into an exact form on the
-                    # engines that have one, and carries its own widened type,
-                    # since the default cannot hold what an exact average of
-                    # 64-bit values produces.
-                    exact = rewrite_exact_integer_avg(model_measure, settings, dialect, expr)
-                    if exact is not None:
-                        expr, exact_type = exact
-                        expr = dialect.cast_to_obml_type(expr, exact_type)
-                    else:
-                        resolved_type = resolve_measure_data_type(model_measure, settings)
-                        if resolved_type:
-                            expr = dialect.cast_to_obml_type(expr, resolved_type)
+                    expr = cast_measure_to_resolved_type(expr, model_measure, settings, dialect)
                 builder.select(AliasedExpr(expr=expr, alias=measure.name))
             measure_exprs[measure.name] = expr
 

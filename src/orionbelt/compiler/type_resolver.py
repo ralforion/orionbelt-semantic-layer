@@ -15,6 +15,8 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import (
@@ -188,18 +190,29 @@ def rewrite_exact_integer_avg(
         return None
     if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
         return None
-    if not isinstance(expr, FunctionCall) or expr.name != "AVG":
+    aggregate, rebuild = _unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
         return None
-    if expr.distinct or len(expr.args) != 1:
+    if aggregate.distinct or len(aggregate.args) != 1:
         return None
     resolved = resolve_measure_data_type(measure, settings)
     if not isinstance(resolved, DecimalType):
         return None
     target = resolved if measure.data_type else _widen_to_integer_range(resolved)
-    exact = dialect.exact_integer_avg(expr.args[0], target)
-    if exact is None:
-        return None
-    return exact, target
+    exact = dialect.exact_integer_avg(aggregate.args[0], target)
+    if exact is not None:
+        return rebuild(exact), target
+    if dialect.avg_over_integers_is_exact:
+        # No rewrite needed, but the result type still is. The aggregate is
+        # already exact here; it is the declared decimal(18, 2) that cannot
+        # hold what it produces - measured, MySQL saturates a true
+        # 1000000000000000003 to 9999999999999999.99 with no warning, and
+        # Postgres raises. Widening lets an exact average through intact.
+        return expr, target
+    # Neither exact nor rewritable: DuckDB alone. It keeps the default so the
+    # overflow stays loud, rather than trading it for a quiet wrong number
+    # (#316).
+    return None
 
 
 def _widen_to_integer_range(default: DecimalType) -> DecimalType:
@@ -219,3 +232,103 @@ def _widen_to_integer_range(default: DecimalType) -> DecimalType:
     return DecimalType(
         precision=_MAX_DECIMAL_PRECISION, scale=_MAX_DECIMAL_PRECISION - _INT64_DIGITS
     )
+
+
+def cast_measure_to_resolved_type(
+    expr: Expr,
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Cast a built measure expression to the type it resolves to.
+
+    The single place that decides how a measure aggregate is typed, so the
+    exact-AVG handling cannot be applied on some paths and forgotten on others.
+    It was: ``star`` and ``cfl`` rewrote an integer AVG and widened its type,
+    while the cumulative, period-over-period and window wrappers called
+    :func:`resolve_measure_data_type` alone. A direct query therefore emitted
+    ``CAST(AVG(x) AS DECIMAL(21, 2))`` and the same measure inside a PoP metric
+    emitted ``DECIMAL(18, 2)``, which is the type that saturates on MySQL and
+    overflows on Postgres (#330).
+
+    Returns *expr* unchanged when the measure is pass-through, which is what a
+    ``None`` resolved type means.
+    """
+    if dialect is None:
+        return expr
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    if exact is not None:
+        rewritten, target = exact
+        return dialect.cast_to_obml_type(rewritten, target)
+    resolved = resolve_measure_cast_type(measure, settings, dialect)
+    if resolved is None:
+        return expr
+    return dialect.cast_to_obml_type(expr, resolved)
+
+
+def _unwrap_default(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:
+    """See past a ``defaultValue`` wrapper to the aggregate inside it.
+
+    ``defaultValue`` emits ``COALESCE(AVG(x), 0)``, so what reaches the rewrite
+    is not a bare ``AVG`` and the rewrite declined - leaving a raw floating
+    average with a widened cast around it, which is the silent drift this is
+    meant to remove. Measure *filters* need no equivalent: they change the
+    aggregate's argument, so it stays a bare ``AVG``.
+    """
+    if isinstance(expr, FunctionCall) and expr.name == "COALESCE" and len(expr.args) == 2:
+        inner, fallback = expr.args
+        return inner, lambda done: FunctionCall(name="COALESCE", args=[done, fallback])
+    return expr, lambda done: done
+
+
+def apply_exact_integer_avg(
+    expr: Expr,
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """The rewrite alone, without the cast.
+
+    For the wrapper metrics, whose base aggregate must **not** be cast to the
+    metric's declared type at this point - a rank declaring ``dataType:
+    integer`` would truncate ``SUM(amount)`` before the window ever saw it.
+    Making the average exact and casting it are separate concerns, and only the
+    second is unsafe there; skipping both left those paths on a raw floating
+    average.
+    """
+    if dialect is None:
+        return expr
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    return expr if exact is None else exact[0]
+
+
+def resolve_measure_cast_type(
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> OBMLType | None:
+    """The type a measure is cast to, decided without looking at its expression.
+
+    :func:`rewrite_exact_integer_avg` can only fire on a bare ``AVG(x)``, since
+    it needs the argument to rewrite. That is the right test for *rewriting*
+    and the wrong one for *typing*: once wrappers compose - a window over a
+    period-over-period, a cumulative over one - the later wrapper holds a CTE
+    alias, so the rewrite declines and the cast fell back to the narrow
+    default. The value in that CTE had already been computed exactly, so the
+    narrow type saturated it on MySQL and overflowed it on Postgres for no
+    reason at all.
+
+    The type therefore follows the **measure and the dialect**, which are known
+    everywhere, rather than the shape the expression happens to have at this
+    point in the plan.
+    """
+    resolved = resolve_measure_data_type(measure, settings)
+    if dialect is None or measure.data_type or not isinstance(resolved, DecimalType):
+        return resolved
+    if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
+        return resolved
+    if not dialect.integer_avg_is_exact():
+        # DuckDB alone: the average is not exact, so a wider type would let a
+        # rounded value through instead of failing on it (#316).
+        return resolved
+    return _widen_to_integer_range(resolved)

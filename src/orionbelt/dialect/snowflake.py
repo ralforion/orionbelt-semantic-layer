@@ -36,6 +36,8 @@ class SnowflakeDialect(Dialect):
             return f"NUMBER({p}, {s})"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
+    avg_over_integers_is_exact = True
+
     @property
     def name(self) -> str:
         return "snowflake"
