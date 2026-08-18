@@ -15,6 +15,8 @@ here is the decision and the SQL.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
@@ -469,3 +471,93 @@ def test_exactness_is_detected_without_a_second_flag(dialect: str) -> None:
     dia = DialectRegistry.get(dialect)
     overrides = type(dia).exact_integer_avg is not Dialect.exact_integer_avg
     assert dia.integer_avg_is_exact() == (dia.avg_over_integers_is_exact or overrides)
+
+
+class TestNoPathLeavesARawFloatingAverage:
+    """The invariant that makes shape-independent widening safe.
+
+    ``resolve_measure_cast_type`` widens whenever the dialect can be exact,
+    without inspecting the expression - which is only sound if every path that
+    *builds* an integer AVG rewrites it. Two did not, and each left a raw
+    floating average with a widened cast around it, which is worse than the
+    narrow cast it replaced: the drift became invisible instead of loud.
+
+    - ``defaultValue`` emits ``COALESCE(AVG(x), 0)``, so what reached the
+      rewrite was not a bare ``AVG``.
+    - A window or cumulative metric's placeholder deliberately skips the
+      *cast*, because casting to the metric's own type would truncate the
+      window's input - and skipped the rewrite along with it.
+    """
+
+    REWRITE_ONLY = ["bigquery", "clickhouse", "dremio", "databricks"]
+
+    SHAPES = {
+        "plain": ["Qty Avg"],
+        "defaultValue": ["Qty Avg Def"],
+        "pop": ["Qty Avg Prior"],
+        "window": ["Qty Avg Lag"],
+        "pop+window": ["Qty Avg Prior", "Qty Avg Lag"],
+    }
+
+    YAML = """
+version: "1.0"
+name: raw_avg
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      When: {code: when, abstractType: date}
+      Qty: {code: qty, abstractType: int}
+dimensions:
+  Sale Month: {dataObject: Charges, column: When, timeGrain: month}
+measures:
+  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
+  Qty Avg Def:
+    columns: [{dataObject: Charges, column: Qty}]
+    resultType: int
+    aggregation: avg
+    defaultValue: 0
+metrics:
+  Qty Avg Prior:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: previousValue
+  Qty Avg Lag:
+    type: window
+    measure: Qty Avg
+    windowFunction: lag
+    offset: 1
+    timeDimension: Sale Month
+"""
+
+    @pytest.mark.parametrize("dialect", REWRITE_ONLY)
+    @pytest.mark.parametrize("shape", sorted(SHAPES), ids=sorted(SHAPES))
+    def test_the_aggregate_is_always_rewritten(self, dialect: str, shape: str) -> None:
+        raw, sm = TrackedLoader().load_string(self.YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Sale Month"], measures=self.SHAPES[shape])
+                ),
+                model,
+                dialect,
+            )
+            .sql
+        )
+        raw_avgs = [
+            m.group(0)
+            for m in re.finditer(r"\b(?:AVG|avg)\(([^()]*)\)", sql)
+            if "CAST" not in m.group(1).upper() and "toDecimal" not in m.group(1)
+        ]
+        assert not raw_avgs, (
+            f"{dialect}/{shape} leaves a raw floating average under a widened cast: "
+            f"{raw_avgs}\n{sql}"
+        )

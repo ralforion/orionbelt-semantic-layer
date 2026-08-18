@@ -35,6 +35,7 @@ from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
+    apply_exact_integer_avg,
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
 )
@@ -96,6 +97,32 @@ def _apply_measure_cast(
     if measure is None:
         return expr
     return cast_measure_to_resolved_type(expr, measure, model.settings, dialect)
+
+
+def _apply_base_measure_rewrite(
+    expr: Expr,
+    metric_name: str,
+    model: SemanticModel | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """Make a wrapper metric's base aggregate exact, without casting it.
+
+    A window or cumulative metric's placeholder column holds the *base
+    measure's* aggregate, so the exactness rule is the base measure's too. The
+    cast is deliberately withheld here - it would truncate the window's input -
+    but the rewrite is not, and withholding both is what left an integer AVG
+    reaching the window as a raw floating average on the rewrite-only dialects.
+    """
+    if model is None or dialect is None:
+        return expr
+    metric = model.metrics.get(metric_name)
+    base_name = getattr(metric, "measure", None) if metric else None
+    if not base_name:
+        return expr
+    base = model.effective_measures.get(base_name)
+    if base is None:
+        return expr
+    return apply_exact_integer_avg(expr, base, model.settings, dialect)
 
 
 def _resolve_col_code(model: SemanticModel, obj_name: str, display_name: str) -> str:
@@ -485,11 +512,19 @@ def _build_pop_base_sql(
             # ``dataType: integer`` truncated ``SUM(amount)`` to INT, so 1.49
             # and 1.40 both became 1 and ranked equal. Those wrappers apply
             # the metric's type to the finished window value themselves.
+            #
+            # The *rewrite* is a separate matter from the cast and does apply
+            # here: an integer AVG has to reach the window already exact, or
+            # the wrapper carries a raw floating average that no later cast can
+            # repair. Skipping both left the rewrite-only dialects drifting
+            # exactly where this machinery exists to stop them.
             is_wrapper_metric = m.is_window or m.is_cumulative
             if m.component_measures and not is_wrapper_metric:
                 expr = _apply_metric_cast(expr, m.name, model, dialect)
             elif not m.component_measures:
                 expr = _apply_measure_cast(expr, m.name, model, dialect)
+            elif is_wrapper_metric:
+                expr = _apply_base_measure_rewrite(expr, m.name, model, dialect)
             expr_sql = dialect.compile_expr(expr)
             measure_selects.append(f"{expr_sql} AS {dialect.quote_identifier(m.name)}")
 

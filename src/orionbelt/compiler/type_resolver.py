@@ -15,6 +15,8 @@ Pass-through (no CAST): MIN/MAX, LISTAGG, non-numeric aggregates.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import Dialect
 from orionbelt.models.semantic import (
@@ -188,17 +190,18 @@ def rewrite_exact_integer_avg(
         return None
     if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
         return None
-    if not isinstance(expr, FunctionCall) or expr.name != "AVG":
+    aggregate, rebuild = _unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != "AVG":
         return None
-    if expr.distinct or len(expr.args) != 1:
+    if aggregate.distinct or len(aggregate.args) != 1:
         return None
     resolved = resolve_measure_data_type(measure, settings)
     if not isinstance(resolved, DecimalType):
         return None
     target = resolved if measure.data_type else _widen_to_integer_range(resolved)
-    exact = dialect.exact_integer_avg(expr.args[0], target)
+    exact = dialect.exact_integer_avg(aggregate.args[0], target)
     if exact is not None:
-        return exact, target
+        return rebuild(exact), target
     if dialect.avg_over_integers_is_exact:
         # No rewrite needed, but the result type still is. The aggregate is
         # already exact here; it is the declared decimal(18, 2) that cannot
@@ -261,6 +264,42 @@ def cast_measure_to_resolved_type(
     if resolved is None:
         return expr
     return dialect.cast_to_obml_type(expr, resolved)
+
+
+def _unwrap_default(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:
+    """See past a ``defaultValue`` wrapper to the aggregate inside it.
+
+    ``defaultValue`` emits ``COALESCE(AVG(x), 0)``, so what reaches the rewrite
+    is not a bare ``AVG`` and the rewrite declined - leaving a raw floating
+    average with a widened cast around it, which is the silent drift this is
+    meant to remove. Measure *filters* need no equivalent: they change the
+    aggregate's argument, so it stays a bare ``AVG``.
+    """
+    if isinstance(expr, FunctionCall) and expr.name == "COALESCE" and len(expr.args) == 2:
+        inner, fallback = expr.args
+        return inner, lambda done: FunctionCall(name="COALESCE", args=[done, fallback])
+    return expr, lambda done: done
+
+
+def apply_exact_integer_avg(
+    expr: Expr,
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> Expr:
+    """The rewrite alone, without the cast.
+
+    For the wrapper metrics, whose base aggregate must **not** be cast to the
+    metric's declared type at this point - a rank declaring ``dataType:
+    integer`` would truncate ``SUM(amount)`` before the window ever saw it.
+    Making the average exact and casting it are separate concerns, and only the
+    second is unsafe there; skipping both left those paths on a raw floating
+    average.
+    """
+    if dialect is None:
+        return expr
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    return expr if exact is None else exact[0]
 
 
 def resolve_measure_cast_type(
