@@ -38,6 +38,7 @@ dataObjects:
       Undeclared: {code: u, abstractType: float}
       HalfDeclared: {code: h, abstractType: float, sqlPrecision: 38}
       WideInt: {code: wi, abstractType: float, sqlPrecision: 38, sqlScale: 0}
+      WideIntAvg: {code: wia, abstractType: int, sqlPrecision: 38, sqlScale: 0}
 dimensions:
   Day: {dataObject: Charges, column: Day}
 measures:
@@ -60,6 +61,10 @@ measures:
     expression: "{[Charges].[Money]} * 1"
     resultType: float
     aggregation: sum
+  Wide Avg:
+    columns: [{dataObject: Charges, column: WideIntAvg}]
+    resultType: int
+    aggregation: avg
   Wide Pinned:
     columns: [{dataObject: Charges, column: Wide}]
     resultType: float
@@ -147,3 +152,30 @@ def test_an_expression_measure_is_covered_too() -> None:
 def test_an_expression_over_a_narrow_column_is_left_alone() -> None:
     """Reading the expression must not widen what does not need widening."""
     assert "DECIMAL(18, 2)" in _sql("Expr Narrow")
+
+
+class TestAnIntegerAverageCombinesBothWidenings:
+    """The declared width and the 64-bit room are different requirements.
+
+    A source declared ``decimal(38, 0)`` averaged to ``decimal(21, 2)`` still
+    overflows: 21 minus 2 is nineteen integer digits and the column holds
+    thirty-eight. Measured on PostgreSQL with a value the column legally holds,
+    ``CAST(AVG(amt) AS DECIMAL(21, 2))`` raises where ``DECIMAL(38, 0)``
+    returns 99999999999999999999999999999999999998.
+    """
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "snowflake"])
+    def test_an_exact_dialect_honours_the_declared_width(self, dialect: str) -> None:
+        assert "38, 0" in _sql("Wide Avg", dialect), _sql("Wide Avg", dialect)
+
+    def test_duckdb_is_not_widened_at_all(self) -> None:
+        """Neither widening applies where the average itself is inexact.
+
+        DuckDB averages in DOUBLE, so a wider type does not carry a better
+        number - it carries a rounded one without complaining. Widening it
+        returned 1000000000000000000 for a true 1000000000000000002, which is
+        the silent trade #315 refused and #316 exists to keep refusing.
+        """
+        sql = _sql("Wide Avg", "duckdb")
+        assert "DECIMAL(18, 2)" in sql, sql
+        assert "38, 0" not in sql, sql

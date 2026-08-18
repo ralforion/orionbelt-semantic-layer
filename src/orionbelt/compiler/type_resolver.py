@@ -163,6 +163,7 @@ def rewrite_exact_integer_avg(
     settings: ModelSettings | None,
     dialect: Dialect | None,
     expr: Expr,
+    model: SemanticModel | None = None,
 ) -> tuple[Expr, OBMLType] | None:
     """An exact ``AVG`` and the type to cast it to, or ``None`` to leave both.
 
@@ -200,7 +201,7 @@ def rewrite_exact_integer_avg(
     resolved = resolve_measure_data_type(measure, settings)
     if not isinstance(resolved, DecimalType):
         return None
-    target = resolved if measure.data_type else _widen_to_integer_range(resolved)
+    target = resolved if measure.data_type else _integer_avg_target(measure, resolved, model)
     exact = dialect.exact_integer_avg(aggregate.args[0], target)
     if exact is not None:
         return rebuild(exact), target
@@ -215,6 +216,31 @@ def rewrite_exact_integer_avg(
     # overflow stays loud, rather than trading it for a quiet wrong number
     # (#316).
     return None
+
+
+def _is_integer_avg(measure: Measure) -> bool:
+    return measure.aggregation.upper() == "AVG" and measure.result_type == DataType.INT
+
+
+def _integer_avg_target(
+    measure: Measure,
+    resolved: DecimalType,
+    model: SemanticModel | None,
+) -> DecimalType:
+    """The type an exact integer average is cast to.
+
+    Both widenings apply and they are not the same one. A 64-bit source needs
+    19 integer digits whatever the model says, and a source the model declares
+    wider needs whatever it declared - a ``decimal(38, 0)`` column averaged to
+    ``decimal(21, 2)`` still overflows, since 21 minus 2 is nineteen digits and
+    the column holds thirty-eight.
+
+    Only ever reached for a dialect whose average is exact. Widening an
+    inexact one is the trade #315 refused: it turns a loud overflow into a
+    quietly rounded answer, which is how DuckDB briefly came to return
+    1000000000000000000 for a true 1000000000000000002.
+    """
+    return _widen_for_declared_source(measure, _widen_to_integer_range(resolved), model)
 
 
 def _widen_for_declared_source(
@@ -329,7 +355,7 @@ def cast_measure_to_resolved_type(
     """
     if dialect is None:
         return expr
-    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
@@ -359,6 +385,7 @@ def apply_exact_integer_avg(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> Expr:
     """The rewrite alone, without the cast.
 
@@ -371,7 +398,7 @@ def apply_exact_integer_avg(
     """
     if dialect is None:
         return expr
-    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr)
+    exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
     return expr if exact is None else exact[0]
 
 
@@ -399,13 +426,13 @@ def resolve_measure_cast_type(
     resolved = resolve_measure_data_type(measure, settings)
     if measure.data_type or not isinstance(resolved, DecimalType):
         return resolved
-    resolved = _widen_for_declared_source(measure, resolved, model)
-    if dialect is None:
+    if not _is_integer_avg(measure):
+        # Every other aggregate is exact on every engine, so a source declared
+        # wider than the default simply gets a type that fits.
+        return _widen_for_declared_source(measure, resolved, model)
+    if dialect is None or not dialect.integer_avg_is_exact():
+        # DuckDB alone: the average is not exact, so **no** widening applies -
+        # not the 64-bit room and not the declared source width. A wider type
+        # would let a rounded value through instead of failing on it (#316).
         return resolved
-    if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
-        return resolved
-    if not dialect.integer_avg_is_exact():
-        # DuckDB alone: the average is not exact, so a wider type would let a
-        # rounded value through instead of failing on it (#316).
-        return resolved
-    return _widen_to_integer_range(resolved)
+    return _integer_avg_target(measure, resolved, model)
