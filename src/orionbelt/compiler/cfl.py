@@ -852,7 +852,9 @@ class CFLPlanner:
                 # Same path as the star planner. Here the argument is the union
                 # column rather than the source, which is still the right thing
                 # to average: the legs project pre-aggregation rows.
-                agg_expr = cast_measure_to_resolved_type(agg_expr, model_measure, settings, dialect)
+                agg_expr = cast_measure_to_resolved_type(
+                    agg_expr, model_measure, settings, dialect, model
+                )
             if m.name in requested_measure_names:
                 outer_builder.select(AliasedExpr(expr=agg_expr, alias=m.name))
             outer_measure_exprs[m.name] = agg_expr

@@ -157,7 +157,7 @@ def _apply_measure_cast(
     base_meas = model.effective_measures.get(measure_name)
     if base_meas is None:
         return expr
-    return cast_measure_to_resolved_type(expr, base_meas, model.settings, dialect)
+    return cast_measure_to_resolved_type(expr, base_meas, model.settings, dialect, model)
 
 
 def _get_alias(expr: Expr) -> str | None:

@@ -25,6 +25,7 @@ from orionbelt.models.semantic import (
     Metric,
     ModelSettings,
     PeriodOverPeriodComparison,
+    SemanticModel,
 )
 from orionbelt.models.types import (
     BUILTIN_DEFAULT,
@@ -215,6 +216,46 @@ def rewrite_exact_integer_avg(
     return None
 
 
+def _widen_for_declared_source(
+    measure: Measure,
+    resolved: DecimalType,
+    model: SemanticModel | None,
+) -> DecimalType:
+    """Widen an inferred type that the source column is declared to outgrow.
+
+    The default carries 16 integer digits. A model that says its column is
+    ``decimal(38, 15)`` has said, in the only vocabulary OBML has for it, that
+    the column holds values with up to 23 - so casting its total to the default
+    cannot work. Measured, that overflows on DuckDB, Postgres and ClickHouse
+    and **saturates silently on MySQL**: a true 100000000000000001.10 comes
+    back as 9999999999999999.99, no warning.
+
+    Only the precision moves; the scale is the rounding the model asked for and
+    is left alone. Both halves of the declared width must be present, per #313 -
+    ``sqlPrecision`` alone says nothing about scale, and assuming zero there
+    reintroduced a rounding bug.
+
+    An **undeclared** column is not covered and cannot be: nothing in the model
+    says how large its values are. Those still overflow, and still saturate on
+    MySQL, which is tracked separately as a cross-engine consistency defect
+    rather than a typing one.
+    """
+    if model is None or len(measure.columns) != 1:
+        return resolved
+    ref = measure.columns[0]
+    obj = model.data_objects.get(ref.view) if ref.view else None
+    column = obj.columns.get(ref.column) if obj and ref.column else None
+    if column is None or column.sql_precision is None or column.sql_scale is None:
+        return resolved
+    declared_integer_digits = column.sql_precision - column.sql_scale
+    if declared_integer_digits <= resolved.precision - resolved.scale:
+        return resolved
+    return DecimalType(
+        precision=min(_MAX_DECIMAL_PRECISION, declared_integer_digits + resolved.scale),
+        scale=resolved.scale,
+    )
+
+
 def _widen_to_integer_range(default: DecimalType) -> DecimalType:
     """The default's scale, widened to hold any 64-bit integer part.
 
@@ -239,6 +280,7 @@ def cast_measure_to_resolved_type(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> Expr:
     """Cast a built measure expression to the type it resolves to.
 
@@ -260,7 +302,7 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
-    resolved = resolve_measure_cast_type(measure, settings, dialect)
+    resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
         return expr
     return dialect.cast_to_obml_type(expr, resolved)
@@ -306,6 +348,7 @@ def resolve_measure_cast_type(
     measure: Measure,
     settings: ModelSettings | None,
     dialect: Dialect | None,
+    model: SemanticModel | None = None,
 ) -> OBMLType | None:
     """The type a measure is cast to, decided without looking at its expression.
 
@@ -323,7 +366,10 @@ def resolve_measure_cast_type(
     point in the plan.
     """
     resolved = resolve_measure_data_type(measure, settings)
-    if dialect is None or measure.data_type or not isinstance(resolved, DecimalType):
+    if measure.data_type or not isinstance(resolved, DecimalType):
+        return resolved
+    resolved = _widen_for_declared_source(measure, resolved, model)
+    if dialect is None:
         return resolved
     if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
         return resolved
