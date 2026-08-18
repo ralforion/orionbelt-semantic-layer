@@ -216,7 +216,8 @@ them, so `SUBSTRING(...)` and `substring(...)` are the same entry. `?` marks an
 optional argument.
 
 Every entry renders on all eight dialects. On Databricks `json_value` reads
-through `try_variant_get`, available on Databricks SQL and on Runtime 15.3 or
+through `try_variant_get` behind a `schema_of_variant` guard, available on
+Databricks SQL and on Runtime 15.3 or
 above; on Dremio through `TRY_CONVERT_FROM(x AS ROW(...))`, whose row type is
 built from the literal path at compile time and whose member names are quoted,
 since Dremio is the one dialect that puts them in identifier position.
@@ -262,11 +263,11 @@ path to a scalar, and the entry already answers NULL for an object or array.
 The scalar comes back as a string, so `1` reads as `'1'`.
 
 A path resolving to an **object or array** is NULL, and that rule is enforced
-rather than inherited: DuckDB, Postgres, Snowflake and MySQL all return the
-*serialized JSON* for a non-scalar path, so each is wrapped in a type guard
-(`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`). BigQuery and ClickHouse
-already answer NULL. Databricks and Dremio get it from a cast that declines
-rather than fails: `try_variant_get(…, 'string')` and
+rather than inherited: DuckDB, Postgres, Snowflake, MySQL and Databricks all
+return the *serialized JSON* for a non-scalar path, so each is wrapped in a
+type guard (`json_type`, `json_typeof`, `TYPEOF`, `JSON_TYPE`,
+`schema_of_variant`). BigQuery and ClickHouse already answer NULL. Dremio alone
+gets the rule from a cast that declines rather than fails,
 `TRY_CONVERT_FROM(x AS ROW(… VARCHAR))`, whose innermost `VARCHAR` will not
 accept an object or an array. Reach an array element with a subscript instead —
 `json_value(x, '$.arr[0]')`.

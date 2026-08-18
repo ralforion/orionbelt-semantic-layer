@@ -764,13 +764,15 @@ _JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "empty string for an absent path, so the call is wrapped in "
             "``nullIf(..., '')``. That restores NULL for the common case but "
             "cannot distinguish an absent path from a genuine empty-string "
-            "value - both come back NULL there. Databricks and Dremio need no guard "
-            "at all, both getting the rule from a cast that declines rather "
-            "than fails: `try_variant_get(..., 'string')` on Databricks, and "
-            "`TRY_CONVERT_FROM(x AS ROW(...))` on Dremio, whose innermost "
-            "VARCHAR will not accept an object or an array. Dremio's row type "
-            "is built from the path at compile time, which is another thing "
-            "the literal-path rule buys."
+            "value - both come back NULL there. Databricks needs a guard too, "
+            "spelled with ``schema_of_variant``: "
+            "`try_variant_get(..., 'string')` was believed to decline a "
+            "non-scalar and was measured returning the serialized JSON like "
+            "the rest. Dremio alone needs none, taking the rule from "
+            "`TRY_CONVERT_FROM(x AS ROW(...))`, whose innermost VARCHAR will "
+            "not accept an object or an array. Dremio's row type is built from "
+            "the path at compile time, which is another thing the literal-path "
+            "rule buys."
         ),
         examples=(
             FunctionExample("""json_value('{"a": "x"}', '$.a')""", "x"),
