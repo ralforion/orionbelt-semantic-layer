@@ -13,8 +13,10 @@ PostgreSQL   numeric field overflow      100000000000000001.10
 MySQL        **9999999999999999.99**     100000000000000001.10
 ===========  ==========================  =========================
 
-MySQL saturates with no warning, which is why this is worth typing correctly
-rather than leaving to the engine (#323).
+MySQL saturated rather than refusing, which is why this is worth typing
+correctly rather than leaving to the engine (#323). Its own casts now carry 38
+digits so that column can no longer be reached (#336), but the other engines
+still refuse, and a declared width is what makes the measure portable.
 """
 
 from __future__ import annotations
@@ -99,8 +101,10 @@ def test_a_column_that_fits_is_left_alone() -> None:
 def test_an_undeclared_column_cannot_be_widened() -> None:
     """Nothing in the model says how large its values are.
 
-    This is the residual: such a measure still overflows, and still saturates
-    on MySQL. Pinned so the limit is visible rather than assumed away.
+    This is the residual: such a measure still overflows on the engines that
+    refuse one. It no longer saturates on MySQL, whose casts carry 38 digits
+    for that reason (#336), so the failure is at least loud everywhere it
+    happens. Pinned so the limit is visible rather than assumed away.
     """
     assert "DECIMAL(18, 2)" in _sql("Undeclared Sum")
 
@@ -120,10 +124,20 @@ def test_an_explicit_data_type_still_wins() -> None:
     assert "DECIMAL(18, 2)" in _sql("Wide Pinned")
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "mysql", "duckdb", "clickhouse", "snowflake"])
+# MySQL floors a measure's decimal cast at 38 digits of its own, because it
+# saturates an overflow where the others raise (#336). The widening still has
+# to reach it - a narrower resolved type would show up as a narrower cast -
+# it just cannot land on the same number. Substrings rather than whole type
+# names, since the engines spell a decimal differently and the point is width.
+WIDENED_TO = dict.fromkeys(["postgres", "duckdb", "clickhouse", "snowflake"], "25, 2") | {
+    "mysql": "38, 2"
+}
+
+
+@pytest.mark.parametrize("dialect", sorted(WIDENED_TO))
 def test_the_widening_reaches_every_dialect(dialect: str) -> None:
     sql = _sql("Wide Sum", dialect)
-    assert "25, 2" in sql, sql
+    assert WIDENED_TO[dialect] in sql, sql
 
 
 def test_the_scale_gives_way_when_the_integer_part_cannot_fit() -> None:

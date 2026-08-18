@@ -1186,9 +1186,10 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
 
     An **undeclared** column cannot be widened, because nothing in the model
     says how large its values are. A total that outgrows `decimal(18, 2)` then
-    fails on PostgreSQL, DuckDB and ClickHouse - and **saturates silently on
-    MySQL**, returning `9999999999999999.99` for a true
-    `100000000000000001.10` with no warning. Declare the column width, or pin
+    fails on PostgreSQL, DuckDB and ClickHouse. It does not fail on MySQL,
+    whose casts carry 38 digits precisely because it would otherwise saturate
+    rather than refuse (see [Numeric Overflow](#numeric-overflow)) - so a model
+    that only ever runs there will not notice. Declare the column width, or pin
     the measure's `dataType`, if your totals can reach 16 digits.
 
 !!! note "Large integer measures"
@@ -1241,9 +1242,11 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     got there natively or by rewrite, since an exact average the declared type
     cannot hold is no better than an inexact one. `decimal(18, 2)` carries 16
     integer digits and a 64-bit value needs 19. Measured, the default made
-    MySQL saturate a true `1000000000000000003` to `9999999999999999.99` **with
-    no warning**, and made PostgreSQL raise. An explicit `dataType` is
-    respected as declared.
+    PostgreSQL raise and MySQL return `9999999999999999.99` for a true
+    `1000000000000000003` - a saturated cast, which its widened cast now holds
+    (see [Numeric Overflow](#numeric-overflow)), but the widened *result type*
+    is what keeps the exact average on the other engines. An explicit
+    `dataType` is respected as declared.
 
 
     **DuckDB is the exception**, tracked in
@@ -1315,6 +1318,58 @@ Rate:
     0)` returned NULL on two engines and raised on four, and `log` outside its
     domain had four different answers - including `inf`, `-0.0`, `-inf` and
     `nan` on ClickHouse, which is the silent case NULL exists to remove.
+
+### Numeric Overflow
+
+**A value that outgrows its type is an error on every engine but MySQL, which
+returns a wrong number instead.** Measured on the same measure over the same
+data, a true total of `100000000000000000` under `dataType: "decimal(18, 2)"`:
+
+| dialect | result |
+| --- | --- |
+| DuckDB | raises `Conversion Error` |
+| PostgreSQL | raises `numeric field overflow` |
+| ClickHouse | raises code 407 |
+| Snowflake | raises |
+| Databricks | raises |
+| BigQuery | `100000000000000000` - its `NUMERIC` is (38, 9), so the value fits |
+| MySQL | `9999999999999999.99` - saturated |
+
+MySQL attaches warning 1264 to that row, but a warning is not an error and no
+driver on this stack surfaces one, so what reaches a dashboard is a plausible
+wrong number. No session setting changes it: `STRICT_ALL_TABLES`,
+`STRICT_TRANS_TABLES` and `TRADITIONAL` all saturate exactly as the default
+does, because those modes govern writes rather than a `SELECT`-time `CAST`.
+
+So on MySQL a measure's decimal cast is widened to at least 38 digits, and the
+overflow stops being reachable rather than being caught:
+
+```sql
+CAST(SUM(`s`.`amt`) AS DECIMAL(38, 2))   -- MySQL; DECIMAL(18, 2) elsewhere
+```
+
+Only the **precision** moves. The scale is what shapes the value and is carried
+through exactly as declared, so `decimal(18, 2)` still rounds to two places and
+only stops refusing totals the source holds legally. A model that declares more
+than 38 keeps what it declared.
+
+38 and no further, though MySQL itself allows 65: it is what every other
+supported engine accepts, so a value MySQL now returns is one a portable model
+could have carried anyway. Widening to 65 would let this one engine answer
+where the other seven cannot, which reverses the divergence rather than
+removing it.
+
+!!! warning "One case is still saturated: a 64-bit integer cast"
+
+    A measure that resolves to `bigint` casts to `SIGNED`, which is MySQL's
+    only 64-bit integer cast target - its `CAST` vocabulary has no wider one.
+    A `SUM` over a bigint column past `9223372036854775807` therefore still
+    returns `9223372036854775807` on MySQL where the other engines raise.
+
+    Widening it would mean casting every count to `DECIMAL`, changing the type
+    family of the most common measure in a model to reach a value no real count
+    has. If your integer totals can pass 9.2 quintillion, declare a
+    `dataType: "decimal(38, 0)"` on the measure, which is not affected.
 
 ### Explicit Data Type
 
