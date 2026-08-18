@@ -71,5 +71,9 @@ intDiv(7, NULLIF(0, 0));
 (CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 THEN NULL ELSE (log10(8) / log10(2)) END);
 --   log(1, 8) = None
 (CASE WHEN 1 <= 0 OR 1 = 1 OR 8 <= 0 THEN NULL ELSE (log10(8) / log10(1)) END);
+--   log(0, 8) = None
+(CASE WHEN 0 <= 0 OR 0 = 1 OR 8 <= 0 THEN NULL ELSE (log10(8) / log10(0)) END);
 --   log(2, 0) = None
 (CASE WHEN 2 <= 0 OR 2 = 1 OR 0 <= 0 THEN NULL ELSE (log10(0) / log10(2)) END);
+--   log(2, -8) = None
+(CASE WHEN 2 <= 0 OR 2 = 1 OR -8 <= 0 THEN NULL ELSE (log10(-8) / log10(2)) END);

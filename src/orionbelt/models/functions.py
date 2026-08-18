@@ -512,8 +512,13 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         examples=(
             FunctionExample("log(10, 100)", 2),
             FunctionExample("log(2, 8)", 3),
+            # All four undefined cases, not two: the ClickHouse answers differ
+            # per case (inf, -0.0, -inf, nan), so pinning half would leave the
+            # other half free to drift.
             FunctionExample("log(1, 8)", None),
+            FunctionExample("log(0, 8)", None),
             FunctionExample("log(2, 0)", None),
+            FunctionExample("log(2, -8)", None),
         ),
     ),
 )
