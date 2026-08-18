@@ -257,7 +257,39 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
-    resolved = resolve_measure_data_type(measure, settings)
+    resolved = resolve_measure_cast_type(measure, settings, dialect)
     if resolved is None:
         return expr
     return dialect.cast_to_obml_type(expr, resolved)
+
+
+def resolve_measure_cast_type(
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+) -> OBMLType | None:
+    """The type a measure is cast to, decided without looking at its expression.
+
+    :func:`rewrite_exact_integer_avg` can only fire on a bare ``AVG(x)``, since
+    it needs the argument to rewrite. That is the right test for *rewriting*
+    and the wrong one for *typing*: once wrappers compose - a window over a
+    period-over-period, a cumulative over one - the later wrapper holds a CTE
+    alias, so the rewrite declines and the cast fell back to the narrow
+    default. The value in that CTE had already been computed exactly, so the
+    narrow type saturated it on MySQL and overflowed it on Postgres for no
+    reason at all.
+
+    The type therefore follows the **measure and the dialect**, which are known
+    everywhere, rather than the shape the expression happens to have at this
+    point in the plan.
+    """
+    resolved = resolve_measure_data_type(measure, settings)
+    if dialect is None or measure.data_type or not isinstance(resolved, DecimalType):
+        return resolved
+    if measure.aggregation.upper() != "AVG" or measure.result_type != DataType.INT:
+        return resolved
+    if not dialect.integer_avg_is_exact():
+        # DuckDB alone: the average is not exact, so a wider type would let a
+        # rounded value through instead of failing on it (#316).
+        return resolved
+    return _widen_to_integer_range(resolved)

@@ -369,3 +369,103 @@ metrics:
         )
         assert "DECIMAL(21, 2)" in sql, sql
         assert "DECIMAL(18, 2)" not in sql, f"{measure} kept the saturating default:\n{sql}"
+
+
+class TestComposedWrappersKeepTheWidenedType:
+    """A second wrapper holds a CTE alias, not the aggregate.
+
+    ``rewrite_exact_integer_avg`` can only fire on a bare ``AVG(x)`` - it needs
+    the argument to rewrite. That is the right test for rewriting and the wrong
+    one for typing: once a window or cumulative metric wraps a
+    period-over-period, the later wrapper is casting a column reference into
+    the earlier CTE, so the rewrite declined and the cast fell back to
+    ``decimal(18, 2)`` - saturating on MySQL, overflowing on Postgres - even
+    though the value in that CTE had already been computed exactly.
+
+    The type now follows the measure and the dialect, which are known at every
+    site, rather than the shape the expression happens to have.
+    """
+
+    COMPOSED_YAML = """
+version: "1.0"
+name: composed
+dataObjects:
+  Charges:
+    code: charges
+    columns:
+      When: {code: when, abstractType: date}
+      Qty: {code: qty, abstractType: int}
+dimensions:
+  Sale Month: {dataObject: Charges, column: When, timeGrain: month}
+measures:
+  Qty Avg: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: avg}
+metrics:
+  Qty Avg Prior:
+    type: period_over_period
+    expression: '{[Qty Avg]}'
+    periodOverPeriod:
+      timeDimension: Sale Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: previousValue
+  Qty Avg Lag:
+    type: window
+    measure: Qty Avg
+    windowFunction: lag
+    offset: 1
+    timeDimension: Sale Month
+  Running Qty Avg:
+    type: cumulative
+    measure: Qty Avg
+    timeDimension: Sale Month
+    cumulativeType: sum
+"""
+
+    def _compile(self, measures: list[str], dialect: str) -> str:
+        raw, sm = TrackedLoader().load_string(self.COMPOSED_YAML)
+        model, result = ReferenceResolver().resolve(raw, sm)
+        assert result.valid, result.errors
+        return (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=["Sale Month"], measures=measures)),
+                model,
+                dialect,
+            )
+            .sql
+        )
+
+    @pytest.mark.parametrize(
+        "measures",
+        [
+            ["Qty Avg Prior"],
+            ["Qty Avg Prior", "Qty Avg Lag"],
+            ["Qty Avg Prior", "Running Qty Avg"],
+        ],
+        ids=["pop", "pop+window", "pop+cumulative"],
+    )
+    def test_no_wrapper_falls_back_to_the_narrow_default(self, measures: list[str]) -> None:
+        sql = self._compile(measures, "postgres")
+        assert "DECIMAL(18, 2)" not in sql, sql
+        assert "DECIMAL(21, 2)" in sql, sql
+
+    def test_duckdb_still_keeps_the_default_through_composition(self) -> None:
+        """The exception has to survive composition too, or #316 leaks back."""
+        sql = self._compile(["Qty Avg Prior", "Qty Avg Lag"], "duckdb")
+        assert "DECIMAL(18, 2)" in sql, sql
+        assert "DECIMAL(21, 2)" not in sql, sql
+
+
+@pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+def test_exactness_is_detected_without_a_second_flag(dialect: str) -> None:
+    """A dialect that overrides the rewrite cannot forget to declare itself.
+
+    ``integer_avg_is_exact`` reads the override rather than a parallel boolean,
+    so the two cannot disagree.
+    """
+    from orionbelt.dialect.base import Dialect
+
+    dia = DialectRegistry.get(dialect)
+    overrides = type(dia).exact_integer_avg is not Dialect.exact_integer_avg
+    assert dia.integer_avg_is_exact() == (dia.avg_over_integers_is_exact or overrides)

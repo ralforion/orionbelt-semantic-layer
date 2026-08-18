@@ -379,6 +379,24 @@ class Dialect(ABC):
     #: number (#316).
     avg_over_integers_is_exact: bool = False
 
+    def integer_avg_is_exact(self) -> bool:
+        """Whether an integer ``AVG`` ends up exact here, natively or rewritten.
+
+        Deliberately independent of any expression. The **type** a measure is
+        cast to has to be decided the same way wherever the cast happens, and
+        by the time a wrapper composes - a window over a period-over-period,
+        say - the expression it holds is a CTE alias rather than the aggregate.
+        Asking "is this a bare AVG I can rewrite?" answers no there, and the
+        cast fell back to the narrow default even though the value inside the
+        CTE had already been computed exactly.
+
+        Detected by introspection rather than a second flag, so a dialect that
+        overrides :meth:`exact_integer_avg` cannot forget to declare it.
+        """
+        return self.avg_over_integers_is_exact or (
+            type(self).exact_integer_avg is not Dialect.exact_integer_avg
+        )
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
 
