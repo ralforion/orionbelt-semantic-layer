@@ -19,6 +19,7 @@ from collections.abc import Callable
 
 from orionbelt.ast.nodes import Expr, FunctionCall
 from orionbelt.dialect.base import Dialect
+from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     DataType,
     Measure,
@@ -240,20 +241,50 @@ def _widen_for_declared_source(
     MySQL, which is tracked separately as a cross-engine consistency defect
     rather than a typing one.
     """
-    if model is None or len(measure.columns) != 1:
+    if model is None:
         return resolved
-    ref = measure.columns[0]
-    obj = model.data_objects.get(ref.view) if ref.view else None
-    column = obj.columns.get(ref.column) if obj and ref.column else None
-    if column is None or column.sql_precision is None or column.sql_scale is None:
-        return resolved
-    declared_integer_digits = column.sql_precision - column.sql_scale
+    declared_integer_digits = _widest_declared_source(measure, model)
     if declared_integer_digits <= resolved.precision - resolved.scale:
         return resolved
+    needed = declared_integer_digits + resolved.scale
+    if needed <= _MAX_DECIMAL_PRECISION:
+        return DecimalType(precision=needed, scale=resolved.scale)
+    # Past what any engine accepts, so the scale gives way rather than the
+    # integer part. A source declared decimal(38, 0) holds 38 integer digits;
+    # keeping the default's two decimals would leave 36 and overflow on a value
+    # the column holds quite legally. Dropping fractional places the source
+    # never had is the smaller loss.
     return DecimalType(
-        precision=min(_MAX_DECIMAL_PRECISION, declared_integer_digits + resolved.scale),
-        scale=resolved.scale,
+        precision=_MAX_DECIMAL_PRECISION,
+        scale=max(0, _MAX_DECIMAL_PRECISION - declared_integer_digits),
     )
+
+
+def _widest_declared_source(measure: Measure, model: SemanticModel) -> int:
+    """Integer digits of the widest column this measure reads, or 0 if unknown.
+
+    Reads ``columns`` **and** an ``expression``. Keying on ``len(columns) == 1``
+    skipped every expression measure, which is the third time that exact cut
+    has hidden a bug - the CFL leg alignment made it twice (#305, #311). An
+    expression measure aggregates a formula over the same physical columns and
+    has the same reason to outgrow the default.
+
+    Only a fully declared width counts, per #313: ``sqlPrecision`` alone says
+    nothing about scale.
+    """
+    refs: list[tuple[str, str]] = [
+        (ref.view, ref.column) for ref in measure.columns if ref.view and ref.column
+    ]
+    if measure.expression:
+        refs.extend(find_qualified_refs(measure.expression))
+    widest = 0
+    for obj_name, col_name in refs:
+        obj = model.data_objects.get(obj_name)
+        column = obj.columns.get(col_name) if obj else None
+        if column is None or column.sql_precision is None or column.sql_scale is None:
+            continue
+        widest = max(widest, column.sql_precision - column.sql_scale)
+    return widest
 
 
 def _widen_to_integer_range(default: DecimalType) -> DecimalType:

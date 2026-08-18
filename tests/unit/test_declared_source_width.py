@@ -37,6 +37,7 @@ dataObjects:
       Money: {code: m, abstractType: float, sqlPrecision: 18, sqlScale: 2}
       Undeclared: {code: u, abstractType: float}
       HalfDeclared: {code: h, abstractType: float, sqlPrecision: 38}
+      WideInt: {code: wi, abstractType: float, sqlPrecision: 38, sqlScale: 0}
 dimensions:
   Day: {dataObject: Charges, column: Day}
 measures:
@@ -48,6 +49,15 @@ measures:
     aggregation: sum
   Half Sum:
     columns: [{dataObject: Charges, column: HalfDeclared}]
+    resultType: float
+    aggregation: sum
+  Int Sum: {columns: [{dataObject: Charges, column: WideInt}], resultType: float, aggregation: sum}
+  Expr Sum:
+    expression: "{[Charges].[Wide]} * 1"
+    resultType: float
+    aggregation: sum
+  Expr Narrow:
+    expression: "{[Charges].[Money]} * 1"
     resultType: float
     aggregation: sum
   Wide Pinned:
@@ -109,3 +119,31 @@ def test_an_explicit_data_type_still_wins() -> None:
 def test_the_widening_reaches_every_dialect(dialect: str) -> None:
     sql = _sql("Wide Sum", dialect)
     assert "25, 2" in sql, sql
+
+
+def test_the_scale_gives_way_when_the_integer_part_cannot_fit() -> None:
+    """A source declared ``decimal(38, 0)`` holds 38 integer digits.
+
+    Keeping the default's two decimals would leave 36 and overflow on a value
+    the column holds quite legally - measured, DuckDB refuses
+    99999999999999999999999999999999999999 cast to ``DECIMAL(38, 2)`` and
+    accepts it at ``DECIMAL(38, 0)``. Dropping fractional places the source
+    never had is the smaller loss.
+    """
+    assert "DECIMAL(38, 0)" in _sql("Int Sum")
+
+
+def test_an_expression_measure_is_covered_too() -> None:
+    """Keying on ``len(columns) == 1`` skipped every expression measure.
+
+    That exact cut has now hidden a bug three times - the CFL leg alignment
+    made it twice (#305, #311). An expression measure aggregates a formula over
+    the same physical columns and has the same reason to outgrow the default,
+    so the widest column it *references* decides, not its declared ``columns``.
+    """
+    assert "DECIMAL(25, 2)" in _sql("Expr Sum")
+
+
+def test_an_expression_over_a_narrow_column_is_left_alone() -> None:
+    """Reading the expression must not widen what does not need widening."""
+    assert "DECIMAL(18, 2)" in _sql("Expr Narrow")
