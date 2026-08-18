@@ -31,11 +31,18 @@ import pytest
 DREMIO_REST_URL = os.environ.get("DREMIO_REST_URL", "http://localhost:19047")
 OBSL_PGWIRE_HOST = os.environ.get("OBSL_PGWIRE_HOST", "obsl")  # docker network alias
 OBSL_PGWIRE_PORT = int(os.environ.get("OBSL_PGWIRE_PORT", "5432"))
-# Defaults to ``commerce`` (the model name served by the demo stack in
-# ``demo/dremio/``, the usual local target). The dedicated test stack in
-# this directory bakes the ``orionbelt_1_commerce`` example, so ``run.sh``
-# exports ``OBSL_MODEL_NAME=orionbelt_1_commerce`` to match it.
-OBSL_MODEL_NAME = os.environ.get("OBSL_MODEL_NAME", "commerce")
+# Defaults to the model **this directory's** stack serves. The compose file
+# beside this conftest sets ``MODEL_FILES: orionbelt_1_commerce.yaml,...``, so
+# that is what these tests find when nobody says otherwise.
+#
+# It used to default to ``commerce``, the name the separate demo stack in
+# ``demo/dremio/`` serves, and ``run.sh`` exported the right one on the way
+# past. That made the suite pass under ``run.sh`` and fail under a plain
+# ``pytest`` - with three errors that read like a compiler regression
+# (``DATA_READ ERROR`` on a semantic query, ``InvalidCatalogName``) rather
+# than like a name mismatch. Point these tests at the demo stack by exporting
+# ``OBSL_MODEL_NAME=commerce``; that is the unusual case, and an explicit one.
+OBSL_MODEL_NAME = os.environ.get("OBSL_MODEL_NAME", "orionbelt_1_commerce")
 # Stage-2: Dremio-backed model. OBSL compiles to Dremio SQL and executes
 # back against the same Dremio container via the ob-dremio Flight driver.
 OBSL_STAGE2_MODEL_NAME = os.environ.get("OBSL_STAGE2_MODEL_NAME", "dremio_info_schema")

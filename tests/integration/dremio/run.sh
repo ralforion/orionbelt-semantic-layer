@@ -41,6 +41,8 @@ for _ in {1..90}; do
     sleep 2
 done
 
+# These three now match the conftest defaults, so a plain `pytest -m dremio`
+# against this stack works too. Kept explicit: this script pins what it built.
 echo "Running pytest -m dremio..."
 DREMIO_REST_URL="http://localhost:19047" \
 OBSL_PGWIRE_HOST="obsl" \
