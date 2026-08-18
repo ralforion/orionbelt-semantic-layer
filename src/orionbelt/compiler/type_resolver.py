@@ -218,6 +218,60 @@ def rewrite_exact_integer_avg(
     return None
 
 
+def rewrite_exact_integer_sum(
+    measure: Measure,
+    settings: ModelSettings | None,
+    dialect: Dialect | None,
+    expr: Expr,
+) -> tuple[Expr, OBMLType] | None:
+    """An exact ``SUM`` and the type to cast it to, or ``None`` to leave both.
+
+    The ``AVG`` counterpart above exists because that aggregate *drifts*; this
+    one exists because on one engine it *wraps*. Measured on two rows of
+    9000000000000000000, ClickHouse returns -446744073709551616 - a negative
+    total from two positive rows - where DuckDB, Postgres, BigQuery and
+    Databricks raise and Snowflake answers exactly. The accumulator is Int64
+    and has already overflowed by the time anything casts it, so an output type
+    cannot repair it; :meth:`Dialect.exact_integer_sum` says how to cast the
+    **argument** instead, and answers ``None`` on the seven engines that need
+    nothing.
+
+    An integer ``SUM`` infers ``bigint`` (#315) on the strength of being "exact
+    everywhere", which is what this disproves for one engine. The rewrite
+    therefore carries its own result type, or the exact 128-bit total would be
+    cast straight back into the 64 bits it was rewritten to escape.
+
+    A **declared** ``dataType`` still wins, as the resolution order promises,
+    and the expression is still rewritten under it - the same split the ``AVG``
+    rewrite makes. A declaration too narrow for its own data is a modelling
+    error, and one that stays as visible here as anywhere else.
+
+    Deliberately conservative in the same way: only a bare ``SUM(x)``
+    qualifies. A windowed sum arrives as a ``WindowFunction`` rather than a call
+    and keeps today's behaviour, which is the cumulative and period-over-period
+    wrappers. A DISTINCT one is declined rather than rewritten - OBML has no
+    aggregation that produces it today, so the branch would be untestable, and
+    dropping the keyword silently is the one way this rewrite could change an
+    answer rather than repair it.
+    """
+    if dialect is None:
+        return None
+    if measure.aggregation.upper() != "SUM" or measure.result_type != DataType.INT:
+        return None
+    aggregate, rebuild = _unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != "SUM":
+        return None
+    if aggregate.distinct or len(aggregate.args) != 1:
+        return None
+    exact = dialect.exact_integer_sum(aggregate.args[0])
+    if exact is None:
+        return None
+    rewritten, target = exact
+    if measure.data_type:
+        target = parse_data_type(measure.data_type)
+    return rebuild(rewritten), target
+
+
 def _is_integer_avg(measure: Measure) -> bool:
     return measure.aggregation.upper() == "AVG" and measure.result_type == DataType.INT
 
@@ -356,6 +410,8 @@ def cast_measure_to_resolved_type(
     if dialect is None:
         return expr
     exact = rewrite_exact_integer_avg(measure, settings, dialect, expr, model)
+    if exact is None:
+        exact = rewrite_exact_integer_sum(measure, settings, dialect, expr)
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)

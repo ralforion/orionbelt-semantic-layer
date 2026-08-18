@@ -71,19 +71,17 @@ OVERFLOWING = [
 # have cost the ordinary answer.
 IN_RANGE = [1000, 2000]
 
-# Engines that still answer with a number on the 64-bit case, each for its own
-# reason, and each asserted by a test of its own rather than through the shared
-# contract:
+# MySQL still answers with a number on the 64-bit case: it saturates its
+# ``SIGNED`` cast, and its CAST vocabulary has no wider integer target. That
+# residue is asserted by a test of its own rather than through the shared
+# contract; see ``test_mysql_still_saturates_a_64_bit_integer_cast``.
 #
-# * ClickHouse wraps ``SUM`` over Int64 before any cast is reached, returning
-#   -446744073709551616. The loss is inside the aggregate, where no output type
-#   reaches it - the reason the exact-AVG rewrite casts inside the SUM (#318) -
-#   so it is a different defect from this one.
-# * MySQL saturates its ``SIGNED`` cast, the residue this fix leaves; see
-#   ``test_mysql_still_saturates_a_64_bit_integer_cast``.
+# ClickHouse was here too, wrapping its Int64 accumulator to
+# -446744073709551616 before any cast was reached. #338 casts the argument
+# instead, so it now holds the value and the contract covers it.
 #
 # The decimal case, whose total stays well inside Int64, runs everywhere.
-SATURATES_AT_64_BITS = {"clickhouse", "mysql"}
+SATURATES_AT_64_BITS = {"mysql"}
 
 
 def _projection(measure: str, dialect: str) -> str:

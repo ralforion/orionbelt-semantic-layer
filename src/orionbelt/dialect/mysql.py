@@ -6,6 +6,7 @@ import re
 
 from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
 from orionbelt.dialect.base import (
+    PORTABLE_DECIMAL_PRECISION,
     Dialect,
     DialectCapabilities,
     UnsupportedAggregationError,
@@ -17,11 +18,6 @@ from orionbelt.models.types import DecimalType, OBMLType
 
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
 _MYSQL_CAST_CHAR_MAX = 255
-
-# The widest decimal precision every supported engine accepts. A measure cast
-# is widened to at least this on MySQL, and deliberately no further - see
-# ``cast_to_obml_type`` (#336).
-_PORTABLE_DECIMAL_PRECISION = 38
 
 
 @DialectRegistry.register
@@ -267,9 +263,9 @@ class MySQLDialect(Dialect):
         """
         if not isinstance(obml_type, DecimalType):
             return obml_type
-        if obml_type.precision >= _PORTABLE_DECIMAL_PRECISION:
+        if obml_type.precision >= PORTABLE_DECIMAL_PRECISION:
             return obml_type
-        return DecimalType(precision=_PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
+        return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=obml_type.scale)
 
     def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """MySQL's ``div_precision_increment`` defaults to 4, capping
