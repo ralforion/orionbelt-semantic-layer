@@ -69,11 +69,14 @@ REWRITTEN = {
     "bigquery": "AVG(CAST(",
     "clickhouse": "divideDecimal(",
     "dremio": "/ NULLIF(COUNT(",
+    # Measured once its workspace was reachable: AVG over BIGINT returns 1.0E18
+    # here too. #318 had left it unrewritten on an assumption (#322).
+    "databricks": "/ NULLIF(COUNT(",
 }
 # Postgres, MySQL and Snowflake are already exact; DuckDB has no exact
 # division at all, so a rewrite there would only trade a loud overflow for a
 # quiet wrong number (#316).
-LEFT_ALONE = ["duckdb", "postgres", "mysql", "snowflake", "databricks"]
+LEFT_ALONE = ["duckdb", "postgres", "mysql", "snowflake"]
 
 
 def _model():

@@ -1200,10 +1200,10 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     | PostgreSQL, MySQL, Snowflake | already exact | plain `AVG` |
     | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))` |
     | Dremio | DOUBLE, drifts | `CAST(SUM(x) AS DECIMAL(38, s)) / COUNT(x)` |
+    | Databricks | drifts | `CAST(SUM(x) AS DECIMAL(38, s)) / COUNT(x)` |
     | ClickHouse | Float64, drifts | `divideDecimal(SUM(x), COUNT(x), s)` |
     | DuckDB | DOUBLE, drifts | plain `AVG` - no exact route exists |
-    | Databricks | not yet verified | plain `AVG` |
-
+    
     The rewritten result also carries a wider type than the `decimal(18, 2)`
     default, since an exact average of 64-bit values needs 19 integer digits.
     An explicit `dataType` is respected as declared.

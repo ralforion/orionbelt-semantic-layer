@@ -13,13 +13,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
-from orionbelt.models.types import DecimalType, OBMLType
-
-# Widest decimal every supported engine accepts, and the integer digits kept
-# free for a running total. A sum is as many digits as its rows make it, so it
-# needs room the average it divides down to does not.
-_MAX_DECIMAL_PRECISION = 38
-_SUM_HEADROOM_DIGITS = 24
+from orionbelt.models.types import OBMLType
 
 
 @DialectRegistry.register
@@ -46,52 +40,11 @@ class DremioDialect(Dialect):
         """Dremio divides decimals exactly, so SUM/COUNT is all it takes.
 
         Measured: ``CAST(SUM(x) AS DECIMAL(38, 2)) / COUNT(x)`` returns
-        1000000000000000003.000000 where ``AVG(x)`` returns 1e+18. This is the
-        textbook rewrite, and worth noting that it is *not* available on
-        DuckDB, where every division returns DOUBLE whatever the operands. An
-        empty group divides to NULL here rather than raising, measured, so it
-        needs no guard of its own.
-
-        **The cast goes inside the SUM**, which is the whole reason for the
-        inner ``DECIMAL(38, 0)``. ``SUM`` over BIGINT accumulates in BIGINT and
-        wraps: two rows of 9000000000000000000 summed to
-        -446744073709551616, and casting afterwards only widens a number that
-        had already overflowed. Note this is a case where Dremio's own ``AVG``
-        is wrong too - it answered -2.23e17 - so the rewrite fixes more than
+        1000000000000000003.000000 where ``AVG(x)`` returns 1e+18 - a case
+        where Dremio's own ``AVG`` is wrong too, so the rewrite fixes more than
         the floating-point drift it was written for.
-
-        The running total then needs integer room the average will not: a sum
-        is as many digits as its rows make it. Scale is therefore capped so
-        ``_SUM_HEADROOM_DIGITS`` remain for the integer part, since 38 digits
-        cannot hold both a large total and a long fraction. A result asking for
-        more scale than that gets the extra places as zeros, which is the
-        honest trade - the alternative is overflowing on a total the source
-        holds quite legally.
         """
-        if not isinstance(obml_type, DecimalType):
-            return None
-        scale = min(obml_type.scale, _MAX_DECIMAL_PRECISION - _SUM_HEADROOM_DIGITS)
-        accumulated = FunctionCall(
-            name="SUM",
-            args=[
-                Cast(
-                    expr=arg,
-                    type_name=self.render_obml_type(
-                        DecimalType(precision=_MAX_DECIMAL_PRECISION, scale=0)
-                    ),
-                )
-            ],
-        )
-        return BinaryOp(
-            left=Cast(
-                expr=accumulated,
-                type_name=self.render_obml_type(
-                    DecimalType(precision=_MAX_DECIMAL_PRECISION, scale=scale)
-                ),
-            ),
-            op="/",
-            right=FunctionCall(name="COUNT", args=[arg]),
-        )
+        return self._exact_avg_by_sum_over_count(arg, obml_type)
 
     def format_table_ref(self, database: str, schema: str, code: str) -> str:
         """Dremio: supports multi-level paths via the ``code`` field.
@@ -125,7 +78,6 @@ class DremioDialect(Dialect):
         return Cast(expr=expr, type_name=target_type)
 
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:
-        from orionbelt.ast.nodes import BinaryOp
 
         return BinaryOp(
             left=FunctionCall(name="LOWER", args=[column]),

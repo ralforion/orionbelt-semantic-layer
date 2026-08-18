@@ -11,6 +11,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import OBMLType
 
 
 @DialectRegistry.register
@@ -55,6 +56,27 @@ class DatabricksDialect(Dialect):
             supports_ilike=False,
             supports_group_by_all=True,
         )
+
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """Databricks drifts like the others, and was classified without being run.
+
+        #318 left it with the plain ``AVG`` because its warehouse would not
+        start, so the classification was an assumption. Measured once the
+        workspace was reachable: ``AVG`` over BIGINT returns 1.0E18 where the
+        true average is 1000000000000000003, so it belongs with BigQuery,
+        ClickHouse and Dremio rather than with the engines that are exact.
+
+        It is the only engine so far where **both** routes work - casting the
+        input and rewriting as SUM/COUNT are each sufficient. SUM/COUNT is used
+        because it carries more scale (decimal(38, 6) against the input cast's
+        decimal(38, 4)) and shares Dremio's implementation.
+
+        Both hazards checked: an empty group divides to NULL, and a sum past 64
+        bits is exact once the cast is inside the SUM. Worth noting that a raw
+        ``SUM`` over BIGINT raises ARITHMETIC_OVERFLOW here rather than wrapping
+        silently as it does on Dremio and ClickHouse.
+        """
+        return self._exact_avg_by_sum_over_count(arg, obml_type)
 
     def quote_identifier(self, name: str) -> str:
         escaped = name.replace("`", "``")

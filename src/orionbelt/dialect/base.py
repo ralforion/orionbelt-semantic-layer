@@ -310,6 +310,60 @@ class Dialect(ABC):
         """
         return Cast(expr=expr, type_name=self.render_obml_type(obml_type))
 
+    # Widest decimal every supported engine accepts, and the integer digits kept
+    # free for a running total. A sum is as many digits as its rows make it, so
+    # it needs room the average it divides down to does not.
+    _MAX_DECIMAL_PRECISION = 38
+    _SUM_HEADROOM_DIGITS = 24
+
+    def _exact_avg_by_sum_over_count(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """``SUM(x) / COUNT(x)`` in decimal, for engines that divide exactly.
+
+        The textbook rewrite, shared by Dremio and Databricks. It is *not*
+        available on DuckDB, where every division returns DOUBLE whatever the
+        operands, which is why that engine has no exact route at all (#316).
+
+        **The cast goes inside the SUM.** ``SUM`` over a 64-bit column
+        accumulates in 64 bits, and casting afterwards only widens a number
+        that has already wrapped: two rows of 9000000000000000000 summed to
+        -446744073709551616 on Dremio, silently, and raise ARITHMETIC_OVERFLOW
+        on Databricks. Both are fixed by widening the argument first.
+
+        The running total then needs integer room the average will not, so the
+        scale is capped to leave ``_SUM_HEADROOM_DIGITS`` for the integer part:
+        38 digits cannot hold both a large total and a long fraction. A result
+        asking for more scale gets the extra places as zeros, which is the
+        honest trade against overflowing on a total the source holds legally.
+
+        An empty group divides to NULL on both engines, measured, so no
+        zero-count guard is needed here - unlike ClickHouse, whose
+        ``divideDecimal`` raises.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
+        accumulated = FunctionCall(
+            name="SUM",
+            args=[
+                Cast(
+                    expr=arg,
+                    type_name=self.render_obml_type(
+                        DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=0)
+                    ),
+                )
+            ],
+        )
+        return BinaryOp(
+            left=Cast(
+                expr=accumulated,
+                type_name=self.render_obml_type(
+                    DecimalType(precision=self._MAX_DECIMAL_PRECISION, scale=scale)
+                ),
+            ),
+            op="/",
+            right=FunctionCall(name="COUNT", args=[arg]),
+        )
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """An exact ``AVG(arg)`` over an integer column, or ``None`` for none.
 
