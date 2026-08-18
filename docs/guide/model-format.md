@@ -1198,7 +1198,28 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     needs 19. Left to default, `SUM` over a `BIGINT` produced a value the
     engine computed correctly and then failed to cast, so the query errored on
     a perfectly legal figure. A measure declaring `resultType: int` therefore
-    infers `bigint` for `SUM`, which is exact on every dialect.
+    infers `bigint` for `SUM`.
+
+    **On two engines the sum itself is rewritten**, because their accumulator
+    is 64-bit and *wraps* rather than overflowing. Measured on two rows of
+    `9000000000000000000`, ClickHouse and Dremio both returned
+    `-446744073709551616`, a negative total from two positive rows, where
+    DuckDB, PostgreSQL, BigQuery and Databricks raise and Snowflake answers
+    exactly. No output type repairs that: `sumWithOverflow` gives the same
+    value on ClickHouse, and so does casting the result to `DECIMAL(38, 0)`,
+    because the accumulator has already wrapped. So the **argument** is widened
+    instead, and the result carries `decimal(38, 0)`:
+
+    | dialect | `SUM` over a 64-bit measure |
+    | --- | --- |
+    | ClickHouse | `SUM(toDecimal128(x, 0))` |
+    | Dremio | `SUM(CAST(x AS DECIMAL(38, 0)))` |
+    | everyone else | plain `SUM`, cast to `bigint` |
+
+    Only `resultType: int` is rewritten, and only a plain `SUM`. A windowed sum
+    inside a cumulative or period-over-period metric keeps the engine's own
+    behaviour; the measure it aggregates is already rewritten inside the CTE,
+    which is where the accumulation over rows happens.
 
     **`AVG` over an integer measure is rewritten** on the engines that need
     it, rather than widened. See the note below for which, and why the
@@ -1233,7 +1254,8 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     overflowed: two rows of 9000000000000000000 summed to
     -446744073709551616 on Dremio and ClickHouse, silently, and raise
     `ARITHMETIC_OVERFLOW` on Databricks. Casting the argument first is what
-    makes the running total exact.
+    makes the running total exact. A plain `SUM` measure meets the same
+    accumulator and is rewritten the same way - see the note above.
 
     The divisor is also NULLIF-guarded, as every division is - see
     [Division by Zero](#division-by-zero) above.

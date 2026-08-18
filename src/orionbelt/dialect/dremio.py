@@ -36,6 +36,21 @@ class DremioDialect(Dialect):
             unsupported_aggregations=["mode", "measure"],
         )
 
+    def exact_integer_sum(self, arg: Expr) -> Expr | None:
+        """``SUM`` over BIGINT accumulates in 64 bits here, and wraps.
+
+        Measured against Dremio OSS: two rows of 9000000000000000000 sum to
+        -446744073709551616, a negative total from two positive rows, and
+        ``CAST(SUM(qty) AS BIGINT)`` - what OBSL emitted - returns the same,
+        because the accumulator has already wrapped by the time the cast runs.
+        Casting the argument first returns 18000000000000000000.
+
+        The same overflow ``exact_integer_avg`` below already dodges inside its
+        own rewrite, which is where it was first found (#318). It reaches a
+        plain ``SUM`` by the same road (#338).
+        """
+        return self._sum_over_widened_argument(arg)
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """Dremio divides decimals exactly, so SUM/COUNT is all it takes.
 

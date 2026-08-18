@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from orionbelt.ast.nodes import Expr, FunctionCall
-from orionbelt.dialect.base import Dialect
+from orionbelt.dialect.base import PORTABLE_DECIMAL_PRECISION, Dialect
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
     DataType,
@@ -218,6 +218,52 @@ def rewrite_exact_integer_avg(
     return None
 
 
+def apply_exact_integer_sum(
+    expr: Expr,
+    measure: Measure,
+    dialect: Dialect | None,
+) -> Expr:
+    """The integer-``SUM`` rewrite alone, without the cast.
+
+    The ``AVG`` counterpart exists because that aggregate *drifts*; this one
+    exists because on two engines it *wraps*. Measured on two rows of
+    9000000000000000000, ClickHouse and Dremio both return -446744073709551616
+    - a negative total from two positive rows - where DuckDB, Postgres,
+    BigQuery and Databricks raise and Snowflake answers exactly. The
+    accumulator is 64-bit and has already overflowed by the time anything casts
+    it, so :meth:`Dialect.exact_integer_sum` widens the **argument** instead,
+    and answers ``None`` on the six engines that need nothing.
+
+    Rewrite-only, and used on every path rather than only the wrapper ones. The
+    cast cannot be applied here - a wrapper metric's placeholder holds the base
+    measure's aggregate and casting it would truncate the window's input - and
+    the type is not this function's business anyway: it comes from
+    :func:`resolve_measure_cast_type`, which decides without looking at an
+    expression and therefore still decides correctly once wrappers compose.
+
+    Deliberately conservative: only a bare ``SUM(x)`` qualifies. A windowed sum
+    arrives as a ``WindowFunction`` rather than a call, and the measure it
+    aggregates is already rewritten in the CTE beneath it, which is where the
+    accumulation over rows happens. A DISTINCT one is declined rather than
+    rewritten - OBML has no aggregation that produces one today, so the branch
+    would be untestable, and dropping the keyword silently is the one way this
+    could change an answer rather than repair it.
+    """
+    if dialect is None or not _is_integer_sum(measure):
+        return expr
+    aggregate, rebuild = _unwrap_default(expr)
+    if not isinstance(aggregate, FunctionCall) or aggregate.name != "SUM":
+        return expr
+    if aggregate.distinct or len(aggregate.args) != 1:
+        return expr
+    rewritten = dialect.exact_integer_sum(aggregate.args[0])
+    return expr if rewritten is None else rebuild(rewritten)
+
+
+def _is_integer_sum(measure: Measure) -> bool:
+    return measure.aggregation.upper() == "SUM" and measure.result_type == DataType.INT
+
+
 def _is_integer_avg(measure: Measure) -> bool:
     return measure.aggregation.upper() == "AVG" and measure.result_type == DataType.INT
 
@@ -359,6 +405,7 @@ def cast_measure_to_resolved_type(
     if exact is not None:
         rewritten, target = exact
         return dialect.cast_to_obml_type(rewritten, target)
+    expr = apply_exact_integer_sum(expr, measure, dialect)
     resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
         return expr
@@ -424,7 +471,18 @@ def resolve_measure_cast_type(
     point in the plan.
     """
     resolved = resolve_measure_data_type(measure, settings)
-    if measure.data_type or not isinstance(resolved, DecimalType):
+    if measure.data_type:
+        return resolved
+    if _is_integer_sum(measure) and dialect is not None and dialect.integer_sum_is_widened():
+        # ClickHouse and Dremio widen the accumulator, so ``bigint`` - which an
+        # integer SUM otherwise infers (#315) - would cast the exact 128-bit
+        # total straight back into the 64 bits the rewrite escaped. Decided
+        # here rather than alongside the rewrite because the two see different
+        # things: once a cumulative composes over a period-over-period, the
+        # expression is a CTE alias and no rewrite fires, but the value inside
+        # that CTE is already 128-bit and still needs a type that holds it.
+        return DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=0)
+    if not isinstance(resolved, DecimalType):
         return resolved
     if not _is_integer_avg(measure):
         # Every other aggregate is exact on every engine, so a source declared

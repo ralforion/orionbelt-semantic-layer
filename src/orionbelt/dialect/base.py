@@ -256,6 +256,13 @@ class DialectCapabilities:
     unsupported_functions: list[str] = field(default_factory=list)
 
 
+#: The widest decimal precision every supported engine accepts. Where a dialect
+#: has to choose a width of its own - widening a wrapping accumulator (#338), or
+#: a cast that would otherwise saturate (#336) - this is the ceiling, so that
+#: a value one engine now returns is one a portable model could have carried.
+PORTABLE_DECIMAL_PRECISION = 38
+
+
 class Dialect(ABC):
     """Abstract base for all SQL dialects.
 
@@ -419,6 +426,67 @@ class Dialect(ABC):
         ``obml_type`` is the type the result will be cast to, already widened
         to hold a 64-bit integer part, and carries the scale an engine needs
         when it wants one explicitly.
+        """
+        return None
+
+    def _sum_over_widened_argument(self, arg: Expr) -> Expr:
+        """``SUM(CAST(arg AS DECIMAL(38, 0)))``.
+
+        The plain form of the same move :meth:`_exact_avg_by_sum_over_count`
+        makes, for the engines whose only problem is the accumulator. Dremio
+        uses it; ClickHouse spells the widening ``toDecimal128`` and overrides.
+        """
+        widened = Cast(
+            expr=arg,
+            type_name=self.render_obml_type(
+                DecimalType(precision=PORTABLE_DECIMAL_PRECISION, scale=0)
+            ),
+        )
+        return FunctionCall(name="SUM", args=[widened])
+
+    def integer_sum_is_widened(self) -> bool:
+        """Whether an integer ``SUM`` is rewritten to a wider accumulator here.
+
+        Deliberately independent of any expression, for the same reason
+        :meth:`integer_avg_is_exact` is. The **type** such a measure is cast to
+        has to be decided the same way wherever the cast happens, and by the
+        time a wrapper composes - a cumulative over a period-over-period, say -
+        what it holds is a CTE alias rather than the aggregate. Asking "is this
+        a bare SUM I can rewrite?" answers no there, and the cast fell back to
+        the inferred ``bigint``, narrowing an exact 128-bit total straight back
+        into the 64 bits the rewrite existed to escape.
+
+        Detected by introspection rather than a second flag, so a dialect that
+        overrides :meth:`exact_integer_sum` cannot forget to declare it.
+        """
+        return type(self).exact_integer_sum is not Dialect.exact_integer_sum
+
+    def exact_integer_sum(self, arg: Expr) -> Expr | None:
+        """An exact ``SUM(arg)`` over an integer column, and its type.
+
+        ``None`` - the default - keeps the plain ``SUM``, which is right for
+        every engine that either computes the total exactly or refuses it. Most
+        do one or the other: measured on two rows of 9000000000000000000,
+        DuckDB, Postgres, BigQuery and Databricks raise, and Snowflake returns
+        18000000000000000000 intact.
+
+        A dialect overrides this where its accumulator **wraps** instead. That
+        is the one outcome no output type can repair, for the same reason
+        :meth:`exact_integer_avg` exists: the loss is inside the aggregate, and
+        a cast only widens a number that has already gone wrong. Measured on
+        ClickHouse, ``SUM`` over Int64 returns -446744073709551616 for that
+        pair, and casting the result to ``Decimal(38, 0)`` returns it
+        unchanged, while casting the **argument** returns the true total.
+
+        Returns the expression only. An integer ``SUM`` infers ``bigint``
+        (#315), which would cast the exact 128-bit total straight back into the
+        64 bits the rewrite escaped, so the result type has to move too - but
+        it moves through :meth:`integer_sum_is_widened`, which answers without
+        looking at an expression and so still answers inside a wrapper.
+
+        Takes no ``obml_type``, unlike its ``AVG`` counterpart: an average
+        needs a scale to divide to, and a sum of integers has no fractional
+        part to declare one for.
         """
         return None
 

@@ -42,6 +42,31 @@ class ClickHouseDialect(Dialect):
         "boolean": "Bool",
     }
 
+    def exact_integer_sum(self, arg: Expr) -> Expr | None:
+        """``SUM`` over Int64 accumulates in Int64 here, and wraps.
+
+        The same overflow ``exact_integer_avg`` below already dodges inside its
+        own rewrite, reached by the plainer road: measured, two rows of
+        9000000000000000000 summed to -446744073709551616, a negative total
+        from two positive rows, and ``sumWithOverflow`` returns the same. So
+        does an outer ``CAST(SUM(x) AS Decimal(38, 0))``, because by then the
+        accumulator has already wrapped. Casting the **argument** returns
+        18000000000000000000.
+
+        Every other engine either answers exactly or refuses; this is the only
+        one that hands back a plausible wrong number, which is why it is the
+        only override (#338).
+
+        The result type moves with it, to ``PORTABLE_DECIMAL_PRECISION`` rather
+        than this engine's own 76: a total the rewrite lets through should be
+        one every supported engine could carry. That is decided by
+        ``integer_sum_is_widened`` rather than returned here, so it holds
+        inside a wrapper too, where no aggregate is visible to key on.
+        """
+        return FunctionCall(
+            name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, Literal.number(0)])]
+        )
+
     def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
         """ClickHouse needs its own function, and two guards around it.
 

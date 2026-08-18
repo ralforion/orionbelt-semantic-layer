@@ -71,19 +71,17 @@ OVERFLOWING = [
 # have cost the ordinary answer.
 IN_RANGE = [1000, 2000]
 
-# Engines that still answer with a number on the 64-bit case, each for its own
-# reason, and each asserted by a test of its own rather than through the shared
-# contract:
+# MySQL still answers with a number on the 64-bit case: it saturates its
+# ``SIGNED`` cast, and its CAST vocabulary has no wider integer target. That
+# residue is asserted by a test of its own rather than through the shared
+# contract; see ``test_mysql_still_saturates_a_64_bit_integer_cast``.
 #
-# * ClickHouse wraps ``SUM`` over Int64 before any cast is reached, returning
-#   -446744073709551616. The loss is inside the aggregate, where no output type
-#   reaches it - the reason the exact-AVG rewrite casts inside the SUM (#318) -
-#   so it is a different defect from this one.
-# * MySQL saturates its ``SIGNED`` cast, the residue this fix leaves; see
-#   ``test_mysql_still_saturates_a_64_bit_integer_cast``.
+# ClickHouse was here too, wrapping its Int64 accumulator to
+# -446744073709551616 before any cast was reached. #338 casts the argument
+# instead, so it now holds the value and the contract covers it.
 #
 # The decimal case, whose total stays well inside Int64, runs everywhere.
-SATURATES_AT_64_BITS = {"clickhouse", "mysql"}
+SATURATES_AT_64_BITS = {"mysql"}
 
 
 def _projection(measure: str, dialect: str) -> str:
@@ -189,3 +187,86 @@ def test_mysql_still_saturates_a_64_bit_integer_cast(vendor_mysql: VendorTarget)
     """
     got = _outcome(vendor_mysql, "Qty Sum", OVERFLOWING[1][1])
     assert got not in (None, "raised") and Decimal(got) == Decimal(2**63 - 1), got
+
+
+# A period-over-period metric and a cumulative one over the same integer SUM.
+# PoP plans first and hosts the cumulative metric's placeholder inside
+# ``pop_base``, so the composition reaches a site neither wrapper touches
+# alone - which is how a raw 64-bit ``SUM`` survived the fix for #338 and had
+# to be found in review instead.
+COMPOSED_MODEL_YAML = """
+version: "1.0"
+name: composed_wrappers
+dataObjects:
+  Charges:
+    code: charges_overflow
+    columns:
+      Qty: {code: qty, abstractType: int}
+      Day: {code: day, abstractType: date}
+dimensions:
+  Charge Month: {dataObject: Charges, column: Day, timeGrain: month}
+measures:
+  Qty Sum: {columns: [{dataObject: Charges, column: Qty}], resultType: int, aggregation: sum}
+metrics:
+  Qty Running:
+    type: cumulative
+    measure: Qty Sum
+    timeDimension: Charge Month
+  Qty MoM:
+    type: period_over_period
+    expression: "{[Qty Sum]}"
+    periodOverPeriod:
+      timeDimension: Charge Month
+      grain: month
+      offsetGrain: month
+      comparison: difference
+"""
+
+
+def test_clickhouse_composed_wrappers_do_not_wrap(vendor_clickhouse: VendorTarget) -> None:
+    """Both halves of the composition, each with data that reaches it.
+
+    The first month holds **two** rows of 9000000000000000000, so the
+    per-group ``SUM`` inside ``pop_base`` overflows 64 bits on its own - that
+    is the placeholder that was projected raw. The second month adds one, so
+    the running total the window accumulates overflows as well - that is the
+    alias ``cumulative_base`` re-cast to ``Nullable(Int64)``.
+
+    Spread over two months rather than one because a single month exercises
+    only the second half: measured, with one row per month this test passed
+    with the placeholder rewrite removed.
+    """
+    raw, sm = TrackedLoader().load_string(COMPOSED_MODEL_YAML)
+    model, result = ReferenceResolver().resolve(raw, sm)
+    assert result.valid, result.errors
+    sql = (
+        CompilationPipeline()
+        .compile(
+            QueryObject(
+                select=QuerySelect(
+                    dimensions=["Charge Month"], measures=["Qty MoM", "Qty Running"]
+                ),
+                order_by=[{"field": "Charge Month", "direction": "asc"}],
+            ),
+            model,
+            "clickhouse",
+        )
+        .sql
+    )
+    vendor_clickhouse.execute("DROP TABLE IF EXISTS charges_overflow")
+    vendor_clickhouse.execute("CREATE TABLE charges_overflow (qty Int64, day Date) ENGINE = Memory")
+    try:
+        vendor_clickhouse.execute(
+            "INSERT INTO charges_overflow VALUES "
+            "(9000000000000000000, '2026-01-15'), (9000000000000000000, '2026-01-20'), "
+            "(1, '2026-02-15')"
+        )
+        rows = vendor_clickhouse.execute(sql)
+        running = [Decimal(str(r["Qty Running"])) for r in rows]
+    finally:
+        vendor_clickhouse.execute("DROP TABLE IF EXISTS charges_overflow")
+
+    assert running == [
+        Decimal("18000000000000000000"),
+        Decimal("18000000000000000001"),
+    ], running
