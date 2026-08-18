@@ -164,3 +164,36 @@ def test_period_over_period_does_not_acquire_a_second_guard() -> None:
     )
     assert "NULLIF(" in sql, sql
     assert "NULLIF(NULLIF(" not in sql, sql
+
+
+class TestTheStringBuiltDivisionPath:
+    """``render_decimal_division_sql`` - the path PoP uses.
+
+    Divisions are built two ways: as ``BinaryOp`` nodes, and as raw SQL
+    strings. Both need the guard, and the second is the one that got away.
+    """
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_every_dialect_guards_it_including_the_overriding_ones(self, dialect: str) -> None:
+        """The regression this class exists for.
+
+        ClickHouse and MySQL override this method to widen their operands.
+        When the guard moved out of ``pop_wrap`` and into the dialect layer,
+        both overrides silently dropped it, and a period-over-period ratio
+        against a zero previous value went from NULL back to ILLEGAL_DIVISION
+        on ClickHouse - measured, code 153.
+
+        The fix was structural rather than another two edits: the guard now
+        lives in the method dialects do not override, and widening moved to
+        ``_render_decimal_division`` underneath it. This test pins that a new
+        dialect cannot reintroduce the hole by overriding the wrong one.
+        """
+        sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
+        assert "NULLIF(prev, 0)" in sql, f"{dialect} divides by an unguarded divisor: {sql}"
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    def test_the_widening_dialects_still_widen(self, dialect: str) -> None:
+        """Guarding must not have cost ClickHouse and MySQL their precision."""
+        sql = DialectRegistry.get(dialect).render_decimal_division_sql("cur", "prev")
+        if dialect in ("clickhouse", "mysql"):
+            assert "38, 14" in sql, sql

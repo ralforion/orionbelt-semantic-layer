@@ -1000,14 +1000,27 @@ class Dialect(ABC):
         """Render ``left / right`` for decimal-typed operands, given raw SQL.
 
         Used by code paths that build division as string SQL (e.g. PoP
-        comparison CTEs) rather than as ``BinaryOp`` AST nodes. Default
-        is plain SQL division; ClickHouse overrides to widen both sides
-        to ``Decimal(38, 10)`` first so ratio precision survives.
+        comparison CTEs) rather than as ``BinaryOp`` AST nodes.
 
-        The divisor is guarded here too, so a string-built division gets the
-        same zero handling as an AST one (#319).
+        **Do not override this** - override :meth:`_render_decimal_division`
+        instead. This method exists to apply the zero-divisor guard (#319) in
+        one place that a dialect cannot forget. It was overridden directly by
+        ClickHouse and MySQL for operand widening, and when the guard moved
+        here from ``pop_wrap`` those two overrides silently dropped it: a
+        period-over-period ratio against a zero previous value went from NULL
+        back to ILLEGAL_DIVISION on ClickHouse. Splitting the two concerns
+        makes the guard structural rather than remembered.
         """
-        return f"{left_sql} / {self.guard_zero_divisor(None, right_sql)}"
+        return self._render_decimal_division(left_sql, self.guard_zero_divisor(None, right_sql))
+
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
+        """The division itself, for dialects that need the operands widened.
+
+        Default is plain SQL division; ClickHouse and MySQL override to widen
+        both sides first so ratio precision survives. The divisor arrives
+        already guarded.
+        """
+        return f"{left_sql} / {right_sql}"
 
     def render_pop_previous_value_sql(self, prev_sql: str, current_sql: str) -> str:
         """Render a ``previousValue`` PoP projection (the prior period's measure).

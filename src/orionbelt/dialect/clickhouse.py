@@ -161,7 +161,7 @@ class ClickHouseDialect(Dialect):
             return f"GROUP BY {groups} WITH CUBE"
         return super().compile_group_by(group_by, grouping)
 
-    def render_decimal_division_sql(self, left_sql: str, right_sql: str) -> str:
+    def _render_decimal_division(self, left_sql: str, right_sql: str) -> str:
         """Widen operands for raw-SQL decimal division — same fix as the
         BinaryOp override but applied where SQL is built as text (e.g.
         the PoP comparison CTE).
