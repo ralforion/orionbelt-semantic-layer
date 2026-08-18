@@ -239,7 +239,7 @@ The expression is written once. All eight dialects render it into their own JSON
 |---|---|
 | BigQuery | `JSON_VALUE(Tags, '$.team')` |
 | ClickHouse | `nullIf(JSON_VALUE(Tags, '$.team'), '')` |
-| Databricks | `try_variant_get(parse_json(Tags), '$.team', 'string')` |
+| Databricks | `CASE WHEN schema_of_variant(try_variant_get(parse_json(Tags), '$.team')) LIKE 'OBJECT%' OR schema_of_variant(try_variant_get(parse_json(Tags), '$.team')) LIKE 'ARRAY%' THEN NULL ELSE try_variant_get(parse_json(Tags), '$.team', 'string') END` |
 | DuckDB | `CASE WHEN json_type(Tags, '$.team') IN ('OBJECT','ARRAY') THEN NULL ELSE json_extract_string(Tags, '$.team') END` |
 | MySQL | `CASE WHEN JSON_TYPE(JSON_EXTRACT(Tags, '$.team')) IN ('OBJECT','ARRAY') THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT(Tags, '$.team')) END` |
 | Postgres | `CASE WHEN json_typeof(json_extract_path(Tags::json, 'team')) IN ('object','array') THEN NULL ELSE json_extract_path_text(Tags::json, 'team') END` |
@@ -250,8 +250,8 @@ Four things differ, and each was measured rather than assumed:
 
 - **Postgres** takes the path segments as *separate arguments*; **Snowflake** takes them dotted without the `$`, and bracketed for array subscripts — it rejects `arr.0` outright.
 - **ClickHouse** returns the *empty string* rather than NULL for an absent path, so it is wrapped in `nullIf`.
-- **DuckDB, Postgres, Snowflake and MySQL** return the *serialized JSON* for a path landing on an object or array, so each carries a type guard to honour the catalog's NULL rule. That is where the `CASE` comes from.
-- **Databricks and Dremio** get the contract from a cast that declines rather than fails: `try_variant_get(…, 'string')` and `TRY_CONVERT_FROM(x AS ROW(… VARCHAR))`, whose innermost `VARCHAR` will not accept an object or an array.
+- **DuckDB, Postgres, Snowflake, MySQL and Databricks** return the *serialized JSON* for a path landing on an object or array, so each carries a type guard to honour the catalog's NULL rule. That is where the `CASE` comes from. Databricks was believed not to need one - `try_variant_get(…, 'string')` was expected to decline a non-scalar - and was measured returning the JSON like the rest, once its warehouse became reachable again.
+- **Dremio** alone gets the contract from a cast that declines rather than fails, `TRY_CONVERT_FROM(x AS ROW(… VARCHAR))`, whose innermost `VARCHAR` will not accept an object or an array.
 - **Dremio** is also the only one that puts the path in *identifier* position rather than inside a string literal, so its member names are quoted and its row type is built from the literal path at compile time.
 
 That spread is why the path must be a literal, and why `json_value` earns its place in the catalog rather than being hand-written per model.

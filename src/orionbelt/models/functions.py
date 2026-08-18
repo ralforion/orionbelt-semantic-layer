@@ -669,6 +669,9 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             FunctionExample("date_diff('day', DATE '2026-08-15', DATE '2026-08-01')", -14),
             FunctionExample("date_diff('month', DATE '2026-01-31', DATE '2026-03-01')", 2),
             FunctionExample("date_diff('year', DATE '2026-12-31', DATE '2027-01-01')", 1),
+            # Quarter had no example while three engines disagreed about the
+            # calendar grains, so nothing pinned it (#328).
+            FunctionExample("date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01')", 1),
         ),
         unit_argument=0,
     ),
@@ -761,13 +764,15 @@ _JSON_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "empty string for an absent path, so the call is wrapped in "
             "``nullIf(..., '')``. That restores NULL for the common case but "
             "cannot distinguish an absent path from a genuine empty-string "
-            "value - both come back NULL there. Databricks and Dremio need no guard "
-            "at all, both getting the rule from a cast that declines rather "
-            "than fails: `try_variant_get(..., 'string')` on Databricks, and "
-            "`TRY_CONVERT_FROM(x AS ROW(...))` on Dremio, whose innermost "
-            "VARCHAR will not accept an object or an array. Dremio's row type "
-            "is built from the path at compile time, which is another thing "
-            "the literal-path rule buys."
+            "value - both come back NULL there. Databricks needs a guard too, "
+            "spelled with ``schema_of_variant``: "
+            "`try_variant_get(..., 'string')` was believed to decline a "
+            "non-scalar and was measured returning the serialized JSON like "
+            "the rest. Dremio alone needs none, taking the rule from "
+            "`TRY_CONVERT_FROM(x AS ROW(...))`, whose innermost VARCHAR will "
+            "not accept an object or an array. Dremio's row type is built from "
+            "the path at compile time, which is another thing the literal-path "
+            "rule buys."
         ),
         examples=(
             FunctionExample("""json_value('{"a": "x"}', '$.a')""", "x"),
