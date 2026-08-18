@@ -387,19 +387,16 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         """AVG is not widened, and the reason is not an oversight.
 
         Widening its cast would clear the overflow without making the average
-        right, because the loss happens in the aggregate before any cast. AVG
-        over a 64-bit magnitude is exact on Postgres (numeric), MySQL (decimal)
-        and Snowflake, but floating point on DuckDB, ClickHouse and BigQuery.
-        On DuckDB no formulation recovers it: casting the input, casting both
-        operands, and rewriting as SUM/COUNT were each measured to come back
-        DOUBLE, because every route through ``/`` is float division there.
+        right, because the loss happens in the aggregate before any cast. So
+        AVG is fixed by rewriting the *expression* instead, on the engines that
+        have an exact route - see ``test_exact_avg.py``. That rewrite carries
+        its own widened type, which is why nothing is inferred here.
 
-        So a widened AVG would trade a loud overflow for a quietly wrong
-        number, on exactly the engines where the number is wrong. Note that
-        declaring ``dataType`` is **not** a way around this - it widens this
-        same cast, so it reintroduces the quiet wrong number. See
-        ``test_declaring_a_data_type_does_not_rescue_avg_on_duckdb`` below, and
-        #316 for the per-dialect rewrite that would actually fix it.
+        DuckDB has no exact route: casting the input, casting both operands and
+        rewriting as SUM/COUNT were each measured to come back DOUBLE, because
+        every division there is float division. It keeps the default and keeps
+        failing loudly, which is the honest outcome and the reason this
+        assertion still holds (#316).
         """
         m = Measure(name="Qty Avg", aggregation="avg", result_type=DataType.INT)
         assert resolve_measure_data_type(m, None) == BUILTIN_DEFAULT

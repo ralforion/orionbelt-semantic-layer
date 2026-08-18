@@ -42,6 +42,48 @@ class ClickHouseDialect(Dialect):
         "boolean": "Bool",
     }
 
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """ClickHouse needs its own function, and two guards around it.
+
+        ``avg`` returns Float64, and ordinary ``/`` on Decimals is no help
+        either - it preserves the operand scale and pre-scales the numerator,
+        which is the overflow ``render_decimal_division_sql`` below exists to
+        dodge. ``divideDecimal(a, b, scale)`` is exact, measured, and handles
+        negatives correctly.
+
+        The two guards are both cases where a plain ``AVG`` answers and a naive
+        rewrite does not:
+
+        **The cast goes inside the SUM.** ``SUM`` over Int64 accumulates in
+        Int64 and wraps: two rows of 9000000000000000000 summed to
+        -446744073709551616, so ``toDecimal128(SUM(x), 0)`` was widening a
+        number that had already overflowed. ``SUM(toDecimal128(x, 0))``
+        accumulates in 128 bits and returns 18000000000000000000.
+
+        **An empty group is not a division.** ``divideDecimal`` by a count of
+        zero raises ILLEGAL_DIVISION where ``AVG`` returns NULL, which a
+        multi-fact plan hits routinely: a group carrying only another fact's
+        rows has no values for this measure at all.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        zero = Literal.number(0)
+        count: Expr = FunctionCall(name="COUNT", args=[arg])
+        quotient: Expr = FunctionCall(
+            name="divideDecimal",
+            args=[
+                FunctionCall(
+                    name="SUM", args=[FunctionCall(name="toDecimal128", args=[arg, zero])]
+                ),
+                FunctionCall(name="toDecimal128", args=[count, zero]),
+                Literal.number(obml_type.scale),
+            ],
+        )
+        return FunctionCall(
+            name="if",
+            args=[BinaryOp(left=count, op="=", right=zero), Literal.null(), quotient],
+        )
+
     def render_obml_type(self, obml_type: OBMLType) -> str:
         if isinstance(obml_type, DecimalType):
             p = min(obml_type.precision, self._MAX_DECIMAL_PRECISION)

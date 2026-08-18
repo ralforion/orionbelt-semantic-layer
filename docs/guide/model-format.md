@@ -1176,51 +1176,59 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     a perfectly legal figure. A measure declaring `resultType: int` therefore
     infers `bigint` for `SUM`, which is exact on every dialect.
 
-    **`AVG` is deliberately not widened**, because on some engines a wider cast
-    would not make the average right. See the warning below.
+    **`AVG` over an integer measure is rewritten** on the engines that need
+    it, rather than widened. See the note below for which, and why the
+    distinction matters.
 
-!!! warning "`AVG` above ~15 significant digits on DuckDB, ClickHouse and BigQuery"
+!!! note "`AVG` above ~15 significant digits"
 
-    These engines compute `AVG` in floating point **whatever the input type**,
-    so this is not limited to integer columns: a wide `DECIMAL` measure drifts
-    once its average exceeds a `double` mantissa. On DuckDB, averaging
-    `9223372036854775807.12` and `...807.24` returns `9.223372036854776e+18`
-    rather than `9223372036854775807.18`, while `SUM` over the same column
-    stays exact. This is [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829),
-    closed as not planned.
+    `AVG` is a floating-point aggregate on several engines **whatever the
+    input type**, so it drifts once the average passes a `double` mantissa.
+    This is not limited to integer columns: a wide `DECIMAL` measure drifts
+    too. On DuckDB, averaging `9223372036854775807.12` and `...807.24` returns
+    `9.223372036854776e+18` rather than `9223372036854775807.18`, while `SUM`
+    over the same column stays exact - see
+    [duckdb/duckdb#6829](https://github.com/duckdb/duckdb/issues/6829), closed
+    as not planned.
 
-    Measured per dialect, averaging two values around 10^18:
+    Because the loss is inside the aggregate, no output type repairs it. A
+    measure declaring `resultType: int` therefore has its **expression**
+    rewritten into an exact form, by whichever route the engine offers:
 
-    | exact | floating point |
-    | --- | --- |
-    | PostgreSQL (`numeric`), MySQL (`decimal`), Snowflake | DuckDB, ClickHouse, BigQuery |
+    | dialect | `AVG` over a 64-bit value | what OBSL emits |
+    | --- | --- | --- |
+    | PostgreSQL, MySQL, Snowflake | already exact | plain `AVG` |
+    | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))` |
+    | Dremio | DOUBLE, drifts | `CAST(SUM(x) AS DECIMAL(38, s)) / COUNT(x)` |
+    | ClickHouse | Float64, drifts | `divideDecimal(SUM(x), COUNT(x), s)` |
+    | DuckDB | DOUBLE, drifts | plain `AVG` - no exact route exists |
+    | Databricks | not yet verified | plain `AVG` |
 
-    Databricks and Dremio are not yet verified for this case.
+    The rewritten result also carries a wider type than the `decimal(18, 2)`
+    default, since an exact average of 64-bit values needs 19 integer digits.
+    An explicit `dataType` is respected as declared.
 
-    **Declaring `dataType` does not fix this**, and on these two engines it
-    makes the failure worse rather than better. The loss happens inside the
-    aggregate, before the cast, so a wider `dataType` only lets the wrong
-    number through:
+    **DuckDB is the exception**, tracked in
+    [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316):
+    every division there returns `DOUBLE`, so there is nothing exact to rewrite
+    to. A large integer average keeps the default and **fails loudly** rather
+    than returning a plausible wrong figure. Declaring a wider `dataType` there
+    does not help and actively hurts - it widens the output cast, letting the
+    already-rounded value through instead of erroring:
 
     ```yaml
     Qty Avg:
       aggregation: avg
-      dataType: "decimal(21, 2)"   # emits CAST(AVG(qty) AS DECIMAL(21, 2))
+      dataType: "decimal(21, 2)"   # DuckDB: emits CAST(AVG(qty) AS DECIMAL(21, 2))
     ```
 
-    On DuckDB that returns `1000000000000000000.00` where the true average is
-    `1000000000000000003.00`. Left at the default the same query *fails*, which
-    is the better outcome: an error you can see beats a plausible wrong figure.
+    which returns `1000000000000000000.00` where the true average is
+    `1000000000000000003.00`. If your averages reach that magnitude on DuckDB,
+    aggregate on an exact engine instead.
 
-    Ordinary money-sized values are unaffected. If your averages can reach that
-    magnitude, aggregate on PostgreSQL, MySQL or Snowflake, express the average as a
-    metric over an exact `SUM` and a `COUNT` and accept the division's own
-    limits, or track
-    [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316).
-
-    A measure over a large-valued **non-integer** column also still takes the
-    built-in default, so pin `dataType` (or `settings.defaultNumericDataType`)
-    if its total can exceed 16 digits.
+    Only integer-sourced measures are rewritten. A `float` measure keeps the
+    plain `AVG` everywhere: BigQuery's `NUMERIC` is (38, 9), so casting a float
+    column with more decimals would trade one silent error for another.
 
 ### Explicit Data Type
 
