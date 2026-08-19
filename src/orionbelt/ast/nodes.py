@@ -328,7 +328,14 @@ class Select:
 
     columns: list[Expr] = field(default_factory=list)
     from_: From | None = None
-    joins: list[Join] = field(default_factory=list)
+    joins: list[Join | Unnest] = field(default_factory=list)
+    """Join clauses and unnests, in the order the planner walked the path.
+
+    One list rather than two, because the order between them matters: an unnest
+    names its parent, so it has to follow whatever put that parent in scope.
+    Keeping them apart would make the planner interleave them again at render
+    time, from information it no longer has.
+    """
     where: Expr | None = None
     group_by: list[Expr] = field(default_factory=list)
     having: Expr | None = None

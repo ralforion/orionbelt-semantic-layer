@@ -1362,9 +1362,12 @@ class Dialect(ABC):
         if node.from_:
             parts.append(f"FROM {self.compile_from(node.from_)}")
 
-        # JOINs
+        # JOINs, and the unnests that ride between them
         for join in node.joins:
-            parts.append(self.compile_join(join))
+            if isinstance(join, Unnest):
+                parts.append(self.render_unnest(join))
+            else:
+                parts.append(self.compile_join(join))
 
         # WHERE
         if node.where:

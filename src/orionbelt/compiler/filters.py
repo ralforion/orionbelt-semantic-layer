@@ -21,6 +21,7 @@ from orionbelt.ast.nodes import (
     RelativeDateRange,
     Select,
     UnaryOp,
+    Unnest,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
@@ -567,7 +568,7 @@ def _join_filter_object_into_subquery(
     subject_object: str,
     target_object: str,
     scope: set[str],
-    joins: list[Join],
+    joins: list[Join | Unnest],
     qualify_table: Callable[[DataObject], str],
     errors: list[SemanticError],
     read_through_expression: bool = False,
@@ -799,7 +800,7 @@ def build_exists_filter_expr(
         alias=first_step.to_object,
     )
 
-    joins: list[Join] = []
+    joins: list[Join | Unnest] = []
     for step in path[1:]:
         step_target_obj = model.data_objects.get(step.to_object)
         if step_target_obj is None:

@@ -70,6 +70,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    Unnest,
 )
 from orionbelt.compiler.expr_rewrite import (
     collect_column_refs,
@@ -715,7 +716,7 @@ def wrap_with_grain_dedup(
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
 
-    outer_joins: list[Join] = []
+    outer_joins: list[Join | Unnest] = []
     for cte_name in joined_ctes:
         # A grand-total CTE is a single row with no grain to match on.
         if not dim_names or cte_name in grand_total_ctes:
