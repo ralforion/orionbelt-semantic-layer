@@ -588,38 +588,19 @@ class CFLPlanner:
                             )
                             leg_builder.select(AliasedExpr(expr=null_expr, alias=alias))
                 elif m.name in this_measure_names:
-                    # Whether this leg casts the measure it owns is
-                    # ``resolve_owning_leg_cast_type``'s decision, and it turns
-                    # on whether the engine resolves a union's legs to a common
-                    # type. This comment used to assert the cast unconditional;
-                    # #313 made it conditional and left the claim standing,
-                    # which is how ClickHouse spent a month unable to run a CFL
-                    # query while every snapshot stayed green (#339).
                     own_expr: Expr = self._unwrap_aggregation(
                         replace(m, expression=conformed_exprs[m.name])
                         if m.name in conformed_exprs
                         else m
                     )
-                    # The leg that owns the measure projects it **uncast**, in
-                    # the source's own type, exactly as the star path does.
-                    #
-                    # Only the NULL pads below carry a declared type, and that
-                    # is enough to settle the union: measured on DuckDB,
-                    # Postgres and ClickHouse, a typed pad beside an uncast
-                    # column resolves to the *column's* type, in any leg order.
-                    # Casting this side as well is what rounded pre-aggregation
-                    # rows to the declared output type (#305), and then, once
-                    # the alignment was widened to carry the scale, overflowed
-                    # a value the source column held quite legally: a
-                    # DECIMAL(38, 20) leaves only 18 integer digits, so a
-                    # DECIMAL(38, 15) source failed on Postgres and DuckDB
-                    # under CFL while succeeding alone (#311). Not casting
-                    # cannot do either, because there is no second type.
-                    #
-                    # The exception is an alignment that *converts* rather than
-                    # widens - LISTAGG over an integer column pads with text -
-                    # where an uncast leg would meet a pad of another type and
-                    # Postgres would refuse the union.
+                    # Whether this leg casts the measure it owns belongs to
+                    # ``resolve_owning_leg_cast_type``, which states the rule
+                    # and the measurements behind it. Deliberately not restated
+                    # here: this spot carried a second copy, it went stale when
+                    # #313 changed the rule, and the copy still read as
+                    # authoritative while ClickHouse could not run a CFL query
+                    # at all (#339). One statement, in the function that
+                    # decides.
                     own_type_name = self._resolve_owning_leg_cast_type(m, model, dialect)
                     if own_type_name:
                         own_expr = Cast(expr=own_expr, type_name=own_type_name)
