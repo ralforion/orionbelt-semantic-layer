@@ -192,8 +192,10 @@ def test_mysql_json_paths_survive_awkward_field_names(vendor_mysql: VendorTarget
 #
 # Built as real tables where the engine allows one, not inline literals. Two
 # dialects were nearly written off during this work because a literal failed to
-# parse while the engine itself was fine - ClickHouse here, and Dremio in the
-# design plan. A literal is not evidence about an engine's capabilities.
+# parse while the engine itself was fine - ClickHouse here, and Dremio, whose
+# FLATTEN raises "Flatten does not support empty list" on a schemaless
+# CONVERT_FROM('[]') literal and reads the same empty array fine out of a
+# typed column. A literal is not evidence about an engine's capabilities.
 # ---------------------------------------------------------------------------
 
 NESTED_DDL = {

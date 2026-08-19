@@ -9,9 +9,6 @@ measure live on it at its own grain.
 This module covers the **OBML surface only**: the field, its validation, and its
 propagation. Nothing compiles a ``nestedIn`` object to SQL yet; the rendering
 matrix and the codegen land separately.
-
-The design and the per-dialect measurements are in
-``design/PLAN_nested_data_objects.md``.
 """
 
 from __future__ import annotations
@@ -185,36 +182,31 @@ def test_a_plain_object_still_needs_no_nested_in() -> None:
     assert obj.nested_in is None and not obj.is_nested
 
 
-class TestANestedObjectIsNotQueryableYet:
-    """No dialect compiles an unnest, so a nested-only object has no table.
+class TestANestedObjectIsNeverAFromTarget:
+    """Its rows exist only inside its parent's, so nothing selects *from* it.
 
-    Found in review of #342: without these guards the planners fell through to
-    an empty ``code`` and emitted ``FROM "" AS "Charge Labels"`` - reachable on
-    any model that adopts the field, because a synthesized count covers every
-    countable object and needs no measure declared at all.
-
-    Both guards go when the per-dialect rendering lands.
+    The planner reaches it by unnesting the parent
+    (``tests/unit/test_nested_planner.py``); these are the guards for every
+    other road into a FROM clause. Found in review of #342: without them the
+    planners fell through to an empty ``code`` and emitted
+    ``FROM "" AS "Charge Labels"``.
     """
 
-    def test_no_count_is_synthesized_for_a_nested_only_object(self) -> None:
+    def test_no_count_is_synthesized_for_a_nested_object(self) -> None:
+        """Not even with a ``code`` fallback, and the reason is arithmetic.
+
+        A synthesized count is ``COUNT(*)``, and the outer unnest pads a parent
+        whose array is empty with one all-NULL element row - a parent without
+        elements, not an element. No engine offers a portable "this element
+        exists" expression and a declared column cannot stand in for one, since
+        a real element may hold NULL there. So the count would be off by the
+        number of empty arrays, which on a real billing export is 61% of rows.
+        """
         model, errors = _resolve(LABELS)
         assert not errors, errors
         assert "Charges Count" in model.effective_measures
         assert "Charge Labels Count" not in model.effective_measures
 
-    def test_selecting_from_one_raises_rather_than_emitting_an_empty_table(self) -> None:
-        model, _ = _resolve(LABELS)
-        obj = model.data_objects["Charge Labels"]
-        with pytest.raises(UnrenderableDataObjectError, match="no dialect compiles"):
-            obj.require_table_source()
-        with pytest.raises(UnrenderableDataObjectError):
-            _ = obj.qualified_code
-
-    def test_the_code_fallback_makes_it_queryable_today(self) -> None:
-        """The fallback is not only future-proofing. An object that carries both
-        reads its flattening view now, which is the whole point of allowing
-        both to be declared.
-        """
         model, errors = _resolve(
             "  Charge Labels:\n"
             "    nestedIn: {dataObject: Charges, column: Labels}\n"
@@ -222,17 +214,15 @@ class TestANestedObjectIsNotQueryableYet:
             "    columns: {Label Value: {code: Value, abstractType: string}}\n"
         )
         assert not errors, errors
-        assert "Charge Labels Count" in model.effective_measures
-        sql = (
-            CompilationPipeline()
-            .compile(
-                QueryObject(select=QuerySelect(dimensions=[], measures=["Charge Labels Count"])),
-                model,
-                "duckdb",
-            )
-            .sql
-        )
-        assert '"v_charge_labels"' in sql and 'FROM ""' not in sql, sql
+        assert "Charge Labels Count" not in model.effective_measures
+
+    def test_selecting_from_one_raises_rather_than_emitting_an_empty_table(self) -> None:
+        model, _ = _resolve(LABELS)
+        obj = model.data_objects["Charge Labels"]
+        with pytest.raises(UnrenderableDataObjectError, match="no table to select from"):
+            obj.require_table_source()
+        with pytest.raises(UnrenderableDataObjectError):
+            _ = obj.qualified_code
 
     def test_a_query_that_never_touches_it_is_unaffected(self) -> None:
         model, _ = _resolve(LABELS)
@@ -246,6 +236,7 @@ class TestANestedObjectIsNotQueryableYet:
             .sql
         )
         assert '"charges"' in sql
+        assert "UNNEST" not in sql.upper()
 
 
 def test_the_rdf_export_carries_the_nested_source() -> None:

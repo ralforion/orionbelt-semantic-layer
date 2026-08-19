@@ -41,6 +41,10 @@ class WarningCode:
     # A model asks for a query time zone but leaves naive columns undeclared
     UNDECLARED_TIMESTAMP_ZONE = "UNDECLARED_TIMESTAMP_ZONE"
 
+    # A nested data object was read from its ``code`` table because the dialect
+    # has no FROM-clause unnest. The two sources are not guaranteed to agree.
+    NESTED_SOURCE_FALLBACK = "NESTED_SOURCE_FALLBACK"
+
     # Compile-time, post-codegen SQL validator emissions
     SQL_VALIDATION = "SQL_VALIDATION"
 

@@ -24,6 +24,7 @@ from orionbelt.ast.nodes import (
     IsNull,
     Join,
     Literal,
+    NestedField,
     OrderByItem,
     RawSQL,
     RegexMatch,
@@ -173,15 +174,18 @@ class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
 class UnsupportedNestedAccessError(Exception):
     """A dialect cannot unnest an array column in its FROM clause."""
 
-    def __init__(self, dialect: str, alias: str) -> None:
+    def __init__(self, dialect: str, alias: str, detail: str | None = None) -> None:
         super().__init__(
             f"Dialect '{dialect}' has no FROM-clause unnest, so data object "
             f"'{alias}' cannot take its rows from a parent's array column here. "
-            f"Declare 'code' alongside 'nestedIn' to read a flattening view on "
-            f"this dialect."
+            + (
+                detail
+                or "Declare 'code' alongside 'nestedIn' to read a flattening view on this dialect."
+            )
         )
         self.dialect = dialect
         self.alias = alias
+        self.detail = detail
 
 
 class UnsupportedFunctionError(Exception):
@@ -262,6 +266,13 @@ class DialectCapabilities:
     # shorter on queries with computed dimensions, where the explicit form
     # repeats the full expression. Postgres, MySQL, Dremio do not support it.
     supports_group_by_all: bool = False
+    # A FROM-clause unnest of an array column. True everywhere but Dremio,
+    # whose ``FLATTEN`` is a projection function and needs a derived table
+    # rather than an extension of the FROM clause. The planner reads this to
+    # decide between the unnest and a nested object's ``code`` fallback,
+    # because that choice has to be made while the plan is built rather than
+    # when it is rendered.
+    supports_from_unnest: bool = True
     unsupported_aggregations: list[str] = field(default_factory=list)
     # Canonical names from the portable function catalog
     # (``models/functions.py``) this engine has no equivalent for. Empty for
@@ -675,6 +686,34 @@ class Dialect(ABC):
         dialect needs it; the rest carry their own types.
         """
         return ColumnRef(name=field, table=alias)
+
+    def render_nested_field(self, node: NestedField) -> Expr:
+        """How a nested object's column is addressed in a plan this dialect built.
+
+        Two different things, depending on which source the planner chose. Where
+        the FROM clause carries an unnest, this is a field of the element -
+        :meth:`nested_field`. Where it cannot, the planner read the object's
+        ``code`` fallback instead and put that table in FROM under the same
+        alias, so the column is an ordinary one and reading it as an element
+        field would name something that does not exist.
+        """
+        if not self.capabilities.supports_from_unnest:
+            return ColumnRef(name=node.field, table=node.alias)
+        return self.nested_field(
+            node.alias, node.field, self.nested_column_type(node.abstract_type)
+        )
+
+    def nested_column_type(self, abstract_type: str | None) -> str:
+        """The SQL type a field of an unnested element is read as.
+
+        Two dialects need one and the other five ignore it: MySQL's
+        ``JSON_TABLE`` declares the shape it extracts rather than inferring it,
+        and Snowflake's VARIANT path has to be cast or a string field comes back
+        with its JSON quotes still on. Both are served by the abstract type map
+        every other cast already goes through, so a nested column is typed the
+        same way an ordinary one is.
+        """
+        return self._resolve_type_name(abstract_type or "string")
 
     def unnest_path(self, node: Unnest) -> str:
         """The parent's array column, quoted segment by segment.
@@ -1580,6 +1619,11 @@ class Dialect(ABC):
                 return self.quote_identifier(name)
             case ColumnRef(name=name, table=table) if table is not None:
                 return f"{self.quote_identifier(table)}.{self.quote_identifier(name)}"
+            case NestedField():
+                # Routed through the dialect rather than rendered here: the
+                # element is a column on six engines and a VARIANT path on
+                # Snowflake, and the planner cannot know which without one.
+                return self.compile_expr(self.render_nested_field(expr))
             case AliasedExpr(expr=inner, alias=alias):
                 return f"{self.compile_expr(inner)} AS {self.quote_identifier(alias)}"
             case FunctionCall(

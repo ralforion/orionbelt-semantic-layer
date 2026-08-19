@@ -33,6 +33,11 @@ class DremioDialect(Dialect):
             supports_arrays=False,
             supports_window_filters=False,
             supports_ilike=False,
+            # ``FLATTEN`` is a projection function, so the unnest goes in the
+            # SELECT list of a derived table rather than in the FROM clause -
+            # see :meth:`render_unnest`. The planner reads this and falls back
+            # to a nested object's ``code`` where one is declared.
+            supports_from_unnest=False,
             # ``measure`` is Databricks Metric View specific.
             unsupported_aggregations=["mode", "measure"],
         )
@@ -48,7 +53,7 @@ class DremioDialect(Dialect):
         That restructures the query rather than extending its FROM clause, so it
         belongs with the planner rather than here. Measured to work, including
         the outer form emulated by a UNION ALL of the non-empty flatten and the
-        rows whose array is empty - see design/PLAN_nested_data_objects.md.
+        rows whose array is empty.
 
         Until then a model reaches its data on Dremio through the ``code``
         fallback, which is what the fallback is for.

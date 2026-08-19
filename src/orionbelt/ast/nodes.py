@@ -198,6 +198,29 @@ class Unnest:
 
 
 @dataclass(frozen=True)
+class NestedField:
+    """A column of an unnested element, addressed the way its dialect wants.
+
+    Not a :class:`ColumnRef`, because the engines do not agree that it is one.
+    ``L."Key"`` reads the field on six of the seven that unnest, but Snowflake's
+    ``FLATTEN`` hands back a row whose ``value`` column holds the element as a
+    VARIANT, so there the same reference is ``L.value:"Key"::string`` - measured,
+    the column form does not compile at all.
+
+    The node carries the *abstract* type rather than a rendered one so it stays
+    dialect-free: only the VARIANT dialect needs a type here, and only it knows
+    how to spell one.
+    """
+
+    alias: str
+    """The unnest's alias - the element, or the row holding it."""
+    field: str
+    """The element field's physical name (``DataObjectColumn.code``)."""
+    abstract_type: str | None = None
+    """The column's ``abstractType``, as its OBML spelling."""
+
+
+@dataclass(frozen=True)
 class RegexMatch:
     """Regex match predicate. Each dialect renders its native syntax.
 
@@ -284,6 +307,7 @@ Expr = (
     | RelativeDateRange
     | InTimeZone
     | WindowFunction
+    | NestedField
 )
 
 

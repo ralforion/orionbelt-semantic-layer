@@ -149,12 +149,14 @@ def partition_dimensions(
         if obj in assigned:
             continue
         group = {obj}
-        reachable = graph.descendants(obj) | {obj}
+        reachable = graph.descendants_without_unnest(obj) | {obj}
         for other in objects:
             if (
                 other != obj
                 and other not in assigned
-                and (other in reachable or obj in (graph.descendants(other) | {other}))
+                and (
+                    other in reachable or obj in (graph.descendants_without_unnest(other) | {other})
+                )
             ):
                 group.add(other)
         groups.append(group)

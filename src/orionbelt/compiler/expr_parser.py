@@ -48,6 +48,7 @@ from orionbelt.ast.nodes import (
     InList,
     IsNull,
     Literal,
+    NestedField,
     UnaryOp,
 )
 
@@ -76,6 +77,8 @@ class _Token:
     # Kinds:
     #   "ref" — metric-formula ``{[Name]}`` reference (unqualified)
     #   "colref" — measure-expression ``{[Obj].[Col]}`` reference (qualified)
+    #   "nestedref" — the same, on a ``nestedIn`` object: a field of an
+    #       unnested element rather than a column of a table
     #   "number" — numeric literal
     #   "string" — string literal ('...')
     #   "ident" — bare identifier (function name or keyword)
@@ -280,6 +283,15 @@ def tokenize_measure_expression(
                     tokens.append(_Token(kind="lparen", value="("))
                     tokens.extend(inner_tokens)
                     tokens.append(_Token(kind="rparen", value=")"))
+                elif obj is not None and obj.is_nested:
+                    # A nested object's column is not a column reference at all
+                    # on every engine - Snowflake reads a VARIANT path - and the
+                    # parser has no model to ask, so the kind carries it.
+                    source = column.code if column is not None and column.code else col_name
+                    abstract = str(column.abstract_type) if column is not None else ""
+                    tokens.append(
+                        _Token(kind="nestedref", value=f"{obj_name}\0{source}\0{abstract}")
+                    )
                 else:
                     source = column.code if column is not None and column.code else col_name
                     tokens.append(_Token(kind="colref", value=f"{obj_name}\0{source}"))
@@ -407,6 +419,10 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             _advance()
             table, column = tok.value.split("\0", 1)
             return ColumnRef(name=column, table=table)
+        if tok.kind == "nestedref":
+            _advance()
+            table, column, abstract = tok.value.split("\0", 2)
+            return NestedField(alias=table, field=column, abstract_type=abstract or None)
         raise ValueError(f"Unexpected token {tok.value!r} ({tok.kind}) in expression")
 
     def _parse_case() -> Expr:
