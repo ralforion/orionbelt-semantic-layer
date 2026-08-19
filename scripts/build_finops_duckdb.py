@@ -14,9 +14,12 @@ only meet at ``billing_periods``. That is what makes invoice reconciliation
 ("does what we were charged match what we were invoiced?") a multi-fact
 question, and it is the case the composite fact layer exists to answer.
 
-Only standard FOCUS columns are generated - every column here is scalar, which
-is true of the specification itself. Provider-specific extensions (the ``x_``
-columns in a real Google Cloud export) are nested and are not modelled here.
+Standard FOCUS columns are scalar, which is true of the specification itself.
+Four columns here are not, and deliberately: ``Labels``, ``Credits``,
+``ResourceTags`` and ``Project`` are repeated records, the shape a real Google
+Cloud export uses for its ``x_`` extensions and AWS CUR for its tags. They sit
+*beside* the scalar ``Tags`` rather than replacing it, so the demo carries both
+shapes and a model can show the accessor each one needs.
 
 The dataset is written as **raw JSONL first**, one JSON object per line under
 ``examples/finops_data/``, and only then loaded into DuckDB. That ordering is
@@ -25,9 +28,10 @@ and the files stay on disk afterwards so they can be opened, grepped and diffed
 before anything is modelled.
 
 ``charges.jsonl`` carries ``Tags`` as a **nested JSON object**, which is what a
-real export looks like. The load flattens it back to JSON text so the model's
-``json_value`` calls can read it; keeping it a DuckDB STRUCT would need the
-nested-column support that does not exist yet.
+real export looks like, and the load flattens it back to JSON text so the
+model's ``json_value`` calls can read it. The four repeated columns beside it
+load as real DuckDB STRUCT arrays and are read by unnesting them, so the demo
+carries the JSON shape and the repeated-record shape side by side.
 
 Run:
     uv run python scripts/build_finops_duckdb.py
@@ -43,6 +47,7 @@ import json
 import random
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from itertools import count
 from pathlib import Path
 
 import duckdb
@@ -148,6 +153,173 @@ SUB_ACCOUNT_TAGS = {
 # one finding the query exists to surface.
 UNTAGGED_RATE = 0.12
 
+# ---------------------------------------------------------------------------
+# Nested columns.
+#
+# ``Tags`` above is the FOCUS-standard key/value column, carried as JSON and
+# read by the portable ``json_value`` catalog entry. The four columns below are
+# the *other* shape a real export uses: Google Cloud keeps `Tags` empty and puts
+# the data in repeated records (`x_Labels`, `x_Tags`, `x_Credits`), and AWS CUR
+# via Athena does the same. Both shapes ship so a model can show each accessor
+# against the data it is for.
+#
+# Multiplicities are chosen, not incidental. A private GCP export was measured
+# while designing this and every array in it is length 0 or 1, which exercises
+# none of the behaviour that makes nested access hard. These deliberately do.
+# ---------------------------------------------------------------------------
+
+LABEL_OWNERS = ["ana@contoso.io", "ben@contoso.io", "cleo@contoso.io", "dev@contoso.io"]
+LABEL_TIERS = ["gold", "silver", "bronze"]
+LABEL_COMPONENTS = ["api", "worker", "ingest", "dashboard"]
+
+# Credit types, weighted the way a real bill is: committed-use dominates,
+# promotions are rare. A flat choice made all four totals equal, which reads as
+# synthetic at a glance.
+CREDIT_KINDS = [
+    ("SUSTAINED_USAGE_DISCOUNT", "Sustained use discount", 0.55, (0.04, 0.12)),
+    ("FREE_TIER", "Free tier", 0.28, (0.01, 0.04)),
+    ("PROMOTION", "Promotional credit", 0.17, (0.05, 0.20)),
+]
+
+# The organisation hierarchy each project hangs off. Two or three levels, so
+# spend rolls up through folders - an array nested inside a struct.
+FOLDER_TREE = {
+    "sub-1001": [
+        ("organizations/8811", "Contoso"),
+        ("folders/301", "Engineering"),
+        ("folders/311", "Platform"),
+    ],
+    "sub-1002": [
+        ("organizations/8811", "Contoso"),
+        ("folders/301", "Engineering"),
+        ("folders/311", "Platform"),
+    ],
+    "sub-1003": [
+        ("organizations/8811", "Contoso"),
+        ("folders/301", "Engineering"),
+        ("folders/312", "Data"),
+    ],
+    "sub-1004": [("organizations/8811", "Contoso"), ("folders/302", "Research")],
+    "sub-1005": [("organizations/8811", "Contoso"), ("folders/303", "Corporate")],
+}
+
+
+def labels_for(sub_account_id: str) -> list[dict]:
+    """Resource labels as an ARRAY<STRUCT<Key, Value>>, 0-7 entries.
+
+    Empty for an untagged charge, which is what makes "untagged spend" a real
+    question. The optional keys are what makes "which tag keys do we actually
+    use, and on what share of spend" a real one - a question no model can ask
+    when every key has to be declared as its own column.
+    """
+    if random.random() < UNTAGGED_RATE:
+        return []
+    tags = SUB_ACCOUNT_TAGS.get(sub_account_id)
+    if not tags:
+        return []
+    kv = lambda k, v: {"Key": k, "Value": v}  # noqa: E731
+    out = [kv("team", tags["team"]), kv("env", tags["env"])]
+    if random.random() < 0.85:
+        out.append(kv("cost_center", tags["cost_center"]))
+    if random.random() < 0.55:
+        out.append(kv("owner", random.choice(LABEL_OWNERS)))
+    if random.random() < 0.45:
+        out.append(kv("service-tier", random.choice(LABEL_TIERS)))
+    if random.random() < 0.40:
+        component = random.choice(LABEL_COMPONENTS)
+        out.append(kv("component", component))
+        # A second key carrying the *same value*. Realistic - component and app
+        # usually agree - and it is the case that double-counts a parent measure
+        # when the array is unnested without being deduplicated first.
+        if random.random() < 0.5:
+            out.append(kv("app", component))
+    if random.random() < 0.20:
+        out.append(kv(f"{random.choice(['ui', 'api'])}-sha", f"{random.randrange(16**7):07x}"))
+    return out
+
+
+def credits_for(billed_cost: float, covered: bool, commitment_id: str | None) -> list[dict]:
+    """Credits as an ARRAY<STRUCT>, tied to the commitment model above.
+
+    A committed-use credit appears only where a commitment actually covers the
+    row, so the nested column reconciles with ``CommitmentDiscountId`` rather
+    than being independent noise.
+
+    Two entries can be byte-identical: a charge spanning two commitments
+    genuinely carries two identical discount lines. That is the case a nested
+    *measure* must not have deduplicated out from under it, so the data has to
+    contain it.
+    """
+    out: list[dict] = []
+    if covered and commitment_id:
+        rate = random.uniform(0.12, 0.30)
+        out.append(
+            {
+                "Id": f"{commitment_id}-cud",
+                "Type": "COMMITTED_USAGE_DISCOUNT",
+                "Name": "Committed use discount",
+                "Amount": -round(billed_cost * rate, 6),
+            }
+        )
+        if random.random() < 0.18:  # a second commitment covering the same row
+            out.append(dict(out[0]))
+    for kind, name, rate, (lo, hi) in CREDIT_KINDS:
+        if random.random() < rate * 0.35:
+            out.append(
+                {
+                    "Id": f"{kind.lower()}-{_stable_id(kind, str(billed_cost))}",
+                    "Type": kind,
+                    "Name": name,
+                    "Amount": -round(billed_cost * random.uniform(lo, hi), 6),
+                }
+            )
+    return out
+
+
+def resource_tags_for(sub_account_id: str) -> list[dict]:
+    """Tags as an ARRAY<STRUCT<Key, Value, Inherited, Namespace>>.
+
+    Four fields, and the two beyond key/value are the point: ``Inherited``
+    separates a tag applied to the resource from one it picked up off the
+    folder, which is the difference between "this team spent it" and "this
+    team's parent spent it". A key/value accessor cannot see either.
+    """
+    tags = SUB_ACCOUNT_TAGS.get(sub_account_id)
+    if not tags:
+        return []
+    tg = lambda k, v, inh, ns: {  # noqa: E731
+        "Key": k,
+        "Value": v,
+        "Inherited": inh,
+        "Namespace": ns,
+    }
+    out = [
+        tg("owner-team", tags["team"], False, "contoso"),
+        tg("environment", tags["env"], False, "contoso"),
+    ]
+    if random.random() < 0.60:
+        out.append(tg("cost-centre", tags["cost_center"], True, "contoso"))
+    if random.random() < 0.30:
+        out.append(tg("compliance", "pci-dss", True, "gcp"))
+    return out
+
+
+def project_for(sub_account_id: str, sub_account_name: str) -> dict:
+    """The project record, carrying its folder chain as a nested array.
+
+    An array *inside* a struct - the one shape that needs a path rather than a
+    column name to address it.
+    """
+    return {
+        "Id": f"proj-{sub_account_id}",
+        "Name": sub_account_name,
+        "Ancestors": [
+            {"ResourceName": rn, "DisplayName": dn}
+            for rn, dn in FOLDER_TREE.get(sub_account_id, [])
+        ],
+    }
+
+
 BILLING_ACCOUNT_ID = "acct-0001"
 BILLING_ACCOUNT_NAME = "Contoso Group"
 
@@ -238,6 +410,12 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
     # matched to the commitment that would plausibly cover it.
     by_provider: dict[tuple[str, str], str] = {(row[5], row[6]): row[0] for row in commitments}
     commitment_meta = {row[0]: (row[2], row[3], row[4]) for row in commitments}
+
+    # One key per charge row. FOCUS defines no row identifier and no natural
+    # combination of its columns is unique here - the closest still collides on
+    # 12 of 20k rows - so the generator mints one. Without it a measure on the
+    # charge grouped by a label value counts a charge once per label it carries.
+    next_key = count(1).__next__
 
     rows: list[tuple] = []
     for year, month in PERIODS:
@@ -340,6 +518,11 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                                 ccat,
                                 cstatus,
                                 tags_for(sub_id),
+                                labels_for(sub_id),
+                                credits_for(billed_cost, covered, commitment_id),
+                                resource_tags_for(sub_id),
+                                project_for(sub_id, sub_name),
+                                f"chg-{next_key():07d}",
                             )
                         )
 
@@ -391,6 +574,15 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                     None,
                     None,
                     None,
+                    # A tax line has no resource, so no labels, credits or
+                    # project. Empty arrays rather than NULL: a charge with no
+                    # labels is the untagged case the demo exists to show, and
+                    # NULL would make it a different one.
+                    [],
+                    [],
+                    [],
+                    None,
+                    f"chg-{next_key():07d}",
                 )
             )
     return rows
@@ -592,6 +784,11 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "CommitmentDiscountCategory",
         "CommitmentDiscountStatus",
         "Tags",
+        "Labels",
+        "Credits",
+        "ResourceTags",
+        "Project",
+        "ChargeKey",
     ),
     "invoice_details": (
         "InvoiceId",
@@ -611,11 +808,19 @@ COLUMNS: dict[str, tuple[str, ...]] = {
 
 
 def _jsonable(value: object) -> object:
-    """Render a row value in the form a real JSON export would carry."""
+    """Render a row value in the form a real JSON export would carry.
+
+    Recurses, because the nested columns carry Decimals inside lists of dicts
+    and ``json.dumps`` refuses those however deep they sit.
+    """
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
     return value
 
 
@@ -720,7 +925,21 @@ CREATE TABLE {SCHEMA}.charges (
     CommitmentDiscountType      VARCHAR,
     CommitmentDiscountCategory  VARCHAR,
     CommitmentDiscountStatus    VARCHAR,
-    Tags                        VARCHAR
+    Tags                        VARCHAR,
+    Labels                      STRUCT(Key VARCHAR, Value VARCHAR)[],
+    Credits                     STRUCT(Id VARCHAR, Type VARCHAR, Name VARCHAR,
+                                       Amount DECIMAL(18, 6))[],
+    ResourceTags                STRUCT(Key VARCHAR, Value VARCHAR,
+                                       Inherited BOOLEAN, Namespace VARCHAR)[],
+    Project                     STRUCT(Id VARCHAR, Name VARCHAR,
+                                       Ancestors STRUCT(ResourceName VARCHAR,
+                                                        DisplayName VARCHAR)[]),
+    -- Surrogate: one charge, one row. FOCUS defines no row identifier and no
+    -- combination of its columns is unique here, so a measure on the charge
+    -- grouped by a nested dimension has nothing to deduplicate on without it.
+    -- Last rather than first, because everything downstream reads a charge
+    -- tuple positionally.
+    ChargeKey                   VARCHAR
 );
 
 CREATE TABLE {SCHEMA}.invoice_details (
@@ -784,8 +1003,11 @@ def main() -> None:
     # shift a column, and DuckDB casts each value into the declared type.
     #
     # Tags is the exception: it is a nested object in the file and has to land
-    # as JSON *text* for the model's json_value calls to read it. A DuckDB
-    # STRUCT would need nested-column support that does not exist yet.
+    # as JSON *text*, because that is the shape the model's json_value calls
+    # read. Labels, Credits, ResourceTags and Project land as native DuckDB
+    # STRUCT arrays instead - read_json_auto infers them and INSERT BY NAME
+    # casts them into the declared types. The two shapes ship side by side on
+    # purpose: json_value reads the first, and nested access reads the second.
     print()
     for table in tables:
         src = DATA_DIR / f"{table}.jsonl"

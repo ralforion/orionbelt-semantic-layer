@@ -55,7 +55,7 @@ It writes the **raw export first**, one JSON object per line under `examples/fin
 }
 ```
 
-`Tags` is a **nested object** in the file, as a real export carries it. The load turns it back into JSON *text*, which is what the model's `json_value` calls read; keeping it a DuckDB `STRUCT` would need nested-column support that does not exist yet.
+`Tags` is a **nested object** in the file, as a real export carries it. The load turns it back into JSON *text*, which is what the model's `json_value` calls read. The four repeated columns beside it - `Labels`, `Credits`, `ResourceTags` and `Project` - are loaded as real DuckDB `STRUCT` arrays instead, and read as [nested data objects](#repeated-columns-labels-credits-and-folders). The demo carries both shapes on purpose.
 
 `charges.jsonl` is about 20 MB and is gitignored, so a three-record excerpt is committed at `examples/finops_charges_sample.json` for anyone who has not run the generator. The result is five tables in a `focus` schema - `charges`, `invoice_details`, `commitments`, `providers`, `billing_periods` - holding six months of synthetic multi-cloud billing that conforms to FOCUS column names and allowed values, with a slice of rows deliberately left untagged. The database is named for the domain, the schema for the specification its tables conform to.
 
@@ -260,6 +260,132 @@ All eight engines answer it, so a model that allocates by tag is not pinned to a
 
 The model sets `expressionMode: portable`, so an uncatalogued function would be an error rather than a silent engine dependency. It validates, which is the assertion that every expression here is portable.
 
+## Repeated columns: labels, credits and folders
+
+The section above reads tags out of a JSON string, which is what the FOCUS spec
+defines. Google Cloud does not do that. It leaves `Tags` empty and puts the data
+in **repeated records** - `ARRAY<STRUCT>` columns - and AWS CUR via Athena does
+the same. The demo dataset carries both shapes side by side.
+
+A repeated column is a table: one small table per charge. So it is declared as a
+data object whose rows come from unnesting it, rather than reached with an
+accessor:
+
+```yaml
+Charge Labels:
+  nestedIn: {dataObject: Charges, column: Labels}
+  columns:
+    Label Key:   {code: Key,   abstractType: string}
+    Label Value: {code: Value, abstractType: string}
+```
+
+Nothing above that changes: dimensions, measures and queries treat it like any
+other data object. See [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin)
+for the full rules.
+
+### The keys are data, not columns
+
+This is what a flattened model cannot offer. `Label Key` is a dimension whose
+*values* are the label keys, so the coverage question is an ordinary group-by -
+and it answers for keys nobody declared in advance:
+
+```yaml
+select:
+  dimensions: [Label Key]
+  measures: [Billed Cost]
+```
+
+| Label Key | Billed Cost |
+|---|---|
+| team | 436,883.52 |
+| env | 436,883.52 |
+| cost_center | 370,756.96 |
+| owner | 239,731.56 |
+| service-tier | 191,473.47 |
+| component | 175,488.09 |
+
+Against 512,917.22 of total spend, that is a governance answer: every resource is
+supposed to carry a cost centre, and 72% of spend does. A model with one declared
+column per tag key cannot ask this, because the keys it does not know about are
+the ones worth finding.
+
+### Where unnesting goes wrong
+
+An unnest multiplies the row that *contains* the array. A charge carrying two
+labels appears twice, so summing the **charge's** cost under a label dimension
+counts it twice. In this dataset `component` and `app` often agree, so the same
+value really does appear twice on one charge - 2,575 of them.
+
+OBSL deduplicates on the charge's `primaryKey` before aggregating. Measured
+against ground truth computed directly in SQL:
+
+| | Spend tagged `worker` |
+|---|---|
+| Truth | **46,343.91** |
+| Naive unnest, no deduplication | 70,022.28 |
+| OBSL | **46,343.91** |
+
+The naive figure overstates by 51%. It is also the figure you get from a
+hand-written flattening view, which is why the deduplication is the point rather
+than the unnest.
+
+That deduplication needs a key, so `Charges` declares `ChargeKey` as its
+`primaryKey`. FOCUS defines no row identifier and no combination of its columns
+is unique here, so the demo generator mints one. Without it, OBSL refuses the
+query rather than answering 70,022.28.
+
+Per-group values are exact; the groups overlap, because a charge carrying two
+different labels belongs to both. The result carries a `FAN_TRAP_RISK` warning
+saying so.
+
+### A measure on the array itself
+
+`Credits` carries an amount, so it is a second fact at its own grain - four
+fields (`Id`, `Type`, `Name`, `Amount`) and none of them a key, which is exactly
+what a key/value accessor cannot read. Google's own `x_Credits` carries five,
+adding `FullName`. Each credit line counts once, including two identical lines
+on one charge:
+
+```yaml
+select:
+  dimensions: [Credit Type]
+  measures: [Credit Amount, Credit Line Count, Billed Cost]
+```
+
+| Credit Type | Credit Amount | Credit Line Count | Billed Cost |
+|---|---|---|---|
+| COMMITTED_USAGE_DISCOUNT | -51,586.84 | 6,423 | 209,339.28 |
+| SUSTAINED_USAGE_DISCOUNT | -7,227.07 | 2,780 | 91,346.11 |
+| PROMOTION | -3,754.04 | 927 | 30,315.76 |
+| FREE_TIER | -1,203.74 | 1,398 | 48,065.14 |
+
+Two grains in one result: `Credit Amount` over the credit lines, `Billed Cost`
+over the charges that carry them. They are computed over different row sets and
+joined at the query grain, because no single flat query produces both correctly -
+the naive one inflates the gross by counting a charge once per credit it has.
+
+### An array inside a struct
+
+`Project.Ancestors` is an array nested in a record. The dotted path reaches it
+with no further declaration:
+
+```yaml
+Project Ancestors:
+  nestedIn: {dataObject: Charges, column: Project.Ancestors}
+```
+
+| Org Folder | Billed Cost |
+|---|---|
+| Contoso | 492,149.20 |
+| Engineering | 305,949.12 |
+| Platform | 191,960.02 |
+| Data | 113,989.10 |
+| Corporate | 97,888.17 |
+| Research | 88,311.92 |
+
+Contoso is the root, so it carries everything with a project; the 20,768.02
+difference from total spend is the tax lines, which have no project at all.
+
 ## Trend and anomaly detection
 
 Cumulative and period-over-period metrics come from the same model:
@@ -282,7 +408,11 @@ select:
 
 ## Using a real cloud export
 
-The model targets standard FOCUS columns only, so it ports to a real export by changing `code` and `schema` on the data objects and the `defaultDialect` setting.
+The model is in two halves, and they port differently.
+
+The **scalar half** is standard FOCUS columns only, so it ports to a real export by changing `code` and `schema` on the data objects and the `defaultDialect` setting - nothing else.
+
+The **repeated half** - `Labels`, `Credits`, `ResourceTags` and `Project.Ancestors` - is not FOCUS. Those are provider extensions, and every provider names them differently: Google prefixes them `x_`, AWS CUR via Athena uses its own. Porting them means pointing each nested object's `column` at whatever the export calls it, which is one line per object.
 
 One caveat for Google Cloud. Its FOCUS export puts every standard FOCUS column in a scalar type, but carries labels, credits, tags and project ancestry as `REPEATED RECORD` extension columns prefixed `x_`:
 
@@ -291,7 +421,17 @@ One caveat for Google Cloud. Its FOCUS export puts every standard FOCUS column i
 | `x_Credits`, `x_Labels`, `x_Tags`, `x_SystemLabels`, `x_ProjectLabels` | `REPEATED RECORD` |
 | `x_Project` | `RECORD` (with a repeated `Ancestors`) |
 
-OBML models relational columns, so reach those through a flattening BigQuery view and point `code` at the view. Note that `x_Credits` being repeated means credits are a *second fact at a different grain* inside the same table, not a labels convenience — model it as its own data object.
+Declare each of those as a nested data object and OBSL unnests it directly - no flattening view, and the dotted path handles `x_Project.Ancestors`:
+
+```yaml
+Charge Labels:
+  nestedIn: {dataObject: Charges, column: x_Labels}
+  columns:
+    Label Key:   {code: Key,   abstractType: string}
+    Label Value: {code: Value, abstractType: string}
+```
+
+`x_Credits` being repeated means credits are a *second fact at a different grain* inside the same table rather than a labels convenience, and modelling it as its own object is what puts it at that grain. On Dremio, which has no FROM-clause unnest, declare `code` alongside `nestedIn` to read a flattening view there and OBSL will say which source it used.
 
 ## Files
 

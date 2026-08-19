@@ -27,10 +27,11 @@
 # Build the data first:
 #     uv run python scripts/build_finops_duckdb.py
 #
-# Every column below is a standard FOCUS column, and every one is scalar - which
-# is true of the specification itself. Provider-specific extensions (the "x_"
-# columns in a real Google Cloud export) are nested and are deliberately out of
-# scope here.
+# The standard FOCUS columns below are scalar, which is true of the
+# specification itself. Four are not: Labels, Credits, ResourceTags and
+# Project.Ancestors are repeated records - the shape a real Google Cloud export
+# uses for its "x_" extensions - and each is modelled as a nested data object
+# further down, beside the scalar Tags that json_value reads.
 
 version: 1.0
 
@@ -158,6 +159,15 @@ dataObjects:
     description: >-
       One row per resource per SKU per charge period. The core FOCUS dataset.
     columns:
+      Charge Key:
+        code: ChargeKey
+        abstractType: string
+        primaryKey: true
+        description: >-
+          Surrogate row identifier. FOCUS defines none, and grouping a charge's
+          own measures by a nested dimension needs one: a charge carrying two
+          labels appears twice under the unnest, and this is what the
+          deduplication keys on.
       Charge Account Id:
         code: BillingAccountId
         abstractType: string
@@ -320,6 +330,82 @@ dataObjects:
           - Provider
         columnsTo:
           - Provider Name
+
+  # ── Repeated columns, as data objects ──────────────────────────────
+  #
+  # Google's FOCUS export keeps `Tags` empty and puts the data in repeated
+  # records instead, and AWS CUR via Athena does the same. A repeated column is
+  # a table - one per charge - so it is modelled as a data object whose rows
+  # come from unnesting it, rather than reached through an accessor. That is
+  # what keeps the label *keys* data rather than model-time constants.
+
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: Labels}
+    description: >-
+      One row per label on a charge. Two fields, the key/value shape three of
+      Google's six repeated fields use.
+    columns:
+      Label Key:
+        code: Key
+        abstractType: string
+      Label Value:
+        code: Value
+        abstractType: string
+
+  Charge Credits:
+    nestedIn: {dataObject: Charges, column: Credits}
+    description: >-
+      One row per credit applied to a charge. Four fields - Id, Type, Name,
+      Amount - and none of them a key, which is why an accessor keyed on a name
+      cannot read it. It carries an amount, so it is a second fact at its own
+      grain. Google's own x_Credits carries five, adding FullName.
+    columns:
+      Credit Id:
+        code: Id
+        abstractType: string
+      Credit Type:
+        code: Type
+        abstractType: string
+      Credit Name:
+        code: Name
+        abstractType: string
+      Credit Amount:
+        code: Amount
+        abstractType: float
+
+  Charge Resource Tags:
+    nestedIn: {dataObject: Charges, column: ResourceTags}
+    description: >-
+      One row per resource tag. Four fields: the two beyond key/value are what
+      distinguish a tag set on the resource from one inherited off the project,
+      which is the difference between "this team spent it" and "this team's
+      parent folder spent it".
+    columns:
+      Tag Key:
+        code: Key
+        abstractType: string
+      Tag Value:
+        code: Value
+        abstractType: string
+      Tag Inherited:
+        code: Inherited
+        abstractType: boolean
+      Tag Namespace:
+        code: Namespace
+        abstractType: string
+
+  Project Ancestors:
+    nestedIn: {dataObject: Charges, column: Project.Ancestors}
+    description: >-
+      The organisation folders a charge's project sits under. An array inside a
+      struct, addressed by the dotted path in `nestedIn.column`.
+    columns:
+      Ancestor Resource Name:
+        code: ResourceName
+        abstractType: string
+      Ancestor Name:
+        code: DisplayName
+        abstractType: string
 
   # ── Invoice Detail dataset (fact 2) ────────────────────────────────
 
@@ -513,6 +599,48 @@ dimensions:
 # ~0.0000167 each), so rounding every row to 2dp before aggregating loses real
 # money at scale. Declare the compute precision here; round for the reader.
 
+  # ── Dimensions on the repeated columns ─────────────────────────────
+  #
+  # These are what a flattened model cannot offer: the key is a *value* here,
+  # so "which label keys does our spend carry?" is an ordinary group-by rather
+  # than a column somebody had to declare in advance.
+
+  Label Key:
+    dataObject: Charge Labels
+    column: Label Key
+    resultType: string
+    synonyms: [label, tag key]
+    description: A label key as it appears on the charge. Data, not a declared column.
+  Label Value:
+    dataObject: Charge Labels
+    column: Label Value
+    resultType: string
+    synonyms: [label value]
+  Credit Type:
+    dataObject: Charge Credits
+    column: Credit Type
+    resultType: string
+    synonyms: [credit, discount type]
+  Tag Key:
+    dataObject: Charge Resource Tags
+    column: Tag Key
+    resultType: string
+  Tag Inherited:
+    dataObject: Charge Resource Tags
+    column: Tag Inherited
+    resultType: boolean
+    description: True where the tag came from the project rather than the resource.
+  Tag Namespace:
+    dataObject: Charge Resource Tags
+    column: Tag Namespace
+    resultType: string
+  Org Folder:
+    dataObject: Project Ancestors
+    column: Ancestor Name
+    resultType: string
+    synonyms: [folder, org unit]
+    description: An organisation folder the charge's project sits under.
+
 measures:
   # Charges fact
   Billed Cost:
@@ -630,6 +758,41 @@ measures:
     description: Contract value of the commitment over its whole term.
 
 # ── Metrics ──────────────────────────────────────────────────────────
+
+  # ── Measures on the repeated columns ───────────────────────────────
+  #
+  # A measure here lives at the *array's* grain, not the charge's. Each credit
+  # line is counted once, including two identical ones on the same charge -
+  # which is why this must not be deduplicated the way a charge measure is.
+
+  Credit Amount:
+    columns:
+      - dataObject: Charge Credits
+        column: Credit Amount
+    resultType: float
+    aggregation: sum
+    dataType: "decimal(18, 6)"
+    format: "#,##0.00"
+    description: >-
+      Credits applied, at credit grain. Negative, as FOCUS writes them.
+    synonyms: [credits, discounts applied]
+
+  Credit Line Count:
+    columns:
+      - dataObject: Charge Credits
+        column: Credit Id
+    resultType: int
+    aggregation: count
+    description: Credit lines, counted at their own grain.
+
+  Tagged Resource Count:
+    columns:
+      - dataObject: Charge Resource Tags
+        column: Tag Key
+    resultType: int
+    aggregation: count_distinct
+    distinct: true
+    description: Distinct resource-tag keys in scope.
 
 metrics:
   Effective Savings Rate:

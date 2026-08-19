@@ -45,7 +45,86 @@
       "team": "data",
       "env": "prod",
       "cost_center": "cc-1310"
-    }
+    },
+    "Labels": [
+      {
+        "Key": "team",
+        "Value": "data"
+      },
+      {
+        "Key": "env",
+        "Value": "prod"
+      },
+      {
+        "Key": "cost_center",
+        "Value": "cc-1310"
+      },
+      {
+        "Key": "service-tier",
+        "Value": "gold"
+      },
+      {
+        "Key": "component",
+        "Value": "dashboard"
+      },
+      {
+        "Key": "app",
+        "Value": "dashboard"
+      }
+    ],
+    "Credits": [
+      {
+        "Id": "cd-001-cud",
+        "Type": "COMMITTED_USAGE_DISCOUNT",
+        "Name": "Committed use discount",
+        "Amount": -9.354457
+      }
+    ],
+    "ResourceTags": [
+      {
+        "Key": "owner-team",
+        "Value": "data",
+        "Inherited": false,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "environment",
+        "Value": "prod",
+        "Inherited": false,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "cost-centre",
+        "Value": "cc-1310",
+        "Inherited": true,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "compliance",
+        "Value": "pci-dss",
+        "Inherited": true,
+        "Namespace": "gcp"
+      }
+    ],
+    "Project": {
+      "Id": "proj-sub-1003",
+      "Name": "data-analytics",
+      "Ancestors": [
+        {
+          "ResourceName": "organizations/8811",
+          "DisplayName": "Contoso"
+        },
+        {
+          "ResourceName": "folders/301",
+          "DisplayName": "Engineering"
+        },
+        {
+          "ResourceName": "folders/312",
+          "DisplayName": "Data"
+        }
+      ]
+    },
+    "ChargeKey": "chg-0000001"
   },
   {
     "BillingAccountId": "acct-0001",
@@ -74,16 +153,16 @@
     "ChargeDescription": "Amazon EC2 instance usage",
     "ChargeFrequency": "Usage-Based",
     "PricingCategory": "Committed",
-    "PricingQuantity": 675.8714,
+    "PricingQuantity": 685.9377,
     "PricingUnit": "Hours",
-    "ConsumedQuantity": 675.8714,
+    "ConsumedQuantity": 685.9377,
     "ConsumedUnit": "Hours",
     "ListUnitPrice": 0.096,
-    "ContractedUnitPrice": 0.09222224,
-    "ListCost": 64.883654,
-    "ContractedCost": 62.330373,
-    "BilledCost": 62.330373,
-    "EffectiveCost": 43.102821,
+    "ContractedUnitPrice": 0.08702301,
+    "ListCost": 65.850019,
+    "ContractedCost": 59.692365,
+    "BilledCost": 59.692365,
+    "EffectiveCost": 42.73417,
     "BillingCurrency": "EUR",
     "CommitmentDiscountId": "cd-001",
     "CommitmentDiscountType": "Savings Plan",
@@ -93,7 +172,82 @@
       "team": "data",
       "env": "prod",
       "cost_center": "cc-1310"
-    }
+    },
+    "Labels": [
+      {
+        "Key": "team",
+        "Value": "data"
+      },
+      {
+        "Key": "env",
+        "Value": "prod"
+      },
+      {
+        "Key": "cost_center",
+        "Value": "cc-1310"
+      },
+      {
+        "Key": "owner",
+        "Value": "dev@contoso.io"
+      },
+      {
+        "Key": "service-tier",
+        "Value": "gold"
+      }
+    ],
+    "Credits": [
+      {
+        "Id": "cd-001-cud",
+        "Type": "COMMITTED_USAGE_DISCOUNT",
+        "Name": "Committed use discount",
+        "Amount": -11.049893
+      },
+      {
+        "Id": "cd-001-cud",
+        "Type": "COMMITTED_USAGE_DISCOUNT",
+        "Name": "Committed use discount",
+        "Amount": -11.049893
+      }
+    ],
+    "ResourceTags": [
+      {
+        "Key": "owner-team",
+        "Value": "data",
+        "Inherited": false,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "environment",
+        "Value": "prod",
+        "Inherited": false,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "compliance",
+        "Value": "pci-dss",
+        "Inherited": true,
+        "Namespace": "gcp"
+      }
+    ],
+    "Project": {
+      "Id": "proj-sub-1003",
+      "Name": "data-analytics",
+      "Ancestors": [
+        {
+          "ResourceName": "organizations/8811",
+          "DisplayName": "Contoso"
+        },
+        {
+          "ResourceName": "folders/301",
+          "DisplayName": "Engineering"
+        },
+        {
+          "ResourceName": "folders/312",
+          "DisplayName": "Data"
+        }
+      ]
+    },
+    "ChargeKey": "chg-0000002"
   },
   {
     "BillingAccountId": "acct-0001",
@@ -122,16 +276,16 @@
     "ChargeDescription": "Amazon EC2 instance usage",
     "ChargeFrequency": "Usage-Based",
     "PricingCategory": "Committed",
-    "PricingQuantity": 589.7503,
+    "PricingQuantity": 765.8309,
     "PricingUnit": "Hours",
-    "ConsumedQuantity": 589.7503,
+    "ConsumedQuantity": 765.8309,
     "ConsumedUnit": "Hours",
     "ListUnitPrice": 0.096,
-    "ContractedUnitPrice": 0.09451161,
-    "ListCost": 56.616029,
-    "ContractedCost": 55.738251,
-    "BilledCost": 55.738251,
-    "EffectiveCost": 45.393536,
+    "ContractedUnitPrice": 0.09497888,
+    "ListCost": 73.519766,
+    "ContractedCost": 72.73776,
+    "BilledCost": 72.73776,
+    "EffectiveCost": 59.826039,
     "BillingCurrency": "EUR",
     "CommitmentDiscountId": "cd-001",
     "CommitmentDiscountType": "Savings Plan",
@@ -141,6 +295,77 @@
       "team": "data",
       "env": "prod",
       "cost_center": "cc-1310"
-    }
+    },
+    "Labels": [
+      {
+        "Key": "team",
+        "Value": "data"
+      },
+      {
+        "Key": "env",
+        "Value": "prod"
+      },
+      {
+        "Key": "cost_center",
+        "Value": "cc-1310"
+      },
+      {
+        "Key": "owner",
+        "Value": "dev@contoso.io"
+      },
+      {
+        "Key": "service-tier",
+        "Value": "bronze"
+      },
+      {
+        "Key": "component",
+        "Value": "api"
+      },
+      {
+        "Key": "app",
+        "Value": "api"
+      }
+    ],
+    "Credits": [
+      {
+        "Id": "cd-001-cud",
+        "Type": "COMMITTED_USAGE_DISCOUNT",
+        "Name": "Committed use discount",
+        "Amount": -9.131221
+      }
+    ],
+    "ResourceTags": [
+      {
+        "Key": "owner-team",
+        "Value": "data",
+        "Inherited": false,
+        "Namespace": "contoso"
+      },
+      {
+        "Key": "environment",
+        "Value": "prod",
+        "Inherited": false,
+        "Namespace": "contoso"
+      }
+    ],
+    "Project": {
+      "Id": "proj-sub-1003",
+      "Name": "data-analytics",
+      "Ancestors": [
+        {
+          "ResourceName": "organizations/8811",
+          "DisplayName": "Contoso"
+        },
+        {
+          "ResourceName": "folders/301",
+          "DisplayName": "Engineering"
+        },
+        {
+          "ResourceName": "folders/312",
+          "DisplayName": "Data"
+        }
+      ]
+    },
+    "ChargeKey": "chg-0000003"
   }
 ]
