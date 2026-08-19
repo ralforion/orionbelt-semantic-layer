@@ -60,6 +60,7 @@ from orionbelt.dialect.base import (
     UnsupportedAggregationError,
     UnsupportedFunctionError,
     UnsupportedGroupingError,
+    UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import (
@@ -207,6 +208,16 @@ def _compile(
             code="UNSUPPORTED_GROUPING",
             message=str(exc),
         )
+    except UnsupportedNestedAccessError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported nested access",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "dataObject": exc.alias,
+            },
+        ) from None
     except UnsupportedFunctionError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_FUNCTION",

@@ -26,6 +26,7 @@ from orionbelt.ast.nodes import (
     UnionAll,
 )
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _nulls_last
 from orionbelt.models.semantic import DataObject, SemanticModel
@@ -45,12 +46,12 @@ class RawPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
-        dialect: Dialect | None = None,  # noqa: ARG002 — kept for parity with other planners
+        dialect: Dialect | None = None,
         union_by_name: bool = False,
     ) -> QueryPlan:
         if resolved.requires_cfl:
             return self._plan_cfl(resolved, model, qualify_table, union_by_name=union_by_name)
-        return self._plan_single_fact(resolved, model, qualify_table)
+        return self._plan_single_fact(resolved, model, qualify_table, dialect)
 
     # ------------------------------------------------------------------
     # Single-fact path
@@ -61,6 +62,7 @@ class RawPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         builder = QueryBuilder()
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
@@ -98,12 +100,15 @@ class RawPlanner:
             obj = model.data_objects.get(new_object)
             if not obj:
                 continue
-            on_expr = graph.build_join_condition(step)
-            builder.join(
-                table=qualify(obj),
-                on=on_expr,
-                join_type=step.join_type,
-                alias=new_object,
+            emit_join_step(
+                builder=builder,
+                step=step,
+                new_object=new_object,
+                obj=obj,
+                graph=graph,
+                qualify=qualify,
+                dialect=dialect,
+                warnings=resolved.warnings,
             )
             joined.add(new_object)
 

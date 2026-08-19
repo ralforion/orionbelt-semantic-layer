@@ -62,6 +62,7 @@ from orionbelt.dialect.base import (
     UnsupportedAggregationError,
     UnsupportedFunctionError,
     UnsupportedGroupingError,
+    UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.models.query import QueryObject
@@ -489,6 +490,16 @@ async def shortcut_compile_query(
                 "grouping": exc.grouping,
             },
         ) from None
+    except UnsupportedNestedAccessError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported nested access",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "dataObject": exc.alias,
+            },
+        ) from None
     except UnsupportedFunctionError as exc:
         raise HTTPException(
             status_code=422,
@@ -662,6 +673,16 @@ async def shortcut_execute_query(
                 "message": str(exc),
                 "dialect": exc.dialect,
                 "grouping": exc.grouping,
+            },
+        ) from None
+    except UnsupportedNestedAccessError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported nested access",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "dataObject": exc.alias,
             },
         ) from None
     except UnsupportedFunctionError as exc:

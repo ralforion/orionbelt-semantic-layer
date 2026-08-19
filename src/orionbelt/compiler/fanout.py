@@ -25,10 +25,87 @@ def _step_causes_fanout(step: JoinStep) -> bool:
     - many-to-one + reversed (traversed as one-to-many): fanout
     - one-to-one: never fanout
     - many-to-one (forward): never fanout
+    - an unnest: multiplies its parent, but not here — see below
     """
+    if step.nested:
+        # An unnest does multiply rows, and the multiplied side is the parent.
+        # It is not reported here because it is not a refusal: the parent's
+        # measures are deduplicated by ``grain_dedup`` in a CTE of their own,
+        # which is the same answer a forward many-to-one already gets. What
+        # this function reports is row multiplication nothing downstream can
+        # repair.
+        return False
     if step.cardinality == Cardinality.MANY_TO_MANY:
         return True
     return step.cardinality == Cardinality.MANY_TO_ONE and step.reversed
+
+
+def _reject_sibling_unnests(resolved: ResolvedQuery, model: SemanticModel) -> None:
+    """Refuse a measure on a nested object when a second one is also unnested.
+
+    Two laterals off the same parent are a genuine cross product of two child
+    grains: measured against 14,673 demo charges, grouping by label value *and*
+    credit type overstates total spend by 3.33x, and every cell is wrong. Each
+    nested object's elements are repeated once per element of the other, and
+    nothing can deduplicate them — a nested object has no key, by design.
+
+    Only a *measure* on a nested object is refused. Dimensions from two of them
+    are safe here for the same reason the refusal is needed: it is the parent's
+    identity that the deduplicating CTE keys on, and that identity is unaffected
+    by how many arrays multiplied it, so a parent-side measure grouped by both
+    stays correct.
+
+    One leg per nested object, unioned, is what this becomes: per-group values
+    are then exact, though they still overlap, because a charge belongs to every
+    group its arrays put it in. Refusing is what the compiler does until that
+    exists, since the alternative is a number wrong by a factor that varies with
+    how many elements each array carries.
+    """
+    unnested = sorted({step.to_object for step in resolved.join_steps if step.nested})
+    if len(unnested) < 2:
+        return
+    effective = model.effective_measures
+    on_nested = sorted(
+        {
+            name
+            for name in _measures_to_check(resolved)
+            if (m := effective.get(name)) is not None
+            and not m.allow_fan_out
+            and m.source_objects & set(unnested)
+        }
+    )
+    if not on_nested:
+        return
+    listed = ", ".join(f"'{name}'" for name in on_nested)
+    objects = ", ".join(f"'{name}'" for name in unnested)
+    raise FanoutError(
+        f"Measure(s) {listed} are sourced from a nested data object, and this query "
+        f"unnests {objects} together. Each one's elements are repeated once per element "
+        f"of the other, and a nested object has no key to deduplicate them by — its rows "
+        f"exist only inside its parent's. Query one nested object at a time, or set "
+        f"allowFanOut: true if the multiplication is intended."
+    )
+
+
+def _measures_to_check(resolved: ResolvedQuery) -> list[str]:
+    """Every measure the query evaluates: selected ones and metric leaves.
+
+    Deduplicated, order preserved, because a metric and a selected measure can
+    name the same leaf and reporting it twice reads as two problems.
+    """
+    names: list[str] = []
+    for m in resolved.measures:
+        if m.component_measures:
+            names.extend(metric_leaf_measure_names(m, resolved.metric_components))
+        else:
+            names.append(m.name)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return unique
 
 
 _ADDITIVE_AGGREGATIONS = frozenset({"sum", "count", "count_distinct"})
@@ -92,28 +169,17 @@ def detect_fanout(resolved: ResolvedQuery, model: SemanticModel) -> None:
     if not resolved.join_steps:
         return
 
+    _reject_sibling_unnests(resolved, model)
+
     errors: list[str] = []
 
     # Dimension objects in the query (these become GROUP BY columns)
     dim_objects = {d.object_name for d in resolved.dimensions}
 
-    # Build a set of measure names to check (direct + metric components,
-    # followed through nested derived metrics — those inline into the same
-    # expression, so their leaves face the same replicating join)
-    measures_to_check: list[str] = []
-    for m in resolved.measures:
-        if m.component_measures:
-            measures_to_check.extend(metric_leaf_measure_names(m, resolved.metric_components))
-        else:
-            measures_to_check.append(m.name)
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    unique_measures: list[str] = []
-    for name in measures_to_check:
-        if name not in seen:
-            seen.add(name)
-            unique_measures.append(name)
+    # Direct measures plus metric components, followed through nested derived
+    # metrics — those inline into the same expression, so their leaves face the
+    # same replicating join.
+    unique_measures = _measures_to_check(resolved)
 
     # Build global column lookup for expression-based measures
     global_columns: dict[str, str] = {}

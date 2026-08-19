@@ -13,6 +13,7 @@ from orionbelt.ast.nodes import (
     FunctionCall,
     InTimeZone,
     Literal,
+    NestedField,
     OrderByItem,
 )
 from orionbelt.compiler import (
@@ -255,6 +256,12 @@ def make_column_expr(
     substitutes placeholders so the returned AST already inlines the
     expression. Used by planners and filter resolution alike — the
     single source of truth for "render this column reference as SQL".
+
+    A column of a **nested** object is a :class:`NestedField` rather than a
+    ``ColumnRef``, because the engines do not agree that it is one: six read
+    ``L."Key"``, Snowflake needs ``L.value:"Key"::string`` and does not compile
+    the column form at all. Every caller goes through here, so the accessor is
+    chosen once and no planner, filter or wrapper can spell it a different way.
     """
     obj = model.data_objects.get(object_name)
     if obj is None:
@@ -264,7 +271,15 @@ def make_column_expr(
         return ColumnRef(name=column_label, table=object_name)
     if column.expression:
         return _build_computed_column_expr(column, obj, model, in_query_timezone=in_query_timezone)
-    ref: Expr = ColumnRef(name=column.code, table=object_name)
+    ref: Expr
+    if obj.is_nested:
+        ref = NestedField(
+            alias=object_name,
+            field=column.code,
+            abstract_type=str(column.abstract_type) if column.abstract_type else None,
+        )
+    else:
+        ref = ColumnRef(name=column.code, table=object_name)
     if not in_query_timezone:
         return ref
     return _in_query_timezone(ref, column, model)
@@ -323,12 +338,16 @@ def apply_query_timezone(expr: Expr, model: SemanticModel) -> Expr:
     def rewrite(node: Expr) -> Expr | None:
         if isinstance(node, InTimeZone):
             return node
-        if not isinstance(node, ColumnRef) or node.table is None:
+        if isinstance(node, NestedField):
+            table, name = node.alias, node.field
+        elif isinstance(node, ColumnRef) and node.table is not None:
+            table, name = node.table, node.name
+        else:
             return None
-        obj = model.data_objects.get(node.table)
+        obj = model.data_objects.get(table)
         if obj is None:
             return node
-        column = next((c for c in obj.columns.values() if c.code == node.name), None)
+        column = next((c for c in obj.columns.values() if c.code == name), None)
         if column is None:
             return node
         return _in_query_timezone(node, column, model)
@@ -848,6 +867,37 @@ class QueryResolver:
                 )
             else:
                 ctx.result.dimensions_exclude = True
+
+        # A nested object cannot appear in a union leg yet. Each leg picks its
+        # own root and builds its own FROM, and neither knows how to carry an
+        # unnest - so the leg would select from a table the object does not
+        # have. Refused rather than compiled, because the alternative is SQL
+        # naming an empty table or, worse, a plausible number from the wrong
+        # rows. Two nested objects in one query are meant to *become* a union
+        # (design/PLAN_nested_data_objects.md); this is what has to land first.
+        if ctx.result.requires_cfl or ctx.result.dimensions_exclude:
+            for name in sorted(ctx.result.required_objects):
+                nested_obj = model.data_objects.get(name)
+                source = nested_obj.nested_in if nested_obj is not None else None
+                if source is None:
+                    continue
+                ctx.errors.append(
+                    SemanticError(
+                        code="NESTED_OBJECT_IN_MULTI_FACT",
+                        message=(
+                            f"Data object '{name}' takes its rows by unnesting "
+                            f"'{source.data_object}.{source.column}', and this "
+                            f"query is planned as a union of independent facts, where each "
+                            f"leg selects from a table of its own. A nested object has none."
+                        ),
+                        path="select",
+                        hint=(
+                            "Query the nested object with measures from its own parent only, "
+                            "or read it through a flattening view by declaring 'code' "
+                            "alongside 'nestedIn'."
+                        ),
+                    )
+                )
 
         # 4. Validate usePathNames before building join graph
         self._validate_use_path_names(ctx, query.use_path_names)
@@ -1702,7 +1752,22 @@ class QueryResolver:
     def _select_base_object(
         self, ctx: _ResolutionContext, filter_objects: set[str] | None = None
     ) -> str:
-        """Select the base (fact) object — prefer measure source objects with most joins."""
+        """Select the base (fact) object, which is never a nested one.
+
+        A ``nestedIn`` object has no table: its rows are an array column on its
+        parent, reached by an unnest that names the parent. Every route into
+        this function can nominate one anyway - it is a measure source like any
+        other, and the "prefer the object with the most joins" fallback does not
+        look at where rows come from - so the answer is mapped up to the nearest
+        ancestor a FROM clause can name, which reaches everything the nested
+        object does and more.
+        """
+        return ctx.model.unnest_root(self._choose_base_object(ctx, filter_objects))
+
+    def _choose_base_object(
+        self, ctx: _ResolutionContext, filter_objects: set[str] | None = None
+    ) -> str:
+        """Prefer measure source objects with the most joins."""
         # An anchored measure has already been told which grain to run at, and
         # the planner joins its conformed subqueries against that object. Moving
         # the base elsewhere leaves those joins referencing a table no longer in

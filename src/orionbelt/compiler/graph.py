@@ -10,7 +10,7 @@ from orionbelt.ast.nodes import BinaryOp, ColumnRef, Expr
 from orionbelt.ast.nodes import JoinType as ASTJoinType
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import UsePathName
-from orionbelt.models.semantic import Cardinality, SemanticModel
+from orionbelt.models.semantic import Cardinality, DataObject, SemanticModel
 
 
 @dataclass
@@ -24,6 +24,15 @@ class JoinStep:
     join_type: ASTJoinType
     cardinality: Cardinality
     reversed: bool = False
+    nested: bool = False
+    """``to_object`` is unnested from an array column on ``from_object``.
+
+    Not a join at all: there is no key and no predicate, because the elements
+    were inside the parent's row before any SQL ran. The step is still a step
+    because everything downstream - path finding, fanout, the planner's join
+    loop - reasons about the query as a walk over the graph, and containment is
+    an edge of that walk however it is rendered.
+    """
 
 
 def _join_type_for(edge_data: dict[str, object]) -> ASTJoinType:
@@ -84,6 +93,13 @@ class JoinGraph:
             for join in obj.joins:
                 if join.join_to not in model.data_objects:
                     continue
+                # A nested object's declared join to its own parent is the
+                # ``code`` fallback's join, not a second route: containment
+                # already connects the two, and adding both would put a cycle
+                # between them. Its columns are folded onto the nested edge
+                # below, which is where the fallback reads them from.
+                if obj.nested_in is not None and join.join_to == obj.nested_in.data_object:
+                    continue
                 pair = (obj_name, join.join_to)
 
                 if join.secondary:
@@ -94,6 +110,10 @@ class JoinGraph:
                     # Primary join: skip if an active override exists for this pair
                     if pair not in active_overrides:
                         self._add_edge(obj_name, join)
+
+        for obj_name, obj in model.data_objects.items():
+            if obj.nested_in is not None and obj.nested_in.data_object in model.data_objects:
+                self._add_nested_edge(obj_name, obj)
 
     def _add_edge(self, obj_name: str, join: object) -> None:
         """Add an edge to the undirected, directed, and traversable graphs.
@@ -128,6 +148,67 @@ class JoinGraph:
             # Safe to walk backwards: row count is preserved.
             self._traversable.add_edge(join.join_to, obj_name)
 
+    def _add_nested_edge(self, obj_name: str, obj: DataObject) -> None:
+        """Add the edge a ``nestedIn`` object declares by containment.
+
+        Oriented **parent to child**, which is the opposite of how the object
+        reads: the child is the many side, but only the parent can put it in
+        scope, so the parent is what the walk starts from and what
+        :meth:`find_common_root` has to answer. Traversal is one-way for the
+        same reason - there is nothing to reach by leaving a nested object that
+        its parent does not already reach.
+
+        The edge is many-to-one *declared child to parent*, so walking it in the
+        direction stored here multiplies the parent's rows. That is exactly what
+        an unnest does, and ``nested`` is what tells fanout detection and the
+        planner so, since neither the cardinality nor ``reversed`` can say it:
+        the multiplication comes out of the FROM clause rather than a predicate.
+
+        ``columns_from`` / ``columns_to`` are the *fallback* join's, oriented
+        parent-first to match the edge. They are empty unless the object also
+        declares ``code`` and a join to its parent, and are read only where the
+        dialect cannot unnest.
+        """
+        source = obj.nested_in
+        if source is None:
+            return
+        parent = source.data_object
+        fallback = next((j for j in obj.joins if j.join_to == parent), None)
+        columns_from = list(fallback.columns_to) if fallback else []
+        columns_to = list(fallback.columns_from) if fallback else []
+        self._graph.add_edge(
+            parent,
+            obj_name,
+            columns_from=columns_from,
+            columns_to=columns_to,
+            cardinality=Cardinality.MANY_TO_ONE,
+            source_object=parent,
+            # An empty array keeps its parent row, which is a LEFT join: a
+            # charge carrying no labels still contributes its cost to an
+            # unfiltered total, and 61% of the rows in a real billing export
+            # carry none.
+            required=False,
+            nested=True,
+        )
+        self._directed.add_edge(
+            parent,
+            obj_name,
+            columns_from=columns_from,
+            columns_to=columns_to,
+            cardinality=Cardinality.MANY_TO_ONE,
+            nested=True,
+        )
+        self._traversable.add_edge(parent, obj_name)
+
+    def _unnest_root(self, name: str) -> str:
+        """The nearest ancestor of *name* a FROM clause can name.
+
+        Delegates to the model, which is where the same question is asked from
+        query resolution - a nested object must not be picked as a base object
+        either, and the two answers have to be the same one.
+        """
+        return self._model.unnest_root(name)
+
     def descendants(self, node: str) -> set[str]:
         """Return all nodes reachable from *node* via directed join paths."""
         if node not in self._directed:
@@ -149,7 +230,7 @@ class JoinGraph:
         """
         required = required_objects & set(self._directed.nodes)
         if len(required) <= 1:
-            return next(iter(sorted(required))) if required else ""
+            return self._unnest_root(next(iter(sorted(required)))) if required else ""
 
         # Find all nodes that can reach ALL required nodes via directed paths
         candidates: list[tuple[str, int]] = []
@@ -165,7 +246,7 @@ class JoinGraph:
 
         # Pick the deepest ancestor: smallest reachable set that still covers all
         candidates.sort(key=lambda x: (x[1], x[0]))
-        return candidates[0][0]
+        return self._unnest_root(candidates[0][0])
 
     def _find_center_undirected(self, required: set[str]) -> str:
         """Fallback: center of the Steiner tree in the undirected graph."""
@@ -183,7 +264,7 @@ class JoinGraph:
                     pass
 
         if not steiner:
-            return nodes[0]
+            return self._unnest_root(nodes[0])
 
         # ``nodes`` can span disconnected components — the pairwise loop above
         # simply skips those pairs, so a Steiner node need not reach every
@@ -209,7 +290,7 @@ class JoinGraph:
             if max_dist < best_max:
                 best_max = max_dist
                 best = node
-        return best
+        return self._unnest_root(best)
 
     def _hops_from(self, origin: str | None, node: str) -> int:
         """Hops from *origin* to *node* in the traversable graph.
@@ -363,6 +444,7 @@ class JoinGraph:
                         to_columns=edge_data["columns_to"],
                         join_type=_join_type_for(edge_data),
                         cardinality=edge_data["cardinality"],
+                        nested=bool(edge_data.get("nested")),
                     )
                 else:
                     # Path traverses the edge against its declared direction.
@@ -378,6 +460,7 @@ class JoinGraph:
                         join_type=_join_type_for(edge_data),
                         cardinality=edge_data["cardinality"],
                         reversed=True,
+                        nested=bool(edge_data.get("nested")),
                     )
                 steps.append(step)
 
@@ -436,6 +519,7 @@ class JoinGraph:
                     join_type=_join_type_for(edge_data),
                     cardinality=edge_data["cardinality"],
                     reversed=reversed_,
+                    nested=bool(edge_data.get("nested")),
                 )
             )
         return steps

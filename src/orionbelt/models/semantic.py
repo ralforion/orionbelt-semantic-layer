@@ -484,24 +484,22 @@ class DataObject(BaseModel):
         """Raise unless this object has a table a FROM clause can name.
 
         A ``nestedIn`` object without ``code`` has no table: its rows are an
-        array column on its parent, and reaching them needs an unnest that no
-        dialect renders yet. Without this guard the planners fall through to an
-        empty ``code`` and emit ``FROM "" AS "Charge Labels"`` - and a
-        synthesized count makes that reachable on any model that adopts the
-        field, with no measure declared at all.
-
-        Removed when the per-dialect rendering lands; until then a model may
-        *declare* a nested object and cannot *query* one unless it also carries
-        the ``code`` fallback, which is exactly what the fallback is for.
+        array column on its parent, reached by an unnest that names the parent
+        rather than by selecting from anything. The planner puts it in the FROM
+        clause that way and never asks for a table, so reaching here means
+        something tried to *select from* it - which is what this refuses, rather
+        than falling through to an empty ``code`` and emitting
+        ``FROM "" AS "Charge Labels"``.
         """
         if self.code:
             return
         source = self.nested_in
         raise UnrenderableDataObjectError(
             f"Data object '{self.name}' takes its rows by unnesting "
-            f"'{source.data_object}.{source.column}', and no dialect compiles a "
-            f"nested data object yet. Declare 'code' alongside 'nestedIn' to read a "
-            f"flattening view in the meantime, or leave this object out of the query."
+            f"'{source.data_object}.{source.column}', so it has no table to select "
+            f"from - its rows exist only inside its parent's. Reach it through "
+            f"'{source.data_object}', or declare 'code' alongside 'nestedIn' to read "
+            f"a flattening view."
             if source is not None
             else f"Data object '{self.name}' has no 'code' to select from."
         )
@@ -1361,6 +1359,29 @@ class SemanticModel(BaseModel):
             for candidate in pool
             if all(name == candidate or candidate in reachable_targets[name] for name in objects)
         )
+
+    def unnest_root(self, name: str) -> str:
+        """The nearest ancestor of *name* that a FROM clause can actually name.
+
+        A ``nestedIn`` object's rows are an array column on its parent, so they
+        exist only inside the parent's row: it can never be a query's base
+        object nor a CFL leg's root, and it is never what a plan selects *from*.
+        Walking up gives the object that can be, and it always covers what the
+        nested one does, since the parent reaches the child and not the reverse.
+
+        Returns *name* unchanged for an ordinary object, and stops on a chain
+        that loops - the semantic validator refuses one, but this is reached
+        from the compiler, which must terminate on any model it is handed.
+        """
+        seen: set[str] = set()
+        cursor = name
+        while cursor not in seen:
+            obj = self.data_objects.get(cursor)
+            if obj is None or obj.nested_in is None:
+                return cursor
+            seen.add(cursor)
+            cursor = obj.nested_in.data_object
+        return cursor
 
     @property
     def effective_measures(self) -> dict[str, Measure]:

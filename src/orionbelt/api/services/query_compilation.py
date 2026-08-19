@@ -27,6 +27,7 @@ from orionbelt.dialect.base import (
     UnsupportedAggregationError,
     UnsupportedFunctionError,
     UnsupportedGroupingError,
+    UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.model_store import ModelStore
@@ -126,6 +127,16 @@ def compile_query_or_raise(*, store: ModelStore, model_id: str, query: Any, dial
                 "message": str(exc),
                 "dialect": exc.dialect,
                 "grouping": exc.grouping,
+            },
+        ) from None
+    except UnsupportedNestedAccessError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported nested access",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "dataObject": exc.alias,
             },
         ) from None
     except UnsupportedFunctionError as exc:
@@ -242,6 +253,16 @@ def compile_query_for_plan(
             ],
             would_compile=False,
         )
+    except UnsupportedNestedAccessError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Unsupported nested access",
+                "message": str(exc),
+                "dialect": exc.dialect,
+                "dataObject": exc.alias,
+            },
+        ) from None
     except UnsupportedFunctionError as exc:
         return None, QueryPlanResponse(
             status="error",

@@ -371,6 +371,12 @@ class ComposabilityResolver:
         replicated = {
             obj for obj in sources if any(obj in self.graph.descendants(d) for d in forcing)
         }
+        # An unnest replicates the other way round: the array multiplies the row
+        # that *contains* it, so a driver nested inside a source replicates that
+        # source rather than the reverse. Reading the descendant relation alone
+        # missed it entirely and advertised a parent-side measure as untouched.
+        unnesting = {d for d in forcing if self.model.unnest_root(d) != d}
+        replicated |= {obj for obj in sources if any(self._nested_under(d, obj) for d in unnesting)}
         if sources != replicated:
             # Not replicated here, so the pass never runs on it.
             return None
@@ -379,7 +385,28 @@ class ComposabilityResolver:
         # deduplicated: the rewrite cannot express either and raises.
         if len(sources) > 1 or outside:
             return "refused"
+
+        # Deduplicating needs one row per row of the source, and only a declared
+        # key says which rows those are. Reachable only through an unnest: an
+        # ordinary join always names the columns it matches on, which serve as
+        # the identity where no primaryKey is declared.
+        source = next(iter(sources))
+        if any(self._nested_under(d, source) for d in unnesting) and not self._has_key(source):
+            return "refused"
         return "dedup"
+
+    def _nested_under(self, name: str, ancestor: str) -> bool:
+        """Whether *name* is a nested object contained, at any depth, in *ancestor*."""
+        obj = self.model.data_objects.get(name)
+        while obj is not None and obj.nested_in is not None:
+            if obj.nested_in.data_object == ancestor:
+                return True
+            obj = self.model.data_objects.get(obj.nested_in.data_object)
+        return False
+
+    def _has_key(self, name: str) -> bool:
+        obj = self.model.data_objects.get(name)
+        return obj is not None and any(col.primary_key for col in obj.columns.values())
 
     def _measure_blocked(self, name: str, anchor: set[str]) -> bool:
         """A measure is only excluded when the rewrite would refuse it outright."""
