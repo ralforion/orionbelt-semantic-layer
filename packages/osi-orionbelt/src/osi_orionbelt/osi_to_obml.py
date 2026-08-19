@@ -363,6 +363,8 @@ class OSItoOBML:
                         do["countable"] = ext_data["obml_countable"]
                     if ext_data.get("obml_count_label") is not None:
                         do["countLabel"] = ext_data["obml_count_label"]
+                    if ext_data.get("obml_nested_in"):
+                        do["nestedIn"] = ext_data["obml_nested_in"]
                 except (json.JSONDecodeError, TypeError):
                     pass
                 break

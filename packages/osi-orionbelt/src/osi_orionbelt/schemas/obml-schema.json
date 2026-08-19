@@ -126,13 +126,27 @@
             "mode"
           ],
           "additionalProperties": false
+        },
+        "nestedIn": {
+          "$ref": "#/definitions/nestedSource"
         }
       },
       "required": [
-        "code",
         "columns"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "required": [
+            "nestedIn"
+          ]
+        }
+      ]
     },
     "dataType": {
       "description": "OrionBelt internal Data Type",
@@ -716,7 +730,11 @@
           "description": "will use the total value of the measure"
         },
         "defaultValue": {
-          "type": ["string", "number", "boolean"],
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
           "description": "Value to report when the aggregate has nothing to add up. An aggregate over no rows is NULL in standard SQL, which a filtered measure reaches routinely, and engines disagree: ClickHouse returns 0 over an empty row set where Postgres, DuckDB and the rest return NULL. Setting this pins the value on every dialect (emitted as COALESCE around the aggregate); leaving it unset keeps the SQL-standard NULL. Same slot as a metric's defaultValue."
         },
         "anchor": {
@@ -1054,6 +1072,25 @@
         }
       ],
       "additionalProperties": false
+    },
+    "nestedSource": {
+      "type": "object",
+      "description": "Take this object's rows by unnesting an array column on a parent object rather than from a table of its own. The correlation is containment, not a key: an unnest pairs each parent row with the elements of its own array.",
+      "properties": {
+        "dataObject": {
+          "type": "string",
+          "description": "The parent data object whose array column supplies these rows"
+        },
+        "column": {
+          "type": "string",
+          "description": "The parent's array column. A dotted path addresses an array nested inside a struct, such as x_Project.Ancestors"
+        }
+      },
+      "required": [
+        "dataObject",
+        "column"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -1263,7 +1300,10 @@
         },
         "expressionMode": {
           "type": "string",
-          "enum": ["permissive", "portable"],
+          "enum": [
+            "permissive",
+            "portable"
+          ],
           "description": "How function calls in expressions are held to the portable function catalog (GET /v1/reference/functions). 'permissive' (default) emits a call the catalog does not carry as written and warns with NON_PORTABLE_FUNCTION, keeping vendor SQL available; 'portable' rejects it, so a model that has to run on any dialect cannot acquire a dependency on one engine's SQL by accident.",
           "default": "permissive"
         },
@@ -1273,7 +1313,10 @@
         },
         "weekStart": {
           "type": "string",
-          "enum": ["monday", "sunday"],
+          "enum": [
+            "monday",
+            "sunday"
+          ],
           "description": "Which day a week begins on, for date_trunc('week', ...) and the week boundaries date_diff('week', ...) counts. ISO 8601 (monday) by default; 'sunday' for a US retail calendar. Week numbering from extract('week', ...) stays ISO either way, because a Sunday-start week number has no definition the engines agree on.",
           "default": "monday"
         },
