@@ -19,11 +19,13 @@ the operator's manual.
 | Full correctness ratification | `uv run pytest tests/integration/correctness/` |
 | Both at once | `uv run pytest tests/integration/correctness/ tests/integration/drift/` |
 | Re-snap after intentional SQL change | `UPDATE_SNAPSHOTS=1 uv run pytest tests/integration/drift/` |
-| Cross-vendor exec (Postgres / MySQL / ClickHouse via testcontainers) | `uv run pytest -m docker tests/integration/drift/vendor_exec/` |
+| Cross-vendor exec (seven engines; see below) | `uv run pytest -m docker tests/integration/drift/vendor_exec/` |
 
 The first four run in well under a second against the bundled DuckDB
 seed (`examples/orionbelt_1_commerce.duckdb`). The vendor-exec sweep
-takes ~20 s including container startup.
+takes tens of seconds for the container engines, and a few minutes when
+cloud credentials are present and Snowflake, BigQuery and Databricks
+join in.
 
 ## When does it run automatically?
 
@@ -31,13 +33,17 @@ takes ~20 s including container startup.
 |---|---|---|
 | Tier 1 — correctness | ✅ every push + PR to `main` | Plain pytest, fast (~1 s) |
 | Tier 2 — drift (DuckDB exec + 8-dialect compile-only + metadata gate) | ✅ every push + PR | Plain pytest, fast (~1.5 s) |
-| Phase A — vendor execution sweep | ❌ skipped in CI | Marked `pytest.mark.docker`; needs Postgres / MySQL / ClickHouse containers |
+| Phase A — vendor execution sweep | ❌ skipped in CI | Marked `pytest.mark.docker`; needs containers, and cloud credentials for three of the seven engines |
 
 CI runs both tiers in a **single pytest invocation**, so a green
 workflow implies every drift snapshot is anchored to a green Tier 1
 check by construction. The vendor-exec sweep is opt-in — run locally,
 or wire a separate workflow job that boots service containers if you
 want it on CI.
+
+Worth knowing what that opt-in costs: a green PR says the SQL compiles
+and matches its snapshot, **not** that any engine will run it. See
+Limitations.
 
 ## Why two tiers
 
@@ -211,25 +217,52 @@ comparison, etc.).
 
 Compile-only snapshots cover all 8 registered dialects without needing
 a database. The vendor-execution sweep adds a stronger check: every
-corpus query is *executed* against a freshly-seeded testcontainer for
-DuckDB, Postgres 16, MySQL 8, and ClickHouse, and the row set is
+corpus query is *executed* against a real engine and the row set is
 compared cell-by-cell to the DuckDB golden under
 `drift/duckdb/<id>.yaml`.
 
+**Seven engines run today.** Four come up as testcontainers and need
+nothing but Docker; three are cloud warehouses reached with credentials
+from the environment, and skip cleanly when those are absent.
+
+| engine | how | needs |
+| --- | --- | --- |
+| DuckDB | in-process | nothing |
+| PostgreSQL 16, MySQL 8, ClickHouse | testcontainers | Docker |
+| Snowflake, BigQuery, Databricks | live connection | credentials in the environment |
+
+Dremio is the one dialect with no fixture here. It has its own opt-in
+stack under `tests/integration/dremio/`, driven by
+`tests/integration/dremio/run.sh`.
+
 ```
 tests/integration/drift/vendor_exec/
-├── _seed.py             ← extracts the bundled commerce DuckDB once,
-│                          loads it into each vendor (DOUBLE → DECIMAL(18,2)
-│                          target type for exact arithmetic)
-├── conftest.py          ← per-vendor container fixtures, all yielding the
-│                          same VendorTarget(name, dialect, execute) shape
-└── test_vendor_exec.py  ← 60 cases (15 corpus × 4 vendors), gated by
-                           pytest.mark.docker
+├── _seed.py                    ← extracts the bundled commerce DuckDB once,
+│                                 loads it into each vendor (DOUBLE →
+│                                 DECIMAL(18,2) for exact arithmetic)
+├── _catalog_values.py          ← expected values for the portable function
+│                                 catalog, shared by the function sweep
+├── conftest.py                 ← per-vendor fixtures, all yielding the same
+│                                 VendorTarget(name, dialect, execute) shape
+├── test_vendor_exec.py         ← the corpus, cell-by-cell against the golden
+├── test_vendor_measure_sweep.py← every measure and metric of the commerce
+│                                 model, asserting it executes at all
+├── test_function_exec.py       ← every portable catalog entry, against its
+│                                 documented value
+├── test_exact_avg_exec.py      ← the exact-AVG rewrite, on values the corpus
+│                                 seed deliberately does not contain
+└── test_overflow_cast_exec.py  ← a measure that outgrows its type: no engine
+                                  may answer with a plausible wrong number
 ```
+
+The last two exist because the corpus cannot reach them. Its values sit
+far below any type's limit, so an aggregate that only misbehaves past a
+64-bit boundary needs rows the seed does not carry — and adding them
+would change the DuckDB golden for every vendor.
 
 Run it:
 ```bash
-# Full sweep across all four engines:
+# Full sweep. Cloud engines skip unless their credentials are present:
 uv run pytest -m docker tests/integration/drift/vendor_exec/
 
 # One vendor:
@@ -244,16 +277,16 @@ collapse, and numeric values rounded to 12 significant digits via
 `float()` to absorb cross-engine division drift on ratios while
 preserving money sums up to ~$1 T at 2-dp precision.
 
-Phases B (Dremio OSS, Spark SQL, BigQuery emulator) and C (Snowflake /
-real BigQuery / Databricks via env-var-gated cloud creds) are
-follow-up work — see plan §5.2.
-
 ## Limitations
 
-* Vendor-side row execution against the four cloud-only engines
-  (Snowflake, BigQuery, Databricks, Dremio cloud) is not in v0. Phase
-  C is gated by demo-account credentials and a separate config knob;
-  follow-up PR.
+* **The container suites do not run in CI.** Every check that gates a PR
+  is compile-only, so a query that compiles to valid SQL an engine then
+  refuses stays green until someone runs Docker locally. That is not
+  hypothetical: four ClickHouse CFL cases failed for a month behind green
+  checks, and no compile-only test could have caught them, because the
+  SQL was well formed and only the engine rejected it.
+* Dremio has no fixture in this sweep, so its coverage is the separate
+  opt-in stack rather than the corpus.
 * The half-boundary cases on rolling AVG / division-precision ratios
   are intrinsic to each engine's float / decimal arithmetic and are
   marked `xfail` in the vendor-exec sweep, not "fixed" by tightening
