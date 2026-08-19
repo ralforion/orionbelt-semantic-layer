@@ -156,3 +156,60 @@ class TestMySQLJsonPaths:
             parent_alias="C", column="x", alias="L", columns=((code, "VARCHAR(64)"),), outer=True
         )
         assert f"PATH {expected}" in DialectRegistry.get("mysql").render_unnest(node)
+
+
+class TestADottedColumnAddressesAnArrayInsideAStruct:
+    """``x_Project.Ancestors`` in the Google export, and three engines differ.
+
+    The dotted identifier chain is the majority form - measured working on
+    DuckDB, BigQuery, Databricks and ClickHouse. The other three each fail their
+    own way and need their own shape, found in review of #344:
+
+    * Postgres reads it as a three-part table name: "missing FROM-clause entry"
+    * MySQL reports an unknown column
+    * Snowflake raises a compilation error
+
+    ClickHouse was nearly written off here too, on a literal that would not
+    parse; against a real table the dotted chain is fine. A failing literal is
+    not evidence about an engine.
+    """
+
+    DOTTED = {
+        "duckdb": '"C"."x_Project"."Ancestors"',
+        "bigquery": "`C`.`x_Project`.`Ancestors`",
+        "databricks": "`C`.`x_Project`.`Ancestors`",
+        "clickhouse": '"C"."x_Project"."Ancestors"',
+        # composite field access needs the parentheses
+        "postgres": '("C"."x_Project")."Ancestors"',
+        # only the first segment is a column; the rest are VARIANT steps
+        "snowflake": '"C"."x_Project":"Ancestors"',
+    }
+
+    @pytest.mark.parametrize("dialect", sorted(DOTTED))
+    def test_the_path_matches_what_the_engine_accepts(self, dialect: str) -> None:
+        node = Unnest(parent_alias="C", column="x_Project.Ancestors", alias="L")
+        assert DialectRegistry.get(dialect).unnest_path(node) == self.DOTTED[dialect]
+
+    def test_mysql_moves_the_member_into_the_json_path(self) -> None:
+        """The only engine where a deeper segment changes *which argument* it
+        belongs to: the column stays the document and the member becomes the
+        row path, because a JSON array inside an object is not a deeper
+        identifier.
+        """
+        node = Unnest(
+            parent_alias="C",
+            column="x_Project.Ancestors",
+            alias="L",
+            columns=(("DisplayName", "VARCHAR(64)"),),
+        )
+        sql = DialectRegistry.get("mysql").render_unnest(node)
+        assert "JSON_TABLE(`C`.`x_Project`, '$.\"Ancestors\"[*]'" in sql, sql
+
+    def test_a_single_segment_column_is_unchanged_everywhere(self) -> None:
+        """The override must not alter the ordinary case."""
+        node = Unnest(parent_alias="C", column="x_Labels", alias="L")
+        for dialect in RENDERS:
+            dia = DialectRegistry.get(dialect)
+            path = dia.unnest_path(node)
+            assert path.endswith(dia.quote_identifier("x_Labels")), (dialect, path)
+            assert "(" not in path and ":" not in path, (dialect, path)

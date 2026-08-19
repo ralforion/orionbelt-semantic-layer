@@ -17,6 +17,35 @@ from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
 
+def _json_source_and_row_path(dialect: MySQLDialect, node: Unnest) -> tuple[str, str]:
+    """Split a dotted column into the JSON document and the path within it.
+
+    ``x_Labels`` reads the whole column as the array: ``JSON_TABLE(col, '$[*]'
+    ...)``. ``x_Project.Ancestors`` reads the array *inside* the document:
+    ``JSON_TABLE(col, '$."Ancestors"[*]' ...)``. Every engine but this one and
+    Snowflake takes the deeper segments as identifiers; MySQL is the only one
+    where they change which argument they belong to.
+    """
+    first, *rest = node.column.split(".")
+    source = f"{dialect.quote_identifier(node.parent_alias)}.{dialect.quote_identifier(first)}"
+    inner = "".join(f".{_json_member(segment)}" for segment in rest)
+    return source, _sql_literal(f"${inner}[*]")
+
+
+def _json_member(name: str) -> str:
+    """One JSON-path member, quoted and escaped for the JSON layer."""
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _sql_literal(text: str) -> str:
+    """*text* as a MySQL single-quoted literal.
+
+    MySQL treats a backslash as an escape inside string literals unless
+    ``NO_BACKSLASH_ESCAPES`` is set, so both it and the quote are doubled.
+    """
+    return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def _json_path_literal(code: str) -> str:
     """A ``JSON_TABLE`` PATH argument for *code*, escaped for **both** layers.
 
@@ -38,9 +67,7 @@ def _json_path_literal(code: str) -> str:
     MySQL treats a backslash as an escape inside string literals unless
     ``NO_BACKSLASH_ESCAPES`` is set, which is why the SQL layer doubles it.
     """
-    member = '"' + code.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    path = f"$.{member}"
-    return "'" + path.replace("\\", "\\\\").replace("'", "''") + "'"
+    return _sql_literal(f"$.{_json_member(code)}")
 
 
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
@@ -257,8 +284,14 @@ class MySQLDialect(Dialect):
             )
             or "value VARCHAR(1024) PATH '$'"
         )
+        # A dotted column is an array inside an object, and here that is not a
+        # deeper *identifier* - it is a deeper JSON path. `C`.`x_Project`.
+        # `Ancestors` is "Unknown column"; the member has to move out of the
+        # source expression and into the row path, leaving the column itself as
+        # the document being read.
+        source, row_path = _json_source_and_row_path(self, node)
         table = (
-            f"JSON_TABLE({self.unnest_path(node)}, '$[*]' COLUMNS ({cols})) "
+            f"JSON_TABLE({source}, {row_path} COLUMNS ({cols})) "
             f"AS {self.quote_identifier(node.alias)}"
         )
         return f"LEFT JOIN {table} ON TRUE" if node.outer else f", {table}"

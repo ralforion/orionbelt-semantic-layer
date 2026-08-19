@@ -185,3 +185,85 @@ def test_mysql_json_paths_survive_awkward_field_names(vendor_mysql: VendorTarget
         f"SELECT {projection} FROM {source} AS `C` {dialect.render_unnest(node)}"
     )
     assert rows == [{f"c{i}": f"v-{i}" for i in range(len(AWKWARD_CODES))}], rows
+
+
+# ---------------------------------------------------------------------------
+# An array nested inside a struct: ``x_Project.Ancestors`` in the Google export.
+#
+# Built as real tables where the engine allows one, not inline literals. Two
+# dialects were nearly written off during this work because a literal failed to
+# parse while the engine itself was fine - ClickHouse here, and Dremio in the
+# design plan. A literal is not evidence about an engine's capabilities.
+# ---------------------------------------------------------------------------
+
+NESTED_DDL = {
+    "duckdb": [
+        "DROP TABLE IF EXISTS nested_probe",
+        "CREATE TABLE nested_probe (x_Project STRUCT(Id VARCHAR, "
+        "Ancestors STRUCT(DisplayName VARCHAR)[]))",
+        "INSERT INTO nested_probe VALUES ({'Id':'p1','Ancestors':[{'DisplayName':'Eng'}]})",
+    ],
+    "postgres": [
+        "DROP TABLE IF EXISTS nested_probe",
+        "DROP TYPE IF EXISTS anc CASCADE",
+        "DROP TYPE IF EXISTS proj CASCADE",
+        'CREATE TYPE anc AS ("DisplayName" text)',
+        'CREATE TYPE proj AS ("Id" text, "Ancestors" anc[])',
+        'CREATE TABLE nested_probe ("x_Project" proj)',
+        """INSERT INTO nested_probe VALUES (ROW('p1', ARRAY[ROW('Eng')::anc])::proj)""",
+    ],
+    "clickhouse": [
+        "DROP TABLE IF EXISTS nested_probe",
+        "CREATE TABLE nested_probe (x_Project Tuple(Id String, "
+        "Ancestors Array(Tuple(DisplayName String)))) ENGINE = Memory",
+        "INSERT INTO nested_probe VALUES (('p1',[('Eng')]))",
+    ],
+    "mysql": [
+        "DROP TABLE IF EXISTS nested_probe",
+        "CREATE TABLE nested_probe (x_Project JSON)",
+        """INSERT INTO nested_probe VALUES ('{"Id":"p1","Ancestors":[{"DisplayName":"Eng"}]}')""",
+    ],
+}
+
+
+def _assert_dotted_path(target: VendorTarget) -> None:
+    """``x_Project.Ancestors`` reaches the array inside the struct.
+
+    Three engines cannot read the dotted identifier chain the other four take,
+    and each fails differently: Postgres reports a missing FROM-clause entry,
+    MySQL an unknown column, Snowflake a compilation error. Each has its own
+    form, and this is the only thing that shows the right one was chosen.
+    """
+    for stmt in NESTED_DDL[target.dialect]:
+        with contextlib.suppress(TypeError):
+            target.execute(stmt)
+    dialect = DialectRegistry.get(target.dialect)
+    node = Unnest(
+        parent_alias="C",
+        column="x_Project.Ancestors",
+        alias="L",
+        columns=(("DisplayName", "VARCHAR(64)"),),
+        outer=False,
+    )
+    field = dialect.compile_expr(dialect.nested_field("L", "DisplayName"))
+    rows = target.execute(
+        f"SELECT {field} AS {dialect.quote_identifier('d')} "
+        f"FROM nested_probe AS {dialect.quote_identifier('C')} {dialect.render_unnest(node)}"
+    )
+    assert [next(iter(r.values())) for r in rows] == ["Eng"], rows
+
+
+def test_duckdb_dotted_path(vendor_duckdb: VendorTarget) -> None:
+    _assert_dotted_path(vendor_duckdb)
+
+
+def test_postgres_dotted_path(vendor_postgres: VendorTarget) -> None:
+    _assert_dotted_path(vendor_postgres)
+
+
+def test_clickhouse_dotted_path(vendor_clickhouse: VendorTarget) -> None:
+    _assert_dotted_path(vendor_clickhouse)
+
+
+def test_mysql_dotted_path(vendor_mysql: VendorTarget) -> None:
+    _assert_dotted_path(vendor_mysql)

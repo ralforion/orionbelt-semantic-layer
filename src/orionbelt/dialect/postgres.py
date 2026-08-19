@@ -92,6 +92,20 @@ class PostgresDialect(Dialect):
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
 
+    def unnest_path(self, node: Unnest) -> str:
+        """A field of a composite has to be reached through parentheses.
+
+        ``"C"."x_Project"."Ancestors"`` parses as a three-part *table* name, so
+        Postgres reports "missing FROM-clause entry for table x_Project".
+        ``("C"."x_Project")."Ancestors"`` is composite field access and reads
+        the array. A single-segment column needs no parentheses and gets none.
+        """
+        parts = node.column.split(".")
+        path = f"{self.quote_identifier(node.parent_alias)}.{self.quote_identifier(parts[0])}"
+        for segment in parts[1:]:
+            path = f"({path}).{self.quote_identifier(segment)}"
+        return path
+
     def render_unnest(self, node: Unnest) -> str:
         """``LATERAL`` is not optional here; the alias is otherwise ordinary.
 

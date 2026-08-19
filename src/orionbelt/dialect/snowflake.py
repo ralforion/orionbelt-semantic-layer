@@ -87,6 +87,20 @@ class SnowflakeDialect(Dialect):
             sql=f'{self.quote_identifier(alias)}.value:"{escaped}"::{sql_type or "string"}'
         )
 
+    def unnest_path(self, node: Unnest) -> str:
+        """Only the first segment is a column; the rest are VARIANT steps.
+
+        ``"C"."x_Project"."Ancestors"`` does not compile - the object's members
+        are reached with ``:`` rather than ``.``, the same operator
+        :meth:`nested_field` uses for a field of an element.
+        """
+        parts = node.column.split(".")
+        path = f"{self.quote_identifier(node.parent_alias)}.{self.quote_identifier(parts[0])}"
+        for segment in parts[1:]:
+            escaped = segment.replace('"', '""')
+            path = f'{path}:"{escaped}"'
+        return path
+
     def render_unnest(self, node: Unnest) -> str:
         """``LATERAL FLATTEN``, whose outer form is an argument rather than a
         join type.

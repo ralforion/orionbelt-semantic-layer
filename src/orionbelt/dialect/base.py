@@ -633,6 +633,12 @@ class Dialect(ABC):
         is an identifier in its own right: ``x_Project.Ancestors`` becomes two
         quoted identifiers joined by a dot, rather than one quoted string
         containing a dot, which would name a column that does not exist.
+
+        The dotted chain is the majority form, measured on DuckDB, BigQuery,
+        Databricks and ClickHouse. Three engines cannot read it and override:
+        Postgres needs the composite parenthesised, Snowflake needs a VARIANT
+        ``:`` path, and MySQL has to move the member into the JSON path
+        entirely - see :meth:`MySQLDialect.render_unnest`.
         """
         parts = [node.parent_alias, *node.column.split(".")]
         return ".".join(self.quote_identifier(p) for p in parts)
