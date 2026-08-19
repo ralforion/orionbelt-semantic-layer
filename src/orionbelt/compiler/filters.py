@@ -666,6 +666,20 @@ def _join_filter_object_into_subquery(
     # a step actually brings into the body is the far end of its *traversal*.
     joined_objects = [step.from_object if step.reversed else step.to_object for step in steps]
 
+    # The third road into the same wall as the subquery's target and its
+    # correlation path: an inner filter can name a nested object, or one only
+    # reachable through it, and the loop below would ask ``qualify_table`` for a
+    # table that does not exist. A subquery body is joins only - there is no
+    # unnest in it - so anything behind a containment edge is out of reach here.
+    nested_hops = [
+        name
+        for name in joined_objects
+        if (o := model.data_objects.get(name)) is not None and o.is_nested
+    ]
+    if nested_hops:
+        errors.append(_nested_subquery_error(nested_hops[0], model.data_objects[nested_hops[0]]))
+        return False
+
     if subject_object in joined_objects:
         errors.append(
             SemanticError(

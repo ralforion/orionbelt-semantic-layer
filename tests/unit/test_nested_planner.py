@@ -120,6 +120,44 @@ def _with_second_fact(yaml_text: str) -> str:
     )
 
 
+def _with_a_dimension_behind_the_array(yaml_text: str) -> str:
+    """A nested object joining onward to a dimension of its own.
+
+    Legal, and the shape a nested *fact* takes: ``Charge Credits`` to a currency
+    table. It also puts an ordinary object behind a containment edge, which is
+    what several reachability walks had to learn not to route through.
+    """
+    return (
+        yaml_text.replace(
+            "      Label Value: {code: Value, abstractType: string}\n",
+            "      Label Value: {code: Value, abstractType: string}\n"
+            "      Owner Id: {code: OwnerId, abstractType: string}\n"
+            "    joins:\n"
+            "      - joinTo: Owners\n"
+            "        columnsFrom: [Owner Id]\n"
+            "        columnsTo: [Owner Id]\n"
+            "        joinType: many-to-one\n",
+            1,
+        )
+        .replace(
+            "  Charge Credits:\n",
+            "  Owners:\n"
+            "    code: owners\n"
+            "    columns:\n"
+            "      Owner Id: {code: owner_id, abstractType: string, primaryKey: true}\n"
+            "      Owner Name: {code: owner_name, abstractType: string}\n"
+            "  Charge Credits:\n",
+            1,
+        )
+        .replace(
+            "  Account Name: {dataObject: Accounts, column: Account Name}\n",
+            "  Account Name: {dataObject: Accounts, column: Account Name}\n"
+            "  Owner Name: {dataObject: Owners, column: Owner Name}\n",
+            1,
+        )
+    )
+
+
 def _load(yaml_text: str = MODEL_YAML) -> SemanticModel:
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
@@ -380,6 +418,86 @@ class TestWhatIsRefused:
         with pytest.raises(ResolutionError) as excinfo:
             _compile(model, ["Part Name"], ["Total Cost"], dialect)
         assert any(e.code == "NESTED_WITHIN_NESTED_UNSUPPORTED" for e in excinfo.value.errors)
+
+    def test_an_exists_subquery_whose_inner_filter_names_one(self) -> None:
+        """The third road to the same wall, after the target and the path.
+
+        A subquery's own ``filter`` joins whatever objects it references into
+        the body, and that loop asked ``qualify_table`` for a table a nested
+        object does not have.
+        """
+        model = _load(_with_a_dimension_behind_the_array(MODEL_YAML))
+        with pytest.raises(ResolutionError) as excinfo:
+            CompilationPipeline().compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Account Name"], measures=[]),
+                    where=[
+                        QueryFilter(
+                            field="Accounts.Account Id",
+                            op=FilterOperator.EXISTS,
+                            subquery=Subquery(
+                                data_object="Charges",
+                                filter=[
+                                    QueryFilter(
+                                        field="Charge Labels.Label Key",
+                                        op=FilterOperator.EQUALS,
+                                        value="team",
+                                    )
+                                ],
+                            ),
+                        )
+                    ],
+                ),
+                model,
+                "duckdb",
+            )
+        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
+
+    def test_an_exists_subquery_targeting_something_behind_one(self) -> None:
+        """A subquery body is joins only, so anything behind a containment edge
+        is out of its reach too - not only the nested object itself.
+        """
+        model = _load(_with_a_dimension_behind_the_array(MODEL_YAML))
+        with pytest.raises(ResolutionError) as excinfo:
+            CompilationPipeline().compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=[], measures=["Total Cost"]),
+                    where=[
+                        QueryFilter(
+                            field="Charges.Cost",
+                            op=FilterOperator.EXISTS,
+                            subquery=Subquery(data_object="Owners"),
+                        )
+                    ],
+                ),
+                model,
+                "duckdb",
+            )
+        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
+
+    def test_a_union_leg_cannot_route_through_one(self) -> None:
+        """A dimension reachable only *through* a nested object is out of every
+        leg's reach, because a leg is a star built out of tables.
+
+        It crashed in ``build_join_condition`` on a step with no columns, and
+        excluding the object alone was not enough: under ``UNION ALL BY NAME``
+        no leg supplied the column and none NULL-padded it either, so the outer
+        SELECT named a column the union does not have.
+        """
+        model = _load(_with_second_fact(_with_a_dimension_behind_the_array(MODEL_YAML)))
+        with pytest.raises(ResolutionError) as excinfo:
+            _compile(model, ["Owner Name"], ["Total Cost", "Budget Amount"])
+        assert any(e.code == "UNREACHABLE_REQUIRED_OBJECT" for e in excinfo.value.errors)
+
+    def test_but_a_star_query_reaches_it_normally(self) -> None:
+        """The same dimension is perfectly reachable when there is no union: the
+        nested object is unnested and its own join walked from there. Refusing
+        it everywhere would have cost a nested fact its dimensions.
+        """
+        model = _load(_with_a_dimension_behind_the_array(MODEL_YAML))
+        sql = _compile(model, ["Owner Name"], ["Total Cost"]).sql
+        assert "UNNEST" in sql.upper()
+        assert '"owners"' in sql
 
     def test_an_exists_subquery_targeting_one(self, model: SemanticModel) -> None:
         """A correlated subquery has nowhere to select from and nothing to

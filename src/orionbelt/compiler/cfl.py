@@ -170,12 +170,18 @@ class CFLPlanner:
         if not measures_by_object and not cross_fact and resolved.requires_cfl:
             measures_by_object = self._group_dimensions_into_legs(resolved, model)
 
+        # A dimension no leg can reach is projected by none of them, and the
+        # union then has no such column for the outer SELECT to group on. Under
+        # ``UNION ALL BY NAME`` that is not even a NULL pad - the padding fills
+        # a column *some* leg supplies, and this one has no supplier at all - so
+        # the query compiled to SQL naming a column that does not exist.
+        self._reject_unreachable_dimensions(measures_by_object, resolved, model)
+
         if len(measures_by_object) <= 1 and not cross_fact:
             # Single fact — delegate to star schema. Resolution let this query
             # past the reachability check because it looked multi-fact, and a
             # star has to serve every dimension from one root, so check now
             # that the leg left standing can.
-            self._reject_unreachable_dimensions(measures_by_object, resolved, model)
             from orionbelt.compiler.star import StarSchemaPlanner
 
             return StarSchemaPlanner().plan(
@@ -292,18 +298,27 @@ class CFLPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
     ) -> None:
-        """Refuse a dimension the one remaining leg cannot produce.
+        """Refuse a dimension **no** leg can produce.
 
         A query looks multi-fact while its measures span facts, and resolution
         skips the reachability check on that basis - the union answers it, each
-        leg projecting the dimensions it reaches and NULL-padding the rest. When
-        the legs collapse to one there is no union to do that, and the star this
-        delegates to would project a column from a table it does not select
-        from. The same refusal resolution would have raised.
+        leg projecting the dimensions it reaches and NULL-padding the rest. That
+        only works while some leg reaches it. One that none does is projected by
+        none of them, so there is no column in the union for the outer SELECT to
+        name, and where the legs collapse to one the star this delegates to
+        would project a column from a table it does not select from. The same
+        refusal resolution would have raised.
+
+        Reachability is measured without crossing a containment edge: a leg is
+        built out of tables and has no unnest to reach a nested object with, nor
+        anything sitting behind one.
         """
-        root = next(iter(measures_by_object), resolved.base_object)
+        roots = set(measures_by_object) or {resolved.base_object}
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
-        reachable = graph.descendants(root) | {root}
+        reachable = {
+            name for root in roots for name in (graph.descendants_without_unnest(root) | {root})
+        }
+        root = sorted(roots)[0]
         unreachable = sorted(
             {dim.object_name for dim in resolved.dimensions if dim.object_name not in reachable}
         )
@@ -502,8 +517,11 @@ class CFLPlanner:
             leg_builder = QueryBuilder()
             this_measure_names = {m.name for m in measures}
 
-            # Compute reachability from this leg's fact object upfront
-            reachable = graph.descendants(obj_name) | {obj_name}
+            # Compute reachability from this leg's fact object upfront.
+            # Deliberately not ``descendants``: a leg is a star built out of
+            # tables and cannot carry an unnest, so a nested object and anything
+            # behind one are out of its reach however ordinary their own joins.
+            reachable = graph.descendants_without_unnest(obj_name) | {obj_name}
 
             # Collect table references from this leg's own-measure
             # expressions. A measure like ``Electronics Sales`` is
@@ -544,8 +562,11 @@ class CFLPlanner:
                 | measure_expr_objects
             )
             wide_lead = graph.find_common_root(wanted)
-            if wide_lead and obj_name in (graph.descendants(wide_lead) | {wide_lead}):
-                reachable = graph.descendants(wide_lead) | {wide_lead}
+            wide_reach = (
+                graph.descendants_without_unnest(wide_lead) | {wide_lead} if wide_lead else set()
+            )
+            if wide_lead and obj_name in wide_reach:
+                reachable = wide_reach
 
             # SELECT conformed dimensions — only emit real column refs for
             # dimensions reachable from this leg's fact AND whose `via:`
@@ -639,21 +660,13 @@ class CFLPlanner:
                 dim.object_name for dim in resolved.dimensions if dim.object_name in reachable
             }
             leg_required.add(obj_name)
-            leg_required.update(filter_objects)
-            # A leg builds its own FROM out of tables, and a nested object has
-            # none: its rows are an array column reached by an unnest, which no
-            # leg knows how to carry. A query that *selects* from one is refused
-            # in resolution; what reaches here is a static model filter naming
-            # one, which is documented as skipped when a plan cannot reach its
-            # object rather than fatal. Dropping it from the leg is what makes
-            # the existing filter-applicability check below skip the predicate,
-            # instead of ``build_join_condition`` raising on a step that has no
-            # columns by design.
-            leg_required = {
-                name
-                for name in leg_required
-                if not (o := model.data_objects.get(name)) or not o.is_nested
-            }
+            # Only filter objects this leg can actually reach. A nested one it
+            # never can - the leg has no unnest to reach it with - and a static
+            # model filter naming one is documented as skipped rather than
+            # fatal, which is what dropping it here delivers: the applicability
+            # check below then leaves the predicate out, instead of
+            # ``build_join_condition`` raising on a step with no columns.
+            leg_required.update(filter_objects & reachable)
             # Include objects referenced by measure expressions, but only
             # those reachable from this leg's fact — cross-fact filter
             # tables would otherwise pull unrelated facts into the leg.

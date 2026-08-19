@@ -215,6 +215,31 @@ class JoinGraph:
             return set()
         return nx.descendants(self._directed, node)
 
+    def descendants_without_unnest(self, node: str) -> set[str]:
+        """Reachable from *node* without crossing a containment edge.
+
+        What a plan that can only emit **joins** can reach. A CFL leg is one:
+        it builds a single-fact star out of tables, and an unnest is not a table
+        it can put in a FROM clause. So a nested object is out of reach there,
+        and so is anything reachable only *through* one - a dimension a nested
+        fact joins onward to is behind an unnest however ordinary its own join
+        is, and routing a leg through it produced a join with no columns.
+        """
+        if node not in self._directed:
+            return set()
+        reached: set[str] = set()
+        frontier = [node]
+        while frontier:
+            current = frontier.pop()
+            for successor in self._directed.successors(current):
+                if successor in reached:
+                    continue
+                if self._directed.edges[current, successor].get("nested"):
+                    continue
+                reached.add(successor)
+                frontier.append(successor)
+        return reached
+
     def find_common_root(self, required_objects: set[str]) -> str:
         """Find the common root for a set of required objects.
 
