@@ -20,6 +20,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt S
 | Top-level objects | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `semantic_models` (entities, measures, dimensions) + `metrics` |
 | Object scoping | Each `DataObject` has its own `columns:`; dimensions/measures/metrics live at model scope and reference `{[DataObject].[Column]}` | Dimensions/measures/entities are scoped *inside* each `semantic_model`; metrics reference measures |
 | Identity for joins | Explicit `joins` between data objects with `columnsFrom`/`columnsTo`, `joinType`, `secondary`, `pathName` | Implicit: `entities` of type `primary`/`foreign`/`unique`/`natural`; MetricFlow auto-resolves joins by matching entity names |
+| Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten upstream in a dbt model first |
 | Deployment | Self-hosted FastAPI service, MCP server, Gradio UI; OSS | Definitions in dbt Core OSS; **query API gated behind dbt Cloud** |
 
 ---
@@ -49,28 +50,28 @@ Three patterns supported, all dbt-equivalent:
 
 ```yaml
 metrics:
- # 1. Running total (unbounded cumulative sum)
- - name: revenue_running_total
- type: cumulative
- measure: revenue
- timeDimension: order_date
- cumulativeType: sum
+  # 1. Running total (unbounded cumulative sum)
+  - name: revenue_running_total
+    type: cumulative
+    measure: revenue
+    timeDimension: order_date
+    cumulativeType: sum
 
- # 2. Rolling window (e.g. last 7 days)
- - name: revenue_7d_avg
- type: cumulative
- measure: revenue
- timeDimension: order_date
- cumulativeType: avg
- cumulativeWindow: 7
+  # 2. Rolling window (e.g. last 7 days)
+  - name: revenue_7d_avg
+    type: cumulative
+    measure: revenue
+    timeDimension: order_date
+    cumulativeType: avg
+    cumulativeWindow: 7
 
- # 3. Grain-to-date (e.g. month-to-date, resets each month)
- - name: revenue_mtd
- type: cumulative
- measure: revenue
- timeDimension: order_date
- cumulativeType: sum
- grainToDate: month
+  # 3. Grain-to-date (e.g. month-to-date, resets each month)
+  - name: revenue_mtd
+    type: cumulative
+    measure: revenue
+    timeDimension: order_date
+    cumulativeType: sum
+    grainToDate: month
 ```
 
 Window functions used:
@@ -88,12 +89,12 @@ Grains for grain-to-date: `year`, `quarter`, `month`, `week` (`GrainToDate`).
 
 ```yaml
 - name: revenue_ma12_by_country
- type: cumulative
- measure: revenue
- timeDimension: order_month
- cumulativeType: avg
- window: 12
- partitionBy: [country] # 12-month MA computed independently per country
+  type: cumulative
+  measure: revenue
+  timeDimension: order_month
+  cumulativeType: avg
+  window: 12
+  partitionBy: [country] # 12-month MA computed independently per country
 ```
 
 dbt SL has no native partition-by surface on cumulative metrics; users would step outside the metric DSL and write window-function SQL by hand.
@@ -106,22 +107,22 @@ OBSL ships `MetricType.WINDOW` for the single-row window-function family — `RA
 
 ```yaml
 metrics:
- # Rank revenue within each quarter
- - name: revenue_rank_by_quarter
- type: window
- windowFunction: dense_rank
- measure: revenue
- orderDirection: desc
- partitionBy: [quarter]
+  # Rank revenue within each quarter
+  - name: revenue_rank_by_quarter
+    type: window
+    windowFunction: dense_rank
+    measure: revenue
+    orderDirection: desc
+    partitionBy: [quarter]
 
- # Prior-month revenue side by side with the current row
- - name: revenue_prior_month
- type: window
- windowFunction: lag
- measure: revenue
- offset: 1
- timeDimension: order_date
- partitionBy: [country]
+  # Prior-month revenue side by side with the current row
+  - name: revenue_prior_month
+    type: window
+    windowFunction: lag
+    measure: revenue
+    offset: 1
+    timeDimension: order_date
+    partitionBy: [country]
 ```
 
 Window metrics compose freely with derived metrics — a `{[Revenue]} - {[Revenue Prior Month]}` MoM delta needs no new SQL. Implementation: `src/orionbelt/compiler/window_wrap.py`, runs after `cumulative_wrap` in the pipeline so window functions can rank cumulative outputs.
@@ -138,14 +139,14 @@ OBSL exposes PoP as a **first-class metric type** with a comparison-mode enum, w
 
 ```yaml
 metrics:
- - name: revenue_yoy
- type: period_over_period
- measure: revenue
- periodOverPeriod:
- grain: month # bucket grain
- offset: -1 # compare vs. previous period
- offsetGrain: year # one year earlier
- comparison: percentChange # ratio | difference | previousValue | percentChange
+  - name: revenue_yoy
+    type: period_over_period
+    measure: revenue
+    periodOverPeriod:
+      grain: month                # bucket grain
+      offset: -1                  # compare vs. previous period
+      offsetGrain: year           # one year earlier
+      comparison: percentChange   # ratio | difference | previousValue | percentChange
 ```
 
 Comparison modes (`PeriodOverPeriodComparison`):

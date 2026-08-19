@@ -55,9 +55,9 @@ run: flights -> by_carrier + {
 ```yaml
 # Model
 metrics:
- - name: flight_count
- type: derived
- expr: "{[Flights].[Count]}"
+  - name: flight_count
+    type: derived
+    expr: "{[Flights].[Count]}"
 ```
 
 ```json
@@ -105,6 +105,30 @@ run: flights -> {
 ```
 
 OBSL has **no equivalent**. OBSL queries return flat tabular result sets. To produce a parent/child shape you'd run multiple queries.
+
+### 3.2a Nested *source* data (`ARRAY<STRUCT>`)
+
+Worth separating from `nest:` above, because the two sound alike and are not the
+same thing. `nest:` is about the **shape of the result**. This is about a
+**repeated column in the source table** — the `ARRAY<STRUCT>` that BigQuery,
+Athena and every document-derived table produce.
+
+Both tools handle it, and both treat it as a join rather than an accessor.
+
+| | Malloy | OBSL |
+|---|---|---|
+| How it is modelled | A repeated record is a built-in `join_many`; read with dot notation | Declared as a data object with `nestedIn: {dataObject, column}` |
+| Ceremony | None — it is simply there in the schema | One declaration per array column |
+| Dialect reach | BigQuery and DuckDB, which have native support | 7 dialects unnested natively; Dremio reads a flattening view instead |
+| Double counting a parent measure | Handled by symmetric aggregates | Deduplicated on the parent's `primaryKey`; refused if it has none |
+
+Malloy has the nicer ergonomics here, and it is the tool's home ground — reading
+nested data is a founding use case rather than a later addition. What OBSL adds
+is reach and an explicit answer to the arithmetic: summing a *parent* measure
+grouped by a nested field double-counts any row whose array has more than one
+element, and OBSL either deduplicates on the parent key or tells you it cannot.
+
+See [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin).
 
 ### 3.3 Refinements (`+ { ... }`)
 

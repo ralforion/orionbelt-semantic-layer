@@ -22,6 +22,7 @@ LookML and Looker are inseparable in practice — you cannot run LookML without 
 | Source of truth | YAML model files | LookML files, hosted in a Looker project (Git-backed) |
 | Top-level constructs | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `connection`, `model`, `view`, `explore`, `dimension`, `dimension_group`, `measure`, `parameter`, `filter`, `derived_table`, `access_filter`, `access_grant` |
 | Object scoping | Each `DataObject` has `columns:`; dimensions/measures/metrics live at model scope | Dimensions and measures are *inside* `view`s; joins live in `explore`s in `model` files |
+| Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | An `UNNEST` derived table, or a view whose `sql_table_name` unnests |
 | Runtime | OSS, self-hosted | **Looker proprietary platform only** (Google Cloud) |
 
 ---

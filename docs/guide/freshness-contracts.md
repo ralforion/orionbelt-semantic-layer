@@ -61,7 +61,6 @@ dataObjects:
     database: WAREHOUSE
     schema: PUBLIC
     code: ORDERS
-    filter: "is_return = false"
     refresh:
       mode: heartbeat
       maxStaleness: 5m
@@ -69,13 +68,12 @@ dataObjects:
     database: WAREHOUSE
     schema: PUBLIC
     code: ORDERS
-    filter: "is_return = true"
     refresh:
       mode: heartbeat
       maxStaleness: 5m
 ```
 
-`Sales` and `Returns` are two semantic facets on top of the same physical table. A multi-fact CFL query touching both collapses to **one** physical table reference (`WAREHOUSE.PUBLIC.ORDERS`). One heartbeat to that table invalidates every cached query depending on it — even if the query went through both `Sales` and `Returns`.
+`Sales` and `Returns` are two semantic facets on top of the same physical table — the split between them lives on the measures, as [measure filters](model-format.md#measure-filters), because a data object maps to a table and does not carry a `WHERE` of its own. A multi-fact CFL query touching both collapses to **one** physical table reference (`WAREHOUSE.PUBLIC.ORDERS`). One heartbeat to that table invalidates every cached query depending on it — even if the query went through both `Sales` and `Returns`.
 
 ## OBSL graph integration
 
