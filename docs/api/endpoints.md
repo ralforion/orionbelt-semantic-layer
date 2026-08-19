@@ -1270,7 +1270,7 @@ List all available SQL dialects, their capability flags, and the vocabulary each
 
 `capabilities` are structural SQL feature flags. `supported_aggregations` lists the OBML
 `aggregation:` values the dialect can compute, and `supported_functions` the entries of the
-[portable function catalog](../guide/model-format.md#portable-functions-in-expressions) it can
+[portable function catalog](../guide/functions.md) it can
 render — both stated positively, so a client needs no second call to learn the full vocabulary
 and subtract from it. Signatures, arity and pinned semantics for the functions are at
 [`GET /v1/reference/functions`](#get-v1referencefunctions).

@@ -419,7 +419,7 @@ curl http://127.0.0.1:8000/v1/dialects
 
 `capabilities` are structural SQL features. The two lists are the vocabulary: every OBML
 `aggregation:` value this dialect can compute, and every entry of the
-[portable function catalog](model-format.md#portable-functions-in-expressions) it can render.
+[portable function catalog](functions.md) it can render.
 Both are stated positively, so answering "may I use `median` on this warehouse?" needs no second
 call. Anything absent is refused at compile time with a 422 rather than emitted and failed at the
 database — MySQL, for instance, lists neither `median` nor `mode`.
