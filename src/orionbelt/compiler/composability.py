@@ -309,7 +309,9 @@ class ComposabilityResolver:
                 continue
             if self._measure_blocked(name, anchor):
                 continue
-            status = self._measure_status(sources, anchor, spine)
+            status = self._measure_status(
+                sources, anchor, spine, measure_join_requirements(self.model, name)
+            )
             if status == "direct":
                 measures.append(name)
             elif status == "cfl":
@@ -325,7 +327,9 @@ class ComposabilityResolver:
                 continue
             if self._metric_blocked(name, anchor):
                 continue
-            status = self._measure_status(sources, anchor, spine)
+            status = self._measure_status(
+                sources, anchor, spine, metric_join_requirements(self.model, name)
+            )
             if status == "direct":
                 metrics.append(name)
             elif status == "cfl":
@@ -385,15 +389,22 @@ class ComposabilityResolver:
         if not sources:
             return None
 
-        # Reaching one of its own objects means unnesting, which replicates the
-        # other. Two replicated sources is the case the rewrite cannot express -
-        # it has no way to know which grain to deduplicate on - so the compiler
-        # refuses, and ACR must not advertise what it refuses.
-        if self._needs_unnest_to_connect(sources):
-            return "refused"
-
         referenced = {obj for objs in auxiliary_references(measure).values() for obj in objs}
         outside = referenced - sources
+
+        # Reaching any one of the objects this measure forces into the query
+        # means unnesting, which replicates the others. That is the case the
+        # rewrite cannot express - it has no way to know which grain to
+        # deduplicate on - so the compiler refuses, and ACR must not advertise
+        # what it refuses.
+        #
+        # ``referenced`` counts, not only ``sources``. A ``withinGroup`` sort key
+        # and a measure ``filter`` read no value and still force their object
+        # into the query, so one sitting behind a containment edge replicates the
+        # measure's own source exactly as a value column would - and judging on
+        # the value columns alone said this measure was untouched.
+        if self._needs_unnest_to_connect(sources | referenced):
+            return "refused"
 
         # Everything that forces a join: the callers' drivers, plus whatever
         # this measure's own clauses drag in.
@@ -510,9 +521,19 @@ class ComposabilityResolver:
         return self._has_common_root(spine | needed)
 
     def _measure_status(
-        self, source_objects: set[str], anchor: set[str], spine: set[str]
+        self,
+        source_objects: set[str],
+        anchor: set[str],
+        spine: set[str],
+        requirements: set[str] | None = None,
     ) -> str | None:
-        """Classify a measure/metric as 'direct', 'cfl', or None (incompatible)."""
+        """Classify a measure/metric as 'direct', 'cfl', or None (incompatible).
+
+        *requirements* are objects the measure needs **joined** without reading a
+        value from - a ``withinGroup`` sort key, a measure ``filter``. They bear
+        on whether a leg can carry it exactly as its value columns do, since the
+        leg has to join them all the same.
+        """
         if not source_objects:
             # No resolvable source (e.g. COUNT(*)-style): always combinable.
             return "direct"
@@ -523,9 +544,10 @@ class ComposabilityResolver:
         # needs an unnest to be computed at all - whether the object *is* nested
         # or merely sits behind one. ``allowFanOut`` does not rescue either: the
         # leg cannot reach the object at all, rather than reaching it too often.
-        if self._needs_unnest_to_connect(source_objects) or any(
+        needed = source_objects | (requirements or set())
+        if self._needs_unnest_to_connect(needed) or any(
             (obj := self.model.data_objects.get(name)) is not None and obj.is_nested
-            for name in source_objects
+            for name in needed
         ):
             return None
         # CFL: each source fact independently reaches the current grain, so it

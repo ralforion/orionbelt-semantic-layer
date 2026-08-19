@@ -597,13 +597,26 @@ class TestTheAdvertisedSet:
 
     @staticmethod
     def _model(*, allow_fan_out: bool) -> SemanticModel:
-        yaml_text = _with_second_fact(_with_a_dimension_behind_the_array(MODEL_YAML)).replace(
+        yaml_text = _with_second_fact(
+            _with_a_dimension_behind_the_array(MODEL_YAML)
+        ).replace(
             "measures:\n",
             "measures:\n"
             "  Weighted Cost:\n"
             '    expression: "{[Charges].[Cost]} * {[Owners].[Owner Weight]}"\n'
             "    resultType: float\n"
-            "    aggregation: sum\n" + ("    allowFanOut: true\n" if allow_fan_out else ""),
+            "    aggregation: sum\n"
+            + ("    allowFanOut: true\n" if allow_fan_out else "")
+            # Reads nothing from Owners and still forces it into the query: a
+            # withinGroup sort key is a join-only requirement, and it sits
+            # behind the same containment edge as the expression above.
+            + "  Charge List:\n"
+            "    columns: [{dataObject: Charges, column: Charge Id}]\n"
+            "    resultType: string\n"
+            "    aggregation: listagg\n"
+            "    withinGroup:\n"
+            "      column: {dataObject: Owners, column: Owner Name}\n"
+            "      order: asc\n" + ("    allowFanOut: true\n" if allow_fan_out else ""),
             1,
         )
         return _load(yaml_text)
