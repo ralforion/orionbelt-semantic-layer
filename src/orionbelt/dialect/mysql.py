@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
 from orionbelt.dialect.base import (
     PORTABLE_DECIMAL_PRECISION,
     Dialect,
@@ -213,6 +213,28 @@ class MySQLDialect(Dialect):
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``JSON_TABLE``, which extracts a declared shape rather than
+        inferring one.
+
+        The only dialect whose unnest needs the child object's **columns**: the
+        others hand back the element and let a field reference read it, while
+        this one has to be told which paths to pull out and at what type. That
+        is why :class:`Unnest` carries them.
+        """
+        cols = (
+            ", ".join(
+                f"{self.quote_identifier(code)} {sql_type} PATH '$.{code}'"
+                for code, sql_type in node.columns
+            )
+            or "value VARCHAR(1024) PATH '$'"
+        )
+        table = (
+            f"JSON_TABLE({self.unnest_path(node)}, '$[*]' COLUMNS ({cols})) "
+            f"AS {self.quote_identifier(node.alias)}"
+        )
+        return f"LEFT JOIN {table} ON TRUE" if node.outer else f", {table}"
 
     def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
         """MySQL: a measure's decimal cast carries at least 38 digits.

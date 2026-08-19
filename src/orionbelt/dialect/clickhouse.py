@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import (
+    BinaryOp,
+    Cast,
+    Expr,
+    FunctionCall,
+    Literal,
+    OrderByItem,
+    Unnest,
+)
 from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
     Dialect,
@@ -43,6 +51,18 @@ class ClickHouseDialect(Dialect):
     }
 
     unions_resolve_leg_types = False
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``ARRAY JOIN``, which is its own clause rather than a join.
+
+        No ``ON``, and the keyword order is ``LEFT ARRAY JOIN`` rather than
+        ``ARRAY LEFT JOIN``. Measured: the outer form keeps a parent whose array
+        is empty but fills the child with the type's **default** rather than
+        NULL - `''` for a String - which is the same behaviour
+        ``DataObjectJoin.required`` already documents for an unmatched row here.
+        """
+        prefix = "LEFT ARRAY JOIN" if node.outer else "ARRAY JOIN"
+        return f"{prefix} {self.unnest_path(node)} AS {self.quote_identifier(node.alias)}"
 
     def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over Int64 accumulates in Int64 here, and wraps.

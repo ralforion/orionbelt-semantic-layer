@@ -166,6 +166,38 @@ class Between:
 
 
 @dataclass(frozen=True)
+class Unnest:
+    """A parent's array column, unnested into rows beside it.
+
+    Not a :class:`Join`, because the engines do not agree that it is one. It is
+    a comma-lateral on BigQuery, DuckDB, Postgres and Snowflake, a ``LATERAL
+    VIEW`` on Databricks, an ``ARRAY JOIN`` on ClickHouse, and a ``JSON_TABLE``
+    on MySQL - four different clause shapes, only some of which take an ``ON``.
+    ``compile_join`` renders ``<type> JOIN <source> ON <expr>`` and cannot spell
+    the rest, so this is its own node with its own per-dialect renderer.
+
+    There is no join predicate for the same reason there is no join key: the
+    correlation is containment. Each output row pairs one parent row with one
+    element of that parent's own array.
+    """
+
+    parent_alias: str
+    column: str
+    """The parent's array column. Dotted for an array inside a struct."""
+    alias: str
+    """Alias the unnested element is addressed by."""
+    columns: tuple[tuple[str, str], ...] = ()
+    """``(code, sql_type)`` per child column. Only MySQL needs them: its
+    ``JSON_TABLE`` declares the shape it is extracting rather than inferring it.
+    """
+    outer: bool = True
+    """Keep a parent row whose array is empty. The default, because a charge
+    with no labels still contributes its cost to an unfiltered total - measured,
+    61% of the rows in a real billing export carry none.
+    """
+
+
+@dataclass(frozen=True)
 class RegexMatch:
     """Regex match predicate. Each dialect renders its native syntax.
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, UnionAll
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, UnionAll, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -65,6 +65,19 @@ class DuckDBDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``UNNEST`` here aliases the *table*, not the element.
+
+        ``AS "L"`` alone makes ``L.Key`` a binder error - measured, "Table L
+        does not have a column named Key" - because the element sits in an
+        unnamed column of a table called L. The two-part ``AS t(col)`` form
+        names both, so the element is addressed the same way it is on the
+        engines whose alias *is* the element.
+        """
+        source = f"UNNEST({self.unnest_path(node)})"
+        alias = f"{self.quote_identifier(node.alias + '__t')}({self.quote_identifier(node.alias)})"
+        return f"LEFT JOIN {source} AS {alias} ON TRUE" if node.outer else f", {source} AS {alias}"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)

@@ -33,6 +33,7 @@ from orionbelt.ast.nodes import (
     SubqueryExpr,
     UnaryOp,
     UnionAll,
+    Unnest,
     WindowFunction,
 )
 from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
@@ -167,6 +168,20 @@ class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
             f"Order the measure by its own column, or query it on a dialect "
             f"that supports WITHIN GROUP ordering.",
         )
+
+
+class UnsupportedNestedAccessError(Exception):
+    """A dialect cannot unnest an array column in its FROM clause."""
+
+    def __init__(self, dialect: str, alias: str) -> None:
+        super().__init__(
+            f"Dialect '{dialect}' has no FROM-clause unnest, so data object "
+            f"'{alias}' cannot take its rows from a parent's array column here. "
+            f"Declare 'code' alongside 'nestedIn' to read a flattening view on "
+            f"this dialect."
+        )
+        self.dialect = dialect
+        self.alias = alias
 
 
 class UnsupportedFunctionError(Exception):
@@ -575,6 +590,38 @@ class Dialect(ABC):
     @abstractmethod
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         """Wrap a column expression for a grain other than a week."""
+
+    def render_unnest(self, node: Unnest) -> str:
+        """A FROM-clause fragment that unnests a parent's array column.
+
+        The default is the comma-lateral every engine but four accepts::
+
+            , UNNEST(`c`.`labels`) AS `l`
+
+        with the outer form spelled as a ``LEFT JOIN ... ON TRUE``, which keeps
+        a parent row whose array is empty. Measured on BigQuery, DuckDB and
+        Postgres; ClickHouse, Databricks, MySQL and Snowflake override.
+
+        Dremio has no FROM-clause form at all - ``FLATTEN`` is a projection
+        function, so the unnest goes in the SELECT list of a derived table -
+        and refuses here rather than emitting something that will not parse.
+        """
+        source = f"UNNEST({self.unnest_path(node)})"
+        alias = self.quote_identifier(node.alias)
+        if node.outer:
+            return f"LEFT JOIN {source} AS {alias} ON TRUE"
+        return f", {source} AS {alias}"
+
+    def unnest_path(self, node: Unnest) -> str:
+        """The parent's array column, quoted segment by segment.
+
+        A dotted ``column`` addresses an array inside a struct, and each segment
+        is an identifier in its own right: ``x_Project.Ancestors`` becomes two
+        quoted identifiers joined by a dot, rather than one quoted string
+        containing a dot, which would name a column that does not exist.
+        """
+        parts = [node.parent_alias, *node.column.split(".")]
+        return ".".join(self.quote_identifier(p) for p in parts)
 
     @abstractmethod
     def render_cast(self, expr: Expr, target_type: str) -> Expr:

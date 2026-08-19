@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -68,6 +68,19 @@ class SnowflakeDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``LATERAL FLATTEN``, whose outer form is an argument rather than a
+        join type.
+
+        The element arrives as ``<alias>.value``, a VARIANT, so a column on a
+        Snowflake nested object is read with ``:field`` rather than ``.field``.
+        """
+        outer = ", outer => TRUE" if node.outer else ""
+        return (
+            f", LATERAL FLATTEN(input => {self.unnest_path(node)}{outer}) "
+            f"{self.quote_identifier(node.alias)}"
+        )
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
