@@ -130,6 +130,7 @@ nav:
   - OBSQL: guide/semantic-ql.md
   - Guide:
       - OBML Model Format: guide/model-format.md
+      - Portable Functions: guide/functions.md
       - Query Language: guide/query-language.md
       - Composability (ACR): guide/composability.md
       - SQL Dialects: guide/dialects.md
