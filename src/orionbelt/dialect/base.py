@@ -33,6 +33,7 @@ from orionbelt.ast.nodes import (
     SubqueryExpr,
     UnaryOp,
     UnionAll,
+    Unnest,
     WindowFunction,
 )
 from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
@@ -167,6 +168,20 @@ class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
             f"Order the measure by its own column, or query it on a dialect "
             f"that supports WITHIN GROUP ordering.",
         )
+
+
+class UnsupportedNestedAccessError(Exception):
+    """A dialect cannot unnest an array column in its FROM clause."""
+
+    def __init__(self, dialect: str, alias: str) -> None:
+        super().__init__(
+            f"Dialect '{dialect}' has no FROM-clause unnest, so data object "
+            f"'{alias}' cannot take its rows from a parent's array column here. "
+            f"Declare 'code' alongside 'nestedIn' to read a flattening view on "
+            f"this dialect."
+        )
+        self.dialect = dialect
+        self.alias = alias
 
 
 class UnsupportedFunctionError(Exception):
@@ -575,6 +590,58 @@ class Dialect(ABC):
     @abstractmethod
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         """Wrap a column expression for a grain other than a week."""
+
+    def render_unnest(self, node: Unnest) -> str:
+        """A FROM-clause fragment that unnests a parent's array column.
+
+        The default is the comma-lateral every engine but four accepts::
+
+            , UNNEST(`c`.`labels`) AS `l`
+
+        with the outer form spelled as a ``LEFT JOIN ... ON TRUE``, which keeps
+        a parent row whose array is empty. Measured on BigQuery, DuckDB and
+        Postgres; ClickHouse, Databricks, MySQL and Snowflake override.
+
+        Dremio has no FROM-clause form at all - ``FLATTEN`` is a projection
+        function, so the unnest goes in the SELECT list of a derived table -
+        and refuses here rather than emitting something that will not parse.
+        """
+        source = f"UNNEST({self.unnest_path(node)})"
+        alias = self.quote_identifier(node.alias)
+        if node.outer:
+            return f"LEFT JOIN {source} AS {alias} ON TRUE"
+        return f", {source} AS {alias}"
+
+    def nested_field(self, alias: str, field: str, sql_type: str | None = None) -> Expr:
+        """How a column of an unnested element is addressed.
+
+        Ordinary column access almost everywhere: measured, ``L."Key"`` reads
+        the field on BigQuery, DuckDB, Postgres, MySQL, ClickHouse and
+        Databricks, because the alias *is* the element. Snowflake overrides,
+        because there the alias is a row whose ``value`` holds the element as a
+        VARIANT.
+
+        ``sql_type`` is what the field should be read as. Only the VARIANT
+        dialect needs it; the rest carry their own types.
+        """
+        return ColumnRef(name=field, table=alias)
+
+    def unnest_path(self, node: Unnest) -> str:
+        """The parent's array column, quoted segment by segment.
+
+        A dotted ``column`` addresses an array inside a struct, and each segment
+        is an identifier in its own right: ``x_Project.Ancestors`` becomes two
+        quoted identifiers joined by a dot, rather than one quoted string
+        containing a dot, which would name a column that does not exist.
+
+        The dotted chain is the majority form, measured on DuckDB, BigQuery,
+        Databricks and ClickHouse. Three engines cannot read it and override:
+        Postgres needs the composite parenthesised, Snowflake needs a VARIANT
+        ``:`` path, and MySQL has to move the member into the JSON path
+        entirely - see :meth:`MySQLDialect.render_unnest`.
+        """
+        parts = [node.parent_alias, *node.column.split(".")]
+        return ".".join(self.quote_identifier(p) for p in parts)
 
     @abstractmethod
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -1315,9 +1382,12 @@ class Dialect(ABC):
         if node.from_:
             parts.append(f"FROM {self.compile_from(node.from_)}")
 
-        # JOINs
+        # JOINs, and the unnests that ride between them
         for join in node.joins:
-            parts.append(self.compile_join(join))
+            if isinstance(join, Unnest):
+                parts.append(self.render_unnest(join))
+            else:
+                parts.append(self.compile_join(join))
 
         # WHERE
         if node.where:

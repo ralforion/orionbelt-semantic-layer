@@ -33,6 +33,7 @@ from orionbelt.ast.nodes import (
     JoinType,
     OrderByItem,
     Select,
+    Unnest,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs, map_nodes
 from orionbelt.compiler.filters import build_filter_expr
@@ -548,7 +549,7 @@ def wrap_with_filter_context(
     # Without ``main`` the first isolated CTE anchors the FROM and the rest
     # cross-join onto it, which is what they would have done anyway.
     anchor = "main" if keep_main else isolated_cte_info[0][0]
-    outer_joins: list[Join] = []
+    outer_joins: list[Join | Unnest] = []
     for cte_name, _, grain in isolated_cte_info:
         if cte_name == anchor:
             continue
