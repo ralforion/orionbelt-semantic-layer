@@ -17,19 +17,30 @@ from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
 
-def _json_member(name: str) -> str:
-    """A JSON path member, always quoted.
+def _json_path_literal(code: str) -> str:
+    """A ``JSON_TABLE`` PATH argument for *code*, escaped for **both** layers.
 
-    Quoting is not optional, and the unquoted form fails two different ways -
-    measured: ``$.Label Key`` raises "Invalid JSON path expression", and
-    ``$.a.b`` **silently returns NULL**, reading a nested key that is not there
-    rather than the literal one. The second is why this quotes unconditionally
-    rather than only when the name looks unsafe: a wrong answer is worse than
-    an error, and an OBML column code is a physical field name that may contain
-    anything.
+    The path is a JSON-path expression *inside* a SQL string literal, so it
+    passes through two escaping regimes and needs both. Escaping only the JSON
+    layer looked right and failed three ways against MySQL 8, measured:
+
+    ==========  ===============================================================
+    ``q"t``     ``\\"`` is consumed by the SQL layer, leaving an unbalanced
+                quote and an invalid JSON path
+    ``q't``     the apostrophe closes the SQL literal: syntax error
+    ``a\\b``     the backslash is a SQL escape, and the path silently reads
+                NULL
+    ==========  ===============================================================
+
+    Order matters in both layers: backslashes first, then the quote character,
+    or the escape introduced by the first pass is escaped again by the second.
+
+    MySQL treats a backslash as an escape inside string literals unless
+    ``NO_BACKSLASH_ESCAPES`` is set, which is why the SQL layer doubles it.
     """
-    escaped = name.replace('"', '\\"')
-    return f'"{escaped}"'
+    member = '"' + code.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    path = f"$.{member}"
+    return "'" + path.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
@@ -241,7 +252,7 @@ class MySQLDialect(Dialect):
         """
         cols = (
             ", ".join(
-                f"{self.quote_identifier(code)} {sql_type} PATH '$.{_json_member(code)}'"
+                f"{self.quote_identifier(code)} {sql_type} PATH {_json_path_literal(code)}"
                 for code, sql_type in node.columns
             )
             or "value VARCHAR(1024) PATH '$'"

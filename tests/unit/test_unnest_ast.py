@@ -124,15 +124,35 @@ class TestMySQLJsonPaths:
     """
 
     @pytest.mark.parametrize("code", ["Label Key", "a.b", "plain"])
-    def test_the_member_is_quoted(self, code: str) -> None:
+    def test_the_member_is_quoted(self, code: str) -> None:  # noqa: D102
         node = Unnest(
             parent_alias="C", column="x", alias="L", columns=((code, "VARCHAR(64)"),), outer=True
         )
         assert f"""PATH '$."{code}"'""" in DialectRegistry.get("mysql").render_unnest(node)
 
-    def test_a_quote_in_the_name_is_escaped(self) -> None:
+    @pytest.mark.parametrize(
+        ("code", "expected"),
+        [
+            ("plain", """'$."plain"'"""),
+            ("has space", """'$."has space"'"""),
+            ("a.b", """'$."a.b"'"""),
+            # a double quote: escaped for JSON, then its backslash escaped again
+            # for the SQL literal it sits inside
+            ('q"t', """'$."q\\\\"t"'"""),
+            # an apostrophe: invisible to the JSON layer, closes the SQL literal
+            ("q't", """'$."q''t"'"""),
+            # a backslash: escaped by both layers, so four in the output
+            ("a\\b", """'$."a\\\\\\\\b"'"""),
+        ],
+    )
+    def test_the_path_is_escaped_for_both_layers(self, code: str, expected: str) -> None:
+        """The path is a JSON-path expression inside a SQL string literal.
+
+        Escaping only the JSON layer looked right and failed three ways against
+        MySQL 8 - an invalid path, a syntax error, and a silent NULL. Found in
+        review of #344, after the first fix covered only spaces and dots.
+        """
         node = Unnest(
-            parent_alias="C", column="x", alias="L", columns=(('q"t', "VARCHAR(64)"),), outer=True
+            parent_alias="C", column="x", alias="L", columns=((code, "VARCHAR(64)"),), outer=True
         )
-        expected = 'PATH \'$."q\\"t"\''
-        assert expected in DialectRegistry.get("mysql").render_unnest(node)
+        assert f"PATH {expected}" in DialectRegistry.get("mysql").render_unnest(node)

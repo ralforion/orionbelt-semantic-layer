@@ -147,3 +147,41 @@ def test_snowflake_unnest(vendor_snowflake: VendorTarget) -> None:
 
 def test_databricks_unnest(vendor_databricks: VendorTarget) -> None:
     _assert_both_forms(vendor_databricks)
+
+
+#: Child field names that pass through two escaping regimes: a JSON-path
+#: expression inside a SQL string literal. ``DataObjectColumn.code`` is a
+#: physical field name and is unconstrained, so all of these are legal to
+#: declare.
+AWKWARD_CODES = ["plain", "has space", "a.b", 'q"t', "q't", "a\\b"]
+
+
+def test_mysql_json_paths_survive_awkward_field_names(vendor_mysql: VendorTarget) -> None:
+    """Escaping only the JSON layer failed three ways, and one was silent.
+
+    Measured against MySQL 8 before the fix: ``q"t`` gave an invalid JSON path,
+    ``q't`` a SQL syntax error, and ``a\\b`` **NULL instead of the value**. The
+    unit test asserts the strings; this asserts the engine accepts them and
+    returns the right field, which is the only thing that actually settles it.
+    """
+    import json
+
+    dialect = DialectRegistry.get("mysql")
+    doc = json.dumps([{name: f"v-{i}" for i, name in enumerate(AWKWARD_CODES)}])
+    node = Unnest(
+        parent_alias="C",
+        column="x_Labels",
+        alias="L",
+        columns=tuple((name, "VARCHAR(64)") for name in AWKWARD_CODES),
+        outer=False,
+    )
+    escaped_doc = doc.replace("\\", "\\\\").replace("'", "''")
+    source = f"(SELECT CAST('{escaped_doc}' AS JSON) AS `x_Labels`)"
+    projection = ", ".join(
+        f"{dialect.compile_expr(dialect.nested_field('L', name))} AS `c{i}`"
+        for i, name in enumerate(AWKWARD_CODES)
+    )
+    rows = vendor_mysql.execute(
+        f"SELECT {projection} FROM {source} AS `C` {dialect.render_unnest(node)}"
+    )
+    assert rows == [{f"c{i}": f"v-{i}" for i in range(len(AWKWARD_CODES))}], rows
