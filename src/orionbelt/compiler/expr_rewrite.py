@@ -25,6 +25,7 @@ from orionbelt.ast.nodes import (
     InList,
     InTimeZone,
     IsNull,
+    NestedField,
     OrderByItem,
     RegexMatch,
     RelativeDateRange,
@@ -147,6 +148,31 @@ def map_column_refs(expr: Expr, fn: Callable[[ColumnRef], Expr]) -> Expr:
 def rewrite_column_refs(expr: Expr, mapping: dict[tuple[str, str | None], ColumnRef]) -> Expr:
     """Rebuild *expr* with every mapped ``ColumnRef`` replaced."""
     return map_column_refs(expr, lambda ref: mapping.get((ref.name, ref.table), ref))
+
+
+def collect_referenced_tables(expr: Expr, tables: set[str]) -> None:
+    """Every data object *expr* names, however its columns are spelled.
+
+    A ``ColumnRef`` carries its object in ``table``; a column of a **nested**
+    data object is a :class:`NestedField` carrying it in ``alias``, because the
+    engines do not agree that an element field is a column. A walk that knows
+    only the first reports *no* objects for the second, which downstream reads
+    as "this expression needs nothing joined" - and a CFL leg then drops the
+    predicate that named it rather than failing to build it.
+
+    Kept beside the rewrites rather than in a planner so both planners and every
+    future caller ask the same question once.
+    """
+
+    def visit(node: Expr) -> Expr | None:
+        if isinstance(node, ColumnRef):
+            if node.table:
+                tables.add(node.table)
+        elif isinstance(node, NestedField):
+            tables.add(node.alias)
+        return None
+
+    map_nodes(expr, visit)
 
 
 def collect_column_refs(expr: Expr, found: list[ColumnRef]) -> None:

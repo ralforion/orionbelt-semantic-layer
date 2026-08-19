@@ -868,36 +868,16 @@ class QueryResolver:
             else:
                 ctx.result.dimensions_exclude = True
 
-        # A nested object cannot appear in a union leg yet. Each leg picks its
-        # own root and builds its own FROM, and neither knows how to carry an
-        # unnest - so the leg would select from a table the object does not
-        # have. Refused rather than compiled, because the alternative is SQL
-        # naming an empty table or, worse, a plausible number from the wrong
-        # rows. Two nested objects in one query are meant to *become* a union
-        # (design/PLAN_nested_data_objects.md); this is what has to land first.
-        if ctx.result.requires_cfl or ctx.result.dimensions_exclude:
-            for name in sorted(ctx.result.required_objects):
-                nested_obj = model.data_objects.get(name)
-                source = nested_obj.nested_in if nested_obj is not None else None
-                if source is None:
-                    continue
-                ctx.errors.append(
-                    SemanticError(
-                        code="NESTED_OBJECT_IN_MULTI_FACT",
-                        message=(
-                            f"Data object '{name}' takes its rows by unnesting "
-                            f"'{source.data_object}.{source.column}', and this "
-                            f"query is planned as a union of independent facts, where each "
-                            f"leg selects from a table of its own. A nested object has none."
-                        ),
-                        path="select",
-                        hint=(
-                            "Query the nested object with measures from its own parent only, "
-                            "or read it through a flattening view by declaring 'code' "
-                            "alongside 'nestedIn'."
-                        ),
-                    )
-                )
+        # Every object this query touches, including the ones only a predicate
+        # names. A WHERE filter is resolved much later, so a guard reading
+        # ``required_objects`` alone sees none of them - and a filter is exactly
+        # how a nested object reaches a query it projects nothing from.
+        touched_objects = (
+            ctx.result.required_objects
+            | where_filter_objects
+            | {mf.data_object for mf in model.filters}
+        )
+        self._reject_unsupported_nested_shapes(ctx, touched_objects)
 
         # 4. Validate usePathNames before building join graph
         self._validate_use_path_names(ctx, query.use_path_names)
@@ -1748,6 +1728,78 @@ class QueryResolver:
         if wanted <= graph.descendants(root) | {root}:
             return root
         return best
+
+    def _reject_unsupported_nested_shapes(
+        self, ctx: _ResolutionContext, touched_objects: set[str]
+    ) -> None:
+        """Refuse the two nested shapes the planner cannot render yet.
+
+        **A nested object in a union leg.** Each CFL leg picks its own root and
+        builds its own FROM, and neither knows how to carry an unnest, so the
+        leg would select from a table the object does not have. Two nested
+        objects in one query are meant to *become* that union; this is what has
+        to land first.
+
+        **A nested object whose parent is itself nested.** An unnest names its
+        parent's array column, and where the parent is an element rather than a
+        row that reference is not a column at all: Snowflake's ``FLATTEN`` row
+        exposes the element under ``value``, so the array is ``p.value:"Parts"``
+        and ``p."Parts"`` does not compile, and MySQL's ``JSON_TABLE`` projects
+        only the scalar columns it was told to extract, so the array is not
+        there to read. Reaching it needs a per-dialect parent-element access
+        that is designed and measured on its own; until then the shape is
+        refused rather than emitted as SQL two engines reject and five have
+        never been asked.
+
+        Both are refused rather than compiled, because the alternative is SQL
+        naming a table that does not exist or - worse, and this is what the
+        filter case actually did - a plausible number from unfiltered rows.
+        """
+        multi_fact = ctx.result.requires_cfl or ctx.result.dimensions_exclude
+        for name in sorted(touched_objects):
+            obj = ctx.model.data_objects.get(name)
+            source = obj.nested_in if obj is not None else None
+            if source is None:
+                continue
+            parent = ctx.model.data_objects.get(source.data_object)
+            if parent is not None and parent.is_nested:
+                ctx.errors.append(
+                    SemanticError(
+                        code="NESTED_WITHIN_NESTED_UNSUPPORTED",
+                        message=(
+                            f"Data object '{name}' is nested in '{source.data_object}', which "
+                            f"is itself nested. An unnest names its parent's array column, and "
+                            f"where the parent is an array element rather than a row, that "
+                            f"reference is spelled differently on every engine - so this "
+                            f"compiles to SQL some of them reject."
+                        ),
+                        path=f"dataObjects.{name}.nestedIn",
+                        hint=(
+                            "Nest the object directly in the table's own object, or read the "
+                            "inner array through a flattening view by declaring 'code' "
+                            "alongside 'nestedIn'."
+                        ),
+                    )
+                )
+                continue
+            if multi_fact:
+                ctx.errors.append(
+                    SemanticError(
+                        code="NESTED_OBJECT_IN_MULTI_FACT",
+                        message=(
+                            f"Data object '{name}' takes its rows by unnesting "
+                            f"'{source.data_object}.{source.column}', and this "
+                            f"query is planned as a union of independent facts, where each "
+                            f"leg selects from a table of its own. A nested object has none."
+                        ),
+                        path="select",
+                        hint=(
+                            "Query the nested object with measures from its own parent only, "
+                            "or read it through a flattening view by declaring 'code' "
+                            "alongside 'nestedIn'."
+                        ),
+                    )
+                )
 
     def _select_base_object(
         self, ctx: _ResolutionContext, filter_objects: set[str] | None = None

@@ -22,7 +22,11 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
 )
-from orionbelt.compiler.expr_rewrite import collect_column_refs, map_nodes
+from orionbelt.compiler.expr_rewrite import (
+    collect_column_refs,
+    collect_referenced_tables,
+    map_nodes,
+)
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import (
     expand_metric_expression,
@@ -578,7 +582,7 @@ def substitute_outer_refs(
 
 
 def collect_table_refs(expr: Expr, tables: set[str]) -> None:
-    """Collect the table name of every ``ColumnRef`` anywhere in *expr*.
+    """Collect the data object every column reference in *expr* belongs to.
 
     Delegates to the complete AST walk in :mod:`expr_rewrite` rather than
     enumerating node types here. The hand-rolled version this replaces covered
@@ -587,10 +591,13 @@ def collect_table_refs(expr: Expr, tables: set[str]) -> None:
     the leg then projected ``CASE WHEN "Reason"."severity" > 2 ...`` over a
     FROM that never joined ``Reason``. It also skipped an aggregate's
     ``order_by``, which a ``withinGroup`` sort key lives in.
+
+    A column of a nested data object is a ``NestedField`` rather than a
+    ``ColumnRef``, and counts here for the same reason: a walk blind to it
+    reports no objects at all and the leg drops the predicate instead of
+    refusing to build it.
     """
-    refs: list[ColumnRef] = []
-    collect_column_refs(expr, refs)
-    tables.update(ref.table for ref in refs if ref.table)
+    collect_referenced_tables(expr, tables)
 
 
 def collect_correlated_tables(expr: Expr, tables: set[str]) -> None:

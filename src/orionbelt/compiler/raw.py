@@ -25,6 +25,7 @@ from orionbelt.ast.nodes import (
     Select,
     UnionAll,
 )
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
@@ -362,36 +363,16 @@ class RawPlanner:
 
     @staticmethod
     def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
-        """Walk an expression tree collecting referenced table names.
+        """Collect the data object every column reference in *expr* belongs to.
 
-        Mirrors ``CFLPlanner._collect_table_refs`` for the subset of node
-        types raw-mode WHERE filters can produce. Imported lazily to avoid
-        a circular import with ``compiler/cfl.py``.
+        The complete walk in :mod:`expr_rewrite`, which is what the CFL planner
+        asks too. This used to be a hand-rolled ``isinstance`` chain over the
+        node types raw-mode filters "can produce", and the whole point of the
+        shared walk is that such a list is never right for long: it covered
+        neither ``CASE`` nor ``CAST``, and a node it does not name contributes
+        no objects at all rather than failing loudly.
         """
-        from orionbelt.ast.nodes import (
-            Between,
-            BinaryOp,
-            FunctionCall,
-            InList,
-            IsNull,
-            RelativeDateRange,
-            UnaryOp,
-        )
-
-        if isinstance(expr, ColumnRef) and expr.table:
-            tables.add(expr.table)
-        elif isinstance(expr, BinaryOp):
-            RawPlanner._collect_table_refs(expr.left, tables)
-            RawPlanner._collect_table_refs(expr.right, tables)
-        elif isinstance(expr, UnaryOp):
-            RawPlanner._collect_table_refs(expr.operand, tables)
-        elif isinstance(expr, (InList, IsNull, Between)):
-            RawPlanner._collect_table_refs(expr.expr, tables)
-        elif isinstance(expr, RelativeDateRange):
-            RawPlanner._collect_table_refs(expr.column, tables)
-        elif isinstance(expr, FunctionCall):
-            for arg in expr.args:
-                RawPlanner._collect_table_refs(arg, tables)
+        collect_referenced_tables(expr, tables)
 
 
 __all__ = ["RawPlanner"]

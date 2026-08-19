@@ -209,15 +209,10 @@ def _compile(
             message=str(exc),
         )
     except UnsupportedNestedAccessError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported nested access",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "dataObject": exc.alias,
-            },
-        ) from None
+        return OneshotBatchQueryError(
+            code="UNSUPPORTED_NESTED_ACCESS",
+            message=str(exc),
+        )
     except UnsupportedFunctionError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_FUNCTION",

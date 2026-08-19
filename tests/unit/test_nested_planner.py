@@ -94,6 +94,26 @@ measures:
 """
 
 
+def _with_second_fact(yaml_text: str) -> str:
+    """The model plus an independent fact, which is what forces a CFL union."""
+    return (
+        yaml_text.replace(
+            "  Charge Credits:\n",
+            "  Budgets:\n"
+            "    code: budgets\n"
+            "    columns:\n"
+            "      Amount: {code: amount, abstractType: float}\n"
+            "  Charge Credits:\n",
+            1,
+        )
+        + """  Budget Amount:
+    columns: [{dataObject: Budgets, column: Amount}]
+    resultType: float
+    aggregation: sum
+"""
+    )
+
+
 def _load(yaml_text: str = MODEL_YAML) -> SemanticModel:
     raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
@@ -299,29 +319,124 @@ class TestWhatIsRefused:
         """
         assert _compile(model, ["Label Value", "Credit Type"], ["Total Cost"]).sql
 
+    def test_a_nested_object_a_filter_alone_names_in_a_union_leg(self) -> None:
+        """The refusal has to see objects only a *predicate* names.
+
+        WHERE filters are resolved long after the guard runs, so a check reading
+        the query's required objects alone saw nothing here - and the CFL leg
+        then dropped the predicate rather than failing to build it, returning
+        unfiltered totals with nothing to say so.
+        """
+        model = _load(_with_second_fact(MODEL_YAML))
+        with pytest.raises(ResolutionError) as excinfo:
+            CompilationPipeline().compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=[], measures=["Total Cost", "Budget Amount"]),
+                    where=[
+                        QueryFilter(
+                            field="Charge Labels.Label Key",
+                            op=FilterOperator.EQUALS,
+                            value="team",
+                        )
+                    ],
+                ),
+                model,
+                "duckdb",
+            )
+        assert any(e.code == "NESTED_OBJECT_IN_MULTI_FACT" for e in excinfo.value.errors)
+
+    @pytest.mark.parametrize("dialect", UNNESTING_DIALECTS)
+    def test_a_nested_object_inside_another_one(self, dialect: str) -> None:
+        """An array inside an array is declarable and not yet compilable.
+
+        The parent is an element rather than a row, and that reference is not a
+        column on every engine: Snowflake's ``FLATTEN`` row holds the element
+        under ``value``, and MySQL's ``JSON_TABLE`` projects only the scalar
+        columns it was told to extract, so the array is not there to read. Both
+        compiled to SQL their engine rejects before this refusal.
+        """
+        model = _load(
+            MODEL_YAML.replace(
+                "dimensions:\n",
+                "  Label Parts:\n"
+                "    nestedIn: {dataObject: Charge Labels, column: Parts}\n"
+                "    columns:\n"
+                "      Part Name: {code: Name, abstractType: string}\n"
+                "dimensions:\n",
+                1,
+            ).replace(
+                "  Account Name: {dataObject: Accounts, column: Account Name}\n",
+                "  Account Name: {dataObject: Accounts, column: Account Name}\n"
+                "  Part Name: {dataObject: Label Parts, column: Part Name}\n",
+                1,
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            _compile(model, ["Part Name"], ["Total Cost"], dialect)
+        assert any(e.code == "NESTED_WITHIN_NESTED_UNSUPPORTED" for e in excinfo.value.errors)
+
     def test_a_nested_object_in_a_union_leg(self) -> None:
         """CFL builds one leg per independent fact, each selecting from a table
         of its own. A nested object has none, so the leg would name nothing.
         """
-        model = _load(
-            MODEL_YAML.replace(
-                "  Charge Credits:\n",
-                "  Budgets:\n"
-                "    code: budgets\n"
-                "    columns:\n"
-                "      Amount: {code: amount, abstractType: float}\n"
-                "  Charge Credits:\n",
-                1,
-            )
-            + """  Budget Amount:
-    columns: [{dataObject: Budgets, column: Amount}]
-    resultType: float
-    aggregation: sum
-"""
-        )
+        model = _load(_with_second_fact(MODEL_YAML))
         with pytest.raises(ResolutionError) as excinfo:
             _compile(model, ["Credit Type"], ["Total Credit", "Budget Amount"])
         assert any(e.code == "NESTED_OBJECT_IN_MULTI_FACT" for e in excinfo.value.errors)
+
+
+class TestTheApiContract:
+    """An unsupported nested access is a *compile* failure, and the surfaces
+    that report compile failures without raising have to keep doing so.
+
+    Both of these went the other way first: the handler was added beside the
+    ones that raise a 422 and copied their shape, which turned one refused query
+    into a dead batch and a ``would_compile: false`` plan into an exception.
+    """
+
+    @staticmethod
+    def _store() -> tuple[object, str]:
+        from orionbelt.service.model_store import ModelStore
+
+        store = ModelStore()
+        return store, store.load_model(MODEL_YAML).model_id
+
+    def test_a_batch_reports_it_as_one_errored_item(self) -> None:
+        from orionbelt.api.routers.oneshot import _compile
+        from orionbelt.api.schemas import OneshotBatchQueryError, OneshotBatchQueryItem
+
+        store, model_id = self._store()
+        outcome = _compile(
+            store=store,
+            model_id=model_id,
+            item=OneshotBatchQueryItem(
+                id="q",
+                query=QueryObject(
+                    select=QuerySelect(dimensions=["Label Value"], measures=["Total Cost"])
+                ),
+            ),
+            default_dialect="dremio",
+        )
+        assert isinstance(outcome, OneshotBatchQueryError)
+        assert outcome.code == "UNSUPPORTED_NESTED_ACCESS"
+        assert "dremio" in outcome.message
+
+    def test_query_plan_reports_it_as_would_compile_false(self) -> None:
+        from orionbelt.api.services.query_compilation import compile_query_for_plan
+
+        store, model_id = self._store()
+        result, response = compile_query_for_plan(
+            store=store,
+            model_id=model_id,
+            query=QueryObject(
+                select=QuerySelect(dimensions=["Label Value"], measures=["Total Cost"])
+            ),
+            dialect="dremio",
+        )
+        assert result is None
+        assert response is not None
+        assert response.would_compile is False
+        assert [w.code for w in response.warnings] == ["UNSUPPORTED_NESTED_ACCESS"]
 
 
 class TestTheCodeFallback:

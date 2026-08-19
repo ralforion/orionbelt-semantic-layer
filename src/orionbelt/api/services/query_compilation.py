@@ -254,15 +254,18 @@ def compile_query_for_plan(
             would_compile=False,
         )
     except UnsupportedNestedAccessError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Unsupported nested access",
-                "message": str(exc),
-                "dialect": exc.dialect,
-                "dataObject": exc.alias,
-            },
-        ) from None
+        return None, QueryPlanResponse(
+            status="error",
+            warnings=[
+                StructuredWarning(
+                    code="UNSUPPORTED_NESTED_ACCESS",
+                    severity="error",
+                    message=str(exc),
+                    context={"dialect": exc.dialect, "dataObject": exc.alias},
+                )
+            ],
+            would_compile=False,
+        )
     except UnsupportedFunctionError as exc:
         return None, QueryPlanResponse(
             status="error",
