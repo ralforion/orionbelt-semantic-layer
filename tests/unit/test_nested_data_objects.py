@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.models.semantic import DataObject, NestedSource
+from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.models.query import QueryObject, QuerySelect
+from orionbelt.models.semantic import DataObject, NestedSource, UnrenderableDataObjectError
+from orionbelt.obsl.exporter import export_obsl
 from orionbelt.parser import ReferenceResolver, TrackedLoader
 from orionbelt.parser.validator import SemanticValidator
 
@@ -180,3 +183,88 @@ def test_nested_source_rejects_unknown_keys() -> None:
 def test_a_plain_object_still_needs_no_nested_in() -> None:
     obj = DataObject(name="X", code="x", database="", schema="")
     assert obj.nested_in is None and not obj.is_nested
+
+
+class TestANestedObjectIsNotQueryableYet:
+    """No dialect compiles an unnest, so a nested-only object has no table.
+
+    Found in review of #342: without these guards the planners fell through to
+    an empty ``code`` and emitted ``FROM "" AS "Charge Labels"`` - reachable on
+    any model that adopts the field, because a synthesized count covers every
+    countable object and needs no measure declared at all.
+
+    Both guards go when the per-dialect rendering lands.
+    """
+
+    def test_no_count_is_synthesized_for_a_nested_only_object(self) -> None:
+        model, errors = _resolve(LABELS)
+        assert not errors, errors
+        assert "Charges Count" in model.effective_measures
+        assert "Charge Labels Count" not in model.effective_measures
+
+    def test_selecting_from_one_raises_rather_than_emitting_an_empty_table(self) -> None:
+        model, _ = _resolve(LABELS)
+        obj = model.data_objects["Charge Labels"]
+        with pytest.raises(UnrenderableDataObjectError, match="no dialect compiles"):
+            obj.require_table_source()
+        with pytest.raises(UnrenderableDataObjectError):
+            _ = obj.qualified_code
+
+    def test_the_code_fallback_makes_it_queryable_today(self) -> None:
+        """The fallback is not only future-proofing. An object that carries both
+        reads its flattening view now, which is the whole point of allowing
+        both to be declared.
+        """
+        model, errors = _resolve(
+            "  Charge Labels:\n"
+            "    nestedIn: {dataObject: Charges, column: Labels}\n"
+            "    code: v_charge_labels\n"
+            "    columns: {Label Value: {code: Value, abstractType: string}}\n"
+        )
+        assert not errors, errors
+        assert "Charge Labels Count" in model.effective_measures
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=[], measures=["Charge Labels Count"])),
+                model,
+                "duckdb",
+            )
+            .sql
+        )
+        assert '"v_charge_labels"' in sql and 'FROM ""' not in sql, sql
+
+    def test_a_query_that_never_touches_it_is_unaffected(self) -> None:
+        model, _ = _resolve(LABELS)
+        sql = (
+            CompilationPipeline()
+            .compile(
+                QueryObject(select=QuerySelect(dimensions=[], measures=["Total Cost"])),
+                model,
+                "duckdb",
+            )
+            .sql
+        )
+        assert '"charges"' in sql
+
+
+def test_the_rdf_export_carries_the_nested_source() -> None:
+    """``/graph`` and SPARQL are a surface of their own: the ontology declaring
+    the class is not enough if the exporter never emits an instance of it.
+    Found in review of #342.
+    """
+    model, errors = _resolve(LABELS)
+    assert not errors, errors
+    graph = export_obsl(model, "demo")
+    rows = list(
+        graph.query(
+            "PREFIX obsl: <https://ralforion.com/ns/obsl#> "
+            "SELECT ?o ?parent ?col WHERE { ?o obsl:nestedIn ?ns . "
+            "?ns obsl:nestedInObject ?parent ; obsl:nestedInColumn ?col }"
+        )
+    )
+    assert len(rows) == 1, rows
+    obj, parent, column = rows[0]
+    assert str(obj).endswith("charge-labels")
+    assert str(parent).endswith("charges")
+    assert str(column) == "Labels"

@@ -381,6 +381,14 @@ class RefreshPolicy(BaseModel):
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
+class UnrenderableDataObjectError(Exception):
+    """A data object cannot be rendered as a FROM target.
+
+    Raised at compile time rather than load time: the model is well formed, and
+    which objects a *query* touches is what decides whether the gap is reached.
+    """
+
+
 class NestedSource(BaseModel):
     """Where a nested data object's rows come from: an array column on a parent.
 
@@ -469,7 +477,34 @@ class DataObject(BaseModel):
     @property
     def qualified_code(self) -> str:
         """Full qualified table reference: database.schema.code."""
+        self.require_table_source()
         return f"{self.database}.{self.schema_name}.{self.code}"
+
+    def require_table_source(self) -> None:
+        """Raise unless this object has a table a FROM clause can name.
+
+        A ``nestedIn`` object without ``code`` has no table: its rows are an
+        array column on its parent, and reaching them needs an unnest that no
+        dialect renders yet. Without this guard the planners fall through to an
+        empty ``code`` and emit ``FROM "" AS "Charge Labels"`` - and a
+        synthesized count makes that reachable on any model that adopts the
+        field, with no measure declared at all.
+
+        Removed when the per-dialect rendering lands; until then a model may
+        *declare* a nested object and cannot *query* one unless it also carries
+        the ``code`` fallback, which is exactly what the fallback is for.
+        """
+        if self.code:
+            return
+        source = self.nested_in
+        raise UnrenderableDataObjectError(
+            f"Data object '{self.name}' takes its rows by unnesting "
+            f"'{source.data_object}.{source.column}', and no dialect compiles a "
+            f"nested data object yet. Declare 'code' alongside 'nestedIn' to read a "
+            f"flattening view in the meantime, or leave this object out of the query."
+            if source is not None
+            else f"Data object '{self.name}' has no 'code' to select from."
+        )
 
     @model_validator(mode="after")
     def _validate_has_a_source(self) -> DataObject:

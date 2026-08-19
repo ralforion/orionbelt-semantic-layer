@@ -530,6 +530,7 @@ class TestExporterAxioms:
             OBSL.DataObject,
             OBSL.Column,
             OBSL.Join,
+            OBSL.NestedSource,
             OBSL.Dimension,
             OBSL.Measure,
             OBSL.Metric,

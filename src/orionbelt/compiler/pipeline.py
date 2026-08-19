@@ -16,7 +16,7 @@ from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
-from orionbelt.models.semantic import SemanticModel
+from orionbelt.models.semantic import DataObject, SemanticModel
 from orionbelt.models.warnings import WarningCode, warning
 
 
@@ -208,9 +208,13 @@ class CompilationPipeline:
         # calendar can be set on it without leaking into another query.
         if model.settings is not None:
             dialect.week_start = model.settings.week_start
-        qualify_table = lambda obj: dialect.format_table_ref(  # noqa: E731
-            obj.database, obj.schema_name, obj.code
-        )
+
+        def qualify_table(obj: DataObject) -> str:
+            # Guarded rather than trusting ``code`` to be non-empty: a nested
+            # object without the fallback has no table, and an unguarded empty
+            # code renders as FROM "" (#342 review).
+            obj.require_table_source()
+            return dialect.format_table_ref(obj.database, obj.schema_name, obj.code)
 
         # Phase 1: Resolution
         resolved = self._resolver.resolve(query, model, qualify_table=qualify_table)
