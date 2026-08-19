@@ -295,6 +295,15 @@ class Dialect(ABC):
         "boolean": "BOOLEAN",
     }
 
+    @property
+    def max_decimal_precision(self) -> int:
+        """The widest decimal precision this engine accepts.
+
+        Public because the CFL union alignment has to reason about it from
+        outside the dialect layer (#339).
+        """
+        return self._MAX_DECIMAL_PRECISION
+
     def render_obml_type(self, obml_type: OBMLType) -> str:
         """Render an OBMLType to a dialect-specific SQL type string.
 
@@ -370,6 +379,23 @@ class Dialect(ABC):
             op="/",
             right=FunctionCall(name="COUNT", args=[arg]),
         )
+
+    #: Whether a UNION column whose legs carry different numeric types
+    #: resolves to a common type here.
+    #:
+    #: True everywhere but ClickHouse, and measured rather than assumed: a
+    #: ``numeric(38, 20)`` NULL pad beside an uncast ``numeric`` column
+    #: resolves to plain ``numeric`` on Postgres and carries a 21-integer-digit
+    #: value through intact, and DuckDB widens to accommodate the leg the same
+    #: way. ClickHouse instead builds ``Variant(Decimal(38, 20), Float64)`` and
+    #: refuses to ``SUM`` it with ILLEGAL_TYPE_OF_ARGUMENT.
+    #:
+    #: That difference decides whether a CFL leg has to cast the measure it
+    #: owns. Where the engine unifies, casting can only lose - it rounded
+    #: pre-aggregation rows (#305) and then overflowed a value the source held
+    #: legally (#311) - so the leg is left alone. Where it does not, one type
+    #: per union column has to be spelled out (#339).
+    unions_resolve_leg_types: bool = True
 
     #: Whether ``AVG`` over a 64-bit integer column is exact natively.
     #:

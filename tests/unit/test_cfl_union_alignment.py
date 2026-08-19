@@ -213,12 +213,18 @@ class TestUnionAlignmentPreservesInput:
         )
 
     def test_every_leg_agrees_on_one_type(self) -> None:
-        """The reason the cast exists at all.
+        """The reason the cast exists at all, on the one engine that needs it.
 
         ClickHouse will not union columns whose types disagree: it builds a
-        ``Variant(Decimal, Float64)`` and refuses to ``SUM`` it. Widening the
-        own-measure cast without widening the NULL padding to match would trade
-        this bug for that one.
+        ``Variant(Decimal, Float64)`` and refuses to ``SUM`` it.
+
+        **Counts the casts, not just their distinct types.** As written before,
+        this collected ``AS Nullable(Decimal(p, s))`` and asserted one distinct
+        value - which an uncast owning leg satisfies trivially, because the
+        only occurrences left are the pads. #313 stopped casting the owning leg
+        and this test went on passing while four ClickHouse queries could not
+        run at all (#339). Every measure column of every leg has to carry the
+        type, so the count is what makes the assertion bite.
         """
         sql = PIPELINE.compile(
             QueryObject(select=QuerySelect(dimensions=["Day"], measures=["Charged", "Invoiced"])),
@@ -229,11 +235,37 @@ class TestUnionAlignmentPreservesInput:
         # those two carry different types, so searching the statement as a
         # whole would find the difference the fix introduces on purpose.
         legs = sql[sql.index("WITH ") : sql.rindex(")\nSELECT")]
-        types = set(re.findall(r"AS (Nullable\(Decimal\(\d+, \d+\)\))", legs))
-        assert len(types) == 1, f"legs disagree on the union type: {types}\n{legs}"
+        typed = re.findall(r"AS (Nullable\(Decimal\(\d+, \d+\)\))", legs)
+        assert len(set(typed)) == 1, f"legs disagree on the union type: {set(typed)}\n{legs}"
+        assert len(typed) == 4, (
+            "two legs times two measures should each carry the union type; "
+            f"found {len(typed)}, so a leg is projecting uncast:\n{legs}"
+        )
         assert re.search(r"CAST\(round\(SUM\(.*?\), 2\) AS Nullable\(Decimal\(18, 2\)\)\)", sql), (
             f"the outer aggregate should still narrow to the declared type:\n{sql}"
         )
+
+    def test_the_engines_that_unify_still_leave_the_leg_alone(self) -> None:
+        """The cast is not a general rule; it is one engine's requirement.
+
+        Measured: a ``numeric(38, 20)`` pad beside an uncast ``numeric`` column
+        resolves to plain ``numeric`` on Postgres and carries a
+        21-integer-digit value through intact, and DuckDB widens to the leg the
+        same way. Casting there is what rounded pre-aggregation rows (#305) and
+        then overflowed a legal value (#311), so those two keep projecting the
+        column as it stands.
+        """
+        for dialect in ("duckdb", "postgres", "snowflake"):
+            sql = PIPELINE.compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=["Day"], measures=["Charged", "Invoiced"])
+                ),
+                _model(),
+                dialect,
+            ).sql
+            assert not re.search(r'CAST\("(?:Charges|Invoices)"\."amount" AS', sql), (
+                f"{dialect} unifies its own unions and should not cast the leg:\n{sql}"
+            )
 
 
 class TestWhatIsAndIsNotWidened:
