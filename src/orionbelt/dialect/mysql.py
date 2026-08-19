@@ -130,6 +130,8 @@ class MySQLDialect(Dialect):
 
     avg_over_integers_is_exact = True
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "mysql"
@@ -581,7 +583,7 @@ class MySQLDialect(Dialect):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
 
         parts = [f"GROUP_CONCAT({distinct_sql}{col_sql}"]
         if order_by:

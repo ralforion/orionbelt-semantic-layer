@@ -42,6 +42,8 @@ class DatabricksDialect(Dialect):
         "boolean": "BOOLEAN",
     }
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "databricks"
@@ -271,7 +273,7 @@ class DatabricksDialect(Dialect):
         """
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         collect_fn = "COLLECT_SET" if distinct else "COLLECT_LIST"
         inner = f"{collect_fn}({col_sql})"
         if order_by:

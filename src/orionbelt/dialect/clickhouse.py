@@ -163,6 +163,8 @@ class ClickHouseDialect(Dialect):
             return self.quote_identifier(code)
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(code)}"
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "clickhouse"
@@ -451,7 +453,7 @@ class ClickHouseDialect(Dialect):
         """
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         group_fn = "groupUniqArray" if distinct else "groupArray"
         inner = f"{group_fn}({col_sql})"
         if order_by:

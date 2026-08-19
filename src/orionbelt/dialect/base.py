@@ -531,6 +531,40 @@ class Dialect(ABC):
         """
         return None
 
+    #: Whether a backslash escapes the next character inside a string literal.
+    #:
+    #: False is the SQL standard: a backslash is an ordinary character and a
+    #: quote is escaped by doubling it. True on MySQL, ClickHouse, BigQuery,
+    #: Snowflake and Databricks, where a backslash starts an escape sequence and
+    #: has to be doubled itself.
+    #:
+    #: Measured on all seven reachable engines, and each convention is *wrong*
+    #: on the other side rather than merely unnecessary: doubling a quote breaks
+    #: on BigQuery, which reads ``'it''s'`` as two concatenated literals and
+    #: raises, and on Databricks, which silently returns ``its``. Backslash
+    #: escaping breaks on Postgres and DuckDB, which take the backslash
+    #: literally and would double it.
+    backslash_escapes_strings: bool = False
+
+    def quote_string_literal(self, value: str) -> str:
+        """*value* as a quoted string literal for this engine.
+
+        The single place a string becomes SQL text, so a filter value, a
+        LISTAGG separator and a time-zone name cannot disagree about escaping.
+        They did: every one of them doubled the quote and left the backslash
+        alone, which is right on two engines out of seven.
+
+        Measured, with the old rendering: ``a\\b`` came back as ``a\x08`` - a
+        backspace - on MySQL, ClickHouse, BigQuery, Snowflake and Databricks,
+        and ``C:\\temp\\x`` raised on three of them. A Windows path, a regex or
+        an escaped delimiter in a filter was silently wrong on five engines.
+        """
+        if self.backslash_escapes_strings:
+            escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+        else:
+            escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.
 
@@ -1042,10 +1076,9 @@ class Dialect(ABC):
             rendered = f"{rendered} AT TIME ZONE {self._quote_zone(from_zone)}"
         return self._render_infix(f"{rendered} AT TIME ZONE {self._quote_zone(zone)}")
 
-    @staticmethod
-    def _quote_zone(zone: str) -> str:
+    def _quote_zone(self, zone: str) -> str:
         """A time zone name as a SQL string literal."""
-        return "'" + zone.replace("'", "''") + "'"
+        return self.quote_string_literal(zone)
 
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted.
@@ -1177,7 +1210,7 @@ class Dialect(ABC):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         result = f"LISTAGG({distinct_sql}{col_sql}, '{escaped_sep}')"
         if order_by:
             ob = ", ".join(self.compile_order_by(o) for o in order_by)
@@ -1520,8 +1553,7 @@ class Dialect(ABC):
             case Literal(value=False):
                 return "FALSE"
             case Literal(value=v) if isinstance(v, str):
-                escaped = v.replace("'", "''")
-                return f"'{escaped}'"
+                return self.quote_string_literal(v)
             case Literal(value=v):
                 return str(v)
             case Star(table=None):
