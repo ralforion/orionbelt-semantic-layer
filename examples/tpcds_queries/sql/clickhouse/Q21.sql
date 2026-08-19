@@ -28,15 +28,18 @@ SELECT
         WHEN "Date"."d_date" >= '2000-03-11'
         THEN "Inventory"."inv_quantity_on_hand"
       END
-    ) * 1.0 AS Nullable(Decimal(38, 14))) / CAST(nullIf(
-      SUM(
-        CASE
-          WHEN "Date"."d_date" < '2000-03-11'
-          THEN "Inventory"."inv_quantity_on_hand"
-        END
-      ),
+    ) * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(nullIf(
+        SUM(
+          CASE
+            WHEN "Date"."d_date" < '2000-03-11'
+            THEN "Inventory"."inv_quantity_on_hand"
+          END
+        ),
+        0
+      ) AS Nullable(Decimal(38, 14))),
       0
-    ) AS Nullable(Decimal(38, 14))),
+    ),
     6
   ) AS Nullable(Decimal(18, 6))) AS "Inventory Ratio"
 FROM "tpcds"."inventory" AS "Inventory"

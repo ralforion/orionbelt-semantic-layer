@@ -1680,7 +1680,9 @@ measures:
 
   # Store-channel measures
   Store Sales Amount:
-    expression: "{[Store Sales].[Ext Sales Price]}"
+    columns:
+      - dataObject: Store Sales
+        column: Ext Sales Price
     resultType: float
     aggregation: sum
     dataType: "decimal(18, 2)"

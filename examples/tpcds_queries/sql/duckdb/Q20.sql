@@ -27,7 +27,7 @@ SELECT
   "Class" AS "Class",
   "Current Price" AS "Current Price",
   "Catalog Sales Amount" AS "Catalog Sales Amount",
-  "Catalog Sales Amount" * 100.0 / SUM("Catalog Class Revenue") OVER (PARTITION BY "Class") AS "Catalog Revenue Ratio"
+  "Catalog Sales Amount" * 100.0 / NULLIF(SUM("Catalog Class Revenue") OVER (PARTITION BY "Class"), 0) AS "Catalog Revenue Ratio"
 FROM "base" AS "base"
 ORDER BY
   "Category" ASC,

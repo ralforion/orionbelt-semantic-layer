@@ -8,6 +8,8 @@ This example shows how to model a subset of the [TPC-DS](https://www.tpc.org/tpc
 
 TPC-DS models a retail company with multiple sales channels (store, catalog, web), returns, inventory, and a rich set of dimension tables. We focus on **store sales** and **store returns** with key dimensions to demonstrate both star schema and CFL planning.
 
+This page is a modelling walkthrough. For the wider sweep — 40 TPC-DS queries checked row-by-row against the benchmark's own reference answers on two engines — see [TPC-DS: Verified Results](tpcds-sweep.md).
+
 ## The Model
 
 ```yaml

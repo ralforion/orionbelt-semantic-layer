@@ -27,7 +27,7 @@ SELECT
   "Class" AS "Class",
   "Current Price" AS "Current Price",
   "Store Sales Amount" AS "Store Sales Amount",
-  "Store Sales Amount" * 100.0 / SUM("Class Revenue") OVER (PARTITION BY "Class") AS "Revenue Ratio"
+  "Store Sales Amount" * 100.0 / NULLIF(SUM("Class Revenue") OVER (PARTITION BY "Class"), 0) AS "Revenue Ratio"
 FROM "base" AS "base"
 ORDER BY
   "Category" ASC,

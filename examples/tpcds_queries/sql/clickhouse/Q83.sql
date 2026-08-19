@@ -77,15 +77,24 @@ SELECT
   CAST(SUM("composite_01"."Catalog Returns Quantity") AS Nullable(Int64)) AS "Catalog Returns Quantity",
   CAST(SUM("composite_01"."Web Returns Quantity") AS Nullable(Int64)) AS "Web Returns Quantity",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    CAST(CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+      0
+    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
     8
   ) AS Nullable(Decimal(18, 8))) AS "Store Return Share",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    CAST(CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+      0
+    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
     8
   ) AS Nullable(Decimal(18, 8))) AS "Catalog Return Share",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    CAST(CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+      0
+    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
     8
   ) AS Nullable(Decimal(18, 8))) AS "Web Return Share",
   CAST(round(

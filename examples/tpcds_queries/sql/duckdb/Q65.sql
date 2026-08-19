@@ -38,9 +38,10 @@ WITH "base" AS (
     "Brand" AS "Brand",
     "Sales Price Sum" AS "Sales Price Sum",
     CASE
-      WHEN SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") / SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim") > 0
-      THEN "Sales Price Sum" / (
-        SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") / SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim")
+      WHEN SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") / NULLIF(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim"), 0) > 0
+      THEN "Sales Price Sum" / NULLIF(
+        SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") / NULLIF(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim"), 0),
+        0
       )
       ELSE NULL
     END AS "Store Item Revenue Share"

@@ -4,7 +4,7 @@
 WITH "composite_01" AS (
   SELECT
     "Item"."i_item_id" AS "Item ID",
-    CAST("Store Returns"."sr_return_quantity" AS BIGINT) AS "Store Returns Quantity",
+    "Store Returns"."sr_return_quantity" AS "Store Returns Quantity",
     CAST(1 AS INT) AS "Store Returns Count"
   FROM "main"."store_returns" AS "Store Returns"
   LEFT JOIN "main"."date_dim" AS "Date"
@@ -23,7 +23,7 @@ WITH "composite_01" AS (
   UNION ALL BY NAME
   SELECT
     "Item"."i_item_id" AS "Item ID",
-    CAST("Catalog Returns"."cr_return_quantity" AS BIGINT) AS "Catalog Returns Quantity",
+    "Catalog Returns"."cr_return_quantity" AS "Catalog Returns Quantity",
     CAST(1 AS INT) AS "Catalog Returns Count"
   FROM "main"."catalog_returns" AS "Catalog Returns"
   LEFT JOIN "main"."date_dim" AS "Date"
@@ -42,7 +42,7 @@ WITH "composite_01" AS (
   UNION ALL BY NAME
   SELECT
     "Item"."i_item_id" AS "Item ID",
-    CAST("Web Returns"."wr_return_quantity" AS BIGINT) AS "Web Returns Quantity",
+    "Web Returns"."wr_return_quantity" AS "Web Returns Quantity",
     CAST(1 AS INT) AS "Web Returns Count"
   FROM "main"."web_returns" AS "Web Returns"
   LEFT JOIN "main"."date_dim" AS "Date"
@@ -64,14 +64,17 @@ SELECT
   CAST(SUM("composite_01"."Store Returns Quantity") AS BIGINT) AS "Store Returns Quantity",
   CAST(SUM("composite_01"."Catalog Returns Quantity") AS BIGINT) AS "Catalog Returns Quantity",
   CAST(SUM("composite_01"."Web Returns Quantity") AS BIGINT) AS "Web Returns Quantity",
-  CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 / (
-    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity")
+  CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 / NULLIF(
+    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity"),
+    0
   ) / 3.0 * 100 AS DECIMAL(18, 8)) AS "Store Return Share",
-  CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 / (
-    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity")
+  CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 / NULLIF(
+    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity"),
+    0
   ) / 3.0 * 100 AS DECIMAL(18, 8)) AS "Catalog Return Share",
-  CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 / (
-    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity")
+  CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 / NULLIF(
+    SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity"),
+    0
   ) / 3.0 * 100 AS DECIMAL(18, 8)) AS "Web Return Share",
   CAST((
     SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity")

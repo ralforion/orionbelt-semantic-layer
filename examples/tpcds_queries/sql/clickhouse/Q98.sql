@@ -27,7 +27,10 @@ SELECT
   "Class" AS "Class",
   "Current Price" AS "Current Price",
   "Store Sales Amount" AS "Store Sales Amount",
-  CAST("Store Sales Amount" * 100.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("Class Revenue") OVER (PARTITION BY "Class") AS Nullable(Decimal(38, 14))) AS "Revenue Ratio"
+  CAST("Store Sales Amount" * 100.0 AS Nullable(Decimal(38, 14))) / nullIf(
+    CAST(SUM("Class Revenue") OVER (PARTITION BY "Class") AS Nullable(Decimal(38, 14))),
+    0
+  ) AS "Revenue Ratio"
 FROM "base" AS "base"
 ORDER BY
   "Category" ASC,

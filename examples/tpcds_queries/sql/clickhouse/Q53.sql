@@ -39,12 +39,27 @@ WITH "base" AS (
     "Manufacturer ID" AS "Manufacturer ID",
     "Quarter of Year" AS "Quarter of Year",
     "Sales Price Sum" AS "Sales Price Sum",
-    CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) AS "Avg Quarterly Sales",
+    CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))),
+      0
+    ) AS "Avg Quarterly Sales",
     CASE
-      WHEN CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) > 0
+      WHEN CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))),
+        0
+      ) > 0
       THEN CAST(ABS(
-        "Sales Price Sum" - CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14)))
-      ) AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14)))
+        "Sales Price Sum" - CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))),
+          0
+        )
+      ) AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(CAST(SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))),
+        0
+      )
       ELSE NULL
     END AS "Quarterly Deviation"
   FROM "base" AS "base"

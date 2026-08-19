@@ -39,12 +39,27 @@ WITH "base" AS (
     "Manager ID" AS "Manager ID",
     "Month of Year" AS "Month of Year",
     "Sales Price Sum" AS "Sales Price Sum",
-    CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS "Avg Monthly Sales",
+    CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))),
+      0
+    ) AS "Avg Monthly Sales",
     CASE
-      WHEN CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) > 0
+      WHEN CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))),
+        0
+      ) > 0
       THEN CAST(ABS(
-        "Sales Price Sum" - CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14)))
-      ) AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14)))
+        "Sales Price Sum" - CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))),
+          0
+        )
+      ) AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(CAST(SUM("Manager Sales") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))),
+        0
+      )
       ELSE NULL
     END AS "Monthly Variance"
   FROM "base" AS "base"

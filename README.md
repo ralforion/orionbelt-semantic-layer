@@ -1,72 +1,140 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo — a stylized belt of three stars" width="400">
+  <img src="https://raw.githubusercontent.com/ralforion/orionbelt-semantic-layer/main/docs/assets/ORIONBELT_Logo.png" alt="OrionBelt Semantic Layer logo" width="320">
 </p>
 
 <h1 align="center">OrionBelt&reg; Semantic Layer and Sidecar</h1>
 
-<p align="center"><strong>An Open Source <a href="https://ralforion.com/semantic-sidecar.html">Semantic Sidecar</a> for <a href="https://ralforion.com/agentic-ai-data-access.html">Agentic AI</a>, Analytics, Quality and Governance Systems.</strong></p>
+<p align="center"><strong>Define your metrics once in YAML. Let agents and BI tools query them without ever touching your schema.</strong></p>
 
-<p align="center"><strong>Inject governed semantics into systems that never had them.</strong></p>
+<p align="center">A <a href="https://ralforion.com/semantic-sidecar.html">semantic sidecar</a>: it rides alongside the systems you already run instead of replacing them.</p>
 
-<!-- TODO: confirm PyPI publication — if not yet published, remove pypi badge -->
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge)](https://orionbelt.ralforion.com/ui/?__theme=dark)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb)
+<p align="center">
+<a href="https://orionbelt.ralforion.com/ui/?__theme=dark"><img src="https://img.shields.io/badge/Live_Demo-Try_it_now-brightgreen?style=for-the-badge" alt="Live Demo"></a>
+</p>
 
-[![GitHub stars](https://img.shields.io/github/stars/ralforion/orionbelt-semantic-layer?style=social)](https://github.com/ralforion/orionbelt-semantic-layer)
-[![Version 2.24.1](https://img.shields.io/badge/version-2.24.1-purple.svg)](https://github.com/ralforion/orionbelt-semantic-layer/releases)
-[![PyPI](https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white)](https://pypi.org/project/orionbelt-semantic-layer/)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE)
+<p align="center">
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-2.24.1-purple.svg" alt="Version 2.24.1"></a>
+<a href="https://pypi.org/project/orionbelt-semantic-layer/"><img src="https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white" alt="PyPI"></a>
+<a href="https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api"><img src="https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED" alt="Docker pulls"></a>
+<a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-BSL_1.1-orange.svg" alt="License: BSL 1.1"></a>
+</p>
 
-[![Docker Hub](https://img.shields.io/docker/v/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&label=Docker%20Hub&color=2496ED&sort=semver)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api/tags)
-[![Docker pulls](https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api)
-[![Image size](https://img.shields.io/docker/image-size/ralforion/orionbelt-semantic-layer-api/latest?logo=docker&logoColor=white&color=2496ED&label=image%20size)](https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api)
+---
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.128+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?logo=pydantic&logoColor=white)](https://docs.pydantic.dev)
-[![Gradio](https://img.shields.io/badge/Gradio-5.0+-F97316.svg?logo=gradio&logoColor=white)](https://www.gradio.app)
+Ask an LLM to write SQL against a raw star schema and sooner or later it joins two fact tables and hands you a revenue number inflated by a factor of eight. It looks right. Nobody catches it.
 
-[![BigQuery](https://img.shields.io/badge/BigQuery-669DF6.svg?logo=googlebigquery&logoColor=white)](https://cloud.google.com/bigquery)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org)
-[![Snowflake](https://img.shields.io/badge/Snowflake-29B5E8.svg?logo=snowflake&logoColor=white)](https://www.snowflake.com)
-[![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC01.svg?logo=clickhouse&logoColor=black)](https://clickhouse.com)
-[![Dremio](https://img.shields.io/badge/Dremio-31B48D.svg)](https://www.dremio.com)
-[![Databricks](https://img.shields.io/badge/Databricks-FF3621.svg?logo=databricks&logoColor=white)](https://www.databricks.com)
-[![DuckDB](https://img.shields.io/badge/DuckDB-FFF000.svg?logo=duckdb&logoColor=black)](https://duckdb.org)
-[![MySQL](https://img.shields.io/badge/MySQL-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com)
+OrionBelt is a **[semantic sidecar](https://ralforion.com/semantic-sidecar.html)**. You declare dimensions, measures, metrics, and joins in version-controlled YAML. OrionBelt compiles them into dialect-specific SQL through a real AST, and routes multi-fact queries through a Composite Fact Layer planner that [blocks the join paths that produce fan traps](https://ralforion.com/text-to-sql.html). Agents and BI tools ask for `"Total Revenue" by "Country"`. They never see a table name.
 
-OrionBelt Semantic Layer (OBSL) is an open-source **[Semantic Sidecar](https://ralforion.com/semantic-sidecar.html)** for AI, analytics, and governed data systems. It injects governed business semantics into existing platforms without requiring architecture changes or dedicated semantic infrastructure.
+No BI tool in the middle. No runtime lock-in. Point it at what you already have.
 
-Define dimensions, measures, metrics, business rules, and semantic context in declarative YAML models. OBSL compiles and executes them as optimized, dialect-specific SQL across BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.
+Here is TPC-DS query 98. Two measures over the same column, identical but for one line: `Class Revenue` is pinned to a coarser grain than the query asks for.
 
-Query using **business concepts** instead of raw schemas and SQL. The same semantic model can power AI agents, analytics workflows, data quality checks, regulatory and business KPIs, and reporting use cases.
+```yaml
+measures:
+  Store Sales Amount:
+    columns: [{dataObject: Store Sales, column: Ext Sales Price}]
+    aggregation: sum
 
-**Analytics as Code** — and beyond.
+  Class Revenue:
+    columns: [{dataObject: Store Sales, column: Ext Sales Price}]
+    aggregation: sum
+    grain: {mode: FIXED, keepOnly: [Class]}   # <- pin to Class, ignore query grain
 
-Define analytical and business semantics in version-controlled YAML, compile them into executable SQL, DQ rules, KPIs, and semantic context, and execute them through a unified API.
+metrics:
+  Revenue Ratio:
+    expression: "{[Store Sales Amount]} * 100.0 / {[Class Revenue]}"
+```
 
-No BI tool in the middle. The entire path from declarative model to executable semantics and query results is programmable, reviewable, and reproducible.
+That one `grain` line is what becomes `SUM(...) OVER (PARTITION BY "Class")` below.
 
-> **Companion Project:** [OrionBelt Analytics](https://github.com/ralforion/orionbelt-analytics) — an ontology-based MCP server that analyzes database schemas and generates RDF/OWL ontologies. Together they let AI assistants navigate your data landscape through ontologies and compile safe, dialect-aware analytical SQL.
+The query names business concepts. No tables, no joins, no SQL:
 
-> **Related reading:**
-> - [What is a Semantic Sidecar?](https://ralforion.com/semantic-sidecar.html) — the pattern OBSL implements
-> - [Agentic AI Data Access](https://ralforion.com/agentic-ai-data-access.html) — governed access for AI agents via MCP
-> - [Governed Text-to-SQL](https://ralforion.com/text-to-sql.html) — fan-trap prevention via ontology, AST & MCP
+```yaml
+select:
+  dimensions: [Item ID, Item Description, Category, Class, Current Price]
+  measures: [Store Sales Amount, Revenue Ratio]
+where:
+  - {field: Category, op: inlist, value: [Sports, Books, Home]}
+  - {field: Order Date, op: between, value: ["1999-02-22", "1999-03-24"]}
+```
 
-## Table of Contents
+```bash
+pip install orionbelt-semantic-layer
+obsl compile tpcds.obml.yml -q Q98.yml -d duckdb
+```
 
-- [Try it in 30 Seconds](#try-it-in-30-seconds) — Live Demo | Colab | PyPI | uv | Docker
-- [Claude Desktop / MCP](#claude-desktop--mcp)
-- [Why OrionBelt?](#why-orionbelt)
-- [Features](#features)
-- [Example](#example)
-- [Gradio UI](#gradio-ui)
-- [Documentation](#documentation)
-- [Status & Roadmap](#status--roadmap)
-- [Commercial Offerings](#commercial-offerings)
-- [Companion Project](#companion-project)
-- [Development](#development)
+```sql
+WITH "base" AS (
+  SELECT
+    "Item"."i_item_id" AS "Item ID",
+    "Item"."i_item_desc" AS "Item Description",
+    "Item"."i_category" AS "Category",
+    "Item"."i_class" AS "Class",
+    "Item"."i_current_price" AS "Current Price",
+    CAST(SUM("Store Sales"."ss_ext_sales_price") AS DECIMAL(18, 2)) AS "Store Sales Amount",
+    SUM("Store Sales"."ss_ext_sales_price") AS "Class Revenue"
+  FROM "main"."store_sales" AS "Store Sales"
+  LEFT JOIN "main"."item" AS "Item"
+    ON "Store Sales"."ss_item_sk" = "Item"."i_item_sk"
+  LEFT JOIN "main"."date_dim" AS "Date"
+    ON "Store Sales"."ss_sold_date_sk" = "Date"."d_date_sk"
+  WHERE
+    "Item"."i_category" IN ('Sports', 'Books', 'Home')
+    AND "Date"."d_date" BETWEEN '1999-02-22' AND '1999-03-24'
+  GROUP BY ALL
+)
+SELECT
+  "Item ID" AS "Item ID",
+  "Item Description" AS "Item Description",
+  "Category" AS "Category",
+  "Class" AS "Class",
+  "Current Price" AS "Current Price",
+  "Store Sales Amount" AS "Store Sales Amount",
+  "Store Sales Amount" * 100.0 / NULLIF(SUM("Class Revenue") OVER (PARTITION BY "Class"), 0) AS "Revenue Ratio"
+FROM "base" AS "base"
+ORDER BY
+  "Category" ASC,
+  "Class" ASC,
+  "Item ID" ASC,
+  "Item Description" ASC,
+  "Revenue Ratio" ASC
+```
+
+You did not write the join path, the window function over an aggregate, the `NULLIF` guard, or one table name. Change `-d duckdb` to `-d snowflake` and the same two files compile for Snowflake, or for any of eight dialects.
+
+**This is checked, not asserted.** 40 TPC-DS queries are built against a single OBML model and compared row by row against each engine's own reference SQL: 39 of 40 match on DuckDB at sf=1, 37 of 40 on ClickHouse at sf=10. Every one of the remaining differences traces to a reference variant rather than a compilation error, and each is documented. See [the sweep](https://ralforion.com/orionbelt-semantic-layer/examples/tpcds-sweep/), or the queries in [`examples/tpcds_queries/`](examples/tpcds_queries/).
+
+The same model serves every surface you already use:
+
+- **Your BI tool**, over the PostgreSQL wire protocol on `:5432`. Tableau, Power BI, Superset, DBeaver, and `psql` connect with the Postgres driver they already ship. Dremio federates it as a Postgres source.
+- **Your [AI agents](https://ralforion.com/agentic-ai-data-access.html)**, over MCP. Works with Claude, Cursor, Copilot, and Windsurf.
+- **Your code**, over REST, Arrow Flight SQL, or PEP 249 drivers.
+
+Compiles to BigQuery, ClickHouse, Databricks, Dremio, DuckDB/MotherDuck, MySQL, PostgreSQL, and Snowflake.
+
+## Where OrionBelt fits
+
+OrionBelt is a sidecar, not a platform. It compiles a YAML model into correct SQL and exposes it over the protocols you already use. It does not run a cluster, own your cache, or ask you to adopt a cloud.
+
+**Reach for OrionBelt when:**
+
+- Agents query your data and a silently wrong number is unacceptable. Multi-fact queries route through a Composite Fact Layer planner that blocks fan-trap join paths instead of quietly summing across them.
+- You want your metric definitions in reviewable YAML, with no JavaScript or Python in the model layer.
+- Your BI tool should connect over the Postgres driver it already ships, with no new connector to install and no vendor runtime in the path.
+- You self-host, across more than one engine, and want one model to compile for all of them.
+
+**Reach for something else when:**
+
+- You need pre-aggregation and caching tuned for high-concurrency dashboards at scale. [Cube](https://cube.dev) has years of production hardening there that OrionBelt does not.
+- Your metrics already live in dbt and your team is happy there. [MetricFlow](https://github.com/dbt-labs/metricflow) keeps them where they are.
+- You want an exploratory analysis language rather than a serving layer. [Malloy](https://www.malloydata.dev) is a better fit.
+
+**[Try the live demo](https://orionbelt.ralforion.com/ui/?__theme=dark)** with a pre-loaded model, or [open the Colab notebook](https://colab.research.google.com/github/ralforion/orionbelt-semantic-layer/blob/main/examples/quickstart_colab.ipynb) and run it against TPC-H data.
+
+## Contents
+
+[Try it in 30 seconds](#try-it-in-30-seconds) · [Claude Desktop / MCP](#claude-desktop--mcp) · [Why OrionBelt?](#why-orionbelt) · [Features](#features) · [Example](#example) · [Documentation](#documentation) · [Roadmap](#status--roadmap) · [Commercial](#commercial-offerings) · [Development](#development)
 
 ---
 
