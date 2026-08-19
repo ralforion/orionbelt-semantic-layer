@@ -38,6 +38,8 @@ class SnowflakeDialect(Dialect):
 
     avg_over_integers_is_exact = True
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "snowflake"
