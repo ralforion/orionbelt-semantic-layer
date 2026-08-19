@@ -43,6 +43,7 @@ import json
 import random
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from itertools import count
 from pathlib import Path
 
 import duckdb
@@ -406,6 +407,12 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
     by_provider: dict[tuple[str, str], str] = {(row[5], row[6]): row[0] for row in commitments}
     commitment_meta = {row[0]: (row[2], row[3], row[4]) for row in commitments}
 
+    # One key per charge row. FOCUS defines no row identifier and no natural
+    # combination of its columns is unique here - the closest still collides on
+    # 12 of 20k rows - so the generator mints one. Without it a measure on the
+    # charge grouped by a label value counts a charge once per label it carries.
+    next_key = count(1).__next__
+
     rows: list[tuple] = []
     for year, month in PERIODS:
         p_start, p_end = month_bounds(year, month)
@@ -511,6 +518,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                                 credits_for(billed_cost, covered, commitment_id),
                                 resource_tags_for(sub_id),
                                 project_for(sub_id, sub_name),
+                                f"chg-{next_key():07d}",
                             )
                         )
 
@@ -570,6 +578,7 @@ def build_charges(commitments: list[tuple]) -> list[tuple]:
                     [],
                     [],
                     None,
+                    f"chg-{next_key():07d}",
                 )
             )
     return rows
@@ -775,6 +784,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "Credits",
         "ResourceTags",
         "Project",
+        "ChargeKey",
     ),
     "invoice_details": (
         "InvoiceId",
@@ -919,7 +929,13 @@ CREATE TABLE {SCHEMA}.charges (
                                        Inherited BOOLEAN, Namespace VARCHAR)[],
     Project                     STRUCT(Id VARCHAR, Name VARCHAR,
                                        Ancestors STRUCT(ResourceName VARCHAR,
-                                                        DisplayName VARCHAR)[])
+                                                        DisplayName VARCHAR)[]),
+    -- Surrogate: one charge, one row. FOCUS defines no row identifier and no
+    -- combination of its columns is unique here, so a measure on the charge
+    -- grouped by a nested dimension has nothing to deduplicate on without it.
+    -- Last rather than first, because everything downstream reads a charge
+    -- tuple positionally.
+    ChargeKey                   VARCHAR
 );
 
 CREATE TABLE {SCHEMA}.invoice_details (
