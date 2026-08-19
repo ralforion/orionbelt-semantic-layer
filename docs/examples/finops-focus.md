@@ -408,7 +408,11 @@ select:
 
 ## Using a real cloud export
 
-The model targets standard FOCUS columns only, so it ports to a real export by changing `code` and `schema` on the data objects and the `defaultDialect` setting.
+The model is in two halves, and they port differently.
+
+The **scalar half** is standard FOCUS columns only, so it ports to a real export by changing `code` and `schema` on the data objects and the `defaultDialect` setting - nothing else.
+
+The **repeated half** - `Labels`, `Credits`, `ResourceTags` and `Project.Ancestors` - is not FOCUS. Those are provider extensions, and every provider names them differently: Google prefixes them `x_`, AWS CUR via Athena uses its own. Porting them means pointing each nested object's `column` at whatever the export calls it, which is one line per object.
 
 One caveat for Google Cloud. Its FOCUS export puts every standard FOCUS column in a scalar type, but carries labels, credits, tags and project ancestry as `REPEATED RECORD` extension columns prefixed `x_`:
 
