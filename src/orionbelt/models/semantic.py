@@ -381,6 +381,43 @@ class RefreshPolicy(BaseModel):
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
+class UnrenderableDataObjectError(Exception):
+    """A data object cannot be rendered as a FROM target.
+
+    Raised at compile time rather than load time: the model is well formed, and
+    which objects a *query* touches is what decides whether the gap is reached.
+    """
+
+
+class NestedSource(BaseModel):
+    """Where a nested data object's rows come from: an array column on a parent.
+
+    A repeated column is a table - one nested table per parent row - so it is
+    modelled as a data object rather than reached through an accessor. That is
+    what lets its fields be ordinary columns, its keys stay data rather than
+    model-time constants, and a measure live on it at its own grain.
+
+    There is no ``columnsFrom``/``columnsTo`` because there is no key to join
+    on. The correlation is *containment*: an unnest pairs each parent row with
+    the elements of its own array, so the association exists before any SQL
+    runs. A flattening view has to manufacture a key precisely because it
+    destroys that containment; inline, there is nothing to recover.
+    """
+
+    data_object: str = Field(
+        alias="dataObject",
+        description="The parent data object whose array column supplies these rows.",
+    )
+    column: str = Field(
+        description=(
+            "The parent's array column. A dotted path addresses an array nested "
+            "inside a struct, such as ``x_Project.Ancestors``."
+        ),
+    )
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
 class DataObject(BaseModel):
     """A database table or view with its columns and joins."""
 
@@ -420,11 +457,71 @@ class DataObject(BaseModel):
             "Drives result-cache TTL composition. PLAN_freshness_driven_cache.md §5."
         ),
     )
+    nested_in: NestedSource | None = Field(
+        default=None,
+        alias="nestedIn",
+        description=(
+            "Take this object's rows by unnesting an array column on another object "
+            "rather than from a table of its own. Declared alongside ``code`` rather "
+            "than instead of it: where both are present the unnest is used and the "
+            "table is the fallback, which is what makes moving a model off a "
+            "hand-written flattening view incremental."
+        ),
+    )
+
+    @property
+    def is_nested(self) -> bool:
+        """Whether this object's rows come from unnesting a parent's column."""
+        return self.nested_in is not None
 
     @property
     def qualified_code(self) -> str:
         """Full qualified table reference: database.schema.code."""
+        self.require_table_source()
         return f"{self.database}.{self.schema_name}.{self.code}"
+
+    def require_table_source(self) -> None:
+        """Raise unless this object has a table a FROM clause can name.
+
+        A ``nestedIn`` object without ``code`` has no table: its rows are an
+        array column on its parent, and reaching them needs an unnest that no
+        dialect renders yet. Without this guard the planners fall through to an
+        empty ``code`` and emit ``FROM "" AS "Charge Labels"`` - and a
+        synthesized count makes that reachable on any model that adopts the
+        field, with no measure declared at all.
+
+        Removed when the per-dialect rendering lands; until then a model may
+        *declare* a nested object and cannot *query* one unless it also carries
+        the ``code`` fallback, which is exactly what the fallback is for.
+        """
+        if self.code:
+            return
+        source = self.nested_in
+        raise UnrenderableDataObjectError(
+            f"Data object '{self.name}' takes its rows by unnesting "
+            f"'{source.data_object}.{source.column}', and no dialect compiles a "
+            f"nested data object yet. Declare 'code' alongside 'nestedIn' to read a "
+            f"flattening view in the meantime, or leave this object out of the query."
+            if source is not None
+            else f"Data object '{self.name}' has no 'code' to select from."
+        )
+
+    @model_validator(mode="after")
+    def _validate_has_a_source(self) -> DataObject:
+        """An object needs somewhere for its rows to come from.
+
+        ``code`` or ``nestedIn``, and both together is the supported case rather
+        than an error: an object that can be unnested *and* has a flattening
+        view behind it stays queryable on an engine that cannot unnest, and
+        lets a model migrate one object at a time instead of all at once.
+        """
+        if not self.code and self.nested_in is None:
+            raise ValueError(
+                f"Data object '{self.name}' declares neither 'code' nor 'nestedIn', "
+                "so it has no rows. Give it a table name, or nest it in a parent "
+                "object's array column."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_count_label(self) -> DataObject:

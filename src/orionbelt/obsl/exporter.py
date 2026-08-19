@@ -47,6 +47,10 @@ def _column_uri(model_id: str, obj_name: str, col_name: str) -> URIRef:
     return URIRef(f"{BASE}{model_id}/data-object/{_slug(obj_name)}/column/{_slug(col_name)}")
 
 
+def _nested_source_uri(model_id: str, obj_name: str) -> URIRef:
+    return URIRef(f"{BASE}{model_id}/data-object/{_slug(obj_name)}/nested-source")
+
+
 def _join_uri(
     model_id: str,
     obj_name: str,
@@ -197,6 +201,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         OBSL.DataObject,
         OBSL.Column,
         OBSL.Join,
+        OBSL.NestedSource,
         OBSL.Dimension,
         OBSL.Measure,
         OBSL.Metric,
@@ -206,6 +211,7 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.DataObject, "Data Object"),
         (OBSL.Column, "Column"),
         (OBSL.Join, "Join"),
+        (OBSL.NestedSource, "Nested Source"),
         (OBSL.Dimension, "Dimension"),
         (OBSL.Measure, "Measure"),
         (OBSL.Metric, "Metric"),
@@ -272,6 +278,8 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
         (OBSL.hasColumn, OBSL.DataObject, OBSL.Column),
         (OBSL.hasJoin, OBSL.DataObject, OBSL.Join),
         (OBSL.joinTo, OBSL.Join, OBSL.DataObject),
+        (OBSL.nestedIn, OBSL.DataObject, OBSL.NestedSource),
+        (OBSL.nestedInObject, OBSL.NestedSource, OBSL.DataObject),
         (OBSL.columnFrom, OBSL.Join, OBSL.Column),
         (OBSL.columnTo, OBSL.Join, OBSL.Column),
         (OBSL.dataObject, OBSL.Dimension, OBSL.DataObject),
@@ -427,6 +435,26 @@ def export_obsl(model: SemanticModel, model_id: str) -> Graph:
             _emit_custom_extensions(g, col_uri, getattr(col, "custom_extensions", []))
 
         # Joins — path_name disambiguates multiple joins to the same target
+        if obj.nested_in is not None:
+            # A nested object's rows are an array column on a parent, so the
+            # source is its own node: the parent is a reference and the column
+            # is a literal, which a SPARQL query needs to tell apart.
+            ns_uri = _nested_source_uri(model_id, obj_name)
+            g.add((obj_uri, OBSL.nestedIn, ns_uri))
+            g.add((ns_uri, RDF.type, OBSL.NestedSource))
+            g.add((ns_uri, RDF.type, OWL.NamedIndividual))
+            g.add(
+                (
+                    ns_uri,
+                    RDFS.label,
+                    Literal(f"{obj.nested_in.data_object}.{obj.nested_in.column}"),
+                )
+            )
+            g.add(
+                (ns_uri, OBSL.nestedInObject, _data_object_uri(model_id, obj.nested_in.data_object))
+            )
+            g.add((ns_uri, OBSL.nestedInColumn, Literal(obj.nested_in.column)))
+
         for join in obj.joins:
             join_uri = _join_uri(model_id, obj_name, join.join_to, join.path_name)
             g.add((obj_uri, OBSL.hasJoin, join_uri))

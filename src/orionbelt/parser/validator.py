@@ -56,6 +56,94 @@ class SemanticValidator:
         errors.extend(self._check_via_reachability(model))
         errors.extend(self._check_missing_via(model))
         errors.extend(self._check_measure_anchors(model))
+        errors.extend(self._check_nested_objects(model))
+        return errors
+
+    def _check_nested_objects(self, model: SemanticModel) -> list[SemanticError]:
+        """Rules a ``nestedIn`` object has to satisfy.
+
+        A nested object's rows exist only inside its parent's, which constrains
+        it in ways an ordinary object is not:
+
+        * its parent has to exist, and cannot be itself;
+        * the chain of parents has to terminate, or a leg would never reach a
+          table to select from;
+        * nothing may join **to** it. There is no key to join on - the parent
+          correlation is containment rather than an equality - and its rows
+          cannot be addressed from outside the parent. Emitting SQL for such a
+          join is not possible, so it is refused here rather than later.
+
+        Joining *from* a nested object to a third one is fine and deliberately
+        not checked: the nested object is already in FROM through its parent,
+        and the join it declares is an ordinary keyed one.
+        """
+        errors: list[SemanticError] = []
+        nested = {name: obj for name, obj in model.data_objects.items() if obj.is_nested}
+
+        for name, obj in nested.items():
+            assert obj.nested_in is not None
+            parent = obj.nested_in.data_object
+            path = f"dataObjects.{name}.nestedIn"
+            if parent == name:
+                errors.append(
+                    SemanticError(
+                        code="INVALID_NESTED_SOURCE",
+                        message=f"Data object '{name}' is nested in itself.",
+                        path=path,
+                    )
+                )
+                continue
+            if parent not in model.data_objects:
+                errors.append(
+                    SemanticError(
+                        code="UNKNOWN_DATA_OBJECT",
+                        message=(
+                            f"Data object '{name}' is nested in '{parent}', which is not "
+                            f"a data object in this model."
+                        ),
+                        path=path,
+                    )
+                )
+                continue
+            # Walk to a non-nested ancestor. An array inside an array is
+            # supported, so depth is fine; a cycle is not.
+            seen = {name}
+            cursor = parent
+            while cursor in nested:
+                if cursor in seen:
+                    errors.append(
+                        SemanticError(
+                            code="INVALID_NESTED_SOURCE",
+                            message=(
+                                f"Data object '{name}' has a cyclic nestedIn chain through "
+                                f"'{cursor}', so it never reaches a table."
+                            ),
+                            path=path,
+                        )
+                    )
+                    break
+                seen.add(cursor)
+                next_parent = nested[cursor].nested_in
+                assert next_parent is not None
+                cursor = next_parent.data_object
+
+        for name, obj in model.data_objects.items():
+            for idx, join in enumerate(obj.joins):
+                target = nested.get(join.join_to)
+                if target is not None and target.nested_in is not None:
+                    errors.append(
+                        SemanticError(
+                            code="INVALID_NESTED_SOURCE",
+                            message=(
+                                f"Data object '{name}' joins to '{join.join_to}', which is "
+                                f"nested in '{target.nested_in.data_object}'. "
+                                f"A nested object has no key to join on - its rows exist "
+                                f"only inside its parent's - so it can only be reached "
+                                f"through that parent."
+                            ),
+                            path=f"dataObjects.{name}.joins[{idx}].joinTo",
+                        )
+                    )
         return errors
 
     def _check_unique_identifiers(self, model: SemanticModel) -> list[SemanticError]:

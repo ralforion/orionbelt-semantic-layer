@@ -121,6 +121,13 @@ def synthesize_count_measures(model: SemanticModel) -> dict[str, Measure]:
     for object_key, obj in model.data_objects.items():
         if not obj.countable:
             continue
+        if not obj.code:
+            # A nested object with no table fallback cannot be selected from
+            # yet, so synthesizing its count would advertise a measure that
+            # fails on use - and would do so on every model that adopts
+            # ``nestedIn``, with nothing declared. Returns when the per-dialect
+            # unnest lands.
+            continue
         name = count_label(object_key, obj, pattern)
         if name in model.measures or name in out:
             continue

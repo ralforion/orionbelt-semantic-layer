@@ -260,6 +260,12 @@ class OBMLtoOSI:
             do_extras["obml_countable"] = do_obj["countable"]
         if do_obj.get("countLabel") is not None:
             do_extras["obml_count_label"] = do_obj["countLabel"]
+        # A nested source has no OSI equivalent: OSI datasets are tables, and
+        # this one's rows are an array column on another dataset. Carried in the
+        # OBML vendor extension so a round trip does not silently turn a nested
+        # object into a table with an empty name.
+        if do_obj.get("nestedIn"):
+            do_extras["obml_nested_in"] = do_obj["nestedIn"]
         if do_extras:
             ds_exts = dataset.setdefault("custom_extensions", [])
             ds_exts.append(
