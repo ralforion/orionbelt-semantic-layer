@@ -16,6 +16,22 @@ from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
 
+
+def _json_member(name: str) -> str:
+    """A JSON path member, always quoted.
+
+    Quoting is not optional, and the unquoted form fails two different ways -
+    measured: ``$.Label Key`` raises "Invalid JSON path expression", and
+    ``$.a.b`` **silently returns NULL**, reading a nested key that is not there
+    rather than the literal one. The second is why this quotes unconditionally
+    rather than only when the name looks unsafe: a wrong answer is worse than
+    an error, and an OBML column code is a physical field name that may contain
+    anything.
+    """
+    escaped = name.replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
 _MYSQL_CAST_CHAR_MAX = 255
 
@@ -225,7 +241,7 @@ class MySQLDialect(Dialect):
         """
         cols = (
             ", ".join(
-                f"{self.quote_identifier(code)} {sql_type} PATH '$.{code}'"
+                f"{self.quote_identifier(code)} {sql_type} PATH '$.{_json_member(code)}'"
                 for code, sql_type in node.columns
             )
             or "value VARCHAR(1024) PATH '$'"

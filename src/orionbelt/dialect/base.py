@@ -612,6 +612,20 @@ class Dialect(ABC):
             return f"LEFT JOIN {source} AS {alias} ON TRUE"
         return f", {source} AS {alias}"
 
+    def nested_field(self, alias: str, field: str, sql_type: str | None = None) -> Expr:
+        """How a column of an unnested element is addressed.
+
+        Ordinary column access almost everywhere: measured, ``L."Key"`` reads
+        the field on BigQuery, DuckDB, Postgres, MySQL, ClickHouse and
+        Databricks, because the alias *is* the element. Snowflake overrides,
+        because there the alias is a row whose ``value`` holds the element as a
+        VARIANT.
+
+        ``sql_type`` is what the field should be read as. Only the VARIANT
+        dialect needs it; the rest carry their own types.
+        """
+        return ColumnRef(name=field, table=alias)
+
     def unnest_path(self, node: Unnest) -> str:
         """The parent's array column, quoted segment by segment.
 

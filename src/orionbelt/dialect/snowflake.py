@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll, Unnest
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, RawSQL, UnionAll, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -68,6 +68,24 @@ class SnowflakeDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
+
+    def nested_field(self, alias: str, field: str, sql_type: str | None = None) -> Expr:
+        """``L.value:"Key"::string`` - a VARIANT path, not a column.
+
+        ``FLATTEN`` yields a row per element whose ``value`` column holds the
+        element itself, so the ordinary ``L."Key"`` every other engine accepts
+        does not compile here at all: measured, "SQL compilation error".
+
+        The field name is quoted inside the path so one containing a space is
+        addressable, and the cast is not optional: without it a string field
+        comes back as ``"team"`` with its JSON quotes still on.
+        """
+        escaped = field.replace('"', '""')
+        # RawSQL: Snowflake's `:` VARIANT path has no typed AST node, and the
+        # cast has to bind to the path rather than to a column reference.
+        return RawSQL(
+            sql=f'{self.quote_identifier(alias)}.value:"{escaped}"::{sql_type or "string"}'
+        )
 
     def render_unnest(self, node: Unnest) -> str:
         """``LATERAL FLATTEN``, whose outer form is an argument rather than a

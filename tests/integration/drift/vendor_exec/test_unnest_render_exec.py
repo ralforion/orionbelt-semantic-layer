@@ -61,17 +61,11 @@ SOURCES = {
                       UNION ALL SELECT 2, 50, array())""",
 }
 
-#: How the element's ``Key`` field is read once unnested. Snowflake hands back a
-#: VARIANT, so it is the one engine that needs a path rather than a field.
-KEY_EXPR = {
-    "snowflake": '"L".value:Key::string',
-    "clickhouse": '"L"."Key"',
-    "duckdb": '"L"."Key"',
-    "postgres": '"L"."Key"',
-    "mysql": "`L`.`Key`",
-    "bigquery": "`L`.`Key`",
-    "databricks": "`L`.`Key`",
-}
+# The field accessor comes from the dialect rather than a table here. Hand
+# writing it is what let a real defect hide: this module used the correct
+# Snowflake path while ``nested_field`` did not exist, so the AST produced
+# `L."Key"`, which does not compile there at all (review of #344). Asking the
+# dialect means the test exercises what the planner will emit.
 
 
 def _prepare(target: VendorTarget) -> None:
@@ -102,8 +96,9 @@ def _run(target: VendorTarget, outer: bool) -> list[dict]:
         .replace("@COST@", q("cost"))
         .replace("@LABELS@", q("x_Labels"))
     )
+    key = dialect.compile_expr(dialect.nested_field("L", "Key"))
     sql = (
-        f"SELECT {q('C')}.{q('id')} AS {q('id')}, {KEY_EXPR[target.dialect]} AS {q('k')} "
+        f"SELECT {q('C')}.{q('id')} AS {q('id')}, {key} AS {q('k')} "
         f"FROM {source} AS {q('C')} {fragment} ORDER BY 1, 2"
     )
     return target.execute(sql)
