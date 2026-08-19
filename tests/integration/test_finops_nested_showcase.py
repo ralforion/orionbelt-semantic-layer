@@ -7,12 +7,16 @@ not lose a duplicate. A page saying so is worth nothing if the model stops
 answering that way, and every number in
 ``docs/examples/finops-focus.md`` comes from here.
 
-Skipped unless ``examples/finops.duckdb`` has been built, which is a generator
-run away (``uv run python scripts/build_finops_duckdb.py``) and is gitignored.
+The database is gitignored, so it is **built when absent** rather than skipped
+around - the same thing ``test_starter_model_executes`` does with its seed, and
+for the same reason: a test that quietly skips in CI protects nothing, and these
+numbers are published. The generator takes about a second.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +33,15 @@ from orionbelt.parser.validator import SemanticValidator  # noqa: E402
 _ROOT = Path(__file__).resolve().parents[2]
 _DB = _ROOT / "examples" / "finops.duckdb"
 _MODEL = _ROOT / "examples" / "finops.obml.yml"
+_BUILDER = _ROOT / "scripts" / "build_finops_duckdb.py"
 
-pytestmark = pytest.mark.skipif(
-    not _DB.exists(),
-    reason="examples/finops.duckdb not built (uv run python scripts/build_finops_duckdb.py)",
-)
+
+@pytest.fixture(scope="module")
+def db() -> Path:
+    """The demo database, built if absent (it is gitignored)."""
+    if not _DB.exists():
+        subprocess.run([sys.executable, str(_BUILDER)], check=True, capture_output=True)
+    return _DB
 
 
 @pytest.fixture(scope="module")
@@ -45,8 +53,8 @@ def model() -> SemanticModel:
 
 
 @pytest.fixture(scope="module")
-def con() -> Any:
-    connection = duckdb.connect(str(_DB), read_only=True)
+def con(db: Path) -> Any:
+    connection = duckdb.connect(str(db), read_only=True)
     yield connection
     connection.close()
 

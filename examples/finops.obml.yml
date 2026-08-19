@@ -27,10 +27,11 @@
 # Build the data first:
 #     uv run python scripts/build_finops_duckdb.py
 #
-# Every column below is a standard FOCUS column, and every one is scalar - which
-# is true of the specification itself. Provider-specific extensions (the "x_"
-# columns in a real Google Cloud export) are nested and are deliberately out of
-# scope here.
+# The standard FOCUS columns below are scalar, which is true of the
+# specification itself. Four are not: Labels, Credits, ResourceTags and
+# Project.Ancestors are repeated records - the shape a real Google Cloud export
+# uses for its "x_" extensions - and each is modelled as a nested data object
+# further down, beside the scalar Tags that json_value reads.
 
 version: 1.0
 
@@ -354,9 +355,10 @@ dataObjects:
   Charge Credits:
     nestedIn: {dataObject: Charges, column: Credits}
     description: >-
-      One row per credit applied to a charge. Five fields and no key among
-      them, which is why an accessor keyed on a name cannot read it - and it
-      carries an amount, so it is a second fact at its own grain.
+      One row per credit applied to a charge. Four fields - Id, Type, Name,
+      Amount - and none of them a key, which is why an accessor keyed on a name
+      cannot read it. It carries an amount, so it is a second fact at its own
+      grain. Google's own x_Credits carries five, adding FullName.
     columns:
       Credit Id:
         code: Id

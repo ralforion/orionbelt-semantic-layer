@@ -14,9 +14,12 @@ only meet at ``billing_periods``. That is what makes invoice reconciliation
 ("does what we were charged match what we were invoiced?") a multi-fact
 question, and it is the case the composite fact layer exists to answer.
 
-Only standard FOCUS columns are generated - every column here is scalar, which
-is true of the specification itself. Provider-specific extensions (the ``x_``
-columns in a real Google Cloud export) are nested and are not modelled here.
+Standard FOCUS columns are scalar, which is true of the specification itself.
+Four columns here are not, and deliberately: ``Labels``, ``Credits``,
+``ResourceTags`` and ``Project`` are repeated records, the shape a real Google
+Cloud export uses for its ``x_`` extensions and AWS CUR for its tags. They sit
+*beside* the scalar ``Tags`` rather than replacing it, so the demo carries both
+shapes and a model can show the accessor each one needs.
 
 The dataset is written as **raw JSONL first**, one JSON object per line under
 ``examples/finops_data/``, and only then loaded into DuckDB. That ordering is
@@ -25,9 +28,10 @@ and the files stay on disk afterwards so they can be opened, grepped and diffed
 before anything is modelled.
 
 ``charges.jsonl`` carries ``Tags`` as a **nested JSON object**, which is what a
-real export looks like. The load flattens it back to JSON text so the model's
-``json_value`` calls can read it; keeping it a DuckDB STRUCT would need the
-nested-column support that does not exist yet.
+real export looks like, and the load flattens it back to JSON text so the
+model's ``json_value`` calls can read it. The four repeated columns beside it
+load as real DuckDB STRUCT arrays and are read by unnesting them, so the demo
+carries the JSON shape and the repeated-record shape side by side.
 
 Run:
     uv run python scripts/build_finops_duckdb.py

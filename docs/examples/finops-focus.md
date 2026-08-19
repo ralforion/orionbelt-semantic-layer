@@ -55,7 +55,7 @@ It writes the **raw export first**, one JSON object per line under `examples/fin
 }
 ```
 
-`Tags` is a **nested object** in the file, as a real export carries it. The load turns it back into JSON *text*, which is what the model's `json_value` calls read; keeping it a DuckDB `STRUCT` would need nested-column support that does not exist yet.
+`Tags` is a **nested object** in the file, as a real export carries it. The load turns it back into JSON *text*, which is what the model's `json_value` calls read. The four repeated columns beside it - `Labels`, `Credits`, `ResourceTags` and `Project` - are loaded as real DuckDB `STRUCT` arrays instead, and read as [nested data objects](#repeated-columns-labels-credits-and-folders). The demo carries both shapes on purpose.
 
 `charges.jsonl` is about 20 MB and is gitignored, so a three-record excerpt is committed at `examples/finops_charges_sample.json` for anyone who has not run the generator. The result is five tables in a `focus` schema - `charges`, `invoice_details`, `commitments`, `providers`, `billing_periods` - holding six months of synthetic multi-cloud billing that conforms to FOCUS column names and allowed values, with a slice of rows deliberately left untagged. The database is named for the domain, the schema for the specification its tables conform to.
 
@@ -340,9 +340,11 @@ saying so.
 
 ### A measure on the array itself
 
-`Credits` carries an amount, so it is a second fact at its own grain - five
-fields and no key among them, which is exactly what a key/value accessor cannot
-read. Each credit line counts once, including two identical lines on one charge:
+`Credits` carries an amount, so it is a second fact at its own grain - four
+fields (`Id`, `Type`, `Name`, `Amount`) and none of them a key, which is exactly
+what a key/value accessor cannot read. Google's own `x_Credits` carries five,
+adding `FullName`. Each credit line counts once, including two identical lines
+on one charge:
 
 ```yaml
 select:
