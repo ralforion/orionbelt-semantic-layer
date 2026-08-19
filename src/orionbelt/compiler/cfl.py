@@ -640,6 +640,20 @@ class CFLPlanner:
             }
             leg_required.add(obj_name)
             leg_required.update(filter_objects)
+            # A leg builds its own FROM out of tables, and a nested object has
+            # none: its rows are an array column reached by an unnest, which no
+            # leg knows how to carry. A query that *selects* from one is refused
+            # in resolution; what reaches here is a static model filter naming
+            # one, which is documented as skipped when a plan cannot reach its
+            # object rather than fatal. Dropping it from the leg is what makes
+            # the existing filter-applicability check below skip the predicate,
+            # instead of ``build_join_condition`` raising on a step that has no
+            # columns by design.
+            leg_required = {
+                name
+                for name in leg_required
+                if not (o := model.data_objects.get(name)) or not o.is_nested
+            }
             # Include objects referenced by measure expressions, but only
             # those reachable from this leg's fact — cross-fact filter
             # tables would otherwise pull unrelated facts into the leg.

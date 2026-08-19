@@ -25,7 +25,13 @@ from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.base import UnsupportedNestedAccessError
 from orionbelt.dialect.registry import DialectRegistry
-from orionbelt.models.query import FilterOperator, QueryFilter, QueryObject, QuerySelect
+from orionbelt.models.query import (
+    FilterOperator,
+    QueryFilter,
+    QueryObject,
+    QuerySelect,
+    Subquery,
+)
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.models.warnings import WarningCode
 from orionbelt.parser import ReferenceResolver, TrackedLoader
@@ -374,6 +380,52 @@ class TestWhatIsRefused:
         with pytest.raises(ResolutionError) as excinfo:
             _compile(model, ["Part Name"], ["Total Cost"], dialect)
         assert any(e.code == "NESTED_WITHIN_NESTED_UNSUPPORTED" for e in excinfo.value.errors)
+
+    def test_an_exists_subquery_targeting_one(self, model: SemanticModel) -> None:
+        """A correlated subquery has nowhere to select from and nothing to
+        correlate on: the rows exist only inside their parent's, which is what
+        makes the ordinary join work without either.
+
+        Structured rather than raised. Before the containment edge there was no
+        path to walk, so this failed as NO_JOIN_PATH_TO_SUBQUERY by accident;
+        with the edge it walked on and hit ``qualify_table``, whose
+        ``UnrenderableDataObjectError`` routers hand back as a 500.
+        """
+        with pytest.raises(ResolutionError) as excinfo:
+            CompilationPipeline().compile(
+                QueryObject(
+                    select=QuerySelect(dimensions=[], measures=["Total Cost"]),
+                    where=[
+                        QueryFilter(
+                            field="Charges.Cost",
+                            op=FilterOperator.EXISTS,
+                            subquery=Subquery(data_object="Charge Labels"),
+                        )
+                    ],
+                ),
+                model,
+                "duckdb",
+            )
+        assert any(e.code == "NESTED_OBJECT_IN_SUBQUERY" for e in excinfo.value.errors)
+
+    def test_a_static_filter_on_one_does_not_refuse_unrelated_queries(self) -> None:
+        """A static model filter is a property of the model, not of the query.
+
+        One naming an object a plan cannot reach is documented as skipped rather
+        than fatal, so counting them in the multi-fact refusal made a single
+        nested static filter break every union query in the model - including
+        the ones that never go near it.
+        """
+        model = _load(
+            _with_second_fact(MODEL_YAML)
+            + """filters:
+  - dataObject: Charge Labels
+    column: Label Key
+    operator: equals
+    value: team
+"""
+        )
+        assert _compile(model, [], ["Total Cost", "Budget Amount"]).sql
 
     def test_a_nested_object_in_a_union_leg(self) -> None:
         """CFL builds one leg per independent fact, each selecting from a table

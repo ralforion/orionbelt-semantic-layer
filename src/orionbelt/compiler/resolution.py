@@ -868,16 +868,20 @@ class QueryResolver:
             else:
                 ctx.result.dimensions_exclude = True
 
-        # Every object this query touches, including the ones only a predicate
-        # names. A WHERE filter is resolved much later, so a guard reading
+        # Every object this *query* names, including the ones only a predicate
+        # does. A WHERE filter is resolved much later, so a guard reading
         # ``required_objects`` alone sees none of them - and a filter is exactly
-        # how a nested object reaches a query it projects nothing from.
-        touched_objects = (
-            ctx.result.required_objects
-            | where_filter_objects
-            | {mf.data_object for mf in model.filters}
+        # how a nested object reaches a query that projects nothing from it.
+        #
+        # A static model filter is deliberately not counted. It is a property of
+        # the model rather than of the query, and one naming an object this plan
+        # cannot reach is documented as skipped rather than fatal
+        # (``test_unreachable_filter_silently_ignored``). Counting them made a
+        # single nested static filter refuse every multi-fact query in the
+        # model, including the ones that never go near it.
+        self._reject_unsupported_nested_shapes(
+            ctx, ctx.result.required_objects | where_filter_objects
         )
-        self._reject_unsupported_nested_shapes(ctx, touched_objects)
 
         # 4. Validate usePathNames before building join graph
         self._validate_use_path_names(ctx, query.use_path_names)
