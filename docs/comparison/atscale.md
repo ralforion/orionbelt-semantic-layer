@@ -22,6 +22,7 @@ AtScale is the only peer in this comparison set that natively speaks **MDX**, th
 | Source of truth | YAML model files | Models authored in AtScale Design Center; deployed to AtScale Engine |
 | Top-level constructs | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `data models` (cubes), `dimensions` (with hierarchies, levels, attributes), `measures`, `calculated members`, `perspectives`, `aggregates`, `security` |
 | OLAP primitives | Time grain on dimensions, no first-class hierarchies | First-class **hierarchies** (multiple per dimension), **levels**, **parent-child** dimensions, **ragged** hierarchies |
+| Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten upstream; the modeller works from relational tables |
 | Templating | None | Limited; some calculated-member expressions |
 | Runtime | OSS, self-hosted (single Python service) | Proprietary AtScale Engine — on-prem, cloud-hosted, or AtScale-managed |
 

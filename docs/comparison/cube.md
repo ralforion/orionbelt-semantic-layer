@@ -22,6 +22,7 @@ Cube is the closest peer to OBSL in the OSS space — both are self-hostable, bo
 | Format | Declarative YAML (`OBML`) | YAML or JavaScript (`.yml` or `.js` cube definitions); supports Twig/Jinja templating |
 | Source of truth | YAML model files | `model/cubes/*.{yml,js}` and `model/views/*.{yml,js}` files |
 | Top-level constructs | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `cubes` (with `measures`, `dimensions`, `segments`, `joins`, `pre_aggregations`), `views` (combining cubes), `pre_aggregations` |
+| Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten in the cube's `sql` / a pre-aggregation |
 | Object scoping | Each `DataObject` has `columns:`; dimensions/measures/metrics live at model scope | Measures and dimensions live *inside* each `cube`; `view`s expose a curated subset for end users |
 | Templating | None (static YAML) | Twig (Jinja2-like) — `COMPILE_CONTEXT` for compile-time multi-tenancy, dynamic SQL, masking |
 | Runtime | OSS, self-hosted (single Python service) | OSS Cube Core (Node.js + Cube Store + optional Redis) **or** Cube Cloud (managed, paid). Since v1.7 the **Tesseract** planner and the native query orchestrator are on by default |
@@ -56,20 +57,20 @@ Pre-aggregations are materialized rollups that Cube builds, refreshes, and route
 
 ```yaml
 cubes:
- - name: orders
- pre_aggregations:
- - name: monthly_revenue
- measures: [total_revenue, order_count]
- dimensions: [status]
- time_dimension: created_at
- granularity: month
- partition_granularity: month
- refresh_key:
- every: 1 hour
- build_range_start:
- sql: SELECT DATE('2020-01-01')
- build_range_end:
- sql: SELECT NOW()
+  - name: orders
+    pre_aggregations:
+      - name: monthly_revenue
+        measures: [total_revenue, order_count]
+        dimensions: [status]
+        time_dimension: created_at
+        granularity: month
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour
+          build_range_start:
+            sql: SELECT DATE('2020-01-01')
+          build_range_end:
+            sql: SELECT NOW()
 ```
 
 Capabilities:

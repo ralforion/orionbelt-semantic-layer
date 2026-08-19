@@ -22,7 +22,10 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | First-class window metric (rank / lag / lead / ntile / first_value / last_value) | ✅ declarative | ❌ | Per-query calculations | Table calcs (UI-side) | Via `type: number` + raw SQL | Via MDX calculated members |
 | Statistical / regression aggregates as first-class measure types (`stddev`, `variance`, `corr`, `covar_*`, `regr_*`) | ✅ 9 declarative aggregations (arity-validated, per-dialect gated) | Basic `stddev` only as first-class | Basic `stddev` only as first-class | Via `type: number` + raw SQL | Via `type: number` + raw SQL | Via MDX calculated members |
 | String / list aggregation (`listagg`) | ✅ first-class `listagg` (per-dialect `STRING_AGG`/`GROUP_CONCAT`/`LISTAGG`/`arrayStringConcat`; `DISTINCT` + `WITHIN GROUP` ordering) | ❌ no string-agg measure type | ✅ `string_agg` helper | ✅ `list` measure type | ✅ generic `string` type wraps aggregate SQL | ❌ semi-additive only |
+| Portable scalar-function catalog in expressions | ✅ **39 entries** (string, numeric, conditional, date/time, JSON). The *answer* is pinned, not just the spelling — see [below](#what-portable-means-here) | ✅ cross-database macros (`dateadd`, `datediff`, `split_part`, `listagg`, …) | ✅ standard function set, implemented per dialect | ❌ native SQL per dialect | ❌ raw SQL passthrough | MDX function layer |
+| JSON access in expressions | ✅ `json_value(x, path)` on all 8 dialects, with one meaning: NULL for a missing path **and** for one pointing at an object or array | Via warehouse SQL | Via warehouse SQL | Via warehouse SQL | Via warehouse SQL | Via warehouse SQL |
 | Conversion / funnel metrics | ❌ | ✅ | Patterns | Patterns | Patterns | Patterns |
+| Same number on every engine (zero divisor, overflow, integer `AVG`/`SUM`) | ✅ pinned and executed: `x/0` is NULL everywhere, an overflowing cast never returns a rounded-down number, integer averages stay exact — see [below](#what-portable-means-here) | Inherits engine semantics | Inherits engine semantics | Inherits engine semantics | Inherits engine semantics | Inherits engine semantics |
 | Symmetric aggregates | ❌ (uses CFL) | ❌ | ✅ | ✅ | ✅ | ✅ (OLAP) |
 | Hierarchical subtotals (`WITH ROLLUP` / `WITH CUBE`) | ✅ first-class in **Semantic QL** (trailing modifier + `GROUPING()` flag columns; dialect-portable across all 8 drivers) | ❌ presentation concern | ❌ | UI-only checkbox; no LookML construct | "Rollup" means pre-aggregation tables, not the SQL operator | Via MDX/DAX |
 | Natural SQL query surface | ✅ **Semantic QL** (OBSQL) with explicit `MEASURE()` marker + aggregate-wrap matching — over **Arrow Flight SQL AND PostgreSQL wire** (v2.5.0+) | ❌ | n/a (Malloy DSL) | n/a (LookML DSL) | ✅ Cube SQL API (Postgres-wire) | n/a (MDX/DAX) |
@@ -32,10 +35,11 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | Multi-path joins (between same pair) | ✅ per-query selection via `pathName` + `usePathNames` | ❌ no path-name primitive | ❌ aliased sources (model-time) | `from` aliasing (model-time) | Dijkstra + member-type priority heuristic; pin via `views` | Role-playing dimensions (model-time) |
 | Composability discovery — given a partial query, which artefacts can still be added | ✅ **[ACR](../guide/composability.md)** (`composables` endpoint) — bidirectional, member-level, **fanout-aware** and CFL-aware; governed REST surface over a multi-fact model + guided UI highlighting | Partial — programmatic but **metric-anchored & asymmetric**: dimensions-for-metrics (`mf list dimensions --metrics`, GraphQL `dimensionsPaginated(metrics:)`, JDBC `metrics_for_dimensions`) | ✅ headless query-builder `ASTQuery.getInputSchema()` ("fields that can be added") — **editor-oriented, single-rooted `source` scope** | ❌ only static per-field attributes via `lookml_model_explore`; picker not selection-aware | ❌ `/meta` is a static schema dump; incompatible members surface only as a query-time error | ❌ implicit in cube relationships / conformed dimensions; no composability API |
 | Nested / hierarchical results | ❌ | ❌ | ✅ (`nest`) | ❌ | ❌ | ❌ |
+| Repeated columns (`ARRAY<STRUCT>`) queryable in the model | ✅ **`nestedIn`** — an array column is declared as a data object and unnested per dialect on 7 engines (Dremio reads a view instead). Its keys stay *data*, so "spend by label key" needs no column per key — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten upstream in dbt | ✅ first-class — a repeated record is a built-in `join_many`, read with dot notation | Via an `UNNEST` derived table | Flatten in the cube's SQL | Flatten upstream |
 | OLAP hierarchies (multi-level, parent-child) | ❌ | ❌ | ❌ | Partial | Partial — level-based `hierarchies` + view folders; no parent-child / ragged | ✅ first-class |
 | Custom granularities / fiscal calendars | ❌ fixed `TimeGrain` set | ✅ `custom_granularities` on a time spine | ❌ | Via `dimension_group` + derived tables | ✅ custom granularities + calendar cubes (4-5-4, fiscal) | ✅ first-class time dimensions |
 | MDX / Excel pivot tables | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ unique |
-| RDF/SPARQL graph view | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| RDF/SPARQL view of the model itself | ✅ the model exports as an OWL + SHACL graph and answers read-only SPARQL, so *"which measures read this column?"* is a query rather than a code search | ❌ | ❌ | ❌ | ❌ | ❌ |
 | MCP server | ✅ | ✅ (dbt-mcp) | ✅ (Publisher) | ✅ managed Looker MCP server + MCP Toolbox (2026) | ✅ | ✅ |
 | Interactive playground / UI | ✅ Gradio (incl. RDF ontology graph) | dbt Cloud Studio (paid) | VS Code + Publisher | ✅ Looker IDE | Cube Playground / Studio | ✅ Design Center |
 | Notebook authoring (VS Code / Colab) | ✅ `quickstart.ipynb` runs natively in VS Code or Colab | Via dbt-cli in any notebook | Notebook tutorials | ❌ | ❌ | ❌ |
@@ -55,6 +59,37 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 - [vs. LookML / Looker](lookml.md) — the proprietary modeling language behind Google Cloud Looker
 - [vs. Cube](cube.md) — the OSS production semantic layer with pre-aggregations and multi-API parity (Postgres wire, REST, GraphQL)
 - [vs. AtScale](atscale.md) — the enterprise universal semantic layer with native MDX/DAX for Excel and Power BI live connections
+
+## What "portable" means here
+
+Three rows above claim something stronger than "it compiles on every engine", and
+they are worth unpacking, because the usual meaning of portable is only the first
+of them.
+
+**The same call.** Most tools give you a function that exists everywhere. That is
+spelling: `split_part` here, `SPLIT_PART` there, a macro somewhere else.
+
+**The same answer.** Engines genuinely disagree about results, and a catalog that
+only fixes spelling passes the disagreement through to your dashboard:
+
+| expression | what engines do | what OBSL returns |
+|---|---|---|
+| `round(2.5)` | ClickHouse rounds ties to even and answers 2 | **3**, everywhere — the call is rewritten arithmetically where needed |
+| `trunc(-1.9)` | Databricks has no numeric truncation at all | **-1**, everywhere |
+| `greatest(1, NULL, 3)` | four engines skip the NULL and answer 3 | **NULL**, everywhere |
+| `length('äbcd')` | ClickHouse and MySQL count bytes and answer 5 | **4** — characters |
+| `x / 0` | `inf` on one engine, an error on four, NULL on the rest | **NULL**, everywhere |
+| `json_value(doc, '$.a')` where `a` is an object | four engines return the serialized JSON | **NULL** — the path did not reach a scalar |
+
+**Checked by running it.** Each row is executed against live engines and asserted
+against the documented value, rather than derived from vendor documentation. That
+distinction earned its place: several of the behaviours above are not what the
+docs of the engine in question say.
+
+If you would rather have the engine's own behaviour, you still can — the catalog
+covers the calls it lists, and anything else passes through. Setting
+`expressionMode: portable` flips that, turning an uncatalogued call into an error
+so an engine dependency cannot be picked up by accident.
 
 ## Topology: a recurring theme
 
