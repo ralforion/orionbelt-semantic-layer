@@ -152,6 +152,15 @@ class ComposabilityResolver:
         self._reach: dict[str, set[str]] = {
             obj: {obj} | self.graph.descendants(obj) for obj in model.data_objects
         }
+        # The same, for a plan that can only *join*. A union leg is one: it
+        # builds a star out of tables and has no unnest to reach a nested object
+        # with, nor anything sitting behind one. Kept separate rather than
+        # replacing ``_reach`` because a star planner does unnest, so a measure
+        # reaching across a containment edge is answerable on its own and only
+        # unanswerable as a leg.
+        self._reach_no_unnest: dict[str, set[str]] = {
+            obj: {obj} | self.graph.descendants_without_unnest(obj) for obj in model.data_objects
+        }
 
     # -- reachability helpers ------------------------------------------------
 
@@ -160,6 +169,20 @@ class ComposabilityResolver:
         objects = objects & set(self._reach)
         if not objects:
             return True
+        return any(objects <= reach for reach in self._reach.values())
+
+    def _needs_unnest_to_connect(self, objects: set[str]) -> bool:
+        """*objects* hang together, but only across a containment edge.
+
+        Distinguished from genuinely independent facts, which no root reaches at
+        all: these have one, reached by unnesting. A star can follow it and a
+        union leg cannot, which is the whole difference this answers.
+        """
+        objects = objects & set(self._reach)
+        if len(objects) <= 1:
+            return False
+        if any(objects <= reach for reach in self._reach_no_unnest.values()):
+            return False
         return any(objects <= reach for reach in self._reach.values())
 
     def _reaches_all(self, fact: str, targets: set[str]) -> bool:
@@ -286,7 +309,9 @@ class ComposabilityResolver:
                 continue
             if self._measure_blocked(name, anchor):
                 continue
-            status = self._measure_status(sources, anchor, spine)
+            status = self._measure_status(
+                sources, anchor, spine, measure_join_requirements(self.model, name)
+            )
             if status == "direct":
                 measures.append(name)
             elif status == "cfl":
@@ -302,7 +327,9 @@ class ComposabilityResolver:
                 continue
             if self._metric_blocked(name, anchor):
                 continue
-            status = self._measure_status(sources, anchor, spine)
+            status = self._measure_status(
+                sources, anchor, spine, metric_join_requirements(self.model, name)
+            )
             if status == "direct":
                 metrics.append(name)
             elif status == "cfl":
@@ -365,12 +392,32 @@ class ComposabilityResolver:
         referenced = {obj for objs in auxiliary_references(measure).values() for obj in objs}
         outside = referenced - sources
 
+        # Reaching any one of the objects this measure forces into the query
+        # means unnesting, which replicates the others. That is the case the
+        # rewrite cannot express - it has no way to know which grain to
+        # deduplicate on - so the compiler refuses, and ACR must not advertise
+        # what it refuses.
+        #
+        # ``referenced`` counts, not only ``sources``. A ``withinGroup`` sort key
+        # and a measure ``filter`` read no value and still force their object
+        # into the query, so one sitting behind a containment edge replicates the
+        # measure's own source exactly as a value column would - and judging on
+        # the value columns alone said this measure was untouched.
+        if self._needs_unnest_to_connect(sources | referenced):
+            return "refused"
+
         # Everything that forces a join: the callers' drivers, plus whatever
         # this measure's own clauses drag in.
         forcing = drivers | outside
         replicated = {
             obj for obj in sources if any(obj in self.graph.descendants(d) for d in forcing)
         }
+        # An unnest replicates the other way round: the array multiplies the row
+        # that *contains* it, so a driver nested inside a source replicates that
+        # source rather than the reverse. Reading the descendant relation alone
+        # missed it entirely and advertised a parent-side measure as untouched.
+        unnesting = {d for d in forcing if self.model.unnest_root(d) != d}
+        replicated |= {obj for obj in sources if any(self._nested_under(d, obj) for d in unnesting)}
         if sources != replicated:
             # Not replicated here, so the pass never runs on it.
             return None
@@ -379,7 +426,28 @@ class ComposabilityResolver:
         # deduplicated: the rewrite cannot express either and raises.
         if len(sources) > 1 or outside:
             return "refused"
+
+        # Deduplicating needs one row per row of the source, and only a declared
+        # key says which rows those are. Reachable only through an unnest: an
+        # ordinary join always names the columns it matches on, which serve as
+        # the identity where no primaryKey is declared.
+        source = next(iter(sources))
+        if any(self._nested_under(d, source) for d in unnesting) and not self._has_key(source):
+            return "refused"
         return "dedup"
+
+    def _nested_under(self, name: str, ancestor: str) -> bool:
+        """Whether *name* is a nested object contained, at any depth, in *ancestor*."""
+        obj = self.model.data_objects.get(name)
+        while obj is not None and obj.nested_in is not None:
+            if obj.nested_in.data_object == ancestor:
+                return True
+            obj = self.model.data_objects.get(obj.nested_in.data_object)
+        return False
+
+    def _has_key(self, name: str) -> bool:
+        obj = self.model.data_objects.get(name)
+        return obj is not None and any(col.primary_key for col in obj.columns.values())
 
     def _measure_blocked(self, name: str, anchor: set[str]) -> bool:
         """A measure is only excluded when the rewrite would refuse it outright."""
@@ -453,15 +521,35 @@ class ComposabilityResolver:
         return self._has_common_root(spine | needed)
 
     def _measure_status(
-        self, source_objects: set[str], anchor: set[str], spine: set[str]
+        self,
+        source_objects: set[str],
+        anchor: set[str],
+        spine: set[str],
+        requirements: set[str] | None = None,
     ) -> str | None:
-        """Classify a measure/metric as 'direct', 'cfl', or None (incompatible)."""
+        """Classify a measure/metric as 'direct', 'cfl', or None (incompatible).
+
+        *requirements* are objects the measure needs **joined** without reading a
+        value from - a ``withinGroup`` sort key, a measure ``filter``. They bear
+        on whether a leg can carry it exactly as its value columns do, since the
+        leg has to join them all the same.
+        """
         if not source_objects:
             # No resolvable source (e.g. COUNT(*)-style): always combinable.
             return "direct"
         # Direct: the whole query stays single-fact (a common root covers all).
         if self._has_common_root(anchor | source_objects):
             return "direct"
+        # A leg is a star built out of tables, so it cannot carry a measure that
+        # needs an unnest to be computed at all - whether the object *is* nested
+        # or merely sits behind one. ``allowFanOut`` does not rescue either: the
+        # leg cannot reach the object at all, rather than reaching it too often.
+        needed = source_objects | (requirements or set())
+        if self._needs_unnest_to_connect(needed) or any(
+            (obj := self.model.data_objects.get(name)) is not None and obj.is_nested
+            for name in needed
+        ):
+            return None
         # CFL: each source fact independently reaches the current grain, so it
         # can join as a separate UNION ALL leg. With no grain yet, independent
         # facts still combine as grand-total legs.

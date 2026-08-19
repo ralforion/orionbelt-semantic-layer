@@ -25,7 +25,9 @@ from orionbelt.ast.nodes import (
     Select,
     UnionAll,
 )
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables
 from orionbelt.compiler.graph import JoinGraph
+from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import ResolvedField, ResolvedQuery, make_column_expr
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _nulls_last
 from orionbelt.models.semantic import DataObject, SemanticModel
@@ -45,12 +47,12 @@ class RawPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
-        dialect: Dialect | None = None,  # noqa: ARG002 — kept for parity with other planners
+        dialect: Dialect | None = None,
         union_by_name: bool = False,
     ) -> QueryPlan:
         if resolved.requires_cfl:
             return self._plan_cfl(resolved, model, qualify_table, union_by_name=union_by_name)
-        return self._plan_single_fact(resolved, model, qualify_table)
+        return self._plan_single_fact(resolved, model, qualify_table, dialect)
 
     # ------------------------------------------------------------------
     # Single-fact path
@@ -61,6 +63,7 @@ class RawPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         builder = QueryBuilder()
         graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
@@ -98,12 +101,15 @@ class RawPlanner:
             obj = model.data_objects.get(new_object)
             if not obj:
                 continue
-            on_expr = graph.build_join_condition(step)
-            builder.join(
-                table=qualify(obj),
-                on=on_expr,
-                join_type=step.join_type,
-                alias=new_object,
+            emit_join_step(
+                builder=builder,
+                step=step,
+                new_object=new_object,
+                obj=obj,
+                graph=graph,
+                qualify=qualify,
+                dialect=dialect,
+                warnings=resolved.warnings,
             )
             joined.add(new_object)
 
@@ -153,7 +159,7 @@ class RawPlanner:
         leg_infos: list[CflLegInfo] = []
 
         for root in sorted(leg_roots):
-            reachable = graph.descendants(root) | {root}
+            reachable = graph.descendants_without_unnest(root) | {root}
             leg_required = {f.object_name for f in resolved.fields if f.object_name in reachable}
             leg_required.add(root)
             leg_required.update(filter_objects & reachable)
@@ -244,7 +250,7 @@ class RawPlanner:
         roots = set(field_objects)
         for src in field_objects:
             for other in field_objects:
-                if other != src and src in graph.descendants(other):
+                if other != src and src in graph.descendants_without_unnest(other):
                     roots.discard(src)
                     break
         return roots
@@ -357,36 +363,16 @@ class RawPlanner:
 
     @staticmethod
     def _collect_table_refs(expr: Expr, tables: set[str]) -> None:
-        """Walk an expression tree collecting referenced table names.
+        """Collect the data object every column reference in *expr* belongs to.
 
-        Mirrors ``CFLPlanner._collect_table_refs`` for the subset of node
-        types raw-mode WHERE filters can produce. Imported lazily to avoid
-        a circular import with ``compiler/cfl.py``.
+        The complete walk in :mod:`expr_rewrite`, which is what the CFL planner
+        asks too. This used to be a hand-rolled ``isinstance`` chain over the
+        node types raw-mode filters "can produce", and the whole point of the
+        shared walk is that such a list is never right for long: it covered
+        neither ``CASE`` nor ``CAST``, and a node it does not name contributes
+        no objects at all rather than failing loudly.
         """
-        from orionbelt.ast.nodes import (
-            Between,
-            BinaryOp,
-            FunctionCall,
-            InList,
-            IsNull,
-            RelativeDateRange,
-            UnaryOp,
-        )
-
-        if isinstance(expr, ColumnRef) and expr.table:
-            tables.add(expr.table)
-        elif isinstance(expr, BinaryOp):
-            RawPlanner._collect_table_refs(expr.left, tables)
-            RawPlanner._collect_table_refs(expr.right, tables)
-        elif isinstance(expr, UnaryOp):
-            RawPlanner._collect_table_refs(expr.operand, tables)
-        elif isinstance(expr, (InList, IsNull, Between)):
-            RawPlanner._collect_table_refs(expr.expr, tables)
-        elif isinstance(expr, RelativeDateRange):
-            RawPlanner._collect_table_refs(expr.column, tables)
-        elif isinstance(expr, FunctionCall):
-            for arg in expr.args:
-                RawPlanner._collect_table_refs(arg, tables)
+        collect_referenced_tables(expr, tables)
 
 
 __all__ = ["RawPlanner"]

@@ -24,6 +24,7 @@ from orionbelt.ast.nodes import (
     IsNull,
     Join,
     Literal,
+    NestedField,
     OrderByItem,
     RawSQL,
     RegexMatch,
@@ -33,6 +34,7 @@ from orionbelt.ast.nodes import (
     SubqueryExpr,
     UnaryOp,
     UnionAll,
+    Unnest,
     WindowFunction,
 )
 from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
@@ -169,6 +171,23 @@ class CrossColumnOrderNotSupportedError(UnsupportedAggregationError):
         )
 
 
+class UnsupportedNestedAccessError(Exception):
+    """A dialect cannot unnest an array column in its FROM clause."""
+
+    def __init__(self, dialect: str, alias: str, detail: str | None = None) -> None:
+        super().__init__(
+            f"Dialect '{dialect}' has no FROM-clause unnest, so data object "
+            f"'{alias}' cannot take its rows from a parent's array column here. "
+            + (
+                detail
+                or "Declare 'code' alongside 'nestedIn' to read a flattening view on this dialect."
+            )
+        )
+        self.dialect = dialect
+        self.alias = alias
+        self.detail = detail
+
+
 class UnsupportedFunctionError(Exception):
     """Raised when a dialect cannot render a catalog scalar function.
 
@@ -247,6 +266,13 @@ class DialectCapabilities:
     # shorter on queries with computed dimensions, where the explicit form
     # repeats the full expression. Postgres, MySQL, Dremio do not support it.
     supports_group_by_all: bool = False
+    # A FROM-clause unnest of an array column. True everywhere but Dremio,
+    # whose ``FLATTEN`` is a projection function and needs a derived table
+    # rather than an extension of the FROM clause. The planner reads this to
+    # decide between the unnest and a nested object's ``code`` fallback,
+    # because that choice has to be made while the plan is built rather than
+    # when it is rendered.
+    supports_from_unnest: bool = True
     unsupported_aggregations: list[str] = field(default_factory=list)
     # Canonical names from the portable function catalog
     # (``models/functions.py``) this engine has no equivalent for. Empty for
@@ -516,6 +542,56 @@ class Dialect(ABC):
         """
         return None
 
+    #: Whether a backslash escapes the next character inside a string literal.
+    #:
+    #: False is the SQL standard: a backslash is an ordinary character and a
+    #: quote is escaped by doubling it. True on MySQL, ClickHouse, BigQuery,
+    #: Snowflake and Databricks, where a backslash starts an escape sequence and
+    #: has to be doubled itself.
+    #:
+    #: Measured on all seven reachable engines, and each convention is *wrong*
+    #: on the other side rather than merely unnecessary: doubling a quote breaks
+    #: on BigQuery, which reads ``'it''s'`` as two concatenated literals and
+    #: raises, and on Databricks, which silently returns ``its``. Backslash
+    #: escaping breaks on Postgres and DuckDB, which take the backslash
+    #: literally and would double it.
+    backslash_escapes_strings: bool = False
+
+    def quote_string_literal(self, value: str) -> str:
+        """*value* as a quoted string literal for this engine.
+
+        The single place a string becomes SQL text, so a filter value, a
+        LISTAGG separator and a time-zone name cannot disagree about escaping.
+        They did: every one of them doubled the quote and left the backslash
+        alone, which is right on two engines out of seven.
+
+        Measured, with the old rendering: ``a\\b`` came back as ``a\x08`` - a
+        backspace - on MySQL, ClickHouse, BigQuery, Snowflake and Databricks,
+        and ``C:\\temp\\x`` raised on three of them. A Windows path, a regex or
+        an escaped delimiter in a filter was silently wrong on five engines.
+        """
+        if self.backslash_escapes_strings:
+            escaped = (
+                value.replace("\\", "\\\\")
+                .replace("'", "\\'")
+                # A quoted string cannot span lines on BigQuery: a real newline
+                # or carriage return closes it, and the query fails with
+                # "Unclosed string literal". Measured, it is the only engine of
+                # the seven that minds - the other six take a raw newline, tab,
+                # form feed or control byte and hand it back unchanged. Written
+                # as escapes for all five backslash dialects rather than only
+                # BigQuery, because in this convention that is simply how a
+                # control character is spelled, and all five read it back.
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            )
+        else:
+            # Standard SQL has no escape sequences here, so a control character
+            # rides through literally. Measured working on Postgres, DuckDB and
+            # Dremio, including a newline: a quoted string may span lines.
+            escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.
 
@@ -575,6 +651,86 @@ class Dialect(ABC):
     @abstractmethod
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         """Wrap a column expression for a grain other than a week."""
+
+    def render_unnest(self, node: Unnest) -> str:
+        """A FROM-clause fragment that unnests a parent's array column.
+
+        The default is the comma-lateral every engine but four accepts::
+
+            , UNNEST(`c`.`labels`) AS `l`
+
+        with the outer form spelled as a ``LEFT JOIN ... ON TRUE``, which keeps
+        a parent row whose array is empty. Measured on BigQuery, DuckDB and
+        Postgres; ClickHouse, Databricks, MySQL and Snowflake override.
+
+        Dremio has no FROM-clause form at all - ``FLATTEN`` is a projection
+        function, so the unnest goes in the SELECT list of a derived table -
+        and refuses here rather than emitting something that will not parse.
+        """
+        source = f"UNNEST({self.unnest_path(node)})"
+        alias = self.quote_identifier(node.alias)
+        if node.outer:
+            return f"LEFT JOIN {source} AS {alias} ON TRUE"
+        return f", {source} AS {alias}"
+
+    def nested_field(self, alias: str, field: str, sql_type: str | None = None) -> Expr:
+        """How a column of an unnested element is addressed.
+
+        Ordinary column access almost everywhere: measured, ``L."Key"`` reads
+        the field on BigQuery, DuckDB, Postgres, MySQL, ClickHouse and
+        Databricks, because the alias *is* the element. Snowflake overrides,
+        because there the alias is a row whose ``value`` holds the element as a
+        VARIANT.
+
+        ``sql_type`` is what the field should be read as. Only the VARIANT
+        dialect needs it; the rest carry their own types.
+        """
+        return ColumnRef(name=field, table=alias)
+
+    def render_nested_field(self, node: NestedField) -> Expr:
+        """How a nested object's column is addressed in a plan this dialect built.
+
+        Two different things, depending on which source the planner chose. Where
+        the FROM clause carries an unnest, this is a field of the element -
+        :meth:`nested_field`. Where it cannot, the planner read the object's
+        ``code`` fallback instead and put that table in FROM under the same
+        alias, so the column is an ordinary one and reading it as an element
+        field would name something that does not exist.
+        """
+        if not self.capabilities.supports_from_unnest:
+            return ColumnRef(name=node.field, table=node.alias)
+        return self.nested_field(
+            node.alias, node.field, self.nested_column_type(node.abstract_type)
+        )
+
+    def nested_column_type(self, abstract_type: str | None) -> str:
+        """The SQL type a field of an unnested element is read as.
+
+        Two dialects need one and the other five ignore it: MySQL's
+        ``JSON_TABLE`` declares the shape it extracts rather than inferring it,
+        and Snowflake's VARIANT path has to be cast or a string field comes back
+        with its JSON quotes still on. Both are served by the abstract type map
+        every other cast already goes through, so a nested column is typed the
+        same way an ordinary one is.
+        """
+        return self._resolve_type_name(abstract_type or "string")
+
+    def unnest_path(self, node: Unnest) -> str:
+        """The parent's array column, quoted segment by segment.
+
+        A dotted ``column`` addresses an array inside a struct, and each segment
+        is an identifier in its own right: ``x_Project.Ancestors`` becomes two
+        quoted identifiers joined by a dot, rather than one quoted string
+        containing a dot, which would name a column that does not exist.
+
+        The dotted chain is the majority form, measured on DuckDB, BigQuery,
+        Databricks and ClickHouse. Three engines cannot read it and override:
+        Postgres needs the composite parenthesised, Snowflake needs a VARIANT
+        ``:`` path, and MySQL has to move the member into the JSON path
+        entirely - see :meth:`MySQLDialect.render_unnest`.
+        """
+        parts = [node.parent_alias, *node.column.split(".")]
+        return ".".join(self.quote_identifier(p) for p in parts)
 
     @abstractmethod
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -975,10 +1131,9 @@ class Dialect(ABC):
             rendered = f"{rendered} AT TIME ZONE {self._quote_zone(from_zone)}"
         return self._render_infix(f"{rendered} AT TIME ZONE {self._quote_zone(zone)}")
 
-    @staticmethod
-    def _quote_zone(zone: str) -> str:
+    def _quote_zone(self, zone: str) -> str:
         """A time zone name as a SQL string literal."""
-        return "'" + zone.replace("'", "''") + "'"
+        return self.quote_string_literal(zone)
 
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
         """Default: ``DATE_TRUNC('unit', x)``, unit first and quoted.
@@ -1110,7 +1265,7 @@ class Dialect(ABC):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         result = f"LISTAGG({distinct_sql}{col_sql}, '{escaped_sep}')"
         if order_by:
             ob = ", ".join(self.compile_order_by(o) for o in order_by)
@@ -1315,9 +1470,12 @@ class Dialect(ABC):
         if node.from_:
             parts.append(f"FROM {self.compile_from(node.from_)}")
 
-        # JOINs
+        # JOINs, and the unnests that ride between them
         for join in node.joins:
-            parts.append(self.compile_join(join))
+            if isinstance(join, Unnest):
+                parts.append(self.render_unnest(join))
+            else:
+                parts.append(self.compile_join(join))
 
         # WHERE
         if node.where:
@@ -1450,8 +1608,7 @@ class Dialect(ABC):
             case Literal(value=False):
                 return "FALSE"
             case Literal(value=v) if isinstance(v, str):
-                escaped = v.replace("'", "''")
-                return f"'{escaped}'"
+                return self.quote_string_literal(v)
             case Literal(value=v):
                 return str(v)
             case Star(table=None):
@@ -1462,6 +1619,11 @@ class Dialect(ABC):
                 return self.quote_identifier(name)
             case ColumnRef(name=name, table=table) if table is not None:
                 return f"{self.quote_identifier(table)}.{self.quote_identifier(name)}"
+            case NestedField():
+                # Routed through the dialect rather than rendered here: the
+                # element is a column on six engines and a VARIANT path on
+                # Snowflake, and the planner cannot know which without one.
+                return self.compile_expr(self.render_nested_field(expr))
             case AliasedExpr(expr=inner, alias=alias):
                 return f"{self.compile_expr(inner)} AS {self.quote_identifier(alias)}"
             case FunctionCall(

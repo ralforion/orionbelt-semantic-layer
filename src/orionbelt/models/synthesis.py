@@ -121,6 +121,21 @@ def synthesize_count_measures(model: SemanticModel) -> dict[str, Measure]:
     for object_key, obj in model.data_objects.items():
         if not obj.countable:
             continue
+        if obj.is_nested:
+            # A synthesized count is ``COUNT(*)``, and over an unnest that
+            # counts one row too many: the outer form keeps a parent whose
+            # array is empty by padding it with a single all-NULL element row,
+            # which is a parent without elements rather than an element. There
+            # is no portable way to tell the two apart - the engines expose no
+            # common "this element exists" expression, and a declared column
+            # cannot stand in for one because a real element may hold NULL
+            # there. So a row count over a nested object is something the model
+            # has to declare (``count`` over a column that is never null), not
+            # something synthesis can promise. The unnest is used wherever the
+            # dialect has one, so this holds whether or not ``code`` is
+            # declared: a measure that means two different things on two
+            # engines is worse than one that is absent on both.
+            continue
         name = count_label(object_key, obj, pattern)
         if name in model.measures or name in out:
             continue

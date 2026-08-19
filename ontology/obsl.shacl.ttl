@@ -151,6 +151,27 @@ obsl:ColumnShape a sh:NodeShape ;
 # Join --- a join path between two data objects
 # -----------------------------------------------------------------------------
 
+obsl:NestedSourceShape a sh:NodeShape ;
+    sh:targetClass obsl:NestedSource ;
+    rdfs:label "OBSL Nested Source Shape" ;
+    rdfs:comment "Validates that a nested source names exactly one parent data object and exactly one array column on it." ;
+    sh:property [
+        sh:path obsl:nestedInObject ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class obsl:DataObject ;
+        sh:name "nested in object" ;
+        sh:message "A nested source must reference exactly one parent obsl:DataObject via obsl:nestedInObject."
+    ] ;
+    sh:property [
+        sh:path obsl:nestedInColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:name "nested in column" ;
+        sh:message "A nested source must name exactly one array column on its parent via obsl:nestedInColumn."
+    ] .
+
 obsl:JoinShape a sh:NodeShape ;
     sh:targetClass obsl:Join ;
     rdfs:label "OBSL Join Shape" ;

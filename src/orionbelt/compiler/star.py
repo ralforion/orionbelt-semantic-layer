@@ -18,6 +18,7 @@ from orionbelt.ast.nodes import (
 from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_facts
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import expand_metric_expression
+from orionbelt.compiler.nested import emit_join_step
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
@@ -216,12 +217,15 @@ class StarSchemaPlanner:
             obj = model.data_objects.get(new_object)
             if not obj:
                 continue
-            on_expr = graph.build_join_condition(step)
-            builder.join(
-                table=qualify(obj),
-                on=on_expr,
-                join_type=step.join_type,
-                alias=new_object,
+            emit_join_step(
+                builder=builder,
+                step=step,
+                new_object=new_object,
+                obj=obj,
+                graph=graph,
+                qualify=qualify,
+                dialect=dialect,
+                warnings=resolved.warnings,
             )
             joined.add(new_object)
 

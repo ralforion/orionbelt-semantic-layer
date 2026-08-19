@@ -116,6 +116,8 @@ class BigQueryDialect(Dialect):
         "boolean": "BOOL",
     }
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "bigquery"
@@ -301,7 +303,7 @@ class BigQueryDialect(Dialect):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         inner = f"{distinct_sql}{col_sql}, '{escaped_sep}'"
         if order_by:
             ob = ", ".join(self.compile_order_by(o) for o in order_by)

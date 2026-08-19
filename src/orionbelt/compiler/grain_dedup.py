@@ -70,6 +70,7 @@ from orionbelt.ast.nodes import (
     Literal,
     OrderByItem,
     Select,
+    Unnest,
 )
 from orionbelt.compiler.expr_rewrite import (
     collect_column_refs,
@@ -152,14 +153,30 @@ def replicated_objects(resolved: ResolvedQuery) -> set[str]:
     Reversed steps are skipped: those are the classic fanout that
     :func:`~orionbelt.compiler.fanout.detect_fanout` already rejects, and
     claiming them here would report one problem twice.
+
+    An **unnest** replicates the other way round. Its child is the many side —
+    each element appears exactly once — and it is the *parent* whose row repeats
+    once per element, carrying everything already on that row with it. So the
+    query's whole join tree is replicated except the elements themselves, which
+    is why a nested-side ``SUM`` is right as it stands while a parent-side one
+    counts a charge once per label it happens to have.
     """
     replicated: set[str] = set()
     for step in resolved.join_steps:
+        if step.nested:
+            continue
         if step.reversed:
             continue
         multiplies = step.cardinality in (Cardinality.MANY_TO_ONE, Cardinality.MANY_TO_MANY)
         if multiplies or step.from_object in replicated:
             replicated.add(step.to_object)
+
+    unnested = {step.to_object for step in resolved.join_steps if step.nested}
+    if unnested:
+        in_query = {resolved.base_object} | {
+            name for step in resolved.join_steps for name in (step.from_object, step.to_object)
+        }
+        replicated |= in_query - unnested
     return replicated
 
 
@@ -581,6 +598,24 @@ def wrap_with_grain_dedup(
         identity = _identity_columns(object_name, resolved, model)
         if not identity:
             listed = ", ".join(f"'{m}'" for m in sorted(measure_names))
+            unnested = sorted({s.to_object for s in resolved.join_steps if s.nested})
+            if unnested:
+                # The replication came out of the FROM clause rather than a
+                # join, so the usual "the join names no target columns" reads as
+                # a non sequitur: there is no join. What the dedup needs is the
+                # same either way - one row per row of the object being summed -
+                # and here only the object itself can say which rows those are.
+                objects = ", ".join(f"'{name}'" for name in unnested)
+                msg = (
+                    f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
+                    f"this query multiplies by unnesting {objects}: one row per array "
+                    f"element, so a charge carrying two labels is summed twice. "
+                    f"Deduplicating needs to know which rows are one row of "
+                    f"'{object_name}', and it declares no primaryKey. Declare one, "
+                    f"select the measure without the nested dimension, or set "
+                    f"allowFanOut: true if the duplication is intended."
+                )
+                raise GrainDedupUnsupportedError(msg)
             msg = (
                 f"Measure(s) {listed} are sourced from '{object_name}', whose rows "
                 f"this query's joins replicate, but '{object_name}' declares no "
@@ -715,7 +750,7 @@ def wrap_with_grain_dedup(
     outer_from = _MAIN_CTE if keep_main else ordered_ctes[0]
     joined_ctes = ordered_ctes if keep_main else ordered_ctes[1:]
 
-    outer_joins: list[Join] = []
+    outer_joins: list[Join | Unnest] = []
     for cte_name in joined_ctes:
         # A grand-total CTE is a single row with no grain to match on.
         if not dim_names or cte_name in grand_total_ctes:

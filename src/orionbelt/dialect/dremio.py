@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal
+from orionbelt.ast.nodes import BinaryOp, Cast, Expr, FunctionCall, Literal, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
     UnsupportedAggregationError,
+    UnsupportedNestedAccessError,
     _dremio_access,
     _dremio_row_type,
     _json_path_of,
@@ -32,9 +33,32 @@ class DremioDialect(Dialect):
             supports_arrays=False,
             supports_window_filters=False,
             supports_ilike=False,
+            # ``FLATTEN`` is a projection function, so the unnest goes in the
+            # SELECT list of a derived table rather than in the FROM clause -
+            # see :meth:`render_unnest`. The planner reads this and falls back
+            # to a nested object's ``code`` where one is declared.
+            supports_from_unnest=False,
             # ``measure`` is Databricks Metric View specific.
             unsupported_aggregations=["mode", "measure"],
         )
+
+    def render_unnest(self, node: Unnest) -> str:
+        """Dremio has no FROM-clause unnest, so this refuses.
+
+        ``FLATTEN`` is a **projection** function: the unnest goes in the SELECT
+        list of a derived table, and the fields are read from outside it::
+
+            FROM (SELECT c.id, c.cost, FLATTEN(c.labels) AS l FROM charges c) f
+
+        That restructures the query rather than extending its FROM clause, so it
+        belongs with the planner rather than here. Measured to work, including
+        the outer form emulated by a UNION ALL of the non-empty flatten and the
+        rows whose array is empty.
+
+        Until then a model reaches its data on Dremio through the ``code``
+        fallback, which is what the fallback is for.
+        """
+        raise UnsupportedNestedAccessError(self.name, node.alias)
 
     def exact_integer_sum(self, arg: Expr) -> Expr | None:
         """``SUM`` over BIGINT accumulates in 64 bits here, and wraps.

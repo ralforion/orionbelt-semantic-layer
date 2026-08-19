@@ -49,6 +49,10 @@ obsl:Join a owl:Class ;
     rdfs:label "Join" ;
     rdfs:comment "A join path between two data objects, defined by source/target columns and cardinality." .
 
+obsl:NestedSource a owl:Class ;
+    rdfs:label "Nested Source" ;
+    rdfs:comment "Where a nested data object's rows come from: an array column on a parent data object, unnested. The correlation is containment rather than a key, so no join columns are declared." .
+
 obsl:Dimension a owl:Class ;
     rdfs:label "Dimension" ;
     rdfs:comment "A grouping or filtering attribute exposed to analysts.  References a column in a data object." .
@@ -142,6 +146,24 @@ obsl:joinTo a owl:ObjectProperty ;
     rdfs:comment "Target data object of a join path." ;
     rdfs:domain obsl:Join ;
     rdfs:range obsl:DataObject .
+
+obsl:nestedIn a owl:ObjectProperty ;
+    rdfs:label "nested in" ;
+    rdfs:comment "The nested source a data object takes its rows from instead of, or in addition to, a table." ;
+    rdfs:domain obsl:DataObject ;
+    rdfs:range obsl:NestedSource .
+
+obsl:nestedInObject a owl:ObjectProperty ;
+    rdfs:label "nested in object" ;
+    rdfs:comment "The parent data object whose array column supplies a nested object's rows." ;
+    rdfs:domain obsl:NestedSource ;
+    rdfs:range obsl:DataObject .
+
+obsl:nestedInColumn a owl:DatatypeProperty ;
+    rdfs:label "nested in column" ;
+    rdfs:comment "The parent's array column. A dotted path addresses an array nested inside a struct." ;
+    rdfs:domain obsl:NestedSource ;
+    rdfs:range xsd:string .
 
 obsl:columnFrom a owl:ObjectProperty ;
     rdfs:label "column from" ;

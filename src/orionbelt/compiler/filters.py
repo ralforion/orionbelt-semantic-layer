@@ -21,6 +21,7 @@ from orionbelt.ast.nodes import (
     RelativeDateRange,
     Select,
     UnaryOp,
+    Unnest,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.query import FilterOperator, QueryFilter, UsePathName
@@ -511,6 +512,35 @@ def collect_measure_filter_objects(item: MeasureFilterItem, objects: set[str]) -
 # ---------------------------------------------------------------------------
 
 
+def _nested_subquery_error(name: str, obj: DataObject) -> SemanticError:
+    """A correlated subquery cannot reach a nested data object.
+
+    There is no table for its FROM clause and no key for its correlation
+    predicate: the rows exist only inside their parent's, which is exactly what
+    makes the ordinary join to it work without either. Returned as a structured
+    error because ``qualify_table`` would otherwise raise
+    ``UnrenderableDataObjectError`` from inside the builder, which routers hand
+    back as a 500 rather than the 422 every other subquery mistake gets.
+    """
+    source = obj.nested_in
+    where = (
+        f"unnesting '{source.data_object}.{source.column}'" if source else "unnesting its parent"
+    )
+    return SemanticError(
+        code="NESTED_OBJECT_IN_SUBQUERY",
+        message=(
+            f"EXISTS cannot select from '{name}': it takes its rows by {where}, so it has "
+            f"no table of its own and no key to correlate on."
+        ),
+        path="filters",
+        hint=(
+            "Filter on the nested object's columns directly - the query joins it through "
+            "its parent - or read it through a flattening view by declaring 'code' "
+            "alongside 'nestedIn'."
+        ),
+    )
+
+
 def _resolve_subquery_filter_field(
     field: str,
     model: SemanticModel,
@@ -567,7 +597,7 @@ def _join_filter_object_into_subquery(
     subject_object: str,
     target_object: str,
     scope: set[str],
-    joins: list[Join],
+    joins: list[Join | Unnest],
     qualify_table: Callable[[DataObject], str],
     errors: list[SemanticError],
     read_through_expression: bool = False,
@@ -635,6 +665,20 @@ def _join_filter_object_into_subquery(
     # ``JoinStep`` keeps from/to in the declared join direction, so the object
     # a step actually brings into the body is the far end of its *traversal*.
     joined_objects = [step.from_object if step.reversed else step.to_object for step in steps]
+
+    # The third road into the same wall as the subquery's target and its
+    # correlation path: an inner filter can name a nested object, or one only
+    # reachable through it, and the loop below would ask ``qualify_table`` for a
+    # table that does not exist. A subquery body is joins only - there is no
+    # unnest in it - so anything behind a containment edge is out of reach here.
+    nested_hops = [
+        name
+        for name in joined_objects
+        if (o := model.data_objects.get(name)) is not None and o.is_nested
+    ]
+    if nested_hops:
+        errors.append(_nested_subquery_error(nested_hops[0], model.data_objects[nested_hops[0]]))
+        return False
 
     if subject_object in joined_objects:
         errors.append(
@@ -721,6 +765,18 @@ def build_exists_filter_expr(
         )
         return None
 
+    # A nested object has no table, so ``SELECT 1 FROM <it>`` cannot be written,
+    # and no key to correlate on either - its rows exist only inside its
+    # parent's. Refused here rather than at the FROM clause below, where
+    # ``qualify_table`` raises an exception routed as a 500 instead of the
+    # structured error every other subquery mistake gets. The containment edge
+    # is what made this reachable: before it there was no path to walk, so the
+    # query failed with NO_JOIN_PATH_TO_SUBQUERY by accident rather than on
+    # purpose.
+    if target_obj.is_nested:
+        errors.append(_nested_subquery_error(sub.data_object, target_obj))
+        return None
+
     subject_obj = model.data_objects.get(subject_object)
     if subject_obj is None:
         errors.append(
@@ -787,6 +843,16 @@ def build_exists_filter_expr(
         )
         return None
 
+    # A hop *through* a nested object is the same problem one step further in:
+    # the subquery body would join a table that does not exist. Reachable when a
+    # nested object declares a join onward to a third one, which is legal and is
+    # how a nested fact reaches its dimensions.
+    for step in path:
+        hop = model.data_objects.get(step.to_object)
+        if hop is not None and hop.is_nested:
+            errors.append(_nested_subquery_error(step.to_object, hop))
+            return None
+
     # First step bridges outer scope → subquery scope (correlation).
     # Remaining steps live entirely inside the subquery (INNER JOIN chain).
     first_step = path[0]
@@ -799,7 +865,7 @@ def build_exists_filter_expr(
         alias=first_step.to_object,
     )
 
-    joins: list[Join] = []
+    joins: list[Join | Unnest] = []
     for step in path[1:]:
         step_target_obj = model.data_objects.get(step.to_object)
         if step_target_obj is None:

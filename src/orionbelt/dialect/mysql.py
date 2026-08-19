@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
 from orionbelt.dialect.base import (
     PORTABLE_DECIMAL_PRECISION,
     Dialect,
@@ -15,6 +15,60 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
 from orionbelt.models.types import DecimalType, OBMLType
+
+
+def _json_source_and_row_path(dialect: MySQLDialect, node: Unnest) -> tuple[str, str]:
+    """Split a dotted column into the JSON document and the path within it.
+
+    ``x_Labels`` reads the whole column as the array: ``JSON_TABLE(col, '$[*]'
+    ...)``. ``x_Project.Ancestors`` reads the array *inside* the document:
+    ``JSON_TABLE(col, '$."Ancestors"[*]' ...)``. Every engine but this one and
+    Snowflake takes the deeper segments as identifiers; MySQL is the only one
+    where they change which argument they belong to.
+    """
+    first, *rest = node.column.split(".")
+    source = f"{dialect.quote_identifier(node.parent_alias)}.{dialect.quote_identifier(first)}"
+    inner = "".join(f".{_json_member(segment)}" for segment in rest)
+    return source, _sql_literal(f"${inner}[*]")
+
+
+def _json_member(name: str) -> str:
+    """One JSON-path member, quoted and escaped for the JSON layer."""
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _sql_literal(text: str) -> str:
+    """*text* as a MySQL single-quoted literal.
+
+    MySQL treats a backslash as an escape inside string literals unless
+    ``NO_BACKSLASH_ESCAPES`` is set, so both it and the quote are doubled.
+    """
+    return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _json_path_literal(code: str) -> str:
+    """A ``JSON_TABLE`` PATH argument for *code*, escaped for **both** layers.
+
+    The path is a JSON-path expression *inside* a SQL string literal, so it
+    passes through two escaping regimes and needs both. Escaping only the JSON
+    layer looked right and failed three ways against MySQL 8, measured:
+
+    ==========  ===============================================================
+    ``q"t``     ``\\"`` is consumed by the SQL layer, leaving an unbalanced
+                quote and an invalid JSON path
+    ``q't``     the apostrophe closes the SQL literal: syntax error
+    ``a\\b``     the backslash is a SQL escape, and the path silently reads
+                NULL
+    ==========  ===============================================================
+
+    Order matters in both layers: backslashes first, then the quote character,
+    or the escape introduced by the first pass is escaped again by the second.
+
+    MySQL treats a backslash as an escape inside string literals unless
+    ``NO_BACKSLASH_ESCAPES`` is set, which is why the SQL layer doubles it.
+    """
+    return _sql_literal(f"$.{_json_member(code)}")
+
 
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
 _MYSQL_CAST_CHAR_MAX = 255
@@ -75,6 +129,8 @@ class MySQLDialect(Dialect):
     }
 
     avg_over_integers_is_exact = True
+
+    backslash_escapes_strings = True
 
     @property
     def name(self) -> str:
@@ -213,6 +269,34 @@ class MySQLDialect(Dialect):
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``JSON_TABLE``, which extracts a declared shape rather than
+        inferring one.
+
+        The only dialect whose unnest needs the child object's **columns**: the
+        others hand back the element and let a field reference read it, while
+        this one has to be told which paths to pull out and at what type. That
+        is why :class:`Unnest` carries them.
+        """
+        cols = (
+            ", ".join(
+                f"{self.quote_identifier(code)} {sql_type} PATH {_json_path_literal(code)}"
+                for code, sql_type in node.columns
+            )
+            or "value VARCHAR(1024) PATH '$'"
+        )
+        # A dotted column is an array inside an object, and here that is not a
+        # deeper *identifier* - it is a deeper JSON path. `C`.`x_Project`.
+        # `Ancestors` is "Unknown column"; the member has to move out of the
+        # source expression and into the row path, leaving the column itself as
+        # the document being read.
+        source, row_path = _json_source_and_row_path(self, node)
+        table = (
+            f"JSON_TABLE({source}, {row_path} COLUMNS ({cols})) "
+            f"AS {self.quote_identifier(node.alias)}"
+        )
+        return f"LEFT JOIN {table} ON TRUE" if node.outer else f", {table}"
 
     def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
         """MySQL: a measure's decimal cast carries at least 38 digits.
@@ -499,7 +583,7 @@ class MySQLDialect(Dialect):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
 
         parts = [f"GROUP_CONCAT({distinct_sql}{col_sql}"]
         if order_by:

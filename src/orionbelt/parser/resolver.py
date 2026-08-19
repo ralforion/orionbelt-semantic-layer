@@ -31,6 +31,7 @@ from orionbelt.models.semantic import (
     ModelExample,
     ModelFilter,
     ModelSettings,
+    NestedSource,
     PeriodOverPeriod,
     RefreshPolicy,
     SemanticModel,
@@ -133,6 +134,20 @@ _CUSTOM_EXTENSION_KEYS = _allowed_keys(CustomExtension)
 # field set, but the inner periodOverPeriod block has its own shape.
 _PERIOD_OVER_PERIOD_KEYS = _allowed_keys(PeriodOverPeriod)
 _METRIC_KEYS = _allowed_keys(Metric, exclude=("name",))
+
+
+def _parse_nested_in(raw: object) -> NestedSource | None:
+    """Build a :class:`NestedSource` from the raw ``nestedIn`` mapping.
+
+    Shape errors are left to Pydantic: the caller already wraps object
+    construction and reports a failure against the object's source span, so
+    raising here would report it twice and less precisely.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("'nestedIn' must be a mapping with 'dataObject' and 'column'")
+    return NestedSource(**raw)
 
 
 def _parse_extensions(
@@ -473,6 +488,7 @@ class ReferenceResolver:
                     synonyms=raw_obj.get("synonyms", []),
                     custom_extensions=_parse_extensions(raw_obj),
                     refresh=_parse_refresh(raw_obj.get("refresh"), name, errors),
+                    nested_in=_parse_nested_in(raw_obj.get("nestedIn")),
                 )
             except Exception as e:
                 span = source_map.get(f"dataObjects.{name}") if source_map else None

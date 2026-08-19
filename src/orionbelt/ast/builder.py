@@ -20,6 +20,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
     UnionAll,
+    Unnest,
 )
 
 
@@ -29,7 +30,7 @@ class QueryBuilder:
     def __init__(self) -> None:
         self._columns: list[Expr] = []
         self._from: From | None = None
-        self._joins: list[Join] = []
+        self._joins: list[Join | Unnest] = []
         self._where: Expr | None = None
         self._group_by: list[Expr] = []
         self._having: Expr | None = None
@@ -64,6 +65,15 @@ class QueryBuilder:
         alias: str | None = None,
     ) -> Self:
         self._joins.append(Join(join_type=join_type, source=table, alias=alias, on=on))
+        return self
+
+    def unnest(self, node: Unnest) -> Self:
+        """Append an unnest in path order, alongside the joins.
+
+        Its parent has to already be in scope - the base object, or an earlier
+        join - because the fragment names it.
+        """
+        self._joins.append(node)
         return self
 
     def where(self, condition: Expr) -> Self:

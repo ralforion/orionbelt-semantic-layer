@@ -166,6 +166,61 @@ class Between:
 
 
 @dataclass(frozen=True)
+class Unnest:
+    """A parent's array column, unnested into rows beside it.
+
+    Not a :class:`Join`, because the engines do not agree that it is one. It is
+    a comma-lateral on BigQuery, DuckDB, Postgres and Snowflake, a ``LATERAL
+    VIEW`` on Databricks, an ``ARRAY JOIN`` on ClickHouse, and a ``JSON_TABLE``
+    on MySQL - four different clause shapes, only some of which take an ``ON``.
+    ``compile_join`` renders ``<type> JOIN <source> ON <expr>`` and cannot spell
+    the rest, so this is its own node with its own per-dialect renderer.
+
+    There is no join predicate for the same reason there is no join key: the
+    correlation is containment. Each output row pairs one parent row with one
+    element of that parent's own array.
+    """
+
+    parent_alias: str
+    column: str
+    """The parent's array column. Dotted for an array inside a struct."""
+    alias: str
+    """Alias the unnested element is addressed by."""
+    columns: tuple[tuple[str, str], ...] = ()
+    """``(code, sql_type)`` per child column. Only MySQL needs them: its
+    ``JSON_TABLE`` declares the shape it is extracting rather than inferring it.
+    """
+    outer: bool = True
+    """Keep a parent row whose array is empty. The default, because a charge
+    with no labels still contributes its cost to an unfiltered total - measured,
+    61% of the rows in a real billing export carry none.
+    """
+
+
+@dataclass(frozen=True)
+class NestedField:
+    """A column of an unnested element, addressed the way its dialect wants.
+
+    Not a :class:`ColumnRef`, because the engines do not agree that it is one.
+    ``L."Key"`` reads the field on six of the seven that unnest, but Snowflake's
+    ``FLATTEN`` hands back a row whose ``value`` column holds the element as a
+    VARIANT, so there the same reference is ``L.value:"Key"::string`` - measured,
+    the column form does not compile at all.
+
+    The node carries the *abstract* type rather than a rendered one so it stays
+    dialect-free: only the VARIANT dialect needs a type here, and only it knows
+    how to spell one.
+    """
+
+    alias: str
+    """The unnest's alias - the element, or the row holding it."""
+    field: str
+    """The element field's physical name (``DataObjectColumn.code``)."""
+    abstract_type: str | None = None
+    """The column's ``abstractType``, as its OBML spelling."""
+
+
+@dataclass(frozen=True)
 class RegexMatch:
     """Regex match predicate. Each dialect renders its native syntax.
 
@@ -252,6 +307,7 @@ Expr = (
     | RelativeDateRange
     | InTimeZone
     | WindowFunction
+    | NestedField
 )
 
 
@@ -296,7 +352,14 @@ class Select:
 
     columns: list[Expr] = field(default_factory=list)
     from_: From | None = None
-    joins: list[Join] = field(default_factory=list)
+    joins: list[Join | Unnest] = field(default_factory=list)
+    """Join clauses and unnests, in the order the planner walked the path.
+
+    One list rather than two, because the order between them matters: an unnest
+    names its parent, so it has to follow whatever put that parent in scope.
+    Keeping them apart would make the planner interleave them again at render
+    time, from information it no longer has.
+    """
     where: Expr | None = None
     group_by: list[Expr] = field(default_factory=list)
     having: Expr | None = None

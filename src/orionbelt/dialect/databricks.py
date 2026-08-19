@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
 from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
     Dialect,
@@ -41,6 +41,8 @@ class DatabricksDialect(Dialect):
         "timestamp_tz": "TIMESTAMP",
         "boolean": "BOOLEAN",
     }
+
+    backslash_escapes_strings = True
 
     @property
     def name(self) -> str:
@@ -84,6 +86,17 @@ class DatabricksDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``LATERAL VIEW explode``, which takes no ``ON`` and names its own
+        generated table as well as the column.
+
+        ``OUTER`` goes between ``VIEW`` and the function, not on the join.
+        """
+        keyword = "LATERAL VIEW OUTER" if node.outer else "LATERAL VIEW"
+        alias = self.quote_identifier(node.alias)
+        table_alias = self.quote_identifier(f"{node.alias}__t")
+        return f"{keyword} explode({self.unnest_path(node)}) {table_alias} AS {alias}"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
@@ -260,7 +273,7 @@ class DatabricksDialect(Dialect):
         """
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         collect_fn = "COLLECT_SET" if distinct else "COLLECT_LIST"
         inner = f"{collect_fn}({col_sql})"
         if order_by:

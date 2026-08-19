@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, UnionAll
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, RawSQL, UnionAll, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -38,6 +38,8 @@ class SnowflakeDialect(Dialect):
 
     avg_over_integers_is_exact = True
 
+    backslash_escapes_strings = True
+
     @property
     def name(self) -> str:
         return "snowflake"
@@ -68,6 +70,51 @@ class SnowflakeDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="DATE_TRUNC", args=[Literal.string(grain.value), column])
+
+    def nested_field(self, alias: str, field: str, sql_type: str | None = None) -> Expr:
+        """``L.value:"Key"::string`` - a VARIANT path, not a column.
+
+        ``FLATTEN`` yields a row per element whose ``value`` column holds the
+        element itself, so the ordinary ``L."Key"`` every other engine accepts
+        does not compile here at all: measured, "SQL compilation error".
+
+        The field name is quoted inside the path so one containing a space is
+        addressable, and the cast is not optional: without it a string field
+        comes back as ``"team"`` with its JSON quotes still on.
+        """
+        escaped = field.replace('"', '""')
+        # RawSQL: Snowflake's `:` VARIANT path has no typed AST node, and the
+        # cast has to bind to the path rather than to a column reference.
+        return RawSQL(
+            sql=f'{self.quote_identifier(alias)}.value:"{escaped}"::{sql_type or "string"}'
+        )
+
+    def unnest_path(self, node: Unnest) -> str:
+        """Only the first segment is a column; the rest are VARIANT steps.
+
+        ``"C"."x_Project"."Ancestors"`` does not compile - the object's members
+        are reached with ``:`` rather than ``.``, the same operator
+        :meth:`nested_field` uses for a field of an element.
+        """
+        parts = node.column.split(".")
+        path = f"{self.quote_identifier(node.parent_alias)}.{self.quote_identifier(parts[0])}"
+        for segment in parts[1:]:
+            escaped = segment.replace('"', '""')
+            path = f'{path}:"{escaped}"'
+        return path
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``LATERAL FLATTEN``, whose outer form is an argument rather than a
+        join type.
+
+        The element arrives as ``<alias>.value``, a VARIANT, so a column on a
+        Snowflake nested object is read with ``:field`` rather than ``.field``.
+        """
+        outer = ", outer => TRUE" if node.outer else ""
+        return (
+            f", LATERAL FLATTEN(input => {self.unnest_path(node)}{outer}) "
+            f"{self.quote_identifier(node.alias)}"
+        )
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)

@@ -60,6 +60,7 @@ from orionbelt.dialect.base import (
     UnsupportedAggregationError,
     UnsupportedFunctionError,
     UnsupportedGroupingError,
+    UnsupportedNestedAccessError,
 )
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.service.db_executor import (
@@ -205,6 +206,11 @@ def _compile(
     except UnsupportedGroupingError as exc:
         return OneshotBatchQueryError(
             code="UNSUPPORTED_GROUPING",
+            message=str(exc),
+        )
+    except UnsupportedNestedAccessError as exc:
+        return OneshotBatchQueryError(
+            code="UNSUPPORTED_NESTED_ACCESS",
             message=str(exc),
         )
     except UnsupportedFunctionError as exc:

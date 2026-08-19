@@ -29,6 +29,12 @@ APPROVED_RAWSQL: dict[str, int] = {
     "src/orionbelt/dialect/mysql.py": 1,
     # BigQuery DATE_TRUNC date-part keyword (MONTH/ISOWEEK, not a quoted string).
     "src/orionbelt/dialect/bigquery.py": 1,
+    # Snowflake VARIANT path for a field of an unnested element:
+    # `L.value:"Key"::string`. FLATTEN yields the element under `value` rather
+    # than as columns, so the ordinary column reference every other engine takes
+    # does not compile there. The `:` path has no typed AST node, and the cast
+    # has to bind to the path rather than to a ColumnRef.
+    "src/orionbelt/dialect/snowflake.py": 1,
     # Week handling: each site re-wraps SQL the dialect just rendered, so that
     # one weekly floor serves the catalog function, the time-grain dimension
     # and the period-over-period spine rather than one implementation per

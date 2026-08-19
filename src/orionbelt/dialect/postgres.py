@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem
+from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, Unnest
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -91,6 +91,37 @@ class PostgresDialect(Dialect):
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
         return FunctionCall(name="date_trunc", args=[Literal.string(grain.value), column])
+
+    def unnest_path(self, node: Unnest) -> str:
+        """A field of a composite has to be reached through parentheses.
+
+        ``"C"."x_Project"."Ancestors"`` parses as a three-part *table* name, so
+        Postgres reports "missing FROM-clause entry for table x_Project".
+        ``("C"."x_Project")."Ancestors"`` is composite field access and reads
+        the array. A single-segment column needs no parentheses and gets none.
+        """
+        parts = node.column.split(".")
+        path = f"{self.quote_identifier(node.parent_alias)}.{self.quote_identifier(parts[0])}"
+        for segment in parts[1:]:
+            path = f"({path}).{self.quote_identifier(segment)}"
+        return path
+
+    def render_unnest(self, node: Unnest) -> str:
+        """``LATERAL`` is not optional here; the alias is otherwise ordinary.
+
+        Without ``LATERAL`` the parent is invisible to the function: measured, a
+        plain ``LEFT JOIN unnest(C.x_Labels)`` fails with "missing FROM-clause
+        entry for table C".
+
+        The alias stays one-part, unlike DuckDB's. Postgres expands a composite
+        array into columns named after its fields, so ``L."Key"`` reads
+        directly - and the two-part ``AS t(col)`` form actively breaks that,
+        collapsing the element to its first field: "column notation .Key applied
+        to type text".
+        """
+        source = f"LATERAL UNNEST({self.unnest_path(node)})"
+        alias = self.quote_identifier(node.alias)
+        return f"LEFT JOIN {source} AS {alias} ON TRUE" if node.outer else f", {source} AS {alias}"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
@@ -211,7 +242,7 @@ class PostgresDialect(Dialect):
         sep = separator if separator is not None else ","
         col_sql = self.compile_expr(args[0]) if args else "''"
         distinct_sql = "DISTINCT " if distinct else ""
-        escaped_sep = sep.replace("'", "''")
+        escaped_sep = self.quote_string_literal(sep)[1:-1]
         inner = f"{distinct_sql}{col_sql}, '{escaped_sep}'"
         if order_by:
             ob = ", ".join(self.compile_order_by(o) for o in order_by)
