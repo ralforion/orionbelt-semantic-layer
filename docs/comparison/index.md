@@ -38,7 +38,7 @@ How OrionBelt Semantic Layer (OBSL) stacks up against the leading semantic layer
 | OLAP hierarchies (multi-level, parent-child) | ❌ | ❌ | ❌ | Partial | Partial — level-based `hierarchies` + view folders; no parent-child / ragged | ✅ first-class |
 | Custom granularities / fiscal calendars | ❌ fixed `TimeGrain` set | ✅ `custom_granularities` on a time spine | ❌ | Via `dimension_group` + derived tables | ✅ custom granularities + calendar cubes (4-5-4, fiscal) | ✅ first-class time dimensions |
 | MDX / Excel pivot tables | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ unique |
-| RDF/SPARQL graph view | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| RDF/SPARQL graph view — **the model itself is queryable** | ✅ the whole model exports as an OWL-typed RDF graph with SHACL shapes, and `POST /v1/sessions/{sid}/models/{mid}/sparql` runs **read-only** SPARQL over it (updates rejected). "Which measures read this column", "which objects carry no description", "what is nested in what" become queries rather than code — including over structure no REST endpoint exposes directly | ❌ | ❌ | ❌ | ❌ | ❌ |
 | MCP server | ✅ | ✅ (dbt-mcp) | ✅ (Publisher) | ✅ managed Looker MCP server + MCP Toolbox (2026) | ✅ | ✅ |
 | Interactive playground / UI | ✅ Gradio (incl. RDF ontology graph) | dbt Cloud Studio (paid) | VS Code + Publisher | ✅ Looker IDE | Cube Playground / Studio | ✅ Design Center |
 | Notebook authoring (VS Code / Colab) | ✅ `quickstart.ipynb` runs natively in VS Code or Colab | Via dbt-cli in any notebook | Notebook tutorials | ❌ | ❌ | ❌ |
