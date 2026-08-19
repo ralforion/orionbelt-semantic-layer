@@ -152,6 +152,15 @@ class ComposabilityResolver:
         self._reach: dict[str, set[str]] = {
             obj: {obj} | self.graph.descendants(obj) for obj in model.data_objects
         }
+        # The same, for a plan that can only *join*. A union leg is one: it
+        # builds a star out of tables and has no unnest to reach a nested object
+        # with, nor anything sitting behind one. Kept separate rather than
+        # replacing ``_reach`` because a star planner does unnest, so a measure
+        # reaching across a containment edge is answerable on its own and only
+        # unanswerable as a leg.
+        self._reach_no_unnest: dict[str, set[str]] = {
+            obj: {obj} | self.graph.descendants_without_unnest(obj) for obj in model.data_objects
+        }
 
     # -- reachability helpers ------------------------------------------------
 
@@ -160,6 +169,20 @@ class ComposabilityResolver:
         objects = objects & set(self._reach)
         if not objects:
             return True
+        return any(objects <= reach for reach in self._reach.values())
+
+    def _needs_unnest_to_connect(self, objects: set[str]) -> bool:
+        """*objects* hang together, but only across a containment edge.
+
+        Distinguished from genuinely independent facts, which no root reaches at
+        all: these have one, reached by unnesting. A star can follow it and a
+        union leg cannot, which is the whole difference this answers.
+        """
+        objects = objects & set(self._reach)
+        if len(objects) <= 1:
+            return False
+        if any(objects <= reach for reach in self._reach_no_unnest.values()):
+            return False
         return any(objects <= reach for reach in self._reach.values())
 
     def _reaches_all(self, fact: str, targets: set[str]) -> bool:
@@ -362,6 +385,13 @@ class ComposabilityResolver:
         if not sources:
             return None
 
+        # Reaching one of its own objects means unnesting, which replicates the
+        # other. Two replicated sources is the case the rewrite cannot express -
+        # it has no way to know which grain to deduplicate on - so the compiler
+        # refuses, and ACR must not advertise what it refuses.
+        if self._needs_unnest_to_connect(sources):
+            return "refused"
+
         referenced = {obj for objs in auxiliary_references(measure).values() for obj in objs}
         outside = referenced - sources
 
@@ -489,6 +519,15 @@ class ComposabilityResolver:
         # Direct: the whole query stays single-fact (a common root covers all).
         if self._has_common_root(anchor | source_objects):
             return "direct"
+        # A leg is a star built out of tables, so it cannot carry a measure that
+        # needs an unnest to be computed at all - whether the object *is* nested
+        # or merely sits behind one. ``allowFanOut`` does not rescue either: the
+        # leg cannot reach the object at all, rather than reaching it too often.
+        if self._needs_unnest_to_connect(source_objects) or any(
+            (obj := self.model.data_objects.get(name)) is not None and obj.is_nested
+            for name in source_objects
+        ):
+            return None
         # CFL: each source fact independently reaches the current grain, so it
         # can join as a separate UNION ALL leg. With no grain yet, independent
         # facts still combine as grand-total legs.

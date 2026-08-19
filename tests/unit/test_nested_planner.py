@@ -583,6 +583,61 @@ class TestWhatIsRefused:
         assert any(e.code == "NESTED_OBJECT_IN_MULTI_FACT" for e in excinfo.value.errors)
 
 
+class TestTheAdvertisedSet:
+    """ACR's contract is that what it lists compiles, and a containment edge is
+    a place the two can disagree: a star planner follows one and a union leg
+    cannot, so reachability measured one way over-advertises.
+
+    Cross-checked rather than asserted by name. Listing the expected measures
+    would pass while the underlying rule was wrong in either direction; asking
+    the compiler is what makes the contract the assertion.
+    """
+
+    ANCHORS = [[], ["Budget Amount"], ["Total Cost"]]
+
+    @staticmethod
+    def _model(*, allow_fan_out: bool) -> SemanticModel:
+        yaml_text = _with_second_fact(_with_a_dimension_behind_the_array(MODEL_YAML)).replace(
+            "measures:\n",
+            "measures:\n"
+            "  Weighted Cost:\n"
+            '    expression: "{[Charges].[Cost]} * {[Owners].[Owner Weight]}"\n'
+            "    resultType: float\n"
+            "    aggregation: sum\n" + ("    allowFanOut: true\n" if allow_fan_out else ""),
+            1,
+        )
+        return _load(yaml_text)
+
+    @pytest.mark.parametrize("allow_fan_out", [False, True])
+    def test_everything_advertised_compiles(self, allow_fan_out: bool) -> None:
+        from orionbelt.compiler.composability import resolve_composables_for_anchors
+
+        model = self._model(allow_fan_out=allow_fan_out)
+        broken: list[str] = []
+        for anchors in self.ANCHORS:
+            listed = resolve_composables_for_anchors(model, anchors)
+            for kind, names in (("measure", listed.measures), ("cfl", listed.cfl_measures)):
+                for name in names:
+                    combo = list(dict.fromkeys([*anchors, name]))
+                    try:
+                        _compile(model, [], combo)
+                    except Exception as exc:  # noqa: BLE001 - any refusal is a mismatch
+                        broken.append(f"anchor={anchors} {kind}={name}: {type(exc).__name__}")
+        assert not broken, broken
+
+    def test_a_measure_across_a_containment_edge_is_never_a_union_leg(self) -> None:
+        """Even with ``allowFanOut``, which rescues the star and not the leg: a
+        leg cannot reach the object at all, rather than reaching it too often.
+        """
+        from orionbelt.compiler.composability import resolve_composables_for_anchors
+
+        model = self._model(allow_fan_out=True)
+        listed = resolve_composables_for_anchors(model, ["Budget Amount"])
+        assert "Weighted Cost" not in listed.cfl_measures
+        # and the star it *is* answerable in still advertises it
+        assert "Weighted Cost" in resolve_composables_for_anchors(model, ["Total Cost"]).measures
+
+
 class TestTheApiContract:
     """An unsupported nested access is a *compile* failure, and the surfaces
     that report compile failures without raising have to keep doing so.
