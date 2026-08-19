@@ -146,6 +146,7 @@ def _with_a_dimension_behind_the_array(yaml_text: str) -> str:
             "    columns:\n"
             "      Owner Id: {code: owner_id, abstractType: string, primaryKey: true}\n"
             "      Owner Name: {code: owner_name, abstractType: string}\n"
+            "      Owner Weight: {code: owner_weight, abstractType: float}\n"
             "  Charge Credits:\n",
             1,
         )
@@ -487,6 +488,33 @@ class TestWhatIsRefused:
         model = _load(_with_second_fact(_with_a_dimension_behind_the_array(MODEL_YAML)))
         with pytest.raises(ResolutionError) as excinfo:
             _compile(model, ["Owner Name"], ["Total Cost", "Budget Amount"])
+        assert any(e.code == "UNREACHABLE_REQUIRED_OBJECT" for e in excinfo.value.errors)
+
+    def test_a_measure_expression_spanning_a_containment_edge(self) -> None:
+        """A measure reading two objects a leg cannot join together.
+
+        ``_single_leg_root`` asked whether one root reached them all, and its
+        answer routed the expression to a leg. Measured with the full reachable
+        set it said yes - through the unnest - and the leg then projected
+        ``"Owners"."owner_weight"`` over a FROM holding only ``charges``.
+
+        Refused rather than handed to the cross-fact path, which is for facts
+        that really are independent: it gives each its own leg, and pairing
+        these two across legs has no key to pair on.
+        """
+        model = _load(
+            _with_second_fact(_with_a_dimension_behind_the_array(MODEL_YAML)).replace(
+                "measures:\n",
+                "measures:\n"
+                "  Weighted Cost:\n"
+                '    expression: "{[Charges].[Cost]} * {[Owners].[Owner Weight]}"\n'
+                "    resultType: float\n"
+                "    aggregation: sum\n",
+                1,
+            )
+        )
+        with pytest.raises(ResolutionError) as excinfo:
+            _compile(model, ["Account Name"], ["Weighted Cost", "Budget Amount"])
         assert any(e.code == "UNREACHABLE_REQUIRED_OBJECT" for e in excinfo.value.errors)
 
     def test_but_a_star_query_reaches_it_normally(self) -> None:

@@ -159,7 +159,7 @@ class RawPlanner:
         leg_infos: list[CflLegInfo] = []
 
         for root in sorted(leg_roots):
-            reachable = graph.descendants(root) | {root}
+            reachable = graph.descendants_without_unnest(root) | {root}
             leg_required = {f.object_name for f in resolved.fields if f.object_name in reachable}
             leg_required.add(root)
             leg_required.update(filter_objects & reachable)
@@ -250,7 +250,7 @@ class RawPlanner:
         roots = set(field_objects)
         for src in field_objects:
             for other in field_objects:
-                if other != src and src in graph.descendants(other):
+                if other != src and src in graph.descendants_without_unnest(other):
                     roots.discard(src)
                     break
         return roots

@@ -216,3 +216,130 @@ def test_the_parent_measure_alone_is_untouched(conn: Any, model: SemanticModel) 
     )
     assert "UNNEST" not in result.sql.upper()
     assert conn.execute(result.sql).fetchall() == [(250.0,)]
+
+
+# ---------------------------------------------------------------------------
+# Every road a nested object can take into a FROM clause, executed.
+#
+# Four rounds of review found the same defect four times, in four different
+# places, and every one of them compiled: a plan named a table it had not
+# joined, or a column no union leg supplied. A string assertion passes on all
+# of them. So the shapes are enumerated here and the compiled SQL is *handed to
+# the engine* - the only check that can tell "it compiled" from "it binds".
+#
+# A shape is correct when it either binds and runs, or is refused with a
+# structured error. What it must never do is compile to SQL the engine rejects.
+# ---------------------------------------------------------------------------
+
+_SHAPES_SQL = """
+CREATE TABLE charges2 (
+    id VARCHAR, cost DOUBLE,
+    Labels STRUCT("Value" VARCHAR, "OwnerId" VARCHAR)[]
+);
+CREATE TABLE budgets (amount DOUBLE, budget_name VARCHAR);
+CREATE TABLE owners (owner_id VARCHAR, owner_name VARCHAR, owner_weight DOUBLE);
+INSERT INTO charges2 VALUES ('c1', 100, [{'Value':'prod','OwnerId':'o1'}]);
+INSERT INTO budgets VALUES (500, 'b1');
+INSERT INTO owners VALUES ('o1', 'Ada', 2.0);
+"""
+
+SHAPES_MODEL_YAML = """
+version: "1.0"
+name: nested_shapes
+dataObjects:
+  Charges:
+    code: charges2
+    columns:
+      Charge Id: {code: id, abstractType: string, primaryKey: true}
+      Cost: {code: cost, abstractType: float}
+  Budgets:
+    code: budgets
+    columns:
+      Amount: {code: amount, abstractType: float}
+      Budget Name: {code: budget_name, abstractType: string}
+  Charge Labels:
+    nestedIn: {dataObject: Charges, column: Labels}
+    columns:
+      Label Value: {code: Value, abstractType: string}
+      Owner Id: {code: OwnerId, abstractType: string}
+    joins:
+      - joinTo: Owners
+        columnsFrom: [Owner Id]
+        columnsTo: [Owner Id]
+        joinType: many-to-one
+  Owners:
+    code: owners
+    columns:
+      Owner Id: {code: owner_id, abstractType: string, primaryKey: true}
+      Owner Name: {code: owner_name, abstractType: string}
+      Owner Weight: {code: owner_weight, abstractType: float}
+dimensions:
+  Label Value: {dataObject: Charge Labels, column: Label Value}
+  Owner Name: {dataObject: Owners, column: Owner Name}
+  Budget Name: {dataObject: Budgets, column: Budget Name}
+measures:
+  Total Cost:
+    columns: [{dataObject: Charges, column: Cost}]
+    resultType: float
+    aggregation: sum
+  Budget Amount:
+    columns: [{dataObject: Budgets, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Weighted Cost:
+    expression: "{[Charges].[Cost]} * {[Owners].[Owner Weight]}"
+    resultType: float
+    aggregation: sum
+"""
+
+#: ``(label, dimensions, measures)``. Each either binds or is refused.
+SHAPES: list[tuple[str, list[str], list[str]]] = [
+    ("nested dim, parent measure", ["Label Value"], ["Total Cost"]),
+    ("dim behind a nested edge, star", ["Owner Name"], ["Total Cost"]),
+    ("dim behind a nested edge, union", ["Owner Name"], ["Total Cost", "Budget Amount"]),
+    ("nested dim in a union", ["Label Value"], ["Total Cost", "Budget Amount"]),
+    ("expression across a nested edge, star", ["Label Value"], ["Weighted Cost"]),
+    ("expression across a nested edge, union", ["Budget Name"], ["Weighted Cost", "Budget Amount"]),
+    ("unrelated union, model untouched", ["Budget Name"], ["Total Cost", "Budget Amount"]),
+]
+
+
+@pytest.fixture(scope="module")
+def shapes_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(SHAPES_MODEL_YAML)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return resolved
+
+
+@pytest.fixture(scope="module")
+def shapes_conn() -> Any:
+    connection = duckdb.connect(":memory:")
+    connection.execute(_SHAPES_SQL)
+    yield connection
+    connection.close()
+
+
+@pytest.mark.parametrize(("label", "dimensions", "measures"), SHAPES, ids=[s[0] for s in SHAPES])
+def test_every_shape_either_runs_or_refuses(
+    shapes_conn: Any,
+    shapes_model: SemanticModel,
+    label: str,
+    dimensions: list[str],
+    measures: list[str],
+) -> None:
+    from orionbelt.compiler.fanout import FanoutError
+    from orionbelt.compiler.resolution import ResolutionError
+    from orionbelt.dialect.base import UnsupportedNestedAccessError
+
+    try:
+        result = CompilationPipeline().compile(
+            QueryObject(select=QuerySelect(dimensions=dimensions, measures=measures)),
+            shapes_model,
+            "duckdb",
+        )
+    except (ResolutionError, FanoutError, UnsupportedNestedAccessError):
+        return  # a structured refusal is a correct outcome
+    # Compiled, so it has to bind. This is the assertion four rounds of string
+    # checks could not make.
+    shapes_conn.execute(result.sql).fetchall()

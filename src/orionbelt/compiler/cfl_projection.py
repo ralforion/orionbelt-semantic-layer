@@ -33,12 +33,14 @@ from orionbelt.compiler.metric_expansion import (
     metric_leaf_components,
 )
 from orionbelt.compiler.resolution import (
+    ResolutionError,
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
 )
 from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.dialect.base import Dialect
+from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     TWO_COLUMN_AGGREGATIONS,
     DataObjectColumn,
@@ -98,7 +100,9 @@ def group_dimensions_into_legs(
     for obj_name, obj in model.data_objects.items():
         if not obj.joins:
             continue
-        reachable_dims = dim_objects & (graph.descendants(obj_name) | {obj_name})
+        # A leg joins; it does not unnest. A dimension behind a containment
+        # edge is out of its reach however ordinary its own join is.
+        reachable_dims = dim_objects & (graph.descendants_without_unnest(obj_name) | {obj_name})
         if reachable_dims:
             fact_candidates.append((obj_name, reachable_dims))
 
@@ -765,8 +769,42 @@ def _single_leg_root(
         return next(iter(objects), None)
     graph = JoinGraph(model, use_path_names=resolved.use_path_names or None)
     root = graph.find_common_root(objects)
-    if root and objects <= (graph.descendants(root) | {root}):
+    if not root:
+        return None
+    # Measured without crossing a containment edge: a leg is a star built out
+    # of tables, so an object only an unnest reaches is not one this leg can
+    # project - and assigning the expression here anyway put a column in the
+    # SELECT whose table the leg never joined.
+    if objects <= (graph.descendants_without_unnest(root) | {root}):
         return root
+    if objects <= (graph.descendants(root) | {root}):
+        # Connected, but only *through* an unnest. Not the cross-fact case the
+        # caller handles next - those objects are genuinely independent and each
+        # gets a leg of its own, which for these would pair rows that have no
+        # key in common. Refused, because the union cannot express a product
+        # taken across a containment edge and the alternative was a column no
+        # leg projected.
+        behind = sorted(objects - (graph.descendants_without_unnest(root) | {root}))
+        listed = ", ".join(f"'{name}'" for name in behind)
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="UNREACHABLE_REQUIRED_OBJECT",
+                    message=(
+                        f"This expression reads {listed}, which '{root}' reaches only by "
+                        f"unnesting an array column, and the query is planned as a union of "
+                        f"independent facts. A union leg is built out of tables and has no "
+                        f"unnest to reach it with."
+                    ),
+                    path="select.measures",
+                    hint=(
+                        "Query the measure without the other facts, so it is planned as a "
+                        "single star, or read the nested object through a flattening view "
+                        "by declaring 'code' alongside 'nestedIn'."
+                    ),
+                )
+            ]
+        )
     return None
 
 
@@ -788,7 +826,7 @@ def _dimension_carrying_leg(
     root = graph.find_common_root(sources | dim_objects) if dim_objects else None
     if not root:
         return None
-    reachable = graph.descendants(root) | {root}
+    reachable = graph.descendants_without_unnest(root) | {root}
     return root if dim_objects & reachable else None
 
 

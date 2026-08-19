@@ -263,7 +263,7 @@ class CFLPlanner:
                     continue
                 leg_object = owner.get(measure.name)
                 reachable: set[str] = (
-                    graph.descendants(leg_object) | {leg_object}
+                    graph.descendants_without_unnest(leg_object) | {leg_object}
                     if leg_object is not None
                     else set()
                 )
