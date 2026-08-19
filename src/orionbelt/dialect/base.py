@@ -560,8 +560,24 @@ class Dialect(ABC):
         an escaped delimiter in a filter was silently wrong on five engines.
         """
         if self.backslash_escapes_strings:
-            escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+            escaped = (
+                value.replace("\\", "\\\\")
+                .replace("'", "\\'")
+                # A quoted string cannot span lines on BigQuery: a real newline
+                # or carriage return closes it, and the query fails with
+                # "Unclosed string literal". Measured, it is the only engine of
+                # the seven that minds - the other six take a raw newline, tab,
+                # form feed or control byte and hand it back unchanged. Written
+                # as escapes for all five backslash dialects rather than only
+                # BigQuery, because in this convention that is simply how a
+                # control character is spelled, and all five read it back.
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            )
         else:
+            # Standard SQL has no escape sequences here, so a control character
+            # rides through literally. Measured working on Postgres, DuckDB and
+            # Dremio, including a newline: a quoted string may span lines.
             escaped = value.replace("'", "''")
         return f"'{escaped}'"
 

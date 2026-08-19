@@ -64,3 +64,37 @@ def test_the_literal_node_goes_through_it(dialect: str) -> None:
 def test_an_ordinary_value_is_untouched(dialect: str) -> None:
     dia = DialectRegistry.get(dialect)
     assert dia.quote_string_literal("plain") == "'plain'"
+
+
+class TestControlCharacters:
+    """A real newline, not the two characters that spell one.
+
+    The first round of this work tested ``"tab\\there"`` - a literal backslash
+    and a t - so a genuine control character was never exercised. BigQuery is
+    the one engine of the eight that minds: a quoted string cannot span lines
+    there, and a raw newline fails the query with "Unclosed string literal".
+    The other seven hand a newline, carriage return, tab, form feed or control
+    byte straight back.
+    """
+
+    @pytest.mark.parametrize("dialect", BACKSLASH)
+    def test_a_newline_is_written_as_an_escape(self, dialect: str) -> None:
+        dia = DialectRegistry.get(dialect)
+        assert dia.quote_string_literal("a\nb") == "'a\\nb'"
+        assert dia.quote_string_literal("a\rb") == "'a\\rb'"
+
+    @pytest.mark.parametrize("dialect", STANDARD)
+    def test_standard_sql_carries_it_literally(self, dialect: str) -> None:
+        """No escape sequences exist there, and a quoted string may span lines -
+        measured on Postgres, DuckDB and Dremio.
+        """
+        dia = DialectRegistry.get(dialect)
+        assert dia.quote_string_literal("a\nb") == "'a\nb'"
+
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_a_tab_needs_no_escape_anywhere(self, dialect: str) -> None:
+        """Measured raw on all eight. Only the line terminators are escaped, so
+        the rule stays "escape what an engine cannot take" rather than a blanket
+        control-character pass.
+        """
+        assert "\t" in DialectRegistry.get(dialect).quote_string_literal("a\tb")

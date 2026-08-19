@@ -48,6 +48,16 @@ VALUES = [
     "tab\\there",
     "percent%_underscore",
     "unicode: é ü 中",
+    # Real control characters, not the escaped spellings. The first round of
+    # this test used "tab\\there" - a literal backslash and a t - so a genuine
+    # newline was never exercised, and BigQuery rejects one inside a quoted
+    # string with "Unclosed string literal".
+    "line\nbreak",
+    "carriage\rreturn",
+    "crlf\r\nboth",
+    "real\ttab",
+    "form\x0cfeed",
+    "control\x01byte",
 ]
 
 
