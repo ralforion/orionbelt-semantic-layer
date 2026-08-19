@@ -22,7 +22,7 @@ SELECT
         OR "Promotion"."p_channel_tv" = 'Y'
         THEN "Store Sales"."ss_ext_sales_price"
       END
-    ) * 100.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("Store Sales"."ss_ext_sales_price") AS Nullable(Decimal(38, 14))),
+    ) * 100.0 AS Nullable(Decimal(38, 14))) / nullIf(CAST(SUM("Store Sales"."ss_ext_sales_price") AS Nullable(Decimal(38, 14))), 0),
     6
   ) AS Nullable(Decimal(18, 6))) AS "promo_pct"
 FROM "tpcds"."store_sales" AS "Store Sales"

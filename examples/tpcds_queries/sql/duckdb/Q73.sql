@@ -24,7 +24,7 @@ WHERE
   AND "Household Demographics"."hd_vehicle_count" > 0
   AND CASE
     WHEN "Household Demographics"."hd_vehicle_count" > 0
-    THEN "Household Demographics"."hd_dep_count" * 1.0 / "Household Demographics"."hd_vehicle_count"
+    THEN "Household Demographics"."hd_dep_count" * 1.0 / NULLIF("Household Demographics"."hd_vehicle_count", 0)
     ELSE NULL
   END > 1
   AND "Household Demographics"."hd_buy_potential" IN ('Unknown', '>10000')

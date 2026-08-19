@@ -24,7 +24,7 @@ WHERE
   AND "Household Demographics"."hd_vehicle_count" > 0
   AND CASE
     WHEN "Household Demographics"."hd_vehicle_count" > 0
-    THEN CAST("Household Demographics"."hd_dep_count" * 1.0 AS Nullable(Decimal(38, 14))) / CAST("Household Demographics"."hd_vehicle_count" AS Nullable(Decimal(38, 14)))
+    THEN CAST("Household Demographics"."hd_dep_count" * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(CAST("Household Demographics"."hd_vehicle_count" AS Nullable(Decimal(38, 14))), 0)
     ELSE NULL
   END > 1
   AND "Household Demographics"."hd_buy_potential" IN ('Unknown', '>10000')

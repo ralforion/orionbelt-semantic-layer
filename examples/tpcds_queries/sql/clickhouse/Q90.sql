@@ -10,14 +10,17 @@ SELECT
         AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
         THEN "Web Sales"."ws_order_number"
       END
-    ) AS Nullable(Decimal(38, 14))) / CAST(COUNT(
-      CASE
-        WHEN "Time"."t_hour" BETWEEN 19 AND 20
-        AND "Household Demographics"."hd_dep_count" = 6
-        AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
-        THEN "Web Sales"."ws_order_number"
-      END
-    ) AS Nullable(Decimal(38, 14))),
+    ) AS Nullable(Decimal(38, 14))) / nullIf(
+      CAST(COUNT(
+        CASE
+          WHEN "Time"."t_hour" BETWEEN 19 AND 20
+          AND "Household Demographics"."hd_dep_count" = 6
+          AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
+          THEN "Web Sales"."ws_order_number"
+        END
+      ) AS Nullable(Decimal(38, 14))),
+      0
+    ),
     6
   ) AS Nullable(Decimal(18, 6))) AS "am_pm_ratio"
 FROM "tpcds"."web_sales" AS "Web Sales"

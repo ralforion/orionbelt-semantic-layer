@@ -156,6 +156,7 @@ nav:
       - Multi-Dialect Output: examples/multi-dialect.md
       - "Multi-Fact: Sales & Returns": examples/multi-fact.md
       - TPC-DS Benchmark: examples/tpcds.md
+      - "TPC-DS: Verified Results": examples/tpcds-sweep.md
       - "FinOps on FOCUS": examples/finops-focus.md
   - Comparison:
       - Overview: comparison/index.md

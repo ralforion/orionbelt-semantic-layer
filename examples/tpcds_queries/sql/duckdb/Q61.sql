@@ -18,7 +18,7 @@ SELECT
       OR "Promotion"."p_channel_tv" = 'Y'
       THEN "Store Sales"."ss_ext_sales_price"
     END
-  ) * 100.0 / SUM("Store Sales"."ss_ext_sales_price") AS DECIMAL(18, 6)) AS "promo_pct"
+  ) * 100.0 / NULLIF(SUM("Store Sales"."ss_ext_sales_price"), 0) AS DECIMAL(18, 6)) AS "promo_pct"
 FROM "main"."store_sales" AS "Store Sales"
 LEFT JOIN "main"."promotion" AS "Promotion"
   ON "Store Sales"."ss_promo_sk" = "Promotion"."p_promo_sk"

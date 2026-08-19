@@ -37,13 +37,14 @@ WITH "base" AS (
     "Manager ID" AS "Manager ID",
     "Month of Year" AS "Month of Year",
     "Sales Price Sum" AS "Sales Price Sum",
-    SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") AS "Avg Monthly Sales",
+    SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / NULLIF(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID"), 0) AS "Avg Monthly Sales",
     CASE
-      WHEN SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID") > 0
+      WHEN SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / NULLIF(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID"), 0) > 0
       THEN ABS(
-        "Sales Price Sum" - SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
-      ) / (
-        SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID")
+        "Sales Price Sum" - SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / NULLIF(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID"), 0)
+      ) / NULLIF(
+        SUM("Manager Sales") OVER (PARTITION BY "Manager ID") / NULLIF(SUM("Manager Month Groups") OVER (PARTITION BY "Manager ID"), 0),
+        0
       )
       ELSE NULL
     END AS "Monthly Variance"

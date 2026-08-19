@@ -9,13 +9,16 @@ SELECT
       AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
       THEN "Web Sales"."ws_order_number"
     END
-  ) / COUNT(
-    CASE
-      WHEN "Time"."t_hour" BETWEEN 19 AND 20
-      AND "Household Demographics"."hd_dep_count" = 6
-      AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
-      THEN "Web Sales"."ws_order_number"
-    END
+  ) / NULLIF(
+    COUNT(
+      CASE
+        WHEN "Time"."t_hour" BETWEEN 19 AND 20
+        AND "Household Demographics"."hd_dep_count" = 6
+        AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
+        THEN "Web Sales"."ws_order_number"
+      END
+    ),
+    0
   ) AS DECIMAL(18, 6)) AS "am_pm_ratio"
 FROM "main"."web_sales" AS "Web Sales"
 LEFT JOIN "main"."household_demographics" AS "Household Demographics"

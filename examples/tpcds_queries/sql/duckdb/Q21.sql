@@ -22,11 +22,14 @@ SELECT
       THEN "Inventory"."inv_quantity_on_hand"
     END
   ) * 1.0 / NULLIF(
-    SUM(
-      CASE
-        WHEN "Date"."d_date" < '2000-03-11'
-        THEN "Inventory"."inv_quantity_on_hand"
-      END
+    NULLIF(
+      SUM(
+        CASE
+          WHEN "Date"."d_date" < '2000-03-11'
+          THEN "Inventory"."inv_quantity_on_hand"
+        END
+      ),
+      0
     ),
     0
   ) AS DECIMAL(18, 6)) AS "Inventory Ratio"

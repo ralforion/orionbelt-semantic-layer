@@ -47,8 +47,17 @@ WITH "base" AS (
     "Brand" AS "Brand",
     "Sales Price Sum" AS "Sales Price Sum",
     CASE
-      WHEN CAST(SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) / CAST(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) > 0
-      THEN CAST("Sales Price Sum" AS Nullable(Decimal(38, 14))) / CAST(CAST(SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) / CAST(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) AS Nullable(Decimal(38, 14)))
+      WHEN CAST(SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))),
+        0
+      ) > 0
+      THEN CAST("Sales Price Sum" AS Nullable(Decimal(38, 14))) / nullIf(
+        CAST(CAST(SUM("Store Revenue") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("Store Item Groups") OVER (PARTITION BY "Store Key Dim") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))),
+        0
+      )
       ELSE NULL
     END AS "Store Item Revenue Share"
   FROM "base" AS "base"

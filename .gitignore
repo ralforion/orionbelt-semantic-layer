@@ -58,3 +58,4 @@ semantic-layer-spec.md
 
 # Generated per-vendor seed scripts (backup of what the drift seed executed)
 tests/integration/drift/vendor_exec/seed_sql/
+examples/tpcds_queries/results/

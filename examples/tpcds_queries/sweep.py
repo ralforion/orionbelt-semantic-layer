@@ -21,9 +21,12 @@ Reference SQL comes from REF_DIR below.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from pathlib import Path
 
@@ -185,6 +188,17 @@ class ClickHouseEngine:
             username=os.environ.get("CLICKHOUSE_USERNAME", "default"),
             password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
             database="tpcds",
+            # sf=10 with the reference query running beside ours: minutes, not
+            # seconds. The default client timeout gives up long before that and
+            # the sweep counts it as a mismatch.
+            send_receive_timeout=3600,
+            # No session id. The client otherwise generates one and pins every
+            # query to it, and the server refuses a second query while the
+            # first is still running on that session - which is what the heavy
+            # tail of this sweep does. It surfaced as SESSION_IS_LOCKED on the
+            # eight queries after Q83 and was counted as eight result
+            # mismatches, which is a far more alarming thing than it was.
+            autogenerate_session_id=False,
         )
 
     def run(self, sql: str):
@@ -201,6 +215,18 @@ class ClickHouseEngine:
 
 ENGINES = {"duckdb": DuckDBEngine, "clickhouse": ClickHouseEngine}
 
+#: How many queries to run at once, per engine. Not one number, because the two
+#: engines are limited by different things.
+#:
+#: DuckDB reads a local file at sf=1 and the whole sweep is a few seconds of
+#: work, so it takes whatever concurrency the machine has.
+#:
+#: ClickHouse at sf=10 is **memory**-bound in its tail, not CPU-bound. Measured
+#: on one local server: three of the heavy queries in flight together asked for
+#: 25 GB, spilled, and Q69 - a few minutes on its own - took 52. Concurrency
+#: there makes the sweep slower, not faster, so it runs one at a time.
+DEFAULT_JOBS = {"duckdb": 8, "clickhouse": 1}
+
 
 # ---------------------------------------------------------------------- comparison
 
@@ -215,7 +241,14 @@ def norm(v, nd=2):
     return str(v).strip()
 
 
-def diff(got_cols, got_rows, ref_cols, ref_rows, keep_got=None, keep_ref=None, nd=2) -> bool:
+def diff(got_cols, got_rows, ref_cols, ref_rows, keep_got=None, keep_ref=None, nd=2) -> dict:
+    """Compare two result sets and return a verdict.
+
+    Returns rather than prints, because the sweep runs its queries concurrently
+    and interleaved output belongs to no query in particular. The caller writes
+    each verdict to its own file.
+    """
+
     def project(rows, keep):
         idx = keep if keep is not None else range(len(rows[0]) if rows else 0)
         return sorted(
@@ -224,19 +257,22 @@ def diff(got_cols, got_rows, ref_cols, ref_rows, keep_got=None, keep_ref=None, n
         )
 
     g, r = project(got_rows, keep_got), project(ref_rows, keep_ref)
-    print(f"  got {len(g):>6} rows x {len(got_cols)} cols")
-    print(f"  ref {len(r):>6} rows x {len(ref_cols)} cols")
-    if g == r:
-        print("  ✅ EXACT MATCH")
-        return True
-    print("  ❌ DIFF")
+    verdict = {
+        "match": g == r,
+        "got_rows": len(g),
+        "got_cols": len(got_cols),
+        "ref_rows": len(r),
+        "ref_cols": len(ref_cols),
+    }
+    if verdict["match"]:
+        return verdict
     for i, (a, b) in enumerate(zip(g, r, strict=False)):
         if a != b:
-            print(f"   row {i}:\n     got {a}\n     ref {b}")
+            verdict["first_diff"] = {"row": i, "got": list(a), "ref": list(b)}
             break
     if len(g) != len(r):
-        print(f"   row count differs: {len(g)} vs {len(r)}")
-    return False
+        verdict["row_count_differs"] = [len(g), len(r)]
+    return verdict
 
 
 def strip_limit(sql: str) -> str:
@@ -279,6 +315,62 @@ def dump_sql(labels: list[str], dialect: str) -> int:
 # --------------------------------------------------------------------------- main
 
 
+RESULTS = HERE / "results"
+
+
+def run_one(label: str, dialect: str) -> dict:
+    """Compile, execute and compare one query, on a connection of its own.
+
+    One engine per query rather than one per sweep. That is what makes the run
+    parallel, and it also removes the failure that made this worth doing: the
+    ClickHouse client pins every query to one session, and the server refuses a
+    second query while the first is still running on it. Eight queries after the
+    heavy Q83 came back SESSION_IS_LOCKED and were counted as eight result
+    mismatches.
+    """
+    started = time.monotonic()
+    engine = ENGINES[dialect]()
+    try:
+        unlimited = label not in PARTIAL and CASES[label][3]
+        sql = compile_query(label, dialect, drop_limit=unlimited)
+        got = engine.run(sql)
+        ref_text = engine.reference(label)
+        if label in PARTIAL:
+            kg, kr, nd = PARTIAL[label]
+            end = min(i for i in (ref_text.find(") AS tmp1"), ref_text.find(") tmp1")) if i > 0)
+            start = re.search(r"\(\s*SELECT", ref_text).start() + 1
+            ref = engine.run(ref_text[start:end])
+        else:
+            kg, kr, nd, _ = CASES[label]
+            ref = engine.run(strip_limit(ref_text) if unlimited else ref_text)
+        verdict = diff(*got, *ref, keep_got=kg, keep_ref=kr, nd=nd)
+    except Exception as e:  # noqa: BLE001
+        verdict = {"match": False, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+    finally:
+        engine.close()
+    verdict |= {"query": label, "dialect": dialect, "seconds": round(time.monotonic() - started, 1)}
+    return verdict
+
+
+def run_sweep(labels: list[str], dialect: str, jobs: int) -> tuple[list[str], list[str]]:
+    """Run every query concurrently, writing one result file each."""
+    out = RESULTS / dialect
+    out.mkdir(parents=True, exist_ok=True)
+    ok: list[str] = []
+    bad: list[str] = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(run_one, label, dialect): label for label in labels}
+        for future in as_completed(futures):
+            v = future.result()
+            label = v["query"]
+            (out / f"{label}.json").write_text(json.dumps(v, indent=1, default=str) + "\n")
+            (ok if v["match"] else bad).append(label)
+            mark = "OK  " if v["match"] else "DIFF"
+            detail = v.get("error") or f'{v.get("got_rows")} vs {v.get("ref_rows")} rows'
+            print(f"  {mark} {label:<5} {v['seconds']:>6.1f}s  {detail}", flush=True)
+    return sorted(ok), sorted(bad)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("labels", nargs="*", help="e.g. Q98 Q63 (default: all)")
@@ -288,6 +380,15 @@ def main() -> int:
         "--dump",
         action="store_true",
         help="write compiled SQL to sql/<dialect>/<label>.sql and stop (no database needed)",
+    )
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help=(
+            "queries to run concurrently, each on its own connection. Defaults "
+            f"per engine ({DEFAULT_JOBS}); see the note there before raising it"
+        ),
     )
     args = ap.parse_args()
 
@@ -301,31 +402,8 @@ def main() -> int:
     if args.dump:
         return dump_sql(wanted, args.dialect)
 
-    engine = ENGINES[args.dialect]()
-    ok, bad = [], []
-    try:
-        for label in wanted:
-            print(f"===== {label}" + (" (inner aggregate block only)" if label in PARTIAL else ""))
-            try:
-                unlimited = label not in PARTIAL and CASES[label][3]
-                got = engine.run(compile_query(label, args.dialect, drop_limit=unlimited))
-                ref_text = engine.reference(label)
-                if label in PARTIAL:
-                    kg, kr, nd = PARTIAL[label]
-                    end = min(
-                        i for i in (ref_text.find(") AS tmp1"), ref_text.find(") tmp1")) if i > 0
-                    )
-                    start = re.search(r"\(\s*SELECT", ref_text).start() + 1
-                    ref = engine.run(ref_text[start:end])
-                else:
-                    kg, kr, nd, _ = CASES[label]
-                    ref = engine.run(strip_limit(ref_text) if unlimited else ref_text)
-                (ok if diff(*got, *ref, keep_got=kg, keep_ref=kr, nd=nd) else bad).append(label)
-            except Exception as e:  # noqa: BLE001
-                print(f"  ERROR {type(e).__name__}: {str(e)[:200]}")
-                bad.append(label)
-    finally:
-        engine.close()
+    jobs = args.jobs or DEFAULT_JOBS.get(args.dialect, 4)
+    ok, bad = run_sweep(wanted, args.dialect, jobs)
 
     expected = EXPECTED_DIFF.get(args.dialect, set())
     known = [label for label in bad if label in expected]

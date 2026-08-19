@@ -27,7 +27,10 @@ SELECT
   "Class" AS "Class",
   "Current Price" AS "Current Price",
   "Catalog Sales Amount" AS "Catalog Sales Amount",
-  CAST("Catalog Sales Amount" * 100.0 AS Nullable(Decimal(38, 14))) / CAST(SUM("Catalog Class Revenue") OVER (PARTITION BY "Class") AS Nullable(Decimal(38, 14))) AS "Catalog Revenue Ratio"
+  CAST("Catalog Sales Amount" * 100.0 AS Nullable(Decimal(38, 14))) / nullIf(
+    CAST(SUM("Catalog Class Revenue") OVER (PARTITION BY "Class") AS Nullable(Decimal(38, 14))),
+    0
+  ) AS "Catalog Revenue Ratio"
 FROM "base" AS "base"
 ORDER BY
   "Category" ASC,

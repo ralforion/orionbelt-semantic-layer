@@ -37,13 +37,14 @@ WITH "base" AS (
     "Manufacturer ID" AS "Manufacturer ID",
     "Quarter of Year" AS "Quarter of Year",
     "Sales Price Sum" AS "Sales Price Sum",
-    SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") AS "Avg Quarterly Sales",
+    SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / NULLIF(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID"), 0) AS "Avg Quarterly Sales",
     CASE
-      WHEN SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID") > 0
+      WHEN SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / NULLIF(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID"), 0) > 0
       THEN ABS(
-        "Sales Price Sum" - SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID")
-      ) / (
-        SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID")
+        "Sales Price Sum" - SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / NULLIF(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID"), 0)
+      ) / NULLIF(
+        SUM("Manufacturer Sales") OVER (PARTITION BY "Manufacturer ID") / NULLIF(SUM("Manufacturer Quarter Groups") OVER (PARTITION BY "Manufacturer ID"), 0),
+        0
       )
       ELSE NULL
     END AS "Quarterly Deviation"
