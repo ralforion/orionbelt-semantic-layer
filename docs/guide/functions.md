@@ -44,34 +44,41 @@ renders the call over an exact-decimal cast rather than reaching for float
 arithmetic:
 
 ```sql
-ROUND(x)                                        -- DuckDB, BigQuery, Snowflake, Databricks, Dremio
-ROUND(CAST(x AS numeric))                       -- PostgreSQL
-ROUND(CAST(x AS DECIMAL(65, 18)))               -- MySQL
-sign(x) * floor(abs(x) + toDecimal64(0.5, 1))   -- ClickHouse
+ROUND(x)                                              -- DuckDB, BigQuery, Snowflake, Databricks, Dremio
+ROUND(CAST(x AS numeric))                             -- PostgreSQL
+TRUNCATE(x + SIGN(x) * 0.5, 0)                        -- MySQL
+truncate(x + SIGN(x) * toDecimal256('0.5', 1), 0)     -- ClickHouse
 ```
 
-On PostgreSQL and MySQL the cast keeps 18 fractional digits, or the digit count
-you asked for when that is larger — `round(x, 19)` casts to 19, so it never
-drops the digit being rounded to.
+Two shapes, and which one an engine gets depends on whether it has a decimal
+type that can hold anything.
 
-ClickHouse converts nothing, because on that engine **the conversion is the
-lossy step**. `toDecimal256` scales a `Float64` by a power of ten in floating
-point, so the value moves before `round` ever sees it: `toDecimal256(2.5, 22)`
-is `2.4999999999999997903541`, and even at a modest scale
-`round(toDecimal256(1e19, 18))` gives `9999999999999999539` where the answer is
-`1e19`. An infinity cannot be converted at all. So the arithmetic runs in
-whatever type arrived and only the *half* is typed: ClickHouse resolves
-`Decimal + Decimal` to `Decimal` and `Float64 + Decimal` to `Float64`, so one
-expression preserves whichever it is handed. A bare `0.5` is a `Float64` and
-would drag every decimal down with it.
+**PostgreSQL does.** Its `numeric` is unbounded, so casting to it names no
+width, loses nothing, and its own `ROUND` then rounds the way the catalog wants.
+The cast earns its place twice over there: PostgreSQL has no
+`round(double precision, integer)` at all, so `round(x, 2)` over a float column
+used to raise rather than answer.
 
-Rounding a decimal must not cost the digits that made it a decimal, which is why
-the native `ROUND` still does the arithmetic. On PostgreSQL the cast earns its
-place twice over: there is no `round(double precision, integer)` in that engine
-at all, so `round(x, 2)` over a float column used to raise rather than answer.
+**MySQL and ClickHouse do not**, so nothing is cast. A cast has to name a width,
+and on those two that width is a loss either way — MySQL's `DECIMAL` is 65
+digits split between the two sides, so `CAST(1e50 AS DECIMAL(65, 18))` saturates
+silently to `999…9`, and ClickHouse's conversion from `Float64` scales by a
+power of ten *in floating point*, so `round(toDecimal256(1e19, 18))` gives
+`9999999999999999539` where the answer is `1e19`. An infinity cannot be
+converted at all.
 
-One consequence is deliberate: on those three engines `round` gives back the
-engine's decimal type rather than a float.
+So they add half of the last kept place and truncate, which is the same
+operation and needs no conversion. The arithmetic runs in whatever type
+arrived, and only the **half** is written as an exact decimal: `0.5` at zero
+places, `0.005` at two, `50` at minus two. A bare `0.005` already *is* a
+`DECIMAL` to MySQL; to ClickHouse it is a `Float64`, and `Decimal + Float64` is
+a `Float64`, so there it is quoted and passed through `toDecimal256`.
+ClickHouse's own promotion then does the rest — `Decimal + Decimal` stays a
+`Decimal`, `Float64 + Decimal` stays a `Float64` — so one expression preserves
+whichever type it is handed.
+
+One consequence is deliberate: on PostgreSQL `round` gives back `numeric`
+rather than a float.
 
 Five more places where the engines differ on the answer, not the name:
 
@@ -199,10 +206,10 @@ so every engine gives the catalog's answer:
   back the *last* field and BigQuery's `SPLIT` would return NULL, so both get a
   guard.
 - `round(2.5)` is 3. ClickHouse, PostgreSQL and MySQL round ties to even for
-  floats and away from zero for decimals. PostgreSQL and MySQL get an
-  exact-decimal cast and their own `ROUND` does the rest; ClickHouse gets
-  arithmetic with a decimal-typed half, because converting a float to decimal
-  there moves the value.
+  floats and away from zero for decimals. PostgreSQL gets an exact-decimal cast
+  and its own `ROUND` does the rest; MySQL and ClickHouse add half of the last
+  kept place and truncate, because a cast there has to name a width and every
+  width loses something.
 - `trunc(-1.9)` is -1. Databricks has no numeric truncation at all (its `trunc`
   takes a date), so it becomes a signed floor of the magnitude.
 - `date_diff('day', TIMESTAMP '2026-08-01 23:00:00', TIMESTAMP '2026-08-02 01:00:00')`

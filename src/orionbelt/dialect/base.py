@@ -993,96 +993,111 @@ class Dialect(ABC):
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
 
-    #: Fractional digits the decimal cast keeps when the caller does not say.
-    #: 18 covers a float's own precision with room to spare, and is low enough
-    #: that a Float-to-Decimal conversion still lands on the value it was given
-    #: (see :meth:`ClickHouseDialect._round_decimal_cast`).
-    _ROUND_CAST_SCALE = 18
+    #: Largest digit count this engine will spell as an exact literal. Past
+    #: the widest scale its decimal type has, rounding is the identity for
+    #: every value the engine can hold, so clamping there is exact.
+    _MAX_ROUND_DIGITS: int = 0
 
-    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
-        """The exact-decimal cast this engine needs before a native ``ROUND``.
+    #: Set by an engine that rounds its float type to even and needs the
+    #: add-half-and-truncate rewrite. ``None`` means the native ROUND is right.
+    _ROUND_TRUNCATE_FN: str | None = None
 
-        ``None`` when the engine's own ``ROUND`` already rounds ties away from
-        zero for every numeric type, which is the case for DuckDB, BigQuery,
-        Snowflake, Databricks and Dremio.
+    def _round_digits(self, args: list[Expr]) -> int | None:
+        """The digit count as a clamped integer, or ``None`` when computed.
 
-        *scale* is the fractional digits the cast must keep: never fewer than
-        the caller asked ``round`` for, or the cast would drop the very digit
-        being rounded to.
+        Read only from an integer literal, which is what a model formula
+        writes. The clamp is what keeps ``round(x, 5000)`` from building a
+        5000-place literal, which is not a number any engine here can hold.
+        """
+        if len(args) < 2:
+            return 0
+        digits = args[1]
+        # bool is a subclass of int, and `round(x, true)` is not a digit count.
+        if (
+            isinstance(digits, Literal)
+            and isinstance(digits.value, int)
+            and not isinstance(digits.value, bool)
+        ):
+            limit = self._MAX_ROUND_DIGITS
+            return max(-limit, min(limit, digits.value))
+        return None
+
+    @staticmethod
+    def _decimal_half(digits: int) -> str:
+        """Half of the last place *digits* keeps, written out exactly.
+
+        ``0.5`` at 0 places, ``0.005`` at 2, ``50`` at -2. Spelled rather than
+        computed, so no float is involved in producing it.
+        """
+        if digits >= 0:
+            return "0." + "0" * digits + "5"
+        return "5" + "0" * (abs(digits) - 1)
+
+    def _round_half_sql(self, half: str) -> str:
+        """Spell *half* so this engine reads it as an exact decimal."""
+        return half
+
+    def _round_half_computed(self, digits_sql: str) -> str:
+        """The same half when the digit count is only known at run time."""
+        return f"0.5 * POW(10, -({digits_sql}))"
+
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """An exact-decimal cast to put under the native ``ROUND``.
+
+        ``None`` unless the engine both rounds its float type to even *and* has
+        a decimal type wide enough to take any value unharmed, which of the
+        eight is true only of PostgreSQL and its unbounded ``numeric``.
         """
         return None
 
-    #: Widest fractional scale this engine's decimal type can express at all.
-    #: ``None`` where the type is unbounded, as PostgreSQL's ``numeric`` is.
-    #: Exceeding it is not a wrong number but invalid SQL.
-    _MAX_ROUND_CAST_SCALE: int | None = None
-
-    #: Widest scale that is safe for *every* input type, used when the digit
-    #: count is not known while the SQL is being built. Defaults to the plain
-    #: scale; an engine raises it only as far as it can without trading one
-    #: kind of wrong answer for another.
-    _UNKNOWN_ROUND_CAST_SCALE: int | None = None
-
-    def _round_cast_scale(self, args: list[Expr]) -> int:
-        """Fractional digits the decimal cast has to preserve.
-
-        A fixed scale is wrong the moment the caller asks for more digits than
-        it keeps: ``round(x, 19)`` under a scale-18 cast has already lost the
-        19th digit before ``ROUND`` runs, which regresses a high-scale decimal
-        column that the engine rounds correctly on its own. So a known digit
-        count sizes the cast, bounded by what the engine's decimal type can
-        express.
-
-        The digit count is read only when it is an integer literal, which is
-        what a model formula writes. A scale is part of a *type*, so it has to
-        be known when the SQL is built and cannot wait for a value: a computed
-        one falls back to the widest scale that is safe whatever arrives.
-        """
-        scale = self._ROUND_CAST_SCALE
-        if len(args) > 1:
-            digits = args[1]
-            # bool is a subclass of int, and `round(x, true)` is not a scale.
-            if (
-                isinstance(digits, Literal)
-                and isinstance(digits.value, int)
-                and not isinstance(digits.value, bool)
-            ):
-                scale = max(scale, digits.value)
-            else:
-                scale = max(scale, self._UNKNOWN_ROUND_CAST_SCALE or scale)
-        if self._MAX_ROUND_CAST_SCALE is not None:
-            scale = min(scale, self._MAX_ROUND_CAST_SCALE)
-        return scale
-
     def _render_round(self, args: list[Expr]) -> str:
-        """Native ``ROUND``, over an exact-decimal cast where the engine needs
-        one to round ties away from zero.
+        """Ties away from zero, which three engines do not do for floats.
 
         Measured, not assumed. ClickHouse, PostgreSQL and MySQL all use
         banker's rounding for their *float* type and away from zero for their
         *decimal* type - ``round(2.5)`` is 2 on a double and 3 on a numeric, on
         the same engine, and all three document it. ClickHouse is not the odd
-        one out it was once described as.
+        one out it was once described as. The other five need nothing.
 
-        The rewrite therefore moves the value to the decimal type rather than
-        doing float arithmetic. An earlier ClickHouse-only fix computed
-        ``sign(x) * floor(abs(x) * pow(10, n) + 0.5) / pow(10, n)``, which fixes
-        the tie but drags every Decimal into Float64 on the way, because both
-        ``pow`` and the ``0.5`` literal are Float64 there - measured, a
-        Decimal128 of 12345678901234567.885 rounded to 2 places came back as
-        1.2345678901234568e16. Rounding a decimal must not cost the digits that
-        made it a decimal, so the native ``ROUND`` does the work and the cast
-        only guarantees the type it sees.
+        Two shapes cover the three, and which one an engine gets is decided by
+        whether it has a decimal type that can hold anything:
+
+        **PostgreSQL** does. Its ``numeric`` is unbounded, so casting to it
+        names no width, loses nothing, and its own ROUND then rounds the way
+        the catalog wants.
+
+        **MySQL and ClickHouse** do not, so nothing is cast. Adding half of the
+        last kept place and truncating is the same operation and needs no
+        conversion: the arithmetic runs in whatever type arrived, and only the
+        *half* is written as an exact decimal, which is what keeps a decimal
+        operand exact while leaving a float a float.
+
+        Casting either of those two was tried and measured worse. MySQL's
+        DECIMAL is 65 digits split between the sides, so ``CAST(1e50 AS
+        DECIMAL(65, 18))`` saturates silently to 999...9. ClickHouse's
+        conversion from Float64 scales by a power of ten in floating point, so
+        ``round(toDecimal256(1e19, 18))`` is 9999999999999999539 where DuckDB
+        says 1e19, and an infinity cannot be converted at all.
         """
-        cast_sql = self._round_decimal_cast(
-            self.compile_expr(args[0]), self._round_cast_scale(args)
-        )
-        if cast_sql is None:
+        cast_sql = self._round_decimal_cast(self.compile_expr(args[0]))
+        if cast_sql is not None:
+            # RawSQL: re-wraps SQL this dialect just rendered, so the argument
+            # goes back through _render_named_function and picks up the
+            # engine's own spelling of ROUND.
+            return self._render_named_function("round", [RawSQL(sql=cast_sql), *args[1:]])
+        if self._ROUND_TRUNCATE_FN is None:
             return self._render_named_function("round", args)
-        # RawSQL: re-wraps SQL this dialect just rendered, so that the argument
-        # goes back through _render_named_function and picks up the engine's own
-        # spelling of ROUND rather than being formatted a second way here.
-        return self._render_named_function("round", [RawSQL(sql=cast_sql), *args[1:]])
+
+        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        digits = self._round_digits(args)
+        if digits is None:
+            # A computed count cannot be spelled as a literal, and the fallback
+            # is a float, so a decimal operand degrades. 2.25.0 did this too.
+            n_sql = self.compile_expr(args[1])
+            half = self._round_half_computed(n_sql)
+            return f"{self._ROUND_TRUNCATE_FN}({value} + SIGN({value}) * {half}, {n_sql})"
+        half = self._round_half_sql(self._decimal_half(digits))
+        return f"{self._ROUND_TRUNCATE_FN}({value} + SIGN({value}) * {half}, {digits})"
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Default: native ``TRUNC(x[, n])``, truncating toward zero."""

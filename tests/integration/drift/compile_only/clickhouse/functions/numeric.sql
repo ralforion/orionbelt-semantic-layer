@@ -34,13 +34,13 @@ POWER(2, 10);
 
 -- round(x, n?)
 --   round(2.5) = 3
-(sign(2.5) * floor(abs(2.5) + toDecimal64(0.5, 1)));
+truncate(2.5 + SIGN(2.5) * toDecimal256('0.5', 1), 0);
 --   round(-2.5) = -3
-(sign(-2.5) * floor(abs(-2.5) + toDecimal64(0.5, 1)));
+truncate(-2.5 + SIGN(-2.5) * toDecimal256('0.5', 1), 0);
 --   round(0.5) = 1
-(sign(0.5) * floor(abs(0.5) + toDecimal64(0.5, 1)));
+truncate(0.5 + SIGN(0.5) * toDecimal256('0.5', 1), 0);
 --   round(2.345, 2) = 2.35
-(sign(2.345) * floor(abs(2.345) * 100 + toDecimal64(0.5, 1)) / 100);
+truncate(2.345 + SIGN(2.345) * toDecimal256('0.005', 3), 2);
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1

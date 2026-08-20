@@ -558,30 +558,13 @@ class MySQLDialect(Dialect):
         digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
         return f"TRUNCATE({value}, {digits})"
 
-    #: MySQL's hard ceiling on DECIMAL scale. Asking for more fractional digits
-    #: than this is not expressible as a type here, so the cast stops.
-    _MAX_ROUND_CAST_SCALE = 30
+    #: MySQL's DECIMAL scale ceiling, and the widest digit count it can spell.
+    _MAX_ROUND_DIGITS = 30
 
-    #: A computed digit count can safely take MySQL's ceiling: the cast then
-    #: keeps every digit a DECIMAL can hold, so nothing the engine could have
-    #: rounded to is lost, and the conversion carries the tie intact at that
-    #: scale (measured, all seven canonical ties round away from zero at 30).
-    #: It costs integer headroom, which is the right trade for a rare case.
-    _UNKNOWN_ROUND_CAST_SCALE = 30
-
-    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
-        """MySQL rounds ties to even for ``DOUBLE`` and away from zero for
-        ``DECIMAL``, both documented.
-
-        The default scale is 18 rather than MySQL's maximum of 30 because 65 is
-        the widest DECIMAL it takes, so every fractional digit is bought from
-        the integer side, and a cast that overflows here **saturates silently**
-        rather than raising. Measured, ``CAST(1e35 AS DECIMAL(65, 30))`` returns
-        99999999999999999999999999999999999.999999999999999999999999999999,
-        where scale 18 carries 1e40 intact. A caller asking ``round`` for more
-        digits buys them back from that headroom deliberately.
-        """
-        return f"CAST({value_sql} AS DECIMAL(65, {scale}))"
+    #: MySQL rounds ties to even for DOUBLE and away from zero for DECIMAL, so
+    #: it takes the add-half-and-truncate shape. A bare decimal literal already
+    #: *is* a DECIMAL here, so the half needs no spelling of its own.
+    _ROUND_TRUNCATE_FN = "TRUNCATE"
 
     def _render_div(self, args: list[Expr]) -> str:
         """MySQL's integer division is the ``DIV`` operator, which truncates

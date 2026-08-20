@@ -281,12 +281,14 @@ class PostgresDialect(Dialect):
             f"{max_date}::timestamp, INTERVAL '{step_n} {step_u}') AS d"
         )
 
-    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
         """PostgreSQL rounds ties to even for ``double precision`` and away from
         zero for ``numeric``, both documented.
 
-        Unconstrained ``numeric``, so *scale* is not needed: PostgreSQL's is an
-        arbitrary-precision type and the cast keeps every digit it is given.
+        The cast names no width because it does not have to: PostgreSQL's
+        ``numeric`` is arbitrary precision, so it keeps every digit it is given
+        and there is no scale to trade against magnitude. Measured on 16, an
+        infinity, the ties and 1e19 all come back intact.
 
         The cast also supplies a function that does not otherwise exist: there
         is no ``round(double precision, integer)`` in PostgreSQL at all, so a
