@@ -81,7 +81,11 @@ Two ends of the digit count are special, and they are not symmetric. Rounding to
 so the call is the identity there and no arithmetic is emitted. A **negative**
 count is not identity at any size — `round(1e40, -41)` is 0 — and truncating
 stops working once the count passes the value's own magnitude, so those divide
-by the factor, round at zero places, and put the scale back.
+by the factor, round at zero places, and put the scale back. The factor has to
+out-scale the *value* rather than the type: `9e64` is an ordinary `DECIMAL(65)`,
+and `round(9e64, -5000)` is 0, not the `1e65` a type-sized factor would give.
+Past the largest finite double no factor is coarse enough, and every
+representable number rounds to zero there anyway.
 
 One consequence is deliberate: on PostgreSQL `round` gives back `numeric`
 rather than a float.

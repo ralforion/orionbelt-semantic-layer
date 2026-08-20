@@ -998,10 +998,11 @@ class Dialect(ABC):
     #: call is the identity there and needs no arithmetic at all.
     _MAX_ROUND_DIGITS: int = 0
 
-    #: The most integer digits this engine's decimal type carries. A negative
-    #: digit count past this rounds to a granularity coarser than the whole
-    #: type, which is zero for every value in it.
-    _MAX_ROUND_MAGNITUDE: int = 0
+    #: The largest power of ten a factor can be and still be a finite double.
+    #: Not a property of the decimal type: the factor has to out-scale whatever
+    #: arrives, and a float column reaches far past any DECIMAL. Past this, no
+    #: representable factor is coarse enough and the answer is zero instead.
+    _MAX_ROUND_MAGNITUDE: int = 308
 
     #: Set by an engine that rounds its float type to even and needs the
     #: add-half-and-truncate rewrite. ``None`` means the native ROUND is right.
@@ -1121,10 +1122,19 @@ class Dialect(ABC):
             # first, round at zero places, and put the scale back, which is
             # exact because the factor is an integer both ways.
             #
-            # The magnitude is bounded by the type rather than by the count: a
-            # coarser granularity than the whole type rounds everything in it
-            # to zero, so the bound gives the same answer the count asked for.
-            factor = 10 ** min(-digits, self._MAX_ROUND_MAGNITUDE)
+            # Bounding the *count* is what a clamp would do, and it is wrong
+            # here: measured, round(9e64, -5000) is 0 while a factor of 10**65
+            # leaves 9e64 sitting at 1e65, and 9e64 is an ordinary DECIMAL(65).
+            # The factor has to out-scale the value, not the type.
+            #
+            # Past the largest finite double no factor can, so there is nothing
+            # to divide by - but there is also nothing left to decide: a
+            # granularity coarser than every representable number rounds all of
+            # them to zero. SIGN carries a NULL through and reads an infinity as
+            # 1, which is what DuckDB answers there too.
+            if -digits > self._MAX_ROUND_MAGNITUDE:
+                return self._render_infix(f"SIGN({value}) * 0")
+            factor = 10**-digits
             half = self._round_half_sql("0.5")
             return self._render_infix(
                 f"{fn}({value} / {factor} + SIGN({value}) * {half}, 0) * {factor}"

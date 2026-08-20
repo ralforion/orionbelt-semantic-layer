@@ -558,9 +558,8 @@ class MySQLDialect(Dialect):
         digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
         return f"TRUNCATE({value}, {digits})"
 
-    #: MySQL's DECIMAL is 65 digits with at most 30 after the point.
+    #: MySQL's DECIMAL has at most 30 digits after the point.
     _MAX_ROUND_DIGITS = 30
-    _MAX_ROUND_MAGNITUDE = 65
 
     #: MySQL rounds ties to even for DOUBLE and away from zero for DECIMAL, so
     #: it takes the add-half-and-truncate shape. A bare decimal literal already

@@ -364,7 +364,6 @@ class ClickHouseDialect(Dialect):
     #: rounding is the identity and no half is needed, which is just as well:
     #: the half wants one place more than the count and 77 is out of range.
     _MAX_ROUND_DIGITS: int = 76
-    _MAX_ROUND_MAGNITUDE: int = 76
 
     def _round_half_sql(self, half: str) -> str:
         """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a

@@ -1046,10 +1046,15 @@ class TestPinnedSemantics:
         assert _render("round(2.345, -2)", "clickhouse") == (
             "(truncate(2.345 / 100 + SIGN(2.345) * toDecimal256('0.5', 1), 0) * 100)"
         )
-        # Bounded by the type's own width, where everything in it rounds to
-        # zero anyway, so the bound gives the answer the count asked for.
-        assert f"/ {10**65} " in _render("round(2.345, -5000)", "mysql")
-        assert f"/ {10**76} " in _render("round(2.345, -5000)", "clickhouse")
+        # The factor has to out-scale the *value*, not the type. Bounding the
+        # count instead left an ordinary DECIMAL(65) in the wrong place:
+        # round(9e64, -5000) is 0, but a factor of 10**65 rounds 9e64 up to
+        # 1e65. Past the largest finite double no factor is coarse enough, and
+        # every representable number rounds to zero there.
+        for dialect in ("mysql", "clickhouse"):
+            assert f"/ {10**308} " in _render("round(2.345, -308)", dialect)
+            assert _render("round(2.345, -309)", dialect) == "(SIGN(2.345) * 0)"
+            assert _render("round(2.345, -5000)", dialect) == "(SIGN(2.345) * 0)"
 
     def test_round_falls_back_when_the_digit_count_is_computed(self) -> None:
         """A digit count that is not an integer literal cannot be spelled as a
