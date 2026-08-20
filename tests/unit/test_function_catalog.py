@@ -959,8 +959,12 @@ class TestPinnedSemantics:
         exact-decimal cast under the engine's own ROUND rather than float
         arithmetic - which would drag every decimal into a float on the way.
         """
-        assert _render("round(2.5)", "clickhouse") == "ROUND(toDecimal256(2.5, 18))"
-        assert _render("round(2.345, 2)", "clickhouse") == "ROUND(toDecimal256(2.345, 18), 2)"
+        assert _render("round(2.5)", "clickhouse") == (
+            "(sign(2.5) * floor(abs(2.5) + toDecimal64(0.5, 1)))"
+        )
+        assert _render("round(2.345, 2)", "clickhouse") == (
+            "(sign(2.345) * floor(abs(2.345) * 100 + toDecimal64(0.5, 1)) / 100)"
+        )
         assert _render("round(2.5)", "postgres") == "ROUND(CAST(2.5 AS numeric))"
         assert _render("round(2.345, 2)", "postgres") == "ROUND(CAST(2.345 AS numeric), 2)"
         assert _render("round(2.5)", "mysql") == "ROUND(CAST(2.5 AS DECIMAL(65, 18)))"
@@ -979,11 +983,18 @@ class TestPinnedSemantics:
         places came back as 1.2345678901234568e16 - the tie was fixed and the
         digits were gone. No rendering may reintroduce float arithmetic here.
         """
-        for dialect in ("clickhouse", "postgres", "mysql"):
+        for dialect in ("postgres", "mysql"):
             sql = _render("round(2.345, 2)", dialect)
             assert "floor" not in sql.lower()
             assert "0.5" not in sql
             assert "pow" not in sql.lower()
+        # ClickHouse keeps the arithmetic, but nothing in it is Float64: the
+        # half is a Decimal and the scale factor is an integer literal, so a
+        # Decimal operand stays one. `pow` would be Float64 and undo that.
+        sql = _render("round(2.345, 2)", "clickhouse")
+        assert "toDecimal64(0.5, 1)" in sql
+        assert "pow" not in sql.lower()
+        assert " 0.5" not in sql.replace("toDecimal64(0.5, 1)", "")
 
     def test_round_cast_never_keeps_fewer_digits_than_asked_for(self) -> None:
         """The cast must not drop the digit being rounded to.
@@ -995,47 +1006,71 @@ class TestPinnedSemantics:
         """
         assert _render("round(2.345, 19)", "mysql").startswith("ROUND(CAST(")
         assert "DECIMAL(65, 19)" in _render("round(2.345, 19)", "mysql")
-        assert "toDecimal256" in _render("round(2.345, 19)", "clickhouse")
-        assert ", 19), 19)" in _render("round(2.345, 19)", "clickhouse")
+        # ClickHouse converts nothing, so no scale can truncate: the factor is
+        # the exact integer 10**19.
+        assert f"* {10**19} +" in _render("round(2.345, 19)", "clickhouse")
         # Fewer digits than the default never shrinks the cast below it.
         assert "DECIMAL(65, 18)" in _render("round(2.345, 2)", "mysql")
-        assert "toDecimal256" in _render("round(2.345, 2)", "clickhouse")
+        assert "* 100 +" in _render("round(2.345, 2)", "clickhouse")
         # PostgreSQL's numeric is arbitrary precision, so it carries any scale.
         assert _render("round(2.345, 19)", "postgres").endswith("AS numeric), 19)")
 
     def test_round_cast_stops_at_the_widest_scale_the_engine_has(self) -> None:
-        """Exceeding the engine's decimal type is invalid SQL, not a wrong
-        number: ``toDecimal256(x, 77)`` raises ARGUMENT_OUT_OF_BOUND, and MySQL
-        has no DECIMAL scale past 30. The cast stops at each ceiling.
+        """MySQL has no DECIMAL scale past 30, and asking for more is invalid
+        SQL rather than a wrong number, so the cast stops at that ceiling.
         """
         assert "DECIMAL(65, 30)" in _render("round(2.345, 35)", "mysql")
         assert "DECIMAL(65, 30)" in _render("round(2.345, 77)", "mysql")
-        assert "toDecimal256(2.345, 76)" in _render("round(2.345, 77)", "clickhouse")
         # PostgreSQL's numeric is unbounded, so it needs no ceiling.
         assert _render("round(2.345, 77)", "postgres") == "ROUND(CAST(2.345 AS numeric), 77)"
+        # ClickHouse converts nothing, so it has no scale to bound. 77 was
+        # ARGUMENT_OUT_OF_BOUND under the cast; it is an integer factor now.
+        assert f"* {10**77} +" in _render("round(2.345, 77)", "clickhouse")
 
-    def test_round_cast_falls_back_to_a_safe_scale_for_a_computed_digit_count(
+    def test_round_takes_the_widest_scale_it_can_for_a_computed_digit_count(
         self,
     ) -> None:
-        """A scale is part of a type, so it has to be known when the SQL is
-        built. A digit count that is not an integer literal therefore takes the
-        widest scale that is safe whatever arrives, rather than the default,
+        """A DECIMAL scale is part of a type, so it has to be known when the SQL
+        is built. MySQL therefore takes its own ceiling of 30 for a computed
+        count, where no DECIMAL digit can be lost, rather than the default 18,
         which would truncate a high-scale decimal at runtime.
-
-        MySQL takes its own ceiling of 30, where no DECIMAL digit can be lost.
-        ClickHouse stops at 21, the last scale at which a Float64 still
-        converts to the value it was given - measured, 2.5 breaks at 22.
         """
         for call in ("round(2.345, 1+1)", "round(2.345, {[S].[N]})"):
             assert "DECIMAL(65, 30)" in _render(call, "mysql")
-            assert "toDecimal256(2.345, 21)" in _render(call, "clickhouse")
+            # ClickHouse cannot build an integer factor from a computed count
+            # and falls back to `pow`, which is Float64. Documented, and what
+            # 2.25.0 already did.
+            assert "pow(10, " in _render(call, "clickhouse")
 
     def test_round_does_not_read_a_boolean_as_a_digit_count(self) -> None:
         """``bool`` is a subclass of ``int``, so a naive isinstance check reads
-        ``true`` as a scale of 1 and calls the count known.
+        ``true`` as a digit count of 1 and calls it known.
         """
         call = FunctionCall(name="round", args=[Literal.number(2.345), Literal(value=True)])
-        assert "toDecimal256(2.345, 21)" in DialectRegistry.get("clickhouse").compile_expr(call)
+        assert "pow(10, " in DialectRegistry.get("clickhouse").compile_expr(call)
+        assert "DECIMAL(65, 30)" in DialectRegistry.get("mysql").compile_expr(call)
+
+    def test_round_does_not_convert_a_float_on_clickhouse(self) -> None:
+        """The conversion is the lossy step, which is why none happens.
+
+        ``toDecimal256`` scales a Float64 by a power of ten in floating point,
+        so the value moves before ``round`` sees it: measured,
+        ``toDecimal256(toFloat64(2.5), 22)`` is 2.4999999999999997903541, and
+        ``round(toDecimal256(toFloat64(1e19), 18))`` is 9999999999999999539
+        where the catalog and DuckDB both say 1e19. An infinity cannot be
+        converted at all and raised DECIMAL_OVERFLOW.
+        """
+        for call in ("round(2.5)", "round(2.345, 2)", "round(2.345, -2)", "round(2.345, 77)"):
+            assert "toDecimal256" not in _render(call, "clickhouse")
+
+    def test_round_scales_the_other_way_for_a_negative_digit_count(self) -> None:
+        """``round(x, -2)`` rounds to hundreds. Ten to a negative power is not
+        an integer, so the factor has to divide rather than multiply or it
+        stops being exact.
+        """
+        assert _render("round(2345, -2)", "clickhouse") == (
+            "(sign(2345) * floor(abs(2345) / 100 + toDecimal64(0.5, 1)) * 100)"
+        )
 
     def test_round_supplies_the_two_argument_form_postgres_lacks(self) -> None:
         """PostgreSQL has no ``round(double precision, integer)`` at all, so a

@@ -39,17 +39,6 @@ class ClickHouseDialect(Dialect):
 
     _MAX_DECIMAL_PRECISION: int = 76
 
-    #: Decimal256 tops out at 76 digits; ``toDecimal256(x, 77)`` is not a wrong
-    #: number but ARGUMENT_OUT_OF_BOUND, so a stated digit count stops here.
-    _MAX_ROUND_CAST_SCALE: int = 76
-
-    #: The largest scale at which a Float64 still converts to the value it was
-    #: given. Measured: every canonical tie is correct through 21, and 2.5,
-    #: -2.5 and 4.5 round the wrong way at 22. A computed digit count cannot be
-    #: checked against the input's type, so it stops at the bound that holds
-    #: for both.
-    _UNKNOWN_ROUND_CAST_SCALE: int = 21
-
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "Int64",
         "integer": "Int32",
@@ -367,31 +356,68 @@ class ClickHouseDialect(Dialect):
         "ends_with": "endsWith",
     }
 
-    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
+    #: A half that is *typed*, so adding it cannot change the operand's type.
+    #: ClickHouse resolves ``Decimal + Decimal`` to Decimal and ``Float64 +
+    #: Decimal`` to Float64, so one expression preserves whichever type it is
+    #: handed. A bare ``0.5`` is Float64 and drags every Decimal down with it.
+    _ROUND_HALF = "toDecimal64(0.5, 1)"
+
+    def _render_round(self, args: list[Expr]) -> str:
         """ClickHouse rounds ties to even for ``Float*`` and away from zero for
-        ``Decimal*``, both documented. Casting to Decimal reaches the half we
-        want, and ``round`` then needs no rewriting.
+        ``Decimal*``, both documented, so the tie has to be moved for floats
+        without disturbing decimals.
 
-        ``toDecimal256`` rather than ``toDecimal128``: the latter leaves only 20
-        integer digits at the default scale and raises DECIMAL_OVERFLOW from
-        1e21 up, where Decimal256 carries 1e30 without complaint.
+        Casting to Decimal looks like the way to do that and is not, because
+        **the conversion is the lossy step**. ``toDecimal256`` scales a
+        ``Float64`` by a power of ten in floating point, so the value moves
+        before ``round`` ever sees it: measured, ``toDecimal256(toFloat64(2.5),
+        22)`` is 2.4999999999999997903541 and the tie then rounds down, and
+        even at scale 18 ``round(toDecimal256(toFloat64(1e19), 18))`` returns
+        9999999999999999539 where the catalog, and DuckDB, say 1e19. The cast
+        also cannot represent an infinity, so ``round`` over one raised
+        DECIMAL_OVERFLOW instead of returning it.
 
-        One limit is inherent and worth stating. ``toDecimal256`` scales a
-        ``Float64`` by a power of ten *in floating point*, so a large scale
-        moves the value: measured, ``toDecimal256(toFloat64(2.5), 22)`` is
-        2.4999999999999997903541, and the tie then rounds down. Every canonical
-        tie survives to scale 21 and 2.5 breaks at 22, which is what
-        ``_UNKNOWN_ROUND_CAST_SCALE`` records. A *Decimal* input is unaffected
-        at any scale, the drift being a conversion artefact rather than a
-        rounding one.
-
-        A digit count the caller *states* is therefore honoured past that
-        bound, up to the 76 digits Decimal256 can express: asking to round to
-        30 places only means anything for a Decimal input, which does not
-        drift, and truncating it to protect a float that has no 30th digit
-        would trade a real loss for a hypothetical one.
+        So no conversion happens. The arithmetic runs in whatever type arrived,
+        and only the *half* is typed - see :attr:`_ROUND_HALF`. Measured, this
+        answers correctly for a Float64 tie, a Decimal128 kept to its full
+        precision, 1e19, an infinity, a negative digit count and a digit count
+        of 77.
         """
-        return f"toDecimal256({value_sql}, {scale})"
+        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        half = self._ROUND_HALF
+        if len(args) == 1:
+            return self._render_infix(f"sign({value}) * floor(abs({value}) + {half})")
+
+        digits = args[1]
+        if (
+            isinstance(digits, Literal)
+            and isinstance(digits.value, int)
+            and not isinstance(digits.value, bool)
+        ):
+            # A literal power of ten is an integer, and an integer times a
+            # Decimal is still a Decimal. ``pow`` would return Float64 and undo
+            # everything the typed half is here to protect.
+            n = digits.value
+            factor = 10 ** abs(n)
+            if n >= 0:
+                return self._render_infix(
+                    f"sign({value}) * floor(abs({value}) * {factor} + {half}) / {factor}"
+                )
+            # A negative count rounds to tens or hundreds: scale the other way,
+            # or the factor becomes a fraction and stops being an integer.
+            return self._render_infix(
+                f"sign({value}) * floor(abs({value}) / {factor} + {half}) * {factor}"
+            )
+
+        # A computed digit count cannot be turned into a literal factor, and
+        # every decimal-typed substitute measured worse: ``toDecimal256(pow(10,
+        # n), 0)`` divides by zero for a negative count, and at scale 20 it put
+        # an error in the 12th digit of a Decimal128. ``pow`` is Float64, so a
+        # Decimal operand degrades here, which is what 2.25.0 already did.
+        scale = f"pow(10, {self.compile_expr(digits)})"
+        return self._render_infix(
+            f"sign({value}) * floor(abs({value}) * {scale} + {half}) / {scale}"
+        )
 
     def _render_div(self, args: list[Expr]) -> str:
         """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which
