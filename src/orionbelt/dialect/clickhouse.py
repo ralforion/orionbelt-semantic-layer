@@ -39,6 +39,17 @@ class ClickHouseDialect(Dialect):
 
     _MAX_DECIMAL_PRECISION: int = 76
 
+    #: Decimal256 tops out at 76 digits; ``toDecimal256(x, 77)`` is not a wrong
+    #: number but ARGUMENT_OUT_OF_BOUND, so a stated digit count stops here.
+    _MAX_ROUND_CAST_SCALE: int = 76
+
+    #: The largest scale at which a Float64 still converts to the value it was
+    #: given. Measured: every canonical tie is correct through 21, and 2.5,
+    #: -2.5 and 4.5 round the wrong way at 22. A computed digit count cannot be
+    #: checked against the input's type, so it stops at the bound that holds
+    #: for both.
+    _UNKNOWN_ROUND_CAST_SCALE: int = 21
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "Int64",
         "integer": "Int32",
@@ -368,12 +379,17 @@ class ClickHouseDialect(Dialect):
         One limit is inherent and worth stating. ``toDecimal256`` scales a
         ``Float64`` by a power of ten *in floating point*, so a large scale
         moves the value: measured, ``toDecimal256(toFloat64(2.5), 22)`` is
-        2.4999999999999997903541, and the tie then rounds down. The default
-        scale of 18 is well inside the safe range, and a float only carries
-        about 17 significant digits, so a request for more fractional digits
-        than that is already past what the input can express. A *Decimal* input
-        is unaffected at any scale, which is what the drift being a conversion
-        artefact means.
+        2.4999999999999997903541, and the tie then rounds down. Every canonical
+        tie survives to scale 21 and 2.5 breaks at 22, which is what
+        ``_UNKNOWN_ROUND_CAST_SCALE`` records. A *Decimal* input is unaffected
+        at any scale, the drift being a conversion artefact rather than a
+        rounding one.
+
+        A digit count the caller *states* is therefore honoured past that
+        bound, up to the 76 digits Decimal256 can express: asking to round to
+        30 places only means anything for a Decimal input, which does not
+        drift, and truncating it to protect a float that has no 30th digit
+        would trade a real loss for a hypothetical one.
         """
         return f"toDecimal256({value_sql}, {scale})"
 

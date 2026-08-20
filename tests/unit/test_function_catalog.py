@@ -16,7 +16,7 @@ import re
 import pytest
 
 import orionbelt.dialect  # noqa: F401 -- triggers dialect registration
-from orionbelt.ast.nodes import ColumnRef
+from orionbelt.ast.nodes import ColumnRef, FunctionCall, Literal
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.base import DialectCapabilities, UnsupportedFunctionError
 from orionbelt.dialect.duckdb import DuckDBDialect
@@ -1004,10 +1004,38 @@ class TestPinnedSemantics:
         assert _render("round(2.345, 19)", "postgres").endswith("AS numeric), 19)")
 
     def test_round_cast_stops_at_the_widest_scale_the_engine_has(self) -> None:
-        """MySQL's DECIMAL scale tops out at 30; asking for more is not a type
-        it can express, so the cast stops rather than emitting invalid SQL.
+        """Exceeding the engine's decimal type is invalid SQL, not a wrong
+        number: ``toDecimal256(x, 77)`` raises ARGUMENT_OUT_OF_BOUND, and MySQL
+        has no DECIMAL scale past 30. The cast stops at each ceiling.
         """
         assert "DECIMAL(65, 30)" in _render("round(2.345, 35)", "mysql")
+        assert "DECIMAL(65, 30)" in _render("round(2.345, 77)", "mysql")
+        assert "toDecimal256(2.345, 76)" in _render("round(2.345, 77)", "clickhouse")
+        # PostgreSQL's numeric is unbounded, so it needs no ceiling.
+        assert _render("round(2.345, 77)", "postgres") == "ROUND(CAST(2.345 AS numeric), 77)"
+
+    def test_round_cast_falls_back_to_a_safe_scale_for_a_computed_digit_count(
+        self,
+    ) -> None:
+        """A scale is part of a type, so it has to be known when the SQL is
+        built. A digit count that is not an integer literal therefore takes the
+        widest scale that is safe whatever arrives, rather than the default,
+        which would truncate a high-scale decimal at runtime.
+
+        MySQL takes its own ceiling of 30, where no DECIMAL digit can be lost.
+        ClickHouse stops at 21, the last scale at which a Float64 still
+        converts to the value it was given - measured, 2.5 breaks at 22.
+        """
+        for call in ("round(2.345, 1+1)", "round(2.345, {[S].[N]})"):
+            assert "DECIMAL(65, 30)" in _render(call, "mysql")
+            assert "toDecimal256(2.345, 21)" in _render(call, "clickhouse")
+
+    def test_round_does_not_read_a_boolean_as_a_digit_count(self) -> None:
+        """``bool`` is a subclass of ``int``, so a naive isinstance check reads
+        ``true`` as a scale of 1 and calls the count known.
+        """
+        call = FunctionCall(name="round", args=[Literal.number(2.345), Literal(value=True)])
+        assert "toDecimal256(2.345, 21)" in DialectRegistry.get("clickhouse").compile_expr(call)
 
     def test_round_supplies_the_two_argument_form_postgres_lacks(self) -> None:
         """PostgreSQL has no ``round(double precision, integer)`` at all, so a

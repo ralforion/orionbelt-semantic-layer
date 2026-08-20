@@ -560,7 +560,14 @@ class MySQLDialect(Dialect):
 
     #: MySQL's hard ceiling on DECIMAL scale. Asking for more fractional digits
     #: than this is not expressible as a type here, so the cast stops.
-    _MAX_DECIMAL_SCALE = 30
+    _MAX_ROUND_CAST_SCALE = 30
+
+    #: A computed digit count can safely take MySQL's ceiling: the cast then
+    #: keeps every digit a DECIMAL can hold, so nothing the engine could have
+    #: rounded to is lost, and the conversion carries the tie intact at that
+    #: scale (measured, all seven canonical ties round away from zero at 30).
+    #: It costs integer headroom, which is the right trade for a rare case.
+    _UNKNOWN_ROUND_CAST_SCALE = 30
 
     def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
         """MySQL rounds ties to even for ``DOUBLE`` and away from zero for
@@ -574,7 +581,7 @@ class MySQLDialect(Dialect):
         where scale 18 carries 1e40 intact. A caller asking ``round`` for more
         digits buys them back from that headroom deliberately.
         """
-        return f"CAST({value_sql} AS DECIMAL(65, {min(scale, self._MAX_DECIMAL_SCALE)}))"
+        return f"CAST({value_sql} AS DECIMAL(65, {scale}))"
 
     def _render_div(self, args: list[Expr]) -> str:
         """MySQL's integer division is the ``DIV`` operator, which truncates

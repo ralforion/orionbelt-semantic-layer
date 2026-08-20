@@ -1012,22 +1012,47 @@ class Dialect(ABC):
         """
         return None
 
+    #: Widest fractional scale this engine's decimal type can express at all.
+    #: ``None`` where the type is unbounded, as PostgreSQL's ``numeric`` is.
+    #: Exceeding it is not a wrong number but invalid SQL.
+    _MAX_ROUND_CAST_SCALE: int | None = None
+
+    #: Widest scale that is safe for *every* input type, used when the digit
+    #: count is not known while the SQL is being built. Defaults to the plain
+    #: scale; an engine raises it only as far as it can without trading one
+    #: kind of wrong answer for another.
+    _UNKNOWN_ROUND_CAST_SCALE: int | None = None
+
     def _round_cast_scale(self, args: list[Expr]) -> int:
         """Fractional digits the decimal cast has to preserve.
 
         A fixed scale is wrong the moment the caller asks for more digits than
         it keeps: ``round(x, 19)`` under a scale-18 cast has already lost the
         19th digit before ``ROUND`` runs, which regresses a high-scale decimal
-        column that the engine rounds correctly on its own.
+        column that the engine rounds correctly on its own. So a known digit
+        count sizes the cast, bounded by what the engine's decimal type can
+        express.
 
         The digit count is read only when it is an integer literal, which is
-        what a model formula writes. Anything computed keeps the default: the
-        scale is part of a *type*, so it has to be known when the SQL is built
-        and cannot wait for a value.
+        what a model formula writes. A scale is part of a *type*, so it has to
+        be known when the SQL is built and cannot wait for a value: a computed
+        one falls back to the widest scale that is safe whatever arrives.
         """
-        if len(args) > 1 and isinstance(args[1], Literal) and isinstance(args[1].value, int):
-            return max(self._ROUND_CAST_SCALE, args[1].value)
-        return self._ROUND_CAST_SCALE
+        scale = self._ROUND_CAST_SCALE
+        if len(args) > 1:
+            digits = args[1]
+            # bool is a subclass of int, and `round(x, true)` is not a scale.
+            if (
+                isinstance(digits, Literal)
+                and isinstance(digits.value, int)
+                and not isinstance(digits.value, bool)
+            ):
+                scale = max(scale, digits.value)
+            else:
+                scale = max(scale, self._UNKNOWN_ROUND_CAST_SCALE or scale)
+        if self._MAX_ROUND_CAST_SCALE is not None:
+            scale = min(scale, self._MAX_ROUND_CAST_SCALE)
+        return scale
 
     def _render_round(self, args: list[Expr]) -> str:
         """Native ``ROUND``, over an exact-decimal cast where the engine needs
