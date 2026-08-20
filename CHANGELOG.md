@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`round` rounds ties away from zero on PostgreSQL and MySQL too, and stops costing ClickHouse its decimals.** The catalog promises `round(2.5)` is 3, and 2.25.0 shipped a ClickHouse-only rewrite on the premise that ClickHouse was the one engine disagreeing. Measured on live engines, it is not: ClickHouse, PostgreSQL and MySQL all use banker's rounding for their **float** type and away from zero for their **decimal** type, and all three document both halves. So `round(2.5)` over a `double precision` column returned **2** on PostgreSQL and MySQL, and `round(x, 2)` over one raised `UndefinedFunction` on PostgreSQL, which has no `round(double precision, integer)` at all. The rewrite itself was also lossy: `sign(x) * floor(abs(x) * pow(10, n) + 0.5) / pow(10, n)` fixes the tie, but `pow` and the `0.5` literal are Float64 on ClickHouse, so a Decimal128 of 12345678901234567.885 rounded to two places came back as 1.2345678901234568e16, with the tie fixed and the digits gone. Since each of the three already rounds its decimal type the way the catalog wants, the call is now rendered over an exact-decimal cast under the engine's own `ROUND` (`CAST(x AS numeric)`, `CAST(x AS DECIMAL(65, 18))`, `toDecimal256(x, 18)`) rather than as float arithmetic. Both constants are measured, not chosen: ClickHouse's tie-break silently reverts to even at scale 30, and `toDecimal128` overflows from 1e21 where Decimal256 carries 1e30; MySQL's `DECIMAL(65, 30)` saturates silently at 1e35 where scale 18 carries 1e40. One consequence is deliberate: on those three engines `round` now returns the engine's decimal type rather than a float. The execution matrix missed all of this because it tests literals, and `2.5` is a `numeric` literal to PostgreSQL and a `DECIMAL` to MySQL, so it was exercising the one type those engines already got right; it now rounds a float-typed and a decimal-typed argument on every vendor.
+
 ## [2.25.0] - 2026-08-20
 
 ### Added

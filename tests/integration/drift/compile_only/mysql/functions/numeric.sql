@@ -34,13 +34,13 @@ POWER(2, 10);
 
 -- round(x, n?)
 --   round(2.5) = 3
-ROUND(2.5);
+ROUND(CAST(2.5 AS DECIMAL(65, 18)));
 --   round(-2.5) = -3
-ROUND(-2.5);
+ROUND(CAST(-2.5 AS DECIMAL(65, 18)));
 --   round(0.5) = 1
-ROUND(0.5);
+ROUND(CAST(0.5 AS DECIMAL(65, 18)));
 --   round(2.345, 2) = 2.35
-ROUND(2.345, 2);
+ROUND(CAST(2.345 AS DECIMAL(65, 18)), 2);
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1

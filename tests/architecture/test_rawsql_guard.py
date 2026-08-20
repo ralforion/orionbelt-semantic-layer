@@ -39,7 +39,7 @@ APPROVED_RAWSQL: dict[str, int] = {
     # one weekly floor serves the catalog function, the time-grain dimension
     # and the period-over-period spine rather than one implementation per
     # entry point. Nothing user-authored is spliced in.
-    "src/orionbelt/dialect/base.py": 5,
+    "src/orionbelt/dialect/base.py": 6,
 }
 
 

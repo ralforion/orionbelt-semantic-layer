@@ -952,13 +952,45 @@ class TestPinnedSemantics:
         )
 
     def test_round_ties_go_away_from_zero_where_the_engine_rounds_to_even(self) -> None:
-        """ClickHouse's ROUND is half-to-even, so 2.5 would come back as 2."""
-        assert _render("round(2.5)", "clickhouse") == "(sign(2.5) * floor(abs(2.5) + 0.5))"
-        assert _render("round(2.345, 2)", "clickhouse") == (
-            "(sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2))"
-        )
-        # Every other engine already rounds away from zero.
-        assert _render("round(2.5)", "duckdb") == "ROUND(2.5)"
+        """ClickHouse, PostgreSQL and MySQL all round ties to even for their
+        float type, so 2.5 would come back as 2 on a double column.
+
+        Each already rounds its *decimal* type away from zero, so the fix is an
+        exact-decimal cast under the engine's own ROUND rather than float
+        arithmetic - which would drag every decimal into a float on the way.
+        """
+        assert _render("round(2.5)", "clickhouse") == "ROUND(toDecimal256(2.5, 18))"
+        assert _render("round(2.345, 2)", "clickhouse") == "ROUND(toDecimal256(2.345, 18), 2)"
+        assert _render("round(2.5)", "postgres") == "ROUND(CAST(2.5 AS numeric))"
+        assert _render("round(2.345, 2)", "postgres") == "ROUND(CAST(2.345 AS numeric), 2)"
+        assert _render("round(2.5)", "mysql") == "ROUND(CAST(2.5 AS DECIMAL(65, 18)))"
+        assert _render("round(2.345, 2)", "mysql") == "ROUND(CAST(2.345 AS DECIMAL(65, 18)), 2)"
+        # The five engines whose ROUND is already away from zero for both types.
+        for dialect in ("duckdb", "bigquery", "snowflake", "databricks", "dremio"):
+            assert _render("round(2.5)", dialect) == "ROUND(2.5)"
+            assert _render("round(2.345, 2)", dialect) == "ROUND(2.345, 2)"
+
+    def test_round_does_not_drag_a_decimal_through_a_float(self) -> None:
+        """The regression the cast exists to prevent.
+
+        The previous ClickHouse rewrite was ``sign(x) * floor(abs(x) * pow(10,
+        n) + 0.5) / pow(10, n)``. Both ``pow`` and the ``0.5`` literal are
+        Float64 there, so a Decimal128 of 12345678901234567.885 rounded to two
+        places came back as 1.2345678901234568e16 - the tie was fixed and the
+        digits were gone. No rendering may reintroduce float arithmetic here.
+        """
+        for dialect in ("clickhouse", "postgres", "mysql"):
+            sql = _render("round(2.345, 2)", dialect)
+            assert "floor" not in sql.lower()
+            assert "0.5" not in sql
+            assert "pow" not in sql.lower()
+
+    def test_round_supplies_the_two_argument_form_postgres_lacks(self) -> None:
+        """PostgreSQL has no ``round(double precision, integer)`` at all, so a
+        two-argument round over a float column raised UndefinedFunction rather
+        than returning a wrong number. The numeric cast supplies the overload.
+        """
+        assert _render("round(2.345, 2)", "postgres") == "ROUND(CAST(2.345 AS numeric), 2)"
 
     def test_trunc_goes_toward_zero_where_the_engine_has_no_truncation(self) -> None:
         """Databricks has no numeric trunc, and a plain FLOOR would give -2."""
@@ -1169,15 +1201,13 @@ class TestRenderingInvariants:
                 "10 / NULLIF((CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 "
                 "THEN NULL ELSE (LOG10(8) / LOG10(2)) END), 0)",
             ),
-            ("clickhouse", "round(2.5)", "(sign(2.5) * floor(abs(2.5) + 0.5))"),
         ],
     )
     def test_a_rewrite_used_as_a_divisor_keeps_its_parens(
         self, dialect: str, call: str, expected: str
     ) -> None:
         """The concrete shape of the bug: a rewritten call on the right of a
-        division. ClickHouse wraps both operands in a decimal CAST of its own,
-        so only the rewrite's own parens are asserted there.
+        division.
 
         The divisor now sits inside a ``NULLIF`` guard (#319), which does not
         change what this test is for: the rewrite must still carry its own

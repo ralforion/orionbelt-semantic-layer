@@ -281,6 +281,24 @@ class PostgresDialect(Dialect):
             f"{max_date}::timestamp, INTERVAL '{step_n} {step_u}') AS d"
         )
 
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """PostgreSQL rounds ties to even for ``double precision`` and away from
+        zero for ``numeric``, both documented.
+
+        The cast also supplies a function that does not otherwise exist: there
+        is no ``round(double precision, integer)`` in PostgreSQL at all, so a
+        two-argument ``round`` over a float column was a hard
+        ``UndefinedFunction`` error rather than a wrong number.
+
+        Deliberately *not* the arithmetic rewrite used for a float engine.
+        ``power(10, n)`` is ``double precision`` here, and even with an integer
+        literal scale PostgreSQL caps the scale of a numeric division: measured,
+        12345678901234567.885 rounded to 2 places came back as
+        12345678901234568 instead of 12345678901234567.89. Over a value that is
+        already ``numeric`` this cast is the identity, so nothing is lost.
+        """
+        return f"CAST({value_sql} AS numeric)"
+
     def compile_regex_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """Postgres uses the ``~`` and ``!~`` operators for regex match."""
         col_sql = self.compile_expr(column)

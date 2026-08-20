@@ -993,11 +993,42 @@ class Dialect(ABC):
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
 
-    def _render_round(self, args: list[Expr]) -> str:
-        """Default: native ``ROUND``, which rounds ties away from zero on every
-        engine but ClickHouse, where ties go to even.
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """The exact-decimal cast this engine needs before a native ``ROUND``.
+
+        ``None`` when the engine's own ``ROUND`` already rounds ties away from
+        zero for every numeric type, which is the case for DuckDB, BigQuery,
+        Snowflake, Databricks and Dremio.
         """
-        return self._render_named_function("round", args)
+        return None
+
+    def _render_round(self, args: list[Expr]) -> str:
+        """Native ``ROUND``, over an exact-decimal cast where the engine needs
+        one to round ties away from zero.
+
+        Measured, not assumed. ClickHouse, PostgreSQL and MySQL all use
+        banker's rounding for their *float* type and away from zero for their
+        *decimal* type - ``round(2.5)`` is 2 on a double and 3 on a numeric, on
+        the same engine, and all three document it. ClickHouse is not the odd
+        one out it was once described as.
+
+        The rewrite therefore moves the value to the decimal type rather than
+        doing float arithmetic. An earlier ClickHouse-only fix computed
+        ``sign(x) * floor(abs(x) * pow(10, n) + 0.5) / pow(10, n)``, which fixes
+        the tie but drags every Decimal into Float64 on the way, because both
+        ``pow`` and the ``0.5`` literal are Float64 there - measured, a
+        Decimal128 of 12345678901234567.885 rounded to 2 places came back as
+        1.2345678901234568e16. Rounding a decimal must not cost the digits that
+        made it a decimal, so the native ``ROUND`` does the work and the cast
+        only guarantees the type it sees.
+        """
+        cast_sql = self._round_decimal_cast(self.compile_expr(args[0]))
+        if cast_sql is None:
+            return self._render_named_function("round", args)
+        # RawSQL: re-wraps SQL this dialect just rendered, so that the argument
+        # goes back through _render_named_function and picks up the engine's own
+        # spelling of ROUND rather than being formatted a second way here.
+        return self._render_named_function("round", [RawSQL(sql=cast_sql), *args[1:]])
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Default: native ``TRUNC(x[, n])``, truncating toward zero."""

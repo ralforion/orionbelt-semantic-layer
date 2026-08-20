@@ -13,20 +13,43 @@ ClickHouse with `lengthUTF8`; picking the right name is the whole job, and every
 portability layer does it.
 
 The harder half is that engines disagree about the **answer**. `ROUND(2.5)`
-exists on both of those engines. It runs on both. It returns `3` on DuckDB and
-`2` on ClickHouse, which rounds ties to even. Neither is a bug — they are simply
-different numbers, and a catalog that fixed only the name would hand that
+exists on every one of them. It runs on every one of them. It returns `3` on
+DuckDB and `2` on ClickHouse, PostgreSQL and MySQL. Neither is a bug — they are
+simply different numbers, and a catalog that fixed only the name would hand that
 difference to your dashboard.
 
-So the catalog states what a call *means*, and bends the engine to it. `round`
-means ties go away from zero, so `round(2.5)` is 3 everywhere. ClickHouse has no
-half-up rounding function to switch to, so OBSL does not call its `ROUND` at all
-— it computes the answer:
+Worse, those three do not even answer consistently within one engine. They round
+ties **to even for their float type and away from zero for their decimal type**,
+and they document both halves:
+
+| | float `round(2.5)` | decimal `round(2.5)` |
+|---|---|---|
+| DuckDB, BigQuery, Snowflake, Databricks | 3 | 3 |
+| ClickHouse, PostgreSQL, MySQL | **2** | 3 |
+
+So the same column, widened from `NUMERIC` to `DOUBLE PRECISION` by a well-meant
+migration, quietly changes the number in your report.
+
+The catalog states what a call *means* and bends the engine to it. `round` means
+ties go away from zero, so `round(2.5)` is 3 everywhere. Since each of those
+three engines already rounds its *decimal* type the way the catalog wants, OBSL
+renders the call over an exact-decimal cast rather than reaching for float
+arithmetic:
 
 ```sql
-ROUND(2.5)                            -- DuckDB, and six others
-(sign(2.5) * floor(abs(2.5) + 0.5))   -- ClickHouse
+ROUND(x)                              -- DuckDB, BigQuery, Snowflake, Databricks, Dremio
+ROUND(toDecimal256(x, 18))            -- ClickHouse
+ROUND(CAST(x AS numeric))             -- PostgreSQL
+ROUND(CAST(x AS DECIMAL(65, 18)))     -- MySQL
 ```
+
+Rounding a decimal must not cost the digits that made it a decimal, which is why
+the native `ROUND` still does the arithmetic. On PostgreSQL the cast earns its
+place twice over: there is no `round(double precision, integer)` in that engine
+at all, so `round(x, 2)` over a float column used to raise rather than answer.
+
+One consequence is deliberate: on those three engines `round` gives back the
+engine's decimal type rather than a float.
 
 Five more places where the engines differ on the answer, not the name:
 
@@ -153,8 +176,9 @@ so every engine gives the catalog's answer:
 - `split_part('a,b,c', ',', 9)` is `''`. MySQL's `SUBSTRING_INDEX` would hand
   back the *last* field and BigQuery's `SPLIT` would return NULL, so both get a
   guard.
-- `round(2.5)` is 3. ClickHouse rounds ties to even, and has no half-up
-  function to switch to, so the call is rewritten arithmetically there.
+- `round(2.5)` is 3. ClickHouse, PostgreSQL and MySQL round ties to even for
+  floats and away from zero for decimals, so on those three the call is
+  rendered over an exact-decimal cast and their own `ROUND` does the rest.
 - `trunc(-1.9)` is -1. Databricks has no numeric truncation at all (its `trunc`
   takes a date), so it becomes a signed floor of the magnitude.
 - `date_diff('day', TIMESTAMP '2026-08-01 23:00:00', TIMESTAMP '2026-08-02 01:00:00')`

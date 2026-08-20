@@ -558,6 +558,19 @@ class MySQLDialect(Dialect):
         digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
         return f"TRUNCATE({value}, {digits})"
 
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """MySQL rounds ties to even for ``DOUBLE`` and away from zero for
+        ``DECIMAL``, both documented.
+
+        ``DECIMAL(65, 18)`` rather than the maximum scale of ``DECIMAL(65, 30)``:
+        65 is the widest MySQL takes, so scale buys itself with integer digits,
+        and a cast that overflows here **saturates silently** rather than
+        raising. Measured, ``CAST(1e35 AS DECIMAL(65, 30))`` returns
+        99999999999999999999999999999999999.999999999999999999999999999999,
+        where scale 18 carries 1e40 intact.
+        """
+        return f"CAST({value_sql} AS DECIMAL(65, 18))"
+
     def _render_div(self, args: list[Expr]) -> str:
         """MySQL's integer division is the ``DIV`` operator, which truncates
         toward zero (``-7 DIV 2`` is -3). Probe-verified.

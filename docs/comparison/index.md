@@ -74,7 +74,7 @@ only fixes spelling passes the disagreement through to your dashboard:
 
 | expression | what engines do | what OBSL returns |
 |---|---|---|
-| `round(2.5)` | ClickHouse rounds ties to even and answers 2 | **3**, everywhere — the call is rewritten arithmetically where needed |
+| `round(2.5)` | ClickHouse, PostgreSQL and MySQL round ties to even for floats and answer 2 | **3**, everywhere and for both numeric types |
 | `trunc(-1.9)` | Databricks has no numeric truncation at all | **-1**, everywhere |
 | `greatest(1, NULL, 3)` | four engines skip the NULL and answer 3 | **NULL**, everywhere |
 | `length('äbcd')` | ClickHouse and MySQL count bytes and answer 5 | **4** — characters |

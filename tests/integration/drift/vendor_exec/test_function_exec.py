@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
-from orionbelt.ast.nodes import Cast, InTimeZone, Literal
+from orionbelt.ast.nodes import Cast, FunctionCall, InTimeZone, Literal, RawSQL
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
@@ -236,3 +236,85 @@ def test_bigquery_query_timezone(vendor_bigquery: VendorTarget) -> None:
 
 def test_databricks_query_timezone(vendor_databricks: VendorTarget) -> None:
     _assert_timezone_conversion(vendor_databricks)
+
+
+# --- round over a float column -----------------------------------------------
+#
+# The catalog examples are literals, and a literal is not a float everywhere:
+# ``2.5`` is ``numeric`` to PostgreSQL and ``DECIMAL`` to MySQL, so
+# ``_assert_catalog_values`` was executing ``round`` against the one type those
+# engines already round the way the catalog wants. It passed while
+# ``round(2.5)`` over a ``double precision`` column returned 2.
+#
+# ClickHouse, PostgreSQL and MySQL all round ties to even for their float type
+# and away from zero for their decimal type, all three documented. So the tie
+# has to be executed against *both* types, per engine, or half the behaviour
+# stays untested.
+
+#: How each engine spells a float-typed and an exact-decimal-typed value.
+_NUMERIC_TYPES: dict[str, tuple[str, str]] = {
+    "duckdb": ("CAST({v} AS DOUBLE)", "CAST({v} AS DECIMAL(9, 1))"),
+    "postgres": ("CAST({v} AS double precision)", "CAST({v} AS numeric)"),
+    "mysql": ("CAST({v} AS DOUBLE)", "CAST({v} AS DECIMAL(9, 1))"),
+    "clickhouse": ("toFloat64({v})", "toDecimal64({v}, 1)"),
+    "snowflake": ("CAST({v} AS float)", "CAST({v} AS number(9, 1))"),
+    "bigquery": ("CAST({v} AS FLOAT64)", "CAST({v} AS NUMERIC)"),
+    "databricks": ("CAST({v} AS DOUBLE)", "CAST({v} AS DECIMAL(9, 1))"),
+}
+
+#: Ties the catalog documents as going away from zero.
+_ROUND_TIES = [("2.5", 3), ("3.5", 4), ("-2.5", -3), ("0.5", 1)]
+
+
+def _assert_round_ties_by_type(vendor: VendorTarget) -> None:
+    """``round`` over a float column and over a decimal column, executed."""
+    engine = DialectRegistry.get(vendor.dialect)
+    float_cast, decimal_cast = _NUMERIC_TYPES[vendor.dialect]
+
+    projections, expected = [], []
+    for index, (value, want) in enumerate(_ROUND_TIES):
+        for kind, cast in (("f", float_cast), ("d", decimal_cast)):
+            # RawSQL, not a parsed column ref: the point is the *typed* argument,
+            # and only the engine's own cast spelling pins the type.
+            ast = FunctionCall(name="round", args=[RawSQL(sql=cast.format(v=value))])
+            projections.append(f"{engine.compile_expr(ast)} AS c{kind}{index}")
+            expected.append((f"round({value}) [{'float' if kind == 'f' else 'decimal'}]", want))
+
+    sql = "SELECT " + ", ".join(projections)
+    values = list(vendor.execute(sql)[0].values())
+    mismatches = [
+        f"{label} -> {values[i]!r}, catalog says {want!r}"
+        for i, (label, want) in enumerate(expected)
+        if values[i] is None or float(values[i]) != float(want)
+    ]
+    assert not mismatches, (
+        f"{vendor.name} rounds ties the wrong way:\n  " + "\n  ".join(mismatches) + f"\nSQL: {sql}"
+    )
+
+
+def test_duckdb_round_ties_by_type(vendor_duckdb: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_duckdb)
+
+
+def test_postgres_round_ties_by_type(vendor_postgres: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_postgres)
+
+
+def test_mysql_round_ties_by_type(vendor_mysql: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_mysql)
+
+
+def test_clickhouse_round_ties_by_type(vendor_clickhouse: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_clickhouse)
+
+
+def test_snowflake_round_ties_by_type(vendor_snowflake: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_snowflake)
+
+
+def test_bigquery_round_ties_by_type(vendor_bigquery: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_bigquery)
+
+
+def test_databricks_round_ties_by_type(vendor_databricks: VendorTarget) -> None:
+    _assert_round_ties_by_type(vendor_databricks)

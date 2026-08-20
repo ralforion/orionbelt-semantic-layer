@@ -356,20 +356,19 @@ class ClickHouseDialect(Dialect):
         "ends_with": "endsWith",
     }
 
-    def _render_round(self, args: list[Expr]) -> str:
-        """ClickHouse rounds ties to even: ``round(2.5)`` is 2 and
-        ``round(0.5)`` is 0, where the catalog rounds away from zero.
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """ClickHouse rounds ties to even for ``Float*`` and away from zero for
+        ``Decimal*``, both documented. Casting to Decimal reaches the half we
+        want, and ``round`` then needs no rewriting.
 
-        There is no half-up rounding function to switch to (``roundBankers`` is
-        the explicit form of the behaviour we are avoiding), so the call is
-        rewritten arithmetically: shift by the digit count, add a half, floor
-        the magnitude, restore the sign.
+        Both constants are measured rather than picked. **The scale is 18**
+        because the tie-break silently reverts at 30: ``round(toDecimal256(2.5,
+        30))`` is 2, where scale 18 gives 3. **The cast is ``toDecimal256``**
+        because ``toDecimal128`` leaves only 20 integer digits at that scale and
+        raises DECIMAL_OVERFLOW from 1e21 up, where Decimal256 carries a value
+        of 1e30 without complaint.
         """
-        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
-        if len(args) == 1:
-            return self._render_infix(f"sign({value}) * floor(abs({value}) + 0.5)")
-        scale = f"pow(10, {self.compile_expr(args[1])})"
-        return self._render_infix(f"sign({value}) * floor(abs({value}) * {scale} + 0.5) / {scale}")
+        return f"toDecimal256({value_sql}, 18)"
 
     def _render_div(self, args: list[Expr]) -> str:
         """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which

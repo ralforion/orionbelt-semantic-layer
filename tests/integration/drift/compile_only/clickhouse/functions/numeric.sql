@@ -34,13 +34,13 @@ POWER(2, 10);
 
 -- round(x, n?)
 --   round(2.5) = 3
-(sign(2.5) * floor(abs(2.5) + 0.5));
+ROUND(toDecimal256(2.5, 18));
 --   round(-2.5) = -3
-(sign(-2.5) * floor(abs(-2.5) + 0.5));
+ROUND(toDecimal256(-2.5, 18));
 --   round(0.5) = 1
-(sign(0.5) * floor(abs(0.5) + 0.5));
+ROUND(toDecimal256(0.5, 18));
 --   round(2.345, 2) = 2.35
-(sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2));
+ROUND(toDecimal256(2.345, 18), 2);
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1

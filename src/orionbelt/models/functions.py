@@ -416,9 +416,21 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         result_type="float",
         summary="Round *x* to *n* decimal places, or to a whole number.",
         semantics=(
-            "Ties round away from zero: 2.5 is 3 and -2.5 is -3. ClickHouse "
-            "rounds ties to even (2.5 is 2), so its renderer rewrites the call "
-            "arithmetically rather than using the native ROUND."
+            "Ties round away from zero: 2.5 is 3 and -2.5 is -3.\n\n"
+            "Measured, three engines split this by argument type. ClickHouse, "
+            "PostgreSQL and MySQL all round ties to even for their float type "
+            "and away from zero for their decimal type, so ``round(2.5)`` is 2 "
+            "on a double and 3 on a numeric, on one engine, and all three "
+            "document it. On those three the call is rendered over an "
+            "exact-decimal cast - ``CAST(x AS numeric)``, ``CAST(x AS "
+            "DECIMAL(65, 18))``, ``toDecimal256(x, 18)`` - so the native ROUND "
+            "sees the type it already rounds correctly. DuckDB, BigQuery, "
+            "Snowflake, Databricks and Dremio need no rewrite.\n\n"
+            "The cast also supplies a missing function on PostgreSQL, which "
+            "has no ``round(double precision, integer)`` at all; a "
+            "two-argument round over a float column raised there before.\n\n"
+            "One consequence is deliberate: on those three engines ``round`` "
+            "returns the engine's decimal type rather than a float."
         ),
         examples=(
             FunctionExample("round(2.5)", 3),
