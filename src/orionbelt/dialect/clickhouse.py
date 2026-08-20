@@ -360,10 +360,11 @@ class ClickHouseDialect(Dialect):
     #: Decimal*, so it takes the add-half-and-truncate shape too.
     _ROUND_TRUNCATE_FN = "truncate"
 
-    #: Decimal256 carries 76 fractional digits and the half needs one place
-    #: more than the digit count, so 75 is the widest that can be spelled.
-    #: Rounding past it leaves every value the engine holds unchanged anyway.
-    _MAX_ROUND_DIGITS: int = 75
+    #: Decimal256 carries 76 digits, wherever the point sits. At 76 places
+    #: rounding is the identity and no half is needed, which is just as well:
+    #: the half wants one place more than the count and 77 is out of range.
+    _MAX_ROUND_DIGITS: int = 76
+    _MAX_ROUND_MAGNITUDE: int = 76
 
     def _round_half_sql(self, half: str) -> str:
         """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a

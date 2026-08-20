@@ -999,31 +999,57 @@ class TestPinnedSemantics:
         assert "pow" not in _render("round(2.345, 2)", "clickhouse").lower()
 
     def test_round_half_matches_the_digit_count_it_is_rounding_to(self) -> None:
-        """Half of the last kept place: 0.5 at 0 places, 0.005 at 2, 50 at -2.
+        """Half of the last kept place: 0.5 at 0 places, 0.005 at 2.
 
         A half that does not track the digit count is the bug the previous
         shape had in a different form - a fixed scale-18 cast dropped the 19th
         digit before ROUND ever ran.
         """
         assert "* 0.5," in _render("round(2.345)", "mysql")
+        assert "* 0.005," in _render("round(2.345, 2)", "mysql")
         assert "* 0.00000000000000000005," in _render("round(2.345, 19)", "mysql")
-        assert "* 50," in _render("round(2.345, -2)", "mysql")
-        assert "toDecimal256('50', 0)" in _render("round(2.345, -2)", "clickhouse")
+        assert "toDecimal256('0.005', 3)" in _render("round(2.345, 2)", "clickhouse")
 
-    def test_round_clamps_a_digit_count_no_engine_could_spell(self) -> None:
-        """``round(x, 5000)`` built a 5001-digit factor and raised ValueError
-        out of Python's integer-to-string limit, during compilation.
+    def test_round_to_the_types_own_scale_or_more_is_the_identity(self) -> None:
+        """Rounding to at least as many places as the decimal type carries
+        cannot change a value it holds, so nothing is emitted.
 
-        Past the widest scale an engine's decimal type has, rounding is the
-        identity for every value it can hold, so clamping is exact rather than
-        approximate. MySQL's DECIMAL stops at 30 places; ClickHouse's
-        Decimal256 holds 76, and the half needs one place more than the count.
+        This is also the only correct answer at the ceiling: the half needs one
+        place *more* than the count, which at the top is a scale the engine
+        cannot express - and rounding a Decimal256(_, 76) to 76 places must
+        return it unchanged rather than round it at 75.
         """
-        assert _render("round(2.345, 5000)", "mysql").endswith(", 30)")
-        assert _render("round(2.345, 5000)", "clickhouse").endswith(", 75)")
-        assert _render("round(2.345, -5000)", "mysql").endswith(", -30)")
-        # PostgreSQL's numeric is unbounded, so it needs no clamp at all.
+        for n in (30, 76, 5000):
+            assert _render(f"round(2.345, {n})", "mysql") == "2.345"
+        for n in (76, 5000):
+            assert _render(f"round(2.345, {n})", "clickhouse") == "2.345"
+        # One below the ceiling still rounds, and its half is expressible.
+        assert "toDecimal256(" in _render("round(2.345, 75)", "clickhouse")
+        assert _render("round(2.345, 29)", "mysql").endswith(", 29)")
+        # PostgreSQL's numeric is unbounded, so it needs no ceiling at all.
         assert _render("round(2.345, 5000)", "postgres") == "ROUND(CAST(2.345 AS numeric), 5000)"
+
+    def test_round_to_a_negative_digit_count_is_never_the_identity(self) -> None:
+        """A large negative count is not the mirror of a large positive one.
+        ``round(1e40, -5000)`` is 0, not 1e40, so the count cannot simply be
+        clamped the way the positive end is.
+
+        Truncating at a negative count also stops working once it passes the
+        value's own magnitude: measured, ClickHouse leaves 1e40 alone at -41
+        where DuckDB, the oracle, says 0. So these divide by the factor, round
+        at zero places, and put the scale back, which is exact because the
+        factor is an integer in both directions.
+        """
+        assert _render("round(2.345, -2)", "mysql") == (
+            "(TRUNCATE(2.345 / 100 + SIGN(2.345) * 0.5, 0) * 100)"
+        )
+        assert _render("round(2.345, -2)", "clickhouse") == (
+            "(truncate(2.345 / 100 + SIGN(2.345) * toDecimal256('0.5', 1), 0) * 100)"
+        )
+        # Bounded by the type's own width, where everything in it rounds to
+        # zero anyway, so the bound gives the answer the count asked for.
+        assert f"/ {10**65} " in _render("round(2.345, -5000)", "mysql")
+        assert f"/ {10**76} " in _render("round(2.345, -5000)", "clickhouse")
 
     def test_round_falls_back_when_the_digit_count_is_computed(self) -> None:
         """A digit count that is not an integer literal cannot be spelled as a

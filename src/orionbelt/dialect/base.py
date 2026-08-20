@@ -993,21 +993,27 @@ class Dialect(ABC):
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
 
-    #: Largest digit count this engine will spell as an exact literal. Past
-    #: the widest scale its decimal type has, rounding is the identity for
-    #: every value the engine can hold, so clamping there is exact.
+    #: The widest scale this engine's decimal type carries. Rounding to that
+    #: many places or more leaves every value it can hold unchanged, so the
+    #: call is the identity there and needs no arithmetic at all.
     _MAX_ROUND_DIGITS: int = 0
+
+    #: The most integer digits this engine's decimal type carries. A negative
+    #: digit count past this rounds to a granularity coarser than the whole
+    #: type, which is zero for every value in it.
+    _MAX_ROUND_MAGNITUDE: int = 0
 
     #: Set by an engine that rounds its float type to even and needs the
     #: add-half-and-truncate rewrite. ``None`` means the native ROUND is right.
     _ROUND_TRUNCATE_FN: str | None = None
 
     def _round_digits(self, args: list[Expr]) -> int | None:
-        """The digit count as a clamped integer, or ``None`` when computed.
+        """The digit count as an integer, or ``None`` when it is computed.
 
         Read only from an integer literal, which is what a model formula
-        writes. The clamp is what keeps ``round(x, 5000)`` from building a
-        5000-place literal, which is not a number any engine here can hold.
+        writes. Returned unbounded: the two ends are not symmetric and each
+        dialect handles them where the meaning is clear, in
+        :meth:`_render_round`.
         """
         if len(args) < 2:
             return 0
@@ -1018,8 +1024,7 @@ class Dialect(ABC):
             and isinstance(digits.value, int)
             and not isinstance(digits.value, bool)
         ):
-            limit = self._MAX_ROUND_DIGITS
-            return max(-limit, min(limit, digits.value))
+            return digits.value
         return None
 
     @staticmethod
@@ -1089,15 +1094,44 @@ class Dialect(ABC):
             return self._render_named_function("round", args)
 
         value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        fn = self._ROUND_TRUNCATE_FN
         digits = self._round_digits(args)
+
         if digits is None:
             # A computed count cannot be spelled as a literal, and the fallback
             # is a float, so a decimal operand degrades. 2.25.0 did this too.
             n_sql = self.compile_expr(args[1])
             half = self._round_half_computed(n_sql)
-            return f"{self._ROUND_TRUNCATE_FN}({value} + SIGN({value}) * {half}, {n_sql})"
+            return f"{fn}({value} + SIGN({value}) * {half}, {n_sql})"
+
+        if digits >= self._MAX_ROUND_DIGITS:
+            # Rounding to at least as many places as the decimal type carries
+            # leaves every value unchanged, so there is nothing to do. Saying
+            # so is also the only correct answer at the ceiling: the half would
+            # need one place *more* than the count, which is a scale the engine
+            # cannot express, and rounding a value to its own scale must not
+            # change it.
+            return value
+
+        if digits < 0:
+            # Rounding to tens or hundreds. Not the same shape: the half would
+            # have to be 5, 50, 500..., and truncating at a negative count
+            # stops working once it passes the value's own magnitude - measured,
+            # ClickHouse leaves 1e40 alone at -41 where the answer is 0. Divide
+            # first, round at zero places, and put the scale back, which is
+            # exact because the factor is an integer both ways.
+            #
+            # The magnitude is bounded by the type rather than by the count: a
+            # coarser granularity than the whole type rounds everything in it
+            # to zero, so the bound gives the same answer the count asked for.
+            factor = 10 ** min(-digits, self._MAX_ROUND_MAGNITUDE)
+            half = self._round_half_sql("0.5")
+            return self._render_infix(
+                f"{fn}({value} / {factor} + SIGN({value}) * {half}, 0) * {factor}"
+            )
+
         half = self._round_half_sql(self._decimal_half(digits))
-        return f"{self._ROUND_TRUNCATE_FN}({value} + SIGN({value}) * {half}, {digits})"
+        return f"{fn}({value} + SIGN({value}) * {half}, {digits})"
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Default: native ``TRUNC(x[, n])``, truncating toward zero."""

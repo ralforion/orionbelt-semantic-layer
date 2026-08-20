@@ -38,10 +38,9 @@ without a table in the query. The disagreement lives in your columns, not in
 your literals.
 
 The catalog states what a call *means* and bends the engine to it. `round` means
-ties go away from zero, so `round(2.5)` is 3 everywhere. Since each of those
-three engines already rounds its *decimal* type the way the catalog wants, OBSL
-renders the call over an exact-decimal cast rather than reaching for float
-arithmetic:
+ties go away from zero, so `round(2.5)` is 3 everywhere. Each of those three
+already rounds its *decimal* type that way, so the work is reaching that half
+without disturbing the decimal on the way:
 
 ```sql
 ROUND(x)                                              -- DuckDB, BigQuery, Snowflake, Databricks, Dremio
@@ -76,6 +75,13 @@ a `Float64`, so there it is quoted and passed through `toDecimal256`.
 ClickHouse's own promotion then does the rest — `Decimal + Decimal` stays a
 `Decimal`, `Float64 + Decimal` stays a `Float64` — so one expression preserves
 whichever type it is handed.
+
+Two ends of the digit count are special, and they are not symmetric. Rounding to
+**at least as many places as the decimal type carries** cannot change anything,
+so the call is the identity there and no arithmetic is emitted. A **negative**
+count is not identity at any size — `round(1e40, -41)` is 0 — and truncating
+stops working once the count passes the value's own magnitude, so those divide
+by the factor, round at zero places, and put the scale back.
 
 One consequence is deliberate: on PostgreSQL `round` gives back `numeric`
 rather than a float.
