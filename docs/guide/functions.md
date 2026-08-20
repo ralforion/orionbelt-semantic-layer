@@ -12,13 +12,13 @@ Most of that is about **spelling**. DuckDB counts characters with `length`,
 ClickHouse with `lengthUTF8`; picking the right name is the whole job, and every
 portability layer does it.
 
-The harder half is that engines disagree about the **answer**. `ROUND(2.5)`
-exists on every one of them. It runs on every one of them. It returns `3` on
-DuckDB and `2` on ClickHouse, PostgreSQL and MySQL. Neither is a bug — they are
-simply different numbers, and a catalog that fixed only the name would hand that
-difference to your dashboard.
+The harder half is that engines disagree about the **answer**. `ROUND(x)` exists
+on every one of them. It runs on every one of them. And on a `DOUBLE PRECISION`
+column holding 2.5 it returns `3` on DuckDB and `2` on ClickHouse, PostgreSQL
+and MySQL. Neither is a bug — they are simply different numbers, and a catalog
+that fixed only the name would hand that difference to your dashboard.
 
-Worse, those three do not even answer consistently within one engine. They round
+Worse, those three do not answer consistently *within* one engine. They round
 ties **to even for their float type and away from zero for their decimal type**,
 and they document both halves:
 
@@ -29,6 +29,13 @@ and they document both halves:
 
 So the same column, widened from `NUMERIC` to `DOUBLE PRECISION` by a well-meant
 migration, quietly changes the number in your report.
+
+This is also why it is easy to miss. A bare `ROUND(2.5)` typed into a console
+answers **3** on PostgreSQL and MySQL, because a decimal literal is `numeric`
+there and `DECIMAL` on MySQL — the types those engines already round the way you
+expect. Only ClickHouse, whose literal is a `Float64`, shows the difference
+without a table in the query. The disagreement lives in your columns, not in
+your literals.
 
 The catalog states what a call *means* and bends the engine to it. `round` means
 ties go away from zero, so `round(2.5)` is 3 everywhere. Since each of those
@@ -42,6 +49,10 @@ ROUND(toDecimal256(x, 18))            -- ClickHouse
 ROUND(CAST(x AS numeric))             -- PostgreSQL
 ROUND(CAST(x AS DECIMAL(65, 18)))     -- MySQL
 ```
+
+The cast keeps 18 fractional digits, or the digit count you asked for when that
+is larger — `round(x, 19)` casts to 19, so the cast never drops the digit being
+rounded to.
 
 Rounding a decimal must not cost the digits that made it a decimal, which is why
 the native `ROUND` still does the arithmetic. On PostgreSQL the cast earns its

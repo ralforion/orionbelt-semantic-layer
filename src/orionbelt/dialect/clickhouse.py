@@ -356,19 +356,26 @@ class ClickHouseDialect(Dialect):
         "ends_with": "endsWith",
     }
 
-    def _round_decimal_cast(self, value_sql: str) -> str | None:
+    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
         """ClickHouse rounds ties to even for ``Float*`` and away from zero for
         ``Decimal*``, both documented. Casting to Decimal reaches the half we
         want, and ``round`` then needs no rewriting.
 
-        Both constants are measured rather than picked. **The scale is 18**
-        because the tie-break silently reverts at 30: ``round(toDecimal256(2.5,
-        30))`` is 2, where scale 18 gives 3. **The cast is ``toDecimal256``**
-        because ``toDecimal128`` leaves only 20 integer digits at that scale and
-        raises DECIMAL_OVERFLOW from 1e21 up, where Decimal256 carries a value
-        of 1e30 without complaint.
+        ``toDecimal256`` rather than ``toDecimal128``: the latter leaves only 20
+        integer digits at the default scale and raises DECIMAL_OVERFLOW from
+        1e21 up, where Decimal256 carries 1e30 without complaint.
+
+        One limit is inherent and worth stating. ``toDecimal256`` scales a
+        ``Float64`` by a power of ten *in floating point*, so a large scale
+        moves the value: measured, ``toDecimal256(toFloat64(2.5), 22)`` is
+        2.4999999999999997903541, and the tie then rounds down. The default
+        scale of 18 is well inside the safe range, and a float only carries
+        about 17 significant digits, so a request for more fractional digits
+        than that is already past what the input can express. A *Decimal* input
+        is unaffected at any scale, which is what the drift being a conversion
+        artefact means.
         """
-        return f"toDecimal256({value_sql}, 18)"
+        return f"toDecimal256({value_sql}, {scale})"
 
     def _render_div(self, args: list[Expr]) -> str:
         """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which

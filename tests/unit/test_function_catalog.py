@@ -985,6 +985,30 @@ class TestPinnedSemantics:
             assert "0.5" not in sql
             assert "pow" not in sql.lower()
 
+    def test_round_cast_never_keeps_fewer_digits_than_asked_for(self) -> None:
+        """The cast must not drop the digit being rounded to.
+
+        A fixed scale-18 cast made ``round(amount, 19)`` render as
+        ``ROUND(CAST(amount AS DECIMAL(65, 18)), 19)``, so the 19th fractional
+        digit was gone before ROUND ran - a regression for a high-scale decimal
+        column that these engines round correctly unaided.
+        """
+        assert _render("round(2.345, 19)", "mysql").startswith("ROUND(CAST(")
+        assert "DECIMAL(65, 19)" in _render("round(2.345, 19)", "mysql")
+        assert "toDecimal256" in _render("round(2.345, 19)", "clickhouse")
+        assert ", 19), 19)" in _render("round(2.345, 19)", "clickhouse")
+        # Fewer digits than the default never shrinks the cast below it.
+        assert "DECIMAL(65, 18)" in _render("round(2.345, 2)", "mysql")
+        assert "toDecimal256" in _render("round(2.345, 2)", "clickhouse")
+        # PostgreSQL's numeric is arbitrary precision, so it carries any scale.
+        assert _render("round(2.345, 19)", "postgres").endswith("AS numeric), 19)")
+
+    def test_round_cast_stops_at_the_widest_scale_the_engine_has(self) -> None:
+        """MySQL's DECIMAL scale tops out at 30; asking for more is not a type
+        it can express, so the cast stops rather than emitting invalid SQL.
+        """
+        assert "DECIMAL(65, 30)" in _render("round(2.345, 35)", "mysql")
+
     def test_round_supplies_the_two_argument_form_postgres_lacks(self) -> None:
         """PostgreSQL has no ``round(double precision, integer)`` at all, so a
         two-argument round over a float column raised UndefinedFunction rather

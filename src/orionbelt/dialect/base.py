@@ -993,14 +993,41 @@ class Dialect(ABC):
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
 
-    def _round_decimal_cast(self, value_sql: str) -> str | None:
+    #: Fractional digits the decimal cast keeps when the caller does not say.
+    #: 18 covers a float's own precision with room to spare, and is low enough
+    #: that a Float-to-Decimal conversion still lands on the value it was given
+    #: (see :meth:`ClickHouseDialect._round_decimal_cast`).
+    _ROUND_CAST_SCALE = 18
+
+    def _round_decimal_cast(self, value_sql: str, scale: int) -> str | None:
         """The exact-decimal cast this engine needs before a native ``ROUND``.
 
         ``None`` when the engine's own ``ROUND`` already rounds ties away from
         zero for every numeric type, which is the case for DuckDB, BigQuery,
         Snowflake, Databricks and Dremio.
+
+        *scale* is the fractional digits the cast must keep: never fewer than
+        the caller asked ``round`` for, or the cast would drop the very digit
+        being rounded to.
         """
         return None
+
+    def _round_cast_scale(self, args: list[Expr]) -> int:
+        """Fractional digits the decimal cast has to preserve.
+
+        A fixed scale is wrong the moment the caller asks for more digits than
+        it keeps: ``round(x, 19)`` under a scale-18 cast has already lost the
+        19th digit before ``ROUND`` runs, which regresses a high-scale decimal
+        column that the engine rounds correctly on its own.
+
+        The digit count is read only when it is an integer literal, which is
+        what a model formula writes. Anything computed keeps the default: the
+        scale is part of a *type*, so it has to be known when the SQL is built
+        and cannot wait for a value.
+        """
+        if len(args) > 1 and isinstance(args[1], Literal) and isinstance(args[1].value, int):
+            return max(self._ROUND_CAST_SCALE, args[1].value)
+        return self._ROUND_CAST_SCALE
 
     def _render_round(self, args: list[Expr]) -> str:
         """Native ``ROUND``, over an exact-decimal cast where the engine needs
@@ -1022,7 +1049,9 @@ class Dialect(ABC):
         made it a decimal, so the native ``ROUND`` does the work and the cast
         only guarantees the type it sees.
         """
-        cast_sql = self._round_decimal_cast(self.compile_expr(args[0]))
+        cast_sql = self._round_decimal_cast(
+            self.compile_expr(args[0]), self._round_cast_scale(args)
+        )
         if cast_sql is None:
             return self._render_named_function("round", args)
         # RawSQL: re-wraps SQL this dialect just rendered, so that the argument
