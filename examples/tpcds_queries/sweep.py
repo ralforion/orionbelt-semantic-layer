@@ -238,7 +238,16 @@ def norm(v, nd=2):
         return v
     if isinstance(v, (int, float, Decimal)):
         return round(float(v), nd)
-    return str(v).strip()
+    if isinstance(v, (bytes, bytearray)):
+        # ClickHouse's TPC-DS schema types the CHAR columns as FixedString(N),
+        # which arrives NUL-padded as bytes: i_class comes back as
+        # b'travel\x00\x00...' for 44 more bytes. Left alone it renders as a
+        # Python repr, which makes first_diff unreadable, and it compares by
+        # *storage* rather than by value - the same 'travel' read as a String,
+        # which is what a CAST or a function wrapper would produce, would not
+        # match the FixedString the reference query returns.
+        v = bytes(v).decode("utf-8", "replace")
+    return str(v).rstrip("\x00").strip()
 
 
 def diff(got_cols, got_rows, ref_cols, ref_rows, keep_got=None, keep_ref=None, nd=2) -> dict:
