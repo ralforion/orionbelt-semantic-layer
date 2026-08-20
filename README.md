@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-2.24.1-purple.svg" alt="Version 2.24.1"></a>
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-2.25.0-purple.svg" alt="Version 2.25.0"></a>
 <a href="https://pypi.org/project/orionbelt-semantic-layer/"><img src="https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white" alt="PyPI"></a>
 <a href="https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api"><img src="https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED" alt="Docker pulls"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
@@ -310,7 +310,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-semantic-layer-api:2.24.1
+    image: ralforion/orionbelt-semantic-layer-api:2.25.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -319,7 +319,7 @@ services:
       MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-semantic-layer-ui:2.24.1
+    image: ralforion/orionbelt-semantic-layer-ui:2.25.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -335,7 +335,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
-> - For production, pin a version tag (`:2.24.1`) rather than `:latest`.
+> - For production, pin a version tag (`:2.25.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
