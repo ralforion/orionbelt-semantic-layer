@@ -23,7 +23,7 @@ WHERE
   AND "Date"."d_moy" = 11
   AND "Date"."d_year" = 1998
   AND (
-    SUBSTRING("Store"."s_zip", 1, 5) = SUBSTRING("Customer Address"."ca_zip", 1, 5)
+    SUBSTRING(toString("Store"."s_zip"), 1, 5) = SUBSTRING(toString("Customer Address"."ca_zip"), 1, 5)
   ) = FALSE
 GROUP BY ALL
 ORDER BY
