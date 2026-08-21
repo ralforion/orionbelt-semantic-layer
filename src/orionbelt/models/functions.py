@@ -416,9 +416,34 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         result_type="float",
         summary="Round *x* to *n* decimal places, or to a whole number.",
         semantics=(
-            "Ties round away from zero: 2.5 is 3 and -2.5 is -3. ClickHouse "
-            "rounds ties to even (2.5 is 2), so its renderer rewrites the call "
-            "arithmetically rather than using the native ROUND."
+            "Ties round away from zero: 2.5 is 3 and -2.5 is -3.\n\n"
+            "Measured, three engines split this by argument type. ClickHouse, "
+            "PostgreSQL and MySQL all round ties to even for their float type "
+            "and away from zero for their decimal type, so ``round(2.5)`` is 2 "
+            "on a double and 3 on a numeric, on one engine, and all three "
+            "document it. On those three the call is rendered over an "
+            "exact-decimal cast on PostgreSQL, whose unbounded ``numeric`` "
+            "can take any value unharmed, so its own ROUND then sees the type "
+            "it already rounds correctly. MySQL and ClickHouse have no such "
+            "type - a cast must name a width, and MySQL's DECIMAL saturates "
+            "while ClickHouse's Float64 conversion moves the value - so they "
+            "add half of the last kept place and truncate, which needs no "
+            "conversion. Only the half is typed, which is what keeps a decimal "
+            "operand exact and leaves a float a float. DuckDB, BigQuery, "
+            "Snowflake, Databricks and Dremio need no rewrite.\n\n"
+            "The cast also supplies a missing function on PostgreSQL, which "
+            "has no ``round(double precision, integer)`` at all; a "
+            "two-argument round over a float column raised there before.\n\n"
+            "One consequence is deliberate: on PostgreSQL ``round`` returns "
+            "``numeric`` rather than a float.\n\n"
+            "One limit is known and has no expression that avoids it. On "
+            "ClickHouse the half promotes a ``Decimal256`` to "
+            "``Decimal(76, n+1)``, so a value carrying more than ``76-(n+1)`` "
+            "integer digits wraps. It is bounded by arithmetic rather than by "
+            "luck: 76 digits in total means that many integer digits force the "
+            "scale to ``n`` or less, and a value already at that scale is "
+            "unchanged by rounding to ``n`` places, so every value it can "
+            "spoil is one it had no work to do on."
         ),
         examples=(
             FunctionExample("round(2.5)", 3),

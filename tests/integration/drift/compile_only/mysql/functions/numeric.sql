@@ -34,13 +34,13 @@ POWER(2, 10);
 
 -- round(x, n?)
 --   round(2.5) = 3
-ROUND(2.5);
+TRUNCATE(2.5 + SIGN(2.5) * 0.5, 0);
 --   round(-2.5) = -3
-ROUND(-2.5);
+TRUNCATE(-2.5 + SIGN(-2.5) * 0.5, 0);
 --   round(0.5) = 1
-ROUND(0.5);
+TRUNCATE(0.5 + SIGN(0.5) * 0.5, 0);
 --   round(2.345, 2) = 2.35
-ROUND(2.345, 2);
+TRUNCATE(2.345 + SIGN(2.345) * 0.005, 2);
 
 -- trunc(x, n?)
 --   trunc(1.9) = 1

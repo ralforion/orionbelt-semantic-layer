@@ -356,20 +356,45 @@ class ClickHouseDialect(Dialect):
         "ends_with": "endsWith",
     }
 
-    def _render_round(self, args: list[Expr]) -> str:
-        """ClickHouse rounds ties to even: ``round(2.5)`` is 2 and
-        ``round(0.5)`` is 0, where the catalog rounds away from zero.
+    #: ClickHouse rounds ties to even for Float* and away from zero for
+    #: Decimal*, so it takes the add-half-and-truncate shape too.
+    _ROUND_TRUNCATE_FN = "truncate"
 
-        There is no half-up rounding function to switch to (``roundBankers`` is
-        the explicit form of the behaviour we are avoiding), so the call is
-        rewritten arithmetically: shift by the digit count, add a half, floor
-        the magnitude, restore the sign.
+    #: Decimal256 carries 76 digits, wherever the point sits. At 76 places
+    #: rounding is the identity and no half is needed, which is just as well:
+    #: the half wants one place more than the count and 77 is out of range.
+    _MAX_ROUND_DIGITS: int = 76
+
+    def _round_half_sql(self, half: str) -> str:
+        """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a
+        Decimal turns it into a Float64 - which is exactly how 2.25.0 lost
+        12345678901234567.885 to 1.2345678901234568e16. Typing the half instead
+        makes ClickHouse's own promotion do the work: ``Decimal + Decimal`` is
+        a Decimal and ``Float64 + Decimal`` is a Float64, so one expression
+        preserves whichever type it is handed.
+
+        Known limit, and there is no expression that avoids it. Adding a half
+        of scale n+1 promotes a Decimal256 to Decimal(76, n+1), so a value with
+        more than 76-(n+1) integer digits wraps - silently, returning a
+        sign-flipped number rather than raising. Guarding it is not possible
+        either: ClickHouse resolves the result type and converts before it
+        evaluates any condition, so an ``if`` overflows in the branch it was
+        meant to avoid, and ``toDecimal256`` wraps rather than raising while
+        also drifting floats (measured, 1e19 converts to
+        10000000000000000000.10 at scale 2).
+
+        What bounds it is that the two conditions cannot both be interesting.
+        Decimal256 holds 76 digits, so needing that many integer digits forces
+        the scale to n or less, and a value whose scale is already n or less is
+        unchanged by rounding to n places. Every value this corrupts is one it
+        did not need to touch, which is pinned by
+        ``test_clickhouse_round_agrees_with_native_wherever_rounding_matters``.
         """
-        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
-        if len(args) == 1:
-            return self._render_infix(f"sign({value}) * floor(abs({value}) + 0.5)")
-        scale = f"pow(10, {self.compile_expr(args[1])})"
-        return self._render_infix(f"sign({value}) * floor(abs({value}) * {scale} + 0.5) / {scale}")
+        scale = len(half.split(".", 1)[1]) if "." in half else 0
+        # toDecimal256, not toDecimal64: the latter caps at 18 fractional
+        # digits and raises ARGUMENT_OUT_OF_BOUND past it. Quoted, so the
+        # engine parses the decimal rather than reading a Float64 literal.
+        return f"toDecimal256('{half}', {scale})"
 
     def _render_div(self, args: list[Expr]) -> str:
         """ClickHouse: ``intDiv`` truncates toward zero. Not ``a // b``, which

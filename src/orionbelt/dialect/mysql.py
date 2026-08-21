@@ -558,6 +558,14 @@ class MySQLDialect(Dialect):
         digits = self.compile_expr(args[1]) if len(args) > 1 else "0"
         return f"TRUNCATE({value}, {digits})"
 
+    #: MySQL's DECIMAL has at most 30 digits after the point.
+    _MAX_ROUND_DIGITS = 30
+
+    #: MySQL rounds ties to even for DOUBLE and away from zero for DECIMAL, so
+    #: it takes the add-half-and-truncate shape. A bare decimal literal already
+    #: *is* a DECIMAL here, so the half needs no spelling of its own.
+    _ROUND_TRUNCATE_FN = "TRUNCATE"
+
     def _render_div(self, args: list[Expr]) -> str:
         """MySQL's integer division is the ``DIV`` operator, which truncates
         toward zero (``-7 DIV 2`` is -3). Probe-verified.

@@ -16,7 +16,7 @@ import re
 import pytest
 
 import orionbelt.dialect  # noqa: F401 -- triggers dialect registration
-from orionbelt.ast.nodes import ColumnRef
+from orionbelt.ast.nodes import ColumnRef, FunctionCall, Literal
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
 from orionbelt.dialect.base import DialectCapabilities, UnsupportedFunctionError
 from orionbelt.dialect.duckdb import DuckDBDialect
@@ -952,13 +952,133 @@ class TestPinnedSemantics:
         )
 
     def test_round_ties_go_away_from_zero_where_the_engine_rounds_to_even(self) -> None:
-        """ClickHouse's ROUND is half-to-even, so 2.5 would come back as 2."""
-        assert _render("round(2.5)", "clickhouse") == "(sign(2.5) * floor(abs(2.5) + 0.5))"
-        assert _render("round(2.345, 2)", "clickhouse") == (
-            "(sign(2.345) * floor(abs(2.345) * pow(10, 2) + 0.5) / pow(10, 2))"
+        """ClickHouse, PostgreSQL and MySQL all round ties to even for their
+        float type, so 2.5 comes back as 2 on a double column. Each already
+        rounds its *decimal* type away from zero, so only the float needs
+        moving - without disturbing the decimal on the way.
+        """
+        assert _render("round(2.5)", "postgres") == "ROUND(CAST(2.5 AS numeric))"
+        assert _render("round(2.5)", "mysql") == "TRUNCATE(2.5 + SIGN(2.5) * 0.5, 0)"
+        assert _render("round(2.5)", "clickhouse") == (
+            "truncate(2.5 + SIGN(2.5) * toDecimal256('0.5', 1), 0)"
         )
-        # Every other engine already rounds away from zero.
-        assert _render("round(2.5)", "duckdb") == "ROUND(2.5)"
+        # The five engines whose ROUND is already away from zero for both types.
+        for dialect in ("duckdb", "bigquery", "snowflake", "databricks", "dremio"):
+            assert _render("round(2.5)", dialect) == "ROUND(2.5)"
+            assert _render("round(2.345, 2)", dialect) == "ROUND(2.345, 2)"
+
+    def test_round_never_converts_the_value_on_mysql_or_clickhouse(self) -> None:
+        """Neither engine has a decimal type that can hold anything, so a cast
+        has to name a width and that width is a loss either way.
+
+        MySQL's DECIMAL is 65 digits split between the sides, so ``CAST(1e50 AS
+        DECIMAL(65, 18))`` saturates silently to 999...9. ClickHouse's
+        conversion from Float64 scales by a power of ten in floating point, so
+        ``round(toDecimal256(1e19, 18))`` is 9999999999999999539 where DuckDB
+        says 1e19, and an infinity cannot be converted at all. Adding half of
+        the last kept place and truncating needs no conversion.
+        """
+        for call in ("round(2.5)", "round(2.345, 2)", "round(2.345, -2)", "round(2.345, 19)"):
+            assert "CAST(" not in _render(call, "mysql")
+            assert "toDecimal256(2" not in _render(call, "clickhouse")
+
+    def test_round_keeps_the_half_exact_so_a_decimal_stays_one(self) -> None:
+        """The half is the only typed part, and typing it is the whole trick.
+
+        A bare ``0.005`` already *is* a DECIMAL to MySQL. To ClickHouse it is a
+        Float64, and ``Decimal + Float64`` is a Float64 - which is exactly how
+        2.25.0 turned 12345678901234567.885 into 1.2345678901234568e16. Quoted
+        and passed through ``toDecimal256`` it stays exact, and ClickHouse's own
+        promotion then preserves whichever type the operand had.
+        """
+        assert _render("round(2.345, 2)", "mysql") == ("TRUNCATE(2.345 + SIGN(2.345) * 0.005, 2)")
+        assert _render("round(2.345, 2)", "clickhouse") == (
+            "truncate(2.345 + SIGN(2.345) * toDecimal256('0.005', 3), 2)"
+        )
+        # Nothing Float64 may creep back in on ClickHouse.
+        assert "pow" not in _render("round(2.345, 2)", "clickhouse").lower()
+
+    def test_round_half_matches_the_digit_count_it_is_rounding_to(self) -> None:
+        """Half of the last kept place: 0.5 at 0 places, 0.005 at 2.
+
+        A half that does not track the digit count is the bug the previous
+        shape had in a different form - a fixed scale-18 cast dropped the 19th
+        digit before ROUND ever ran.
+        """
+        assert "* 0.5," in _render("round(2.345)", "mysql")
+        assert "* 0.005," in _render("round(2.345, 2)", "mysql")
+        assert "* 0.00000000000000000005," in _render("round(2.345, 19)", "mysql")
+        assert "toDecimal256('0.005', 3)" in _render("round(2.345, 2)", "clickhouse")
+
+    def test_round_to_the_types_own_scale_or_more_is_the_identity(self) -> None:
+        """Rounding to at least as many places as the decimal type carries
+        cannot change a value it holds, so nothing is emitted.
+
+        This is also the only correct answer at the ceiling: the half needs one
+        place *more* than the count, which at the top is a scale the engine
+        cannot express - and rounding a Decimal256(_, 76) to 76 places must
+        return it unchanged rather than round it at 75.
+        """
+        for n in (30, 76, 5000):
+            assert _render(f"round(2.345, {n})", "mysql") == "2.345"
+        for n in (76, 5000):
+            assert _render(f"round(2.345, {n})", "clickhouse") == "2.345"
+        # One below the ceiling still rounds, and its half is expressible.
+        assert "toDecimal256(" in _render("round(2.345, 75)", "clickhouse")
+        assert _render("round(2.345, 29)", "mysql").endswith(", 29)")
+        # PostgreSQL's numeric is unbounded, so it needs no ceiling at all.
+        assert _render("round(2.345, 5000)", "postgres") == "ROUND(CAST(2.345 AS numeric), 5000)"
+
+    def test_round_to_a_negative_digit_count_is_never_the_identity(self) -> None:
+        """A large negative count is not the mirror of a large positive one.
+        ``round(1e40, -5000)`` is 0, not 1e40, so the count cannot simply be
+        clamped the way the positive end is.
+
+        Truncating at a negative count also stops working once it passes the
+        value's own magnitude: measured, ClickHouse leaves 1e40 alone at -41
+        where DuckDB, the oracle, says 0. So these divide by the factor, round
+        at zero places, and put the scale back, which is exact because the
+        factor is an integer in both directions.
+        """
+        assert _render("round(2.345, -2)", "mysql") == (
+            "(TRUNCATE(2.345 / 100 + SIGN(2.345) * 0.5, 0) * 100)"
+        )
+        assert _render("round(2.345, -2)", "clickhouse") == (
+            "(truncate(2.345 / 100 + SIGN(2.345) * toDecimal256('0.5', 1), 0) * 100)"
+        )
+        # The factor has to out-scale the *value*, not the type. Bounding the
+        # count instead left an ordinary DECIMAL(65) in the wrong place:
+        # round(9e64, -5000) is 0, but a factor of 10**65 rounds 9e64 up to
+        # 1e65. Past the largest finite double no factor is coarse enough, and
+        # every representable number rounds to zero there.
+        for dialect in ("mysql", "clickhouse"):
+            assert f"/ {10**308} " in _render("round(2.345, -308)", dialect)
+            assert _render("round(2.345, -309)", dialect) == "(SIGN(2.345) * 0)"
+            assert _render("round(2.345, -5000)", dialect) == "(SIGN(2.345) * 0)"
+
+    def test_round_falls_back_when_the_digit_count_is_computed(self) -> None:
+        """A digit count that is not an integer literal cannot be spelled as a
+        half, so both engines fall back to a float power of ten. That degrades
+        a decimal operand, is documented, and is what 2.25.0 did as well.
+        """
+        for dialect in ("mysql", "clickhouse"):
+            sql = _render("round(2.345, 1+1)", dialect)
+            assert "POW(10, -(1 + 1))" in sql
+
+    def test_round_does_not_read_a_boolean_as_a_digit_count(self) -> None:
+        """``bool`` is a subclass of ``int``, so a naive isinstance check reads
+        ``true`` as a digit count of 1 and calls it known.
+        """
+        call = FunctionCall(name="round", args=[Literal.number(2.345), Literal(value=True)])
+        assert "POW(10, " in DialectRegistry.get("clickhouse").compile_expr(call)
+        assert "POW(10, " in DialectRegistry.get("mysql").compile_expr(call)
+
+    def test_round_supplies_the_two_argument_form_postgres_lacks(self) -> None:
+        """PostgreSQL has no ``round(double precision, integer)`` at all, so a
+        two-argument round over a float column raised UndefinedFunction rather
+        than returning a wrong number. The numeric cast supplies the overload.
+        """
+        assert _render("round(2.345, 2)", "postgres") == "ROUND(CAST(2.345 AS numeric), 2)"
 
     def test_trunc_goes_toward_zero_where_the_engine_has_no_truncation(self) -> None:
         """Databricks has no numeric trunc, and a plain FLOOR would give -2."""
@@ -1169,15 +1289,13 @@ class TestRenderingInvariants:
                 "10 / NULLIF((CASE WHEN 2 <= 0 OR 2 = 1 OR 8 <= 0 "
                 "THEN NULL ELSE (LOG10(8) / LOG10(2)) END), 0)",
             ),
-            ("clickhouse", "round(2.5)", "(sign(2.5) * floor(abs(2.5) + 0.5))"),
         ],
     )
     def test_a_rewrite_used_as_a_divisor_keeps_its_parens(
         self, dialect: str, call: str, expected: str
     ) -> None:
         """The concrete shape of the bug: a rewritten call on the right of a
-        division. ClickHouse wraps both operands in a decimal CAST of its own,
-        so only the rewrite's own parens are asserted there.
+        division.
 
         The divisor now sits inside a ``NULLIF`` guard (#319), which does not
         change what this test is for: the rewrite must still carry its own

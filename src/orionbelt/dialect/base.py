@@ -993,11 +993,155 @@ class Dialect(ABC):
         """Default: native ``ENDS_WITH(x, suffix)``."""
         return self._render_named_function("ends_with", args)
 
-    def _render_round(self, args: list[Expr]) -> str:
-        """Default: native ``ROUND``, which rounds ties away from zero on every
-        engine but ClickHouse, where ties go to even.
+    #: The widest scale this engine's decimal type carries. Rounding to that
+    #: many places or more leaves every value it can hold unchanged, so the
+    #: call is the identity there and needs no arithmetic at all.
+    _MAX_ROUND_DIGITS: int = 0
+
+    #: The largest power of ten a factor can be and still be a finite double.
+    #: Not a property of the decimal type: the factor has to out-scale whatever
+    #: arrives, and a float column reaches far past any DECIMAL. Past this, no
+    #: representable factor is coarse enough and the answer is zero instead.
+    _MAX_ROUND_MAGNITUDE: int = 308
+
+    #: Set by an engine that rounds its float type to even and needs the
+    #: add-half-and-truncate rewrite. ``None`` means the native ROUND is right.
+    _ROUND_TRUNCATE_FN: str | None = None
+
+    def _round_digits(self, args: list[Expr]) -> int | None:
+        """The digit count as an integer, or ``None`` when it is computed.
+
+        Read only from an integer literal, which is what a model formula
+        writes. Returned unbounded: the two ends are not symmetric and each
+        dialect handles them where the meaning is clear, in
+        :meth:`_render_round`.
         """
-        return self._render_named_function("round", args)
+        if len(args) < 2:
+            return 0
+        digits = args[1]
+        # bool is a subclass of int, and `round(x, true)` is not a digit count.
+        if (
+            isinstance(digits, Literal)
+            and isinstance(digits.value, int)
+            and not isinstance(digits.value, bool)
+        ):
+            return digits.value
+        return None
+
+    @staticmethod
+    def _decimal_half(digits: int) -> str:
+        """Half of the last place *digits* keeps, written out exactly.
+
+        ``0.5`` at 0 places, ``0.005`` at 2, ``50`` at -2. Spelled rather than
+        computed, so no float is involved in producing it.
+        """
+        if digits >= 0:
+            return "0." + "0" * digits + "5"
+        return "5" + "0" * (abs(digits) - 1)
+
+    def _round_half_sql(self, half: str) -> str:
+        """Spell *half* so this engine reads it as an exact decimal."""
+        return half
+
+    def _round_half_computed(self, digits_sql: str) -> str:
+        """The same half when the digit count is only known at run time."""
+        return f"0.5 * POW(10, -({digits_sql}))"
+
+    def _round_decimal_cast(self, value_sql: str) -> str | None:
+        """An exact-decimal cast to put under the native ``ROUND``.
+
+        ``None`` unless the engine both rounds its float type to even *and* has
+        a decimal type wide enough to take any value unharmed, which of the
+        eight is true only of PostgreSQL and its unbounded ``numeric``.
+        """
+        return None
+
+    def _render_round(self, args: list[Expr]) -> str:
+        """Ties away from zero, which three engines do not do for floats.
+
+        Measured, not assumed. ClickHouse, PostgreSQL and MySQL all use
+        banker's rounding for their *float* type and away from zero for their
+        *decimal* type - ``round(2.5)`` is 2 on a double and 3 on a numeric, on
+        the same engine, and all three document it. ClickHouse is not the odd
+        one out it was once described as. The other five need nothing.
+
+        Two shapes cover the three, and which one an engine gets is decided by
+        whether it has a decimal type that can hold anything:
+
+        **PostgreSQL** does. Its ``numeric`` is unbounded, so casting to it
+        names no width, loses nothing, and its own ROUND then rounds the way
+        the catalog wants.
+
+        **MySQL and ClickHouse** do not, so nothing is cast. Adding half of the
+        last kept place and truncating is the same operation and needs no
+        conversion: the arithmetic runs in whatever type arrived, and only the
+        *half* is written as an exact decimal, which is what keeps a decimal
+        operand exact while leaving a float a float.
+
+        Casting either of those two was tried and measured worse. MySQL's
+        DECIMAL is 65 digits split between the sides, so ``CAST(1e50 AS
+        DECIMAL(65, 18))`` saturates silently to 999...9. ClickHouse's
+        conversion from Float64 scales by a power of ten in floating point, so
+        ``round(toDecimal256(1e19, 18))`` is 9999999999999999539 where DuckDB
+        says 1e19, and an infinity cannot be converted at all.
+        """
+        cast_sql = self._round_decimal_cast(self.compile_expr(args[0]))
+        if cast_sql is not None:
+            # RawSQL: re-wraps SQL this dialect just rendered, so the argument
+            # goes back through _render_named_function and picks up the
+            # engine's own spelling of ROUND.
+            return self._render_named_function("round", [RawSQL(sql=cast_sql), *args[1:]])
+        if self._ROUND_TRUNCATE_FN is None:
+            return self._render_named_function("round", args)
+
+        value = self.compile_expr(args[0], _parent_prec=self._PREC_MUL)
+        fn = self._ROUND_TRUNCATE_FN
+        digits = self._round_digits(args)
+
+        if digits is None:
+            # A computed count cannot be spelled as a literal, and the fallback
+            # is a float, so a decimal operand degrades. 2.25.0 did this too.
+            n_sql = self.compile_expr(args[1])
+            half = self._round_half_computed(n_sql)
+            return f"{fn}({value} + SIGN({value}) * {half}, {n_sql})"
+
+        if digits >= self._MAX_ROUND_DIGITS:
+            # Rounding to at least as many places as the decimal type carries
+            # leaves every value unchanged, so there is nothing to do. Saying
+            # so is also the only correct answer at the ceiling: the half would
+            # need one place *more* than the count, which is a scale the engine
+            # cannot express, and rounding a value to its own scale must not
+            # change it.
+            return value
+
+        if digits < 0:
+            # Rounding to tens or hundreds. Not the same shape: the half would
+            # have to be 5, 50, 500..., and truncating at a negative count
+            # stops working once it passes the value's own magnitude - measured,
+            # ClickHouse leaves 1e40 alone at -41 where the answer is 0. Divide
+            # first, round at zero places, and put the scale back, which is
+            # exact because the factor is an integer both ways.
+            #
+            # Bounding the *count* is what a clamp would do, and it is wrong
+            # here: measured, round(9e64, -5000) is 0 while a factor of 10**65
+            # leaves 9e64 sitting at 1e65, and 9e64 is an ordinary DECIMAL(65).
+            # The factor has to out-scale the value, not the type.
+            #
+            # Past the largest finite double no factor can, so there is nothing
+            # to divide by - but there is also nothing left to decide: a
+            # granularity coarser than every representable number rounds all of
+            # them to zero. SIGN carries a NULL through and reads an infinity as
+            # 1, which is what DuckDB answers there too.
+            if -digits > self._MAX_ROUND_MAGNITUDE:
+                return self._render_infix(f"SIGN({value}) * 0")
+            factor = 10**-digits
+            half = self._round_half_sql("0.5")
+            return self._render_infix(
+                f"{fn}({value} / {factor} + SIGN({value}) * {half}, 0) * {factor}"
+            )
+
+        half = self._round_half_sql(self._decimal_half(digits))
+        return f"{fn}({value} + SIGN({value}) * {half}, {digits})"
 
     def _render_trunc(self, args: list[Expr]) -> str:
         """Default: native ``TRUNC(x[, n])``, truncating toward zero."""
