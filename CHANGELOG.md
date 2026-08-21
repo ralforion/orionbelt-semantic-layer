@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.25.1] - 2026-08-21
+
 ### Fixed
 
 - **A ClickHouse `FixedString` is read by value rather than by storage.** ClickHouse pads a `FixedString` to its declared width with NUL bytes, and they count as content, so a `FixedString(50)` holding `Books` answered **50** to `length`, came back from `upper` still carrying 45 of them, and made `ends_with(x, 'ks')` **false**; `replace` and `split_part` raised outright. Measured, 13 of the catalog's 15 string functions disagreed with the same characters held as a `String`, and two of the wrong answers were silent, one of them a filter. This is not an exotic schema: TPC-DS types its `CHAR` columns as `FixedString`, following ClickHouse's own published DDL, so a model over one got the padded answers. The catalog now marks which argument positions hold text, and ClickHouse reads those through `toString`, which strips the padding, is the identity on a `String`, and carries `Nullable` and NULL through unchanged. Numeric arguments are untouched, since coercing `substring(x, 2, 3)`'s bounds would change the call, and literals are left alone because they are already the engine's ordinary string type. No other dialect is affected, none of them having a fixed-width string type. The existing tests could not see any of this because they pass string *literals*, which are never `FixedString` - the same blind spot that hid the `round` tie bug - so a vendor test now runs every string entry over both spellings of the same value.
