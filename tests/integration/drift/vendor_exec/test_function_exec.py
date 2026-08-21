@@ -26,6 +26,7 @@ import pytest
 import orionbelt.dialect  # noqa: F401  -- triggers dialect registrations
 from orionbelt.ast.nodes import Cast, FunctionCall, InTimeZone, Literal, RawSQL
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+from orionbelt.compiler.expr_rewrite import map_nodes
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.functions import FUNCTION_CATALOG, FunctionSpec
 from orionbelt.models.semantic import TimeGrain, WeekStart
@@ -419,4 +420,66 @@ def test_clickhouse_round_is_known_wrong_for_a_full_width_decimal(
         f"{still_correct}, so the rewrite now handles a case the docs say it "
         "does not. Take the limit out of the dialect, the catalog semantics, "
         "the guide and the changelog, and delete this test."
+    )
+
+
+# --- a ClickHouse FixedString must answer like the same String ---------------
+#
+# ClickHouse pads a FixedString to its declared width with NUL bytes, and they
+# count as content. TPC-DS types its CHAR columns that way, following
+# ClickHouse's own published DDL, so this is how a real schema arrives.
+#
+# The invariant is simple and needs no second engine: the same characters, held
+# as FixedString or as String, must give a catalog function the same answer.
+
+#: One call per string entry, with {X} standing in for the subject.
+_STRING_CALLS = [
+    "length({X})",
+    "substring({X}, 2, 3)",
+    "upper({X})",
+    "lower({X})",
+    "trim({X})",
+    "ltrim({X})",
+    "rtrim({X})",
+    "concat({X}, '|')",
+    "replace({X}, 'oo', 'XX')",
+    "position('ook', {X})",
+    "split_part({X}, 'o', 1)",
+    "lpad({X}, 8, '*')",
+    "rpad({X}, 8, '*')",
+    "starts_with({X}, 'Bo')",
+    "ends_with({X}, 'ks')",
+]
+
+
+def test_clickhouse_fixedstring_answers_like_a_string(
+    vendor_clickhouse: VendorTarget,
+) -> None:
+    """Every catalog string function, over 'Books' held both ways.
+
+    Before the coercion 13 of these 15 disagreed: ``length`` answered 50,
+    ``upper`` came back still carrying 45 NULs, ``ends_with(x, 'ks')`` was
+    **false**, and ``replace`` and ``split_part`` raised outright.
+    """
+    engine = DialectRegistry.get(vendor_clickhouse.dialect)
+    mismatches = []
+    for template in _STRING_CALLS:
+        ast = parse_expression(tokenize_metric_formula(template.format(X="'Books'")))
+
+        def as_column(node: object, column: str = "") -> object:
+            return (
+                RawSQL(sql=column) if isinstance(node, Literal) and node.value == "Books" else None
+            )
+
+        fixed = engine.compile_expr(
+            map_nodes(ast, lambda n: as_column(n, "toFixedString('Books', 50)"))
+        )
+        plain = engine.compile_expr(map_nodes(ast, lambda n: as_column(n, "toString('Books')")))
+        row = list(
+            vendor_clickhouse.execute(f"SELECT {fixed} AS fixed, {plain} AS plain")[0].values()
+        )
+        if str(row[0]) != str(row[1]):
+            mismatches.append(f"{template.format(X='col')}: fixed={row[0]!r} string={row[1]!r}")
+    assert not mismatches, (
+        "a FixedString answers differently from the same String:\n  " + "\n  ".join(mismatches)
     )

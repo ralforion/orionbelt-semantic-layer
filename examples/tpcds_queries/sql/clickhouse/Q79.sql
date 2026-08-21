@@ -4,7 +4,7 @@
 SELECT
   "Customer"."c_last_name" AS "Customer Name",
   "Customer"."c_first_name" AS "Customer First Name",
-  SUBSTRING("Store"."s_city", 1, 30) AS "Store City 30",
+  SUBSTRING(toString("Store"."s_city"), 1, 30) AS "Store City 30",
   "Store Sales"."ss_ticket_number" AS "Ticket Number",
   "Store Sales"."ss_addr_sk" AS "Sales Addr Key",
   CAST(round(SUM("Store Sales"."ss_coupon_amt"), 2) AS Nullable(Decimal(18, 2))) AS "Coupon Amount Sum",
@@ -33,6 +33,6 @@ GROUP BY ALL
 ORDER BY
   "Customer"."c_last_name" ASC,
   "Customer"."c_first_name" ASC,
-  SUBSTRING("Store"."s_city", 1, 30) ASC,
+  SUBSTRING(toString("Store"."s_city"), 1, 30) ASC,
   SUM("Store Sales"."ss_net_profit") ASC,
   "Store Sales"."ss_ticket_number" ASC

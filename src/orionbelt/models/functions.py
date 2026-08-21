@@ -48,6 +48,9 @@ import re
 from dataclasses import dataclass, field
 
 # Function groups, in the order they are presented to readers.
+#: Sentinel for ``text_arguments``: every argument of a variadic is text.
+TEXT_ALL = -1
+
 GROUP_STRING = "string"
 GROUP_NUMERIC = "numeric"
 GROUP_CONDITIONAL = "conditional"
@@ -126,6 +129,11 @@ class FunctionSpec:
     summary: str
     semantics: str | None = None
     examples: tuple[FunctionExample, ...] = field(default_factory=tuple)
+    #: Argument positions holding text, so a dialect can make them safe before
+    #: the call is rendered. ``(TEXT_ALL,)`` for a variadic whose every argument
+    #: is text. Only ClickHouse uses it today, to strip the NUL padding a
+    #: ``FixedString`` carries; everywhere else it is the identity.
+    text_arguments: tuple[int, ...] = ()
     unit_argument: int | None = None
     """Index of an argument that must be a literal from :data:`TIME_UNITS`."""
 
@@ -159,6 +167,7 @@ class FunctionSpec:
 _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     FunctionSpec(
         name="substring",
+        text_arguments=(0,),
         signature="substring(x, start, len?)",
         group=GROUP_STRING,
         min_args=2,
@@ -173,6 +182,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="concat",
+        text_arguments=(TEXT_ALL,),
         signature="concat(a, b, ...)",
         group=GROUP_STRING,
         min_args=2,
@@ -191,6 +201,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="upper",
+        text_arguments=(0,),
         signature="upper(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -202,6 +213,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="lower",
+        text_arguments=(0,),
         signature="lower(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -213,6 +225,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="trim",
+        text_arguments=(0,),
         signature="trim(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -224,6 +237,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="ltrim",
+        text_arguments=(0,),
         signature="ltrim(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -235,6 +249,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="rtrim",
+        text_arguments=(0,),
         signature="rtrim(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -246,6 +261,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="length",
+        text_arguments=(0,),
         signature="length(x)",
         group=GROUP_STRING,
         min_args=1,
@@ -260,6 +276,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="replace",
+        text_arguments=(0, 1, 2),
         signature="replace(x, from, to)",
         group=GROUP_STRING,
         min_args=3,
@@ -271,6 +288,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="position",
+        text_arguments=(0, 1),
         signature="position(needle, haystack)",
         group=GROUP_STRING,
         min_args=2,
@@ -289,6 +307,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="split_part",
+        text_arguments=(0, 1),
         signature="split_part(x, delim, n)",
         group=GROUP_STRING,
         min_args=3,
@@ -306,6 +325,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="lpad",
+        text_arguments=(0, 2),
         signature="lpad(x, len, fill)",
         group=GROUP_STRING,
         min_args=3,
@@ -317,6 +337,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="rpad",
+        text_arguments=(0, 2),
         signature="rpad(x, len, fill)",
         group=GROUP_STRING,
         min_args=3,
@@ -328,6 +349,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="starts_with",
+        text_arguments=(0, 1),
         signature="starts_with(x, prefix)",
         group=GROUP_STRING,
         min_args=2,
@@ -342,6 +364,7 @@ _STRING_FUNCTIONS: tuple[FunctionSpec, ...] = (
     ),
     FunctionSpec(
         name="ends_with",
+        text_arguments=(0, 1),
         signature="ends_with(x, suffix)",
         group=GROUP_STRING,
         min_args=2,

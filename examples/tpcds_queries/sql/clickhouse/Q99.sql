@@ -2,7 +2,7 @@
 -- Regenerate: uv run python sweep.py --dialect clickhouse --dump
 
 SELECT
-  SUBSTRING("Warehouse"."w_warehouse_name", 1, 20) AS "Warehouse Name 20",
+  SUBSTRING(toString("Warehouse"."w_warehouse_name"), 1, 20) AS "Warehouse Name 20",
   "Ship Mode"."sm_type" AS "Ship Type",
   "Call Center"."cc_name" AS "Call Center Name",
   CAST(COUNT(
@@ -57,6 +57,6 @@ WHERE
   )
 GROUP BY ALL
 ORDER BY
-  SUBSTRING("Warehouse"."w_warehouse_name", 1, 20) ASC,
+  SUBSTRING(toString("Warehouse"."w_warehouse_name"), 1, 20) ASC,
   "Ship Mode"."sm_type" ASC,
   "Call Center"."cc_name" ASC

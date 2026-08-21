@@ -9,6 +9,7 @@ from orionbelt.ast.nodes import (
     FunctionCall,
     Literal,
     OrderByItem,
+    RawSQL,
     Unnest,
 )
 from orionbelt.dialect.base import (
@@ -364,6 +365,28 @@ class ClickHouseDialect(Dialect):
     #: rounding is the identity and no half is needed, which is just as well:
     #: the half wants one place more than the count and 77 is out of range.
     _MAX_ROUND_DIGITS: int = 76
+
+    def _coerce_text_argument(self, expr: Expr) -> Expr:
+        """Read a ``FixedString`` by value rather than by storage.
+
+        ClickHouse is the one engine here with a fixed-width string type, and
+        it pads to that width with NUL bytes that then count as content. A
+        ``FixedString(50)`` holding 'Books' answers 50 to ``lengthUTF8``, comes
+        back from ``upper`` still carrying 45 NULs, makes ``endsWith(x, 'ks')``
+        **false**, and raises outright from ``replaceAll`` and
+        ``splitByString``. Measured, 13 of the catalog's 15 string functions
+        disagree with the same value held as a ``String``.
+
+        That matters because it is how a real schema arrives: TPC-DS types its
+        CHAR columns as ``FixedString``, following ClickHouse's own published
+        DDL, so a model over one gets the padded answers.
+
+        ``toString`` is exact and cheap: it strips the padding, is the identity
+        on a ``String``, and carries ``Nullable`` and NULL through unchanged.
+        """
+        # RawSQL: re-wraps SQL this dialect just rendered, so the coercion sits
+        # outside whatever spelling the argument itself compiled to.
+        return RawSQL(sql=f"toString({self.compile_expr(expr)})")
 
     def _round_half_sql(self, half: str) -> str:
         """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a

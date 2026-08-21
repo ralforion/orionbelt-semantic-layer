@@ -15,7 +15,7 @@ WHERE
   "Date"."d_qoy" = 2
   AND "Date"."d_year" = 2001
   AND (
-    SUBSTRING("Customer Address"."ca_zip", 1, 5) IN ('85669', '86197', '88274', '83405', '86475', '85392', '85460', '80348', '81792')
+    SUBSTRING(toString("Customer Address"."ca_zip"), 1, 5) IN ('85669', '86197', '88274', '83405', '86475', '85392', '85460', '80348', '81792')
     OR "Customer Address"."ca_state" IN ('CA', 'WA', 'GA')
     OR "Catalog Sales"."cs_sales_price" > 500
   )

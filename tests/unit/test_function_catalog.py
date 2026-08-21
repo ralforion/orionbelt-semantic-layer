@@ -1080,6 +1080,39 @@ class TestPinnedSemantics:
         """
         assert _render("round(2.345, 2)", "postgres") == "ROUND(CAST(2.345 AS numeric), 2)"
 
+    def test_string_functions_read_a_clickhouse_fixedstring_by_value(self) -> None:
+        """ClickHouse pads a ``FixedString`` to its width with NUL bytes that
+        then count as content, so the padding leaks into the answer: measured,
+        13 of the 15 string entries disagree with the same value held as a
+        ``String``. ``toString`` strips it and is the identity on a ``String``.
+        """
+        assert _render("length({[S].[C]})", "clickhouse").startswith("lengthUTF8(toString(")
+        assert _render("upper({[S].[C]})", "clickhouse").startswith("UPPER(toString(")
+        assert "toString(" in _render("ends_with({[S].[C]}, 'ks')", "clickhouse")
+        # No other engine has a fixed-width string type, so none is touched.
+        for dialect in ("duckdb", "postgres", "mysql", "bigquery", "snowflake"):
+            assert "toString(" not in _render("length({[S].[C]})", dialect)
+
+    def test_only_the_text_arguments_are_coerced(self) -> None:
+        """Wrapping a numeric argument would turn it into a string and change
+        the call: ``substring(x, 2, 3)`` takes two integers, ``lpad`` takes a
+        width. Only the positions the catalog marks as text are coerced.
+        """
+        sql = _render("substring({[S].[C]}, 2, 3)", "clickhouse")
+        assert sql.count("toString(") == 1
+        assert sql.endswith(", 2, 3)")
+        sql = _render("lpad({[S].[C]}, 8, '*')", "clickhouse")
+        assert sql.count("toString(") == 1  # the subject, not the width
+        assert ", 8, '*')" in sql
+
+    def test_a_literal_text_argument_is_left_alone(self) -> None:
+        """A literal is already the engine's ordinary string type, so coercing
+        it would only make the SQL harder to read.
+        """
+        sql = _render("replace({[S].[C]}, 'oo', 'XX')", "clickhouse")
+        assert sql.count("toString(") == 1
+        assert "'oo', 'XX'" in sql
+
     def test_trunc_goes_toward_zero_where_the_engine_has_no_truncation(self) -> None:
         """Databricks has no numeric trunc, and a plain FLOOR would give -2."""
         assert _render("trunc(-1.9)", "databricks") == "(SIGN(-1.9) * FLOOR(ABS(-1.9)))"
