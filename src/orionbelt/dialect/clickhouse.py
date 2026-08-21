@@ -372,6 +372,23 @@ class ClickHouseDialect(Dialect):
         makes ClickHouse's own promotion do the work: ``Decimal + Decimal`` is
         a Decimal and ``Float64 + Decimal`` is a Float64, so one expression
         preserves whichever type it is handed.
+
+        Known limit, and there is no expression that avoids it. Adding a half
+        of scale n+1 promotes a Decimal256 to Decimal(76, n+1), so a value with
+        more than 76-(n+1) integer digits wraps - silently, returning a
+        sign-flipped number rather than raising. Guarding it is not possible
+        either: ClickHouse resolves the result type and converts before it
+        evaluates any condition, so an ``if`` overflows in the branch it was
+        meant to avoid, and ``toDecimal256`` wraps rather than raising while
+        also drifting floats (measured, 1e19 converts to
+        10000000000000000000.10 at scale 2).
+
+        What bounds it is that the two conditions cannot both be interesting.
+        Decimal256 holds 76 digits, so needing that many integer digits forces
+        the scale to n or less, and a value whose scale is already n or less is
+        unchanged by rounding to n places. Every value this corrupts is one it
+        did not need to touch, which is pinned by
+        ``test_clickhouse_round_agrees_with_native_wherever_rounding_matters``.
         """
         scale = len(half.split(".", 1)[1]) if "." in half else 0
         # toDecimal256, not toDecimal64: the latter caps at 18 fractional

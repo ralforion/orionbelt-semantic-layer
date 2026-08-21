@@ -435,7 +435,15 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
             "has no ``round(double precision, integer)`` at all; a "
             "two-argument round over a float column raised there before.\n\n"
             "One consequence is deliberate: on PostgreSQL ``round`` returns "
-            "``numeric`` rather than a float."
+            "``numeric`` rather than a float.\n\n"
+            "One limit is known and has no expression that avoids it. On "
+            "ClickHouse the half promotes a ``Decimal256`` to "
+            "``Decimal(76, n+1)``, so a value carrying more than ``76-(n+1)`` "
+            "integer digits wraps. It is bounded by arithmetic rather than by "
+            "luck: 76 digits in total means that many integer digits force the "
+            "scale to ``n`` or less, and a value already at that scale is "
+            "unchanged by rounding to ``n`` places, so every value it can "
+            "spoil is one it had no work to do on."
         ),
         examples=(
             FunctionExample("round(2.5)", 3),

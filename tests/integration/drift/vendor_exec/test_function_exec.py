@@ -318,3 +318,57 @@ def test_bigquery_round_ties_by_type(vendor_bigquery: VendorTarget) -> None:
 
 def test_databricks_round_ties_by_type(vendor_databricks: VendorTarget) -> None:
     _assert_round_ties_by_type(vendor_databricks)
+
+
+# --- the boundary of the ClickHouse rewrite ----------------------------------
+#
+# ClickHouse's own ROUND is already away-from-zero for Decimal*, so the rewrite
+# exists for Float64 alone - but it cannot be applied to one type and not the
+# other, because nothing distinguishes them when the SQL is built.
+#
+# Adding a half of scale n+1 promotes a Decimal256 to Decimal(76, n+1), and a
+# value with more than 76-(n+1) integer digits then wraps. Measured, that is
+# silent: it returns a sign-flipped number rather than raising, and no guard
+# helps, because ClickHouse resolves the result type and converts before it
+# evaluates any condition.
+#
+# What bounds the damage is that the two conditions cannot both be interesting.
+# Decimal256 holds 76 digits, so needing i > 76-(n+1) integer digits forces the
+# scale to n or less, and a value whose scale is already n or less is unchanged
+# by rounding to n places. **Every value the rewrite corrupts is one it did not
+# need to touch.** This test pins that: wherever rounding actually does
+# something, the rewrite agrees with ClickHouse's own ROUND.
+
+#: (integer digits, scale, digit count). Every row has scale > digits, so the
+#: rounding is real, and each sits as close to the overflow edge as it can.
+_CH_DECIMAL_ROUNDING = [
+    (75, 1, 0),  # one digit under the edge for n=0
+    (74, 2, 1),  # one digit under the edge for n=1
+    (73, 3, 2),
+    (60, 16, 2),
+    (20, 3, 2),
+]
+
+
+def test_clickhouse_round_agrees_with_native_wherever_rounding_matters(
+    vendor_clickhouse: VendorTarget,
+) -> None:
+    """The rewrite must match ClickHouse's own ROUND on every Decimal256 whose
+    scale exceeds the digit count, right up to the width of the type.
+    """
+    engine = DialectRegistry.get(vendor_clickhouse.dialect)
+    mismatches = []
+    for integer_digits, scale, digits in _CH_DECIMAL_ROUNDING:
+        literal = "9" * integer_digits + "." + "9" * scale
+        value = f"toDecimal256('{literal}', {scale})"
+        ast = FunctionCall(name="round", args=[RawSQL(sql=value), Literal.number(digits)])
+        sql = f"SELECT {engine.compile_expr(ast)} AS ours, round({value}, {digits}) AS native"
+        row = list(vendor_clickhouse.execute(sql)[0].values())
+        if str(row[0]) != str(row[1]):
+            mismatches.append(
+                f"i={integer_digits} s={scale} n={digits}: ours={row[0]!r} native={row[1]!r}"
+            )
+    assert not mismatches, (
+        "the round rewrite diverges from ClickHouse's own ROUND where the "
+        "rounding is real:\n  " + "\n  ".join(mismatches)
+    )
