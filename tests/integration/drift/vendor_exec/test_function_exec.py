@@ -372,3 +372,51 @@ def test_clickhouse_round_agrees_with_native_wherever_rounding_matters(
         "the round rewrite diverges from ClickHouse's own ROUND where the "
         "rounding is real:\n  " + "\n  ".join(mismatches)
     )
+
+
+#: (integer digits, scale, digit count) where the rewrite is known to be wrong.
+#: Scale <= digits in every row, so ClickHouse's own ROUND returns the value
+#: untouched and there was nothing to do.
+_CH_DECIMAL_OVERFLOW = [
+    (76, 0, 1),
+    (75, 0, 1),
+    (76, 0, 2),
+]
+
+
+def test_clickhouse_round_is_known_wrong_for_a_full_width_decimal(
+    vendor_clickhouse: VendorTarget,
+) -> None:
+    """Pin the limitation rather than leave it to the prose.
+
+    These are the values the rewrite spoils: a Decimal256 wide enough that
+    adding a half of scale n+1 overflows it, which by the arithmetic above can
+    only happen when its scale is already n or less and the round is therefore
+    the identity. Every route out was measured and none works - an ``if`` guard
+    overflows in the branch it was meant to avoid, ``toDecimal256`` wraps
+    instead of raising and drifts floats on the way, and dispatching on
+    ``toTypeName`` does not help because the result type is resolved and
+    converted before the condition is folded, even though the test is constant.
+
+    **If this test starts failing, that is good news**: something now handles
+    the case, and the limit should come out of
+    :meth:`ClickHouseDialect._round_half_sql`, the catalog ``semantics`` for
+    ``round``, ``docs/guide/functions.md`` and the changelog, along with this
+    test.
+    """
+    engine = DialectRegistry.get(vendor_clickhouse.dialect)
+    still_correct = []
+    for integer_digits, scale, digits in _CH_DECIMAL_OVERFLOW:
+        literal = "9" * integer_digits + ("." + "9" * scale if scale else "")
+        value = f"toDecimal256('{literal}', {scale})"
+        ast = FunctionCall(name="round", args=[RawSQL(sql=value), Literal.number(digits)])
+        sql = f"SELECT {engine.compile_expr(ast)} AS ours, round({value}, {digits}) AS native"
+        row = list(vendor_clickhouse.execute(sql)[0].values())
+        if str(row[0]) == str(row[1]):
+            still_correct.append(f"i={integer_digits} s={scale} n={digits}")
+    assert not still_correct, (
+        "the ClickHouse Decimal256 overflow no longer reproduces for "
+        f"{still_correct}, so the rewrite now handles a case the docs say it "
+        "does not. Take the limit out of the dialect, the catalog semantics, "
+        "the guide and the changelog, and delete this test."
+    )

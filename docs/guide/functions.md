@@ -79,6 +79,14 @@ whichever type it is handed.
 Two ends of the digit count are special, and they are not symmetric. Rounding to
 **at least as many places as the decimal type carries** cannot change anything,
 so the call is the identity there and no arithmetic is emitted. A **negative**
+count is not identity at any size — `round(1e40, -41)` is 0 — and truncating
+stops working once the count passes the value's own magnitude, so those divide
+by the factor, round at zero places, and put the scale back. The factor has to
+out-scale the *value* rather than the type: `9e64` is an ordinary `DECIMAL(65)`,
+and `round(9e64, -5000)` is 0, not the `1e65` a type-sized factor would give.
+Past the largest finite double no factor is coarse enough, and every
+representable number rounds to zero there anyway.
+
 One ClickHouse limit is worth stating, because no expression avoids it. The
 half promotes a `Decimal256` to `Decimal(76, n+1)`, so a value carrying more
 than `76 - (n+1)` integer digits wraps rather than raising. It is bounded by
@@ -87,14 +95,6 @@ digits force the scale to `n` or less, and a value already at that scale is
 unchanged by rounding to `n` places — so every value this can spoil is one it
 had no work to do on. Wherever the rounding is real, the rewrite agrees with
 ClickHouse's own `ROUND`, and a test pins that up to the width of the type.
-
-count is not identity at any size — `round(1e40, -41)` is 0 — and truncating
-stops working once the count passes the value's own magnitude, so those divide
-by the factor, round at zero places, and put the scale back. The factor has to
-out-scale the *value* rather than the type: `9e64` is an ordinary `DECIMAL(65)`,
-and `round(9e64, -5000)` is 0, not the `1e65` a type-sized factor would give.
-Past the largest finite double no factor is coarse enough, and every
-representable number rounds to zero there anyway.
 
 One consequence is deliberate: on PostgreSQL `round` gives back `numeric`
 rather than a float.
