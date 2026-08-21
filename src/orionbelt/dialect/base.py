@@ -37,7 +37,13 @@ from orionbelt.ast.nodes import (
     Unnest,
     WindowFunction,
 )
-from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
+from orionbelt.models.functions import (
+    JSON_PATH_RE,
+    TEXT_ALL,
+    TIME_UNITS,
+    FunctionSpec,
+    lookup_function,
+)
 from orionbelt.models.semantic import TimeGrain, WeekStart
 from orionbelt.models.types import DecimalType, OBMLType
 
@@ -822,6 +828,33 @@ class Dialect(ABC):
         """
         if name in {f.lower() for f in self.capabilities.unsupported_functions}:
             raise UnsupportedFunctionError(self.name, name)
+
+    def _coerce_text_argument(self, expr: Expr) -> Expr:
+        """Make a text argument safe for this engine's string functions.
+
+        The identity everywhere but ClickHouse, which is the one engine with a
+        fixed-width string type whose padding leaks into the answer.
+        """
+        return expr
+
+    def _coerce_text_arguments(self, spec: FunctionSpec, args: list[Expr]) -> list[Expr]:
+        """Apply :meth:`_coerce_text_argument` to the positions *spec* marks.
+
+        A literal is never the problem - it is already the engine's ordinary
+        string type - so it is left alone and the SQL stays readable.
+        """
+        if not spec.text_arguments:
+            return args
+        positions = (
+            range(len(args))
+            if spec.text_arguments == (TEXT_ALL,)
+            else [i for i in spec.text_arguments if i < len(args)]
+        )
+        coerced = list(args)
+        for i in positions:
+            if not isinstance(coerced[i], Literal):
+                coerced[i] = self._coerce_text_argument(coerced[i])
+        return coerced
 
     def _render_function(self, name: str, args: list[Expr]) -> str:
         """Render a call to a portable-catalog scalar function.
@@ -1812,7 +1845,7 @@ class Dialect(ABC):
                         or _is_json_path_literal(args[spec.path_argument])
                     )
                 ):
-                    return self._render_function(spec.name, args)
+                    return self._render_function(spec.name, self._coerce_text_arguments(spec, args))
                 # Everything else stays pass-through: removing the escape
                 # hatch would break every model built before the catalog.
                 fname = self._map_function_name(fname)

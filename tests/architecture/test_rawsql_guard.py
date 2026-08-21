@@ -35,6 +35,11 @@ APPROVED_RAWSQL: dict[str, int] = {
     # does not compile there. The `:` path has no typed AST node, and the cast
     # has to bind to the path rather than to a ColumnRef.
     "src/orionbelt/dialect/snowflake.py": 1,
+    # FixedString coercion: re-wraps SQL this dialect just rendered, so the
+    # `toString` sits outside whatever spelling the argument compiled to. A
+    # typed Cast node would say Decimal/String rather than "read this by value
+    # rather than by storage", which is what the padding makes necessary.
+    "src/orionbelt/dialect/clickhouse.py": 1,
     # Week handling: each site re-wraps SQL the dialect just rendered, so that
     # one weekly floor serves the catalog function, the time-grain dimension
     # and the period-over-period spine rather than one implementation per

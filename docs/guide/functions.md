@@ -99,6 +99,16 @@ ClickHouse's own `ROUND`, and a test pins that up to the width of the type.
 One consequence is deliberate: on PostgreSQL `round` gives back `numeric`
 rather than a float.
 
+One of those places is a *type* rather than a function. ClickHouse pads a
+`FixedString` to its declared width with NUL bytes, and they count as content:
+a `FixedString(50)` holding `Books` answers **50** to `length`, comes back from
+`upper` still carrying 45 of them, and makes `ends_with(x, 'ks')` **false**.
+`replace` and `split_part` refuse it outright. That is not exotic — TPC-DS
+types its `CHAR` columns that way, following ClickHouse's own published DDL. So
+on ClickHouse the text arguments of a string function are read through
+`toString`, which strips the padding, is the identity on a `String`, and carries
+`Nullable` through unchanged. Numeric arguments and literals are left alone.
+
 Five more places where the engines differ on the answer, not the name:
 
 | expression | what engines do | what OBSL returns |
