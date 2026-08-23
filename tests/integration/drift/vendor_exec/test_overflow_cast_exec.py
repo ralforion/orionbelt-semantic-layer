@@ -58,6 +58,10 @@ measures:
     resultType: int
     aggregation: sum
     dataType: "decimal(18, 2)"
+  Qty Sum Int32:
+    columns: [{dataObject: Charges, column: Qty}]
+    aggregation: sum
+    dataType: "integer"
 """
 
 # (measure, rows, the true total). Two cases, because the two targets saturate
@@ -66,6 +70,21 @@ measures:
 OVERFLOWING = [
     ("Qty Sum Narrow", [50000000000000000, 50000000000000000], "100000000000000000"),
     ("Qty Sum", [9000000000000000000, 9000000000000000000], "18000000000000000000"),
+    # A declared ``integer``, which is 32 bits on the engines that have one, so
+    # it overflows four billion earlier than either case above. This is the
+    # shape #356 was filed for: ClickHouse returned 2147483647 here, where
+    # DuckDB, PostgreSQL and Databricks raise and the wider-integer engines
+    # hold the value. Engines whose ``integer`` cast target is 64-bit (MySQL
+    # SIGNED, BigQuery INT64, Snowflake NUMBER(38, 0)) answer with the total,
+    # which the contract accepts - it forbids a *wrong* number, not a right one.
+    #
+    # It declares ``dataType`` and *not* ``resultType``, deliberately. With
+    # ``resultType: int`` the #338 fix casts the SUM argument to Decimal128
+    # first, and a Decimal-to-Int cast already raises on ClickHouse, so the
+    # saturation is unreachable through that door and this case would pass
+    # against the unfixed dialect. The default float ``resultType`` leaves a
+    # Float64 SUM, which is what saturates.
+    ("Qty Sum Int32", [2000000000, 2000000000], "4000000000"),
 ]
 # The same measures over values every type holds, so the guard is shown not to
 # have cost the ordinary answer.

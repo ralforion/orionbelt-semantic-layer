@@ -4,6 +4,13 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **ClickHouse no longer answers with a wrapped or saturated integer when a cast overflows.** A measure declaring `dataType: integer` compiled to `CAST(SUM(x) AS Nullable(Int32))`, and ClickHouse neither raises nor returns the value there: a true 4000000000 came back as **-294967296**, wrapped through two's complement, and a Float64 source saturates to 2147483647 instead. Every other engine either raises or holds the value. This is the defect class #336 named, on a different engine and a different type, and the #336 fix does not reach it: that one widened MySQL's decimal casts. The integer path now renders `accurateCast`, which raises on overflow where `CAST` does not. `accurateCast` also rejects any value carrying a fraction, so the input is truncated first, which is exactly what the plain `CAST` already did to it and leaves every non-overflowing answer unchanged; `trunc` preserves its argument's type, so a `COUNT` past 2^53 is not routed through a float on the way. A NULL literal and a whole-number literal are both exempt, the second because every CFL count pad is one and truncating it is noise. Reachable only with the default float `resultType`: declaring `resultType: int` casts the SUM argument to `Decimal128` under the #338 fix, and a decimal-to-integer cast already raised.
+
+- **MySQL renders two cast targets its `CAST` accepts, where it rendered two it does not.** `TIMESTAMP` and `TINYINT(1)` are both legal MySQL column types and neither is in MySQL's cast vocabulary, so a measure declaring `dataType: timestamp` or `dataType: boolean` validated clean, compiled without a warning, and failed at the database with error 1064. They are rewritten at cast time only, to `DATETIME` and `SIGNED`, leaving the DDL paths that those spellings are correct for untouched. This dialect already rewrote `VARCHAR` to `CHAR` for exactly this reason, and its own abstract-type map already carried `DATETIME` for `timestamp`: the typed-literal path in the expression parser was fixed for this and the measure `dataType` path was not. MySQL was the only affected engine of the six measured. A vendor test now executes a cast to every OBML type on every vendor, so a new type or a new dialect cannot reintroduce the shape.
+
+
 ## [2.25.1] - 2026-08-21
 
 ### Fixed

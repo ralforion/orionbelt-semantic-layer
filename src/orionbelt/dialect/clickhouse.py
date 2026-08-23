@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from orionbelt.ast.nodes import (
     BinaryOp,
     Cast,
@@ -32,6 +34,20 @@ _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.MINUTE: "toStartOfMinute",
     TimeGrain.SECOND: "toStartOfSecond",
 }
+
+
+def _is_integer_literal(value: object) -> bool:
+    """``True`` for a whole-number literal, excluding ``bool``.
+
+    ``bool`` is a subclass of ``int`` in Python, and ``True`` is not an integer
+    to ClickHouse - the same trap #351 hit with ``round(x, true)``.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+#: Integer cast targets this dialect renders. ``accurateCast`` is used for these
+#: rather than ``CAST`` because ``CAST`` saturates on overflow (#356).
+_INT_TYPE_RE = re.compile(r"^\s*U?Int(?:8|16|32|64|128|256)\s*$", re.IGNORECASE)
 
 
 @DialectRegistry.register
@@ -291,6 +307,24 @@ class ClickHouseDialect(Dialect):
             scale_token = resolved_type.split(",")[-1].rstrip(") ")
             scale = int(scale_token.strip())
             inner_sql = f"round({inner_sql}, {scale})"
+        elif not is_null_literal and _INT_TYPE_RE.match(resolved_type):
+            # An integer CAST saturates here where every other engine raises
+            # (#356): CAST(3e9 AS Nullable(Int32)) is 2147483647, not an error.
+            # ``accurateCast`` raises instead, but it also rejects any value
+            # carrying a fraction, so the input is truncated first - which is
+            # what the plain CAST already did to it, so no answer changes.
+            # ``trunc`` preserves the argument's type (measured: UInt64 stays
+            # UInt64, Decimal stays Decimal), so a COUNT above 2^53 is not
+            # rounded through a float on the way.
+            #
+            # An integer literal is exempt, for the reason the NULL literal
+            # above is: every CFL count pad is one, so the rule as written put
+            # ``trunc(1)`` in every union leg for nothing. Only integers -
+            # ``accurateCast(2.5, 'Int32')`` raises, so a fractional literal
+            # still needs the truncation.
+            if isinstance(inner, Literal) and _is_integer_literal(inner.value):
+                return f"accurateCast({inner_sql}, '{nullable}')"
+            return f"accurateCast(trunc({inner_sql}), '{nullable}')"
         return f"CAST({inner_sql} AS {nullable})"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
