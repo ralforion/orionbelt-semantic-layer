@@ -33,6 +33,7 @@ from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.dialect.snowflake import SnowflakeDialect
 from orionbelt.models.semantic import TimeGrain, WeekStart
+from orionbelt.models.types import parse_data_type
 
 ALL_DIALECTS = [
     "bigquery",
@@ -242,6 +243,44 @@ class TestClickHouseDialect:
         result = dialect.render_cast(col("val"), "INT")
         assert isinstance(result, FunctionCall)
         assert result.name == "toInt64"
+
+    def test_integer_cast_uses_accurate_cast(self, dialect: ClickHouseDialect) -> None:
+        """``CAST`` saturates an overflowing integer here, ``accurateCast`` raises (#356).
+
+        The truncation is what the plain ``CAST`` already did to a fractional
+        input, so it preserves every non-overflowing answer; ``accurateCast``
+        rejects a value carrying a fraction without it.
+        """
+        expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == "accurateCast(trunc(\"qty\"), 'Nullable(Int32)')"
+
+        wide = dialect.cast_to_obml_type(col("qty"), parse_data_type("bigint"))
+        assert dialect.compile_expr(wide) == "accurateCast(trunc(\"qty\"), 'Nullable(Int64)')"
+
+    def test_integer_cast_of_integer_literal_skips_trunc(self, dialect: ClickHouseDialect) -> None:
+        """Every CFL count pad is an integer literal, and truncating one is noise.
+
+        Exempted for the same reason the NULL literal is. A *fractional* literal
+        still needs it, because ``accurateCast(2.5, 'Int32')`` raises.
+        """
+        target = parse_data_type("integer")
+        whole = dialect.cast_to_obml_type(Literal.number(1), target)
+        assert dialect.compile_expr(whole) == "accurateCast(1, 'Nullable(Int32)')"
+
+        fractional = dialect.cast_to_obml_type(Literal.number(2.5), target)
+        assert dialect.compile_expr(fractional) == "accurateCast(trunc(2.5), 'Nullable(Int32)')"
+
+    def test_integer_cast_of_null_literal_is_a_plain_cast(self, dialect: ClickHouseDialect) -> None:
+        """A NULL pad carries a type and needs no accurate anything."""
+        expr = dialect.cast_to_obml_type(Literal.null(), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == "CAST(NULL AS Nullable(Int32))"
+
+    def test_non_integer_casts_are_untouched(self, dialect: ClickHouseDialect) -> None:
+        """The rewrite is scoped to integer targets; decimal keeps its pre-round."""
+        dec = dialect.cast_to_obml_type(col("amt"), parse_data_type("decimal(18, 2)"))
+        assert dialect.compile_expr(dec) == ('CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))')
+        text = dialect.cast_to_obml_type(col("amt"), parse_data_type("string"))
+        assert dialect.compile_expr(text) == 'CAST("amt" AS Nullable(String))'
 
 
 class TestDatabricksDialect:
@@ -586,11 +625,25 @@ class TestMySQLDialect:
     def test_registry_includes_mysql(self) -> None:
         assert "mysql" in DialectRegistry.available()
 
-    def test_cast(self, dialect: MySQLDialect) -> None:
+    def test_cast_boolean_uses_signed_not_tinyint(self, dialect: MySQLDialect) -> None:
+        """``TINYINT(1)`` is a legal column type and an illegal cast target (#357).
+
+        This asserted ``TINYINT(1)`` before, which MySQL rejects with error 1064,
+        so a measure declaring ``dataType: boolean`` validated clean and compiled
+        to invalid SQL. ``SIGNED`` is MySQL's own reading of a boolean.
+        """
         expr = Cast(expr=col("age"), type_name="boolean")
-        sql = dialect.compile_expr(expr)
-        assert "CAST" in sql
-        assert "TINYINT(1)" in sql
+        assert dialect.compile_expr(expr) == "CAST(`age` AS SIGNED)"
+
+    def test_cast_timestamp_uses_datetime(self, dialect: MySQLDialect) -> None:
+        """``TIMESTAMP`` is not in MySQL's cast vocabulary either (#357).
+
+        ``DATETIME`` is what this dialect's own ``_ABSTRACT_TYPE_MAP`` already
+        uses; the typed-literal path was fixed for this and the measure
+        ``dataType`` path was not.
+        """
+        expr = Cast(expr=col("seen"), type_name="timestamp")
+        assert dialect.compile_expr(expr) == "CAST(`seen` AS DATETIME)"
 
     def test_cast_string_abstract_uses_safe_char_length(self, dialect: MySQLDialect) -> None:
         """Abstract ``string`` (VARCHAR(255)) maps to CHAR(255) — inside CHAR's limit."""
