@@ -36,13 +36,31 @@ _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
 }
 
 
-def _is_integer_literal(value: object) -> bool:
-    """``True`` for a whole-number literal, excluding ``bool``.
+#: Aggregates whose result is numeric however their argument is typed, named as
+#: the compiler builds them - the canonical ``AggregationType`` spelling, not
+#: this dialect's rendering of it, which is applied further down. MIN, MAX,
+#: ANY_VALUE, MEDIAN, MODE and LISTAGG are absent on purpose: they carry the
+#: argument's type through, so a Bool, Date or String can arrive under them.
+#: See ``_compile_cast``.
+_NUMERIC_AGGREGATES: frozenset[str] = frozenset(
+    {
+        "SUM",
+        "COUNT",
+        "AVG",
+        "STDDEV",
+        "STDDEV_POP",
+        "VARIANCE",
+        "VAR_POP",
+        "CORR",
+        "COVAR_POP",
+        "COVAR_SAMP",
+    }
+)
 
-    ``bool`` is a subclass of ``int`` in Python, and ``True`` is not an integer
-    to ClickHouse - the same trap #351 hit with ``round(x, true)``.
-    """
-    return isinstance(value, int) and not isinstance(value, bool)
+
+def _numeric_aggregate(expr: Expr) -> bool:
+    """``True`` when *expr* is an aggregate call that can only produce a number."""
+    return isinstance(expr, FunctionCall) and expr.name.upper() in _NUMERIC_AGGREGATES
 
 
 #: Integer cast targets this dialect renders. ``accurateCast`` is used for these
@@ -307,44 +325,30 @@ class ClickHouseDialect(Dialect):
             scale_token = resolved_type.split(",")[-1].rstrip(") ")
             scale = int(scale_token.strip())
             inner_sql = f"round({inner_sql}, {scale})"
-        elif not is_null_literal and _INT_TYPE_RE.match(resolved_type):
-            # An integer CAST does not raise here, and does not hold the value
-            # either (#356): a true 4000000000 wraps to -294967296 from an
-            # integer source and saturates to 2147483647 from a Float64 one.
-            # ``accurateCast`` raises instead.
+        elif _numeric_aggregate(inner) and _INT_TYPE_RE.match(resolved_type):
+            # An integer CAST here neither raises nor holds the value (#356): a
+            # true 4000000000 wraps to -294967296 from an integer source and
+            # saturates to 2147483647 from a Float64 one. ``accurateCast``
+            # raises. It will not take a fraction, so the value is truncated
+            # first, which is what the plain CAST already did to it.
             #
-            # It will not take a fraction, though, so the value goes through an
-            # exact scale-0 decimal first. That truncates it, which is what the
-            # plain CAST already did, so no non-overflowing answer changes.
-            # Three things make this the right intermediate rather than
-            # ``trunc``, which was the obvious one:
+            # Scoped to aggregates that are numeric whatever they are given,
+            # and that is the whole of what makes it safe. ``trunc`` refuses a
+            # String, and ``toString`` - the other intermediate tried here -
+            # turns a Bool into 'true' and a Date into '2026-08-15', so both
+            # reshape a cast this dialect answers today. Neither can be
+            # distinguished from a numeric one at compile time, because the
+            # compiler models no types over expression bodies. What *can* be
+            # read off the AST is the aggregate: SUM, COUNT and AVG are
+            # numeric however their argument is typed, as are the statistical
+            # ones, while MIN, MAX, ``any``, MEDIAN and the LISTAGG rewrite
+            # carry their input's type through and are left alone.
             #
-            # * ``trunc`` refuses a String, so a measure aggregating a text
-            #   column under ``dataType: integer`` raised code 43 where it used
-            #   to answer. ``toString`` makes that case work again, and it is
-            #   the identity on text.
-            # * Scale 0 rather than 18: the fraction is being discarded anyway,
-            #   and the spare digits move the Decimal256 ceiling out to 76, so
-            #   1e60 raises rather than silently returning NULL.
-            # * The round trip is exact. ``toString`` of a Float64 is its
-            #   shortest round-tripping form, and a Decimal is carried
-            #   digit-for-digit - measured against the plain CAST on a
-            #   Decimal(38, 3) of 123456789012345678.885, and at 2^53+1 and
-            #   Int64 max, none of which drift.
-            #
-            # Past 76 digits the conversion yields NULL rather than raising,
-            # which the "value, NULL, or refusal" contract allows; an infinity
-            # lands there too. It costs one conversion per output group, not
-            # per row, since every caller wraps an aggregate.
-            #
-            # An integer literal skips the whole thing, for the reason the NULL
-            # literal above does: every CFL count pad is one, so the rule as
-            # written wrapped ``1`` in two function calls for nothing. Only
-            # integers - ``accurateCast(2.5, 'Int32')`` raises, so a fractional
-            # literal still needs the conversion.
-            if isinstance(inner, Literal) and _is_integer_literal(inner.value):
-                return f"accurateCast({inner_sql}, '{nullable}')"
-            return f"accurateCast(toDecimal256OrNull(toString({inner_sql}), 0), '{nullable}')"
+            # The residue is deliberate and narrow: MIN or MAX over a column
+            # wider than the declared target still wraps. Closing it needs the
+            # source type threaded into ``cast_to_obml_type``, which is a
+            # change to eight call sites and a separate piece of work.
+            return f"accurateCast(trunc({inner_sql}), '{nullable}')"
         return f"CAST({inner_sql} AS {nullable})"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:

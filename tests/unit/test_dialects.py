@@ -244,39 +244,62 @@ class TestClickHouseDialect:
         assert isinstance(result, FunctionCall)
         assert result.name == "toInt64"
 
-    def test_integer_cast_uses_accurate_cast(self, dialect: ClickHouseDialect) -> None:
-        """``CAST`` wraps or saturates an overflowing integer, ``accurateCast`` raises (#356).
-
-        The scale-0 decimal is what makes ``accurateCast`` usable: it will not
-        take a fraction, and the conversion truncates exactly as the plain
-        ``CAST`` already did, so no non-overflowing answer changes.
-        """
-        expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
-        assert dialect.compile_expr(expr) == (
-            "accurateCast(toDecimal256OrNull(toString(\"qty\"), 0), 'Nullable(Int32)')"
-        )
-
-        wide = dialect.cast_to_obml_type(col("qty"), parse_data_type("bigint"))
-        assert dialect.compile_expr(wide) == (
-            "accurateCast(toDecimal256OrNull(toString(\"qty\"), 0), 'Nullable(Int64)')"
-        )
-
-    def test_integer_cast_of_integer_literal_skips_the_conversion(
+    def test_integer_cast_of_a_numeric_aggregate_uses_accurate_cast(
         self, dialect: ClickHouseDialect
     ) -> None:
-        """Every CFL count pad is an integer literal, and converting one is noise.
+        """``CAST`` wraps or saturates an overflowing integer, ``accurateCast`` raises (#356).
 
-        Exempted for the same reason the NULL literal is. A *fractional* literal
-        still needs it, because ``accurateCast(2.5, 'Int32')`` raises.
+        The truncation is what the plain ``CAST`` already did to a fractional
+        input, so no non-overflowing answer changes; ``accurateCast`` rejects a
+        value carrying a fraction without it.
         """
-        target = parse_data_type("integer")
-        whole = dialect.cast_to_obml_type(Literal.number(1), target)
-        assert dialect.compile_expr(whole) == "accurateCast(1, 'Nullable(Int32)')"
-
-        fractional = dialect.cast_to_obml_type(Literal.number(2.5), target)
-        assert dialect.compile_expr(fractional) == (
-            "accurateCast(toDecimal256OrNull(toString(2.5), 0), 'Nullable(Int32)')"
+        agg = FunctionCall(name="SUM", args=[col("qty")])
+        expr = dialect.cast_to_obml_type(agg, parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == (
+            "accurateCast(trunc(SUM(\"qty\")), 'Nullable(Int32)')"
         )
+
+        wide = dialect.cast_to_obml_type(agg, parse_data_type("bigint"))
+        assert dialect.compile_expr(wide) == (
+            "accurateCast(trunc(SUM(\"qty\")), 'Nullable(Int64)')"
+        )
+
+    @pytest.mark.parametrize("name", ["SUM", "COUNT", "AVG", "STDDEV", "CORR", "VAR_POP"])
+    def test_numeric_aggregates_are_guarded(self, dialect: ClickHouseDialect, name: str) -> None:
+        """The set is named as the *compiler* builds it, not as this dialect renders it.
+
+        ``stddev`` reaches ``_compile_cast`` as ``STDDEV`` and only becomes
+        ``stddevSamp`` further down, so a set spelled in ClickHouse's own names
+        matches nothing. It did, once.
+        """
+        expr = FunctionCall(name=name, args=[col("qty")])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("accurateCast(trunc("), sql
+
+    @pytest.mark.parametrize("name", ["MIN", "MAX", "ANY_VALUE", "MEDIAN", "MODE", "LISTAGG"])
+    def test_type_preserving_aggregates_keep_the_plain_cast(
+        self, dialect: ClickHouseDialect, name: str
+    ) -> None:
+        """These carry their argument's type, so a Bool, Date or String can arrive.
+
+        ``trunc`` refuses a String and ``toString`` turns a Bool into ``'true'``
+        and a Date into ``'2026-08-15'``, so guarding these reshapes casts this
+        dialect answers today: measured, ``MAX(flag)`` reads 1, ``MAX(day)``
+        reads 20680 and ``MAX(code)`` reads 42 for ``'42'``. The compiler models
+        no types over expression bodies, so the aggregate is the only thing that
+        can be read off the AST, and these say nothing.
+        """
+        expr = FunctionCall(name=name, args=[col("v")])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("CAST("), sql
+        assert "accurateCast" not in sql
+
+    def test_integer_cast_of_a_bare_column_keeps_the_plain_cast(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """Nothing on a bare column says it is a number, so it is left alone."""
+        expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == 'CAST("qty" AS Nullable(Int32))'
 
     def test_integer_cast_of_null_literal_is_a_plain_cast(self, dialect: ClickHouseDialect) -> None:
         """A NULL pad carries a type and needs no accurate anything."""

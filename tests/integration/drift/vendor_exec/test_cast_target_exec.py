@@ -62,10 +62,11 @@ def _assert_numeric_text_casts_to_its_value(target: VendorTarget) -> None:
     """A text source holding a number reads as that number under an integer cast.
 
     Narrow, and it earns its place. The #356 fix on ClickHouse first rendered
-    ``accurateCast(trunc(x), ...)``, and ``trunc`` refuses a String, so a measure
-    aggregating a text column under ``dataType: integer`` raised code 43 where it
-    had answered before. The conversion goes through ``toString`` now, and this
-    is what says so.
+    ``accurateCast(trunc(x), ...)`` for every integer target, and ``trunc``
+    refuses a String, so a measure aggregating a text column under
+    ``dataType: integer`` raised code 43 where it had answered before. The
+    second attempt went through ``toString`` and broke Bool and Date instead.
+    The guard is scoped to numeric aggregates now, and this is what says so.
 
     Only the parseable case is asserted. Unparseable text is a genuine
     cross-engine divergence rather than a contract - DuckDB, PostgreSQL,
