@@ -62,6 +62,11 @@ measures:
     columns: [{dataObject: Charges, column: Qty}]
     aggregation: sum
     dataType: "integer"
+  Qty Sum Int32 Defaulted:
+    columns: [{dataObject: Charges, column: Qty}]
+    aggregation: sum
+    dataType: "integer"
+    defaultValue: 0
 """
 
 # (measure, rows, the true total). Two cases, because the two targets saturate
@@ -85,6 +90,11 @@ OVERFLOWING = [
     # against the unfixed dialect. The default float ``resultType`` leaves a
     # Float64 SUM, which is what saturates.
     ("Qty Sum Int32", [2000000000, 2000000000], "4000000000"),
+    # The same measure with a defaultValue, which wraps the aggregate in
+    # COALESCE. Review found the ClickHouse guard matching only the outermost
+    # node, so this shape fell back to the unguarded cast and went on wrapping
+    # to -294967296 after the plain case was fixed.
+    ("Qty Sum Int32 Defaulted", [2000000000, 2000000000], "4000000000"),
 ]
 # The same measures over values every type holds, so the guard is shown not to
 # have cost the ordinary answer.

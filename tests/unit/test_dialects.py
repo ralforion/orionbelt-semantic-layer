@@ -11,6 +11,7 @@ from orionbelt.ast.nodes import (
     CaseExpr,
     Cast,
     ColumnRef,
+    Expr,
     FunctionCall,
     InList,
     IsNull,
@@ -300,6 +301,46 @@ class TestClickHouseDialect:
         """Nothing on a bare column says it is a number, so it is left alone."""
         expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
         assert dialect.compile_expr(expr) == 'CAST("qty" AS Nullable(Int32))'
+
+    def test_wrapped_numeric_aggregates_stay_guarded(self, dialect: ClickHouseDialect) -> None:
+        """The planner wraps a measure before it is cast, and each wrapper hid the aggregate.
+
+        ``measure.defaultValue`` emits ``COALESCE(SUM(x), 0)``, which is how a
+        guarded SUM stopped being guarded once: matching only the outermost node
+        saw ``COALESCE`` and fell back to the unguarded cast. Arithmetic from a
+        derived metric and a window from ``total: true`` are the same shape.
+        """
+        agg = FunctionCall(name="SUM", args=[col("qty")])
+        target = parse_data_type("integer")
+        wrapped: list[Expr] = [
+            FunctionCall(name="COALESCE", args=[agg, Literal.number(0)]),
+            BinaryOp(left=agg, op="*", right=Literal.number(2)),
+            WindowFunction(func_name="SUM", args=[col("qty")]),
+            CaseExpr(when_clauses=[(col("f"), agg)], else_clause=Literal.number(0)),
+        ]
+        for expr in wrapped:
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, target))
+            assert sql.startswith("accurateCast(trunc("), f"{type(expr).__name__}: {sql}"
+
+    def test_non_numeric_wrappers_are_not_guarded(self, dialect: ClickHouseDialect) -> None:
+        """Unknown stays unknown: a wrapper over something unprovable is left alone."""
+        target = parse_data_type("integer")
+        for expr in (
+            FunctionCall(name="COALESCE", args=[col("anything"), Literal.number(0)]),
+            FunctionCall(name="SOME_VENDOR_FN", args=[col("qty")]),
+            BinaryOp(left=col("a"), op="*", right=col("b")),
+        ):
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, target))
+            assert sql.startswith("CAST("), sql
+
+    def test_a_bare_numeric_literal_is_not_guarded(self, dialect: ClickHouseDialect) -> None:
+        """It cannot overflow at run time, and every CFL count pad is one.
+
+        It still counts as numeric *inside* the predicate, which is what lets
+        ``COALESCE(SUM(x), 0)`` qualify.
+        """
+        expr = dialect.cast_to_obml_type(Literal.number(1), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == "CAST(1 AS Nullable(Int32))"
 
     def test_integer_cast_of_null_literal_is_a_plain_cast(self, dialect: ClickHouseDialect) -> None:
         """A NULL pad carries a type and needs no accurate anything."""
