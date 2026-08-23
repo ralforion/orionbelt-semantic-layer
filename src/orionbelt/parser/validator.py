@@ -26,7 +26,26 @@ from orionbelt.models.semantic import (
     SemanticModel,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
+from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
 from orionbelt.models.warnings import WarningCode
+
+#: Digits an OBML integer target holds, or ``None`` when the type is not one.
+#: ``integer`` is 32 bits on every engine with a distinct one, so 2147483647,
+#: ten digits; ``bigint`` is 64. A ``double`` is absent on purpose: it is
+#: inexact past its mantissa, which is a different complaint from this one.
+_TARGET_INTEGER_DIGITS: dict[str, int] = {"integer": 10, "bigint": 19}
+
+#: Digits a 64-bit integer holds, which is what OBML's ``int`` is. Spelled here
+#: rather than imported from ``compiler.type_resolver``: the parser does not
+#: depend on the compiler, and this is a property of the format, not the planner.
+_INT64_DIGITS = 19
+
+
+def _integer_digits(declared: OBMLType) -> int | None:
+    """Integer digits *declared* can hold, or ``None`` if it holds none."""
+    if isinstance(declared, DecimalType):
+        return declared.precision - declared.scale
+    return _TARGET_INTEGER_DIGITS.get(declared.name)
 
 
 class SemanticValidator:
@@ -57,6 +76,7 @@ class SemanticValidator:
         errors.extend(self._check_missing_via(model))
         errors.extend(self._check_measure_anchors(model))
         errors.extend(self._check_nested_objects(model))
+        errors.extend(self._check_narrowing_data_types(model))
         return errors
 
     def _check_nested_objects(self, model: SemanticModel) -> list[SemanticError]:
@@ -465,6 +485,88 @@ class SemanticValidator:
                         model,
                         subject=f"Measure '{name}' column[{i}]",
                         path=f"measures.{name}.columns[{i}]",
+                    )
+                )
+        return errors
+
+    #: Aggregations whose result stays in the neighbourhood of the source
+    #: column's values, so a target too narrow for the column is too narrow for
+    #: the answer. COUNT is absent because its magnitude is a row count and says
+    #: nothing about the column, and so are the statistical aggregates, whose
+    #: results are ratios rather than values.
+    _SOURCE_SCALED_AGGREGATIONS = frozenset(
+        {"sum", "avg", "min", "max", "any_value", "median", "mode"}
+    )
+
+    def _check_narrowing_data_types(self, model: SemanticModel) -> list[SemanticError]:
+        """Warn when a measure's ``dataType`` cannot hold what its column can.
+
+        OBML's ``int`` is a 64-bit integer, 19 digits, and a declared
+        ``integer`` is 32 bits on every engine that has a distinct one. So
+        ``dataType: integer`` over an ``int`` column is a narrowing the model
+        states about its own data, and the value that outgrows it is answered
+        differently by every engine: DuckDB, PostgreSQL, BigQuery, Databricks
+        and Snowflake raise, MySQL saturates and ClickHouse wraps (#336, #356).
+
+        **Integer targets only.** A decimal target is narrower than ``int`` on
+        this arithmetic too - ``decimal(18, 2)`` holds 16 integer digits - but
+        warning about those is noise rather than signal: ``decimal(18, 2)`` is
+        what ``defaultNumericDataType`` hands out, and a quantity column typed
+        ``int`` does not reach 10^16. Measured before restricting it: the rule
+        without this fired eight times on ``examples/tpcds.obml.yml`` alone, all
+        of them on quantities that cannot overflow, and a warning that fires on
+        the project's own flagship model teaches readers to ignore warnings.
+        Between two *integer* types the narrowing is unambiguous, which is the
+        case this exists for.
+
+        A warning rather than an error, because narrowing is a legitimate thing
+        to ask for when the modeller knows the range, and because existing
+        models declare it. What it removes is the silence.
+        """
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if not measure.data_type:
+                continue
+            if measure.aggregation.lower() not in self._SOURCE_SCALED_AGGREGATIONS:
+                continue
+            try:
+                declared = parse_data_type(measure.data_type)
+            except ValueError:
+                continue  # Reported by the schema layer; not this check's business.
+            if isinstance(declared, DecimalType):
+                continue
+            capacity = _integer_digits(declared)
+            if capacity is None or capacity >= _INT64_DIGITS:
+                continue
+            for col_ref in measure.columns:
+                if not col_ref.view or not col_ref.column:
+                    continue
+                obj = model.data_objects.get(col_ref.view)
+                column = obj.columns.get(col_ref.column) if obj else None
+                if column is None or column.abstract_type is not DataType.INT:
+                    continue
+                errors.append(
+                    SemanticError(
+                        code=WarningCode.NARROWING_DATA_TYPE,
+                        message=(
+                            f"Measure '{name}' declares dataType "
+                            f"'{measure.data_type}', which holds {capacity} integer "
+                            f"digits, over column '{col_ref.view}.{col_ref.column}' "
+                            f"of type int, which holds {_INT64_DIGITS}"
+                        ),
+                        path=f"measures.{name}.dataType",
+                        hint=(
+                            "Widen dataType (bigint, or a decimal with more integer "
+                            "digits) if the column can really reach those values. A "
+                            "value that outgrows the declared type raises on most "
+                            "engines, saturates on MySQL and wraps on ClickHouse."
+                        ),
+                        severity="warning",
+                        context={
+                            "measure": name,
+                            "dataType": measure.data_type,
+                            "column": f"{col_ref.view}.{col_ref.column}",
+                        },
                     )
                 )
         return errors
