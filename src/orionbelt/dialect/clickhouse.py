@@ -308,23 +308,43 @@ class ClickHouseDialect(Dialect):
             scale = int(scale_token.strip())
             inner_sql = f"round({inner_sql}, {scale})"
         elif not is_null_literal and _INT_TYPE_RE.match(resolved_type):
-            # An integer CAST saturates here where every other engine raises
-            # (#356): CAST(3e9 AS Nullable(Int32)) is 2147483647, not an error.
-            # ``accurateCast`` raises instead, but it also rejects any value
-            # carrying a fraction, so the input is truncated first - which is
-            # what the plain CAST already did to it, so no answer changes.
-            # ``trunc`` preserves the argument's type (measured: UInt64 stays
-            # UInt64, Decimal stays Decimal), so a COUNT above 2^53 is not
-            # rounded through a float on the way.
+            # An integer CAST does not raise here, and does not hold the value
+            # either (#356): a true 4000000000 wraps to -294967296 from an
+            # integer source and saturates to 2147483647 from a Float64 one.
+            # ``accurateCast`` raises instead.
             #
-            # An integer literal is exempt, for the reason the NULL literal
-            # above is: every CFL count pad is one, so the rule as written put
-            # ``trunc(1)`` in every union leg for nothing. Only integers -
-            # ``accurateCast(2.5, 'Int32')`` raises, so a fractional literal
-            # still needs the truncation.
+            # It will not take a fraction, though, so the value goes through an
+            # exact scale-0 decimal first. That truncates it, which is what the
+            # plain CAST already did, so no non-overflowing answer changes.
+            # Three things make this the right intermediate rather than
+            # ``trunc``, which was the obvious one:
+            #
+            # * ``trunc`` refuses a String, so a measure aggregating a text
+            #   column under ``dataType: integer`` raised code 43 where it used
+            #   to answer. ``toString`` makes that case work again, and it is
+            #   the identity on text.
+            # * Scale 0 rather than 18: the fraction is being discarded anyway,
+            #   and the spare digits move the Decimal256 ceiling out to 76, so
+            #   1e60 raises rather than silently returning NULL.
+            # * The round trip is exact. ``toString`` of a Float64 is its
+            #   shortest round-tripping form, and a Decimal is carried
+            #   digit-for-digit - measured against the plain CAST on a
+            #   Decimal(38, 3) of 123456789012345678.885, and at 2^53+1 and
+            #   Int64 max, none of which drift.
+            #
+            # Past 76 digits the conversion yields NULL rather than raising,
+            # which the "value, NULL, or refusal" contract allows; an infinity
+            # lands there too. It costs one conversion per output group, not
+            # per row, since every caller wraps an aggregate.
+            #
+            # An integer literal skips the whole thing, for the reason the NULL
+            # literal above does: every CFL count pad is one, so the rule as
+            # written wrapped ``1`` in two function calls for nothing. Only
+            # integers - ``accurateCast(2.5, 'Int32')`` raises, so a fractional
+            # literal still needs the conversion.
             if isinstance(inner, Literal) and _is_integer_literal(inner.value):
                 return f"accurateCast({inner_sql}, '{nullable}')"
-            return f"accurateCast(trunc({inner_sql}), '{nullable}')"
+            return f"accurateCast(toDecimal256OrNull(toString({inner_sql}), 0), '{nullable}')"
         return f"CAST({inner_sql} AS {nullable})"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:

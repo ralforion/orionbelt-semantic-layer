@@ -7,7 +7,7 @@ SELECT CAST(NULL AS Nullable(String)) AS "Sales Client Name", "Clients"."clientn
 FROM "orionbelt_1"."clientcomplaints" AS "Client Complaints"
 LEFT JOIN "orionbelt_1"."clients" AS "Clients" ON "Client Complaints"."complclientid" = "Clients"."clientid"
 )
-SELECT COALESCE("Sales Client Name", "Complaint Client Name") AS "Client", CAST(round(SUM("composite_01"."Total Sales"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", accurateCast(trunc(COUNT("composite_01"."Client Complaints Count")), 'Nullable(Int32)') AS "Client Complaints Count"
+SELECT COALESCE("Sales Client Name", "Complaint Client Name") AS "Client", CAST(round(SUM("composite_01"."Total Sales"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales", accurateCast(toDecimal256OrNull(toString(COUNT("composite_01"."Client Complaints Count")), 0), 'Nullable(Int32)') AS "Client Complaints Count"
 FROM "composite_01" AS "composite_01"
 GROUP BY ALL
-HAVING accurateCast(trunc(COUNT("composite_01"."Client Complaints Count")), 'Nullable(Int32)') > 0
+HAVING accurateCast(toDecimal256OrNull(toString(COUNT("composite_01"."Client Complaints Count")), 0), 'Nullable(Int32)') > 0

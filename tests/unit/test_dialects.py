@@ -245,20 +245,26 @@ class TestClickHouseDialect:
         assert result.name == "toInt64"
 
     def test_integer_cast_uses_accurate_cast(self, dialect: ClickHouseDialect) -> None:
-        """``CAST`` saturates an overflowing integer here, ``accurateCast`` raises (#356).
+        """``CAST`` wraps or saturates an overflowing integer, ``accurateCast`` raises (#356).
 
-        The truncation is what the plain ``CAST`` already did to a fractional
-        input, so it preserves every non-overflowing answer; ``accurateCast``
-        rejects a value carrying a fraction without it.
+        The scale-0 decimal is what makes ``accurateCast`` usable: it will not
+        take a fraction, and the conversion truncates exactly as the plain
+        ``CAST`` already did, so no non-overflowing answer changes.
         """
         expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
-        assert dialect.compile_expr(expr) == "accurateCast(trunc(\"qty\"), 'Nullable(Int32)')"
+        assert dialect.compile_expr(expr) == (
+            "accurateCast(toDecimal256OrNull(toString(\"qty\"), 0), 'Nullable(Int32)')"
+        )
 
         wide = dialect.cast_to_obml_type(col("qty"), parse_data_type("bigint"))
-        assert dialect.compile_expr(wide) == "accurateCast(trunc(\"qty\"), 'Nullable(Int64)')"
+        assert dialect.compile_expr(wide) == (
+            "accurateCast(toDecimal256OrNull(toString(\"qty\"), 0), 'Nullable(Int64)')"
+        )
 
-    def test_integer_cast_of_integer_literal_skips_trunc(self, dialect: ClickHouseDialect) -> None:
-        """Every CFL count pad is an integer literal, and truncating one is noise.
+    def test_integer_cast_of_integer_literal_skips_the_conversion(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """Every CFL count pad is an integer literal, and converting one is noise.
 
         Exempted for the same reason the NULL literal is. A *fractional* literal
         still needs it, because ``accurateCast(2.5, 'Int32')`` raises.
@@ -268,7 +274,9 @@ class TestClickHouseDialect:
         assert dialect.compile_expr(whole) == "accurateCast(1, 'Nullable(Int32)')"
 
         fractional = dialect.cast_to_obml_type(Literal.number(2.5), target)
-        assert dialect.compile_expr(fractional) == "accurateCast(trunc(2.5), 'Nullable(Int32)')"
+        assert dialect.compile_expr(fractional) == (
+            "accurateCast(toDecimal256OrNull(toString(2.5), 0), 'Nullable(Int32)')"
+        )
 
     def test_integer_cast_of_null_literal_is_a_plain_cast(self, dialect: ClickHouseDialect) -> None:
         """A NULL pad carries a type and needs no accurate anything."""
