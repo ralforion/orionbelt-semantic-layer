@@ -44,6 +44,7 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
+    make_dimension_expr,
 )
 from orionbelt.compiler.star import StarSchemaPlanner
 from orionbelt.models.errors import SemanticError
@@ -478,9 +479,7 @@ def wrap_with_filter_context(
         cte_columns: list[Expr] = []
         for dim in resolved.dimensions:
             if dim.name in grain:
-                col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-                if dim.grain and dialect:
-                    col = dialect.render_time_grain(col, dim.grain)
+                col: Expr = make_dimension_expr(model, dim, dialect)
                 cte_columns.append(AliasedExpr(expr=col, alias=dim.name))
 
         for m in measure_group:
@@ -490,9 +489,7 @@ def wrap_with_filter_context(
         cte_group_by: list[Expr] = []
         for dim in resolved.dimensions:
             if dim.name in grain:
-                gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-                if dim.grain and dialect:
-                    gb_col = dialect.render_time_grain(gb_col, dim.grain)
+                gb_col: Expr = make_dimension_expr(model, dim, dialect)
                 cte_group_by.append(gb_col)
 
         cte_name = f"fc_{idx}"

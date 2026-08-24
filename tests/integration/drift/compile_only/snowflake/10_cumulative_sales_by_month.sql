@@ -1,5 +1,5 @@
 WITH "cumulative_base" AS (
-SELECT DATE_TRUNC('month', "Sales"."salesdate") AS "Sales Month", CAST(SUM("Sales"."salesamount") AS NUMBER(18, 2)) AS "Total Sales"
+SELECT CAST(DATE_TRUNC('month', "Sales"."salesdate") AS DATE) AS "Sales Month", CAST(SUM("Sales"."salesamount") AS NUMBER(18, 2)) AS "Total Sales"
 FROM "orionbelt_1"."sales" AS "Sales"
 GROUP BY ALL
 )

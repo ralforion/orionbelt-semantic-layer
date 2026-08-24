@@ -89,6 +89,7 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
+    make_dimension_expr,
 )
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import Cardinality, Measure, SemanticModel
@@ -587,9 +588,7 @@ def wrap_with_grain_dedup(
         # replication to exactly one row per (grain, source-object row).
         inner_columns: list[Expr] = []
         for dim in group_dims:
-            dim_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-            if dim.grain:
-                dim_expr = dialect.render_time_grain(dim_expr, dim.grain)
+            dim_expr: Expr = make_dimension_expr(model, dim, dialect)
             inner_columns.append(AliasedExpr(expr=dim_expr, alias=dim.name))
 
         # Without an identity the DISTINCT would also collapse two genuinely
@@ -777,9 +776,7 @@ def wrap_with_grain_dedup(
     # structurally against what the planner projected and repointed at its alias.
     projected_exprs: list[tuple[Expr, str]] = []
     for dim in resolved.dimensions:
-        order_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-        if dim.grain:
-            order_expr = dialect.render_time_grain(order_expr, dim.grain)
+        order_expr: Expr = make_dimension_expr(model, dim, dialect)
         projected_exprs.append((order_expr, dim.name))
         # The star planner rewrites a time-grained dimension to its bare alias
         # before emitting ORDER BY, so match that shape too.

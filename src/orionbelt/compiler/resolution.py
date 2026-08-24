@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     CaseExpr,
@@ -63,7 +64,11 @@ from orionbelt.models.semantic import (
     TimeGrain,
     WindowFunctionKind,
 )
+from orionbelt.models.types import parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
+
+if TYPE_CHECKING:
+    from orionbelt.dialect.base import Dialect
 
 
 def parse_column_expression(
@@ -135,6 +140,49 @@ def _build_computed_column_expr(
     if not in_query_timezone:
         return parsed
     return apply_query_timezone(parsed, model)
+
+
+#: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
+#: absent because the format has no cast target for them.
+_CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
+
+
+def make_dimension_expr(
+    model: SemanticModel,
+    dim: ResolvedDimension,
+    dialect: Dialect | None = None,
+) -> Expr:
+    """The expression a dimension is projected and grouped by.
+
+    :func:`make_column_expr`, plus the time grain when the dimension declares
+    one, plus the cast that keeps the model's word: a dimension declaring
+    ``resultType: date`` kept that type until a ``timeGrain`` was added, and
+    then it became whatever the engine's truncation returns. That is not the
+    same thing on every engine - ``DATE`` on ClickHouse, ``TIMESTAMP`` on
+    DuckDB, ``timestamptz`` on PostgreSQL, whose ``date_trunc`` resolves to the
+    timestamptz overload and hands back a value that carries the session's zone,
+    so which month a row belongs to depended on who ran the query (#369).
+
+    Only a *temporal* declaration is cast, which is the case that was measured
+    and the one the grain can change. A dimension declaring ``resultType:
+    string`` over a grain is asking for a label - MySQL's month grain is a
+    ``DATE_FORMAT``, a string by construction - and casting that to ``CHAR``
+    would add a cast that says nothing. ``timestamp_tz`` and ``time_tz`` are
+    left alone too: OBML has no cast target for either, and inventing one would
+    be a guess rather than the declaration.
+
+    Every planner and wrapper renders a dimension through here, so the SELECT
+    and the GROUP BY cannot drift apart, which is what eight copies of these
+    three lines were free to do.
+    """
+    col = make_column_expr(model, dim.object_name, dim.column_name)
+    if not dim.grain or dialect is None:
+        return col
+    col = dialect.render_time_grain(col, dim.grain)
+    declared = model.dimensions.get(dim.name)
+    if declared is None or declared.result_type not in _CASTABLE_TEMPORAL_TYPES:
+        return col
+    return dialect.cast_to_obml_type(col, parse_data_type(declared.result_type.value))
 
 
 def effective_anchor(

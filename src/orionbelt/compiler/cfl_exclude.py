@@ -25,7 +25,7 @@ from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.resolution import (
     ResolvedDimension,
     ResolvedQuery,
-    make_column_expr,
+    make_dimension_expr,
 )
 from orionbelt.compiler.star import QueryPlan, _nulls_last
 from orionbelt.models.semantic import (
@@ -35,6 +35,7 @@ from orionbelt.models.semantic import (
 
 if TYPE_CHECKING:
     from orionbelt.compiler.cfl import CFLPlanner
+    from orionbelt.dialect.base import Dialect
 
 
 def plan_dimensions_exclude(
@@ -42,6 +43,7 @@ def plan_dimensions_exclude(
     resolved: ResolvedQuery,
     model: SemanticModel,
     qualify_table: Callable[[DataObject], str] | None = None,
+    dialect: Dialect | None = None,
 ) -> QueryPlan:
     """Plan a dimensionsExclude query using EXCEPT pattern.
 
@@ -76,6 +78,7 @@ def plan_dimensions_exclude(
             graph,
             qualify,
             via_constraints=resolved.via_constraints or None,
+            dialect=dialect,
         )
         ctes.append(CTE(name=cte_name, query=cte_query))
 
@@ -91,7 +94,9 @@ def plan_dimensions_exclude(
     all_pairs_select = all_pairs_builder.build()
 
     # Build "existing_pairs": actual combinations via fact-table joins
-    existing_pairs_select = planner._build_existing_pairs_select(resolved, model, graph, qualify)
+    existing_pairs_select = planner._build_existing_pairs_select(
+        resolved, model, graph, qualify, dialect
+    )
 
     # EXCEPT CTE: all_pairs EXCEPT existing_pairs
     except_cte = CTE(
@@ -178,6 +183,7 @@ def build_group_distinct_select(
     graph: JoinGraph,
     qualify: Callable[[DataObject], str],
     via_constraints: dict[str, str] | None = None,
+    dialect: Dialect | None = None,
 ) -> Select:
     """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
     required_objects = {d.object_name for d in dims}
@@ -197,7 +203,11 @@ def build_group_distinct_select(
 
     builder = QueryBuilder()
     for dim in dims:
-        col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
+        # Through ``make_dimension_expr``, so the candidate combinations are at
+        # the grain the query asked for. Reading the raw column made this side
+        # of the EXCEPT a set of *day* pairs under a column labelled by the
+        # month, and the anti-join then answered a question nobody asked (#369).
+        col: Expr = make_dimension_expr(model, dim, dialect)
         builder.select(AliasedExpr(expr=col, alias=dim.name))
         builder.group_by(col)
 
@@ -236,6 +246,7 @@ def build_existing_pairs_select(
     model: SemanticModel,
     graph: JoinGraph,
     qualify: Callable[[DataObject], str],
+    dialect: Dialect | None = None,
 ) -> Select:
     """Build SELECT for existing dimension combinations via fact-table joins.
 
@@ -257,7 +268,9 @@ def build_existing_pairs_select(
 
     builder = QueryBuilder()
     for dim in resolved.dimensions:
-        col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
+        # The same grain as the candidate side, or the EXCEPT compares values
+        # that were never meant to match.
+        col: Expr = make_dimension_expr(model, dim, dialect)
         builder.select(AliasedExpr(expr=col, alias=dim.name))
         builder.group_by(col)
 
