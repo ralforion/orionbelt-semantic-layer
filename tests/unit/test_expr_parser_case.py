@@ -344,3 +344,72 @@ class TestUnarySign:
         sql = DialectRegistry.get("duckdb").compile_expr(self._parse("5 - -3"))
         assert sql == "5 - -3"
         assert "--" not in sql
+
+
+class TestUnbalancedCallParens:
+    """A call needs its closing ``)``, the way a group always has (#364).
+
+    Running out of tokens used to end the argument list as if the author had
+    written one. That does not fail: it moves what the call wraps, so the
+    expression stays valid, executes, and returns a different number.
+    """
+
+    #: Each pair is the same expression with and without the typo. Both parse
+    #: today; only the second is what the author wrote.
+    MEANING_CHANGED = [
+        ("ROUND({[Financial].[Outstanding Nominal Amount]}, 2) * 100", "ROUND(x, 2) * 100"),
+        ("ROUND({[Financial].[Outstanding Nominal Amount]}, 2 * 100", "ROUND(x, 2 * 100)"),
+    ]
+
+    def test_a_call_missing_its_closing_paren_raises(self) -> None:
+        model = _load_model()
+        tokens = tokenize_measure_expression("UPPER({[Financial].[Default Status]}", model)
+        with pytest.raises(ValueError, match=r"Missing closing '\)' in call to 'UPPER'"):
+            parse_expression(tokens)
+
+    def test_the_outer_call_of_a_nested_pair_is_checked_too(self) -> None:
+        """The inner ``)`` used to satisfy both."""
+        model = _load_model()
+        tokens = tokenize_measure_expression("UPPER(TRIM({[Financial].[Default Status]})", model)
+        with pytest.raises(ValueError, match=r"Missing closing '\)' in call to 'UPPER'"):
+            parse_expression(tokens)
+
+    def test_an_in_list_is_checked_too(self) -> None:
+        model = _load_model()
+        tokens = tokenize_measure_expression("{[Financial].[Default Status]} IN ('11', '12'", model)
+        with pytest.raises(ValueError, match=r"Missing closing '\)' in IN list"):
+            parse_expression(tokens)
+
+    def test_the_balanced_forms_are_untouched(self) -> None:
+        model = _load_model()
+        for expression in (
+            "UPPER({[Financial].[Default Status]})",
+            "UPPER(TRIM({[Financial].[Default Status]}))",
+            "{[Financial].[Default Status]} IN ('11', '12')",
+            "ROUND({[Financial].[Outstanding Nominal Amount]}, 2) * 100",
+        ):
+            parse_expression(tokenize_measure_expression(expression, model))
+
+    def test_the_typo_that_moved_a_number_no_longer_parses(self) -> None:
+        """``ROUND(x, 2 * 100`` compiled to ``ROUND(x, 200)``.
+
+        Measured before the fix on ``-3.14159``: the intended
+        ``ROUND(x, 2) * 100`` reads -314.00 and the typo reads -3.14159. Both
+        ran, and nothing said which one the model meant.
+        """
+        model = _load_model()
+        intended, typo = (expr for expr, _ in self.MEANING_CHANGED)
+        parse_expression(tokenize_measure_expression(intended, model))
+        with pytest.raises(ValueError, match=r"Missing closing '\)' in call to 'ROUND'"):
+            parse_expression(tokenize_measure_expression(typo, model))
+
+    def test_a_column_reference_reads_as_the_model_spells_it(self) -> None:
+        """The message reaches the model's author now, so it says ``Object.column``.
+
+        A ``colref`` token carries a NUL-separated payload, which used to reach
+        the message verbatim: ``Unexpected token 'Financial\x00dflt_stts\x00string'``.
+        """
+        model = _load_model()
+        tokens = tokenize_measure_expression("UPPER {[Financial].[Default Status]})", model)
+        with pytest.raises(ValueError, match=r"'Financial\.dflt_stts'"):
+            parse_expression(tokens)

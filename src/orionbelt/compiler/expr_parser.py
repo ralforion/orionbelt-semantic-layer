@@ -316,6 +316,21 @@ def tokenize_measure_expression(
 # ---------------------------------------------------------------------------
 
 
+def _describe(token: _Token) -> str:
+    """A token as an error message should show it.
+
+    ``colref`` and ``nestedref`` carry a NUL-separated payload - object, source
+    column, declared type - which is how the tokenizer hands the pieces to the
+    parser and not something to show a reader. These messages reach the author
+    of the model now (#359), so they read as the model spells things.
+    """
+    if token.kind in ("colref", "nestedref"):
+        obj, _, rest = token.value.partition("\0")
+        column = rest.split("\0", 1)[0]
+        return f"{obj}.{column}"
+    return token.value
+
+
 def parse_expression(tokens: list[_Token]) -> Expr:
     """Parse tokens into an AST with correct operator precedence.
 
@@ -338,9 +353,17 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         t = _peek()
         return t is not None and t.kind == "op" and t.value == value
 
-    def _parse_arg_list() -> list[Expr]:
+    def _parse_arg_list(closing: str) -> list[Expr]:
         """Parse a (possibly empty) comma-separated list of expressions
         up to the matching ``)``. Caller has already consumed the ``(``.
+
+        Running out of tokens is a missing ``)``, not the end of the list. It
+        used to end the list as if the author had written one, and that does
+        not fail loudly: it moves what the call wraps. ``ROUND({x}, 2 * 100``
+        became ``ROUND(x, 2 * 100)`` where ``ROUND({x}, 2) * 100`` was meant,
+        and both are valid SQL that returns a different number (#364). The
+        parenthesised *group* form has always raised here, in
+        :func:`_parse_factor`, which is the inconsistency this removes.
         """
         args: list[Expr] = []
         if _peek() and _peek().kind == "rparen":  # type: ignore[union-attr]
@@ -350,8 +373,9 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         while _peek() and _peek().kind == "comma":  # type: ignore[union-attr]
             _advance()
             args.append(_parse_or())
-        if _peek() and _peek().kind == "rparen":  # type: ignore[union-attr]
-            _advance()
+        if _peek() is None or _peek().kind != "rparen":  # type: ignore[union-attr]
+            raise ValueError(f"Missing closing ')' in {closing}")
+        _advance()
         return args
 
     def _parse_factor() -> Expr:
@@ -413,7 +437,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             # Function call — IDENT must be followed by ``(``.
             if _peek() and _peek().kind == "lparen":  # type: ignore[union-attr]
                 _advance()  # consume '('
-                args = _parse_arg_list()
+                args = _parse_arg_list(f"call to '{tok.value}'")
                 return FunctionCall(name=tok.value, args=args)
             # Bare identifier without a call — surface as a literal so
             # the SQL emitter renders it verbatim. Used for SQL keyword
@@ -431,7 +455,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             _advance()
             table, column, abstract = tok.value.split("\0", 2)
             return NestedField(alias=table, field=column, abstract_type=abstract or None)
-        raise ValueError(f"Unexpected token {tok.value!r} ({tok.kind}) in expression")
+        raise ValueError(f"Unexpected token {_describe(tok)!r} ({tok.kind}) in expression")
 
     def _parse_case() -> Expr:
         """Parse ``CASE WHEN expr THEN expr [WHEN ...]* [ELSE expr] END``."""
@@ -460,7 +484,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
                 _advance()
                 break
             raise ValueError(
-                f"Unexpected token {t.value!r} in CASE expression — expected WHEN / ELSE / END"
+                f"Unexpected token {_describe(t)!r} in CASE expression — expected WHEN / ELSE / END"
             )
         if not when_clauses:
             raise ValueError("CASE expression requires at least one WHEN clause")
@@ -525,7 +549,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             if _peek() is None or _peek().kind != "lparen":  # type: ignore[union-attr]
                 raise ValueError("IN must be followed by '('")
             _advance()  # consume (
-            values = _parse_arg_list()  # consumes the matching )
+            values = _parse_arg_list("IN list")  # consumes the matching )
             return InList(expr=left, values=values, negated=negated)
         if op_tok.value == "BETWEEN":
             low = _parse_add()
@@ -568,5 +592,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
     # y END`` compiled to the literal string ``'CASE'`` with no error.
     if pos[0] < len(tokens):
         leftover = tokens[pos[0]]
-        raise ValueError(f"Unexpected token {leftover.value!r} ({leftover.kind}) after expression")
+        raise ValueError(
+            f"Unexpected token {_describe(leftover)!r} ({leftover.kind}) after expression"
+        )
     return result
