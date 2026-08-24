@@ -73,6 +73,14 @@ def _json_path_literal(code: str) -> str:
 _VARCHAR_RE = re.compile(r"^\s*VARCHAR\s*(?:\(\s*(\d+)\s*\))?\s*$", re.IGNORECASE)
 _MYSQL_CAST_CHAR_MAX = 255
 
+#: Column types this dialect renders that MySQL's ``CAST`` does not accept,
+#: mapped to the cast target meaning the same thing. Keyed upper-case; see
+#: ``MySQLDialect._compile_cast``.
+_MYSQL_CAST_TARGET_REWRITES: dict[str, str] = {
+    "TIMESTAMP": "DATETIME",
+    "TINYINT(1)": "SIGNED",
+}
+
 
 @DialectRegistry.register
 class MySQLDialect(Dialect):
@@ -367,16 +375,29 @@ class MySQLDialect(Dialect):
 
         Allowed target types in MySQL are ``BINARY``, ``CHAR``, ``DATE``,
         ``DATETIME``, ``DECIMAL``, ``JSON``, ``NCHAR``, ``SIGNED``,
-        ``TIME``, ``UNSIGNED``, and ``YEAR``. Other type maps in this
-        dialect (e.g. ``string → VARCHAR(65535)`` for DDL) work fine in
-        ``CREATE TABLE`` but cause a parse error inside ``CAST``.
+        ``TIME``, ``UNSIGNED``, and ``YEAR``, plus the floating types from
+        8.0.17. Other type maps in this dialect (e.g.
+        ``string → VARCHAR(65535)`` for DDL) work fine in ``CREATE TABLE``
+        but cause a parse error inside ``CAST``.
 
-        Rewrite ``VARCHAR[(N)]`` → ``CHAR[(N)]`` at cast time only; DDL
-        paths keep the wider VARCHAR type. CHAR's documented column
+        Three spellings need rewriting at cast time only; DDL paths keep the
+        column types unchanged, which is what they are correct for.
+
+        ``VARCHAR[(N)]`` becomes ``CHAR[(N)]``. CHAR's documented column
         limit is 255 characters, so any length above that — including
         the 65535 used for OBML's unbounded ``string`` — is dropped and
         plain ``CHAR`` is emitted to let MySQL pick a safe internal
         width without truncating the value.
+
+        ``TIMESTAMP`` becomes ``DATETIME`` and ``TINYINT(1)`` becomes
+        ``SIGNED`` (#357). Both are legal MySQL column types and neither is
+        a legal cast target, so a measure declaring ``dataType: timestamp``
+        or ``dataType: boolean`` validated clean and compiled to error 1064.
+        ``DATETIME`` is the spelling this dialect's own ``_ABSTRACT_TYPE_MAP``
+        already uses for ``timestamp``; the typed-literal path in
+        ``expr_parser`` was fixed for this and the measure path was not.
+        ``SIGNED`` is MySQL's own reading of a boolean, which has no distinct
+        type there and already renders as 1/0 through every other path.
         """
         resolved = self._resolve_type_name(type_name)
         match = _VARCHAR_RE.match(resolved)
@@ -387,6 +408,8 @@ class MySQLDialect(Dialect):
             else:
                 length = int(length_group)
                 resolved = f"CHAR({length})" if length <= _MYSQL_CAST_CHAR_MAX else "CHAR"
+        else:
+            resolved = _MYSQL_CAST_TARGET_REWRITES.get(resolved.upper(), resolved)
         return f"CAST({self.compile_expr(inner)} AS {resolved})"
 
     def render_string_contains(self, column: Expr, pattern: Expr) -> Expr:

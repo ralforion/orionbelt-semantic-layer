@@ -11,6 +11,7 @@ from orionbelt.ast.nodes import (
     CaseExpr,
     Cast,
     ColumnRef,
+    Expr,
     FunctionCall,
     InList,
     IsNull,
@@ -33,6 +34,7 @@ from orionbelt.dialect.postgres import PostgresDialect
 from orionbelt.dialect.registry import UnsupportedDialectError
 from orionbelt.dialect.snowflake import SnowflakeDialect
 from orionbelt.models.semantic import TimeGrain, WeekStart
+from orionbelt.models.types import parse_data_type
 
 ALL_DIALECTS = [
     "bigquery",
@@ -242,6 +244,148 @@ class TestClickHouseDialect:
         result = dialect.render_cast(col("val"), "INT")
         assert isinstance(result, FunctionCall)
         assert result.name == "toInt64"
+
+    def test_integer_cast_of_a_numeric_aggregate_uses_accurate_cast(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """``CAST`` wraps or saturates an overflowing integer, ``accurateCast`` raises (#356).
+
+        The truncation is what the plain ``CAST`` already did to a fractional
+        input, so no non-overflowing answer changes; ``accurateCast`` rejects a
+        value carrying a fraction without it.
+        """
+        agg = FunctionCall(name="SUM", args=[col("qty")])
+        expr = dialect.cast_to_obml_type(agg, parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == (
+            "accurateCast(trunc(SUM(\"qty\")), 'Nullable(Int32)')"
+        )
+
+        wide = dialect.cast_to_obml_type(agg, parse_data_type("bigint"))
+        assert dialect.compile_expr(wide) == (
+            "accurateCast(trunc(SUM(\"qty\")), 'Nullable(Int64)')"
+        )
+
+    @pytest.mark.parametrize("name", ["SUM", "COUNT", "AVG", "STDDEV", "CORR", "VAR_POP"])
+    def test_numeric_aggregates_are_guarded(self, dialect: ClickHouseDialect, name: str) -> None:
+        """The set is named as the *compiler* builds it, not as this dialect renders it.
+
+        ``stddev`` reaches ``_compile_cast`` as ``STDDEV`` and only becomes
+        ``stddevSamp`` further down, so a set spelled in ClickHouse's own names
+        matches nothing. It did, once.
+        """
+        expr = FunctionCall(name=name, args=[col("qty")])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("accurateCast(trunc("), sql
+
+    @pytest.mark.parametrize("name", ["MIN", "MAX", "ANY_VALUE", "MEDIAN", "MODE", "LISTAGG"])
+    def test_type_preserving_aggregates_keep_the_plain_cast(
+        self, dialect: ClickHouseDialect, name: str
+    ) -> None:
+        """These carry their argument's type, so a Bool, Date or String can arrive.
+
+        ``trunc`` refuses a String and ``toString`` turns a Bool into ``'true'``
+        and a Date into ``'2026-08-15'``, so guarding these reshapes casts this
+        dialect answers today: measured, ``MAX(flag)`` reads 1, ``MAX(day)``
+        reads 20680 and ``MAX(code)`` reads 42 for ``'42'``. The compiler models
+        no types over expression bodies, so the aggregate is the only thing that
+        can be read off the AST, and these say nothing.
+        """
+        expr = FunctionCall(name=name, args=[col("v")])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("CAST("), sql
+        assert "accurateCast" not in sql
+
+    def test_integer_cast_of_a_bare_column_keeps_the_plain_cast(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """Nothing on a bare column says it is a number, so it is left alone."""
+        expr = dialect.cast_to_obml_type(col("qty"), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == 'CAST("qty" AS Nullable(Int32))'
+
+    def test_wrapped_numeric_aggregates_stay_guarded(self, dialect: ClickHouseDialect) -> None:
+        """The planner wraps a measure before it is cast, and each wrapper hid the aggregate.
+
+        ``measure.defaultValue`` emits ``COALESCE(SUM(x), 0)``, which is how a
+        guarded SUM stopped being guarded once: matching only the outermost node
+        saw ``COALESCE`` and fell back to the unguarded cast. Arithmetic from a
+        derived metric and a window from ``total: true`` are the same shape.
+        """
+        agg = FunctionCall(name="SUM", args=[col("qty")])
+        target = parse_data_type("integer")
+        wrapped: list[Expr] = [
+            FunctionCall(name="COALESCE", args=[agg, Literal.number(0)]),
+            BinaryOp(left=agg, op="*", right=Literal.number(2)),
+            WindowFunction(func_name="SUM", args=[col("qty")]),
+            CaseExpr(when_clauses=[(col("f"), agg)], else_clause=Literal.number(0)),
+        ]
+        for expr in wrapped:
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, target))
+            assert sql.startswith("accurateCast(trunc("), f"{type(expr).__name__}: {sql}"
+
+    @pytest.mark.parametrize("name", ["RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE"])
+    def test_ranking_window_functions_are_guarded(
+        self, dialect: ClickHouseDialect, name: str
+    ) -> None:
+        """A rank counts rows, so it is an integer whatever it is ordered over.
+
+        ClickHouse types all four as ``UInt64``, and a ``UInt64`` past the
+        target wraps exactly like a SUM does: measured,
+        ``CAST(toUInt64(4000000000) AS Nullable(Int32))`` is **-294967296**
+        while ``accurateCast(trunc(...))`` raises code 70. A window metric with
+        ``dataType: integer`` reached the unguarded cast until this was added.
+        """
+        expr = WindowFunction(func_name=name, order_by=[OrderByItem(expr=col("qty"))])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("accurateCast(trunc("), sql
+
+    def test_offsetting_window_functions_are_not_guarded_without_a_type(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """``LAG`` carries its argument's value, so it is numeric only when that is.
+
+        The argument is a reference into the window CTE, which carries no
+        declared type, so this keeps the plain ``CAST``. Unknown means leave it
+        alone rather than guess.
+        """
+        expr = WindowFunction(
+            func_name="LAG",
+            args=[col("Qty Sum"), Literal.number(1)],
+            order_by=[OrderByItem(expr=col("day"))],
+        )
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("CAST("), sql
+
+    def test_non_numeric_wrappers_are_not_guarded(self, dialect: ClickHouseDialect) -> None:
+        """Unknown stays unknown: a wrapper over something unprovable is left alone."""
+        target = parse_data_type("integer")
+        for expr in (
+            FunctionCall(name="COALESCE", args=[col("anything"), Literal.number(0)]),
+            FunctionCall(name="SOME_VENDOR_FN", args=[col("qty")]),
+            BinaryOp(left=col("a"), op="*", right=col("b")),
+        ):
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, target))
+            assert sql.startswith("CAST("), sql
+
+    def test_a_bare_numeric_literal_is_not_guarded(self, dialect: ClickHouseDialect) -> None:
+        """It cannot overflow at run time, and every CFL count pad is one.
+
+        It still counts as numeric *inside* the predicate, which is what lets
+        ``COALESCE(SUM(x), 0)`` qualify.
+        """
+        expr = dialect.cast_to_obml_type(Literal.number(1), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == "CAST(1 AS Nullable(Int32))"
+
+    def test_integer_cast_of_null_literal_is_a_plain_cast(self, dialect: ClickHouseDialect) -> None:
+        """A NULL pad carries a type and needs no accurate anything."""
+        expr = dialect.cast_to_obml_type(Literal.null(), parse_data_type("integer"))
+        assert dialect.compile_expr(expr) == "CAST(NULL AS Nullable(Int32))"
+
+    def test_non_integer_casts_are_untouched(self, dialect: ClickHouseDialect) -> None:
+        """The rewrite is scoped to integer targets; decimal keeps its pre-round."""
+        dec = dialect.cast_to_obml_type(col("amt"), parse_data_type("decimal(18, 2)"))
+        assert dialect.compile_expr(dec) == ('CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))')
+        text = dialect.cast_to_obml_type(col("amt"), parse_data_type("string"))
+        assert dialect.compile_expr(text) == 'CAST("amt" AS Nullable(String))'
 
 
 class TestDatabricksDialect:
@@ -586,11 +730,25 @@ class TestMySQLDialect:
     def test_registry_includes_mysql(self) -> None:
         assert "mysql" in DialectRegistry.available()
 
-    def test_cast(self, dialect: MySQLDialect) -> None:
+    def test_cast_boolean_uses_signed_not_tinyint(self, dialect: MySQLDialect) -> None:
+        """``TINYINT(1)`` is a legal column type and an illegal cast target (#357).
+
+        This asserted ``TINYINT(1)`` before, which MySQL rejects with error 1064,
+        so a measure declaring ``dataType: boolean`` validated clean and compiled
+        to invalid SQL. ``SIGNED`` is MySQL's own reading of a boolean.
+        """
         expr = Cast(expr=col("age"), type_name="boolean")
-        sql = dialect.compile_expr(expr)
-        assert "CAST" in sql
-        assert "TINYINT(1)" in sql
+        assert dialect.compile_expr(expr) == "CAST(`age` AS SIGNED)"
+
+    def test_cast_timestamp_uses_datetime(self, dialect: MySQLDialect) -> None:
+        """``TIMESTAMP`` is not in MySQL's cast vocabulary either (#357).
+
+        ``DATETIME`` is what this dialect's own ``_ABSTRACT_TYPE_MAP`` already
+        uses; the typed-literal path was fixed for this and the measure
+        ``dataType`` path was not.
+        """
+        expr = Cast(expr=col("seen"), type_name="timestamp")
+        assert dialect.compile_expr(expr) == "CAST(`seen` AS DATETIME)"
 
     def test_cast_string_abstract_uses_safe_char_length(self, dialect: MySQLDialect) -> None:
         """Abstract ``string`` (VARCHAR(255)) maps to CHAR(255) — inside CHAR's limit."""

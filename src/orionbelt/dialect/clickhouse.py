@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
 from orionbelt.ast.nodes import (
     BinaryOp,
+    CaseExpr,
     Cast,
     Expr,
     FunctionCall,
     Literal,
     OrderByItem,
     RawSQL,
+    UnaryOp,
     Unnest,
+    WindowFunction,
 )
 from orionbelt.dialect.base import (
     CrossColumnOrderNotSupportedError,
@@ -32,6 +37,109 @@ _GRAIN_FUNCTIONS: dict[TimeGrain, str] = {
     TimeGrain.MINUTE: "toStartOfMinute",
     TimeGrain.SECOND: "toStartOfSecond",
 }
+
+
+#: Aggregates whose result is numeric however their argument is typed, named as
+#: the compiler builds them - the canonical ``AggregationType`` spelling, not
+#: this dialect's rendering of it, which is applied further down.
+_NUMERIC_AGGREGATES: frozenset[str] = frozenset(
+    {
+        "SUM",
+        "COUNT",
+        "AVG",
+        "STDDEV",
+        "STDDEV_POP",
+        "VARIANCE",
+        "VAR_POP",
+        "CORR",
+        "COVAR_POP",
+        "COVAR_SAMP",
+    }
+)
+
+#: Window functions that count rather than carry a value, so their result is an
+#: integer whatever they are ordered over. ClickHouse types all four as UInt64,
+#: and ``CAST(toUInt64(4000000000) AS Nullable(Int32))`` is -294967296 there, so
+#: they are the same overflow class as an aggregate and need the same guard.
+_NUMERIC_WINDOW_FUNCTIONS: frozenset[str] = frozenset(
+    {"RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE", "PERCENT_RANK", "CUME_DIST"}
+)
+
+#: Functions that are numeric when the arguments they can return are. COALESCE
+#: is the one that matters: ``measure.defaultValue`` wraps the aggregate in it,
+#: which is how a guarded SUM stopped being guarded (#356 review).
+_NUMERIC_IF_ARGS_ARE: frozenset[str] = frozenset(
+    {
+        "COALESCE",
+        "IFNULL",
+        "NULLIF",
+        "GREATEST",
+        "LEAST",
+        "ROUND",
+        "ABS",
+        "TRUNCATE",
+        "FLOOR",
+        "CEIL",
+    }
+)
+
+#: Arithmetic on numbers is a number. Comparison and logic are not, and a
+#: string concatenation shares ``+`` on no dialect this project targets.
+_ARITHMETIC_OPS: frozenset[str] = frozenset({"+", "-", "*", "/", "%"})
+
+
+def _is_numeric_expr(expr: Expr) -> bool:
+    """``True`` only when *expr* can be shown to produce a number.
+
+    The compiler models no types over expression bodies, so this reads what the
+    AST already says and refuses to guess. Unknown is ``False``, which leaves
+    the plain ``CAST`` and the behaviour this dialect has always had.
+
+    Recursive because the planner wraps a measure before it is cast, and each
+    wrapper hid the aggregate from an earlier version of this check: a
+    ``defaultValue`` puts ``COALESCE(SUM(x), 0)`` there, ``total: true`` puts a
+    window around it, and a derived metric puts it inside arithmetic. Matching
+    only the outermost node meant each of those silently fell back to the
+    unguarded cast.
+    """
+    match expr:
+        case Literal(value=value):
+            # bool is an int in Python and is not a number to ClickHouse.
+            return isinstance(value, int | float) and not isinstance(value, bool)
+        case UnaryOp(op="-", operand=operand):
+            return _is_numeric_expr(operand)
+        case BinaryOp(op=op, left=left, right=right) if op in _ARITHMETIC_OPS:
+            return _is_numeric_expr(left) and _is_numeric_expr(right)
+        case Cast(type_name=type_name):
+            resolved = type_name.upper()
+            return bool(_INT_TYPE_RE.match(type_name)) or resolved.startswith(
+                ("DECIMAL", "FLOAT", "NULLABLE(DECIMAL", "NULLABLE(FLOAT", "NULLABLE(INT")
+            )
+        case WindowFunction(func_name=func_name, args=args):
+            return _is_numeric_call(func_name, args)
+        case CaseExpr(when_clauses=when_clauses, else_clause=else_clause):
+            results = [result for _, result in when_clauses]
+            if else_clause is not None:
+                results.append(else_clause)
+            return bool(results) and all(_is_numeric_expr(r) for r in results)
+        case FunctionCall(name=name, args=args):
+            return _is_numeric_call(name, args)
+    return False
+
+
+def _is_numeric_call(name: str, args: list[Expr]) -> bool:
+    """``True`` when a call by this name and these arguments produces a number."""
+    upper = name.upper()
+    if upper in _NUMERIC_AGGREGATES or upper in _NUMERIC_WINDOW_FUNCTIONS:
+        return True
+    if upper in _NUMERIC_IF_ARGS_ARE:
+        return bool(args) and all(_is_numeric_expr(a) for a in args)
+    return False
+
+
+#: Integer cast targets this dialect renders. ``accurateCast`` is used for these
+#: rather than ``CAST`` because ``CAST`` saturates on overflow (#356).
+_INT_TYPE_RE = re.compile(r"^\s*U?Int(?:8|16|32|64|128|256)\s*$", re.IGNORECASE)
 
 
 @DialectRegistry.register
@@ -291,6 +399,39 @@ class ClickHouseDialect(Dialect):
             scale_token = resolved_type.split(",")[-1].rstrip(") ")
             scale = int(scale_token.strip())
             inner_sql = f"round({inner_sql}, {scale})"
+        elif (
+            not isinstance(inner, Literal)
+            and _is_numeric_expr(inner)
+            and _INT_TYPE_RE.match(resolved_type)
+        ):
+            # An integer CAST here neither raises nor holds the value (#356): a
+            # true 4000000000 wraps to -294967296 from an integer source and
+            # saturates to 2147483647 from a Float64 one. ``accurateCast``
+            # raises. It will not take a fraction, so the value is truncated
+            # first, which is what the plain CAST already did to it.
+            #
+            # Scoped to aggregates that are numeric whatever they are given,
+            # and that is the whole of what makes it safe. ``trunc`` refuses a
+            # String, and ``toString`` - the other intermediate tried here -
+            # turns a Bool into 'true' and a Date into '2026-08-15', so both
+            # reshape a cast this dialect answers today. Neither can be
+            # distinguished from a numeric one at compile time, because the
+            # compiler models no types over expression bodies. What *can* be
+            # read off the AST is the aggregate: SUM, COUNT and AVG are
+            # numeric however their argument is typed, as are the statistical
+            # ones, while MIN, MAX, ``any``, MEDIAN and the LISTAGG rewrite
+            # carry their input's type through and are left alone.
+            #
+            # A bare literal is exempt: it cannot overflow at run time, and
+            # every CFL count pad is one, so guarding it wrapped ``1`` in two
+            # calls for nothing. It still counts as numeric *inside* the
+            # predicate, which is what lets ``COALESCE(SUM(x), 0)`` qualify.
+            #
+            # The residue is deliberate and narrow: MIN or MAX over a column
+            # wider than the declared target still wraps. Closing it needs the
+            # source type threaded into ``cast_to_obml_type``, which is a
+            # change to eight call sites and a separate piece of work.
+            return f"accurateCast(trunc({inner_sql}), '{nullable}')"
         return f"CAST({inner_sql} AS {nullable})"
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
