@@ -35,6 +35,7 @@ from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import (
     ResolutionError,
+    ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
@@ -238,10 +239,10 @@ def wrap_with_pop(
     offset_grain = pop_config.pop_offset_grain.value
     time_dim_name = pop_config.pop_time_dimension
 
-    # Resolve the time dimension's physical column and object
+    # Resolve the time dimension's object and the SQL that reads it
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     time_obj_name = time_dim.object_name
-    time_source_col = time_dim.source_column
+    time_col_sql = _time_column_sql(time_dim, model, dialect)
 
     # --- CTE 1: date_range ---
     date_range_sql = _build_date_range_sql(
@@ -272,7 +273,7 @@ def wrap_with_pop(
     # Build FROM date_spine with LEFT JOINs to fact and dimension tables
     # Re-use the planner's join structure but restructured
     pop_base_sql = _build_pop_base_sql(
-        ast, resolved, model, dialect, qualify_table, grain, time_obj_name, time_source_col
+        ast, resolved, model, dialect, qualify_table, grain, time_obj_name, time_col_sql
     )
     # RawSQL: restructured join tree anchored on the date spine with dialect date
     # arithmetic; not the planner's Select shape. Covered by PoP drift snapshots.
@@ -358,6 +359,22 @@ def wrap_with_pop(
     )
 
 
+def _time_column_sql(time_dim: ResolvedDimension, model: SemanticModel, dialect: Dialect) -> str:
+    """The SQL that reads a PoP metric's time dimension.
+
+    Through ``make_column_expr`` rather than the dimension's physical column
+    name, for the reason the projection goes through it: a computed dimension
+    has no physical name, and quoting the empty string produced
+    ``MIN("Event".""``) in the date-range scan and the same in the spine join.
+    Both are as valid a time dimension as any other, and the model that declares
+    one validates clean.
+
+    The date-range CTE and the spine join both scan the object the dimension
+    belongs to, so the reference binds in either.
+    """
+    return dialect.compile_expr(make_column_expr(model, time_dim.object_name, time_dim.column_name))
+
+
 def _build_date_range_sql(
     resolved: ResolvedQuery,
     model: SemanticModel,
@@ -378,10 +395,10 @@ def _build_date_range_sql(
     if not fact_objects and resolved.base_object:
         fact_objects = [resolved.base_object]
 
-    # Resolve the time dimension's physical info per object
+    # Resolve the time dimension's object and the SQL that reads it
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     time_obj_name = time_dim.object_name
-    time_source_col = time_dim.source_column
+    time_col_sql = _time_column_sql(time_dim, model, dialect)
 
     # Build WHERE clause from resolved filters
     where_parts: list[str] = []
@@ -419,10 +436,8 @@ def _build_date_range_sql(
         obj = model.data_objects[obj_name]
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
-        time_alias = dialect.quote_identifier(time_obj_name)
-        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
-        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
-        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
+        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col_sql})", grain)
+        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col_sql})", grain)
 
         return (
             f"SELECT {trunc_min} AS min_date,\n"
@@ -437,11 +452,10 @@ def _build_date_range_sql(
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
 
-        # Use the time dimension's table alias (may differ from the fact table)
-        time_alias = dialect.quote_identifier(time_obj_name)
-        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
-        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
-        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
+        # The time dimension reads from its own object, which may not be this
+        # leg's fact table; the join above put it in scope either way.
+        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col_sql})", grain)
+        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col_sql})", grain)
 
         legs.append(
             f"SELECT {trunc_min} AS min_date,\n"
@@ -464,7 +478,7 @@ def _build_pop_base_sql(
     qualify_table: Callable[[DataObject], str],
     grain: str,
     time_obj_name: str,
-    time_source_col: str,
+    time_col_sql: str,
 ) -> str:
     """Build the raw SQL body for the pop_base CTE.
 
@@ -489,10 +503,15 @@ def _build_pop_base_sql(
             # column: a computed one has no ``source_column`` at all, and
             # quoting the empty string produced ``"Customer"."" AS "Region"``,
             # which no engine parses. Same funnel every other planner uses.
-            expr_sql = dialect.compile_expr(
-                make_column_expr(model, dim.object_name, dim.column_name)
+            dim_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
+            if dim.grain:
+                # The grain is the dimension: without it this CTE groups by the
+                # raw value and two rows of the same month stay two rows, under
+                # a column labelled by the month.
+                dim_expr = dialect.render_time_grain(dim_expr, dim.grain)
+            dim_selects.append(
+                f"{dialect.compile_expr(dim_expr)} AS {dialect.quote_identifier(dim.name)}"
             )
-            dim_selects.append(f"{expr_sql} AS {dialect.quote_identifier(dim.name)}")
         dim_groups.append(str(d_idx))
 
     # Measure selects
@@ -577,8 +596,7 @@ def _build_pop_base_sql(
     time_obj = model.data_objects[time_obj_name]
     time_table = qualify_table(time_obj)
     time_alias_q = dialect.quote_identifier(time_obj_name)
-    time_col = f"{time_alias_q}.{dialect.quote_identifier(time_source_col)}"
-    trunc_col = dialect.render_date_trunc_sql(time_col, grain)
+    trunc_col = dialect.render_date_trunc_sql(time_col_sql, grain)
     join_clauses.append(
         f"\n  LEFT JOIN {time_table} AS {time_alias_q}\n    ON {trunc_col} = {spine_cte}.spine_date"
     )

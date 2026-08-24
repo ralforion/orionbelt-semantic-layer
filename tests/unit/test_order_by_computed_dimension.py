@@ -303,3 +303,105 @@ def test_period_over_period_reads_a_dimension_in_the_query_timezone() -> None:
         }
     }
     assert "AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Berlin'" in _sql(model, query)
+
+
+POP_DIMENSIONS_YAML = """
+version: 1.0
+name: pop_dimensions
+
+dataObjects:
+  Event:
+    code: event
+    columns:
+      Created:  {code: created, abstractType: date}
+      Occurred: {code: occurred, abstractType: date}
+      Amount:   {code: amount, abstractType: float, numClass: additive}
+      Effective:
+        expression: "CASE WHEN {Amount} > 0 THEN {Occurred} ELSE {Created} END"
+        abstractType: date
+
+dimensions:
+  Created Month:   {dataObject: Event, column: Created, resultType: date, timeGrain: month}
+  Occurred Month:  {dataObject: Event, column: Occurred, resultType: date, timeGrain: month}
+  Effective Month: {dataObject: Event, column: Effective, resultType: date, timeGrain: month}
+
+measures:
+  Total:
+    columns: [{dataObject: Event, column: Amount}]
+    resultType: float
+    aggregation: sum
+
+metrics:
+  Total MoM:
+    type: period_over_period
+    expression: '{[Total]}'
+    periodOverPeriod:
+      timeDimension: Occurred Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+  Effective MoM:
+    type: period_over_period
+    expression: '{[Total]}'
+    periodOverPeriod:
+      timeDimension: Effective Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+
+
+@pytest.fixture(scope="module")
+def pop_model() -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(POP_DIMENSIONS_YAML)
+    resolved, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return resolved
+
+
+def _pop_connection() -> duckdb.DuckDBPyConnection:
+    """Two January rows and one February row, so a month grouping is visible."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE event AS SELECT * FROM (VALUES"
+        " (DATE '2024-01-05', DATE '2024-01-05', 10.0),"
+        " (DATE '2024-01-20', DATE '2024-01-20', 20.0),"
+        " (DATE '2024-02-10', DATE '2024-02-10', 30.0)"
+        ") t(created, occurred, amount)"
+    )
+    return con
+
+
+def test_a_computed_column_is_a_valid_pop_time_dimension(pop_model: SemanticModel) -> None:
+    """The date-range scan and the spine join read it the same way the projection does.
+
+    Both built the column from its physical name, which a computed dimension
+    does not have, so they emitted ``MIN("Event"."")`` and joined on the same -
+    from a model that validates clean and warns about nothing.
+    """
+    query = {"select": {"dimensions": ["Effective Month"], "measures": ["Total", "Effective MoM"]}}
+    sql = _sql(pop_model, query)
+    assert '""' not in sql, sql
+    assert 'MIN(CASE WHEN "Event"."amount" > 0' in sql
+    assert _pop_connection().execute(sql).fetchall()
+
+
+def test_a_second_time_grained_dimension_keeps_its_grain(pop_model: SemanticModel) -> None:
+    """``pop_base`` grouped by the raw value under a column labelled by the month.
+
+    Two rows of the same month stayed two rows, each carrying a day-level date
+    in a column called ``Created Month``. Executed, because the wrong answer
+    here is a plausible-looking one.
+    """
+    query = {
+        "select": {
+            "dimensions": ["Occurred Month", "Created Month"],
+            "measures": ["Total", "Total MoM"],
+        }
+    }
+    rows = _pop_connection().execute(_sql(pop_model, query)).fetchall()
+    assert len(rows) == 2, rows
+    by_month = {row[1].strftime("%Y-%m-%d"): row[2] for row in rows}
+    assert by_month == {"2024-01-01": 30, "2024-02-01": 30}

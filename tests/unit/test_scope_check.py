@@ -52,6 +52,42 @@ def test_the_cte_itself_is_in_scope() -> None:
     assert out_of_scope_tables(_wrapped("base")) == set()
 
 
+def test_a_declared_but_unselected_cte_is_not_in_scope() -> None:
+    """Declaring a CTE does not let the query name it.
+
+    ``WITH other AS (...) ... FROM base`` cannot say ``other.x``: DuckDB
+    answers ``Referenced table "other" not found``, exactly as it does for the
+    enclosing-CTE case this module exists for.
+    """
+    select = _wrapped("other")
+    select = Select(
+        columns=select.columns,
+        from_=select.from_,
+        order_by=select.order_by,
+        ctes=[*select.ctes, CTE(name="other", query=Select())],
+    )
+    assert out_of_scope_tables(select) == {"other"}
+
+
+def test_an_alias_replaces_the_source_name() -> None:
+    """``FROM base AS b`` binds ``b``, and every engine rejects ``base.x`` after it."""
+    select = Select(
+        columns=[AliasedExpr(expr=ColumnRef(name="y", table="base"), alias="Y")],
+        from_=From(source="base", alias="b"),
+        ctes=[CTE(name="base", query=Select())],
+    )
+    assert out_of_scope_tables(select) == {"base"}
+
+
+def test_a_source_without_an_alias_is_named_by_itself() -> None:
+    select = Select(
+        columns=[AliasedExpr(expr=ColumnRef(name="y", table="base"), alias="Y")],
+        from_=From(source="base"),
+        ctes=[CTE(name="base", query=Select())],
+    )
+    assert out_of_scope_tables(select) == set()
+
+
 def test_an_unqualified_reference_is_in_scope() -> None:
     """A bare column is whatever the FROM exposes under that name."""
     assert out_of_scope_tables(_wrapped(None)) == set()

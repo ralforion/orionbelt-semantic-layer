@@ -34,14 +34,21 @@ def out_of_scope_tables(select: Select) -> set[str]:
 
 
 def _in_scope(select: Select) -> set[str]:
-    """What the outer query can name: its FROM, its joins, its unnests, its CTEs.
+    """The names this query's own FROM binds, and only those.
 
-    A subquery source is in scope under its alias only, having no table name of
-    its own to be named by. An unnest contributes both names it introduces: the
-    element alias, and the parent it is correlated to.
+    One name per source: its alias if it has one, else the source itself. An
+    alias *replaces* the name, it does not add to it - ``FROM base AS b`` binds
+    ``b``, and every engine rejects ``base.x`` after it. A subquery source has
+    no name of its own to fall back on, so it is in scope only under its alias.
+
+    Declaring a CTE does not put it in scope either. ``WITH other AS (...)``
+    that this query never selects from is a table it cannot name, which is the
+    same defect as naming the table of an enclosing CTE - the case this module
+    exists for. An unnest is the one source that binds two names: the element
+    alias, and the parent it is correlated to.
     """
-    scope = {cte.name for cte in select.ctes}
-    sources: list[tuple[str | Select | None, str | None]] = []
+    scope: set[str] = set()
+    sources: list[tuple[str | Select, str | None]] = []
     if select.from_ is not None:
         sources.append((select.from_.source, select.from_.alias))
     for joined in select.joins:
@@ -52,7 +59,7 @@ def _in_scope(select: Select) -> set[str]:
     for source, alias in sources:
         if alias:
             scope.add(alias)
-        if isinstance(source, str):
+        elif isinstance(source, str):
             scope.add(source)
     return scope
 
