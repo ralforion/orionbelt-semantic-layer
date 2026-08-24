@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
+import duckdb
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
@@ -880,8 +883,9 @@ class TestPoPDeclaredDataType:
         )
         sql = CompilationPipeline().compile(query, _load_model(), "duckdb").sql
         assert 'CAST("Revenue MoM Diff"' not in sql
-        # The operand it inherits from is typed.
-        assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
+        # The operand it inherits from is typed. It reads the column out of the
+        # derived table ``pop_base`` selects from, so the reference is flat.
+        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in sql
 
     def test_a_wrapper_metric_placeholder_is_not_cast_early(self) -> None:
         """A window metric's ``pop_base`` column is the base measure, not the rank.
@@ -903,7 +907,7 @@ class TestPoPDeclaredDataType:
         )
         sql = CompilationPipeline().compile(query, model, "duckdb").sql
         pop_base = sql[sql.index('"pop_base" AS (') : sql.index('"pop_compare" AS (')]
-        assert 'SUM("Sales"."amount") AS "Region Rank"' in pop_base
+        assert 'SUM("__ob_pop_src"."Sales__amount") AS "Region Rank"' in pop_base
         assert "CAST" not in pop_base.split('AS "Region Rank"')[0].rsplit(",", 1)[-1]
         # The window result itself still carries the metric's declared type.
         assert 'CAST(RANK() OVER (ORDER BY "Amount Sum" DESC) AS INTEGER)' in sql
@@ -939,9 +943,11 @@ class TestPoPDeclaredDataType:
             )
             .sql
         )
-        cast = 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"'
-        assert cast in plain
-        assert cast in pop
+        # Same aggregate and same declared type in both. The source differs by
+        # construction: a plain query reads the fact table, and ``pop_base``
+        # reads the derived table it joins the date spine to.
+        assert 'CAST(SUM("Orders"."AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in plain
+        assert 'CAST(SUM("__ob_pop_src"."Orders__AMOUNT") AS DECIMAL(18, 2)) AS "Revenue"' in pop
 
 
 _RANK_POP_YAML = """\
@@ -1066,3 +1072,96 @@ metrics:
         result = self._compile(["Sales Total", "Sales MoM"])
         assert "composite_01" not in result.sql
         assert "date_spine" in result.sql
+
+
+class TestPopFilters:
+    """A ``where`` filter reaches the measures, not only the spine's range (#365).
+
+    ``date_range`` pushed the filters down and ``pop_base`` had no WHERE at all,
+    so the spine covered the filtered extent while every measure aggregated
+    every row. Nothing failed: the query returned a well-formed result with the
+    wrong numbers in it, and adding a period-over-period metric to an existing
+    filtered query silently changed what its other measures meant.
+    """
+
+    MODEL_YAML = """
+version: 1.0
+name: pop_filters
+dataObjects:
+  Event:
+    code: event
+    columns:
+      Occurred: {code: occurred, abstractType: date}
+      Region:   {code: region, abstractType: string}
+      Amount:   {code: amount, abstractType: float, numClass: additive}
+dimensions:
+  Occurred Month:
+    dataObject: Event
+    column: Occurred
+    resultType: date
+    timeGrain: month
+  Region: {dataObject: Event, column: Region, resultType: string}
+measures:
+  Total:
+    columns: [{dataObject: Event, column: Amount}]
+    resultType: float
+    aggregation: sum
+metrics:
+  Total MoM:
+    type: period_over_period
+    expression: '{[Total]}'
+    periodOverPeriod:
+      timeDimension: Occurred Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+
+    def _model(self) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def _rows(self, measures: list[str]) -> list[tuple]:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Occurred Month"], measures=measures),
+            where=[QueryFilter(field="Region", op=FilterOperator.EQ, value="EU")],
+        )
+        sql = CompilationPipeline().compile(query, self._model(), "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-01-10', 'EU', 10.0),"
+            " (DATE '2024-01-11', 'US', 700.0),"
+            " (DATE '2024-02-10', 'EU', 20.0)"
+            ") t(occurred, region, amount)"
+        )
+        return sorted(con.execute(sql).fetchall(), key=lambda row: row[0])
+
+    def test_the_measure_reads_the_filtered_rows(self) -> None:
+        """January is 10, not 710. The 700 belongs to the region the query excluded."""
+        rows = self._rows(["Total", "Total MoM"])
+        assert [(row[0].isoformat(), row[1]) for row in rows] == [
+            ("2024-01-01", Decimal("10.00")),
+            ("2024-02-01", Decimal("20.00")),
+        ]
+
+    def test_the_metric_agrees_with_the_measure_it_compares(self) -> None:
+        """February minus January over the filtered rows is +10, not -690."""
+        rows = self._rows(["Total", "Total MoM"])
+        assert rows[1][2] == Decimal("10.00")
+
+    def test_the_same_query_without_the_metric_gives_the_same_measure(self) -> None:
+        """The defect was visible as a disagreement between these two queries.
+
+        Compared on the period's ISO date rather than the value itself: the
+        spine hands back a DATE and ``DATE_TRUNC`` a TIMESTAMP, which is a
+        separate difference between the two paths and not what this is about.
+        """
+        with_metric = [
+            (row[0].isoformat()[:10], row[1]) for row in self._rows(["Total", "Total MoM"])
+        ]
+        without = [(row[0].isoformat()[:10], row[1]) for row in self._rows(["Total"])]
+        assert with_metric == without
