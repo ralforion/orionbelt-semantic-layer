@@ -24,6 +24,7 @@ import duckdb
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -405,3 +406,71 @@ def test_a_second_time_grained_dimension_keeps_its_grain(pop_model: SemanticMode
     assert len(rows) == 2, rows
     by_month = {row[1].strftime("%Y-%m-%d"): row[2] for row in rows}
     assert by_month == {"2024-01-01": 30, "2024-02-01": 30}
+
+
+CROSS_OBJECT_YAML = """
+version: 1.0
+name: pop_cross_object
+
+dataObjects:
+  Calendar:
+    code: calendar
+    columns:
+      Day:        {code: day, abstractType: date}
+      Is Holiday: {code: is_holiday, abstractType: boolean}
+  Event:
+    code: event
+    joins:
+      - joinTo: Calendar
+        columnsFrom: [Created]
+        columnsTo: [Day]
+        joinType: many-to-one
+    columns:
+      Created: {code: created, abstractType: date}
+      Amount:  {code: amount, abstractType: float, numClass: additive}
+      Effective:
+        expression: "CASE WHEN {[Calendar].[Is Holiday]} THEN {Created} ELSE {Created} END"
+        abstractType: date
+
+dimensions:
+  Effective Month: {dataObject: Event, column: Effective, resultType: date, timeGrain: month}
+
+measures:
+  Total:
+    columns: [{dataObject: Event, column: Amount}]
+    resultType: float
+    aggregation: sum
+
+metrics:
+  Effective MoM:
+    type: period_over_period
+    expression: '{[Total]}'
+    periodOverPeriod:
+      timeDimension: Effective Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+
+
+def test_a_pop_time_dimension_reaching_another_object_is_refused() -> None:
+    """Named, rather than emitted as SQL the database rejects.
+
+    ``pop_base`` joins the spine on this expression *first*, and a join's ON
+    cannot name a table joined after it - which the expression's other object
+    always is, being joined to the time dimension's own. Reordering cannot
+    settle it: each join would have to come first. Supporting the shape means a
+    derived table inside ``pop_base``, so until then the refusal says which
+    object made it unsupported.
+    """
+    raw, source_map = TrackedLoader().load_string(CROSS_OBJECT_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = {"select": {"dimensions": ["Effective Month"], "measures": ["Total", "Effective MoM"]}}
+    with pytest.raises(ResolutionError) as excinfo:
+        _sql(model, query)
+    (error,) = excinfo.value.errors
+    assert error.code == "INVALID_METRIC"
+    assert error.context["foreignObjects"] == ["Calendar"]
+    assert "'Calendar'" in error.message

@@ -29,7 +29,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.outer_order_by import outer_order_by
@@ -242,6 +242,7 @@ def wrap_with_pop(
     # Resolve the time dimension's object and the SQL that reads it
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     time_obj_name = time_dim.object_name
+    _reject_cross_object_time_dimension(pop_config, time_dim, model)
     time_col_sql = _time_column_sql(time_dim, model, dialect)
 
     # --- CTE 1: date_range ---
@@ -356,6 +357,61 @@ def wrap_with_pop(
         limit=ast.limit,
         offset=ast.offset,
         ctes=all_ctes,
+    )
+
+
+def _reject_cross_object_time_dimension(
+    pop_measure: ResolvedMeasure, time_dim: ResolvedDimension, model: SemanticModel
+) -> None:
+    """Refuse a PoP time dimension whose expression reads a second data object.
+
+    The spine is joined on this expression, and it is the *first* join in
+    ``pop_base``: a join's ON can only name what is already to its left, so an
+    expression reaching into a table joined after it does not bind. Reordering
+    does not help either - that second join is joined *to* the time dimension's
+    own object, so each would have to come first.
+
+    Making it work means giving ``pop_base`` a derived table that computes the
+    expression with its dependencies already joined, which is a restructuring of
+    this builder with a portability question of its own (a parenthesized join
+    group is not spelled the same on all eight dialects). Until then this says
+    so, where the alternative is a statement the database rejects by naming a
+    data object, reading as a model defect rather than an unsupported shape.
+
+    A plain column and a computed column that stays inside its own object are
+    the ordinary cases, and both pass.
+    """
+    expr = make_column_expr(model, time_dim.object_name, time_dim.column_name)
+    referenced: set[str] = set()
+    collect_referenced_tables(expr, referenced)
+    foreign = sorted(referenced - {time_dim.object_name})
+    if not foreign:
+        return
+    named = ", ".join(f"'{obj}'" for obj in foreign)
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="INVALID_METRIC",
+                message=(
+                    f"Period-over-period metric '{pop_measure.name}' compares over "
+                    f"'{time_dim.name}', a computed column whose expression reads "
+                    f"{named} as well as its own data object "
+                    f"'{time_dim.object_name}'. The date spine is joined on that "
+                    "expression, and a join cannot name a table joined after it."
+                ),
+                path="metrics",
+                hint=(
+                    "Compare over a plain column, or over a computed column that "
+                    "reads only columns of its own data object."
+                ),
+                context={
+                    "metric": pop_measure.name,
+                    "timeDimension": time_dim.name,
+                    "dataObject": time_dim.object_name,
+                    "foreignObjects": foreign,
+                },
+            )
+        ]
     )
 
 
