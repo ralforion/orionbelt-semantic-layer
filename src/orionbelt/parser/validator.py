@@ -90,7 +90,16 @@ class SemanticValidator:
         errors.extend(self._check_time_grain_on_temporal_columns(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
-        errors.extend(self._check_computed_column_refs(model))
+        # An expression whose references do not resolve is reported once, by the
+        # check that names the reference: it does not parse either, and
+        # "unknown column 'X'" is the useful half of that pair.
+        reference_errors = self._check_computed_column_refs(model)
+        errors.extend(reference_errors)
+        errors.extend(
+            self._check_computed_column_expressions(
+                model, {e.path for e in reference_errors if e.path}
+            )
+        )
         errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_query_timezone_coverage(model))
         errors.extend(self._check_reference_name_collisions(model))
@@ -1043,6 +1052,68 @@ class SemanticValidator:
                     f"Metric '{metric_name}'",
                     metric.expression,
                 )
+
+    def _check_computed_column_expressions(
+        self, model: SemanticModel, already_reported: set[str]
+    ) -> list[SemanticError]:
+        """A computed column's expression has to parse, or the column is nothing.
+
+        A computed column *is* its expression: there is no ``code`` to fall back
+        to, so a body the parser cannot read leaves nothing to select. The
+        compiler used to invent something anyway - a reference to the column's
+        display name, as though it were a physical column - and the model
+        loaded, the query compiled, ``sql_valid`` came back true, and the
+        database rejected a statement naming an object that only exists in the
+        model (#359).
+
+        Reported here as well as at compile time so it reaches whoever wrote the
+        model rather than whoever runs the report. Reachable through ordinary
+        SQL the format invites: ``||``, ``INTERVAL``, ``CAST(x AS t)`` (#355)
+        and the simple ``CASE`` form (#360) are all bodies the parser does not
+        take today.
+
+        A cycle is left to :meth:`_check_no_cyclic_computed_columns`, which
+        names both ends of it rather than wherever the recursion happened to
+        stop, and an unresolvable reference to
+        :meth:`_check_computed_column_refs` - *already_reported* carries the
+        paths it claimed. Both of those fail to parse too, and neither is
+        better described as a syntax error.
+        """
+        # Imported here rather than at module scope: the tokenizer lives in the
+        # compiler, and the parser package does not depend on it to be imported.
+        # It is the compiler's own entry point on purpose - a check that parsed
+        # the body its own way could answer differently from the code that has
+        # to build it.
+        from orionbelt.compiler.resolution import parse_column_expression
+
+        errors: list[SemanticError] = []
+        for obj_name, obj in model.data_objects.items():
+            for col_name, column in obj.columns.items():
+                path = f"dataObjects.{obj_name}.columns.{col_name}.expression"
+                if not column.expression or path in already_reported:
+                    continue
+                try:
+                    parse_column_expression(column, obj, model)
+                except RecursionError:
+                    continue
+                except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
+                    errors.append(
+                        SemanticError(
+                            code="INVALID_COLUMN_EXPRESSION",
+                            message=(
+                                f"Computed column '{col_name}' in data object "
+                                f"'{obj_name}' has invalid expression: {exc}"
+                            ),
+                            path=path,
+                            hint=(
+                                "The expression parser reads a subset of SQL. A "
+                                "construct it does not accept has to be written "
+                                "another way, or moved into the source view."
+                            ),
+                            context={"dataObject": obj_name, "column": col_name},
+                        )
+                    )
+        return errors
 
     def _check_expression_functions(self, model: SemanticModel) -> list[SemanticError]:
         """Reject a portable-catalog function called with the wrong arity.

@@ -66,20 +66,21 @@ from orionbelt.models.semantic import (
 from orionbelt.models.warnings import WarningCode, warning
 
 
-def _build_computed_column_expr(
+def parse_column_expression(
     column: DataObjectColumn,
     obj: DataObject,
     model: SemanticModel,
-    *,
-    in_query_timezone: bool = True,
 ) -> Expr:
     """Parse a computed column's ``expression`` into an AST.
 
-    ``{name}`` placeholders are substituted with ``{[obj.name].[name]}`` so
-    the existing measure-expression tokenizer resolves them to physical
-    table-qualified column refs. Falls back to a column ref to the column's
-    own ``code`` if parsing fails — defensive: never block compilation on
-    an expression-parse error in a single column.
+    ``{name}`` placeholders are substituted with ``{[obj.name].[name]}`` so the
+    measure-expression tokenizer resolves them to physical, table-qualified
+    column refs.
+
+    Raises whatever the tokenizer or parser raises. Shared with
+    ``parser.validator``, which asks the same question at model load: a check
+    that parsed the body its own way could answer differently from the compiler
+    that has to build it, and then the load-time answer would mean nothing.
     """
     expr_str = column.expression or ""
 
@@ -90,18 +91,50 @@ def _build_computed_column_expr(
         return match.group(0)
 
     rewritten = substitute_placeholders(expr_str, _sub)
+    return parse_expression(tokenize_measure_expression(rewritten, model))
+
+
+def _build_computed_column_expr(
+    column: DataObjectColumn,
+    obj: DataObject,
+    model: SemanticModel,
+    *,
+    in_query_timezone: bool = True,
+) -> Expr:
+    """The AST a computed column stands for, in the query's time zone.
+
+    A body that does not parse is an error rather than a fallback. There used
+    to be one - a reference to the column's own ``code``, which a computed
+    column does not have, so it emitted the *display name* as though it were a
+    physical column. The model loaded, the query compiled, ``sql_valid`` came
+    back true, and the database rejected a statement naming an object that only
+    exists in the model (#359). A metric whose formula does not parse has always
+    been refused with ``INVALID_METRIC_EXPRESSION``; this is the same answer for
+    the other declaration form.
+    """
     try:
-        tokens = tokenize_measure_expression(rewritten, model)
-        parsed = parse_expression(tokens)
-        # A join key opts out for the same reason a plain one does, and it has
-        # to be threaded this far: a computed key converted while the plain key
-        # it is compared against is not would be an asymmetric comparison, and
-        # that changes which rows join rather than merely costing an index.
-        if not in_query_timezone:
-            return parsed
-        return apply_query_timezone(parsed, model)
-    except Exception:  # noqa: BLE001 — preserve previous behaviour on bad expression
-        return ColumnRef(name=column.code or column.name, table=obj.name)
+        parsed = parse_column_expression(column, obj, model)
+    except Exception as exc:
+        raise ResolutionError(
+            [
+                SemanticError(
+                    code="INVALID_COLUMN_EXPRESSION",
+                    message=(
+                        f"Computed column '{column.name}' in data object "
+                        f"'{obj.name}' has invalid expression: {exc}"
+                    ),
+                    path=f"dataObjects.{obj.name}.columns.{column.name}.expression",
+                )
+            ]
+        ) from exc
+    # A join key opts out of the timezone conversion for the same reason a plain
+    # one does, and it has to be threaded this far: a computed key converted
+    # while the plain key it is compared against is not would be an asymmetric
+    # comparison, and that changes which rows join rather than merely costing an
+    # index.
+    if not in_query_timezone:
+        return parsed
+    return apply_query_timezone(parsed, model)
 
 
 def effective_anchor(
