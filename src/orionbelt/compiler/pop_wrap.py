@@ -162,6 +162,7 @@ def wrap_with_pop(
         return ast
 
     pop_measures = [m for m in resolved.measures if m.is_pop]
+    _reject_multi_fact(resolved, pop_measures)
 
     # PoP metrics in one query may use different comparison offsets (e.g. MoM
     # + YoY), but they share a single date spine, so they must agree on the
@@ -357,6 +358,60 @@ def wrap_with_pop(
         limit=ast.limit,
         offset=ast.offset,
         ctes=all_ctes,
+    )
+
+
+def _reject_multi_fact(resolved: ResolvedQuery, pop_measures: list[ResolvedMeasure]) -> None:
+    """Refuse a period-over-period metric in a query the CFL planner unioned.
+
+    This wrapper does not read the plan it wraps: it rebuilds a FROM of its own
+    from ``resolved.join_steps``, around a date spine, and that shape holds one
+    join tree. Given two independent facts it applied *every* leg's joins to
+    *every* leg and emitted `LEFT JOIN "calendar" ON "Returns"."returned_on" =
+    "Calendar"."day"` inside a leg selecting from ``sales``, leaving the
+    composite CTE the planner had already built declared and never referenced.
+    The database rejected it by naming a data object from the model, so it read
+    as a modelling defect (#366).
+
+    ``composite_cte`` rather than ``requires_cfl``, because the CFL planner
+    delegates back to the star planner whenever the measures turn out to reach a
+    single leg: what makes this unbuildable is a union that was actually
+    produced, not one that was asked for.
+
+    Supporting the shape means the spine joining a source that is itself a
+    ``UNION ALL`` with NULL padding per leg. That is real work, and this is the
+    other two multi-fact-plus-wrapper combinations' answer already: ``passes.py``
+    declares grain dedup incompatible with this pass, and totals declares itself
+    incompatible with it. Multi-fact CFL was the one that was neither supported
+    nor refused.
+    """
+    if resolved.composite_cte is None:
+        return
+    facts = ", ".join(f"'{name}'" for name in resolved.fact_tables)
+    metric = pop_measures[0].name if pop_measures else "period-over-period"
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="INVALID_METRIC",
+                message=(
+                    f"Period-over-period metric '{metric}' cannot be combined with "
+                    f"measures from independent facts ({facts}) in one query. The "
+                    "comparison is built around a date spine over a single join "
+                    "tree, and those measures are stacked into a UNION ALL that "
+                    "has no such tree."
+                ),
+                path="metrics",
+                hint=(
+                    "Query the period-over-period metric with measures from its own "
+                    "fact, and the other facts' measures separately."
+                ),
+                context={
+                    "metric": metric,
+                    "factTables": list(resolved.fact_tables),
+                    "compositeCte": resolved.composite_cte,
+                },
+            )
+        ]
     )
 
 

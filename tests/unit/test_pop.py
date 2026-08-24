@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.pipeline import CompilationPipeline, CompilationResult
 from orionbelt.compiler.resolution import (
     QueryResolver,
     ResolutionError,
@@ -981,3 +981,88 @@ metrics:
       offsetGrain: month
       comparison: difference
 """
+
+
+class TestPopMultiFact:
+    """A PoP metric in a query the CFL planner unioned is refused, not compiled (#366).
+
+    ``wrap_with_pop`` does not read the plan it wraps: it rebuilds a FROM of its
+    own around a date spine, and that shape holds one join tree. Given two
+    independent facts it applied every leg's joins to every leg and left the
+    composite CTE declared and never referenced, so the database rejected the
+    statement by naming a data object from the model.
+    """
+
+    MODEL_YAML = """
+version: 1.0
+name: pop_multi_fact
+dataObjects:
+  Calendar:
+    code: calendar
+    columns:
+      Day: {code: day, abstractType: date}
+  Sales:
+    code: sales
+    joins: [{joinTo: Calendar, columnsFrom: [Sold On], columnsTo: [Day], joinType: many-to-one}]
+    columns:
+      Sold On: {code: sold_on, abstractType: date}
+      Amount:  {code: amount, abstractType: float, numClass: additive}
+  Returns:
+    code: returns
+    joins: [{joinTo: Calendar, columnsFrom: [Returned On], columnsTo: [Day], joinType: many-to-one}]
+    columns:
+      Returned On: {code: returned_on, abstractType: date}
+      Refund:      {code: refund, abstractType: float, numClass: additive}
+dimensions:
+  Day Month: {dataObject: Calendar, column: Day, resultType: date, timeGrain: month}
+measures:
+  Sales Total:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+  Refund Total:
+    columns: [{dataObject: Returns, column: Refund}]
+    resultType: float
+    aggregation: sum
+metrics:
+  Sales MoM:
+    type: period_over_period
+    expression: '{[Sales Total]}'
+    periodOverPeriod:
+      timeDimension: Day Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+
+    def _model(self) -> SemanticModel:
+        loader = TrackedLoader()
+        raw, source_map = loader.load_string(self.MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def _compile(self, measures: list[str]) -> CompilationResult:
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Day Month"], measures=measures),
+        )
+        return CompilationPipeline().compile(query, self._model(), "duckdb")
+
+    def test_measures_from_independent_facts_are_refused(self) -> None:
+        with pytest.raises(ResolutionError) as excinfo:
+            self._compile(["Sales Total", "Refund Total", "Sales MoM"])
+        (error,) = excinfo.value.errors
+        assert error.code == "INVALID_METRIC"
+        assert error.context["factTables"] == ["Returns", "Sales"]
+        assert error.context["compositeCte"] == "composite_01"
+
+    def test_the_metrics_own_fact_still_compiles(self) -> None:
+        """The CFL planner delegates back to star here, so there is a join tree.
+
+        The refusal reads ``composite_cte``, which is set only when a union was
+        actually produced, so this query is untouched by it.
+        """
+        result = self._compile(["Sales Total", "Sales MoM"])
+        assert "composite_01" not in result.sql
+        assert "date_spine" in result.sql
