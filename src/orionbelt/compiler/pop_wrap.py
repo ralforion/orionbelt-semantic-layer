@@ -668,25 +668,34 @@ def _build_pop_base_sql(
         collect_column_refs(measure_expr, refs)
 
     taken: dict[str, tuple[str | None, str]] = {}
-    alias_of: dict[tuple[str, str], str] = {}
+    flat_of: dict[tuple[str, str], ColumnRef] = {}
     projections = [
         f"{_bucket_sql(time_dim, model, dialect, grain)} AS "
         f"{dialect.quote_identifier(_BUCKET_COLUMN)}"
     ]
     for ref in refs:
-        if ref.table is None or (ref.table, ref.name) in alias_of:
+        if ref.table is None or (ref.table, ref.name) in flat_of:
             continue
         alias = _flat_alias(ref.table, ref.name, taken)
-        alias_of[(ref.table, ref.name)] = alias
-        plain = ColumnRef(name=ref.name, table=ref.table)
-        projections.append(f"{dialect.compile_expr(plain)} AS {dialect.quote_identifier(alias)}")
+        # The declared type travels with the reference. The source projects the
+        # column unchanged, so the flat column *is* that column, and a dialect
+        # that has to know whether it is looking at a number reads
+        # ``abstract_type`` to find out: ClickHouse guards ``MAX`` over an int
+        # with ``accurateCast(trunc(...))`` and cannot see the type any other
+        # way. Dropping it here left a measure guarded in a plain query and
+        # unguarded in the same query with a PoP metric in it, which is where
+        # #356 came back.
+        flat_of[(ref.table, ref.name)] = ColumnRef(
+            name=alias, table=_SRC_ALIAS, abstract_type=ref.abstract_type
+        )
+        projections.append(f"{dialect.compile_expr(ref)} AS {dialect.quote_identifier(alias)}")
 
     def _repoint(expr: Expr) -> Expr:
         """Read the same value from the derived table's projection."""
 
         def _one(ref: ColumnRef) -> Expr:
-            flat = alias_of.get((ref.table, ref.name)) if ref.table else None
-            return ColumnRef(name=flat, table=_SRC_ALIAS) if flat else ref
+            flat = flat_of.get((ref.table, ref.name)) if ref.table else None
+            return flat if flat is not None else ref
 
         return map_column_refs(expr, _one)
 

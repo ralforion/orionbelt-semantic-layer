@@ -1074,6 +1074,70 @@ metrics:
         assert "date_spine" in result.sql
 
 
+class TestPopSourceColumnTypes:
+    """The declared abstractType survives the derived table (#356 / #361 / #362).
+
+    ``pop_base`` reads its columns out of a subquery, so every reference in it
+    is rebuilt. A rebuilt one that dropped the column's declared type left
+    ClickHouse unable to see that it was looking at a number, and its guard
+    against an overflowing integer cast is exactly that question: a measure was
+    guarded in a plain query and unguarded in the same query with a PoP metric
+    in it, where the engine wraps rather than raises.
+    """
+
+    MODEL_YAML = """
+version: 1.0
+name: pop_source_types
+dataObjects:
+  Event:
+    code: event
+    columns:
+      Occurred: {code: occurred, abstractType: date}
+      Big:      {code: big, abstractType: int}
+dimensions:
+  Occurred Month:
+    dataObject: Event
+    column: Occurred
+    resultType: date
+    timeGrain: month
+measures:
+  Big Max:
+    columns: [{dataObject: Event, column: Big}]
+    aggregation: max
+    resultType: int
+    dataType: "integer"
+metrics:
+  Big MoM:
+    type: period_over_period
+    expression: '{[Big Max]}'
+    periodOverPeriod:
+      timeDimension: Occurred Month
+      grain: month
+      offset: -1
+      offsetGrain: month
+      comparison: difference
+"""
+
+    def _sql(self, measures: list[str]) -> str:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject(
+            select=QuerySelect(dimensions=["Occurred Month"], measures=measures),
+        )
+        return CompilationPipeline().compile(query, model, "clickhouse").sql
+
+    def test_clickhouse_guards_the_narrowing_cast_inside_a_pop_query(self) -> None:
+        """``MAX`` over an int is numeric wherever the reference is read from."""
+        assert 'accurateCast(trunc(MAX("__ob_pop_src"."Event__big"))' in self._sql(
+            ["Big Max", "Big MoM"]
+        )
+
+    def test_the_plain_query_is_the_same_shape(self) -> None:
+        """The guard is not new here; what is new is that it survives the rewrite."""
+        assert 'accurateCast(trunc(MAX("Event"."big"))' in self._sql(["Big Max"])
+
+
 class TestPopFilters:
     """A ``where`` filter reaches the measures, not only the spine's range (#365).
 
