@@ -19,7 +19,11 @@ from orionbelt.compiler.anchored import conformed_join_type, plan_conformed_fact
 from orionbelt.compiler.graph import JoinGraph
 from orionbelt.compiler.metric_expansion import expand_metric_expression
 from orionbelt.compiler.nested import emit_join_step
-from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery, make_column_expr
+from orionbelt.compiler.resolution import (
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_dimension_expr,
+)
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
     resolve_metric_data_type,
@@ -151,9 +155,7 @@ class StarSchemaPlanner:
         # SELECT: dimensions (apply time grain truncation if specified)
         grouping_dim_aliases: list[str] = []
         for dim in resolved.dimensions:
-            col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-            if dim.grain and dialect:
-                col = dialect.render_time_grain(col, dim.grain)
+            col: Expr = make_dimension_expr(model, dim, dialect)
             builder.select(AliasedExpr(expr=col, alias=dim.name))
             if resolved.grouping is not None:
                 grouping_dim_aliases.append(dim.name)
@@ -239,9 +241,7 @@ class StarSchemaPlanner:
         # with "column does not exist" and requires the group-key expression.
         group_by_exprs: dict[str, Expr] = {}
         for dim in resolved.dimensions:
-            gb_col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-            if dim.grain and dialect:
-                gb_col = dialect.render_time_grain(gb_col, dim.grain)
+            gb_col: Expr = make_dimension_expr(model, dim, dialect)
             builder.group_by(gb_col)
             group_by_exprs[dim.name] = gb_col
 

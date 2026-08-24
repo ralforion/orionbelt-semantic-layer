@@ -32,7 +32,7 @@ from orionbelt.compiler.resolution import (
     ResolvedDimension,
     ResolvedMeasure,
     ResolvedQuery,
-    make_column_expr,
+    make_dimension_expr,
 )
 from orionbelt.compiler.star import CflLegInfo, QueryPlan, _grouping_flag_alias, _nulls_last
 from orionbelt.compiler.type_resolver import (
@@ -577,9 +577,7 @@ class CFLPlanner:
             for dim in resolved.dimensions:
                 via_ok = dim.via is None or dim.via in reachable
                 if dim.object_name in reachable and via_ok:
-                    col: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-                    if dim.grain and dialect:
-                        col = dialect.render_time_grain(col, dim.grain)
+                    col: Expr = make_dimension_expr(model, dim, dialect)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
                 elif not union_by_name:
                     model_dim = model.dimensions.get(dim.name)

@@ -46,6 +46,7 @@ from orionbelt.compiler.resolution import (
     ResolvedMeasure,
     ResolvedQuery,
     make_column_expr,
+    make_dimension_expr,
 )
 from orionbelt.compiler.type_resolver import (
     apply_exact_integer_avg,
@@ -594,12 +595,10 @@ def _build_pop_base_sql(
             continue
         # Through ``make_column_expr``, because a dimension is not always a
         # column: a computed one has no physical name at all.
-        dim_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
-        if dim.grain:
-            # The grain is the dimension: without it this CTE groups by the raw
-            # value and two rows of the same month stay two rows, under a column
-            # labelled by the month.
-            dim_expr = dialect.render_time_grain(dim_expr, dim.grain)
+        # The grain is part of the dimension: without it this CTE groups by the
+        # raw value and two rows of the same month stay two rows, under a column
+        # labelled by the month.
+        dim_expr: Expr = make_dimension_expr(model, dim, dialect)
         dim_entries.append((dim.name, dim_expr))
 
     measure_entries: list[tuple[str, Expr]] = []
