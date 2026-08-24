@@ -53,12 +53,14 @@ class ColumnRef:
     """Reference to a column, optionally qualified by table/alias.
 
     ``abstract_type`` is the OBML type of the column this names, when the node
-    was built somewhere that knew it - which is ``resolution._build_column_expr``
-    and nowhere else. A ref invented by a planner or a wrapper (a CTE alias, a
-    projected measure) leaves it ``None``, because at that point the type
-    genuinely is not known. Carried for the same reason :class:`NestedField`
-    carries one: a dialect sometimes has to know whether it is looking at a
-    number, and the compiler models no types over expression bodies.
+    was built somewhere that knew it - the two places that resolve a name against
+    the model, ``resolution.make_column_expr`` for the ``columns:`` form and
+    ``compiler.expr_parser`` for the ``expression:`` one. A ref invented by a
+    planner or a wrapper (a CTE alias, a projected measure) leaves it ``None``,
+    because at that point the type genuinely is not known. Carried for the same
+    reason :class:`NestedField` carries one: a dialect sometimes has to know
+    whether it is looking at a number, and the compiler models no types over
+    expression bodies.
 
     It is **excluded from equality and hashing**. Structural comparison of
     expressions is load-bearing in the planner - ``cfl_projection``,

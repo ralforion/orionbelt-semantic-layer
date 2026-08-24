@@ -108,8 +108,9 @@ def _is_numeric_expr(expr: Expr) -> bool:
             # bool is an int in Python and is not a number to ClickHouse.
             return isinstance(value, int | float) and not isinstance(value, bool)
         case ColumnRef(abstract_type=abstract_type):
-            # Only ``resolution._build_column_expr`` records one. A ref invented
-            # for a CTE alias has none, and unknown keeps the plain CAST.
+            # Recorded where the name was resolved against the model, in either
+            # declaration form. A ref invented for a CTE alias has none, and
+            # unknown keeps the plain CAST.
             return abstract_type in _NUMERIC_ABSTRACT_TYPES
         case UnaryOp(op="-", operand=operand):
             return _is_numeric_expr(operand)
@@ -140,7 +141,8 @@ def _is_numeric_call(name: str, args: list[Expr]) -> bool:
     if upper in _TYPE_PRESERVING_CALLS:
         # The value comes from the first argument, so it is numeric exactly when
         # that is. Knowable only where the column carried its declared type into
-        # the AST, which is ``ColumnRef.abstract_type``. Only the first argument
+        # the AST, which is ``ColumnRef.abstract_type``, in either declaration
+        # form. Only the first argument
         # is read: ``LAG(x, 1, 0)`` carries an offset and a default after it,
         # and neither says anything about the type of the result.
         return bool(args) and _is_numeric_expr(args[0])

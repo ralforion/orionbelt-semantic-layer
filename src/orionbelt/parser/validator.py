@@ -48,6 +48,31 @@ def _integer_digits(declared: OBMLType) -> int | None:
     return _TARGET_INTEGER_DIGITS.get(declared.name)
 
 
+def _measure_source_columns(measure: Measure) -> list[tuple[str, str]]:
+    """The ``(data object, column)`` pairs *measure* reads, both forms.
+
+    ``columns:`` and ``{[Object].[Column]}`` inside ``expression:`` are the same
+    statement about the same data - :attr:`Measure.source_objects` already reads
+    both - so a check that consults only the first is silent on half the
+    supported declarations. Deduplicated in declaration order: an expression that
+    names one column twice states one narrowing, not two.
+    """
+    pairs: list[tuple[str, str]] = [
+        (col_ref.view, col_ref.column)
+        for col_ref in measure.columns
+        if col_ref.view and col_ref.column
+    ]
+    if measure.expression:
+        pairs.extend(find_qualified_refs(measure.expression))
+    seen: set[tuple[str, str]] = set()
+    unique: list[tuple[str, str]] = []
+    for pair in pairs:
+        if pair not in seen:
+            seen.add(pair)
+            unique.append(pair)
+    return unique
+
+
 class SemanticValidator:
     """Validates semantic rules from spec §3.8."""
 
@@ -538,11 +563,9 @@ class SemanticValidator:
             capacity = _integer_digits(declared)
             if capacity is None or capacity >= _INT64_DIGITS:
                 continue
-            for col_ref in measure.columns:
-                if not col_ref.view or not col_ref.column:
-                    continue
-                obj = model.data_objects.get(col_ref.view)
-                column = obj.columns.get(col_ref.column) if obj else None
+            for obj_name, col_name in _measure_source_columns(measure):
+                obj = model.data_objects.get(obj_name)
+                column = obj.columns.get(col_name) if obj else None
                 if column is None or column.abstract_type is not DataType.INT:
                     continue
                 errors.append(
@@ -551,7 +574,7 @@ class SemanticValidator:
                         message=(
                             f"Measure '{name}' declares dataType "
                             f"'{measure.data_type}', which holds {capacity} integer "
-                            f"digits, over column '{col_ref.view}.{col_ref.column}' "
+                            f"digits, over column '{obj_name}.{col_name}' "
                             f"of type int, which holds {_INT64_DIGITS}"
                         ),
                         path=f"measures.{name}.dataType",
@@ -565,7 +588,7 @@ class SemanticValidator:
                         context={
                             "measure": name,
                             "dataType": measure.data_type,
-                            "column": f"{col_ref.view}.{col_ref.column}",
+                            "column": f"{obj_name}.{col_name}",
                         },
                     )
                 )
