@@ -322,6 +322,39 @@ class TestClickHouseDialect:
             sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, target))
             assert sql.startswith("accurateCast(trunc("), f"{type(expr).__name__}: {sql}"
 
+    @pytest.mark.parametrize("name", ["RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE"])
+    def test_ranking_window_functions_are_guarded(
+        self, dialect: ClickHouseDialect, name: str
+    ) -> None:
+        """A rank counts rows, so it is an integer whatever it is ordered over.
+
+        ClickHouse types all four as ``UInt64``, and a ``UInt64`` past the
+        target wraps exactly like a SUM does: measured,
+        ``CAST(toUInt64(4000000000) AS Nullable(Int32))`` is **-294967296**
+        while ``accurateCast(trunc(...))`` raises code 70. A window metric with
+        ``dataType: integer`` reached the unguarded cast until this was added.
+        """
+        expr = WindowFunction(func_name=name, order_by=[OrderByItem(expr=col("qty"))])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("accurateCast(trunc("), sql
+
+    def test_offsetting_window_functions_are_not_guarded_without_a_type(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """``LAG`` carries its argument's value, so it is numeric only when that is.
+
+        The argument is a reference into the window CTE, which carries no
+        declared type, so this keeps the plain ``CAST``. Unknown means leave it
+        alone rather than guess.
+        """
+        expr = WindowFunction(
+            func_name="LAG",
+            args=[col("Qty Sum"), Literal.number(1)],
+            order_by=[OrderByItem(expr=col("day"))],
+        )
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
+        assert sql.startswith("CAST("), sql
+
     def test_non_numeric_wrappers_are_not_guarded(self, dialect: ClickHouseDialect) -> None:
         """Unknown stays unknown: a wrapper over something unprovable is left alone."""
         target = parse_data_type("integer")

@@ -57,6 +57,14 @@ _NUMERIC_AGGREGATES: frozenset[str] = frozenset(
     }
 )
 
+#: Window functions that count rather than carry a value, so their result is an
+#: integer whatever they are ordered over. ClickHouse types all four as UInt64,
+#: and ``CAST(toUInt64(4000000000) AS Nullable(Int32))`` is -294967296 there, so
+#: they are the same overflow class as an aggregate and need the same guard.
+_NUMERIC_WINDOW_FUNCTIONS: frozenset[str] = frozenset(
+    {"RANK", "DENSE_RANK", "ROW_NUMBER", "NTILE", "PERCENT_RANK", "CUME_DIST"}
+)
+
 #: Functions that are numeric when the arguments they can return are. COALESCE
 #: is the one that matters: ``measure.defaultValue`` wraps the aggregate in it,
 #: which is how a guarded SUM stopped being guarded (#356 review).
@@ -122,7 +130,7 @@ def _is_numeric_expr(expr: Expr) -> bool:
 def _is_numeric_call(name: str, args: list[Expr]) -> bool:
     """``True`` when a call by this name and these arguments produces a number."""
     upper = name.upper()
-    if upper in _NUMERIC_AGGREGATES:
+    if upper in _NUMERIC_AGGREGATES or upper in _NUMERIC_WINDOW_FUNCTIONS:
         return True
     if upper in _NUMERIC_IF_ARGS_ARE:
         return bool(args) and all(_is_numeric_expr(a) for a in args)
