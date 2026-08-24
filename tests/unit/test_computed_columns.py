@@ -7,8 +7,11 @@ SELECT lists, GROUP BY, WHERE filters, raw-mode field projections, etc.
 
 from __future__ import annotations
 
+import pytest
+
 import orionbelt.dialect  # noqa: F401 — registers dialects
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import (
     FilterOperator,
     QueryFilter,
@@ -20,6 +23,7 @@ from orionbelt.models.query import (
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.parser.validator import SemanticValidator
 
 _MODEL_YAML = """\
 version: 1.0
@@ -285,3 +289,132 @@ class TestComputedColumnStringLiterals:
         # The {Quoted} reference resolves and inlines; both literals survive.
         assert sql.count("'{Zip}'") == 2
         assert "[Orders]" not in sql
+
+
+class TestUnparseableComputedColumn:
+    """A body the parser cannot read is an error, not a fallback (#359).
+
+    A computed column *is* its expression: there is no ``code`` to fall back to,
+    so a body that does not parse leaves nothing to select. The compiler used to
+    invent something anyway, a reference to the column's own display name as
+    though it were a physical column, and the model loaded, the query compiled,
+    ``sql_valid`` came back true, and the database rejected a statement naming
+    an object that only exists in the model.
+
+    A metric whose formula does not parse has always been refused with
+    ``INVALID_METRIC_EXPRESSION``. This is the same answer for the other
+    declaration form, at both ends: at load, where the model is written, and at
+    compile, where the column would have been built.
+    """
+
+    #: Ordinary SQL the format invites - `DataObjectColumn` tells authors an
+    #: expression is dialect-leaky and to pin ``defaultDialect`` - and which the
+    #: parser does not take. ``CAST`` is #355 and the simple ``CASE`` is #360.
+    UNPARSEABLE = {
+        "concat operator": "{Code} || '-eu'",
+        "interval literal": "{Day} + INTERVAL 1 DAY",
+        "cast": "CAST({Amount} AS INT)",
+        "extract": "EXTRACT(YEAR FROM {Day})",
+        "simple case": "CASE {Code} WHEN 'DE' THEN 'EU' ELSE 'Other' END",
+    }
+
+    MODEL_YAML = """\
+version: 1.0
+name: unparseable
+dataObjects:
+  Event:
+    code: event
+    columns:
+      Code:   {code: code, abstractType: string}
+      Day:    {code: day, abstractType: date}
+      Amount: {code: amount, abstractType: float, numClass: additive}
+      Tagged:
+        expression: "%s"
+        abstractType: string
+dimensions:
+  Tagged: {dataObject: Event, column: Tagged, resultType: string}
+measures:
+  Total:
+    columns: [{dataObject: Event, column: Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+    def _model(self, expression: str) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML % expression)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def test_the_model_does_not_validate(self) -> None:
+        """Reported where it can still be fixed cheaply: at the model."""
+        for label, expression in self.UNPARSEABLE.items():
+            errors = [
+                e
+                for e in SemanticValidator().validate(self._model(expression))
+                if e.code == "INVALID_COLUMN_EXPRESSION"
+            ]
+            assert len(errors) == 1, f"{label}: {errors}"
+            assert errors[0].path == "dataObjects.Event.columns.Tagged.expression"
+            assert "Tagged" in errors[0].message
+
+    def test_compiling_it_raises_rather_than_inventing_a_column(self) -> None:
+        """The other end, for a model that reached the compiler anyway.
+
+        It used to emit ``SELECT "Event"."Tagged"``, a column no table has, and
+        DuckDB answered ``Table "Event" does not have a column named "Tagged"``.
+        """
+        query = QueryObject(select=QuerySelect(dimensions=["Tagged"], measures=["Total"]))
+        with pytest.raises(ResolutionError) as excinfo:
+            CompilationPipeline().compile(query, self._model("{Code} || '-eu'"), "duckdb")
+        (error,) = excinfo.value.errors
+        assert error.code == "INVALID_COLUMN_EXPRESSION"
+        assert error.path == "dataObjects.Event.columns.Tagged.expression"
+
+    def test_a_body_that_parses_is_untouched(self) -> None:
+        """The control: the same shape with a body the parser reads."""
+        model = self._model("CASE WHEN {Code} = 'DE' THEN 'EU' ELSE 'Other' END")
+        assert not [
+            e for e in SemanticValidator().validate(model) if e.code == "INVALID_COLUMN_EXPRESSION"
+        ]
+        query = QueryObject(select=QuerySelect(dimensions=["Tagged"], measures=["Total"]))
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert 'CASE WHEN "Event"."code" = \'DE\'' in sql
+
+    def test_a_cycle_is_left_to_the_check_that_names_both_ends(self) -> None:
+        """A cyclic pair recurses rather than failing to parse.
+
+        ``_check_no_cyclic_computed_columns`` reports it with both columns in
+        hand, which is more use than whichever one the recursion stopped on.
+        """
+        yaml = """\
+version: 1.0
+dataObjects:
+  Event:
+    code: event
+    columns:
+      A: {expression: "{B} + 1", abstractType: int}
+      B: {expression: "{A} + 1", abstractType: int}
+"""
+        raw, source_map = TrackedLoader().load_string(yaml)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        codes = [e.code for e in SemanticValidator().validate(model)]
+        assert "INVALID_COLUMN_EXPRESSION" not in codes
+        assert any("CYCLIC" in code for code in codes), codes
+
+    def test_the_bundled_models_still_validate(self) -> None:
+        """The rule is new, so it has to be silent on every model in the repo."""
+        import pathlib
+
+        noisy: list[str] = []
+        for path in sorted(pathlib.Path("examples").rglob("*.obml.yml")):
+            raw, source_map = TrackedLoader().load(path)
+            model, result = ReferenceResolver().resolve(raw, source_map)
+            if result.errors:
+                continue
+            noisy.extend(
+                f"{path}: {e.message}"
+                for e in SemanticValidator().validate(model)
+                if e.code == "INVALID_COLUMN_EXPRESSION"
+            )
+        assert not noisy, "\n".join(noisy)
