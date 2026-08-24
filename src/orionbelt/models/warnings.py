@@ -52,6 +52,10 @@ class WarningCode:
     # Compile-time, post-codegen SQL validator emissions
     SQL_VALIDATION = "SQL_VALIDATION"
 
+    # The outermost query names a table its own FROM does not provide, so the
+    # statement compiles and parses but cannot execute (#358)
+    OUT_OF_SCOPE_TABLE = "OUT_OF_SCOPE_TABLE"
+
     # Generic merge-time warning (extends/inherits)
     MERGE_WARNING = "MERGE_WARNING"
 

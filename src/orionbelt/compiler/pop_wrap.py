@@ -26,14 +26,20 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     From,
-    OrderByItem,
     RawSQL,
     Select,
 )
-from orionbelt.compiler.expr_rewrite import map_column_refs
+from orionbelt.compiler.expr_rewrite import collect_referenced_tables, map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
-from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.outer_order_by import outer_order_by
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedDimension,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.compiler.type_resolver import (
     apply_exact_integer_avg,
     apply_exact_integer_sum,
@@ -233,10 +239,11 @@ def wrap_with_pop(
     offset_grain = pop_config.pop_offset_grain.value
     time_dim_name = pop_config.pop_time_dimension
 
-    # Resolve the time dimension's physical column and object
+    # Resolve the time dimension's object and the SQL that reads it
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     time_obj_name = time_dim.object_name
-    time_source_col = time_dim.source_column
+    _reject_cross_object_time_dimension(pop_config, time_dim, model)
+    time_col_sql = _time_column_sql(time_dim, model, dialect)
 
     # --- CTE 1: date_range ---
     date_range_sql = _build_date_range_sql(
@@ -267,7 +274,7 @@ def wrap_with_pop(
     # Build FROM date_spine with LEFT JOINs to fact and dimension tables
     # Re-use the planner's join structure but restructured
     pop_base_sql = _build_pop_base_sql(
-        ast, resolved, model, dialect, qualify_table, grain, time_obj_name, time_source_col
+        ast, resolved, model, dialect, qualify_table, grain, time_obj_name, time_col_sql
     )
     # RawSQL: restructured join tree anchored on the date spine with dialect date
     # arithmetic; not the planner's Select shape. Covered by PoP drift snapshots.
@@ -298,7 +305,7 @@ def wrap_with_pop(
         outer_columns.append(AliasedExpr(expr=column, alias=m.name))
 
     # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
-    outer_order_by = _build_outer_order_by(resolved)
+    order_by = outer_order_by(resolved, model)
 
     # Apply HAVING filters here. In a PoP query the measures and PoP metrics are
     # materialised columns in ``pop_compare``, so a HAVING predicate on them
@@ -346,11 +353,82 @@ def wrap_with_pop(
         where=outer_where,
         group_by=[],
         having=None,
-        order_by=outer_order_by,
+        order_by=order_by,
         limit=ast.limit,
         offset=ast.offset,
         ctes=all_ctes,
     )
+
+
+def _reject_cross_object_time_dimension(
+    pop_measure: ResolvedMeasure, time_dim: ResolvedDimension, model: SemanticModel
+) -> None:
+    """Refuse a PoP time dimension whose expression reads a second data object.
+
+    The spine is joined on this expression, and it is the *first* join in
+    ``pop_base``: a join's ON can only name what is already to its left, so an
+    expression reaching into a table joined after it does not bind. Reordering
+    does not help either - that second join is joined *to* the time dimension's
+    own object, so each would have to come first.
+
+    Making it work means giving ``pop_base`` a derived table that computes the
+    expression with its dependencies already joined, which is a restructuring of
+    this builder with a portability question of its own (a parenthesized join
+    group is not spelled the same on all eight dialects). Until then this says
+    so, where the alternative is a statement the database rejects by naming a
+    data object, reading as a model defect rather than an unsupported shape.
+
+    A plain column and a computed column that stays inside its own object are
+    the ordinary cases, and both pass.
+    """
+    expr = make_column_expr(model, time_dim.object_name, time_dim.column_name)
+    referenced: set[str] = set()
+    collect_referenced_tables(expr, referenced)
+    foreign = sorted(referenced - {time_dim.object_name})
+    if not foreign:
+        return
+    named = ", ".join(f"'{obj}'" for obj in foreign)
+    raise ResolutionError(
+        [
+            SemanticError(
+                code="INVALID_METRIC",
+                message=(
+                    f"Period-over-period metric '{pop_measure.name}' compares over "
+                    f"'{time_dim.name}', a computed column whose expression reads "
+                    f"{named} as well as its own data object "
+                    f"'{time_dim.object_name}'. The date spine is joined on that "
+                    "expression, and a join cannot name a table joined after it."
+                ),
+                path="metrics",
+                hint=(
+                    "Compare over a plain column, or over a computed column that "
+                    "reads only columns of its own data object."
+                ),
+                context={
+                    "metric": pop_measure.name,
+                    "timeDimension": time_dim.name,
+                    "dataObject": time_dim.object_name,
+                    "foreignObjects": foreign,
+                },
+            )
+        ]
+    )
+
+
+def _time_column_sql(time_dim: ResolvedDimension, model: SemanticModel, dialect: Dialect) -> str:
+    """The SQL that reads a PoP metric's time dimension.
+
+    Through ``make_column_expr`` rather than the dimension's physical column
+    name, for the reason the projection goes through it: a computed dimension
+    has no physical name, and quoting the empty string produced
+    ``MIN("Event".""``) in the date-range scan and the same in the spine join.
+    Both are as valid a time dimension as any other, and the model that declares
+    one validates clean.
+
+    The date-range CTE and the spine join both scan the object the dimension
+    belongs to, so the reference binds in either.
+    """
+    return dialect.compile_expr(make_column_expr(model, time_dim.object_name, time_dim.column_name))
 
 
 def _build_date_range_sql(
@@ -373,10 +451,10 @@ def _build_date_range_sql(
     if not fact_objects and resolved.base_object:
         fact_objects = [resolved.base_object]
 
-    # Resolve the time dimension's physical info per object
+    # Resolve the time dimension's object and the SQL that reads it
     time_dim = next(d for d in resolved.dimensions if d.name == time_dim_name)
     time_obj_name = time_dim.object_name
-    time_source_col = time_dim.source_column
+    time_col_sql = _time_column_sql(time_dim, model, dialect)
 
     # Build WHERE clause from resolved filters
     where_parts: list[str] = []
@@ -414,10 +492,8 @@ def _build_date_range_sql(
         obj = model.data_objects[obj_name]
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
-        time_alias = dialect.quote_identifier(time_obj_name)
-        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
-        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
-        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
+        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col_sql})", grain)
+        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col_sql})", grain)
 
         return (
             f"SELECT {trunc_min} AS min_date,\n"
@@ -432,11 +508,10 @@ def _build_date_range_sql(
         table_ref = qualify_table(obj)
         alias = dialect.quote_identifier(obj_name)
 
-        # Use the time dimension's table alias (may differ from the fact table)
-        time_alias = dialect.quote_identifier(time_obj_name)
-        time_col = f"{time_alias}.{dialect.quote_identifier(time_source_col)}"
-        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col})", grain)
-        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col})", grain)
+        # The time dimension reads from its own object, which may not be this
+        # leg's fact table; the join above put it in scope either way.
+        trunc_min = dialect.render_date_trunc_sql(f"MIN({time_col_sql})", grain)
+        trunc_max = dialect.render_date_trunc_sql(f"MAX({time_col_sql})", grain)
 
         legs.append(
             f"SELECT {trunc_min} AS min_date,\n"
@@ -459,7 +534,7 @@ def _build_pop_base_sql(
     qualify_table: Callable[[DataObject], str],
     grain: str,
     time_obj_name: str,
-    time_source_col: str,
+    time_col_sql: str,
 ) -> str:
     """Build the raw SQL body for the pop_base CTE.
 
@@ -480,9 +555,19 @@ def _build_pop_base_sql(
         if pop_measure and dim.name == pop_measure.pop_time_dimension:
             dim_selects.append(f"{spine_cte}.spine_date AS {dialect.quote_identifier(dim.name)}")
         else:
-            obj_alias = dialect.quote_identifier(dim.object_name)
-            col = dialect.quote_identifier(dim.source_column)
-            dim_selects.append(f"{obj_alias}.{col} AS {dialect.quote_identifier(dim.name)}")
+            # Through ``make_column_expr``, because a dimension is not always a
+            # column: a computed one has no ``source_column`` at all, and
+            # quoting the empty string produced ``"Customer"."" AS "Region"``,
+            # which no engine parses. Same funnel every other planner uses.
+            dim_expr: Expr = make_column_expr(model, dim.object_name, dim.column_name)
+            if dim.grain:
+                # The grain is the dimension: without it this CTE groups by the
+                # raw value and two rows of the same month stay two rows, under
+                # a column labelled by the month.
+                dim_expr = dialect.render_time_grain(dim_expr, dim.grain)
+            dim_selects.append(
+                f"{dialect.compile_expr(dim_expr)} AS {dialect.quote_identifier(dim.name)}"
+            )
         dim_groups.append(str(d_idx))
 
     # Measure selects
@@ -567,8 +652,7 @@ def _build_pop_base_sql(
     time_obj = model.data_objects[time_obj_name]
     time_table = qualify_table(time_obj)
     time_alias_q = dialect.quote_identifier(time_obj_name)
-    time_col = f"{time_alias_q}.{dialect.quote_identifier(time_source_col)}"
-    trunc_col = dialect.render_date_trunc_sql(time_col, grain)
+    trunc_col = dialect.render_date_trunc_sql(time_col_sql, grain)
     join_clauses.append(
         f"\n  LEFT JOIN {time_table} AS {time_alias_q}\n    ON {trunc_col} = {spine_cte}.spine_date"
     )
@@ -735,35 +819,3 @@ def _build_pop_compare_sql(
 
     select_clause = ",\n       ".join(selects)
     return f"SELECT {select_clause}\n  FROM {base_cte}\n" + "\n".join(join_clauses)
-
-
-def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
-    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
-    from orionbelt.ast.nodes import Literal
-    from orionbelt.compiler.star import _nulls_last
-
-    col_to_dim: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    order_by: list[OrderByItem] = []
-    for expr, desc, nulls in resolved.order_by_exprs:
-        nl = _nulls_last(nulls)
-        if isinstance(expr, Literal):
-            order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-        elif isinstance(expr, ColumnRef):
-            dim_name = col_to_dim.get((expr.name, expr.table))
-            name = dim_name if dim_name else expr.name
-            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc, nulls_last=nl))
-        else:
-            # Measure expression — find matching measure by expression equality
-            matched = False
-            for m in resolved.measures:
-                if m.expression == expr:
-                    order_by.append(
-                        OrderByItem(expr=ColumnRef(name=m.name), desc=desc, nulls_last=nl)
-                    )
-                    matched = True
-                    break
-            if not matched:
-                order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-    return order_by
