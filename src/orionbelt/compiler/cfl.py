@@ -160,7 +160,7 @@ class CFLPlanner:
 
         # dimensionsExclude: EXCEPT-based anti-join pattern
         if resolved.dimensions_exclude:
-            return self._plan_dimensions_exclude(resolved, model, qualify_table)
+            return self._plan_dimensions_exclude(resolved, model, qualify_table, dialect)
 
         # Group measures by their source object
         measures_by_object, cross_fact = self._group_measures_by_object(resolved, model)
@@ -977,9 +977,10 @@ class CFLPlanner:
         resolved: ResolvedQuery,
         model: SemanticModel,
         qualify_table: Callable[[DataObject], str] | None = None,
+        dialect: Dialect | None = None,
     ) -> QueryPlan:
         """Plan a dimensionsExclude query using EXCEPT pattern."""
-        return cfl_exclude.plan_dimensions_exclude(self, resolved, model, qualify_table)
+        return cfl_exclude.plan_dimensions_exclude(self, resolved, model, qualify_table, dialect)
 
     @staticmethod
     def _partition_dimensions(
@@ -996,10 +997,11 @@ class CFLPlanner:
         graph: JoinGraph,
         qualify: Callable[[DataObject], str],
         via_constraints: dict[str, str] | None = None,
+        dialect: Dialect | None = None,
     ) -> Select:
         """Build SELECT DISTINCT (via GROUP BY) for a group of dimensions."""
         return cfl_exclude.build_group_distinct_select(
-            dims, model, graph, qualify, via_constraints=via_constraints
+            dims, model, graph, qualify, via_constraints=via_constraints, dialect=dialect
         )
 
     def _build_existing_pairs_select(
@@ -1008,6 +1010,9 @@ class CFLPlanner:
         model: SemanticModel,
         graph: JoinGraph,
         qualify: Callable[[DataObject], str],
+        dialect: Dialect | None = None,
     ) -> Select:
         """Build SELECT for existing dimension combinations via fact-table joins."""
-        return cfl_exclude.build_existing_pairs_select(self, resolved, model, graph, qualify)
+        return cfl_exclude.build_existing_pairs_select(
+            self, resolved, model, graph, qualify, dialect
+        )

@@ -25,6 +25,8 @@ were cast nowhere.
 
 from __future__ import annotations
 
+import datetime
+
 import duckdb
 import pytest
 
@@ -169,3 +171,91 @@ def test_an_ungrained_dimension_is_unchanged(model: SemanticModel) -> None:
     projection = _sql(model, "Occurred Day").split("FROM")[0]
     assert projection.count("CAST(") == 1  # the measure's own cast
     assert '"Event"."occurred" AS "Occurred Day"' in projection
+
+
+EXCLUDE_MODEL_YAML = """
+version: 1.0
+name: exclude_grain
+
+dataObjects:
+  Calendar:
+    code: calendar
+    columns:
+      Day: {code: day, abstractType: date}
+  Product:
+    code: product
+    columns:
+      SKU:      {code: sku, abstractType: string}
+      Category: {code: category, abstractType: string}
+  Sales:
+    code: sales
+    joins:
+      - {joinTo: Calendar, columnsFrom: [Sold On], columnsTo: [Day], joinType: many-to-one}
+      - {joinTo: Product, columnsFrom: [SKU], columnsTo: [SKU], joinType: many-to-one}
+    columns:
+      Sold On: {code: sold_on, abstractType: date}
+      SKU:     {code: sku, abstractType: string}
+      Amount:  {code: amount, abstractType: float, numClass: additive}
+
+dimensions:
+  Sale Month: {dataObject: Calendar, column: Day, resultType: date, timeGrain: month}
+  Category:   {dataObject: Product, column: Category, resultType: string}
+
+measures:
+  Total:
+    columns: [{dataObject: Sales, column: Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+
+def _exclude_sql() -> str:
+    raw, source_map = TrackedLoader().load_string(EXCLUDE_MODEL_YAML)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    query = QueryObject.model_validate(
+        {"select": {"dimensions": ["Sale Month", "Category"]}, "dimensionsExclude": True}
+    )
+    return CompilationPipeline().compile(query, model, "duckdb").sql
+
+
+def test_dimensions_exclude_asks_at_the_declared_grain() -> None:
+    """Both sides of the EXCEPT read the dimension the same way.
+
+    This path built its own projections and never rendered the grain at all, so
+    the candidate combinations were *day* pairs under a column labelled by the
+    month, and the anti-join answered a question nobody asked. Both sides go
+    through the one funnel now, so they cannot describe different things.
+    """
+    sql = _exclude_sql()
+    grained = 'CAST(DATE_TRUNC(\'month\', "Calendar"."day") AS DATE) AS "Sale Month"'
+    assert sql.count(grained) == 2, sql
+    assert '"Calendar"."day" AS "Sale Month"' not in sql
+
+
+def test_dimensions_exclude_returns_the_missing_month_combinations() -> None:
+    """Executed, because the wrong answer here is a plausible-looking one.
+
+    January sold Toys, February sold Books. The combinations that never
+    happened are January/Books and February/Toys. Ungrained, the query compared
+    day pairs and answered with three of the four *days*, including a January
+    day on which Toys were not sold.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE calendar AS SELECT * FROM (VALUES"
+        " (DATE '2024-01-05'), (DATE '2024-01-20'), (DATE '2024-02-10')) t(day)"
+    )
+    con.execute(
+        "CREATE TABLE product AS SELECT * FROM (VALUES"
+        " ('s1', 'Toys'), ('s2', 'Books')) t(sku, category)"
+    )
+    con.execute(
+        "CREATE TABLE sales AS SELECT * FROM (VALUES"
+        " (DATE '2024-01-05', 's1', 10.0), (DATE '2024-02-10', 's2', 20.0)) t(sold_on, sku, amount)"
+    )
+    rows = sorted(con.execute(_exclude_sql()).fetchall(), key=str)
+    assert rows == [
+        (datetime.date(2024, 1, 1), "Books"),
+        (datetime.date(2024, 2, 1), "Toys"),
+    ]
