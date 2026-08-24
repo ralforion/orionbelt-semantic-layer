@@ -26,14 +26,19 @@ from orionbelt.ast.nodes import (
     ColumnRef,
     Expr,
     From,
-    OrderByItem,
     RawSQL,
     Select,
 )
 from orionbelt.compiler.expr_rewrite import map_column_refs
 from orionbelt.compiler.having_hoist import windowed_aliases
 from orionbelt.compiler.metric_expansion import expand_metric_expression
-from orionbelt.compiler.resolution import ResolutionError, ResolvedMeasure, ResolvedQuery
+from orionbelt.compiler.outer_order_by import outer_order_by
+from orionbelt.compiler.resolution import (
+    ResolutionError,
+    ResolvedMeasure,
+    ResolvedQuery,
+    make_column_expr,
+)
 from orionbelt.compiler.type_resolver import (
     apply_exact_integer_avg,
     apply_exact_integer_sum,
@@ -298,7 +303,7 @@ def wrap_with_pop(
         outer_columns.append(AliasedExpr(expr=column, alias=m.name))
 
     # Remap ORDER BY to alias-only refs (dimension/measure names, not physical codes)
-    outer_order_by = _build_outer_order_by(resolved)
+    order_by = outer_order_by(resolved, model)
 
     # Apply HAVING filters here. In a PoP query the measures and PoP metrics are
     # materialised columns in ``pop_compare``, so a HAVING predicate on them
@@ -346,7 +351,7 @@ def wrap_with_pop(
         where=outer_where,
         group_by=[],
         having=None,
-        order_by=outer_order_by,
+        order_by=order_by,
         limit=ast.limit,
         offset=ast.offset,
         ctes=all_ctes,
@@ -480,9 +485,14 @@ def _build_pop_base_sql(
         if pop_measure and dim.name == pop_measure.pop_time_dimension:
             dim_selects.append(f"{spine_cte}.spine_date AS {dialect.quote_identifier(dim.name)}")
         else:
-            obj_alias = dialect.quote_identifier(dim.object_name)
-            col = dialect.quote_identifier(dim.source_column)
-            dim_selects.append(f"{obj_alias}.{col} AS {dialect.quote_identifier(dim.name)}")
+            # Through ``make_column_expr``, because a dimension is not always a
+            # column: a computed one has no ``source_column`` at all, and
+            # quoting the empty string produced ``"Customer"."" AS "Region"``,
+            # which no engine parses. Same funnel every other planner uses.
+            expr_sql = dialect.compile_expr(
+                make_column_expr(model, dim.object_name, dim.column_name)
+            )
+            dim_selects.append(f"{expr_sql} AS {dialect.quote_identifier(dim.name)}")
         dim_groups.append(str(d_idx))
 
     # Measure selects
@@ -735,35 +745,3 @@ def _build_pop_compare_sql(
 
     select_clause = ",\n       ".join(selects)
     return f"SELECT {select_clause}\n  FROM {base_cte}\n" + "\n".join(join_clauses)
-
-
-def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
-    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
-    from orionbelt.ast.nodes import Literal
-    from orionbelt.compiler.star import _nulls_last
-
-    col_to_dim: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    order_by: list[OrderByItem] = []
-    for expr, desc, nulls in resolved.order_by_exprs:
-        nl = _nulls_last(nulls)
-        if isinstance(expr, Literal):
-            order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-        elif isinstance(expr, ColumnRef):
-            dim_name = col_to_dim.get((expr.name, expr.table))
-            name = dim_name if dim_name else expr.name
-            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc, nulls_last=nl))
-        else:
-            # Measure expression — find matching measure by expression equality
-            matched = False
-            for m in resolved.measures:
-                if m.expression == expr:
-                    order_by.append(
-                        OrderByItem(expr=ColumnRef(name=m.name), desc=desc, nulls_last=nl)
-                    )
-                    matched = True
-                    break
-            if not matched:
-                order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-    return order_by

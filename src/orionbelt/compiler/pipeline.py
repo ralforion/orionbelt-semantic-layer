@@ -11,6 +11,7 @@ from orionbelt.compiler.grain_dedup import detect_dedup_measures
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
 from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery
+from orionbelt.compiler.scope_check import out_of_scope_tables
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.validator import validate_sql
 from orionbelt.dialect.registry import DialectRegistry
@@ -277,6 +278,30 @@ class CompilationPipeline:
                     message=f"SQL validation: {e}",
                 )
                 for e in validation_errors
+            ]
+
+        # Phase 4b: scope check (non-blocking). Syntax is not the only way a
+        # statement can be wrong: an expression left behind in a query that
+        # wraps it parses clean and fails at the database, naming a data object
+        # from the model as if the model were at fault (#358). Kept separate
+        # from ``sql_valid``, which answers whether sqlglot could parse it.
+        stray_tables = out_of_scope_tables(wrapped_ast)
+        if stray_tables:
+            named = ", ".join(sorted(stray_tables))
+            warnings = warnings + [
+                warning(
+                    code=WarningCode.OUT_OF_SCOPE_TABLE,
+                    message=(
+                        f"Compiled SQL references {named} in the outermost query, "
+                        f"which its FROM does not provide"
+                    ),
+                    hint=(
+                        "The statement will be rejected by the database. This is a "
+                        "compiler defect rather than a model one - please report the "
+                        "query and model."
+                    ),
+                    context={"tables": sorted(stray_tables)},
+                )
             ]
 
         # Build explain plan

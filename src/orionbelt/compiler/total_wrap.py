@@ -36,12 +36,13 @@ from orionbelt.ast.nodes import (
     From,
     FunctionCall,
     Literal,
-    OrderByItem,
     Select,
     WindowFunction,
 )
 from orionbelt.compiler.metric_expansion import expand_metric_expression, metric_leaf_components
+from orionbelt.compiler.outer_order_by import remap_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
+from orionbelt.models.semantic import SemanticModel
 
 _UNSUPPORTED_TOTAL_AGGS = frozenset({"MEDIAN", "MODE", "LISTAGG", "ANY_VALUE"})
 
@@ -219,7 +220,9 @@ def _substitute_metric_refs(
     return expand_metric_expression(expr, resolved.metric_components, value_of)
 
 
-def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
+def wrap_with_totals(
+    ast: Select, resolved: ResolvedQuery, model: SemanticModel | None = None
+) -> Select:
     """Wrap a planner AST with a CTE + outer query for total measures.
 
     If no totals are present, returns ``ast`` unchanged.
@@ -322,7 +325,7 @@ def wrap_with_totals(ast: Select, resolved: ResolvedQuery) -> Select:
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
 
     # --- ORDER BY remapping: use CTE aliases instead of raw expressions ---
-    outer_order_by = _remap_order_by(ast.order_by, resolved)
+    outer_order_by = remap_order_by(ast.order_by, resolved, model)
 
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
@@ -351,47 +354,6 @@ def _get_alias(expr: Expr) -> str | None:
 def _from_cte(name: str) -> From:
     """Build a FROM clause referencing a CTE."""
     return From(source=name, alias=name)
-
-
-def _remap_order_by(
-    order_by: list[OrderByItem],
-    resolved: ResolvedQuery,
-) -> list[OrderByItem]:
-    """Remap ORDER BY items to reference CTE column aliases.
-
-    The planner's ORDER BY may contain raw table-qualified expressions
-    (e.g. ``SUM("Line Items"."l_extendedprice" * ...)``).  In the outer
-    query these tables don't exist — only the base CTE's column aliases.
-    """
-    dim_map: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    measure_exprs: list[tuple[Expr, str]] = [(m.expression, m.name) for m in resolved.measures]
-
-    result: list[OrderByItem] = []
-    for ob in order_by:
-        remapped = _remap_single_order_expr(ob.expr, dim_map, measure_exprs)
-        result.append(OrderByItem(expr=remapped, desc=ob.desc, nulls_last=ob.nulls_last))
-    return result
-
-
-def _remap_single_order_expr(
-    expr: Expr,
-    dim_map: dict[tuple[str, str | None], str],
-    measure_exprs: list[tuple[Expr, str]],
-) -> Expr:
-    """Remap one ORDER BY expression to use the CTE alias."""
-    if isinstance(expr, ColumnRef) and expr.table is not None:
-        key = (expr.name, expr.table)
-        if key in dim_map:
-            return ColumnRef(name=dim_map[key])
-        return ColumnRef(name=expr.name)
-    for meas_expr, name in measure_exprs:
-        if expr is meas_expr or expr == meas_expr:
-            return ColumnRef(name=name)
-    if isinstance(expr, Literal):
-        return expr
-    return expr
 
 
 def _is_avg_window_wrap_by_name(name: str, resolved: ResolvedQuery) -> bool:

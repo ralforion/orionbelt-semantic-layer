@@ -31,6 +31,7 @@ from orionbelt.ast.nodes import (
     WindowFrame,
     WindowFunction,
 )
+from orionbelt.compiler.outer_order_by import outer_order_by
 from orionbelt.compiler.resolution import ResolvedMeasure, ResolvedQuery
 from orionbelt.compiler.type_resolver import (
     cast_measure_to_resolved_type,
@@ -272,7 +273,7 @@ def wrap_with_cumulative(
             outer_columns.append(AliasedExpr(expr=ColumnRef(name=m.name), alias=m.name))
 
     # --- ORDER BY remapping ---
-    outer_order_by = _build_outer_order_by(resolved)
+    order_by = outer_order_by(resolved, model)
 
     # --- Assemble final Select ---
     all_ctes = list(ast.ctes) + [base_cte]
@@ -284,7 +285,7 @@ def wrap_with_cumulative(
         where=None,
         group_by=[],
         having=None,
-        order_by=outer_order_by,
+        order_by=order_by,
         limit=ast.limit,
         offset=ast.offset,
         ctes=all_ctes,
@@ -342,34 +343,3 @@ def _get_alias(expr: Expr) -> str | None:
     if isinstance(expr, AliasedExpr):
         return expr.alias
     return None
-
-
-def _build_outer_order_by(resolved: ResolvedQuery) -> list[OrderByItem]:
-    """Build ORDER BY using dimension/measure alias names for the outer CTE query."""
-    from orionbelt.compiler.star import _nulls_last
-
-    col_to_dim: dict[tuple[str, str | None], str] = {
-        (d.source_column, d.object_name): d.name for d in resolved.dimensions
-    }
-    order_by: list[OrderByItem] = []
-    for expr, desc, nulls in resolved.order_by_exprs:
-        nl = _nulls_last(nulls)
-        if isinstance(expr, Literal):
-            order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-        elif isinstance(expr, ColumnRef):
-            dim_name = col_to_dim.get((expr.name, expr.table))
-            name = dim_name if dim_name else expr.name
-            order_by.append(OrderByItem(expr=ColumnRef(name=name), desc=desc, nulls_last=nl))
-        else:
-            # Measure expression — find matching measure by expression equality
-            matched = False
-            for m in resolved.measures:
-                if m.expression == expr:
-                    order_by.append(
-                        OrderByItem(expr=ColumnRef(name=m.name), desc=desc, nulls_last=nl)
-                    )
-                    matched = True
-                    break
-            if not matched:
-                order_by.append(OrderByItem(expr=expr, desc=desc, nulls_last=nl))
-    return order_by

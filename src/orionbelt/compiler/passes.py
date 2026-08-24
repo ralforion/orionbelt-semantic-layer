@@ -182,7 +182,7 @@ def build_default_passes() -> tuple[CompilerPass, ...]:
         CompilerPass(
             name=PASS_TOTALS,
             applies=lambda r: r.has_totals,
-            run=lambda ast, ctx: wrap_with_totals(ast, ctx.resolved),
+            run=lambda ast, ctx: wrap_with_totals(ast, ctx.resolved, ctx.model),
             # Totals rewrites the AST structure that PoP / cumulative
             # wrappers depend on, producing invalid SQL when combined.
             incompatible_with=frozenset({PASS_PERIOD_OVER_PERIOD, PASS_CUMULATIVE}),
