@@ -38,6 +38,10 @@ class WarningCode:
     # An expression calls a function the portable catalog does not carry
     NON_PORTABLE_FUNCTION = "NON_PORTABLE_FUNCTION"
 
+    # A measure declares a dataType too narrow for values its own source column
+    # is allowed to hold
+    NARROWING_DATA_TYPE = "NARROWING_DATA_TYPE"
+
     # A model asks for a query time zone but leaves naive columns undeclared
     UNDECLARED_TIMESTAMP_ZONE = "UNDECLARED_TIMESTAMP_ZONE"
 

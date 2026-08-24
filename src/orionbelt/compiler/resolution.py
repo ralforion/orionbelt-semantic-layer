@@ -279,7 +279,17 @@ def make_column_expr(
             abstract_type=str(column.abstract_type) if column.abstract_type else None,
         )
     else:
-        ref = ColumnRef(name=column.code, table=object_name)
+        # Where the ``columns:`` form resolves a name against the model, so
+        # where its type is recorded; the expression tokenizer does the same for
+        # ``expression:``. Every planner and wrapper comes through here (see
+        # this function's docstring), and refs they invent afterwards for CTE
+        # aliases carry no type, which is correct: at that point there is
+        # nothing to record.
+        ref = ColumnRef(
+            name=column.code,
+            table=object_name,
+            abstract_type=str(column.abstract_type) if column.abstract_type else None,
+        )
     if not in_query_timezone:
         return ref
     return _in_query_timezone(ref, column, model)

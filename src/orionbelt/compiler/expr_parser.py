@@ -76,7 +76,8 @@ class _Token:
 
     # Kinds:
     #   "ref" — metric-formula ``{[Name]}`` reference (unqualified)
-    #   "colref" — measure-expression ``{[Obj].[Col]}`` reference (qualified)
+    #   "colref" — measure-expression ``{[Obj].[Col]}`` reference (qualified),
+    #       carrying ``table\\0source_code\\0abstract_type``
     #   "nestedref" — the same, on a ``nestedIn`` object: a field of an
     #       unnested element rather than a column of a table
     #   "number" — numeric literal
@@ -225,7 +226,7 @@ def tokenize_measure_expression(
     Column references resolve as follows:
 
     * Base column (``code:`` present) — emit a single ``"colref"`` token
-      carrying ``table\\0source_code`` in its value.
+      carrying ``table\\0source_code\\0abstract_type`` in its value.
     * Computed column (``expression:`` set) — recursively tokenize the
       referenced column's expression body in-place, wrapped in
       ``( ... )`` so it composes correctly with surrounding operators.
@@ -294,7 +295,14 @@ def tokenize_measure_expression(
                     )
                 else:
                     source = column.code if column is not None and column.code else col_name
-                    tokens.append(_Token(kind="colref", value=f"{obj_name}\0{source}"))
+                    # The declared abstractType rides along, the way it does on
+                    # ``nestedref``: this is the expression form's counterpart of
+                    # ``resolution.make_column_expr``, the other place a
+                    # ``ColumnRef`` is built with the column in hand, and a
+                    # dialect that has to know whether it is looking at a number
+                    # cannot tell the two forms apart. Unknown column, no type.
+                    abstract = str(column.abstract_type) if column is not None else ""
+                    tokens.append(_Token(kind="colref", value=f"{obj_name}\0{source}\0{abstract}"))
                 i = m.end()
             else:
                 i += 1
@@ -417,8 +425,8 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             return ColumnRef(name=tok.value)
         if tok.kind == "colref":
             _advance()
-            table, column = tok.value.split("\0", 1)
-            return ColumnRef(name=column, table=table)
+            table, column, abstract = tok.value.split("\0", 2)
+            return ColumnRef(name=column, table=table, abstract_type=abstract or None)
         if tok.kind == "nestedref":
             _advance()
             table, column, abstract = tok.value.split("\0", 2)

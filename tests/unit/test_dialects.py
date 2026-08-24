@@ -295,6 +295,46 @@ class TestClickHouseDialect:
         assert sql.startswith("CAST("), sql
         assert "accurateCast" not in sql
 
+    def test_selecting_aggregate_is_guarded_when_its_column_is_numeric(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """``MAX`` is numeric exactly when its argument is, and the ref now says so.
+
+        This is the residue #356 left: a MIN or MAX over a column wider than the
+        declared target still wrapped, because nothing told the dialect the
+        argument was a number. ``ColumnRef.abstract_type`` does.
+        """
+        for type_name in ("int", "float"):
+            agg = FunctionCall(name="MAX", args=[ColumnRef(name="big", abstract_type=type_name)])
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(agg, parse_data_type("integer")))
+            assert sql == "accurateCast(trunc(MAX(\"big\")), 'Nullable(Int32)')", type_name
+
+    @pytest.mark.parametrize("type_name", ["string", "boolean", "date", "timestamp", "json"])
+    def test_selecting_aggregate_is_not_guarded_for_a_non_numeric_column(
+        self, dialect: ClickHouseDialect, type_name: str
+    ) -> None:
+        """Measured: these answer today and must keep answering.
+
+        ``MAX(flag)`` reads 1, ``MAX(day)`` reads 20680, ``MAX(code)`` reads 42
+        for ``'42'``. ``trunc`` refuses all three.
+        """
+        agg = FunctionCall(name="MAX", args=[ColumnRef(name="v", abstract_type=type_name)])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(agg, parse_data_type("integer")))
+        assert sql.startswith("CAST("), sql
+
+    def test_selecting_aggregate_over_an_untyped_ref_is_not_guarded(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """A ref invented for a CTE alias carries no type, and unknown means leave it.
+
+        Only ``resolution._build_column_expr`` records a type. Wrappers that
+        rewrite refs to point at a CTE genuinely do not know one, so those keep
+        the behaviour this dialect has always had rather than guessing.
+        """
+        agg = FunctionCall(name="MAX", args=[ColumnRef(name="alias", table="cte")])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(agg, parse_data_type("integer")))
+        assert sql == 'CAST(MAX("cte"."alias") AS Nullable(Int32))'
+
     def test_integer_cast_of_a_bare_column_keeps_the_plain_cast(
         self, dialect: ClickHouseDialect
     ) -> None:
@@ -338,22 +378,36 @@ class TestClickHouseDialect:
         sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
         assert sql.startswith("accurateCast(trunc("), sql
 
-    def test_offsetting_window_functions_are_not_guarded_without_a_type(
+    def test_offsetting_window_functions_follow_their_first_argument(
         self, dialect: ClickHouseDialect
     ) -> None:
         """``LAG`` carries its argument's value, so it is numeric only when that is.
 
-        The argument is a reference into the window CTE, which carries no
-        declared type, so this keeps the plain ``CAST``. Unknown means leave it
-        alone rather than guess.
+        Only the first argument is read: ``LAG(x, 1)`` carries an offset after
+        it, and an offset says nothing about the type of the result. A reference
+        into the window CTE carries no declared type, so that case keeps the
+        plain ``CAST`` rather than guessing.
         """
-        expr = WindowFunction(
+        target = parse_data_type("integer")
+
+        typed = WindowFunction(
             func_name="LAG",
-            args=[col("Qty Sum"), Literal.number(1)],
+            args=[ColumnRef(name="qty", abstract_type="int"), Literal.number(1)],
             order_by=[OrderByItem(expr=col("day"))],
         )
-        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, parse_data_type("integer")))
-        assert sql.startswith("CAST("), sql
+        assert dialect.compile_expr(dialect.cast_to_obml_type(typed, target)).startswith(
+            "accurateCast(trunc("
+        )
+
+        for untyped in (
+            WindowFunction(func_name="LAG", args=[col("Qty Sum"), Literal.number(1)]),
+            WindowFunction(
+                func_name="LAG",
+                args=[ColumnRef(name="code", abstract_type="string"), Literal.number(1)],
+            ),
+        ):
+            sql = dialect.compile_expr(dialect.cast_to_obml_type(untyped, target))
+            assert sql.startswith("CAST("), sql
 
     def test_non_numeric_wrappers_are_not_guarded(self, dialect: ClickHouseDialect) -> None:
         """Unknown stays unknown: a wrapper over something unprovable is left alone."""

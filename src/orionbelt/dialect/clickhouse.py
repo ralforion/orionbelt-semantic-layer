@@ -8,6 +8,7 @@ from orionbelt.ast.nodes import (
     BinaryOp,
     CaseExpr,
     Cast,
+    ColumnRef,
     Expr,
     FunctionCall,
     Literal,
@@ -106,6 +107,11 @@ def _is_numeric_expr(expr: Expr) -> bool:
         case Literal(value=value):
             # bool is an int in Python and is not a number to ClickHouse.
             return isinstance(value, int | float) and not isinstance(value, bool)
+        case ColumnRef(abstract_type=abstract_type):
+            # Recorded where the name was resolved against the model, in either
+            # declaration form. A ref invented for a CTE alias has none, and
+            # unknown keeps the plain CAST.
+            return abstract_type in _NUMERIC_ABSTRACT_TYPES
         case UnaryOp(op="-", operand=operand):
             return _is_numeric_expr(operand)
         case BinaryOp(op=op, left=left, right=right) if op in _ARITHMETIC_OPS:
@@ -132,9 +138,41 @@ def _is_numeric_call(name: str, args: list[Expr]) -> bool:
     upper = name.upper()
     if upper in _NUMERIC_AGGREGATES or upper in _NUMERIC_WINDOW_FUNCTIONS:
         return True
+    if upper in _TYPE_PRESERVING_CALLS:
+        # The value comes from the first argument, so it is numeric exactly when
+        # that is. Knowable only where the column carried its declared type into
+        # the AST, which is ``ColumnRef.abstract_type``, in either declaration
+        # form. Only the first argument
+        # is read: ``LAG(x, 1, 0)`` carries an offset and a default after it,
+        # and neither says anything about the type of the result.
+        return bool(args) and _is_numeric_expr(args[0])
     if upper in _NUMERIC_IF_ARGS_ARE:
         return bool(args) and all(_is_numeric_expr(a) for a in args)
     return False
+
+
+#: Calls that hand back one of their argument's values, so their result is
+#: numeric exactly when the argument is. The offsetting window functions belong
+#: here for the same reason the selecting aggregates do: ``LAG`` returns a value
+#: of the column it reads, where ``RANK`` counts rows and is an integer whatever
+#: it is ordered over.
+_TYPE_PRESERVING_CALLS: frozenset[str] = frozenset(
+    {
+        "MIN",
+        "MAX",
+        "ANY_VALUE",
+        "MEDIAN",
+        "MODE",
+        "LAG",
+        "LEAD",
+        "FIRST_VALUE",
+        "LAST_VALUE",
+    }
+)
+
+#: OBML abstract types that are numbers. ``trunc`` takes these and none of the
+#: other types a column can declare.
+_NUMERIC_ABSTRACT_TYPES: frozenset[str] = frozenset({"int", "float"})
 
 
 #: Integer cast targets this dialect renders. ``accurateCast`` is used for these
