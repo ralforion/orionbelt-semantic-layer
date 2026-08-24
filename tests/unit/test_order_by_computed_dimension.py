@@ -20,11 +20,13 @@ clause over.
 
 from __future__ import annotations
 
+import datetime
+from decimal import Decimal
+
 import duckdb
 import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
@@ -241,10 +243,16 @@ def test_period_over_period_projects_the_computed_dimension(model: SemanticModel
 
     It quoted the empty string, so the CTE selected ``"Customer"."" AS "Region"``
     and no engine parsed the statement. Found by executing the fixed ORDER BY.
+
+    The expression is evaluated once, in the derived table the spine is joined
+    to, and read back by the alias that table projects it under.
     """
     sql = _sql(model, WRAPPED_QUERIES["period over period"])
     assert '""' not in sql, sql
-    assert 'CASE WHEN "Customer"."country"' in sql
+    # The source carries the column out; the expression is evaluated over what
+    # it projects, so the dimension is spelled once and reads in scope.
+    assert '"Customer"."country" AS "Customer__country"' in sql
+    assert 'CASE WHEN "__ob_pop_src"."Customer__country"' in sql
 
 
 TZ_MODEL_YAML = """
@@ -385,7 +393,7 @@ def test_a_computed_column_is_a_valid_pop_time_dimension(pop_model: SemanticMode
     query = {"select": {"dimensions": ["Effective Month"], "measures": ["Total", "Effective MoM"]}}
     sql = _sql(pop_model, query)
     assert '""' not in sql, sql
-    assert 'MIN(CASE WHEN "Event"."amount" > 0' in sql
+    assert 'CASE WHEN "Event"."amount" > 0' in sql
     assert _pop_connection().execute(sql).fetchall()
 
 
@@ -454,23 +462,32 @@ metrics:
 """
 
 
-def test_a_pop_time_dimension_reaching_another_object_is_refused() -> None:
-    """Named, rather than emitted as SQL the database rejects.
+def test_a_pop_time_dimension_may_read_another_data_object() -> None:
+    """The expression is computed inside the source, where its joins are in scope.
 
-    ``pop_base`` joins the spine on this expression *first*, and a join's ON
-    cannot name a table joined after it - which the expression's other object
-    always is, being joined to the time dimension's own. Reordering cannot
-    settle it: each join would have to come first. Supporting the shape means a
-    derived table inside ``pop_base``, so until then the refusal says which
-    object made it unsupported.
+    It was refused while ``pop_base`` hung the fact tables off the spine: the
+    spine join came first, and a join's ON cannot name a table joined after it.
+    With the join tree in a derived table beneath the spine, the bucket is a
+    plain column by the time the spine reads it, and the shape is ordinary.
     """
     raw, source_map = TrackedLoader().load_string(CROSS_OBJECT_YAML)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     query = {"select": {"dimensions": ["Effective Month"], "measures": ["Total", "Effective MoM"]}}
-    with pytest.raises(ResolutionError) as excinfo:
-        _sql(model, query)
-    (error,) = excinfo.value.errors
-    assert error.code == "INVALID_METRIC"
-    assert error.context["foreignObjects"] == ["Calendar"]
-    assert "'Calendar'" in error.message
+    sql = _sql(model, query)
+    assert '"__ob_pop_src"."__ob_bucket" = "date_spine".spine_date' in sql
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE calendar AS SELECT * FROM (VALUES"
+        " (DATE '2024-01-05', true), (DATE '2024-02-05', false)) t(day, is_holiday)"
+    )
+    con.execute(
+        "CREATE TABLE event AS SELECT * FROM (VALUES"
+        " (DATE '2024-01-05', 10.0), (DATE '2024-02-05', 20.0)) t(created, amount)"
+    )
+    rows = sorted(con.execute(sql).fetchall(), key=lambda row: row[0])
+    assert rows == [
+        (datetime.date(2024, 1, 1), Decimal("10.00"), None),
+        (datetime.date(2024, 2, 1), Decimal("20.00"), Decimal("10.00")),
+    ]
