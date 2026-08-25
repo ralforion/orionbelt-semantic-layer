@@ -945,14 +945,20 @@ class Dialect(ABC):
 
     #: A number, as a POSIX regular expression: an optional sign, digits with an
     #: optional fractional part or a bare fraction, and an optional exponent.
-    #: Only the two engines with no safe cast need it, and they need it *before*
-    #: the conversion rather than around it - MySQL's failure is a silent 0, and
-    #: nothing downstream can tell that from a genuine zero.
+    #: ``to_number`` tests against it on **every** dialect, and *before* the
+    #: conversion rather than around it. Before, because MySQL's failure is a
+    #: silent 0 that nothing downstream can tell from a genuine zero. Every
+    #: dialect, because it is the definition of "names a number" the entry
+    #: promises: a safe cast reads ``NaN`` and ``Infinity`` as numbers where
+    #: this pattern does not, so testing only the engines without one would
+    #: split the answer five against three.
     _NUMERIC_TEXT_RE = r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
 
-    #: What this dialect calls the type ``to_number`` converts to, and the safe
-    #: cast that answers NULL rather than raising. ``TRY_CAST`` on three
-    #: engines, spelled differently on two more, absent on two.
+    #: The safe cast ``to_number`` converts with, for the engines whose safe
+    #: cast is ``TRY_CAST``-shaped: DuckDB, Snowflake and Databricks by this
+    #: name, BigQuery as ``SAFE_CAST``. ClickHouse, PostgreSQL, MySQL and Dremio
+    #: do not use it at all - they override ``_render_safe_number_cast``, having
+    #: a per-type ``OrNull`` conversion or no safe cast whatsoever.
     _TRY_CAST_FN = "TRY_CAST"
 
     def _render_to_number(self, args: list[Expr]) -> str:
