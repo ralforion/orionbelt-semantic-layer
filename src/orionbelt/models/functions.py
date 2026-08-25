@@ -448,6 +448,69 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         examples=(FunctionExample("power(2, 10)", 1024),),
     ),
     FunctionSpec(
+        name="to_number",
+        signature="to_number(x)",
+        group=GROUP_NUMERIC,
+        min_args=1,
+        max_args=1,
+        result_type="float",
+        summary="The number *x* names, or NULL when it does not name one.",
+        semantics=(
+            "The other half of ``cast`` (#375), and the half a value read out "
+            "of JSON wants: ``json_value`` is specified to return a string, "
+            "and a cast over text is answered differently by every engine - "
+            "``cast('abc', 'double')`` raises on five, is NULL on ClickHouse "
+            "and is **0** on MySQL, which is the plausible wrong number rather "
+            "than a failure.\n\n"
+            "**Text that does not name a number is NULL, on all eight.** The "
+            "text is tested against a pattern for a decimal numeral first, on "
+            "every dialect, and that is what makes the claim true rather than "
+            "nearly true. Five engines have a safe cast - ``TRY_CAST`` on "
+            "DuckDB, Snowflake and Databricks, ``SAFE_CAST`` on BigQuery, "
+            "``toFloat64OrNull`` on ClickHouse - and it stays *inside* the "
+            "test, because a pattern says whether the text is a numeral and "
+            "not whether the numeral fits. PostgreSQL, MySQL and Dremio have "
+            "no safe cast at any version, and on MySQL the test is the only "
+            "thing standing between the query and a wrong number: "
+            "``CAST('abc' AS DOUBLE)`` is **0.0** there, which nothing "
+            "downstream can tell from a genuine zero.\n\n"
+            "Testing everywhere is also what settles the special float "
+            "tokens. ``TRY_CAST('NaN' AS DOUBLE)`` is nan on DuckDB and "
+            "ClickHouse where a numeral pattern does not match ``NaN`` or "
+            "``Infinity`` at all, so the five with a safe cast would have "
+            "answered one thing and the three without another. They are NULL "
+            "on all eight: they do not name a number in decimal notation, "
+            "which is what this entry converts.\n\n"
+            "The argument is read through the dialect's string type, since it "
+            "is not always text - ``to_number(4.6)`` is an accepted call, and "
+            "DuckDB has no ``trim(DECIMAL)``. The round trip is exact, "
+            "measured: a double through an engine's own text form and back is "
+            "the same double, including 1e308 and a 17-digit mantissa.\n\n"
+            "**Surrounding whitespace is ignored**, because the engines split "
+            "on it: ``' 42 '`` is 42 to DuckDB's ``TRY_CAST`` and NULL to "
+            "ClickHouse's ``toFloat64OrNull``. The argument is trimmed, so it "
+            "is 42 everywhere.\n\n"
+            "**What is not pinned is magnitude**, and it splits four ways. "
+            "``'1e999'`` is infinity on DuckDB, ClickHouse, BigQuery and "
+            "Databricks, the largest double on MySQL, NULL on Snowflake, and "
+            "an exact unbounded ``numeric`` on PostgreSQL - which is this "
+            "entry's result type there, the same consequence ``round`` has on "
+            "that engine, and the reason a pattern test is enough for it where "
+            "it would not be over a float. Pinning that would mean deciding "
+            "1e999 is not a number, which it is.\n\n"
+            "Measured over a text column on all eight, since a literal is not "
+            "the same question: PostgreSQL folds a constant cast at plan time, "
+            "so a guard tested against one answers about the planner rather "
+            "than about the query. Dremio was measured last and is why this "
+            "reads three rather than two - ``TRY_CAST`` does not parse there "
+            "at all, which no amount of reading its documentation had said."
+        ),
+        examples=(
+            FunctionExample("to_number('4.6')", 4.6),
+            FunctionExample("to_number('abc')", None),
+        ),
+    ),
+    FunctionSpec(
         name="cast",
         signature="cast(x, 'type')",
         group=GROUP_NUMERIC,

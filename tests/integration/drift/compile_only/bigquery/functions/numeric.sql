@@ -32,6 +32,12 @@ EXP(0);
 --   power(2, 10) = 1024
 POWER(2, 10);
 
+-- to_number(x)
+--   to_number('4.6') = 4.6
+CASE WHEN REGEXP_CONTAINS(TRIM(CAST('4.6' AS STRING)), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN SAFE_CAST(TRIM(CAST('4.6' AS STRING)) AS FLOAT64) END;
+--   to_number('abc') = None
+CASE WHEN REGEXP_CONTAINS(TRIM(CAST('abc' AS STRING)), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN SAFE_CAST(TRIM(CAST('abc' AS STRING)) AS FLOAT64) END;
+
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6
 CAST('4.60' AS FLOAT64);

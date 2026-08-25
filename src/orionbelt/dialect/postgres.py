@@ -72,6 +72,18 @@ class PostgresDialect(Dialect):
         escaped = name.replace('"', '""')
         return f'"{escaped}"'
 
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """``numeric``, since this engine has no safe cast of its own.
+
+        ``numeric`` rather than ``double precision`` is what makes the pattern
+        test sufficient here: a pattern says whether text names a number, not
+        whether the number fits, and ``'1e999'::double precision`` raises out of
+        range where ``'1e999'::numeric`` is exact, this engine's ``numeric``
+        being unbounded. The same consequence ``round`` has here, for the same
+        reason.
+        """
+        return f"CAST({trimmed} AS NUMERIC)"
+
     def _render_json_value(self, args: list[Expr]) -> str:
         """Postgres has no ``JSON_VALUE``; ``json_extract_path_text`` takes the
         path as separate arguments, which is why the catalog pins it to a

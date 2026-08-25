@@ -427,6 +427,15 @@ class MySQLDialect(Dialect):
 
     # ``LENGTH`` counts bytes on MySQL (``LENGTH('äbcd')`` is 5); the catalog
     # counts characters, which is ``CHAR_LENGTH``.
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """A plain ``DOUBLE``: no safe cast here, and this is the engine that
+        needs the test most. ``CAST('abc' AS DOUBLE)`` is **0.0** rather than an
+        error, so there is nothing to catch afterwards - a 0 for text that is
+        not a number cannot be told from a genuine zero. The test runs instead
+        of the conversion rather than around it.
+        """
+        return f"CAST({trimmed} AS DOUBLE)"
+
     def _render_json_value(self, args: list[Expr]) -> str:
         """MySQL's ``JSON_EXTRACT`` keeps the JSON quoting, so the catalog's
         string result needs ``JSON_UNQUOTE`` around it, and ``JSON_TYPE``

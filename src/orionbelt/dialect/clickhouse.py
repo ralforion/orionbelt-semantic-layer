@@ -520,6 +520,13 @@ class ClickHouseDialect(Dialect):
     # ``length`` counts bytes on ClickHouse (``length('äbcd')`` is 5), and
     # ``startsWith`` / ``endsWith`` are the camelCase-only spellings — unlike
     # ``substring`` or ``upper``, which have case-insensitive ANSI aliases.
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """``toFloat64OrNull``: no ``TRY_CAST`` here, and the ``OrNull`` family
+        is per target type. It reads a String, which is what the shared shape
+        hands it, including the scientific notation a large float prints as.
+        """
+        return f"toFloat64OrNull({trimmed})"
+
     def _render_json_value(self, args: list[Expr]) -> str:
         """ClickHouse returns the empty string for an absent path, not NULL.
 
