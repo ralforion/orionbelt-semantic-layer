@@ -36,7 +36,7 @@ POWER(2, 10);
 --   cast('4.60', 'double') = 4.6
 CAST('4.60' AS Nullable(Float64));
 --   cast(2.555, 'decimal(18, 2)') = 2.56
-CAST(truncate(2.555 + SIGN(2.555) * toDecimal256('0.005', 3), 2) AS Nullable(Decimal(18, 2)));
+CAST(round(toDecimal256OrNull(toString(2.555), 3), 2) AS Nullable(Decimal(18, 2)));
 
 -- round(x, n?)
 --   round(2.5) = 3

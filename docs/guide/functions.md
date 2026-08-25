@@ -188,9 +188,14 @@ BigQuery's `ROUND` wrap for a parameterized decimal and MySQL's widening to 38
 digits.
 
 A decimal target **rounds to its scale, ties away from zero**, the same rule
-`round` pins. Seven engines already did; ClickHouse rounds a float's ties to
-even, so 2.5 to `decimal(18, 0)` came back 2 there, and the call is rewritten
-into the add-half-and-truncate shape `round` uses on that engine.
+`round` pins. Seven engines already did; ClickHouse rounds a *float's* ties to
+even, so 2.5 to `decimal(18, 0)` came back 2 there. It rounds a *decimal's* ties
+away from zero, so the call converts to an exact decimal first — the same move
+`round` makes on PostgreSQL, handing the engine the type it already rounds
+correctly. That conversion is also what lets ClickHouse take a **text**
+argument at all: `round('4.6', 2)` raises there, so a cast over a `json_value`
+— which returns a string by definition — did not compile to something the
+engine would run.
 
 **What it does not pin is failure**, and that limit is the point of the entry
 rather than a footnote on it. A cast over a number is portable. A cast over

@@ -569,33 +569,37 @@ class ClickHouseDialect(Dialect):
         return RawSQL(sql=f"toString({self.compile_expr(expr)})")
 
     def _render_cast_call(self, args: list[Expr]) -> str:
-        """``cast(x, 'decimal(p, s)')`` rounds ties away from zero here too.
+        """``cast(x, 'decimal(p, s)')`` over an exact decimal, so the round is right.
 
-        The catalog pins that rule (#355) and this engine does not follow it on
-        its own: ``round`` takes a float's ties to even, so 2.5 at scale 0 came
+        Two things this engine does differently, settled by one rewrite.
+
+        Its ``round`` takes a **float's** ties to even, so 2.5 at scale 0 came
         back 2 and -2.5 came back -2 where the other seven engines said 3 and
-        -3. The rewrite is the add-half-and-truncate shape the ``round`` entry
-        already uses here, applied to the argument before the cast sees it -
-        the cast's own pre-round is then rounding an exact value to its own
-        scale, which is the identity.
+        -3 - but it rounds a *Decimal's* ties away from zero, which is the rule
+        the catalog pins (#355). Converting first is therefore the whole fix,
+        and it is the same move the ``round`` entry makes on PostgreSQL: give
+        the engine the type it already rounds correctly.
 
-        Only this path. The same pre-round sits inside ``cast_to_obml_type``,
-        where a measure's declared ``dataType`` and the CFL union alignment
-        reach it, and this shape is the wrong trade there: it names its operand
-        twice, so a windowed aggregate would be written out twice, and the half
-        promotes the operand to one scale more than the target, which at
-        ``decimal(76, 20)`` - the width union alignment picks - overflows
-        Decimal256 and wraps *silently*, measured. An author asking for
-        ``cast`` names a width of their own, gets the pinned rule, and pays the
-        repetition for one expression rather than for every aggregate on this
-        dialect.
+        And its pre-round refuses text outright. ``round('4.6', 2)`` raises
+        ILLEGAL_TYPE_OF_ARGUMENT, so a cast over anything string-shaped - a
+        ``json_value``, which is specified to return a string, most of all -
+        did not compile to something the engine would run. ``toString`` is the
+        identity on a String and exact on a number, and
+        ``toDecimal256OrNull`` reads both, including the scientific notation a
+        large float prints as. Measured: '4.605' rounds to 4.61 as it does
+        everywhere else, 'abc' and '' come back NULL as they already did for
+        this engine's own text conversions, and a value too large for the
+        target still raises.
+
+        One place more than the target scale, because that is what rounding to
+        the target scale needs to see.
         """
         target = _cast_target_of(args[1])
         assert target is not None
         if not isinstance(target, DecimalType):
             return super()._render_cast_call(args)
-        rounded = self._render_round([args[0], Literal.number(target.scale)])
-        return f"CAST({rounded} AS Nullable({self.render_obml_type(target)}))"
+        exact = f"toDecimal256OrNull(toString({self.compile_expr(args[0])}), {target.scale + 1})"
+        return f"CAST(round({exact}, {target.scale}) AS Nullable({self.render_obml_type(target)}))"
 
     def _round_half_sql(self, half: str) -> str:
         """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a

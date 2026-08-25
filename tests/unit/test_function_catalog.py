@@ -1575,16 +1575,31 @@ class TestCastTargets:
         sql = _render("cast(x, 'decimal(18, 2)')", dialect)
         assert "18, 2" in sql.replace("38, 2", "18, 2") or "NUMERIC" in sql, sql
 
-    def test_clickhouse_rounds_ties_away_from_zero(self) -> None:
-        """The one engine that does not on its own.
+    def test_clickhouse_rounds_over_an_exact_decimal(self) -> None:
+        """The one engine that does not round to the pinned rule on its own.
 
-        Its ``round`` takes a float's ties to even, so 2.5 to ``decimal(18, 0)``
-        came back 2 where the other seven said 3. The rewrite is the shape the
-        ``round`` entry already uses here.
+        Its ``round`` takes a *float's* ties to even - 2.5 at scale 0 came back
+        2 where the other seven said 3 - and rounds a *Decimal's* away from
+        zero, so converting first is the whole fix. Same move the ``round``
+        entry makes on PostgreSQL: hand the engine the type it already rounds
+        correctly.
         """
-        sql = _render("cast(x, 'decimal(18, 0)')", "clickhouse")
-        assert sql.startswith("CAST(truncate("), sql
-        assert "SIGN(" in sql and "toDecimal256('0.5', 1)" in sql
+        sql = _render("cast(x, 'decimal(18, 2)')", "clickhouse")
+        assert sql == (
+            "CAST(round(toDecimal256OrNull(toString('x'), 3), 2) AS Nullable(Decimal(18, 2)))"
+        )
+
+    def test_clickhouse_takes_a_text_argument(self) -> None:
+        """``round('4.6', 2)`` raises ILLEGAL_TYPE_OF_ARGUMENT on this engine.
+
+        Which made the motivating case - a number read out of JSON, where
+        ``json_value`` is specified to return a string - compile to something
+        the engine would not run. ``toString`` is the identity on a String and
+        exact on a number, so one shape serves both.
+        """
+        sql = _render("cast(json_value(x, '$.rate'), 'decimal(18, 2)')", "clickhouse")
+        assert "toDecimal256OrNull(toString(" in sql
+        assert "SIGN(" not in sql
 
     def test_a_measure_data_type_cast_is_left_alone_on_clickhouse(self) -> None:
         """The rewrite is scoped to this entry, and the reason is measured.
