@@ -1589,6 +1589,24 @@ class TestCastTargets:
             "CAST(round(toDecimal256OrNull(toString('x'), 3), 2) AS Nullable(Decimal(18, 2)))"
         )
 
+    @pytest.mark.parametrize(
+        ("target", "expected_scale"),
+        [("decimal(18, 2)", 3), ("decimal(76, 75)", 76), ("decimal(76, 76)", 76)],
+    )
+    def test_clickhouse_keeps_the_intermediate_within_decimal256(
+        self, target: str, expected_scale: int
+    ) -> None:
+        """One place more than the target, and never more than 76.
+
+        The extra place is what rounding to the target scale needs to see, and
+        Decimal256 has none to give at the ceiling: ``decimal(76, 76)`` asked
+        for 77 and ClickHouse answered ARGUMENT_OUT_OF_BOUND before the cast
+        ran. Nothing is lost by clamping, since a value already at scale 76 is
+        unchanged by rounding to 76 places.
+        """
+        sql = _render(f"cast(x, '{target}')", "clickhouse")
+        assert f"toDecimal256OrNull(toString('x'), {expected_scale})" in sql, sql
+
     def test_clickhouse_takes_a_text_argument(self) -> None:
         """``round('4.6', 2)`` raises ILLEGAL_TYPE_OF_ARGUMENT on this engine.
 

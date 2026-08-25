@@ -592,13 +592,19 @@ class ClickHouseDialect(Dialect):
         target still raises.
 
         One place more than the target scale, because that is what rounding to
-        the target scale needs to see.
+        the target scale needs to see - and no more than Decimal256 carries,
+        which is 76. At the ceiling the extra place cannot exist, and it is not
+        wanted either: a value already at scale 76 is unchanged by rounding to
+        76 places, so the intermediate is the target's own scale and the round
+        is the identity. Asking for 77 is what ``decimal(76, 76)`` did, and
+        ClickHouse answers it with ARGUMENT_OUT_OF_BOUND before the cast runs.
         """
         target = _cast_target_of(args[1])
         assert target is not None
         if not isinstance(target, DecimalType):
             return super()._render_cast_call(args)
-        exact = f"toDecimal256OrNull(toString({self.compile_expr(args[0])}), {target.scale + 1})"
+        exact_scale = min(target.scale + 1, self._MAX_ROUND_DIGITS)
+        exact = f"toDecimal256OrNull(toString({self.compile_expr(args[0])}), {exact_scale})"
         return f"CAST(round({exact}, {target.scale}) AS Nullable({self.render_obml_type(target)}))"
 
     def _round_half_sql(self, half: str) -> str:
