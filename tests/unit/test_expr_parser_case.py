@@ -8,6 +8,7 @@ with no error and ``SUM('CASE')`` ended up in the SQL.
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from orionbelt.ast.nodes import (
@@ -21,6 +22,8 @@ from orionbelt.ast.nodes import (
 )
 from orionbelt.compiler.expr_parser import parse_expression, tokenize_measure_expression
 from orionbelt.compiler.pipeline import CompilationPipeline
+from orionbelt.models.query import QueryObject
+from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
@@ -413,3 +416,173 @@ class TestUnbalancedCallParens:
         tokens = tokenize_measure_expression("UPPER {[Financial].[Default Status]})", model)
         with pytest.raises(ValueError, match=r"'Financial\.dflt_stts'"):
             parse_expression(tokens)
+
+
+class TestSimpleCaseForm:
+    """``CASE <subject> WHEN <value> THEN ...`` desugars into the searched form (#360).
+
+    Both are standard SQL (SQL:1999 6.11) and both run unmodified on all eight
+    engines; only the searched one could be written in an OBML expression, so
+    the natural way to map a code to a label - one subject, a list of values -
+    was the one that did not parse.
+    """
+
+    MODEL_YAML = """\
+version: 1.0
+name: simple_case
+dataObjects:
+  Counterparty:
+    code: counterparty
+    columns:
+      Country: {code: country, abstractType: string}
+      Amount:  {code: amount, abstractType: float, numClass: additive}
+      Currency Simple:
+        expression: "CASE {Country} WHEN 'DE' THEN 'EUR' WHEN 'US' THEN 'USD' ELSE 'other' END"
+        abstractType: string
+      Currency Searched:
+        expression: >-
+          CASE WHEN {Country} = 'DE' THEN 'EUR'
+               WHEN {Country} = 'US' THEN 'USD' ELSE 'other' END
+        abstractType: string
+      Null Match:
+        expression: "CASE {Country} WHEN NULL THEN 'matched' ELSE 'no' END"
+        abstractType: string
+
+dimensions:
+  Country:           {dataObject: Counterparty, column: Country, resultType: string}
+  Currency Simple:   {dataObject: Counterparty, column: Currency Simple, resultType: string}
+  Currency Searched: {dataObject: Counterparty, column: Currency Searched, resultType: string}
+  Null Match:        {dataObject: Counterparty, column: Null Match, resultType: string}
+
+measures:
+  Total:
+    columns: [{dataObject: Counterparty, column: Amount}]
+    resultType: float
+    aggregation: sum
+"""
+
+    def _model(self) -> SemanticModel:
+        raw, source_map = TrackedLoader().load_string(self.MODEL_YAML)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return model
+
+    def _rows(self) -> list[tuple]:
+        query = QueryObject.model_validate(
+            {
+                "select": {
+                    "dimensions": [
+                        "Country",
+                        "Currency Simple",
+                        "Currency Searched",
+                        "Null Match",
+                    ],
+                    "measures": ["Total"],
+                }
+            }
+        )
+        sql = CompilationPipeline().compile(query, self._model(), "duckdb").sql
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE counterparty AS SELECT * FROM (VALUES"
+            " ('DE', 10.0), ('US', 20.0), ('CH', 30.0), (NULL, 40.0)) t(country, amount)"
+        )
+        return sorted(con.execute(sql).fetchall(), key=lambda row: str(row[0]))
+
+    def test_it_parses_at_all(self):
+        model = _load_model()
+        tokens = tokenize_measure_expression(
+            "CASE {[Financial].[Default Status]} WHEN '11' THEN 1 ELSE 0 END", model
+        )
+        parsed = parse_expression(tokens)
+        assert isinstance(parsed, CaseExpr)
+        assert len(parsed.when_clauses) == 1
+
+    def test_it_becomes_the_searched_form(self):
+        """The subject is compared, so the node is the one the searched form builds."""
+        model = _load_model()
+        parsed = parse_expression(
+            tokenize_measure_expression(
+                "CASE {[Financial].[Default Status]} WHEN '11' THEN 1 END", model
+            )
+        )
+        assert isinstance(parsed, CaseExpr)
+        condition, _ = parsed.when_clauses[0]
+        assert isinstance(condition, BinaryOp)
+        assert condition.op == "="
+        assert condition.right == Literal.string("11")
+
+    def test_the_two_forms_agree_over_a_column(self):
+        """Over a column and with a NULL row, because a literal exercises neither."""
+        rows = self._rows()
+        # Sorted by the country's text, so the NULL row sits under "None".
+        assert [(row[0], row[1]) for row in rows] == [
+            ("CH", "other"),
+            ("DE", "EUR"),
+            (None, "other"),
+            ("US", "USD"),
+        ]
+        assert all(row[1] == row[2] for row in rows), rows
+
+    def test_when_null_matches_nothing(self):
+        """``x = NULL`` is unknown rather than false, in both forms.
+
+        Including for the row whose subject *is* NULL, which is the case that
+        looks like it should match and does not.
+        """
+        assert {row[3] for row in self._rows()} == {"no"}
+
+    @pytest.mark.parametrize(
+        "when",
+        [
+            "-1",
+            "-{[Financial].[Outstanding Nominal Amount]}",
+            "{[Financial].[Outstanding Nominal Amount]} * 2",
+        ],
+    )
+    def test_a_negated_or_computed_value_is_still_a_value(self, when: str):
+        """Unary *minus* is not a predicate, and arithmetic is not either.
+
+        The check reads ``NOT`` on its own because it is the one predicate that
+        arrives as a ``UnaryOp``; catching every ``UnaryOp`` would have taken
+        ``WHEN -1`` with it.
+        """
+        model = _load_model()
+        parsed = parse_expression(
+            tokenize_measure_expression(
+                f"CASE {{[Financial].[Default Status]}} WHEN {when} THEN 1 END", model
+            )
+        )
+        assert isinstance(parsed, CaseExpr)
+
+    def test_a_subject_with_no_when_is_refused(self):
+        model = _load_model()
+        with pytest.raises(ValueError, match="at least one WHEN"):
+            parse_expression(
+                tokenize_measure_expression("CASE {[Financial].[Default Status]} END", model)
+            )
+
+    @pytest.mark.parametrize(
+        "when",
+        [
+            "{[Financial].[Outstanding Nominal Amount]} > 5",
+            "{[Financial].[Default Status]} IS NULL",
+            "{[Financial].[Default Status]} IN ('11', '12')",
+            "{[Financial].[Default Status]} LIKE '1%'",
+            "NOT ({[Financial].[Default Status]} = '11')",
+            "NOT {[Financial].[Default Status]}",
+        ],
+    )
+    def test_a_condition_in_the_value_position_is_refused(self, when: str):
+        """``CASE x WHEN y > 5`` is legal SQL meaning ``x = (y > 5)``.
+
+        Almost never what was meant, and the engines disagree about it: a type
+        error on most, a silent coercion on MySQL. Saying so beats either.
+        """
+        model = _load_model()
+        with pytest.raises(ValueError, match="takes a value, not a condition"):
+            parse_expression(
+                tokenize_measure_expression(
+                    f"CASE {{[Financial].[Default Status]}} WHEN {when} THEN 1 END", model
+                )
+            )

@@ -309,13 +309,17 @@ class TestUnparseableComputedColumn:
 
     #: Ordinary SQL the format invites - `DataObjectColumn` tells authors an
     #: expression is dialect-leaky and to pin ``defaultDialect`` - and which the
-    #: parser does not take. ``CAST`` is #355 and the simple ``CASE`` is #360.
+    #: parser does not take.
+    #:
+    #: Two of the original five have since been given to the parser rather than
+    #: left to this error: ``cast`` became a catalog entry (#355) and the simple
+    #: ``CASE`` form became grammar (#360). What is left is what still has to be
+    #: written another way, and :meth:`test_what_the_parser_has_since_learned`
+    #: pins the two that moved.
     UNPARSEABLE = {
         "concat operator": "{Code} || '-eu'",
         "interval literal": "{Day} + INTERVAL 1 DAY",
-        "cast": "CAST({Amount} AS INT)",
         "extract": "EXTRACT(YEAR FROM {Day})",
-        "simple case": "CASE {Code} WHEN 'DE' THEN 'EU' ELSE 'Other' END",
     }
 
     MODEL_YAML = """\
@@ -370,6 +374,24 @@ measures:
         (error,) = excinfo.value.errors
         assert error.code == "INVALID_COLUMN_EXPRESSION"
         assert error.path == "dataObjects.Event.columns.Tagged.expression"
+
+    def test_what_the_parser_has_since_learned(self) -> None:
+        """Two of the five this error was written for are now accepted.
+
+        ``cast(x, 'type')`` is a catalog entry (#355) and the simple ``CASE``
+        form is grammar (#360). Pinned here so the error's reach shrinking is
+        deliberate rather than noticed later.
+        """
+        for expression in (
+            "cast({Amount}, 'double')",
+            "CASE {Code} WHEN 'DE' THEN 'EU' ELSE 'Other' END",
+        ):
+            errors = [
+                e
+                for e in SemanticValidator().validate(self._model(expression))
+                if e.code == "INVALID_COLUMN_EXPRESSION"
+            ]
+            assert errors == [], f"{expression}: {errors}"
 
     def test_a_body_that_parses_is_untouched(self) -> None:
         """The control: the same shape with a body the parser reads."""

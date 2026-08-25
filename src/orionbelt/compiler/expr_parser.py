@@ -49,6 +49,7 @@ from orionbelt.ast.nodes import (
     IsNull,
     Literal,
     NestedField,
+    RegexMatch,
     UnaryOp,
 )
 
@@ -94,6 +95,12 @@ class _Token:
 # ``<=`` and ``>=`` over ``<`` / ``>``. ``!=`` is accepted as an alias
 # for ``<>``.
 _COMPARISON_OPS: tuple[str, ...] = ("<=", ">=", "<>", "!=", "=", "<", ">")
+
+#: Binary operators that make an expression a *condition* rather than a value. A
+#: simple ``CASE`` compares its subject to a value, so one of these in that
+#: position is a searched CASE written with a subject by mistake. ``NOT`` is
+#: absent because it is unary; :func:`_when_value` checks it on its own.
+_PREDICATE_OPS: frozenset[str] = frozenset({*_COMPARISON_OPS, "AND", "OR", "LIKE", "NOT LIKE"})
 
 # Bare-identifier literals — emitted as their typed ``Literal`` node by
 # the parser. Keep uppercase so case-insensitive matching is one lookup.
@@ -458,8 +465,33 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         raise ValueError(f"Unexpected token {_describe(tok)!r} ({tok.kind}) in expression")
 
     def _parse_case() -> Expr:
-        """Parse ``CASE WHEN expr THEN expr [WHEN ...]* [ELSE expr] END``."""
+        """Parse either CASE form; the simple one desugars into the searched one.
+
+        * searched — ``CASE WHEN <condition> THEN <expr> ... END``
+        * simple — ``CASE <subject> WHEN <value> THEN <expr> ... END``
+
+        Both are standard SQL (SQL:1999 6.11) and both run unmodified on all
+        eight engines; only the searched one could be written in an OBML
+        expression before (#360). Mapping a code to a label is the most common
+        thing a computed column does, and the simple form is how that is
+        naturally written - one subject, a list of values - where the searched
+        form repeats the subject on every branch.
+
+        The rewrite is exact rather than close: ``CASE x WHEN a THEN r`` *is*
+        ``CASE WHEN x = a THEN r``, by the standard's own definition, and the
+        equality carries the NULL semantics with it. ``WHEN NULL`` matches
+        nothing in either form, because ``x = NULL`` is unknown rather than
+        false. So the simple form produces the same :class:`CaseExpr` the
+        searched one does, and nothing downstream - no dialect, no test, no OSI
+        round trip - has to know the difference.
+        """
         _advance()  # consume CASE
+        subject: Expr | None = None
+        head = _peek()
+        if head is None:
+            raise ValueError("Unterminated CASE expression — expected WHEN / ELSE / END")
+        if not (head.kind == "op" and head.value == "WHEN"):
+            subject = _parse_or()
         when_clauses: list[tuple[Expr, Expr]] = []
         else_clause: Expr | None = None
         while True:
@@ -468,7 +500,8 @@ def parse_expression(tokens: list[_Token]) -> Expr:
                 raise ValueError("Unterminated CASE expression — expected WHEN / ELSE / END")
             if t.kind == "op" and t.value == "WHEN":
                 _advance()
-                cond = _parse_or()
+                operand = _parse_or()
+                cond = operand if subject is None else _when_value(subject, operand)
                 nxt = _peek()
                 if nxt is None or nxt.kind != "op" or nxt.value != "THEN":
                     raise ValueError("CASE WHEN clause missing THEN")
@@ -489,6 +522,33 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         if not when_clauses:
             raise ValueError("CASE expression requires at least one WHEN clause")
         return CaseExpr(when_clauses=when_clauses, else_clause=else_clause)
+
+    def _when_value(subject: Expr, operand: Expr) -> Expr:
+        """``subject = operand``, for one branch of a simple CASE.
+
+        A condition in that position is refused rather than compared against
+        the subject. ``CASE x WHEN y > 5 THEN ...`` is legal SQL and means
+        ``x = (y > 5)``, which is almost never what was meant and which the
+        engines then disagree about - comparing a value to a boolean is a type
+        error on most of them and a silent coercion on MySQL. Saying so beats
+        either outcome.
+
+        ``NOT`` is checked separately because it is the one predicate that
+        arrives as a :class:`UnaryOp`. A unary *minus* is not one: ``WHEN -1``
+        is an ordinary value, and a negative literal has already been folded
+        into the literal by the time it reaches here.
+        """
+        is_negation = isinstance(operand, UnaryOp) and operand.op == "NOT"
+        if (
+            isinstance(operand, IsNull | InList | Between | RegexMatch)
+            or is_negation
+            or (isinstance(operand, BinaryOp) and operand.op in _PREDICATE_OPS)
+        ):
+            raise ValueError(
+                "CASE <subject> WHEN takes a value, not a condition — write the "
+                "searched form 'CASE WHEN <condition> THEN ...' instead"
+            )
+        return BinaryOp(left=subject, op="=", right=operand)
 
     def _parse_term() -> Expr:
         left = _parse_factor()
