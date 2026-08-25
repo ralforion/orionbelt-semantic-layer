@@ -1081,7 +1081,7 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     | BigQuery | FLOAT64, drifts | `AVG(CAST(x AS NUMERIC))`, BIGNUMERIC above scale 9 |
     | Dremio, Databricks | drift | `CAST(SUM(CAST(x AS DECIMAL(38, 0))) AS DECIMAL(38, s)) / COUNT(x)` |
     | ClickHouse | Float64, drifts | `divideDecimal(SUM(toDecimal128(x, 0)), toDecimal128(COUNT(x), 0), s)`, guarded against a zero count |
-    | DuckDB | DOUBLE, drifts | plain `AVG` - no exact route exists |
+    | DuckDB | DOUBLE, drifts | `(2 * (SUM(x) * 10^s) + SIGN(SUM(x)) * COUNT(x)) // (2 * COUNT(x)) * 10^-s`, guarded against a zero count - no exact *division* exists there, so the average is assembled from integer arithmetic |
 
     **The inner cast is the load-bearing part** of the Dremio and Databricks
     form, and of the ClickHouse one. `SUM` over a 64-bit column accumulates in

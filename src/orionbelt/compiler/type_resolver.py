@@ -171,10 +171,11 @@ def rewrite_exact_integer_avg(
     ``AVG`` is a floating-point aggregate on BigQuery, ClickHouse, Dremio and
     DuckDB whatever the input type, so it drifts past a ``double`` mantissa -
     around fifteen significant digits - and no output cast can repair a value
-    the aggregate has already rounded. Three of those four can be asked for
-    exact arithmetic instead; :meth:`Dialect.exact_integer_avg` says how, and
-    answers ``None`` where it cannot, which is DuckDB and every engine that was
-    exact to begin with.
+    the aggregate has already rounded. All four can be asked for exact
+    arithmetic instead, though only three of them by dividing: DuckDB has no
+    exact division at all and assembles its average from integer arithmetic
+    (#316). :meth:`Dialect.exact_integer_avg` says how, and answers ``None``
+    for the engines that were exact to begin with.
 
     The result type has to move with the expression. Left at the
     ``decimal(18, 2)`` default, the exact average would be computed correctly
