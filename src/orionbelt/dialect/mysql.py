@@ -437,11 +437,7 @@ class MySQLDialect(Dialect):
         around it.
         """
         trimmed = self._render_named_function("trim", [args[0]])
-        return self._render_numeric_text_guard(args, f"CAST({trimmed} AS DOUBLE)")
-
-    def _render_regex_match(self, value: str, pattern: str) -> str:
-        """MySQL spells a pattern test ``REGEXP``."""
-        return f"{value} REGEXP {pattern}"
+        return self._render_numeric_text_guard(args[0], f"CAST({trimmed} AS DOUBLE)")
 
     def _render_json_value(self, args: list[Expr]) -> str:
         """MySQL's ``JSON_EXTRACT`` keeps the JSON quoting, so the catalog's

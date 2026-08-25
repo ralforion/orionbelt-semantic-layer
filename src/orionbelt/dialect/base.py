@@ -972,20 +972,19 @@ class Dialect(ABC):
             f"{self._TRY_CAST_FN}({trimmed} AS {self.render_obml_type(SimpleType(name='double'))})"
         )
 
-    def _render_numeric_text_guard(self, args: list[Expr], convert: str) -> str:
+    def _render_numeric_text_guard(self, value: Expr, convert: str) -> str:
         """``CASE WHEN <trimmed> matches a number THEN <convert> END``.
 
-        For the two engines with no safe cast. *convert* is this dialect's
-        conversion of the same trimmed text, which the caller renders, since
-        what it converts *to* is the half they disagree about.
+        For the three engines with no safe cast. *convert* is this dialect's
+        conversion of the same trimmed text, rendered by the caller, since what
+        it converts *to* is the half they disagree about. The test goes through
+        :meth:`compile_regex_match`, which already knows each engine's spelling
+        - ``~`` on PostgreSQL, ``REGEXP`` on MySQL, ``REGEXP_LIKE`` by default,
+        which is Dremio's.
         """
-        trimmed = self._render_named_function("trim", [args[0]])
-        pattern = self._quote_text(self._NUMERIC_TEXT_RE)
-        return f"CASE WHEN {self._render_regex_match(trimmed, pattern)} THEN {convert} END"
-
-    def _render_regex_match(self, value: str, pattern: str) -> str:
-        """``value`` against ``pattern``, in this dialect's spelling."""
-        return f"{value} ~ {pattern}"
+        trimmed = FunctionCall(name="trim", args=[value])
+        test = self.compile_regex_match(trimmed, self._NUMERIC_TEXT_RE, negated=False)
+        return f"CASE WHEN {test} THEN {convert} END"
 
     def _render_cast_call(self, args: list[Expr]) -> str:
         """``cast(x, 'decimal(18, 2)')`` through this dialect's own cast.

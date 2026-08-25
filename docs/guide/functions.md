@@ -215,19 +215,21 @@ Measured, one `SELECT` per engine. A JSON field is exactly this case, since
 
 `to_number(x)` is the other half of `cast`: **text that does not name a number
 is NULL, on all eight dialects**. Five engines have a form that says so —
-`TRY_CAST` on DuckDB, Snowflake, Databricks and Dremio, `SAFE_CAST` on BigQuery,
-`toFloat64OrNull` on ClickHouse. PostgreSQL and MySQL have none at any version,
-so the text is tested against a numeric pattern **before** it is converted.
-Testing afterwards is not an option on MySQL: its failure is a silent `0`, and
-nothing downstream can tell that from a genuine zero.
+`TRY_CAST` on DuckDB, Snowflake and Databricks, `SAFE_CAST` on BigQuery,
+`toFloat64OrNull` on ClickHouse. PostgreSQL, MySQL and Dremio have none at any
+version, so on those three the text is tested against a numeric pattern
+**before** it is converted. Testing afterwards is not an option on MySQL: its
+failure is a silent `0`, and nothing downstream can tell that from a genuine
+zero.
 
 Surrounding whitespace is ignored, because the engines split on it — `' 42 '` is
 42 to DuckDB's `TRY_CAST` and NULL to ClickHouse's `toFloat64OrNull` — so the
 argument is trimmed and the answer is 42 everywhere.
 
 **Magnitude is not pinned**, and it splits four ways. `to_number('1e999')` is
-infinity on DuckDB, ClickHouse, BigQuery and Databricks, the largest double on
-MySQL, NULL on Snowflake, and an exact unbounded `numeric` on PostgreSQL — which
+infinity on DuckDB, ClickHouse, BigQuery, Databricks and Dremio, the largest
+double on MySQL, NULL on Snowflake, and an exact unbounded `numeric` on
+PostgreSQL — which
 is the result type there, the same consequence `round` has on that engine, and
 the reason a pattern test suffices for it where it would not over a float.
 Pinning that would mean deciding 1e999 is not a number, which it is.

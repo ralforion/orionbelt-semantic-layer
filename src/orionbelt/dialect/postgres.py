@@ -84,8 +84,8 @@ class PostgresDialect(Dialect):
         """
         # Through the text form, because this engine has no ``trim(numeric)``
         # and the pattern test is a question about text either way.
-        as_text: list[Expr] = [Cast(expr=args[0], type_name="TEXT")]
-        trimmed = self._render_named_function("trim", as_text)
+        as_text: Expr = Cast(expr=args[0], type_name="TEXT")
+        trimmed = self._render_named_function("trim", [as_text])
         return self._render_numeric_text_guard(as_text, f"CAST({trimmed} AS NUMERIC)")
 
     def _render_json_value(self, args: list[Expr]) -> str:

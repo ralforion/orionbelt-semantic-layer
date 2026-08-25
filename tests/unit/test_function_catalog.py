@@ -1645,7 +1645,6 @@ class TestToNumber:
     SAFE_CAST = {
         "duckdb": "TRY_CAST",
         "databricks": "TRY_CAST",
-        "dremio": "TRY_CAST",
         "snowflake": "TRY_CAST",
         "bigquery": "SAFE_CAST",
     }
@@ -1660,12 +1659,14 @@ class TestToNumber:
         """No ``TRY_CAST`` here; the ``OrNull`` family is per target type."""
         assert _render("to_number(x)", "clickhouse") == "toFloat64OrNull(trimBoth(toString('x')))"
 
-    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "dremio"])
     def test_an_engine_without_one_tests_the_text_first(self, dialect: str) -> None:
         """The test runs *instead of* the conversion, not around it.
 
         On MySQL there is nothing to catch afterwards: ``CAST('abc' AS DOUBLE)``
         is 0.0 rather than an error, and a 0 cannot be told from a genuine zero.
+        Dremio is here because it was measured, not because its documentation
+        said so: ``TRY_CAST`` does not parse there at all.
         """
         sql = _render("to_number(x)", dialect)
         assert sql.startswith("CASE WHEN "), sql
