@@ -533,7 +533,12 @@ measures:
         assert {row[3] for row in self._rows()} == {"no"}
 
     @pytest.mark.parametrize(
-        "when", ["-1", "-{[Financial].[Outstanding Nominal Amount]}", "{[Financial].[Amount]} * 2"]
+        "when",
+        [
+            "-1",
+            "-{[Financial].[Outstanding Nominal Amount]}",
+            "{[Financial].[Outstanding Nominal Amount]} * 2",
+        ],
     )
     def test_a_negated_or_computed_value_is_still_a_value(self, when: str):
         """Unary *minus* is not a predicate, and arithmetic is not either.
