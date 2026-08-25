@@ -34,9 +34,9 @@ POWER(2, 10);
 
 -- to_number(x)
 --   to_number('4.6') = 4.6
-CASE WHEN (TRIM('4.6') REGEXP '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN CAST(TRIM('4.6') AS DOUBLE) END;
+CASE WHEN (TRIM(CAST('4.6' AS CHAR)) REGEXP '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN CAST(TRIM(CAST('4.6' AS CHAR)) AS DOUBLE) END;
 --   to_number('abc') = None
-CASE WHEN (TRIM('abc') REGEXP '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN CAST(TRIM('abc') AS DOUBLE) END;
+CASE WHEN (TRIM(CAST('abc' AS CHAR)) REGEXP '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN CAST(TRIM(CAST('abc' AS CHAR)) AS DOUBLE) END;
 
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6

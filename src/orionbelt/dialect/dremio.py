@@ -279,18 +279,16 @@ class DremioDialect(Dialect):
             f") AS spine"
         )
 
-    def _render_to_number(self, args: list[Expr]) -> str:
-        """A pattern test, then ``DOUBLE``: this engine has no ``TRY_CAST``.
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """A plain ``DOUBLE``: this engine has no ``TRY_CAST``.
 
         Measured on dremio-oss rather than assumed, after the assumption was
         wrong: ``TRY_CAST(x AS DOUBLE)`` does not parse here at all - the
         planner reads ``TRY_CAST(x`` as a call and stops at the ``AS``. Its
         plain ``CAST`` raises on text that is not a number, unlike MySQL's, so
-        the test is about answering NULL rather than about avoiding a silent
-        zero, but the shape is the same one.
+        the test is what turns that into the NULL the entry promises.
         """
-        trimmed = self._render_named_function("trim", [args[0]])
-        return self._render_numeric_text_guard(args[0], f"CAST({trimmed} AS DOUBLE)")
+        return f"CAST({trimmed} AS DOUBLE)"
 
     def _render_json_value(self, args: list[Expr]) -> str:
         """``TRY_CONVERT_FROM(x AS ROW(...))`` honours the whole contract.

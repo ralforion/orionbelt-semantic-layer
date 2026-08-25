@@ -34,9 +34,9 @@ POWER(2, 10);
 
 -- to_number(x)
 --   to_number('4.6') = 4.6
-TRY_CAST(TRIM('4.6') AS FLOAT);
+CASE WHEN REGEXP_LIKE(TRIM(CAST('4.6' AS VARCHAR)), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN TRY_CAST(TRIM(CAST('4.6' AS VARCHAR)) AS FLOAT) END;
 --   to_number('abc') = None
-TRY_CAST(TRIM('abc') AS FLOAT);
+CASE WHEN REGEXP_LIKE(TRIM(CAST('abc' AS VARCHAR)), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN TRY_CAST(TRIM(CAST('abc' AS VARCHAR)) AS FLOAT) END;
 
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6

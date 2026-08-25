@@ -520,17 +520,12 @@ class ClickHouseDialect(Dialect):
     # ``length`` counts bytes on ClickHouse (``length('äbcd')`` is 5), and
     # ``startsWith`` / ``endsWith`` are the camelCase-only spellings — unlike
     # ``substring`` or ``upper``, which have case-insensitive ANSI aliases.
-    def _render_to_number(self, args: list[Expr]) -> str:
-        """``toFloat64OrNull``, which is this engine's safe cast for one type.
-
-        There is no ``TRY_CAST`` here; the ``OrNull`` family is per target type
-        and takes a String, so the argument goes through ``toString`` - the
-        identity on a String and exact on a number, including the scientific
-        notation a large float prints as. ``trimBoth`` because this engine's own
-        conversion rejects surrounding whitespace where DuckDB's accepts it, and
-        the entry pins that rather than leaving it to the engine.
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """``toFloat64OrNull``: no ``TRY_CAST`` here, and the ``OrNull`` family
+        is per target type. It reads a String, which is what the shared shape
+        hands it, including the scientific notation a large float prints as.
         """
-        return f"toFloat64OrNull(trimBoth(toString({self.compile_expr(args[0])})))"
+        return f"toFloat64OrNull({trimmed})"
 
     def _render_json_value(self, args: list[Expr]) -> str:
         """ClickHouse returns the empty string for an absent path, not NULL.

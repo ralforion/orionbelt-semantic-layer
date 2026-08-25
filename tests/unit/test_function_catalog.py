@@ -1637,9 +1637,9 @@ class TestToNumber:
     """Text that does not name a number is NULL, on all eight dialects (#375).
 
     The other half of ``cast``: a cast over text is answered differently by
-    every engine, and MySQL's answer is a silent 0. Five engines have a safe
-    form that says NULL; PostgreSQL and MySQL have none at any version and test
-    the text against a pattern first.
+    every engine, and MySQL's answer is a silent 0. Every dialect tests the text
+    against a numeral pattern first; the five with a safe cast keep it inside
+    the test, for the magnitudes a pattern cannot speak about.
     """
 
     SAFE_CAST = {
@@ -1649,30 +1649,40 @@ class TestToNumber:
         "bigquery": "SAFE_CAST",
     }
 
-    @pytest.mark.parametrize("dialect", sorted(SAFE_CAST))
-    def test_an_engine_with_a_safe_cast_uses_it(self, dialect: str) -> None:
-        sql = _render("to_number(x)", dialect)
-        assert sql.startswith(f"{self.SAFE_CAST[dialect]}("), sql
-        assert "CASE WHEN" not in sql
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_every_dialect_tests_the_text_first(self, dialect: str) -> None:
+        """The pattern is the definition of "names a number", everywhere.
 
-    def test_clickhouse_uses_its_own_or_null_conversion(self) -> None:
-        """No ``TRY_CAST`` here; the ``OrNull`` family is per target type."""
-        assert _render("to_number(x)", "clickhouse") == "toFloat64OrNull(trimBoth(toString('x')))"
-
-    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "dremio"])
-    def test_an_engine_without_one_tests_the_text_first(self, dialect: str) -> None:
-        """The test runs *instead of* the conversion, not around it.
-
-        On MySQL there is nothing to catch afterwards: ``CAST('abc' AS DOUBLE)``
-        is 0.0 rather than an error, and a 0 cannot be told from a genuine zero.
-        Dremio is here because it was measured, not because its documentation
-        said so: ``TRY_CAST`` does not parse there at all.
+        Which is what makes the entry's claim true: ``TRY_CAST('NaN' AS
+        DOUBLE)`` is nan on DuckDB and ClickHouse, where the pattern matches
+        neither ``NaN`` nor ``Infinity``, so testing on only the engines
+        without a safe cast would have split the answer five against three.
         """
         sql = _render("to_number(x)", dialect)
         assert sql.startswith("CASE WHEN "), sql
         assert "[0-9]" in sql
 
-    def test_postgres_converts_to_numeric_so_the_guard_is_enough(self) -> None:
+    @pytest.mark.parametrize("dialect", sorted(SAFE_CAST))
+    def test_an_engine_with_a_safe_cast_keeps_it_inside_the_test(self, dialect: str) -> None:
+        """A pattern says whether the text is a numeral, not whether it fits."""
+        assert f"THEN {self.SAFE_CAST[dialect]}(" in _render("to_number(x)", dialect)
+
+    def test_clickhouse_uses_its_own_or_null_conversion(self) -> None:
+        """No ``TRY_CAST`` here; the ``OrNull`` family is per target type."""
+        assert "THEN toFloat64OrNull(" in _render("to_number(x)", "clickhouse")
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "dremio"])
+    def test_an_engine_without_one_converts_plainly(self, dialect: str) -> None:
+        """Nothing to be safe with, so the test carries the whole contract.
+
+        Dremio is here because it was measured, not because its documentation
+        said so: ``TRY_CAST`` does not parse there at all.
+        """
+        sql = _render("to_number(x)", dialect)
+        assert "TRY_CAST" not in sql and "SAFE_CAST" not in sql, sql
+        assert "THEN CAST(" in sql
+
+    def test_postgres_converts_to_numeric_so_the_test_is_enough(self) -> None:
         """A pattern says whether text names a number, not whether it fits.
 
         ``'1e999'::double precision`` raises out of range where ``::numeric`` is
@@ -1684,11 +1694,12 @@ class TestToNumber:
         assert "DOUBLE PRECISION" not in sql
 
     @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
-    def test_every_dialect_trims_first(self, dialect: str) -> None:
-        """``' 42 '`` is 42 to DuckDB's TRY_CAST and NULL to ClickHouse's.
+    def test_every_dialect_reads_the_argument_as_text(self, dialect: str) -> None:
+        """``to_number(4.6)`` is an accepted call, and DuckDB has no trim(DECIMAL).
 
-        The entry pins that by removing the difference rather than choosing a
-        side, so the trim is part of the contract and not a nicety.
+        Trimming the argument as it arrives failed to compile there. The round
+        trip through the engine's own text form is exact, measured.
         """
         sql = _render("to_number(x)", dialect).upper()
         assert "TRIM" in sql, sql
+        assert "CAST" in sql or "TOSTRING" in sql, sql

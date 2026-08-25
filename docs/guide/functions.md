@@ -214,13 +214,26 @@ Measured, one `SELECT` per engine. A JSON field is exactly this case, since
 ## to_number, where NULL is the pinned answer
 
 `to_number(x)` is the other half of `cast`: **text that does not name a number
-is NULL, on all eight dialects**. Five engines have a form that says so —
-`TRY_CAST` on DuckDB, Snowflake and Databricks, `SAFE_CAST` on BigQuery,
-`toFloat64OrNull` on ClickHouse. PostgreSQL, MySQL and Dremio have none at any
-version, so on those three the text is tested against a numeric pattern
-**before** it is converted. Testing afterwards is not an option on MySQL: its
-failure is a silent `0`, and nothing downstream can tell that from a genuine
-zero.
+is NULL, on all eight dialects**. Every dialect tests the text against a pattern
+for a decimal numeral **before** converting it. Five have a safe cast — `TRY_CAST`
+on DuckDB, Snowflake and Databricks, `SAFE_CAST` on BigQuery, `toFloat64OrNull`
+on ClickHouse — and it stays *inside* the test, since a pattern says whether the
+text is a numeral and not whether the numeral fits. PostgreSQL, MySQL and Dremio
+have none at any version, and on MySQL the test is the only thing between the
+query and a wrong number: `CAST('abc' AS DOUBLE)` is `0.0` there, which nothing
+downstream can tell from a genuine zero.
+
+Testing everywhere is also what settles the special float tokens.
+`TRY_CAST('NaN' AS DOUBLE)` is `nan` on DuckDB and ClickHouse, and a numeral
+pattern matches neither `NaN` nor `Infinity`, so without it the five engines
+with a safe cast would answer one thing and the three without it another. They
+are NULL on all eight: they do not name a number in decimal notation, which is
+what this entry converts.
+
+The argument is read through the dialect's string type, because it is not always
+text — `to_number(4.6)` is an accepted call, and DuckDB has no `trim(DECIMAL)`.
+That round trip is exact: a double through an engine's own text form and back is
+the same double, measured up to 1e308 and a 17-digit mantissa.
 
 Surrounding whitespace is ignored, because the engines split on it — `' 42 '` is
 42 to DuckDB's `TRY_CAST` and NULL to ClickHouse's `toFloat64OrNull` — so the

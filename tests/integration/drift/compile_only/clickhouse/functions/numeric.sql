@@ -34,9 +34,9 @@ POWER(2, 10);
 
 -- to_number(x)
 --   to_number('4.6') = 4.6
-toFloat64OrNull(trimBoth(toString('4.6')));
+CASE WHEN match(TRIM(toString(CAST('4.6' AS Nullable(String)))), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN toFloat64OrNull(TRIM(CAST('4.6' AS Nullable(String)))) END;
 --   to_number('abc') = None
-toFloat64OrNull(trimBoth(toString('abc')));
+CASE WHEN match(TRIM(toString(CAST('abc' AS Nullable(String)))), '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$') THEN toFloat64OrNull(TRIM(CAST('abc' AS Nullable(String)))) END;
 
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6

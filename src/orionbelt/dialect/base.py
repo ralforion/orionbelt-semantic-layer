@@ -956,18 +956,44 @@ class Dialect(ABC):
     _TRY_CAST_FN = "TRY_CAST"
 
     def _render_to_number(self, args: list[Expr]) -> str:
-        """Default: ``TRY_CAST(TRIM(x) AS DOUBLE)``.
+        """``CASE WHEN <trimmed text> names a number THEN <safe cast> END``.
 
-        Correct as measured on DuckDB, Databricks and Snowflake. BigQuery
-        spells the same thing ``SAFE_CAST``; ClickHouse has a per-type
-        ``OrNull`` conversion instead; PostgreSQL and MySQL have neither and
-        override with a pattern test.
+        One shape on all eight, and the pattern is what makes the entry's claim
+        true rather than nearly true. The engines with a safe cast also accept
+        the special float tokens - ``TRY_CAST('NaN' AS DOUBLE)`` is nan on
+        DuckDB and ClickHouse - where the three without one answer NULL,
+        because a pattern for a decimal numeral does not match ``NaN`` or
+        ``Infinity``. Testing everywhere settles it at NULL, which is the
+        answer the entry promises for text that does not name a number, and
+        those tokens do not name one in decimal notation.
 
-        The trim is not decoration. ``' 42 '`` is 42 to DuckDB's ``TRY_CAST``
-        and NULL to ClickHouse's ``toFloat64OrNull``, so the entry pins it by
-        removing the difference rather than by choosing a side.
+        The safe cast stays *inside* the test on the engines that have one: a
+        pattern says whether the text is a numeral, not whether the numeral
+        fits, and a 400-digit one still has to not raise.
+
+        The argument goes through this dialect's string type first. It is not
+        always text - ``to_number(4.6)`` is an accepted call - and DuckDB has no
+        ``trim(DECIMAL)``, so trimming the argument as it arrives fails to
+        compile. The round trip is exact: measured on DuckDB, PostgreSQL and
+        ClickHouse, a double through the engine's own text form and back is the
+        same double, including 1e308 and a 17-digit mantissa.
         """
-        trimmed = self._render_named_function("trim", [args[0]])
+        as_text = self._as_text_expr(args[0])
+        trimmed = self._render_named_function("trim", [as_text])
+        return self._render_numeric_text_guard(as_text, self._render_safe_number_cast(trimmed))
+
+    def _as_text_expr(self, value: Expr) -> Expr:
+        """*value* as this dialect's string type, so text functions can read it."""
+        return Cast(expr=value, type_name=self.render_obml_type(SimpleType(name="string")))
+
+    def _render_safe_number_cast(self, trimmed: str) -> str:
+        """The conversion inside the test: a safe cast where the engine has one.
+
+        ``TRY_CAST`` on DuckDB, Snowflake and Databricks; ``SAFE_CAST`` on
+        BigQuery, spelled through ``_TRY_CAST_FN``. ClickHouse has a per-type
+        ``OrNull`` conversion instead, and PostgreSQL, MySQL and Dremio have
+        none at all - all four override this.
+        """
         return (
             f"{self._TRY_CAST_FN}({trimmed} AS {self.render_obml_type(SimpleType(name='double'))})"
         )
@@ -975,12 +1001,9 @@ class Dialect(ABC):
     def _render_numeric_text_guard(self, value: Expr, convert: str) -> str:
         """``CASE WHEN <trimmed> matches a number THEN <convert> END``.
 
-        For the three engines with no safe cast. *convert* is this dialect's
-        conversion of the same trimmed text, rendered by the caller, since what
-        it converts *to* is the half they disagree about. The test goes through
-        :meth:`compile_regex_match`, which already knows each engine's spelling
-        - ``~`` on PostgreSQL, ``REGEXP`` on MySQL, ``REGEXP_LIKE`` by default,
-        which is Dremio's.
+        The test goes through :meth:`compile_regex_match`, which already knows
+        each engine's spelling - ``~`` on PostgreSQL, ``REGEXP`` on MySQL,
+        ``REGEXP_LIKE`` by default, which is Dremio's.
         """
         trimmed = FunctionCall(name="trim", args=[value])
         test = self.compile_regex_match(trimmed, self._NUMERIC_TEXT_RE, negated=False)
