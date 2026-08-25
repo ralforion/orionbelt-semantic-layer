@@ -4,6 +4,35 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+## [2.26.0] - 2026-08-25
+
+### Upgrading
+
+A model that loaded on 2.25.1 can fail to load on 2.26.0, deliberately. Three checks that used to
+pass silently now report, and each one was reporting nothing while the query failed at the database
+or returned a wrong number:
+
+- **A computed column whose `expression` does not parse** is now `INVALID_COLUMN_EXPRESSION` at
+  model load rather than a reference to a column no table has. Reachable through ordinary SQL the
+  format invites - `||`, `INTERVAL`, `EXTRACT(... FROM ...)` - so a model carrying one of those has
+  been emitting SQL the database rejects. Two of the constructs that used to land here are now
+  accepted instead: `cast(x, 'type')` and the simple `CASE` form.
+- **A function call missing its closing `)`** is refused rather than closed for you. That one is
+  worth reading twice: the invented parenthesis moved what the call wrapped, so
+  `ROUND({Amount}, 2 * 100` compiled, ran, and returned a different number from
+  `ROUND({Amount}, 2) * 100`.
+- **A period-over-period metric in a multi-fact query** is refused with `INVALID_METRIC` rather than
+  compiled into SQL that names a table its own `FROM` does not have.
+
+Two result shapes change without an error to announce them:
+
+- A **time-grained dimension** now carries the type its model declares, so a `resultType: date`
+  dimension binds as `DATE` on Arrow, Flight and pgwire where it previously arrived as a timestamp
+  on DuckDB and a `timestamptz` on PostgreSQL. The `GROUP BY` expression changes with it, which an
+  expression index built on the uncast form will no longer match.
+- A **filtered period-over-period query** returns different numbers, because the filter now reaches
+  the measures. They were previously computed over rows the filter excluded.
+
 ### Added
 
 - **The simple `CASE` form is part of the expression grammar (#360).** `CASE {Country} WHEN 'DE' THEN 'EUR' WHEN 'US' THEN 'USD' ELSE 'other' END` parses now; before, only the searched form did, so the natural way to map a code to a label - one subject, a list of values - was the one that did not work, and the searched form made an author repeat the subject on every branch. Both are standard SQL (SQL:1999 6.11) and both run unmodified on all eight engines.
