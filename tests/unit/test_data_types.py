@@ -411,35 +411,31 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         assert Decimal(str(con.execute(sql).fetchall()[0][1])) == Decimal("2000000000000000003")
         con.close()
 
-    def test_a_bigint_avg_fails_loudly_rather_than_rounding_silently(self) -> None:
-        """The limit, pinned so it cannot regress into a silent wrong answer.
+    def test_a_bigint_avg_is_exact_rather_than_loud(self) -> None:
+        """What replaced the loud overflow (#316).
 
-        This is the behaviour a widened cast would have replaced: DuckDB
-        averages in DOUBLE, so the value that reaches the cast is already
-        1000000000000000000 rather than ...003. Overflowing the default is the
-        honest outcome; quietly returning the rounded figure is not.
+        DuckDB averages in DOUBLE whatever the input type, so the value
+        reaching the cast used to be 1000000000000000000 rather than ...001.5,
+        and overflowing the default was the honest outcome. The average is now
+        assembled from integer arithmetic - exact where the engine's own
+        ``AVG`` is not - so there is nothing left to fail loudly about.
         """
         duckdb = pytest.importorskip("duckdb")
         model = _bigint_model()
         con = _bigint_table(duckdb)
         query = QueryObject(select=QuerySelect(dimensions=["Day"], measures=["Qty Avg"]))
         sql = CompilationPipeline().compile(query, model, "duckdb").sql
-        with pytest.raises(duckdb.ConversionException):
-            con.execute(sql).fetchall()
+        assert Decimal(str(con.execute(sql).fetchall()[0][1])) == Decimal("1000000000000000001.50")
         con.close()
 
-    def test_declaring_a_data_type_does_not_rescue_avg_on_duckdb(self) -> None:
-        """The escape hatch that is not one, pinned so the guidance cannot drift.
+    def test_a_data_type_is_no_longer_needed_and_no_longer_lies(self) -> None:
+        """``dataType`` used to be the escape hatch that was not one.
 
-        It is tempting to tell users "declare ``dataType`` if you need a wider
-        average". On DuckDB, ClickHouse and BigQuery that is actively harmful advice:
-        the
-        loss is inside the aggregate, so a wider dataType only widens this same
-        cast and lets the wrong number through instead of failing. An error you
-        can see beats a plausible wrong figure.
-
-        Asserted as an inequality rather than by pinning the wrong value, so
-        this reads as "still lossy" rather than as an endorsement of it.
+        The loss was inside the aggregate, so widening the output cast let a
+        plausible wrong number through instead of failing: this test used to
+        assert the *inequality*, as "still lossy". Both halves are settled now -
+        the default type holds the exact average, and declaring a wider one
+        returns the same exact figure rather than a rounded one.
         """
         duckdb = pytest.importorskip("duckdb")
         yaml = _BIGINT_YAML.replace(
@@ -458,10 +454,7 @@ class TestAnIntegerMeasureIsNotTheNumericDefault:
         assert "DECIMAL(21, 2)" in sql, sql
         value = Decimal(str(con.execute(sql).fetchall()[0][1]))
         con.close()
-        assert value != Decimal("1000000000000000001.50"), (
-            "DuckDB averaged exactly - see #316; if this now passes, the docs and "
-            "the type_resolver comment both need updating"
-        )
+        assert value == Decimal("1000000000000000001.50")
 
 
 _BIGINT_YAML = """

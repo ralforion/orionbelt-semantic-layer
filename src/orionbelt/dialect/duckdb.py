@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from orionbelt.ast.nodes import Cast, Expr, FunctionCall, Literal, OrderByItem, UnionAll, Unnest
+from orionbelt.ast.nodes import (
+    BinaryOp,
+    CaseExpr,
+    Cast,
+    Expr,
+    FunctionCall,
+    Literal,
+    OrderByItem,
+    UnionAll,
+    Unnest,
+)
 from orionbelt.dialect.base import (
     Dialect,
     DialectCapabilities,
@@ -10,6 +20,7 @@ from orionbelt.dialect.base import (
 )
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.semantic import TimeGrain
+from orionbelt.models.types import DecimalType, OBMLType
 
 
 @DialectRegistry.register
@@ -19,6 +30,92 @@ class DuckDBDialect(Dialect):
     @property
     def name(self) -> str:
         return "duckdb"
+
+    def exact_integer_avg(self, arg: Expr, obml_type: OBMLType) -> Expr | None:
+        """An exact average assembled from integer arithmetic (#316).
+
+        This engine computes ``AVG`` in ``double`` whatever the input type, so
+        the drift starts at the mantissa rather than at a declared type, and no
+        output cast repairs it - the loss is already inside the aggregate.
+        duckdb/duckdb#6829 was closed as not planned, so the exactness has to
+        come from the SQL.
+
+        **Every route through ``/`` is out.** Measured: decimal over decimal,
+        ``SUM``/``COUNT`` with either operand cast, and ``AVG`` over a cast
+        input all come back ``DOUBLE``. What *is* exact here is integer
+        arithmetic, so the average is assembled rather than divided:
+
+        1. ``SUM`` over a ``BIGINT`` accumulates in ``HUGEINT``, 128 bits, and
+           is exact.
+        2. Scaling by ``10^s`` before dividing keeps the fraction the result
+           needs, in integers.
+        3. ``(2n + sign(n)*d) // 2d`` is the rounded quotient. Ties go **away
+           from zero**, which is what ``round`` pins and what the engines that
+           are already exact answer: measured against PostgreSQL at ``2.365``
+           and ``-2.365``, all three agree on 2.37 and -2.37. ``//`` truncates
+           toward zero here, which is what makes the doubling trick work in
+           both signs.
+        4. The scale is put back by *multiplying* by ``10^-s`` as a decimal
+           constant. ``HUGEINT * DECIMAL(s+1, s)`` is ``DECIMAL(38, s)`` and
+           exact, where dividing by ``10^s`` would have gone back to floating
+           point.
+
+        An empty group is not a division: ``COUNT`` of zero would raise where
+        ``AVG`` returns NULL, and a multi-fact plan hits that routinely, so the
+        whole thing sits behind a count test. NULL rows need no handling of
+        their own - ``SUM`` and ``COUNT`` both skip them, so the assembly
+        averages exactly the rows ``AVG`` would have.
+
+        The remaining limit is honest and loud: ``2 * SUM * 10^s`` has to fit
+        128 bits, so a total beyond ~8.5x10^35 at scale 2 raises here rather
+        than drifting quietly. The scale is capped for the same arithmetic -
+        see below - since it is the other half of the same budget.
+        """
+        if not isinstance(obml_type, DecimalType):
+            return None
+        # The scale is capped for the same reason it is on the engines that
+        # divide (``_exact_avg_by_sum_over_count``), and here it bites harder:
+        # the sum is multiplied by ``10^s`` *before* the division, so a long
+        # fraction spends the same 128 bits the total needs. Measured, an
+        # uncapped scale of 37 overflowed on rows of 5 - a result the declared
+        # type holds comfortably - and a scale of 38 asked for a
+        # ``DECIMAL(39, 38)`` constant, which is not a type. A result asking
+        # for more scale gets the extra places as zeros, which is the same
+        # honest trade the other rewrites make.
+        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
+        zero = Literal.number(0)
+        count: Expr = Cast(expr=FunctionCall(name="COUNT", args=[arg]), type_name="HUGEINT")
+        total: Expr = Cast(expr=FunctionCall(name="SUM", args=[arg]), type_name="HUGEINT")
+
+        scaled = BinaryOp(left=total, op="*", right=Literal.number(10**scale))
+        numerator = BinaryOp(
+            left=BinaryOp(left=Literal.number(2), op="*", right=scaled),
+            op="+",
+            right=BinaryOp(left=FunctionCall(name="SIGN", args=[total]), op="*", right=count),
+        )
+        quotient = BinaryOp(
+            left=numerator,
+            op="//",
+            right=BinaryOp(left=Literal.number(2), op="*", right=count),
+        )
+        # ``* 10^-s`` rather than ``/ 10^s``: multiplication by a decimal
+        # constant stays in decimal, division does not.
+        rescaled: Expr = (
+            quotient
+            if scale == 0
+            else BinaryOp(
+                left=quotient,
+                op="*",
+                right=Cast(
+                    expr=Literal.number(float(f"0.{'0' * (scale - 1)}1")),
+                    type_name=f"DECIMAL({scale + 1}, {scale})",
+                ),
+            )
+        )
+        return CaseExpr(
+            when_clauses=[(BinaryOp(left=count, op="=", right=zero), Literal.null())],
+            else_clause=rescaled,
+        )
 
     @property
     def capabilities(self) -> DialectCapabilities:

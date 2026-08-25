@@ -92,9 +92,10 @@ def resolve_measure_data_type(
     # So AVG is fixed by rewriting the *expression* rather than the type. That
     # is ``rewrite_exact_integer_avg`` below, which the planners call and which
     # supplies its own widened type when it fires. Here AVG simply falls
-    # through to the default, which is what DuckDB keeps - it has no exact
-    # division to rewrite to, so the default's overflow is the honest outcome
-    # (#316).
+    # through to the default, which is what the engines whose own AVG is
+    # already exact keep. Every engine whose AVG drifts now has a rewrite,
+    # DuckDB included, which assembles the average from integer arithmetic
+    # since it has no exact division to rewrite to (#316).
     if measure.result_type == DataType.INT and agg == "SUM":
         return SimpleType(name="bigint")
 
@@ -170,10 +171,11 @@ def rewrite_exact_integer_avg(
     ``AVG`` is a floating-point aggregate on BigQuery, ClickHouse, Dremio and
     DuckDB whatever the input type, so it drifts past a ``double`` mantissa -
     around fifteen significant digits - and no output cast can repair a value
-    the aggregate has already rounded. Three of those four can be asked for
-    exact arithmetic instead; :meth:`Dialect.exact_integer_avg` says how, and
-    answers ``None`` where it cannot, which is DuckDB and every engine that was
-    exact to begin with.
+    the aggregate has already rounded. All four can be asked for exact
+    arithmetic instead, though only three of them by dividing: DuckDB has no
+    exact division at all and assembles its average from integer arithmetic
+    (#316). :meth:`Dialect.exact_integer_avg` says how, and answers ``None``
+    for the engines that were exact to begin with.
 
     The result type has to move with the expression. Left at the
     ``decimal(18, 2)`` default, the exact average would be computed correctly
@@ -212,9 +214,10 @@ def rewrite_exact_integer_avg(
         # 1000000000000000003 to 9999999999999999.99 with no warning, and
         # Postgres raises. Widening lets an exact average through intact.
         return expr, target
-    # Neither exact nor rewritable: DuckDB alone. It keeps the default so the
-    # overflow stays loud, rather than trading it for a quiet wrong number
-    # (#316).
+    # Neither exact nor rewritable. No dialect is in this position today -
+    # DuckDB was the last, until its average was assembled from integer
+    # arithmetic (#316) - and the branch stays because a new dialect starts
+    # here until someone measures it.
     return None
 
 
@@ -489,8 +492,10 @@ def resolve_measure_cast_type(
         # wider than the default simply gets a type that fits.
         return _widen_for_declared_source(measure, resolved, model)
     if dialect is None or not dialect.integer_avg_is_exact():
-        # DuckDB alone: the average is not exact, so **no** widening applies -
-        # not the 64-bit room and not the declared source width. A wider type
-        # would let a rounded value through instead of failing on it (#316).
+        # An engine whose average is neither exact nor rewritten: **no**
+        # widening applies, neither the 64-bit room nor the declared source
+        # width, since a wider type would only let a rounded value through
+        # instead of failing on it. Empty today, and the reason it is empty is
+        # #316; a new dialect lands here until it is measured.
         return resolved
     return _integer_avg_target(measure, resolved, model)

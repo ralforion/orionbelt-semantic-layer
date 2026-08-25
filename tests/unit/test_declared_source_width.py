@@ -182,14 +182,14 @@ class TestAnIntegerAverageCombinesBothWidenings:
     def test_an_exact_dialect_honours_the_declared_width(self, dialect: str) -> None:
         assert "38, 0" in _sql("Wide Avg", dialect), _sql("Wide Avg", dialect)
 
-    def test_duckdb_is_not_widened_at_all(self) -> None:
-        """Neither widening applies where the average itself is inexact.
+    def test_duckdb_honours_the_declared_width_too(self) -> None:
+        """Widening carries a better number here now (#316).
 
-        DuckDB averages in DOUBLE, so a wider type does not carry a better
-        number - it carries a rounded one without complaining. Widening it
-        returned 1000000000000000000 for a true 1000000000000000002, which is
-        the silent trade #315 refused and #316 exists to keep refusing.
+        It used not to: DuckDB averages in DOUBLE, so a wider type carried a
+        rounded value without complaining, and refusing to widen was what kept
+        the failure loud. The average is assembled from integer arithmetic now,
+        so the wider type holds an exact figure and this engine joins the three
+        that honour the declaration.
         """
         sql = _sql("Wide Avg", "duckdb")
-        assert "DECIMAL(18, 2)" in sql, sql
-        assert "38, 0" not in sql, sql
+        assert "38, 0" in sql, sql
