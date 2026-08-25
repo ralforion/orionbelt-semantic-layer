@@ -32,6 +32,12 @@ EXP(0);
 --   power(2, 10) = 1024
 POWER(2, 10);
 
+-- cast(x, 'type')
+--   cast('4.60', 'double') = 4.6
+CAST('4.60' AS Nullable(Float64));
+--   cast(2.555, 'decimal(18, 2)') = 2.56
+CAST(truncate(2.555 + SIGN(2.555) * toDecimal256('0.005', 3), 2) AS Nullable(Decimal(18, 2)));
+
 -- round(x, n?)
 --   round(2.5) = 3
 truncate(2.5 + SIGN(2.5) * toDecimal256('0.5', 1), 0);

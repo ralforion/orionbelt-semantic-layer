@@ -32,6 +32,12 @@ EXP(0);
 --   power(2, 10) = 1024
 POWER(2, 10);
 
+-- cast(x, 'type')
+--   cast('4.60', 'double') = 4.6
+CAST('4.60' AS DOUBLE PRECISION);
+--   cast(2.555, 'decimal(18, 2)') = 2.56
+CAST(2.555 AS DECIMAL(18, 2));
+
 -- round(x, n?)
 --   round(2.5) = 3
 ROUND(CAST(2.5 AS numeric));

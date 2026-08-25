@@ -36,6 +36,7 @@ from orionbelt.models.functions import (
 )
 from orionbelt.models.query import QueryObject, QuerySelect
 from orionbelt.models.semantic import SemanticModel, WeekStart
+from orionbelt.models.types import parse_data_type
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.validator import SemanticValidator
@@ -1541,3 +1542,59 @@ def test_catalog_functions_survive_a_full_compile() -> None:
     query = QueryObject(select=QuerySelect(dimensions=["Bad Zip"], measures=["Order Count"]))
     sql = CompilationPipeline().compile(query, model, "duckdb").sql
     assert 'UPPER(SUBSTRING("Orders"."ZIP", 1, 5))' in sql
+
+
+class TestCastTargets:
+    """``cast(x, 'type')`` takes the targets the catalog can pin, and no others.
+
+    The engines do not merely spell a cast differently, they disagree about the
+    value it produces, so the entry carries the two targets that agree and
+    refuses the rest by name (#355). Every absence in ``CAST_TARGETS`` is a
+    measurement, recorded in the entry's semantics.
+    """
+
+    ACCEPTED = ("double", "decimal(18, 2)", "decimal(38, 9)", "DECIMAL(18, 2)")
+    REFUSED = ("integer", "bigint", "string", "date", "timestamp", "boolean", "time")
+
+    @pytest.mark.parametrize("target", ACCEPTED)
+    def test_an_accepted_target_validates(self, target: str) -> None:
+        assert _errors_for(f"cast({{Zip}}, '{target}')") == []
+
+    @pytest.mark.parametrize("target", REFUSED)
+    def test_a_target_the_catalog_cannot_pin_is_refused(self, target: str) -> None:
+        assert _errors_for(f"cast({{Zip}}, '{target}')") == ["UNSUPPORTED_CAST_TARGET"]
+
+    @pytest.mark.parametrize("argument", ("{Zip}", "'not a type'", "'decimal(0, 2)'"))
+    def test_a_target_that_is_not_a_type_literal_is_refused(self, argument: str) -> None:
+        """A non-literal has nothing to render from: the type is needed to build the SQL."""
+        assert _errors_for(f"cast({{Zip}}, {argument})") == ["UNSUPPORTED_CAST_TARGET"]
+
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_every_dialect_renders_a_decimal_cast(self, dialect: str) -> None:
+        """Through ``cast_to_obml_type``, so each engine's own overrides apply."""
+        sql = _render("cast(x, 'decimal(18, 2)')", dialect)
+        assert "18, 2" in sql.replace("38, 2", "18, 2") or "NUMERIC" in sql, sql
+
+    def test_clickhouse_rounds_ties_away_from_zero(self) -> None:
+        """The one engine that does not on its own.
+
+        Its ``round`` takes a float's ties to even, so 2.5 to ``decimal(18, 0)``
+        came back 2 where the other seven said 3. The rewrite is the shape the
+        ``round`` entry already uses here.
+        """
+        sql = _render("cast(x, 'decimal(18, 0)')", "clickhouse")
+        assert sql.startswith("CAST(truncate("), sql
+        assert "SIGN(" in sql and "toDecimal256('0.5', 1)" in sql
+
+    def test_a_measure_data_type_cast_is_left_alone_on_clickhouse(self) -> None:
+        """The rewrite is scoped to this entry, and the reason is measured.
+
+        The same pre-round sits inside ``cast_to_obml_type``, where a declared
+        ``dataType`` and the CFL union alignment reach it. The add-half shape
+        names its operand twice - a windowed aggregate would be written out
+        twice - and at ``decimal(76, 20)``, the width union alignment picks, the
+        half overflows Decimal256 and wraps silently.
+        """
+        dialect = DialectRegistry.get("clickhouse")
+        cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
+        assert dialect.compile_expr(cast) == 'CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))'

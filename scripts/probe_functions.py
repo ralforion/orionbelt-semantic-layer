@@ -19,6 +19,11 @@ Usage::
     uv run python scripts/probe_functions.py snowflake   # SNOWFLAKE_*
     uv run python scripts/probe_functions.py bigquery    # BIGQUERY_PROJECT + ADC
     uv run python scripts/probe_functions.py databricks  # DATABRICKS_* (warehouse running)
+    uv run python scripts/probe_functions.py duckdb cast # one group only
+
+The ``cast`` group is generated rather than listed: each case is rendered through
+the engine's own ``cast_to_obml_type``, so the probe measures what OBSL emits
+rather than a hand-spelled approximation of it.
 
 Candidates are grouped so the output reads as a checklist: the canonical OBSL
 form first, then the per-engine alternatives it may have to be rewritten into.
@@ -434,10 +439,74 @@ ENGINES: dict[str, Callable[[], Iterator[Callable[[str], object]]]] = {
 }
 
 
-def probe(execute: Callable[[str], object], groups: set[str] | None = None) -> None:
+#: Cast cases, as ``(label, input SQL literal, OBML type)``. Rendered per engine
+#: through ``dialect.cast_to_obml_type`` rather than hand-spelled, so what is
+#: measured is what OBSL would actually emit - including BigQuery's ROUND wrap
+#: for a parameterized decimal and MySQL's widening (#336). The engines do not
+#: merely disagree about spelling here: a float to integer rounds on four and
+#: truncates on two, and ``'4.6'`` to integer returns 5, 4, an error or NULL
+#: depending on where it runs (#355).
+CAST_CASES: list[tuple[str, str, str]] = [
+    # -- to decimal: does the fraction round or truncate, and which way at .5
+    ("2.555 -> decimal(18,2)", "2.555", "decimal(18, 2)"),
+    ("2.545 -> decimal(18,2)", "2.545", "decimal(18, 2)"),
+    ("-2.555 -> decimal(18,2)", "-2.555", "decimal(18, 2)"),
+    ("2.5 -> decimal(18,0)", "2.5", "decimal(18, 0)"),
+    ("3.5 -> decimal(18,0)", "3.5", "decimal(18, 0)"),
+    ("-2.5 -> decimal(18,0)", "-2.5", "decimal(18, 0)"),
+    ("'4.6' -> decimal(18,2)", "'4.6'", "decimal(18, 2)"),
+    ("'abc' -> decimal(18,2)", "'abc'", "decimal(18, 2)"),
+    ("'' -> decimal(18,2)", "''", "decimal(18, 2)"),
+    ("1e17+1 -> decimal(18,2)", "100000000000000001", "decimal(18, 2)"),
+    # -- to double
+    ("'4.6' -> double", "'4.6'", "double"),
+    ("'abc' -> double", "'abc'", "double"),
+    ("'' -> double", "''", "double"),
+    ("1 -> double", "1", "double"),
+    # -- to string: the trailing zero and the boolean split
+    ("2.50 -> string", "2.50", "string"),
+    ("1 -> string", "1", "string"),
+    # -- to date
+    ("'2026-08-15' -> date", "'2026-08-15'", "date"),
+    ("'2026-8-5' -> date", "'2026-8-5'", "date"),
+    ("'08/15/2026' -> date", "'08/15/2026'", "date"),
+    ("'abc' -> date", "'abc'", "date"),
+    # -- to timestamp
+    ("'2026-08-15 13:45:00' -> ts", "'2026-08-15 13:45:00'", "timestamp"),
+    ("'2026-08-15' -> ts", "'2026-08-15'", "timestamp"),
+    ("'abc' -> ts", "'abc'", "timestamp"),
+    # -- the targets v1 leaves out, measured so the reason stays checkable
+    ("2.5 -> integer", "2.5", "integer"),
+    ("3.5 -> integer", "3.5", "integer"),
+    ("-2.5 -> integer", "-2.5", "integer"),
+    ("'4.6' -> integer", "'4.6'", "integer"),
+    ("'abc' -> integer", "'abc'", "integer"),
+    ("'' -> integer", "''", "integer"),
+]
+
+
+def cast_candidates(engine: str) -> list[tuple[str, str, str]]:
+    """:data:`CAST_CASES`, rendered the way *engine*'s dialect would emit them."""
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get(engine)
+    rendered: list[tuple[str, str, str]] = []
+    for label, literal, obml_type in CAST_CASES:
+        expr = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
+        rendered.append(("cast", label, dialect.compile_expr(expr)))
+    return rendered
+
+
+def probe(
+    execute: Callable[[str], object],
+    groups: set[str] | None = None,
+    engine: str = "duckdb",
+) -> None:
     """Run every candidate through *execute*, printing one line each."""
     current_group = ""
-    for group, label, expression in CANDIDATES:
+    for group, label, expression in [*CANDIDATES, *cast_candidates(engine)]:
         if groups and group not in groups:
             continue
         if group != current_group:
@@ -461,7 +530,7 @@ def main(argv: list[str]) -> int:
     connect = ENGINES[engine]()
     execute = next(connect)
     try:
-        probe(execute, groups)
+        probe(execute, groups, engine)
     finally:
         # Drain the generator so its ``finally`` closes the connection.
         for _ in connect:

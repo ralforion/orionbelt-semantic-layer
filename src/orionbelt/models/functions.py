@@ -53,6 +53,12 @@ TEXT_ALL = -1
 
 GROUP_STRING = "string"
 GROUP_NUMERIC = "numeric"
+
+#: OBML types :func:`cast` accepts today. Deliberately short, and each absence
+#: is measured rather than assumed - see the ``cast`` entry's semantics. A
+#: ``decimal(p, s)`` target is accepted by shape rather than by name, so the
+#: set holds the simple names only.
+CAST_TARGETS: frozenset[str] = frozenset({"double"})
 GROUP_CONDITIONAL = "conditional"
 GROUP_DATETIME = "datetime"
 GROUP_JSON = "json"
@@ -136,6 +142,17 @@ class FunctionSpec:
     text_arguments: tuple[int, ...] = ()
     unit_argument: int | None = None
     """Index of an argument that must be a literal from :data:`TIME_UNITS`."""
+
+    type_argument: int | None = None
+    """Index of an argument that must be a literal OBML type name.
+
+    Same contract as :attr:`unit_argument`, and for a sharper version of the
+    same reason: the engines do not merely spell a cast target differently,
+    they *disagree about the value it produces*, so the target is pinned to a
+    literal drawn from :data:`CAST_TARGETS` and rendered through the dialect's
+    own ``cast_to_obml_type``. A SQL type name is deliberately not accepted -
+    naming ``NUMERIC`` or ``Decimal64`` is the vendor leak the abstract type
+    map exists to prevent."""
 
     path_argument: int | None = None
     """Index of an argument that must be a literal JSONPath.
@@ -429,6 +446,68 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         result_type="float",
         summary="*base* raised to the power of *exponent*.",
         examples=(FunctionExample("power(2, 10)", 1024),),
+    ),
+    FunctionSpec(
+        name="cast",
+        signature="cast(x, 'type')",
+        group=GROUP_NUMERIC,
+        min_args=2,
+        max_args=2,
+        result_type="argument",
+        type_argument=1,
+        summary="Convert *x* to an OBML type named as a quoted literal.",
+        semantics=(
+            "``cast(x, 'decimal(18, 2)')`` and ``cast(x, 'double')``, and "
+            "nothing else yet. The type is OBML's own name for a type, never "
+            "the engine's: it is parsed with ``parse_data_type`` and rendered "
+            "through the dialect's ``cast_to_obml_type``, which is where "
+            "BigQuery's ROUND wrap for a parameterized decimal and MySQL's "
+            "widening to 38 digits (#336) already live.\n\n"
+            "**A decimal target rounds to its scale, ties away from zero**, "
+            "the same rule ``round`` pins, through the same rewrite. Measured "
+            "across eight engines, seven agreed and ClickHouse did not: OBSL "
+            "pre-rounded with ClickHouse's own ``round``, which rounds a "
+            "float's ties to even, so 2.5 cast to ``decimal(18, 0)`` came "
+            "back 2 and -2.5 came back -2 where every other engine said 3 and "
+            "-3. The pre-round now takes the add-half-and-truncate shape "
+            "``round`` already uses there.\n\n"
+            "It inherits that rewrite's one limit, which is a property of "
+            "binary floats rather than of the rule: a half that the float "
+            "cannot hold exactly is rounded from the value the engine really "
+            "has. ``2.545`` is *below* the midpoint as a Float64, so "
+            "ClickHouse answers 2.54 at scale 2 while DuckDB answers 2.55 - "
+            "and the catalog's own ``round`` splits identically on the same "
+            "input, measured. An exact decimal input is unaffected: the same "
+            "value as ``Decimal(18, 3)`` rounds to 2.55 there too.\n\n"
+            "**What this does not pin is failure.** A value the target cannot "
+            "hold is answered differently by design of each engine, and the "
+            "difference is not a spelling: casting the text ``'abc'`` to a "
+            "number raises on DuckDB, PostgreSQL, BigQuery, Snowflake and "
+            "Databricks, returns NULL on ClickHouse, and returns **0** on "
+            "MySQL. Overflow splits again: seven raise and BigQuery does not, "
+            "its NUMERIC being wider than the declared precision. A cast over "
+            "a *number* is portable; a cast over text is only as portable as "
+            "the text is clean. ``to_number`` (#375) is the entry that pins "
+            "NULL on every engine, and is what a value read out of JSON "
+            "wants.\n\n"
+            "**Targets left out, each for a measured reason.** ``integer`` "
+            "and ``bigint``: a float to an integer rounds on DuckDB, "
+            "PostgreSQL, MySQL, BigQuery and Snowflake and truncates on "
+            "ClickHouse and Databricks, so 2.5 is 3 or 2 depending on where "
+            "the query runs. ``string``: 2.50 renders '2.50' on DuckDB, "
+            "PostgreSQL, MySQL and Databricks and '2.5' on BigQuery, "
+            "ClickHouse and Snowflake. ``date``: '08/15/2026' is accepted on "
+            "PostgreSQL - and only because its ``DateStyle`` says MDY, which "
+            "OBSL does not control - accepted on Snowflake, NULL on MySQL and "
+            "ClickHouse, and an error on the rest. ``timestamp``: the value "
+            "agrees but the type does not, coming back zoned on PostgreSQL, "
+            "Snowflake, BigQuery and Databricks. ``boolean``: MySQL has no "
+            "cast target for it at all (#357)."
+        ),
+        examples=(
+            FunctionExample("cast('4.60', 'double')", 4.6),
+            FunctionExample("cast(2.555, 'decimal(18, 2)')", 2.56),
+        ),
     ),
     FunctionSpec(
         name="round",

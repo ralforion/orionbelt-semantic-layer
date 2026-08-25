@@ -1,11 +1,11 @@
 ---
-description: "The portable scalar-function catalog: 39 entries whose meaning OBSL pins across all eight dialects, with the engine disagreements each one settles."
+description: "The portable scalar-function catalog: 40 entries whose meaning OBSL pins across all eight dialects, with the engine disagreements each one settles."
 ---
 
 # Portable functions
 
 A model that uses a warehouse's own functions is a model that runs on one
-warehouse. OBSL carries a **catalog of 39 scalar functions** whose meaning it
+warehouse. OBSL carries a **catalog of 40 scalar functions** whose meaning it
 owns, and renders each one per dialect.
 
 Most of that is about **spelling**. DuckDB counts characters with `length`,
@@ -177,6 +177,45 @@ since Dremio is the one dialect that puts them in identifier position.
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
+| `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero |
+
+## Casting, and what it does not promise
+
+`cast(x, 'decimal(18, 2)')` and `cast(x, 'double')`. The target is a quoted
+**OBML** type, never a SQL one: naming `NUMERIC` or `Decimal64` is the vendor
+leak the abstract type map exists to prevent, and the OBML name is what carries
+BigQuery's `ROUND` wrap for a parameterized decimal and MySQL's widening to 38
+digits.
+
+A decimal target **rounds to its scale, ties away from zero**, the same rule
+`round` pins. Seven engines already did; ClickHouse rounds a float's ties to
+even, so 2.5 to `decimal(18, 0)` came back 2 there, and the call is rewritten
+into the add-half-and-truncate shape `round` uses on that engine.
+
+**What it does not pin is failure**, and that limit is the point of the entry
+rather than a footnote on it. A cast over a number is portable. A cast over
+*text* is only as portable as the text is clean:
+
+| `cast('abc', 'double')` | answer |
+|---|---|
+| DuckDB, PostgreSQL, BigQuery, Snowflake, Databricks | error |
+| ClickHouse | NULL |
+| MySQL | **0** |
+
+Measured, one `SELECT` per engine. A JSON field is exactly this case, since
+`json_value` returns a string, so the entry that pins NULL everywhere is
+`to_number` and it does not exist yet.
+
+**Targets left out**, each because the engines answer differently and the
+catalog only carries what it can pin:
+
+| target | what splits |
+|---|---|
+| `integer`, `bigint` | 2.5 is **3** on DuckDB, PostgreSQL, MySQL, BigQuery and Snowflake, **2** on ClickHouse and Databricks |
+| `string` | 2.50 is **'2.50'** on DuckDB, PostgreSQL, MySQL and Databricks, **'2.5'** on BigQuery, ClickHouse and Snowflake |
+| `date` | `'08/15/2026'` is accepted on PostgreSQL — because its `DateStyle` says MDY, which OBSL does not set — and on Snowflake, NULL on MySQL and ClickHouse, an error on the rest |
+| `timestamp` | the value agrees, the type does not: zoned on PostgreSQL, Snowflake, BigQuery and Databricks |
+| `boolean` | MySQL has no cast target for it at all |
 
 ## JSON access
 
