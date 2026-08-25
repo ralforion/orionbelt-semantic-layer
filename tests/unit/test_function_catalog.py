@@ -1631,3 +1631,63 @@ class TestCastTargets:
         dialect = DialectRegistry.get("clickhouse")
         cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
         assert dialect.compile_expr(cast) == 'CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))'
+
+
+class TestToNumber:
+    """Text that does not name a number is NULL, on all eight dialects (#375).
+
+    The other half of ``cast``: a cast over text is answered differently by
+    every engine, and MySQL's answer is a silent 0. Five engines have a safe
+    form that says NULL; PostgreSQL and MySQL have none at any version and test
+    the text against a pattern first.
+    """
+
+    SAFE_CAST = {
+        "duckdb": "TRY_CAST",
+        "databricks": "TRY_CAST",
+        "dremio": "TRY_CAST",
+        "snowflake": "TRY_CAST",
+        "bigquery": "SAFE_CAST",
+    }
+
+    @pytest.mark.parametrize("dialect", sorted(SAFE_CAST))
+    def test_an_engine_with_a_safe_cast_uses_it(self, dialect: str) -> None:
+        sql = _render("to_number(x)", dialect)
+        assert sql.startswith(f"{self.SAFE_CAST[dialect]}("), sql
+        assert "CASE WHEN" not in sql
+
+    def test_clickhouse_uses_its_own_or_null_conversion(self) -> None:
+        """No ``TRY_CAST`` here; the ``OrNull`` family is per target type."""
+        assert _render("to_number(x)", "clickhouse") == "toFloat64OrNull(trimBoth(toString('x')))"
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_an_engine_without_one_tests_the_text_first(self, dialect: str) -> None:
+        """The test runs *instead of* the conversion, not around it.
+
+        On MySQL there is nothing to catch afterwards: ``CAST('abc' AS DOUBLE)``
+        is 0.0 rather than an error, and a 0 cannot be told from a genuine zero.
+        """
+        sql = _render("to_number(x)", dialect)
+        assert sql.startswith("CASE WHEN "), sql
+        assert "[0-9]" in sql
+
+    def test_postgres_converts_to_numeric_so_the_guard_is_enough(self) -> None:
+        """A pattern says whether text names a number, not whether it fits.
+
+        ``'1e999'::double precision`` raises out of range where ``::numeric`` is
+        exact, this engine's ``numeric`` being unbounded, so the target type is
+        what makes a test sufficient here.
+        """
+        sql = _render("to_number(x)", "postgres")
+        assert "AS NUMERIC)" in sql
+        assert "DOUBLE PRECISION" not in sql
+
+    @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
+    def test_every_dialect_trims_first(self, dialect: str) -> None:
+        """``' 42 '`` is 42 to DuckDB's TRY_CAST and NULL to ClickHouse's.
+
+        The entry pins that by removing the difference rather than choosing a
+        side, so the trim is part of the contract and not a nicety.
+        """
+        sql = _render("to_number(x)", dialect).upper()
+        assert "TRIM" in sql, sql

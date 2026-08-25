@@ -46,7 +46,7 @@ from orionbelt.models.functions import (
     lookup_function,
 )
 from orionbelt.models.semantic import TimeGrain, WeekStart
-from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
+from orionbelt.models.types import DecimalType, OBMLType, SimpleType, parse_data_type
 
 
 def _unit_of(arg: Expr) -> str:
@@ -936,10 +936,56 @@ class Dialect(ABC):
                 return self._render_current_date()
             case "cast":
                 return self._render_cast_call(args)
+            case "to_number":
+                return self._render_to_number(args)
             case "json_value":
                 return self._render_json_value(args)
             case _:
                 return self._render_named_function(name, args)
+
+    #: A number, as a POSIX regular expression: an optional sign, digits with an
+    #: optional fractional part or a bare fraction, and an optional exponent.
+    #: Only the two engines with no safe cast need it, and they need it *before*
+    #: the conversion rather than around it - MySQL's failure is a silent 0, and
+    #: nothing downstream can tell that from a genuine zero.
+    _NUMERIC_TEXT_RE = r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+
+    #: What this dialect calls the type ``to_number`` converts to, and the safe
+    #: cast that answers NULL rather than raising. ``TRY_CAST`` on three
+    #: engines, spelled differently on two more, absent on two.
+    _TRY_CAST_FN = "TRY_CAST"
+
+    def _render_to_number(self, args: list[Expr]) -> str:
+        """Default: ``TRY_CAST(TRIM(x) AS DOUBLE)``.
+
+        Correct as measured on DuckDB, Databricks and Snowflake. BigQuery
+        spells the same thing ``SAFE_CAST``; ClickHouse has a per-type
+        ``OrNull`` conversion instead; PostgreSQL and MySQL have neither and
+        override with a pattern test.
+
+        The trim is not decoration. ``' 42 '`` is 42 to DuckDB's ``TRY_CAST``
+        and NULL to ClickHouse's ``toFloat64OrNull``, so the entry pins it by
+        removing the difference rather than by choosing a side.
+        """
+        trimmed = self._render_named_function("trim", [args[0]])
+        return (
+            f"{self._TRY_CAST_FN}({trimmed} AS {self.render_obml_type(SimpleType(name='double'))})"
+        )
+
+    def _render_numeric_text_guard(self, args: list[Expr], convert: str) -> str:
+        """``CASE WHEN <trimmed> matches a number THEN <convert> END``.
+
+        For the two engines with no safe cast. *convert* is this dialect's
+        conversion of the same trimmed text, which the caller renders, since
+        what it converts *to* is the half they disagree about.
+        """
+        trimmed = self._render_named_function("trim", [args[0]])
+        pattern = self._quote_text(self._NUMERIC_TEXT_RE)
+        return f"CASE WHEN {self._render_regex_match(trimmed, pattern)} THEN {convert} END"
+
+    def _render_regex_match(self, value: str, pattern: str) -> str:
+        """``value`` against ``pattern``, in this dialect's spelling."""
+        return f"{value} ~ {pattern}"
 
     def _render_cast_call(self, args: list[Expr]) -> str:
         """``cast(x, 'decimal(18, 2)')`` through this dialect's own cast.

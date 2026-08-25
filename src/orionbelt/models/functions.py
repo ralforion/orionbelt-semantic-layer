@@ -448,6 +448,51 @@ _NUMERIC_FUNCTIONS: tuple[FunctionSpec, ...] = (
         examples=(FunctionExample("power(2, 10)", 1024),),
     ),
     FunctionSpec(
+        name="to_number",
+        signature="to_number(x)",
+        group=GROUP_NUMERIC,
+        min_args=1,
+        max_args=1,
+        result_type="float",
+        summary="The number *x* names, or NULL when it does not name one.",
+        semantics=(
+            "The other half of ``cast`` (#375), and the half a value read out "
+            "of JSON wants: ``json_value`` is specified to return a string, "
+            "and a cast over text is answered differently by every engine - "
+            "``cast('abc', 'double')`` raises on five, is NULL on ClickHouse "
+            "and is **0** on MySQL, which is the plausible wrong number rather "
+            "than a failure.\n\n"
+            "**Text that does not name a number is NULL, on all eight.** Five "
+            "engines have a form that says so - ``TRY_CAST`` on DuckDB, "
+            "Snowflake and Databricks, ``SAFE_CAST`` on BigQuery, "
+            "``toFloat64OrNull`` on ClickHouse. PostgreSQL and MySQL have "
+            "none at any version, so the text is tested against a numeric "
+            "pattern *before* it is converted. Testing after is not available "
+            "on MySQL: its failure is a silent 0, and no guard can tell that "
+            "from a genuine zero once it has happened.\n\n"
+            "**Surrounding whitespace is ignored**, because the engines split "
+            "on it: ``' 42 '`` is 42 to DuckDB's ``TRY_CAST`` and NULL to "
+            "ClickHouse's ``toFloat64OrNull``. The argument is trimmed, so it "
+            "is 42 everywhere.\n\n"
+            "**What is not pinned is magnitude**, and it splits four ways. "
+            "``'1e999'`` is infinity on DuckDB, ClickHouse, BigQuery and "
+            "Databricks, the largest double on MySQL, NULL on Snowflake, and "
+            "an exact unbounded ``numeric`` on PostgreSQL - which is this "
+            "entry's result type there, the same consequence ``round`` has on "
+            "that engine, and the reason a pattern test is enough for it where "
+            "it would not be over a float. Pinning that would mean deciding "
+            "1e999 is not a number, which it is.\n\n"
+            "Measured over a text column on all seven engines that can be "
+            "reached, since a literal is not the same question: PostgreSQL "
+            "folds a constant cast at plan time, so a guard tested against one "
+            "answers about the planner rather than about the query."
+        ),
+        examples=(
+            FunctionExample("to_number('4.6')", 4.6),
+            FunctionExample("to_number('abc')", None),
+        ),
+    ),
+    FunctionSpec(
         name="cast",
         signature="cast(x, 'type')",
         group=GROUP_NUMERIC,

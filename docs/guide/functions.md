@@ -1,11 +1,11 @@
 ---
-description: "The portable scalar-function catalog: 40 entries whose meaning OBSL pins across all eight dialects, with the engine disagreements each one settles."
+description: "The portable scalar-function catalog: 41 entries whose meaning OBSL pins across all eight dialects, with the engine disagreements each one settles."
 ---
 
 # Portable functions
 
 A model that uses a warehouse's own functions is a model that runs on one
-warehouse. OBSL carries a **catalog of 40 scalar functions** whose meaning it
+warehouse. OBSL carries a **catalog of 41 scalar functions** whose meaning it
 owns, and renders each one per dialect.
 
 Most of that is about **spelling**. DuckDB counts characters with `length`,
@@ -178,6 +178,7 @@ since Dremio is the one dialect that puts them in identifier position.
 | `current_date()` | date | Today, per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
 | `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero |
+| `to_number(x)` | float | The number `x` names, or **NULL** when it does not name one; surrounding whitespace ignored |
 
 ## Casting, and what it does not promise
 
@@ -208,8 +209,34 @@ rather than a footnote on it. A cast over a number is portable. A cast over
 | MySQL | **0** |
 
 Measured, one `SELECT` per engine. A JSON field is exactly this case, since
-`json_value` returns a string, so the entry that pins NULL everywhere is
-`to_number` and it does not exist yet.
+`json_value` returns a string, which is what `to_number` is for.
+
+## to_number, where NULL is the pinned answer
+
+`to_number(x)` is the other half of `cast`: **text that does not name a number
+is NULL, on all eight dialects**. Five engines have a form that says so —
+`TRY_CAST` on DuckDB, Snowflake, Databricks and Dremio, `SAFE_CAST` on BigQuery,
+`toFloat64OrNull` on ClickHouse. PostgreSQL and MySQL have none at any version,
+so the text is tested against a numeric pattern **before** it is converted.
+Testing afterwards is not an option on MySQL: its failure is a silent `0`, and
+nothing downstream can tell that from a genuine zero.
+
+Surrounding whitespace is ignored, because the engines split on it — `' 42 '` is
+42 to DuckDB's `TRY_CAST` and NULL to ClickHouse's `toFloat64OrNull` — so the
+argument is trimmed and the answer is 42 everywhere.
+
+**Magnitude is not pinned**, and it splits four ways. `to_number('1e999')` is
+infinity on DuckDB, ClickHouse, BigQuery and Databricks, the largest double on
+MySQL, NULL on Snowflake, and an exact unbounded `numeric` on PostgreSQL — which
+is the result type there, the same consequence `round` has on that engine, and
+the reason a pattern test suffices for it where it would not over a float.
+Pinning that would mean deciding 1e999 is not a number, which it is.
+
+```yaml
+Rate:
+  expression: "to_number(json_value({Tags}, '$.rate'))"
+  abstractType: float
+```
 
 **Targets left out**, each because the engines answer differently and the
 catalog only carries what it can pin:

@@ -32,6 +32,12 @@ EXP(0);
 --   power(2, 10) = 1024
 POWER(2, 10);
 
+-- to_number(x)
+--   to_number('4.6') = 4.6
+SAFE_CAST(TRIM('4.6') AS FLOAT64);
+--   to_number('abc') = None
+SAFE_CAST(TRIM('abc') AS FLOAT64);
+
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6
 CAST('4.60' AS FLOAT64);

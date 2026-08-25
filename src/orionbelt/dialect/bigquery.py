@@ -23,6 +23,10 @@ _NUMERIC_MAX_INTEGER_DIGITS = 29
 class BigQueryDialect(Dialect):
     """BigQuery dialect — backtick identifiers, STRUCT/ARRAY support, SAFE functions."""
 
+    #: BigQuery spells the safe cast ``SAFE_CAST``; the behaviour is TRY_CAST's,
+    #: measured on the same cases.
+    _TRY_CAST_FN = "SAFE_CAST"
+
     _OBML_SIMPLE_TYPE_MAP: dict[str, str] = {
         "bigint": "INT64",
         "integer": "INT64",

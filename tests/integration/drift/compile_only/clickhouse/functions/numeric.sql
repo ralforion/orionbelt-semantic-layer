@@ -32,6 +32,12 @@ EXP(0);
 --   power(2, 10) = 1024
 POWER(2, 10);
 
+-- to_number(x)
+--   to_number('4.6') = 4.6
+toFloat64OrNull(trimBoth(toString('4.6')));
+--   to_number('abc') = None
+toFloat64OrNull(trimBoth(toString('abc')));
+
 -- cast(x, 'type')
 --   cast('4.60', 'double') = 4.6
 CAST('4.60' AS Nullable(Float64));

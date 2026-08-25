@@ -439,6 +439,63 @@ ENGINES: dict[str, Callable[[], Iterator[Callable[[str], object]]]] = {
 }
 
 
+#: A number, as each engine's regular-expression dialect spells one: an optional
+#: sign, digits with an optional fractional part or a bare fraction, and an
+#: optional exponent. The engines with no safe cast have to ask this *before*
+#: converting, since MySQL's failure is a silent 0 rather than an error.
+_NUMERIC_TEXT_RE = r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+
+
+def _pg_guard(value: str) -> str:
+    return f"CASE WHEN {value} ~ '{_NUMERIC_TEXT_RE}' THEN CAST({value} AS NUMERIC) END"
+
+
+def _my_guard(value: str) -> str:
+    return f"CASE WHEN {value} REGEXP '{_NUMERIC_TEXT_RE}' THEN CAST({value} AS DOUBLE) END"
+
+
+#: Candidate spellings for a conversion that answers NULL for text that is not a
+#: number (#375). Listed per engine rather than generated: the whole question is
+#: which safe form each engine *has*, and two of them have none.
+TO_NUMBER_CANDIDATES: list[tuple[str, str, str]] = [
+    ("to_number", "DDB try_cast '4.6'", "TRY_CAST('4.6' AS DOUBLE)"),
+    ("to_number", "DDB try_cast 'abc'", "TRY_CAST('abc' AS DOUBLE)"),
+    ("to_number", "DDB try_cast ''", "TRY_CAST('' AS DOUBLE)"),
+    ("to_number", "DDB try_cast ' 42 '", "TRY_CAST(' 42 ' AS DOUBLE)"),
+    ("to_number", "DDB try_cast '1e999'", "TRY_CAST('1e999' AS DOUBLE)"),
+    ("to_number", "DDB try_cast number", "TRY_CAST(4.6 AS DOUBLE)"),
+    ("to_number", "BQ safe_cast '4.6'", "SAFE_CAST('4.6' AS FLOAT64)"),
+    ("to_number", "BQ safe_cast 'abc'", "SAFE_CAST('abc' AS FLOAT64)"),
+    ("to_number", "BQ safe_cast '1e999'", "SAFE_CAST('1e999' AS FLOAT64)"),
+    ("to_number", "SF try_cast '4.6'", "TRY_CAST('4.6' AS DOUBLE)"),
+    ("to_number", "SF try_cast 'abc'", "TRY_CAST('abc' AS DOUBLE)"),
+    ("to_number", "SF try_to_double 'abc'", "TRY_TO_DOUBLE('abc')"),
+    ("to_number", "CH toFloat64OrNull '4.6'", "toFloat64OrNull('4.6')"),
+    ("to_number", "CH toFloat64OrNull 'abc'", "toFloat64OrNull('abc')"),
+    ("to_number", "CH toFloat64OrNull ' 42 '", "toFloat64OrNull(' 42 ')"),
+    ("to_number", "CH toFloat64OrNull '1e999'", "toFloat64OrNull('1e999')"),
+    ("to_number", "CH over toString(number)", "toFloat64OrNull(toString(4.6))"),
+    ("to_number", "PG regex + numeric '4.6'", _pg_guard("'4.6'")),
+    ("to_number", "PG regex + numeric 'abc'", _pg_guard("'abc'")),
+    ("to_number", "PG regex + numeric ''", _pg_guard("''")),
+    ("to_number", "PG regex + numeric ' 42 '", _pg_guard("' 42 '")),
+    ("to_number", "PG regex + numeric '1e999'", _pg_guard("'1e999'")),
+    ("to_number", "PG plain numeric '1e999'", "CAST('1e999' AS NUMERIC)"),
+    (
+        "to_number",
+        "PG numeric -> double '1e999'",
+        "CAST(CAST('1e999' AS NUMERIC) AS DOUBLE PRECISION)",
+    ),
+    ("to_number", "MY regexp + decimal '4.6'", _my_guard("'4.6'")),
+    ("to_number", "MY regexp + decimal 'abc'", _my_guard("'abc'")),
+    ("to_number", "MY regexp + decimal ''", _my_guard("''")),
+    ("to_number", "MY regexp + decimal ' 42 '", _my_guard("' 42 '")),
+    ("to_number", "MY regexp + decimal '1e999'", _my_guard("'1e999'")),
+    ("to_number", "MY plain double '1e999'", "CAST('1e999' AS DOUBLE)"),
+    ("to_number", "MY plain double 'abc'", "CAST('abc' AS DOUBLE)"),
+]
+
+
 #: Cast cases, as ``(label, input SQL literal, OBML type)``. Rendered per engine
 #: through ``dialect.cast_to_obml_type`` rather than hand-spelled, so what is
 #: measured is what OBSL would actually emit - including BigQuery's ROUND wrap
@@ -506,7 +563,11 @@ def probe(
 ) -> None:
     """Run every candidate through *execute*, printing one line each."""
     current_group = ""
-    for group, label, expression in [*CANDIDATES, *cast_candidates(engine)]:
+    for group, label, expression in [
+        *CANDIDATES,
+        *TO_NUMBER_CANDIDATES,
+        *cast_candidates(engine),
+    ]:
         if groups and group not in groups:
             continue
         if group != current_group:
