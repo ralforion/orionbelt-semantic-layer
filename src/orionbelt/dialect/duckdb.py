@@ -68,11 +68,21 @@ class DuckDBDialect(Dialect):
 
         The remaining limit is honest and loud: ``2 * SUM * 10^s`` has to fit
         128 bits, so a total beyond ~8.5x10^35 at scale 2 raises here rather
-        than drifting quietly.
+        than drifting quietly. The scale is capped for the same arithmetic -
+        see below - since it is the other half of the same budget.
         """
         if not isinstance(obml_type, DecimalType):
             return None
-        scale = obml_type.scale
+        # The scale is capped for the same reason it is on the engines that
+        # divide (``_exact_avg_by_sum_over_count``), and here it bites harder:
+        # the sum is multiplied by ``10^s`` *before* the division, so a long
+        # fraction spends the same 128 bits the total needs. Measured, an
+        # uncapped scale of 37 overflowed on rows of 5 - a result the declared
+        # type holds comfortably - and a scale of 38 asked for a
+        # ``DECIMAL(39, 38)`` constant, which is not a type. A result asking
+        # for more scale gets the extra places as zeros, which is the same
+        # honest trade the other rewrites make.
+        scale = min(obml_type.scale, self._MAX_DECIMAL_PRECISION - self._SUM_HEADROOM_DIGITS)
         zero = Literal.number(0)
         count: Expr = Cast(expr=FunctionCall(name="COUNT", args=[arg]), type_name="HUGEINT")
         total: Expr = Cast(expr=FunctionCall(name="SUM", args=[arg]), type_name="HUGEINT")

@@ -16,14 +16,16 @@ here is the decision and the SQL.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 import pytest
 
+from orionbelt.ast.nodes import ColumnRef
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.type_resolver import _widen_to_integer_range
 from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject, QuerySelect
-from orionbelt.models.types import DecimalType
+from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.parser import ReferenceResolver, TrackedLoader
 
 MODEL_YAML = """
@@ -652,3 +654,46 @@ class TestDuckDBAssemblesItsAverage:
         would dress a drifted total as an exact figure.
         """
         assert "//" not in _sql("Amount Avg", "duckdb")
+
+    @pytest.mark.parametrize("scale", [2, 14, 20, 37, 38])
+    def test_a_long_fraction_does_not_overflow_the_assembly(self, scale: int) -> None:
+        """The scale spends the same 128 bits the total does, so it is capped.
+
+        The sum is multiplied by ``10^s`` *before* the division, so an
+        uncapped scale overflows on values the declared type holds
+        comfortably: measured, ``decimal(38, 37)`` raised on rows of 5, and
+        ``decimal(38, 38)`` asked for a ``DECIMAL(39, 38)`` constant, which is
+        not a type and fails at bind time. Beyond the cap the extra places come
+        back as zeros, which is the trade the engines that divide already make.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        dialect = DialectRegistry.get("duckdb")
+        obml = parse_data_type(f"decimal(38, {scale})")
+        expr = dialect.exact_integer_avg(ColumnRef(name="qty"), obml)
+        assert expr is not None
+        con = duckdb.connect()
+        con.execute("CREATE TABLE t (qty BIGINT)")
+        con.executemany("INSERT INTO t VALUES (?)", [(5,), (5,)])
+        value = con.execute(f"SELECT {dialect.compile_expr(expr)} FROM t").fetchall()[0][0]
+        con.close()
+        assert Decimal(str(value)) == Decimal(5)
+
+    def test_the_places_beyond_the_cap_are_zeros_rather_than_digits(self) -> None:
+        """Honest about what the cap costs: 14 exact places, then padding.
+
+        One third at ``decimal(38, 20)`` reads 0.33333333333333000000 rather
+        than twenty threes. The alternative is overflowing on a total the
+        source holds legally, which is what the cap exists to avoid.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        dialect = DialectRegistry.get("duckdb")
+        obml = parse_data_type("decimal(38, 20)")
+        expr = dialect.exact_integer_avg(ColumnRef(name="qty"), obml)
+        assert expr is not None
+        con = duckdb.connect()
+        con.execute("CREATE TABLE t (qty BIGINT)")
+        con.executemany("INSERT INTO t VALUES (?)", [(1,), (0,), (0,)])
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(expr, obml))
+        value = con.execute(f"SELECT {sql} FROM t").fetchall()[0][0]
+        con.close()
+        assert str(value) == "0.33333333333333000000"
