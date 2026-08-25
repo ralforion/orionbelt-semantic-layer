@@ -532,6 +532,24 @@ measures:
         """
         assert {row[3] for row in self._rows()} == {"no"}
 
+    @pytest.mark.parametrize(
+        "when", ["-1", "-{[Financial].[Outstanding Nominal Amount]}", "{[Financial].[Amount]} * 2"]
+    )
+    def test_a_negated_or_computed_value_is_still_a_value(self, when: str):
+        """Unary *minus* is not a predicate, and arithmetic is not either.
+
+        The check reads ``NOT`` on its own because it is the one predicate that
+        arrives as a ``UnaryOp``; catching every ``UnaryOp`` would have taken
+        ``WHEN -1`` with it.
+        """
+        model = _load_model()
+        parsed = parse_expression(
+            tokenize_measure_expression(
+                f"CASE {{[Financial].[Default Status]}} WHEN {when} THEN 1 END", model
+            )
+        )
+        assert isinstance(parsed, CaseExpr)
+
     def test_a_subject_with_no_when_is_refused(self):
         model = _load_model()
         with pytest.raises(ValueError, match="at least one WHEN"):
@@ -546,6 +564,8 @@ measures:
             "{[Financial].[Default Status]} IS NULL",
             "{[Financial].[Default Status]} IN ('11', '12')",
             "{[Financial].[Default Status]} LIKE '1%'",
+            "NOT ({[Financial].[Default Status]} = '11')",
+            "NOT {[Financial].[Default Status]}",
         ],
     )
     def test_a_condition_in_the_value_position_is_refused(self, when: str):

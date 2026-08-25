@@ -96,12 +96,11 @@ class _Token:
 # for ``<>``.
 _COMPARISON_OPS: tuple[str, ...] = ("<=", ">=", "<>", "!=", "=", "<", ">")
 
-#: Operators that make an expression a *condition* rather than a value. A simple
-#: ``CASE`` compares its subject to a value, so one of these in that position is
-#: a searched CASE written with a subject by mistake.
-_PREDICATE_OPS: frozenset[str] = frozenset(
-    {*_COMPARISON_OPS, "AND", "OR", "NOT", "LIKE", "NOT LIKE"}
-)
+#: Binary operators that make an expression a *condition* rather than a value. A
+#: simple ``CASE`` compares its subject to a value, so one of these in that
+#: position is a searched CASE written with a subject by mistake. ``NOT`` is
+#: absent because it is unary; :func:`_when_value` checks it on its own.
+_PREDICATE_OPS: frozenset[str] = frozenset({*_COMPARISON_OPS, "AND", "OR", "LIKE", "NOT LIKE"})
 
 # Bare-identifier literals — emitted as their typed ``Literal`` node by
 # the parser. Keep uppercase so case-insensitive matching is one lookup.
@@ -533,9 +532,17 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         engines then disagree about - comparing a value to a boolean is a type
         error on most of them and a silent coercion on MySQL. Saying so beats
         either outcome.
+
+        ``NOT`` is checked separately because it is the one predicate that
+        arrives as a :class:`UnaryOp`. A unary *minus* is not one: ``WHEN -1``
+        is an ordinary value, and a negative literal has already been folded
+        into the literal by the time it reaches here.
         """
-        if isinstance(operand, IsNull | InList | Between | RegexMatch) or (
-            isinstance(operand, BinaryOp) and operand.op in _PREDICATE_OPS
+        is_negation = isinstance(operand, UnaryOp) and operand.op == "NOT"
+        if (
+            isinstance(operand, IsNull | InList | Between | RegexMatch)
+            or is_negation
+            or (isinstance(operand, BinaryOp) and operand.op in _PREDICATE_OPS)
         ):
             raise ValueError(
                 "CASE <subject> WHEN takes a value, not a condition — write the "
