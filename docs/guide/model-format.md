@@ -1106,23 +1106,26 @@ Pass-through (no CAST emitted): `min`, `max`, `any_value`, `median`, `mode`, `li
     `dataType` is respected as declared.
 
 
-    **DuckDB is the exception**, tracked in
-    [#316](https://github.com/ralforion/orionbelt-semantic-layer/issues/316):
-    every division there returns `DOUBLE`, so there is nothing exact to rewrite
-    to. A large integer average keeps the default and **fails loudly** rather
-    than returning a plausible wrong figure. Declaring a wider `dataType` there
-    does not help and actively hurts - it widens the output cast, letting the
-    already-rounded value through instead of erroring:
+    **DuckDB is the awkward one**, and is exact now too. Every division there
+    returns `DOUBLE` — decimal over decimal, `SUM`/`COUNT` with either operand
+    cast, `AVG` over a cast input — so there is nothing exact to divide *with*.
+    Its integer arithmetic is exact, though, so the average is assembled rather
+    than divided: scale the sum by `10^s`, take the rounded quotient with `//`,
+    and put the scale back by *multiplying* by a decimal constant, since
+    dividing by `10^s` would go back to floating point.
 
-    ```yaml
-    Qty Avg:
-      aggregation: avg
-      dataType: "decimal(21, 2)"   # DuckDB: emits CAST(AVG(qty) AS DECIMAL(21, 2))
+    ```sql
+    CASE WHEN COUNT(qty) = 0 THEN NULL ELSE
+      (2 * (SUM(qty) * 100) + SIGN(SUM(qty)) * COUNT(qty)) // (2 * COUNT(qty))
+        * CAST(0.01 AS DECIMAL(3, 2))
+    END
     ```
 
-    which returns `1000000000000000000.00` where the true average is
-    `1000000000000000003.00`. If your averages reach that magnitude on DuckDB,
-    aggregate on an exact engine instead.
+    Ties go **away from zero**, which is what `round` pins and what the engines
+    that were already exact answer: measured against PostgreSQL at `2.365` and
+    `-2.365`, all three say 2.37 and -2.37. The remaining limit is loud rather
+    than quiet: `2 * SUM * 10^s` has to fit 128 bits, so a total beyond about
+    8.5x10^35 at scale 2 raises rather than drifting.
 
     Only integer-sourced measures are rewritten. A `float` measure keeps the
     plain `AVG` everywhere: BigQuery's `NUMERIC` is (38, 9), so casting a float

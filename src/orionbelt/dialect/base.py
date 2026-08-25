@@ -389,7 +389,8 @@ class Dialect(ABC):
 
         The textbook rewrite, shared by Dremio and Databricks. It is *not*
         available on DuckDB, where every division returns DOUBLE whatever the
-        operands, which is why that engine has no exact route at all (#316).
+        operands - that engine assembles its average from integer arithmetic
+        instead, in its own override (#316).
 
         **The cast goes inside the SUM.** ``SUM`` over a 64-bit column
         accumulates in 64 bits, and casting afterwards only widens a number
@@ -458,10 +459,11 @@ class Dialect(ABC):
     #: returns 9999999999999999.99 for a true 1000000000000000003, saturating
     #: silently with no warning at all; Postgres raises instead.
     #:
-    #: False where the aggregate itself drifts. Those either get an exact
-    #: rewrite (:meth:`exact_integer_avg`) or, on DuckDB alone, keep the
-    #: default so the overflow stays loud rather than becoming a quiet wrong
-    #: number (#316).
+    #: False where the aggregate itself drifts. Every one of those now has an
+    #: exact rewrite (:meth:`exact_integer_avg`), DuckDB included, which is why
+    #: this flag says only whether the *engine* is exact on its own and not
+    #: whether the answer ends up exact - :meth:`integer_avg_is_exact` answers
+    #: that (#316).
     avg_over_integers_is_exact: bool = False
 
     def integer_avg_is_exact(self) -> bool:
@@ -493,13 +495,13 @@ class Dialect(ABC):
         aggregate.
 
         Dialects that offer exact arithmetic override this to say how. The
-        three that do are all different: BigQuery only needs its **input** cast
+        four that do are all different: BigQuery only needs its **input** cast
         to NUMERIC, Dremio divides decimals exactly so ``SUM``/``COUNT``
-        works, and ClickHouse needs its own ``divideDecimal``. Returning
-        ``None`` - the default - keeps the plain ``AVG``, which is right both
-        for the engines that are already exact (Postgres, MySQL, Snowflake) and
-        for DuckDB, where no formulation is exact and a widened result would
-        only convert a loud overflow into a quiet wrong number (#316).
+        works, ClickHouse needs its own ``divideDecimal``, and DuckDB, which
+        has no exact division at all, assembles the average from integer
+        arithmetic (#316). Returning ``None`` - the default - keeps the plain
+        ``AVG``, which is right for the engines that are already exact:
+        Postgres, MySQL and Snowflake.
 
         ``obml_type`` is the type the result will be cast to, already widened
         to hold a 64-bit integer part, and carries the scale an engine needs
@@ -1606,10 +1608,14 @@ class Dialect(ABC):
             return cls._PREC_CMP
         if up in ("+", "-", "||"):
             return cls._PREC_ADD
-        if up in ("*", "/", "%"):
+        if up in ("*", "/", "%", "//"):
             return cls._PREC_MUL
-        # Unknown operator — wrap defensively (treat as lowest precedence).
-        return cls._CLAUSE_ROOT_PREC
+        # Unknown operator — wrap defensively. ``_PREC_OR`` and not
+        # ``_CLAUSE_ROOT_PREC``: the root level means "no surrounding context",
+        # so a child claiming it is never wrapped at all, which is the opposite
+        # of defensive. Binding weaker than every operator that *is* known is
+        # what makes the wrap happen.
+        return cls._PREC_OR
 
     # Non-associative operators — children at the same precedence must
     # be wrapped on BOTH sides. SQL forbids chained comparisons

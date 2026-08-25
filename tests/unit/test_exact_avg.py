@@ -71,6 +71,10 @@ REWRITTEN = {
     "bigquery": "AVG(CAST(",
     "clickhouse": "divideDecimal(",
     "dremio": "/ NULLIF(COUNT(",
+    # No exact division at all here, so the average is assembled from integer
+    # arithmetic instead: scale, divide with `//`, put the scale back by
+    # multiplying (#316).
+    "duckdb": "// (2 * CAST(COUNT(",
     # Measured once its workspace was reachable: AVG over BIGINT returns 1.0E18
     # here too. #318 had left it unrewritten on an assumption (#322).
     "databricks": "/ NULLIF(COUNT(",
@@ -78,9 +82,10 @@ REWRITTEN = {
 # Postgres, MySQL and Snowflake are already exact, so their *expression* is
 # left alone - but their result type is still widened (#330), because an exact
 # average the declared type cannot hold is no better than an inexact one.
-# DuckDB has no exact division at all, so a rewrite there would only trade a
-# loud overflow for a quiet wrong number (#316).
-LEFT_ALONE = ["duckdb", "postgres", "mysql", "snowflake"]
+# The three that need no rewrite because their own AVG is already exact. DuckDB
+# was here too, for the opposite reason - no exact division to rewrite *to* -
+# until one was assembled from integer arithmetic (#316).
+LEFT_ALONE = ["postgres", "mysql", "snowflake"]
 NATIVELY_EXACT = ["postgres", "mysql", "snowflake"]
 
 
@@ -111,13 +116,12 @@ class TestWhichDialectsAreRewritten:
 
     @pytest.mark.parametrize("dialect", LEFT_ALONE)
     def test_the_others_keep_the_plain_avg(self, dialect: str) -> None:
-        """Not an omission: two different reasons, both deliberate.
+        """Not an omission: Postgres, MySQL and Snowflake are already exact.
 
-        Postgres, MySQL and Snowflake compute ``AVG`` over a 64-bit value
-        exactly already, so a rewrite would add noise and risk for nothing.
-        DuckDB has no exact division to rewrite *to* - every route through
-        ``/`` returns DOUBLE - so the only thing a widened result would buy is
-        a plausible wrong number in place of an error.
+        They compute ``AVG`` over a 64-bit value exactly, so a rewrite would
+        add noise and risk for nothing. DuckDB used to be in this list for the
+        opposite reason - no exact division to rewrite *to* - and has since
+        been given one built from integer arithmetic (#316).
         """
         sql = _sql("Qty Avg", dialect)
         assert "AVG(" in sql.upper(), sql
@@ -302,13 +306,15 @@ class TestTheResultTypeIsWidenedWhereverTheAverageIsExact:
         assert self.WIDENED[dialect] in sql, sql
         assert "(18, 2)" not in sql, sql
 
-    def test_duckdb_keeps_the_default_so_the_overflow_stays_loud(self) -> None:
-        """The one engine where widening would hide the problem.
+    def test_duckdb_is_widened_like_the_rest(self) -> None:
+        """It used to be the engine where widening would have hidden the problem.
 
-        Its average is not exact and cannot be made so, so a wider type would
-        let a rounded value through instead of failing on it (#316).
+        Its average was not exact and, at the time, could not be made so, so a
+        wider type would have let a rounded value through instead of failing on
+        it. Now that the average is assembled exactly (#316), the widened type
+        carries a number that deserves it.
         """
-        assert "DECIMAL(18, 2)" in _sql("Qty Avg", "duckdb")
+        assert "DECIMAL(21, 2)" in _sql("Qty Avg", "duckdb")
 
     @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
     def test_every_dialect_is_classified_for_exactness(self, dialect: str) -> None:
@@ -459,11 +465,15 @@ metrics:
         assert "DECIMAL(18, 2)" not in sql, sql
         assert "DECIMAL(21, 2)" in sql, sql
 
-    def test_duckdb_still_keeps_the_default_through_composition(self) -> None:
-        """The exception has to survive composition too, or #316 leaks back."""
+    def test_duckdb_is_widened_through_composition_too(self) -> None:
+        """What was an exception is now the ordinary path (#316).
+
+        The widened type has to survive composition for the same reason the
+        exception had to: a measure must not change type by being wrapped in a
+        metric.
+        """
         sql = self._compile(["Qty Avg Prior", "Qty Avg Lag"], "duckdb")
-        assert "DECIMAL(18, 2)" in sql, sql
-        assert "DECIMAL(21, 2)" not in sql, sql
+        assert "DECIMAL(21, 2)" in sql, sql
 
 
 @pytest.mark.parametrize("dialect", sorted(DialectRegistry.available()))
@@ -568,3 +578,77 @@ metrics:
             f"{dialect}/{shape} leaves a raw floating average under a widened cast: "
             f"{raw_avgs}\n{sql}"
         )
+
+
+class TestDuckDBAssemblesItsAverage:
+    """The engine with no exact division to divide with (#316).
+
+    Every route through ``/`` returns DOUBLE there - decimal over decimal,
+    ``SUM``/``COUNT`` with either operand cast, ``AVG`` over a cast input - so
+    the average is assembled from integer arithmetic instead. These execute,
+    because the shapes that go wrong in an assembly like this are signs, ties
+    and empty groups, and none of them shows up in the rendered SQL.
+    """
+
+    #: ``(values, the exact average at scale 2)``. The negatives are the pair a
+    #: naive assembly gets wrong: the issue records ``[-3, -2]`` and ``[-3, 2]``
+    #: raising a conversion error before this was written carefully.
+    CASES = [
+        ([9223372036854775807, 9223372036854775805], "9223372036854775806.00"),
+        ([5, 0], "2.50"),
+        ([-5, 0], "-2.50"),
+        ([-3, 2], "-0.50"),
+        ([-3, -2], "-2.50"),
+        ([1, 0, 0], "0.33"),
+        ([-1, 0, 0], "-0.33"),
+        ([7], "7.00"),
+        ([None, 5, 0], "2.50"),
+    ]
+
+    def _value(self, values: list[int | None]):
+        """The average of *values* in one group, through the compiled SQL.
+
+        The query groups by ``Day``, so every row carries the same day and the
+        result is a single group - which is the point: an assembled average has
+        to be right per group, not only over a whole table.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect()
+        con.execute("CREATE TABLE charges (day BIGINT, qty BIGINT, amount DOUBLE)")
+        for value in values:
+            con.execute("INSERT INTO charges VALUES (1, ?, 1.5)", [value])
+        row = con.execute(_sql("Qty Avg", "duckdb")).fetchall()
+        con.close()
+        return row[0][-1] if row else None
+
+    @pytest.mark.parametrize(("values", "expected"), CASES)
+    def test_the_assembled_average_is_exact(self, values, expected) -> None:
+        assert str(self._value(values)) == expected
+
+    def test_a_group_with_no_values_is_null_rather_than_a_division(self) -> None:
+        """``COUNT`` of zero would raise where ``AVG`` returns NULL.
+
+        A multi-fact plan hits that routinely: a group carrying only another
+        fact's rows has no values for this measure at all. Rows of NULL are
+        that group - they make a group with a count of zero, where an empty
+        table makes no group at all.
+        """
+        assert self._value([None, None]) is None
+
+    def test_ties_go_away_from_zero_like_the_exact_engines(self) -> None:
+        """2.365 and -2.365 at scale 2, where ties-away and ties-to-even differ.
+
+        Measured against PostgreSQL, which is exact natively: it answers 2.37
+        and -2.37, and so does this. That is also the rule ``round`` pins.
+        """
+        rows = [3] * 199 + [473 - 3 * 199]
+        assert str(self._value(rows)) == "2.37"
+        assert str(self._value([-v for v in rows])) == "-2.37"
+
+    def test_a_float_measure_is_left_alone_here_too(self) -> None:
+        """The assembly is exact because the sum is; over a float it is not.
+
+        ``SUM`` of a DOUBLE is a DOUBLE, so scaling and dividing it in integers
+        would dress a drifted total as an exact figure.
+        """
+        assert "//" not in _sql("Amount Avg", "duckdb")
