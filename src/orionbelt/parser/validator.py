@@ -14,7 +14,7 @@ from orionbelt.models.expressions import (
     find_placeholders,
     find_qualified_refs,
 )
-from orionbelt.models.functions import JSON_PATH_RE, TIME_UNITS, lookup_function
+from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     DataColumnRef,
     DataType,
@@ -1186,6 +1186,7 @@ class SemanticValidator:
                     )
                 )
         errors.extend(self._check_expression_units(model))
+        errors.extend(self._check_expression_cast_targets(model))
         errors.extend(self._check_expression_json_paths(model))
         return errors
 
@@ -1197,6 +1198,26 @@ class SemanticValidator:
             inner = text[1:-1].lower()
             if inner in TIME_UNITS:
                 return inner
+        return None
+
+    @staticmethod
+    def _cast_target_literal(argument: str) -> str | None:
+        """The OBML type a source argument names, or ``None`` if it names none.
+
+        ``None`` for a non-literal, for text that is not an OBML type, and for
+        a type the catalog does not pin - the caller reports all three the same
+        way, since all three leave the call unrenderable.
+        """
+        text = argument.strip()
+        if not (len(text) >= 2 and text.startswith("'") and text.endswith("'")):
+            return None
+        inner = text[1:-1].strip().lower()
+        try:
+            obml_type = parse_data_type(inner)
+        except ValueError:
+            return None
+        if isinstance(obml_type, DecimalType) or obml_type.name in CAST_TARGETS:
+            return inner
         return None
 
     @staticmethod
@@ -1292,6 +1313,56 @@ class SemanticValidator:
                             "function": spec.name,
                             "unit": argument,
                             "units": list(TIME_UNITS),
+                        },
+                    )
+                )
+        return errors
+
+    def _check_expression_cast_targets(self, model: SemanticModel) -> list[SemanticError]:
+        """Refuse a ``cast`` to something the catalog does not pin.
+
+        The target is a quoted OBML type, not an expression and not a SQL type
+        name, for a sharper version of the reason a time unit is: the engines
+        do not merely spell a cast differently, they disagree about the value
+        it produces. A float to an integer rounds on five engines and
+        truncates on two; 2.50 to a string keeps its trailing zero on four and
+        drops it on three. Only the targets the catalog can pin are accepted,
+        and the rest are named here rather than compiled into a query that
+        answers differently per engine.
+
+        A target that is not a literal at all falls in here too. There is
+        nothing to render it from: the type has to be known when the SQL is
+        built, and this call would otherwise pass through verbatim as
+        ``cast(x, y)``, which no engine accepts.
+        """
+        errors: list[SemanticError] = []
+        accepted = ", ".join(sorted([*CAST_TARGETS, "decimal(p, s)"]))
+        for path, subject, expression in self._expression_bodies(model):
+            for call in find_function_calls(expression):
+                spec = lookup_function(call.name)
+                if spec is None or spec.type_argument is None or not spec.accepts(call.arg_count):
+                    continue
+                argument = call.arguments[spec.type_argument]
+                if self._cast_target_literal(argument) is not None:
+                    continue
+                errors.append(
+                    SemanticError(
+                        code="UNSUPPORTED_CAST_TARGET",
+                        message=(
+                            f"{subject} calls '{call.name}' with target {argument}, "
+                            f"which is not one of {accepted}"
+                        ),
+                        path=path,
+                        hint=(
+                            "The target is a quoted OBML type, not a SQL type and not "
+                            "an expression. The types left out are the ones the engines "
+                            "answer differently: see the catalog entry for which, and "
+                            "what each of them does."
+                        ),
+                        context={
+                            "function": spec.name,
+                            "target": argument,
+                            "targets": sorted([*CAST_TARGETS, "decimal(p, s)"]),
                         },
                     )
                 )

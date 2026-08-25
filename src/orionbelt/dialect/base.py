@@ -38,6 +38,7 @@ from orionbelt.ast.nodes import (
     WindowFunction,
 )
 from orionbelt.models.functions import (
+    CAST_TARGETS,
     JSON_PATH_RE,
     TEXT_ALL,
     TIME_UNITS,
@@ -45,7 +46,7 @@ from orionbelt.models.functions import (
     lookup_function,
 )
 from orionbelt.models.semantic import TimeGrain, WeekStart
-from orionbelt.models.types import DecimalType, OBMLType
+from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
 
 
 def _unit_of(arg: Expr) -> str:
@@ -63,6 +64,25 @@ def _is_unit_literal(arg: Expr) -> bool:
     return (
         isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value.lower() in TIME_UNITS
     )
+
+
+def _cast_target_of(arg: Expr) -> OBMLType | None:
+    """The OBML type a literal argument names, or ``None`` if it names none.
+
+    ``None`` covers three cases that are one case to the caller: the argument
+    is not a literal, the text is not an OBML type, or it is a type ``cast``
+    does not take yet. Each is reported by the model validator with its own
+    message; here they share an answer, which is to leave the call alone.
+    """
+    if not isinstance(arg, Literal) or not isinstance(arg.value, str):
+        return None
+    try:
+        obml_type = parse_data_type(arg.value)
+    except ValueError:
+        return None
+    if isinstance(obml_type, DecimalType) or obml_type.name in CAST_TARGETS:
+        return obml_type
+    return None
 
 
 _JSON_SEGMENT_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)|\[([0-9]+)\]")
@@ -914,10 +934,29 @@ class Dialect(ABC):
                 return self._render_last_day(args[0])
             case "current_date":
                 return self._render_current_date()
+            case "cast":
+                return self._render_cast_call(args)
             case "json_value":
                 return self._render_json_value(args)
             case _:
                 return self._render_named_function(name, args)
+
+    def _render_cast_call(self, args: list[Expr]) -> str:
+        """``cast(x, 'decimal(18, 2)')`` through this dialect's own cast.
+
+        No dialect overrides this one. The target is an OBML type, so the whole
+        of the per-engine difference is already inside ``cast_to_obml_type``
+        and its type map: BigQuery's ROUND wrap for a parameterized decimal,
+        MySQL's widening to 38 digits, ClickHouse's ``Nullable`` and its
+        rounding to the target scale. An override here would be a second place
+        for the same knowledge to live.
+        """
+        target = _cast_target_of(args[1])
+        # ``compile_expr`` only routes here once the target is a literal this
+        # catalog takes, so this holds; the assert says so rather than the
+        # reader having to go and check.
+        assert target is not None
+        return self.compile_expr(self.cast_to_obml_type(args[0], target))
 
     def _render_json_value(self, args: list[Expr]) -> str:
         """Default: ANSI ``JSON_VALUE(x, path)``, taking the path verbatim.
@@ -1843,6 +1882,10 @@ class Dialect(ABC):
                     and (
                         spec.path_argument is None
                         or _is_json_path_literal(args[spec.path_argument])
+                    )
+                    and (
+                        spec.type_argument is None
+                        or _cast_target_of(args[spec.type_argument]) is not None
                     )
                 ):
                     return self._render_function(spec.name, self._coerce_text_arguments(spec, args))

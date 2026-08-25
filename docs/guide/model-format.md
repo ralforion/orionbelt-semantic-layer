@@ -313,7 +313,7 @@ owns what it means and renders it per dialect, or **outside it**, in which case
 the call is emitted verbatim and the model is pinned to whatever engines happen
 to spell it that way.
 
-The 39 entries, what each is pinned to mean, JSON access, and the
+The 40 entries, what each is pinned to mean, JSON access, and the
 `expressionMode` setting are in **[Portable Functions](functions.md)**.
 
 ### Joins
