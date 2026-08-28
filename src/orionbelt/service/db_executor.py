@@ -701,6 +701,16 @@ def _execute_duckdb(
 
     Uses the native ``duckdb`` package with ``read_only=True`` to avoid
     cross-process file lock conflicts with the notebook process.
+
+    Prefers an Arrow-native fetch, like :func:`_fetch_result` does for the
+    pooled drivers. DuckDB already holds the result columnar, so
+    ``fetchall()`` builds a Python object per cell only for
+    ``ExecutionResult`` to hand most callers back to Arrow — and the
+    round trip *re-infers* types, which collapses an empty or all-null
+    ``int64`` column to ``null``. Carrying the table through preserves the
+    exact schema and defers row materialisation to
+    ``ExecutionResult.rows``. Falls back to the PEP 249 path when
+    :func:`_try_fetch_arrow` declines (pyarrow not loaded).
     """
     import duckdb
 
@@ -714,6 +724,26 @@ def _execute_duckdb(
             db_tz = _detect_db_timezone(conn, "duckdb")
             effective_tz = db_tz or tz
         result = conn.execute(sql)
+
+        arrow_table = _try_fetch_arrow(result)
+        if arrow_table is not None:
+            arrow_columns = [
+                ColumnMeta(
+                    name=f.name,
+                    type_hint=_arrow_type_to_hint(f.type),
+                    default_format=_default_format_for_arrow_type(f.type),
+                )
+                for f in arrow_table.schema
+            ]
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            return ExecutionResult(
+                columns=arrow_columns,
+                arrow_table=arrow_table,
+                row_count=arrow_table.num_rows,
+                execution_time_ms=round(elapsed_ms, 2),
+                tz=effective_tz,
+            )
+
         rows_raw = result.fetchall()
         desc = result.description or []
         columns = [

@@ -232,10 +232,14 @@ class TestExecuteSql:
 
     @_needs_ob_flight
     def test_duckdb_direct_execution(self) -> None:
-        """DuckDB uses a direct native path (no get_connection)."""
+        """DuckDB falls back to the PEP 249 path when Arrow is unavailable."""
         mock_result = MagicMock()
         mock_result.fetchall.return_value = [("US", 100)]
         mock_result.description = [("country",), ("revenue",)]
+        # A MagicMock answers every attribute, so it would claim Arrow
+        # support it does not have and route this test down the Arrow
+        # branch. Delete it to model a cursor without an Arrow fetch.
+        del mock_result.fetch_arrow_table
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
@@ -253,6 +257,44 @@ class TestExecuteSql:
         assert isinstance(result, ExecutionResult)
         assert result.row_count == 1
         assert result.rows == [["US", 100]]
+        mock_conn.close.assert_called_once()
+
+    @_needs_ob_flight
+    def test_duckdb_direct_execution_arrow(self) -> None:
+        """DuckDB prefers the Arrow fetch and carries the exact schema.
+
+        The zero-row case is the one that matters: rebuilding a table from
+        Python rows re-infers types and would collapse an empty ``int64``
+        column to ``null``, so a cached entry would no longer match the
+        schema a fresh read advertises.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        table = pa.table(
+            {"country": pa.array([], type=pa.string()), "revenue": pa.array([], type=pa.int64())}
+        )
+        mock_result = MagicMock()
+        mock_result.fetch_arrow_table.return_value = table
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = mock_result
+
+        with (
+            patch(
+                "ob_flight.db_router.get_credentials",
+                return_value={"database": ":memory:"},
+                create=True,
+            ),
+            patch("duckdb.connect", return_value=mock_conn),
+        ):
+            result = execute_sql("SELECT 1", dialect="duckdb")
+
+        assert isinstance(result, ExecutionResult)
+        assert result.row_count == 0
+        assert result.rows == []
+        assert [c.name for c in result.columns] == ["country", "revenue"]
+        assert [c.type_hint for c in result.columns] == ["string", "number"]
+        mock_result.fetchall.assert_not_called()
         mock_conn.close.assert_called_once()
 
     @_needs_ob_flight
