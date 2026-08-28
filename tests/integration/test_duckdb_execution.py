@@ -7,6 +7,7 @@ multi-measure, filtered, total (window), metric, and CFL (multi-fact) queries.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ from orionbelt.models.query import (  # noqa: E402
 from orionbelt.models.semantic import SemanticModel  # noqa: E402
 from orionbelt.parser.loader import TrackedLoader  # noqa: E402
 from orionbelt.parser.resolver import ReferenceResolver  # noqa: E402
-from orionbelt.service.db_executor import ColumnMeta, ExecutionResult  # noqa: E402
+from orionbelt.service.db_executor import ExecutionResult  # noqa: E402
 from orionbelt.service.session_manager import SessionManager  # noqa: E402
 from orionbelt.settings import Settings  # noqa: E402
 from tests.conftest import SALES_MODEL_DIR, SAMPLE_MODEL_YAML  # noqa: E402
@@ -726,46 +727,25 @@ INSERT INTO PUBLIC.ORDERS VALUES
 def _make_execute_sql(conn: duckdb.DuckDBPyConnection):
     """Create a mock execute_sql that uses the test DuckDB connection.
 
-    Mirrors the production duckdb-local path so column metadata (type_hint
-    + default_format) lines up with what the real ``execute_sql`` would
-    produce — keeps integration tests honest about the auto-default
-    pipeline.
+    Delegates result shaping to the production helper
+    (``duckdb_execution_result``) so column metadata and row
+    serialisation are literally the same code the real ``execute_sql``
+    runs. Only the connection differs: these tests must query the
+    fixture's in-memory database rather than one opened from credentials.
+
+    Sharing the helper is deliberate — this mock previously reimplemented
+    the shaping and went stale the moment the production path learned to
+    prefer an Arrow fetch.
     """
 
     import time
-    from decimal import Decimal as _Decimal
 
-    from orionbelt.service.db_executor import (
-        _default_format_for_duckdb_type,
-        _duckdb_type_hint,
-    )
-
-    def _coerce(v: Any) -> Any:
-        return float(v) if isinstance(v, _Decimal) else v
+    from orionbelt.service.db_executor import duckdb_execution_result
 
     def execute_sql(
         sql: str, *, dialect: str, tz: Any = None, override_db_tz: bool = False
     ) -> ExecutionResult:
-        t0 = time.monotonic()
-        result = conn.execute(sql)
-        raw_rows = result.fetchall()
-        desc = result.description or []
-        columns = [
-            ColumnMeta(
-                name=d[0],
-                type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string",
-                default_format=(_default_format_for_duckdb_type(d[1]) if len(d) > 1 else None),
-            )
-            for d in desc
-        ]
-        rows = [[_coerce(v) for v in r] for r in raw_rows]
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        return ExecutionResult(
-            columns=columns,
-            raw_rows=rows,
-            row_count=len(rows),
-            execution_time_ms=round(elapsed_ms, 2),
-        )
+        return duckdb_execution_result(conn.execute(sql), time.monotonic(), tz=tz)
 
     return execute_sql
 
@@ -1005,8 +985,11 @@ class TestAPIExecuteEndpoint:
             col_names = [c["name"] for c in data["columns"]]
             rows_as_dicts = [dict(zip(col_names, row, strict=False)) for row in data["rows"]]
             by_country = {r["Customer Country"]: r for r in rows_as_dicts}
-            assert by_country["US"]["Total Revenue"] == pytest.approx(150.0)
-            assert by_country["UK"]["Total Revenue"] == pytest.approx(75.0)
+            # The REST/JSON surface delivers a DECIMAL measure as an exact
+            # decimal *string*, never a lossy float (see ``_serialize_value``
+            # and ``api.schemas.ColumnMetadata.type``, issue #136).
+            assert Decimal(by_country["US"]["Total Revenue"]) == Decimal("150.00")
+            assert Decimal(by_country["UK"]["Total Revenue"]) == Decimal("75.00")
         finally:
             reset_session_manager()
 
@@ -1318,7 +1301,15 @@ class TestAPIExecuteEndpoint:
             env, table = _split_result_frame(arrow_resp.content)
             data = json_resp.json()
             assert table.column_names == [c["name"] for c in data["columns"]]
-            assert table.to_pylist() == [
+
+            # Same values, deliberately different encodings: Arrow carries a
+            # DECIMAL measure as decimal128 (``Decimal``), JSON as an exact
+            # decimal string. Normalise before comparing rather than assert
+            # one surface uses the other's representation.
+            def _norm(v: Any) -> Any:
+                return str(v) if isinstance(v, Decimal) else v
+
+            assert [{k: _norm(v) for k, v in r.items()} for r in table.to_pylist()] == [
                 dict(zip(table.column_names, row, strict=True)) for row in data["rows"]
             ]
             assert env["sql"] == data["sql"]
@@ -1380,8 +1371,10 @@ class TestAPIExecuteEndpoint:
 
             raw_rev = raw_tbl.column("Total Revenue").to_pylist()
             fmt_rev = fmt_tbl.column("Total Revenue").to_pylist()
-            # Raw arrow ships typed numeric values (UI round trip formats client-side).
-            assert all(isinstance(v, (int, float)) for v in raw_rev if v is not None)
+            # Raw arrow ships typed numeric values (UI round trip formats
+            # client-side). A DECIMAL measure arrives as decimal128, so the
+            # Python value is ``Decimal`` -- exact by design, not a float.
+            assert all(isinstance(v, (int, float, Decimal)) for v in raw_rev if v is not None)
             # format_values bakes locale-aware display strings into the data,
             # exactly as the shared value_formatting helper would render them.
             from orionbelt.service.value_formatting import format_number

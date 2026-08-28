@@ -291,6 +291,19 @@ def _arrow_type_to_hint(arrow_type: Any) -> str:
             pa.types.is_timestamp(arrow_type)
             or pa.types.is_date(arrow_type)
             or pa.types.is_time(arrow_type)
+            # DuckDB hands an INTERVAL back as month_day_nano_interval, and a
+            # duration column as duration[unit]. Neither is a point in time,
+            # but "datetime" is the bucket this codebase already puts
+            # intervals in: ``_duckdb_type_hint`` classifies INTERVAL that
+            # way, and ADBC's Postgres driver reaches the same answer via
+            # ``coarse_hint_from_type_name("interval")`` (see
+            # ``test_opaque_interval_maps_to_datetime``). Without these two
+            # branches the same interval column would be "datetime" on the
+            # PEP 249 path and "string" on the Arrow path, so a client would
+            # see a different Postgres OID depending only on whether pyarrow
+            # happened to be imported.
+            or pa.types.is_interval(arrow_type)
+            or pa.types.is_duration(arrow_type)
         ):
             return "datetime"
         if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
@@ -689,6 +702,88 @@ def execute_sql(
         raise ExecutionError(f"Database execution failed: {exc}") from exc
 
 
+def _duckdb_fetch_arrow(result: Any) -> Any:
+    """Arrow fetch for a DuckDB result, or ``None``.
+
+    DuckDB deprecated ``fetch_arrow_table()`` in favour of
+    ``to_arrow_table()``; calling the old name emits a
+    ``DeprecationWarning`` on every query. Prefer the new name and fall
+    back to :func:`_try_fetch_arrow` for older ``duckdb`` releases
+    (``pyproject`` allows ``>=1.0``), which also keeps the
+    "pyarrow must already be imported" guard in one place.
+    """
+    import sys
+
+    if "pyarrow" not in sys.modules:
+        return None
+    fetch_fn = getattr(result, "to_arrow_table", None)
+    if fetch_fn is not None:
+        try:
+            return fetch_fn()
+        except Exception:  # noqa: BLE001 — never fail a query on a fetch probe
+            return None
+    return _try_fetch_arrow(result)
+
+
+def duckdb_execution_result(
+    result: Any, t0: float, *, tz: ZoneInfo | None = None
+) -> ExecutionResult:
+    """Build an :class:`ExecutionResult` from an executed DuckDB result.
+
+    Prefers an Arrow-native fetch, like :func:`_fetch_result` does for the
+    pooled drivers. DuckDB already holds the result columnar, so
+    ``fetchall()`` builds a Python object per cell only for
+    ``ExecutionResult`` to hand most callers back to Arrow — and the
+    round trip *re-infers* types, which collapses an empty or all-null
+    ``int64`` column to ``null``. Carrying the table through preserves the
+    exact schema and defers row materialisation to
+    ``ExecutionResult.rows``. Falls back to the PEP 249 path when the
+    Arrow fetch declines (pyarrow not loaded).
+
+    Public (no leading underscore) so integration tests that must run
+    against their own DuckDB connection can share this exact code rather
+    than reimplementing it and silently drifting from production.
+    """
+    arrow_table = _duckdb_fetch_arrow(result)
+    if arrow_table is not None:
+        arrow_columns = [
+            ColumnMeta(
+                name=f.name,
+                type_hint=_arrow_type_to_hint(f.type),
+                default_format=_default_format_for_arrow_type(f.type),
+            )
+            for f in arrow_table.schema
+        ]
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        return ExecutionResult(
+            columns=arrow_columns,
+            arrow_table=arrow_table,
+            row_count=arrow_table.num_rows,
+            execution_time_ms=round(elapsed_ms, 2),
+            tz=tz,
+        )
+
+    rows_raw = result.fetchall()
+    desc = result.description or []
+    columns = [
+        ColumnMeta(
+            name=d[0],
+            type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string",
+            default_format=(_default_format_for_duckdb_type(d[1]) if len(d) > 1 else None),
+        )
+        for d in desc
+    ]
+    rows = [_serialize_row(r, tz) for r in rows_raw]
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    return ExecutionResult(
+        columns=columns,
+        raw_rows=rows,
+        row_count=len(rows),
+        execution_time_ms=round(elapsed_ms, 2),
+        tz=tz,
+    )
+
+
 def _execute_duckdb(
     sql: str,
     creds: dict[str, Any],
@@ -700,17 +795,8 @@ def _execute_duckdb(
     """Execute SQL directly via native duckdb.
 
     Uses the native ``duckdb`` package with ``read_only=True`` to avoid
-    cross-process file lock conflicts with the notebook process.
-
-    Prefers an Arrow-native fetch, like :func:`_fetch_result` does for the
-    pooled drivers. DuckDB already holds the result columnar, so
-    ``fetchall()`` builds a Python object per cell only for
-    ``ExecutionResult`` to hand most callers back to Arrow — and the
-    round trip *re-infers* types, which collapses an empty or all-null
-    ``int64`` column to ``null``. Carrying the table through preserves the
-    exact schema and defers row materialisation to
-    ``ExecutionResult.rows``. Falls back to the PEP 249 path when
-    :func:`_try_fetch_arrow` declines (pyarrow not loaded).
+    cross-process file lock conflicts with the notebook process. Result
+    shaping lives in :func:`duckdb_execution_result`.
     """
     import duckdb
 
@@ -723,46 +809,7 @@ def _execute_duckdb(
         else:
             db_tz = _detect_db_timezone(conn, "duckdb")
             effective_tz = db_tz or tz
-        result = conn.execute(sql)
-
-        arrow_table = _try_fetch_arrow(result)
-        if arrow_table is not None:
-            arrow_columns = [
-                ColumnMeta(
-                    name=f.name,
-                    type_hint=_arrow_type_to_hint(f.type),
-                    default_format=_default_format_for_arrow_type(f.type),
-                )
-                for f in arrow_table.schema
-            ]
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            return ExecutionResult(
-                columns=arrow_columns,
-                arrow_table=arrow_table,
-                row_count=arrow_table.num_rows,
-                execution_time_ms=round(elapsed_ms, 2),
-                tz=effective_tz,
-            )
-
-        rows_raw = result.fetchall()
-        desc = result.description or []
-        columns = [
-            ColumnMeta(
-                name=d[0],
-                type_hint=_duckdb_type_hint(d[1]) if len(d) > 1 else "string",
-                default_format=(_default_format_for_duckdb_type(d[1]) if len(d) > 1 else None),
-            )
-            for d in desc
-        ]
-        rows = [_serialize_row(r, effective_tz) for r in rows_raw]
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        return ExecutionResult(
-            columns=columns,
-            raw_rows=rows,
-            row_count=len(rows),
-            execution_time_ms=round(elapsed_ms, 2),
-            tz=effective_tz,
-        )
+        return duckdb_execution_result(conn.execute(sql), t0, tz=effective_tz)
     finally:
         conn.close()
 

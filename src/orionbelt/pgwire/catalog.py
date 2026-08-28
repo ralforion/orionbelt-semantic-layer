@@ -1215,6 +1215,14 @@ def _duckdb_desc_to_hint(description_row: tuple[Any, ...]) -> str:
         # a DECIMAL model column agrees with information_schema.columns and the
         # query result's RowDescription (issue #116).
         return "decimal"
+    if "interval" in name:
+        # Must precede the numeric check: "interval" contains "int", so the
+        # substring match below classified a duration as a number and
+        # advertised OID_FLOAT8 for it. "datetime" is the bucket the rest of
+        # the codebase puts intervals in — ``db_executor._duckdb_type_hint``,
+        # ``_arrow_type_to_hint`` and ADBC's ``coarse_hint_from_type_name``
+        # all agree on it.
+        return "datetime"
     if any(token in name for token in ("int", "float", "double", "real")):
         return "number"
     if any(token in name for token in ("timestamp", "date", "time")):

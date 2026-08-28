@@ -238,7 +238,9 @@ class TestExecuteSql:
         mock_result.description = [("country",), ("revenue",)]
         # A MagicMock answers every attribute, so it would claim Arrow
         # support it does not have and route this test down the Arrow
-        # branch. Delete it to model a cursor without an Arrow fetch.
+        # branch. Delete both probed names to model a result without an
+        # Arrow fetch.
+        del mock_result.to_arrow_table
         del mock_result.fetch_arrow_table
 
         mock_conn = MagicMock()
@@ -274,7 +276,9 @@ class TestExecuteSql:
             {"country": pa.array([], type=pa.string()), "revenue": pa.array([], type=pa.int64())}
         )
         mock_result = MagicMock()
-        mock_result.fetch_arrow_table.return_value = table
+        # ``to_arrow_table`` is the non-deprecated name and the one the
+        # DuckDB path probes first.
+        mock_result.to_arrow_table.return_value = table
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
@@ -296,6 +300,37 @@ class TestExecuteSql:
         assert [c.type_hint for c in result.columns] == ["string", "number"]
         mock_result.fetchall.assert_not_called()
         mock_conn.close.assert_called_once()
+
+    def test_interval_hint_agrees_across_mappings(self) -> None:
+        """INTERVAL classifies the same whichever path produced it.
+
+        Four mappings can see an interval: ``_duckdb_type_hint`` (PEP 249
+        fallback), ``_arrow_type_to_hint`` (Arrow fetch, both DuckDB's
+        month_day_nano_interval and a duration), pgwire's
+        ``_duckdb_desc_to_hint`` (catalog), and ADBC's
+        ``coarse_hint_from_type_name`` for the Postgres driver's opaque
+        "interval" (see ``test_opaque_interval_maps_to_datetime``). They
+        must agree, or the same column is advertised with a different
+        Postgres OID depending only on which driver answered.
+
+        ``_duckdb_desc_to_hint`` used to return "number" here, because
+        "interval" contains "int" and the numeric substring check ran
+        first.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        from orionbelt.pgwire.catalog import _duckdb_desc_to_hint
+        from orionbelt.service.db_executor import _arrow_type_to_hint, _duckdb_type_hint
+
+        assert _duckdb_type_hint("INTERVAL") == "datetime"
+        assert _arrow_type_to_hint(pa.month_day_nano_interval()) == "datetime"
+        assert _arrow_type_to_hint(pa.duration("us")) == "datetime"
+        assert _duckdb_desc_to_hint(("v", "INTERVAL")) == "datetime"
+
+        # Genuine integers still read as numbers despite sharing the "int"
+        # substring that used to swallow INTERVAL.
+        for name in ("INTEGER", "BIGINT", "TINYINT", "HUGEINT"):
+            assert _duckdb_desc_to_hint(("v", name)) == "number"
 
     @_needs_ob_flight
     def test_db_error_raises_execution_error(self) -> None:
