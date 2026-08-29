@@ -965,6 +965,11 @@ def explain_sql(sql: str, *, dialect: str) -> str:
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
+    except _config_errors() as exc:
+        # Same contract as execute_sql: a credential / configuration problem
+        # is not an EXPLAIN failure, and reporting it as one sends the reader
+        # to the database instead of to their environment.
+        raise ExecutionUnavailableError(str(exc)) from None
     except Exception as exc:
         raise ExecutionError(f"EXPLAIN failed: {exc}") from exc
 

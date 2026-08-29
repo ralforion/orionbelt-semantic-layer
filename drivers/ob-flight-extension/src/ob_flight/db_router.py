@@ -106,7 +106,7 @@ _ENV_ALIASES: dict[str, tuple[str, ...]] = {
     # with every other vendor key here.
     "MOTHERDUCK_ACCESS_TOKEN": (
         "MOTHERDUCK_TOKEN",
-        "motherduck_token",  # noqa: SIM112 — MotherDuck's own lowercase spelling
+        "motherduck_token",
     ),
 }
 
