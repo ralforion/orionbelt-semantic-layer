@@ -36,12 +36,17 @@ ACTION_CREATE_PREPARED_STATEMENT = "CreatePreparedStatement"
 ACTION_CLOSE_PREPARED_STATEMENT = "ClosePreparedStatement"
 
 # Standard Flight SQL schemas for catalog responses
-CATALOG_SCHEMA = pa.schema([pa.field("catalog_name", pa.utf8())])
+# Nullability is part of the Flight SQL contract, not decoration: ADBC
+# compares the stream's schema against the spec field-for-field and rejects
+# the endpoint on a mismatch ("Invalid schema returned for ..."). JDBC is
+# lenient here, which is why this went unnoticed until the ADBC conformance
+# harness ran. Fields the spec marks NOT NULL must say so.
+CATALOG_SCHEMA = pa.schema([pa.field("catalog_name", pa.utf8(), nullable=False)])
 
 DB_SCHEMA_SCHEMA = pa.schema(
     [
         pa.field("catalog_name", pa.utf8()),
-        pa.field("db_schema_name", pa.utf8()),
+        pa.field("db_schema_name", pa.utf8(), nullable=False),
     ]
 )
 
@@ -49,13 +54,13 @@ TABLE_SCHEMA = pa.schema(
     [
         pa.field("catalog_name", pa.utf8()),
         pa.field("db_schema_name", pa.utf8()),
-        pa.field("table_name", pa.utf8()),
-        pa.field("table_type", pa.utf8()),
-        pa.field("table_schema", pa.binary()),
+        pa.field("table_name", pa.utf8(), nullable=False),
+        pa.field("table_type", pa.utf8(), nullable=False),
+        pa.field("table_schema", pa.binary(), nullable=False),
     ]
 )
 
-TABLE_TYPES_SCHEMA = pa.schema([pa.field("table_type", pa.utf8())])
+TABLE_TYPES_SCHEMA = pa.schema([pa.field("table_type", pa.utf8(), nullable=False)])
 
 PRIMARY_KEYS_SCHEMA = pa.schema(
     [

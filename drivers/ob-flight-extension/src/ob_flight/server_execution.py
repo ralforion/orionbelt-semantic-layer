@@ -115,6 +115,32 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
+def _projects_only_artefacts(ast: Any, model: Any) -> bool:
+    """True when every SELECT item names a dimension, measure or metric.
+
+    Used to tell a data query apart from a metadata preview when the FROM
+    target is schema-qualified. ``SELECT *`` yields a Star (not a Column),
+    so it correctly answers False and keeps the preview behaviour BI tools
+    rely on.
+    """
+    import sqlglot.expressions as exp
+
+    known = {label.lower() for label in model.dimensions}
+    known |= {label.lower() for label in model.effective_measures}
+    known |= {label.lower() for label in model.metrics}
+
+    projections = list(getattr(ast, "expressions", []) or [])
+    if not projections:
+        return False
+    for proj in projections:
+        inner = proj.this if isinstance(proj, exp.Alias) else proj
+        if not isinstance(inner, exp.Column):
+            return False
+        if (getattr(inner, "name", "") or "").lower() not in known:
+            return False
+    return True
+
+
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
     """Classify a SQL query into one of three handling modes.
 
@@ -281,6 +307,17 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
         and schema in model_schemas
         and bare in (_LABEL_VIEW_NAMES + _METADATA_VIEW_NAMES + ("model",))
     ):
+        # ...except when the projection names the model's own artefacts.
+        # ``FROM <model>.model`` is a metadata preview only while the caller
+        # asks for metadata; ``SELECT "Customer Country", "Total Revenue"
+        # FROM "sales"."model"`` is a data query that a client wrote after
+        # browsing the catalog it was just handed. Routing that to the
+        # catalog answers a different question than the one asked - the
+        # caller gets column-metadata rows instead of their result set,
+        # silently. Only ``model`` is rescued: the label / metadata views
+        # exist to return introspection rows, so they stay as they are.
+        if bare == "model" and _projects_only_artefacts(ast, model):
+            return _MODE_SEMANTIC
         return _MODE_CATALOG
 
     # Semantic — the model's virtual table, OR a per-category label view
