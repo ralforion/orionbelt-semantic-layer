@@ -64,9 +64,20 @@ dependency group, so they differ from one another too; the tables list what
 each group adds **on top of** the runtime dependencies above.
 
 Most packages ship their own licence text in `dist-info/licenses/` inside the
-image — 71 of 73 distributions in the UI image when this was written. A few
-declare a licence in metadata but ship no licence file at all (`ffmpy`,
-`gradio_client`); for those the upstream project is the authoritative source.
+image. A few declare a licence in metadata and ship no file at all; for those
+the upstream project is the authoritative source. Measured per image when this
+was written — the images differ, so a single figure would be wrong for two of
+them:
+
+| Image | Carry licence text | Ship none |
+|---|---|---|
+| `…-api` | 50 of 50 | — |
+| `…-flight` | 109 of 112 | `et_xmlfile`, `openpyxl`, `thrift` |
+| `…-ui` | 71 of 73 | `ffmpy`, `gradio_client` |
+
+Those counts move with every dependency bump. The command under *Transitive
+dependencies* below reads the current state out of an image, which is
+authoritative where this table is a snapshot.
 
 ### `ralforion/orionbelt-semantic-layer-api`
 
