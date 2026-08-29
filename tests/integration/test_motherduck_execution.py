@@ -59,19 +59,27 @@ def _token_env_names() -> tuple[str, ...]:
     return (canonical, *_ENV_ALIASES.get(canonical, ()))
 
 
-def _token() -> str | None:
-    return next((v for v in (os.environ.get(n) for n in _token_env_names()) if v), None)
-
-
 @pytest.fixture(scope="module")
 def motherduck_env() -> dict[str, str]:
-    """Skip unless a MotherDuck database and token are configured."""
+    """Skip unless the router considers MotherDuck configured.
+
+    "Configured" is asked of the router rather than re-derived here. The
+    token may arrive through any of three env vars *or* embedded directly in
+    ``DUCKDB_DATABASE`` as ``motherduck_token=`` / ``read_scaling_token=``;
+    a local rule that only looked at the env vars skipped the whole live
+    suite for the documented embedded forms even though the router accepted
+    them.
+    """
+    from ob_flight.db_router import MotherDuckTokenMissingError, get_credentials
+
     database = os.environ.get("DUCKDB_DATABASE", "")
     if not database.startswith("md:"):
         pytest.skip("DUCKDB_DATABASE is not a MotherDuck database (md:<name>)")
-    if not _token():
-        pytest.skip("MOTHERDUCK_ACCESS_TOKEN (or motherduck_token) is not set")
-    return {"database": database}
+    try:
+        creds = get_credentials("duckdb")
+    except MotherDuckTokenMissingError as exc:
+        pytest.skip(str(exc))
+    return {"database": str(creds["database"])}
 
 
 @pytest.fixture(scope="module")
@@ -118,11 +126,14 @@ class TestConnection:
 
     def test_token_is_folded_into_the_database_string(self, motherduck_env: dict[str, str]) -> None:
         """``duckdb.connect`` has no token argument, so it rides on the URI."""
-        from ob_flight.db_router import get_credentials
+        from ob_flight.db_router import _MOTHERDUCK_URI_TOKEN_PARAMS, get_credentials
 
         database = get_credentials("duckdb")["database"]
         assert database.startswith("md:")
-        assert "motherduck_token=" in database
+        # Either accepted parameter counts: a read-scaling token is spelled
+        # differently and is no less a token. Taken from the router so the
+        # assertion cannot narrow behind it.
+        assert any(f"{p}=" in database for p in _MOTHERDUCK_URI_TOKEN_PARAMS), database
 
     def test_missing_token_fails_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A tokenless ``md:`` must raise, never reach interactive auth.
