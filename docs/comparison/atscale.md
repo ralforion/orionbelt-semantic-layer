@@ -207,7 +207,7 @@ AtScale's MDX/DAX support is unique and a genuine advantage for Microsoft-stack 
 | Air-gapped deploy | ✅ supported | ✅ supported (enterprise) |
 | Self-host parity | The free tier has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | Full features in licensed enterprise tier; Developer Edition has feature/scale restrictions |
 
-The free **Developer Community Edition** lowers AtScale's barrier for evaluation, prototyping, and individual learning — you can model, run MDX queries from Excel, and explore AtScale without a contract. For production multi-user deployments, autonomous aggregates at scale, or enterprise governance/support, the licensed AtScale tier is required. For OBSL the free tier is fully production-grade for self-hosted use; commercial offerings (embedded analytics license, managed cloud, enterprise features, consulting + support) are available alongside if you want them, not as an upgrade gate for OSS capabilities.
+The free **Developer Community Edition** lowers AtScale's barrier for evaluation, prototyping, and individual learning — you can model, run MDX queries from Excel, and explore AtScale without a contract. For production multi-user deployments, autonomous aggregates at scale, or enterprise governance/support, the licensed AtScale tier is required. For OBSL the free tier is fully production-grade for self-hosted use; commercial offerings (embedded analytics license, managed cloud, enterprise features, consulting + support) are available alongside if you want them, not as an upgrade gate for the free tier's capabilities.
 
 ---
 
@@ -293,7 +293,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 2. **Multi-rooted DAG modeling with explicit CFL multi-fact planning** — the ability to query across genuinely independent fact tables in one go without pre-designing a cube.
 3. **First-class declarative cumulative & period-over-period metric types** — turnkey alternatives to writing MDX calculated members.
 4. **RDF/SPARQL graph surface** for governance/lineage tooling outside the proprietary platform.
-5. **A modern OSS SQL wire protocol surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
+5. **A modern, open-protocol SQL wire surface for BI tools** — OBSL ships both **PostgreSQL wire** (Tableau / DBeaver / Superset / Power BI / `psql` / Dremio's Postgres-source connector, v2.5.0+) and **Apache Arrow Flight SQL** (gRPC, columnar, JDBC/ODBC via Flight SQL drivers) side-by-side; AtScale's BI-tool surface is JDBC/ODBC + MDX/DAX through the enterprise gateway.
 6. **First-class DB-API 2.0 drivers** for direct programmatic access from Python.
 7. ~~MCP server (first-party)~~ — **closed**: AtScale ships its own containerized MCP Server exposing models, hierarchies, and metrics under role-based access.
 8. **Plain-text portable model format** — OBML is a static YAML file that diffs in Git; AtScale models are richer but harder to version-control as plain text.
