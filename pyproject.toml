@@ -198,6 +198,7 @@ markers = [
     "adbc: requires a reachable PostgreSQL via ADBC; run with: pytest -m adbc",
     "adbc_flight: drives the OBSL Flight SQL server through the ADBC flightsql driver (conformance harness); run with: pytest -m adbc_flight",
     "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars); run with: pytest -m snowflake",
+    "motherduck: requires a live MotherDuck database (DUCKDB_DATABASE=md:<db> + MOTHERDUCK_ACCESS_TOKEN); run with: pytest -m motherduck",
     "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC); run with: pytest -m bigquery",
     "databricks: requires a live Databricks workspace (DATABRICKS_* env vars); run with: pytest -m databricks",
     "spark: executes the Databricks dialect on a local PySpark session (needs pyspark + a JDK); run with: pytest -m spark",

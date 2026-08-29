@@ -18,6 +18,7 @@ Usage::
 
     uv run python scripts/seed_cloud_vendor.py snowflake
     uv run python scripts/seed_cloud_vendor.py --check snowflake
+    uv run python scripts/seed_cloud_vendor.py motherduck
 
 Credentials come from the environment (``.env`` is not read automatically -
 ``set -a && source .env && set +a`` first). This drops and recreates the
@@ -31,6 +32,7 @@ import os
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEED_SQL = REPO_ROOT / "tests" / "integration" / "drift" / "vendor_exec" / "seed_sql"
@@ -38,10 +40,17 @@ SCHEMA = "orionbelt_1"
 EXPECTED_SALES_ROWS = 10000
 
 
+# Vendors whose seed dump lives under another dialect's directory. MotherDuck
+# *is* DuckDB served remotely and accepts the same SQL, so it reuses the
+# generated duckdb dump rather than carrying a byte-identical copy.
+_SEED_DIALECT = {"motherduck": "duckdb"}
+
+
 def statements(vendor: str) -> Iterator[tuple[str, str]]:
     """Yield ``(filename, statement)`` for a vendor's seed dump, comments stripped."""
+    dialect = _SEED_DIALECT.get(vendor, vendor)
     for name in ("01_schema.sql", "02_data.sql"):
-        path = SEED_SQL / vendor / name
+        path = SEED_SQL / dialect / name
         if not path.exists():
             raise SystemExit(f"No seed dump at {path}. Generate it with _seed.py first.")
         for chunk in path.read_text(encoding="utf-8").split(";\n"):
@@ -113,15 +122,46 @@ def _databricks() -> tuple[Callable[[str], None], Callable[[str], list[tuple]], 
     return execute, query, conn.close
 
 
+def _motherduck() -> tuple[Callable[[str], None], Callable[[str], list[tuple]], Callable[[], None]]:
+    import duckdb
+
+    database = os.environ.get("DUCKDB_DATABASE", "")
+    if not database.startswith("md:"):
+        raise SystemExit(
+            "Missing environment: DUCKDB_DATABASE must be a MotherDuck database "
+            f"(md:<name>), got {database!r}"
+        )
+    # SIM112 wants an uppercase name; the lowercase spelling is MotherDuck's
+    # own documented variable and what its CLI exports, so it is accepted
+    # verbatim rather than renamed.
+    token = os.environ.get("MOTHERDUCK_ACCESS_TOKEN") or os.environ.get(
+        "motherduck_token"  # noqa: SIM112
+    )
+    if not token:
+        raise SystemExit("Missing environment: MOTHERDUCK_ACCESS_TOKEN (or motherduck_token)")
+    sep = "&" if "?" in database else "?"
+    # Seeding writes, so unlike the query path this connection is not read-only.
+    conn = duckdb.connect(f"{database}{sep}motherduck_token={quote(token, safe='')}")
+
+    def execute(sql: str) -> None:
+        conn.execute(sql)
+
+    def query(sql: str) -> list[tuple]:
+        return list(conn.execute(sql).fetchall())
+
+    return execute, query, conn.close
+
+
 VENDORS: dict[str, Callable[[], tuple]] = {
     "bigquery": _bigquery,
     "databricks": _databricks,
+    "motherduck": _motherduck,
     "snowflake": _snowflake,
 }
 
 # Identifier quoting per vendor, for the row-count probe. The seed dumps
 # themselves already carry the right quoting.
-_QUOTE = {"bigquery": "`", "databricks": "`", "snowflake": '"'}
+_QUOTE = {"bigquery": "`", "databricks": "`", "motherduck": '"', "snowflake": '"'}
 
 
 def main(argv: list[str] | None = None) -> int:
