@@ -259,9 +259,18 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
-    schema: Any = None,
+    schema: Any,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
+
+    ``schema`` is the executor's driver Arrow schema
+    (``ExecutionResult.arrow_schema``), or ``None`` when the result came from
+    a PEP 249 driver that has none. It is **required, not defaulted**: rows
+    alone cannot type an empty or all-null column, so a writer that omits it
+    silently stores an Arrow ``null`` column that a raw ``format=arrow`` hit
+    then serves verbatim against numeric column metadata. Making callers pass
+    it explicitly turns that omission into a signature error instead of a
+    payload that contradicts its own envelope.
 
     Only the row data (blob) and the result's column schema + row count (entry
     sidecar) are cached; the response envelope (sql, explain, timing, ``cached``

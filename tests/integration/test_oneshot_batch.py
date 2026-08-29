@@ -403,3 +403,79 @@ class TestOneshotBatchSettings:
             w["code"] == "MAX_PARALLELISM_CAPPED" or "max_parallelism reduced" in w["message"]
             for w in data["batch_warnings"]
         )
+
+
+# ---------------------------------------------------------------------------
+# Cache writes preserve declared Arrow types
+# ---------------------------------------------------------------------------
+
+
+class _CapturingCache:
+    """Minimal Cache stand-in that records the payload it was handed."""
+
+    def __init__(self) -> None:
+        self.payload: bytes | None = None
+
+    async def set(self, key: str, payload: bytes, **kwargs: object) -> None:  # noqa: ARG002
+        self.payload = payload
+
+
+class TestOneshotCacheSchemaPreservation:
+    """The one-shot writer feeds the *shared* cache, so it must store types.
+
+    Its envelope has already reduced the result to JSON rows, which cannot
+    type an empty or all-null column. Without the executor's Arrow schema the
+    blob stores ``null`` — and a later raw ``format=arrow`` hit serves that
+    blob verbatim against numeric column metadata.
+    """
+
+    async def test_schema_is_forwarded_to_the_encoder(self) -> None:
+        pa = pytest.importorskip("pyarrow")
+
+        from types import SimpleNamespace
+
+        from orionbelt.api.routers.oneshot import _try_oneshot_cache_set
+        from orionbelt.api.schemas import ColumnMetadata
+        from orionbelt.cache.result_codec import decode_data
+
+        envelope = SimpleNamespace(
+            columns=[ColumnMetadata(name="n", type="number")],
+            rows=[],
+            sql="SELECT 1",
+            dialect="duckdb",
+            row_count=0,
+        )
+        schema = pa.schema([pa.field("n", pa.int64())])
+
+        async def _write(schema_arg: object) -> object:
+            cache = _CapturingCache()
+            await _try_oneshot_cache_set(
+                cache=cache,
+                key="k",
+                envelope=envelope,
+                ttl_seconds=60,
+                datasource="duckdb",
+                model_id="m",
+                dialect="duckdb",
+                physical_tables=[],
+                schema=schema_arg,
+            )
+            assert cache.payload is not None
+            return decode_data(cache.payload).schema.field(0).type
+
+        assert str(await _write(schema)) == "int64"
+        # Guard the test itself: without the schema the defect reproduces.
+        assert str(await _write(None)) == "null"
+
+    def test_try_cache_set_requires_schema(self) -> None:
+        """``schema`` has no default, so a new writer cannot silently omit it.
+
+        Every cache writer must decide what to pass. Defaulting it to None is
+        what let the one-shot path store null-typed payloads unnoticed.
+        """
+        import inspect
+
+        from orionbelt.api.query_cache import try_cache_set
+
+        param = inspect.signature(try_cache_set).parameters["schema"]
+        assert param.default is inspect.Parameter.empty
