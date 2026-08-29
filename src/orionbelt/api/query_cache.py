@@ -259,6 +259,7 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
+    schema: Any = None,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
 
@@ -274,7 +275,7 @@ async def try_cache_set(
     from orionbelt.cache import key as cache_key_mod
 
     try:
-        payload = encode_data([c.name for c in columns], rows)
+        payload = encode_data([c.name for c in columns], rows, schema)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
@@ -416,6 +417,10 @@ async def execute_query_with_cache(
         override_db_tz=override_db_tz,
     )
     columns = build_result_columns(model, exec_result)
+    # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
+    # construction so this is safe regardless, but keeping it explicit
+    # documents that the encoders want the driver's declared types.
+    arrow_schema = exec_result.arrow_schema
 
     if (
         cacheable
@@ -435,6 +440,7 @@ async def execute_query_with_cache(
             ttl_seconds=ttl_outcome.ttl.seconds,
             datasource=ds,
             model_id=model_id,
+            schema=arrow_schema,
         )
 
     return CachedExecution(

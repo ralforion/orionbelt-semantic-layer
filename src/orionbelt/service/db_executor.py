@@ -83,11 +83,28 @@ class ExecutionResult:
         self._arrow_table = arrow_table
         self._rows = raw_rows
         self._tz = tz
+        # Captured up front, because ``rows`` drops the table to free memory.
+        # Keeping the *schema* costs nothing and lets the response and cache
+        # writers preserve declared types without having to read the table
+        # before anything touches ``rows`` — an ordering hazard that would
+        # otherwise be invisible at the call site.
+        self._arrow_schema = getattr(arrow_table, "schema", None)
 
     @property
     def timezone(self) -> str | None:
         """IANA timezone name used to label naive timestamps, or None."""
         return str(self._tz) if self._tz is not None else None
+
+    @property
+    def arrow_schema(self) -> Any | None:
+        """The driver's Arrow schema, or ``None`` for a PEP 249 result.
+
+        Survives ``rows`` materialisation. Encoders use it so an empty or
+        all-null column keeps its declared type instead of decoding as
+        ``null`` — otherwise a raw-arrow payload contradicts the column
+        metadata in its own envelope.
+        """
+        return self._arrow_schema
 
     @property
     def rows(self) -> list[list[Any]]:
