@@ -2,7 +2,8 @@
 name = "orionbelt-semantic-layer"
 version = "2.26.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
-license = {text = "BSL-1.1"}
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "info@ralforion.com"}]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -29,7 +30,6 @@ classifiers = [
     "Framework :: Pydantic :: 2",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

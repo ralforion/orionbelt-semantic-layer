@@ -17,7 +17,7 @@
 <a href="https://pypi.org/project/orionbelt-semantic-layer/"><img src="https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white" alt="PyPI"></a>
 <a href="https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api"><img src="https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED" alt="Docker pulls"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
-<a href="https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-BSL_1.1-orange.svg" alt="License: BSL 1.1"></a>
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-orange.svg" alt="License: BUSL-1.1"></a>
 </p>
 
 ---
@@ -370,7 +370,7 @@ Also works with Copilot, Cursor, and Windsurf. See the [MCP repo](https://github
 | **Multi-fact queries** | Star Schema + CFL planner (fan-trap prevention) | Limited | Pre-aggregations | Automatic joins |
 | **Integration surface** | REST API + MCP + Gradio UI | dbt Cloud API | REST + GraphQL | VS Code extension |
 | **Deployment** | Self-host anywhere, single binary | SaaS (Cloud) | SaaS or self-host | Library |
-| **License** | BSL 1.1 (converts to Apache 2.0) | Apache 2.0 | AGPL / proprietary | MIT |
+| **License** | BUSL-1.1 (converts to Apache 2.0) | Apache 2.0 | AGPL / proprietary | MIT |
 
 ---
 
@@ -646,7 +646,9 @@ Copyright © 2026 [RALFORION d.o.o.](https://ralforion.com)
 
 OrionBelt® is a registered trademark of RALFORION d.o.o.
 
-Licensed under the [Business Source License 1.1](LICENSE). The Licensed Work will convert to Apache License 2.0 on 2030-03-16.
+Licensed under the [Business Source License 1.1](LICENSE) (SPDX: `BUSL-1.1`). The Licensed Work will convert to Apache License 2.0 on 2030-03-16.
+
+Third-party works redistributed by OrionBelt, and their terms, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 By contributing to this project, you agree to the [Contributor License Agreement](CLA.md).
 

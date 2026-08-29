@@ -6,7 +6,8 @@ build-backend = "hatchling.build"
 name = "ob-flight-extension"
 version = "2.6.1"
 description = "Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)"
-license = { text = "BSL-1.1" }
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 readme = "README.md"
 authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
 keywords = ["arrow", "flight-sql", "dbeaver", "tableau", "orionbelt", "semantic-layer"]

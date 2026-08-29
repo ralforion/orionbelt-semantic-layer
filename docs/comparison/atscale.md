@@ -199,7 +199,7 @@ AtScale's MDX/DAX support is unique and a genuine advantage for Microsoft-stack 
 
 | | OBSL | AtScale |
 |---|---|---|
-| License | Source-available (BSL) | Proprietary; **free Developer Community Edition** for non-production / individual use |
+| License | Source-available (BUSL-1.1) | Proprietary; **free Developer Community Edition** for non-production / individual use |
 | Self-hostable | ✅ (one Python service) | ✅ — Developer Edition is free to install; production deployment requires enterprise license |
 | Pricing | OSS is free for self-hosted production; commercial tiers available for embedded analytics, managed cloud, and enterprise features | **Developer Edition: free** (with feature/scale limits). Enterprise: typical six-figure annual licensing for production |
 | Commercial offering | Embedded analytics license · commercial cloud offering · enterprise features · consulting + support | Enterprise license — production deployments, autonomous aggregates at scale, enterprise governance, vendor support |

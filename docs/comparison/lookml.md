@@ -222,7 +222,7 @@ This is the most consequential difference and worth calling out separately.
 
 | | OBSL | LookML |
 |---|---|---|
-| License | Source-available (BSL) | Proprietary (Google Cloud / Looker) |
+| License | Source-available (BUSL-1.1) | Proprietary (Google Cloud / Looker) |
 | Self-hostable | Yes — runs anywhere Python runs | Limited: Looker is a hosted SaaS; "Looker (original)" had a self-hosted option but is being deprecated |
 | Cost | OSS is free for self-hosted production; commercial tiers available for embedded analytics, managed cloud, and enterprise features | Per-user licensing on the Looker platform |
 | Commercial offering | Embedded analytics license · commercial cloud offering · enterprise features · consulting + support | Looker platform — per-user licensing, hosted by Google Cloud |

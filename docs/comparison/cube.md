@@ -275,7 +275,7 @@ Both projects ship a free OSS core and offer commercial extensions, but the spli
 
 | | OBSL | Cube |
 |---|---|---|
-| Core license | Source-available (BSL 1.1) | Apache 2.0 |
+| Core license | Source-available (BUSL-1.1) | Apache 2.0 |
 | Self-hostable | ✅ (one Python service) | ✅ (Cube Core: Node.js + optional Cube Store + optional Redis) |
 | Commercial offering | Embedded analytics license · commercial cloud offering · enterprise features · consulting + support | Cube Cloud — managed runtime, multi-cluster, advanced security, Studio IDE, paid |
 | Operational footprint | Light: one process, in-memory sessions, optional file-backed result cache (DuckDB metadata + Parquet) on local disk | Heavier: API server + Cube Store + Redis (optional) + scheduler + refresh workers in production |

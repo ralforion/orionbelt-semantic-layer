@@ -27,7 +27,7 @@ OBSL applies the same pattern to **semantics**:
 - It's a **runtime, not a rewrite.** Existing BI tools, AI agents, governance systems, and DQ pipelines keep talking to their databases — OBSL attaches a governed semantic interface alongside them.
 - It's **multi-surface by design.** The same model is reachable over REST (for agents and apps), MCP (for LLM clients), Arrow Flight SQL + PostgreSQL wire (for BI tools), and direct DB-API drivers (for Python). One model, many channels.
 - It's **opinionated about correctness, not deployment.** Dialect-aware SQL generation, fan-trap-safe joins, and dimensional metrics are non-negotiable; where to run OBSL — embedded in your app, alongside a warehouse, behind a proxy, in a single container — is your call.
-- It's **open by default.** BSL 1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.
+- It's **open by default.** BUSL-1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.
 
 ## The OrionBelt trio
 
@@ -197,7 +197,7 @@ Contact [RALFORION d.o.o.](https://ralforion.com) for details.
 <p align="center">
   <a href="https://ralforion.com"><img src="assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200"></a>
   <br>
-  Copyright &copy; 2026 RALFORION d.o.o. &mdash; Licensed under BSL 1.1
+  Copyright &copy; 2026 RALFORION d.o.o. &mdash; Licensed under BUSL-1.1
   <br>
   OrionBelt&reg; is a registered trademark of RALFORION d.o.o.
 </p>

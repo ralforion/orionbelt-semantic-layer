@@ -6,7 +6,8 @@ build-backend = "hatchling.build"
 name = "ob-driver-core"
 version = "2.6.1"
 description = "Shared foundation for OrionBelt DB-API 2.0 drivers (PEP 249 types, OBML detection, compilation bridge)"
-license = { text = "BSL-1.1" }
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 readme = "README.md"
 authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
 keywords = ["semantic-layer", "obml", "db-api", "orionbelt", "pep249"]

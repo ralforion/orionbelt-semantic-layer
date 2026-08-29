@@ -6,7 +6,8 @@ build-backend = "hatchling.build"
 name = "ob-clickhouse"
 version = "2.6.1"
 description = "OrionBelt Semantic Layer driver for ClickHouse (DB-API 2.0)"
-license = { text = "BSL-1.1" }
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 readme = "README.md"
 authors = [{ name = "Ralf Becher", email = "info@orionbelt.ai" }]
 keywords = ["clickhouse", "semantic-layer", "obml", "db-api", "orionbelt"]
