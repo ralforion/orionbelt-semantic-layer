@@ -63,8 +63,10 @@ carry more than the wheel does. Each is built from a different optional-
 dependency group, so they differ from one another too; the tables list what
 each group adds **on top of** the runtime dependencies above.
 
-Every package keeps its own licence text in its `dist-info/licenses/`
-directory inside the image.
+Most packages ship their own licence text in `dist-info/licenses/` inside the
+image — 71 of 73 distributions in the UI image when this was written. A few
+declare a licence in metadata but ship no licence file at all (`ffmpy`,
+`gradio_client`); for those the upstream project is the authoritative source.
 
 ### `ralforion/orionbelt-semantic-layer-api`
 

@@ -25,7 +25,7 @@ Cube is the closest peer to OBSL in the OSS space — both are self-hostable, bo
 | Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten in the cube's `sql` / a pre-aggregation |
 | Object scoping | Each `DataObject` has `columns:`; dimensions/measures/metrics live at model scope | Measures and dimensions live *inside* each `cube`; `view`s expose a curated subset for end users |
 | Templating | None (static YAML) | Twig (Jinja2-like) — `COMPILE_CONTEXT` for compile-time multi-tenancy, dynamic SQL, masking |
-| Runtime | OSS, self-hosted (single Python service) | OSS Cube Core (Node.js + Cube Store + optional Redis) **or** Cube Cloud (managed, paid). Since v1.7 the **Tesseract** planner and the native query orchestrator are on by default |
+| Runtime | Source-available (BUSL-1.1), self-hosted (single Python service) | OSS Cube Core (Node.js + Cube Store + optional Redis) **or** Cube Cloud (managed, paid). Since v1.7 the **Tesseract** planner and the native query orchestrator are on by default |
 | Curation layer | None — one global namespace of dimensions / measures / metrics / filters | `views` are the primary consumer-facing surface: curated members, folders, view groups, hierarchies, access policies, AI context |
 
 ---
@@ -269,7 +269,7 @@ Cube's SQL API is a structural advantage for BI-tool connectivity. OBSL's RDF/SP
 
 ---
 
-## 9. Open-source vs. commercial story
+## 9. Licensing vs. commercial story
 
 Both projects ship a free OSS core and offer commercial extensions, but the split is different:
 
@@ -279,7 +279,7 @@ Both projects ship a free OSS core and offer commercial extensions, but the spli
 | Self-hostable | ✅ (one Python service) | ✅ (Cube Core: Node.js + optional Cube Store + optional Redis) |
 | Commercial offering | Embedded analytics license · commercial cloud offering · enterprise features · consulting + support | Cube Cloud — managed runtime, multi-cluster, advanced security, Studio IDE, paid |
 | Operational footprint | Light: one process, in-memory sessions, optional file-backed result cache (DuckDB metadata + Parquet) on local disk | Heavier: API server + Cube Store + Redis (optional) + scheduler + refresh workers in production |
-| Self-host parity | OSS has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | Many advanced features (Studio, advanced workspaces, AI features) are Cube Cloud-only |
+| Self-host parity | The free tier has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | Many advanced features (Studio, advanced workspaces, AI features) are Cube Cloud-only |
 
 For a small embedded-analytics use case OBSL is operationally simpler. For high-throughput multi-tenant production with heavy caching across replicas, Cube's architecture is purpose-built and Cube Cloud provides the managed experience. OBSL's file cache based on freshness inheritance (v2.2.0) covers single-replica result-caching workloads — agents, dev/staging, modest production — without standing up Redis or a rollup store.
 
