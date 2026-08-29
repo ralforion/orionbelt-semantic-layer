@@ -26,6 +26,36 @@ It powers the Ontology Graph tab in the Gradio UI. Nothing else in the wheel is
 third-party: the JSON Schemas under `orionbelt/schema/` and the ontology under
 `ontology/` are OrionBelt's own work.
 
+## Python runtime dependencies
+
+Installed by every distribution path, and present in all three container
+images. Licences are read from each distribution's metadata.
+
+| Package | Licence |
+|---|---|
+| fastapi | MIT |
+| httpx | BSD-3-Clause |
+| jsonschema | MIT |
+| networkx | BSD-3-Clause |
+| opentelemetry-api | Apache-2.0 |
+| pydantic | MIT |
+| pydantic-settings | MIT |
+| pytz | MIT |
+| pyyaml | MIT |
+| rdflib | BSD-3-Clause |
+| ruamel.yaml | MIT |
+| sqlglot | MIT |
+| structlog | MIT OR Apache-2.0 |
+| typer | MIT |
+| tzdata | Apache-2.0 |
+| uvicorn | BSD-3-Clause |
+
+All permissive (MIT, BSD-3-Clause, Apache-2.0). None is copyleft, so none
+imposes a licensing obligation on OrionBelt's own source.
+
+Installing from PyPI does not redistribute these — pip fetches them itself.
+They are listed because the container images below *do* contain them.
+
 ## Bundled in the container images
 
 Publishing an image redistributes everything installed inside it, so the images
@@ -53,7 +83,7 @@ driver.
 | Package | Licence |
 |---|---|
 | pyarrow | Apache-2.0 |
-| ob-flight-extension, ob-driver-core, osi-orionbelt, and the nine `ob-<vendor>` drivers | OrionBelt's own — see below |
+| ob-flight-extension, ob-driver-core, osi-orionbelt, and the eight `ob-<vendor>` drivers | OrionBelt's own — see below |
 
 The vendor drivers each depend on that vendor's own client SDK
 (`snowflake-connector-python`, `databricks-sql-connector`,

@@ -21,7 +21,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # can resolve the workspace graph. The flight* extras pull the osi-orionbelt
 # member under packages/, so it must be present at this first sync.
 ARG OB_EXTRA=flight-duckdb-only
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY drivers/ drivers/
 COPY packages/ packages/
 RUN uv sync --no-dev --no-install-project --frozen --extra ${OB_EXTRA}

@@ -593,7 +593,7 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 ## Commercial Offerings
 
-OrionBelt Semantic Layer is open by default — the OSS distribution has full parity on the shipped v2.6 surface and is production-grade for self-hosted use. For teams that want production support, a managed runtime, or embedded analytics terms, RALFORION offers:
+OrionBelt Semantic Layer is source-available under BUSL-1.1 until its Apache-2.0 conversion — the free distribution has full parity on the shipped v2.6 surface and is production-grade for self-hosted use. For teams that want production support, a managed runtime, or embedded analytics terms, RALFORION offers:
 
 - **Embedded analytics license** — relicensing terms for shipping OBSL inside a commercial product
 - **Commercial cloud offering** — managed OrionBelt runtime with SLAs

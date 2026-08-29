@@ -8,7 +8,7 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install dependencies first (cached layer — only reruns when pyproject.toml/uv.lock change)
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --no-dev --extra ui --no-install-project --frozen
 
 # Copy source and install the project itself. The UI proxies OSI conversion to
