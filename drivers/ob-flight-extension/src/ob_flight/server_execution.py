@@ -115,36 +115,32 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
-def _projects_only_artefacts(ast: Any, model: Any) -> bool:
-    """True when every SELECT item resolves to a dimension, measure or metric.
+def _projects_model_artefacts(ast: Any, model: Any) -> bool:
+    """True when the projection references the model's own artefacts.
 
     Used to tell a data query apart from a metadata preview when the FROM
-    target is schema-qualified.
+    target is schema-qualified (``FROM "sales"."model"``).
 
-    Resolution deliberately reuses the OBSQL translator's own helpers
-    rather than re-deriving "what does this projection refer to".
-    ``_column_name`` already unwraps aliases, ``CAST``/``TRY_CAST`` (Tableau
-    wraps every dimension in ``CAST(... AS TEXT)``) and the
-    ``MEASURE()``/``AGG()`` markers, and ``_classify_aggregate_wrap``
-    handles ``SUM(...)`` and friends. A local reimplementation accepted
-    only bare columns, so ``SELECT SUM("Total Revenue") FROM
-    "sales"."model"`` and ``SELECT CAST("Customer Country" AS TEXT) FROM
-    "sales"."model"`` still fell through to the catalog and answered with
-    column-metadata rows.
+    The test is deliberately *reference*-based, not shape-based. Earlier
+    versions enumerated the shapes the translator understands — bare
+    columns, then aliases, then ``CAST``/``MEASURE``, then aggregate
+    wrappers — and each round of review found another shape that fell
+    through to the catalog and answered with column-metadata rows instead
+    of results: ``CAST("Customer Country" AS TEXT)``,
+    ``SUM("Total Revenue")``, ``LOWER("Customer Country")``. Enumeration
+    cannot win that race, because the router would have to track every
+    expression the translator accepts *and* every one it rejects.
 
-    Anything that resolves to no label at all — ``SELECT *``, a literal, a
-    scalar probe like ``current_schema()`` — answers False and keeps the
-    preview behaviour BI tools rely on.
+    So: if the projection mentions an artefact anywhere, it is a data
+    query. Shapes the translator cannot compile then fail with a specific
+    ``UNSUPPORTED_SQL_FEATURE`` naming the offending expression, which is
+    a far better answer than a table of metadata for a different question.
 
-    A projection that names artefacts but in a shape the translator cannot
-    compile is still routed to the semantic path on purpose: the caller
-    then gets a specific ``UNSUPPORTED_SQL_FEATURE`` instead of a table of
-    metadata that silently answers a different question.
+    ``SELECT *`` and projections with no column reference at all
+    (literals, ``current_schema()``, ``COUNT(*)``) answer False and keep
+    the preview behaviour BI tools rely on.
     """
-    from orionbelt.compiler.sql_translator import (
-        _classify_aggregate_wrap,
-        _column_name,
-    )
+    import sqlglot.expressions as exp
 
     known = {label.lower() for label in model.dimensions}
     known |= {label.lower() for label in model.effective_measures}
@@ -154,14 +150,15 @@ def _projects_only_artefacts(ast: Any, model: Any) -> bool:
     if not projections:
         return False
     for proj in projections:
-        label = _column_name(proj)
-        if label is None:
-            agg_wrap = _classify_aggregate_wrap(proj)
-            if agg_wrap is not None:
-                label = _column_name(agg_wrap[2])
-        if label is None or label.lower() not in known:
+        # A star anywhere means "show me everything about this relation",
+        # which over a qualified model is the preview BI tools ask for.
+        if isinstance(proj, exp.Star) or next(proj.find_all(exp.Star), None) is not None:
             return False
-    return True
+    return any(
+        (col.name or "").lower() in known
+        for proj in projections
+        for col in proj.find_all(exp.Column)
+    )
 
 
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
@@ -339,7 +336,7 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
         # caller gets column-metadata rows instead of their result set,
         # silently. Only ``model`` is rescued: the label / metadata views
         # exist to return introspection rows, so they stay as they are.
-        if bare == "model" and _projects_only_artefacts(ast, model):
+        if bare == "model" and _projects_model_artefacts(ast, model):
             return _MODE_SEMANTIC
         return _MODE_CATALOG
 

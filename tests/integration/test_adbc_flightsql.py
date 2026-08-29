@@ -234,6 +234,22 @@ class TestExecution:
         assert "column_name" not in table.column_names, table.column_names
         assert list(table.to_pylist()[0].values())[0] == pytest.approx(225.0)
 
+    def test_qualified_unsupported_expression_errors_not_previews(self, conn: Any) -> None:
+        """An artefact in a shape the translator rejects must *error*.
+
+        ``LOWER(...)`` is not a shape OBSQL compiles, but the projection
+        plainly references a dimension, so answering with column-metadata
+        rows would answer a different question. The caller should get the
+        translator's specific refusal instead.
+        """
+        with pytest.raises(Exception, match="(?i)unsupported|reject|translation"):
+            _fetch(conn, f'SELECT LOWER("Customer Country") FROM "{MODEL_NAME}"."model"')
+
+    def test_qualified_count_star_still_previews_metadata(self, conn: Any) -> None:
+        """``COUNT(*)`` references no artefact, so it stays a preview probe."""
+        table = _fetch(conn, f'SELECT COUNT(*) FROM "{MODEL_NAME}"."model"')
+        assert "column_name" in table.column_names, table.column_names
+
     def test_qualified_star_still_previews_metadata(self, conn: Any) -> None:
         """``SELECT *`` over a qualified model stays a metadata preview.
 
