@@ -78,6 +78,16 @@ def seeded(motherduck_env: dict[str, str]) -> None:
         pytest.skip(f"{SCHEMA}.sales is empty on MotherDuck; run the seeder")
 
 
+# ``examples/orionbelt_1_commerce.duckdb`` stores salesamount / salesquantity as
+# DOUBLE, while the generated seed dump narrows them to DECIMAL(18,2) — so the
+# remote tables are decimal and the local example is float. Summing the two is
+# exact-decimal arithmetic on one side and float accumulation on the other
+# (8305358.25 vs 8305358.249999998), which never matches byte-for-byte and is
+# not a MotherDuck difference. The local side casts to the dump's declared type
+# so both sides compute the same thing.
+_SEEDED_DECIMAL = "DECIMAL(18, 2)"
+
+
 def _local(sql: str) -> list[tuple[Any, ...]]:
     """Run the same SQL against the local commerce DuckDB — the truth side."""
     import duckdb
@@ -143,12 +153,16 @@ class TestAgainstLocalTruth:
         """A shape the semantic layer actually emits: GROUP BY + SUM over DECIMAL."""
         from orionbelt.service.db_executor import execute_sql
 
-        sql = (
+        remote_sql = (
             'SELECT "salespaymenttype" AS pt, SUM("salesamount") AS amt '
             f'FROM "{SCHEMA}"."sales" GROUP BY 1 ORDER BY 1'
         )
-        remote = [tuple(r) for r in execute_sql(sql, dialect="duckdb").rows]
-        local = [(pt, amt) for pt, amt in _local(sql)]
+        local_sql = (
+            f'SELECT "salespaymenttype" AS pt, SUM("salesamount"::{_SEEDED_DECIMAL}) AS amt '
+            f'FROM "{SCHEMA}"."sales" GROUP BY 1 ORDER BY 1'
+        )
+        remote = [tuple(r) for r in execute_sql(remote_sql, dialect="duckdb").rows]
+        local = [tuple(r) for r in _local(local_sql)]
         assert remote == local, f"remote={remote[:3]} local={local[:3]}"
 
 
@@ -199,7 +213,8 @@ measures:
         remote = sorted(tuple(r) for r in execute_sql(compiled.sql, dialect="duckdb").rows)
         local = sorted(
             _local(
-                f'SELECT "salespaymenttype", SUM("salesamount") FROM "{SCHEMA}"."sales" GROUP BY 1'
+                f'SELECT "salespaymenttype", SUM("salesamount"::{_SEEDED_DECIMAL}) '
+                f'FROM "{SCHEMA}"."sales" GROUP BY 1'
             )
         )
         assert remote == local, f"remote={remote[:3]} local={local[:3]}"
