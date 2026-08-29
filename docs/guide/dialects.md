@@ -15,6 +15,40 @@ OrionBelt compiles semantic queries into SQL for eight database dialects. Each d
 | PostgreSQL | `postgres` | Standard PostgreSQL with strict GROUP BY |
 | Snowflake | `snowflake` | Cloud data warehouse with QUALIFY, semi-structured types |
 
+### Connecting to MotherDuck
+
+MotherDuck is DuckDB served remotely, so it needs no separate dialect — the
+`duckdb` codegen is what runs, and every DuckDB capability below applies
+unchanged. What differs is only the connection:
+
+```bash
+DUCKDB_DATABASE=md:my_database
+MOTHERDUCK_ACCESS_TOKEN=<token>
+```
+
+Create the token at [app.motherduck.com](https://app.motherduck.com) under
+your organization name → **Settings** → **Create token**. A **Read Scaling**
+token is the better fit than the default Read/Write one: OrionBelt only ever
+issues `SELECT`, and read-scaling tokens are built for concurrent readers.
+
+The lowercase `motherduck_token` that MotherDuck's own CLI exports is accepted
+as an alias, so an environment already set up for the CLI needs no changes.
+`MOTHERDUCK_ACCESS_TOKEN` is the canonical spelling, matching the other vendor
+credentials.
+
+!!! warning "A `md:` database without a token is refused"
+
+    OrionBelt raises `MotherDuckTokenMissingError` rather than connecting.
+    This is deliberate. Without an explicit token the DuckDB extension falls
+    back to **interactive browser authentication**, which on a server does not
+    fail — it *hangs*, so it surfaces as a stuck worker rather than a
+    configuration error. Refusing up front also prevents an ambient
+    `motherduck_token` in the environment from silently connecting to a
+    different account than the one you configured.
+
+`read_only` stays enabled for MotherDuck as it is for a local file: OrionBelt
+only reads, and a `md:` connection accepts it.
+
 ## Capabilities Matrix
 
 Each dialect declares capability flags that the compiler uses to choose SQL generation strategies.
