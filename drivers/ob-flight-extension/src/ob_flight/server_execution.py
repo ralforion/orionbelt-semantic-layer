@@ -115,6 +115,48 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
     return sql
 
 
+def _projects_model_artefacts(ast: Any, model: Any) -> bool:
+    """True when the projection references the model's own artefacts.
+
+    Used to tell a data query apart from a metadata preview when the FROM
+    target is schema-qualified (``FROM "sales"."model"``).
+
+    The test is deliberately *reference*-based, not shape-based. Earlier
+    versions enumerated the shapes the translator understands — bare
+    columns, then aliases, then ``CAST``/``MEASURE``, then aggregate
+    wrappers — and each round of review found another shape that fell
+    through to the catalog and answered with column-metadata rows instead
+    of results: ``CAST("Customer Country" AS TEXT)``,
+    ``SUM("Total Revenue")``, ``LOWER("Customer Country")``. Enumeration
+    cannot win that race, because the router would have to track every
+    expression the translator accepts *and* every one it rejects.
+
+    So: if the projection mentions an artefact anywhere, it is a data
+    query. Shapes the translator cannot compile then fail with a specific
+    ``UNSUPPORTED_SQL_FEATURE`` naming the offending expression, which is
+    a far better answer than a table of metadata for a different question.
+
+    No separate ``SELECT *`` guard: a star carries no column reference, so
+    the same scan already answers False for ``SELECT *``, ``COUNT(*)``,
+    ``t.*``, literals and ``current_schema()``, keeping the preview
+    behaviour BI tools rely on. An explicit star check was worse than
+    redundant — short-circuiting on it sent ``SELECT *, "Total Revenue"``
+    to the catalog, when the projection names an artefact and the
+    translator has a precise refusal for the star.
+    """
+    import sqlglot.expressions as exp
+
+    known = {label.lower() for label in model.dimensions}
+    known |= {label.lower() for label in model.effective_measures}
+    known |= {label.lower() for label in model.metrics}
+
+    return any(
+        (col.name or "").lower() in known
+        for proj in getattr(ast, "expressions", []) or []
+        for col in proj.find_all(exp.Column)
+    )
+
+
 def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
     """Classify a SQL query into one of three handling modes.
 
@@ -281,6 +323,17 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
         and schema in model_schemas
         and bare in (_LABEL_VIEW_NAMES + _METADATA_VIEW_NAMES + ("model",))
     ):
+        # ...except when the projection names the model's own artefacts.
+        # ``FROM <model>.model`` is a metadata preview only while the caller
+        # asks for metadata; ``SELECT "Customer Country", "Total Revenue"
+        # FROM "sales"."model"`` is a data query that a client wrote after
+        # browsing the catalog it was just handed. Routing that to the
+        # catalog answers a different question than the one asked - the
+        # caller gets column-metadata rows instead of their result set,
+        # silently. Only ``model`` is rescued: the label / metadata views
+        # exist to return introspection rows, so they stay as they are.
+        if bare == "model" and _projects_model_artefacts(ast, model):
+            return _MODE_SEMANTIC
         return _MODE_CATALOG
 
     # Semantic — the model's virtual table, OR a per-category label view

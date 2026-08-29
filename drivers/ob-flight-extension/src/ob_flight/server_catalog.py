@@ -37,7 +37,7 @@ from ob_flight.flight_sql import (
     build_catalogs_table,
     build_columns_table,
     build_db_schemas_table,
-    build_empty_imported_keys_table,
+    build_empty_foreign_keys_table,
     build_empty_keys_table,
     build_sql_info_table,
     build_table_types_table,
@@ -386,7 +386,26 @@ def handle_catalog_command(
     cmd_value: bytes = b"",
     context: flight.ServerCallContext | None = None,
 ) -> flight.RecordBatchStream:
-    """Handle Flight SQL catalog metadata commands.
+    """Stream the response for a Flight SQL catalog command.
+
+    Thin wrapper over :func:`build_catalog_table`; the table is built
+    separately so tests can assert it against the schema
+    ``get_flight_info`` advertises. ``RecordBatchStream`` does not expose
+    its schema, and a client-level test cannot reach the commands no
+    client in this repo exercises.
+    """
+    table = build_catalog_table(server, type_url, cmd_value, context)
+    logger.debug("Catalog response for %s: %d rows", type_url.rsplit(".", 1)[-1], len(table))
+    return flight.RecordBatchStream(table)
+
+
+def build_catalog_table(
+    server: OBFlightServer,
+    type_url: str,
+    cmd_value: bytes = b"",
+    context: flight.ServerCallContext | None = None,
+) -> pa.Table:
+    """Build the response table for Flight SQL catalog metadata commands.
 
     Multi-model aware: ``CommandGetCatalogs`` returns the list of
     loaded model names so BI tools see them in the catalog dropdown.
@@ -430,10 +449,11 @@ def handle_catalog_command(
         )
     elif type_url == CMD_GET_TABLE_TYPES:
         table = build_table_types_table()
-    elif type_url in (CMD_GET_PRIMARY_KEYS, CMD_GET_EXPORTED_KEYS, CMD_GET_CROSS_REFERENCE):
+    elif type_url == CMD_GET_PRIMARY_KEYS:
         table = build_empty_keys_table()
-    elif type_url == CMD_GET_IMPORTED_KEYS:
-        table = build_empty_imported_keys_table()
+    elif type_url in (CMD_GET_IMPORTED_KEYS, CMD_GET_EXPORTED_KEYS, CMD_GET_CROSS_REFERENCE):
+        # One shared foreign-key schema for all three, per FlightSql.proto.
+        table = build_empty_foreign_keys_table()
     elif type_url == CMD_GET_SQL_INFO:
         # Populate the standard SqlInfo entries so JDBC clients display
         # the server name (otherwise DBeaver shows "Server: ?").
@@ -447,5 +467,4 @@ def handle_catalog_command(
     else:
         raise flight.FlightServerError(f"Unsupported catalog command: {type_url}")
 
-    logger.debug("Catalog response for %s: %d rows", type_url.rsplit(".", 1)[-1], len(table))
-    return flight.RecordBatchStream(table)
+    return table

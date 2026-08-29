@@ -196,6 +196,7 @@ pythonpath = ["src"]
 markers = [
     "docker: requires Docker (testcontainers); run with: pytest -m docker",
     "adbc: requires a reachable PostgreSQL via ADBC; run with: pytest -m adbc",
+    "adbc_flight: drives the OBSL Flight SQL server through the ADBC flightsql driver (conformance harness); run with: pytest -m adbc_flight",
     "snowflake: requires a live Snowflake account (SNOWFLAKE_* env vars); run with: pytest -m snowflake",
     "bigquery: requires a live BigQuery project (BIGQUERY_* env vars + ADC); run with: pytest -m bigquery",
     "databricks: requires a live Databricks workspace (DATABRICKS_* env vars); run with: pytest -m databricks",
@@ -268,6 +269,7 @@ dev = [
     "ob-postgres>=0.1",
     "ob-snowflake>=0.1",
     "osi-orionbelt>=0.2",
+    "adbc-driver-flightsql>=1.0",
 ]
 
 [tool.uv.workspace]

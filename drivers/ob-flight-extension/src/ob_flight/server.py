@@ -16,6 +16,7 @@ from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
     ACTION_CLOSE_PREPARED_STATEMENT,
     ACTION_CREATE_PREPARED_STATEMENT,
+    CATALOG_SCHEMA,
     CMD_GET_CATALOGS,
     CMD_GET_COLUMNS,
     CMD_GET_CROSS_REFERENCE,
@@ -29,7 +30,13 @@ from ob_flight.flight_sql import (
     CMD_GET_XDBC_TYPE_INFO,
     CMD_PREPARED_STATEMENT_QUERY,
     CMD_STATEMENT_QUERY,
+    COLUMNS_SCHEMA,
+    DB_SCHEMA_SCHEMA,
+    FOREIGN_KEYS_SCHEMA,
+    PRIMARY_KEYS_SCHEMA,
     SQL_INFO_SCHEMA,
+    TABLE_SCHEMA,
+    TABLE_TYPES_SCHEMA,
     build_prepared_statement_result,
     is_flight_sql_command,
     parse_any,
@@ -54,20 +61,36 @@ __all__ = [
 ]
 
 
-# Flight SQL catalog command type URLs that return metadata (no DB execution)
-_CATALOG_COMMANDS = {
-    CMD_GET_CATALOGS,
-    CMD_GET_DB_SCHEMAS,
-    CMD_GET_TABLES,
-    CMD_GET_TABLE_TYPES,
-    CMD_GET_SQL_INFO,
-    CMD_GET_XDBC_TYPE_INFO,
-    CMD_GET_PRIMARY_KEYS,
-    CMD_GET_IMPORTED_KEYS,
-    CMD_GET_EXPORTED_KEYS,
-    CMD_GET_CROSS_REFERENCE,
-    CMD_GET_COLUMNS,
+# Flight SQL catalog command type URLs that return metadata (no DB
+# execution), each mapped to the schema ``get_flight_info`` must advertise.
+#
+# The advertised schema has to equal what ``do_get`` actually streams. A JDBC
+# client reads FlightInfo first and treats a mismatch as an empty response;
+# ADBC refuses the stream outright ("endpoint 0 returned inconsistent
+# schema"). Keeping the set and the schemas in one mapping means a new
+# command cannot be added to the routing without also declaring its shape.
+#
+# ``CMD_GET_XDBC_TYPE_INFO`` is deliberately ``info: utf8`` rather than the
+# Flight SQL spec shape: ``handle_catalog_command`` streams an empty
+# single-column table for it, and agreeing with the stream matters more than
+# agreeing with the spec while that stays true.
+_CATALOG_COMMAND_SCHEMAS = {
+    CMD_GET_CATALOGS: CATALOG_SCHEMA,
+    CMD_GET_DB_SCHEMAS: DB_SCHEMA_SCHEMA,
+    CMD_GET_TABLES: TABLE_SCHEMA,
+    CMD_GET_TABLE_TYPES: TABLE_TYPES_SCHEMA,
+    CMD_GET_SQL_INFO: SQL_INFO_SCHEMA,
+    CMD_GET_XDBC_TYPE_INFO: pa.schema([pa.field("info", pa.utf8())]),
+    CMD_GET_PRIMARY_KEYS: PRIMARY_KEYS_SCHEMA,
+    # FlightSql.proto gives imported / exported / cross-reference one
+    # shared foreign-key schema; only GetPrimaryKeys uses the six-column one.
+    CMD_GET_IMPORTED_KEYS: FOREIGN_KEYS_SCHEMA,
+    CMD_GET_EXPORTED_KEYS: FOREIGN_KEYS_SCHEMA,
+    CMD_GET_CROSS_REFERENCE: FOREIGN_KEYS_SCHEMA,
+    CMD_GET_COLUMNS: COLUMNS_SCHEMA,
 }
+
+_CATALOG_COMMANDS = frozenset(_CATALOG_COMMAND_SCHEMAS)
 
 # Catalog query modes — re-exported from server_execution for back-compat.
 _MODE_SEMANTIC = server_execution._MODE_SEMANTIC
@@ -403,14 +426,19 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # for CommandGetTables / CommandGetColumns). Stored as hex
                 # so the tuple stays plain str/bytes-only.
                 self._store_pending(ticket_id, ("catalog", type_url, value.hex()))
-                # SqlInfo has a structured spec schema (uint32 + dense_union).
-                # JDBC clients inspect the FlightInfo schema before calling
-                # do_get, so returning the placeholder `result` column makes
-                # them treat the response as empty (DBeaver shows "Server: ?").
-                if type_url == CMD_GET_SQL_INFO:
-                    schema = SQL_INFO_SCHEMA
-                else:
-                    schema = pa.schema([pa.field("result", pa.utf8())])
+                # Advertise the command's real Flight SQL schema. Clients
+                # inspect FlightInfo before calling do_get: a JDBC client
+                # treats a mismatched placeholder as an empty response
+                # (DBeaver showed "Server: ?" until SqlInfo was special-cased
+                # here), and ADBC rejects the stream outright with
+                # "endpoint 0 returned inconsistent schema". Every command
+                # already has its spec schema as a constant, so there is no
+                # reason to guess.
+                schema = _CATALOG_COMMAND_SCHEMAS.get(type_url)
+                if schema is None:
+                    raise flight.FlightServerError(
+                        f"No advertised schema for catalog command: {type_url}"
+                    )
 
             else:
                 raise flight.FlightServerError(f"Unsupported Flight SQL command: {type_url}")
