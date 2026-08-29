@@ -216,7 +216,7 @@ Looker is broader on enterprise legacy databases; OBSL is competitive on modern 
 
 ---
 
-## 9. Open source vs. proprietary
+## 9. Licensing vs. proprietary
 
 This is the most consequential difference and worth calling out separately.
 
@@ -276,7 +276,7 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 
 ### Pick **OBSL** when:
 
-- You need an **open-source, self-hostable, embeddable** semantic layer — no vendor lock-in.
+- You need a **source-available, self-hostable, embeddable** semantic layer — no vendor lock-in.
 - Your consumers are **applications, agents, or LLMs** — a stable JSON Query API beats requiring callers to know LookML.
 - You need first-class, *reusable* **cumulative** and **period-over-period** metric types instead of expressing them as table calculations.
 - You target ClickHouse, Databricks, Dremio, or DuckDB.
@@ -304,7 +304,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 
 ### To match OBSL, LookML/Looker would need:
 
-1. **Open-source / self-hostable runtime** (the structural blocker).
+1. **Source-available / self-hostable runtime** (the structural blocker).
 2. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently table calculations.
 3. **Named secondary join paths** with per-query selection.
 4. **RDF/SPARQL graph surface** for governance/lineage.

@@ -289,7 +289,7 @@ In a Microsoft-stack enterprise: AtScale serves the human BI audience (Excel, Po
 
 ### To match OBSL, AtScale would need:
 
-1. **Open-source / self-hostable runtime in production** — the free Developer Community Edition is welcome for evaluation, but production deployments still require an enterprise license. A truly OSS production tier would be the structural unlock.
+1. **Source-available / self-hostable runtime in production** — the free Developer Community Edition is welcome for evaluation, but production deployments still require an enterprise license. A truly OSS production tier would be the structural unlock.
 2. **Multi-rooted DAG modeling with explicit CFL multi-fact planning** — the ability to query across genuinely independent fact tables in one go without pre-designing a cube.
 3. **First-class declarative cumulative & period-over-period metric types** — turnkey alternatives to writing MDX calculated members.
 4. **RDF/SPARQL graph surface** for governance/lineage tooling outside the proprietary platform.

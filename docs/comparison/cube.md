@@ -11,7 +11,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **Cube** (f
 - **Changed since the 2026-05 capture**: multi-fact modeling is **no longer an OBSL-only capability**. Cube Core v1.7 made **Tesseract** the default planner and graduated **multi-fact views** to GA — a view spanning several fact tables now compiles to one aggregating subquery per fact, `FULL JOIN`ed on the shared dimensions. The remaining topology difference is narrower and more specific (see [§6](#6-data-modeling-topology-still-a-differentiator-but-a-narrower-one)).
 - **Different niches**: Cube is "the production semantic-layer + caching + API gateway" — built to serve high-volume embedded analytics with millisecond response times. OBSL is "an embeddable semantic compiler with a clean REST surface and rich modeling primitives" — best when you don't need pre-aggregation infrastructure and want a smaller dependency footprint.
 
-Cube is the closest peer to OBSL in the OSS space — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.
+Cube is the closest peer to OBSL — both are self-hostable, both target embedded analytics, both expose REST/MCP. The interesting differences are in modeling topology, metric expressivity, and the caching/pre-aggregation layer.
 
 ---
 
@@ -271,7 +271,7 @@ Cube's SQL API is a structural advantage for BI-tool connectivity. OBSL's RDF/SP
 
 ## 9. Licensing vs. commercial story
 
-Both projects ship a free OSS core and offer commercial extensions, but the split is different:
+Both projects ship a free, self-hostable core and offer commercial extensions, but the split is different:
 
 | | OBSL | Cube |
 |---|---|---|
@@ -338,7 +338,7 @@ For a small embedded-analytics use case OBSL is operationally simpler. For high-
 - You want a **graph view of the model** (RDF/SPARQL) for governance/lineage tooling.
 - You need **OSI interoperability** for moving models between semantic layer formats.
 - Your operational appetite is small — **one Python service**, no Redis, no scheduler, no separate query orchestrator.
-- You're targeting **Dremio** or otherwise want full feature parity in self-hosted OSS without a Cloud upgrade path.
+- You're targeting **Dremio** or otherwise want full feature parity self-hosted without a Cloud upgrade path.
 - Your consumers are **agents/LLMs** primarily — both projects expose MCP, but OBSL's smaller surface is easier to point an agent at without query-shape ambiguity.
 
 ### They could coexist

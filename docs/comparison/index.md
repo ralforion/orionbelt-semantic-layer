@@ -159,7 +159,7 @@ AtScale's conformed-dimensions-within-a-Cube + virtual cubes, and Cube's multi-f
 - **Multi-tenant** semantic models with TTL-scoped sessions.
 - **LLM/agent integration** via MCP — a clean, schema-driven query surface beats teaching the agent a new language.
 - **Modern cloud warehouses** including ClickHouse, Databricks, Dremio, and DuckDB.
-- **Open-source / self-hostable / air-gapped** deployments.
+- **Source-available / self-hostable / air-gapped** deployments.
 
 ## Where another tool may be a better fit
 
