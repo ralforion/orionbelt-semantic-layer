@@ -28,40 +28,63 @@ third-party: the JSON Schemas under `orionbelt/schema/` and the ontology under
 
 ## Bundled in the container images
 
-`ralforion/orionbelt-api`, `ralforion/orionbelt-ui` and
-`ralforion/orionbelt-flight` contain the full installed dependency tree, so
-publishing them is redistribution of those packages too. Each keeps its own
-licence text in its `dist-info/licenses/` directory inside the image; the table
-below records the direct runtime dependencies and their terms.
+Publishing an image redistributes everything installed inside it, so the images
+carry more than the wheel does. Each is built from a different optional-
+dependency group, so they differ from one another too; the tables list what
+each group adds **on top of** the runtime dependencies above.
+
+Every package keeps its own licence text in its `dist-info/licenses/`
+directory inside the image.
+
+### `ralforion/orionbelt-semantic-layer-api`
+
+Built from `Dockerfile` with `OB_EXTRA` defaulting to `flight-duckdb-only`.
 
 | Package | Licence |
 |---|---|
-| fastapi | MIT |
-| httpx | BSD-3-Clause |
-| jsonschema | MIT |
-| networkx | BSD-3-Clause |
-| opentelemetry-api | Apache-2.0 |
-| pydantic | MIT |
-| pydantic-settings | MIT |
-| pytz | MIT |
-| pyyaml | MIT |
-| rdflib | BSD-3-Clause |
-| ruamel.yaml | MIT |
-| sqlglot | MIT |
-| structlog | MIT OR Apache-2.0 |
-| typer | MIT |
-| tzdata | Apache-2.0 |
-| uvicorn | BSD-3-Clause |
+| pyarrow | Apache-2.0 |
+| ob-flight-extension, ob-driver-core, ob-duckdb, osi-orionbelt | OrionBelt's own — see below |
 
-All are permissive (MIT, BSD-3-Clause, Apache-2.0). None is copyleft, so none
-imposes a licensing obligation on OrionBelt's own source. Optional extras
-(`ui`, `flight`, `drivers`, `docs`) and the vendor database drivers pull in
-further packages under the same kinds of terms; they are installed by pip from
-PyPI rather than copied into this repository.
+### `ralforion/orionbelt-semantic-layer-flight`
 
-Transitive dependencies are not enumerated here. They are resolved and pinned
-in [`uv.lock`](uv.lock), which records the exact version of every package in a
+Built from `Dockerfile.flight` with the `flight` extra, which adds every vendor
+driver.
+
+| Package | Licence |
+|---|---|
+| pyarrow | Apache-2.0 |
+| ob-flight-extension, ob-driver-core, osi-orionbelt, and the nine `ob-<vendor>` drivers | OrionBelt's own — see below |
+
+The vendor drivers each depend on that vendor's own client SDK
+(`snowflake-connector-python`, `databricks-sql-connector`,
+`google-cloud-bigquery`, `clickhouse-connect`, `mysql-connector-python`,
+`duckdb`, `adbc-driver-postgresql`), so this image carries the largest
+third-party tree of the three.
+
+### `ralforion/orionbelt-semantic-layer-ui`
+
+Built from `Dockerfile.ui` with the `ui` extra. It proxies execution to the
+API, so it carries no drivers and no converter.
+
+| Package | Licence |
+|---|---|
+| gradio | Apache-2.0 |
+| pyarrow | Apache-2.0 |
+
+### Transitive dependencies
+
+Not enumerated here — including the vendor client SDKs the drivers pull in, and
+everything `gradio` brings with it. They are resolved and pinned in
+[`uv.lock`](uv.lock), which records the exact version of every package in a
 build, and each carries its own licence in its distribution metadata.
+
+For an authoritative per-image list, read the metadata inside the image rather
+than trusting this file to stay current:
+
+```bash
+docker run --rm ralforion/orionbelt-semantic-layer-api \
+  python -c "import importlib.metadata as m; [print(d.name, d.version) for d in m.distributions()]"
+```
 
 ## Not redistributed
 
