@@ -62,14 +62,16 @@ TABLE_SCHEMA = pa.schema(
 
 TABLE_TYPES_SCHEMA = pa.schema([pa.field("table_type", pa.utf8(), nullable=False)])
 
+# CommandGetPrimaryKeys — six columns. Distinct from the foreign-key shape
+# below; only GetPrimaryKeys uses it.
 PRIMARY_KEYS_SCHEMA = pa.schema(
     [
         pa.field("catalog_name", pa.utf8()),
         pa.field("db_schema_name", pa.utf8()),
-        pa.field("table_name", pa.utf8()),
-        pa.field("column_name", pa.utf8()),
+        pa.field("table_name", pa.utf8(), nullable=False),
+        pa.field("column_name", pa.utf8(), nullable=False),
         pa.field("key_name", pa.utf8()),
-        pa.field("key_sequence", pa.int32()),
+        pa.field("key_sequence", pa.int32(), nullable=False),
     ]
 )
 
@@ -89,21 +91,26 @@ COLUMNS_SCHEMA = pa.schema(
     ]
 )
 
-IMPORTED_KEYS_SCHEMA = pa.schema(
+# Shared by CommandGetImportedKeys, CommandGetExportedKeys **and**
+# CommandGetCrossReference — FlightSql.proto defines one schema for all
+# three. Named for the relationship, not for one of its commands: calling
+# it IMPORTED_KEYS_SCHEMA is what led two of the three to be answered with
+# the six-column primary-key shape instead.
+FOREIGN_KEYS_SCHEMA = pa.schema(
     [
         pa.field("pk_catalog_name", pa.utf8()),
         pa.field("pk_db_schema_name", pa.utf8()),
-        pa.field("pk_table_name", pa.utf8()),
-        pa.field("pk_column_name", pa.utf8()),
+        pa.field("pk_table_name", pa.utf8(), nullable=False),
+        pa.field("pk_column_name", pa.utf8(), nullable=False),
         pa.field("fk_catalog_name", pa.utf8()),
         pa.field("fk_db_schema_name", pa.utf8()),
-        pa.field("fk_table_name", pa.utf8()),
-        pa.field("fk_column_name", pa.utf8()),
-        pa.field("key_sequence", pa.int32()),
+        pa.field("fk_table_name", pa.utf8(), nullable=False),
+        pa.field("fk_column_name", pa.utf8(), nullable=False),
+        pa.field("key_sequence", pa.int32(), nullable=False),
         pa.field("fk_key_name", pa.utf8()),
         pa.field("pk_key_name", pa.utf8()),
-        pa.field("update_rule", pa.uint8()),
-        pa.field("delete_rule", pa.uint8()),
+        pa.field("update_rule", pa.uint8(), nullable=False),
+        pa.field("delete_rule", pa.uint8(), nullable=False),
     ]
 )
 
@@ -605,18 +612,18 @@ def build_columns_table(
 
 
 def build_empty_keys_table() -> pa.Table:
-    """Build empty response for GetPrimaryKeys/GetImportedKeys/GetExportedKeys."""
+    """Build empty response for GetPrimaryKeys."""
     return pa.table(
         {f.name: pa.array([], type=f.type) for f in PRIMARY_KEYS_SCHEMA},
         schema=PRIMARY_KEYS_SCHEMA,
     )
 
 
-def build_empty_imported_keys_table() -> pa.Table:
-    """Build empty response for GetImportedKeys."""
+def build_empty_foreign_keys_table() -> pa.Table:
+    """Build empty response for GetImportedKeys / GetExportedKeys / GetCrossReference."""
     return pa.table(
-        {f.name: pa.array([], type=f.type) for f in IMPORTED_KEYS_SCHEMA},
-        schema=IMPORTED_KEYS_SCHEMA,
+        {f.name: pa.array([], type=f.type) for f in FOREIGN_KEYS_SCHEMA},
+        schema=FOREIGN_KEYS_SCHEMA,
     )
 
 

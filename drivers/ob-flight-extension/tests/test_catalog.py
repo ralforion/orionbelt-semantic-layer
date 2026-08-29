@@ -380,3 +380,76 @@ class TestBuildMetricsData:
         model.metrics = {}
         table = build_metrics_data(model)
         assert len(table) == 0
+
+
+class TestAdvertisedSchemaMatchesStream:
+    """``get_flight_info`` must advertise exactly what ``do_get`` streams.
+
+    A client reads FlightInfo before fetching. JDBC treats a mismatch as an
+    empty response (silent); ADBC refuses the endpoint outright. Both
+    catalog defects found by the ADBC conformance harness were mismatches
+    of this kind:
+
+    * every command advertised a placeholder ``result: utf8`` while
+      streaming its real table;
+    * ``GetExportedKeys`` / ``GetCrossReference`` streamed the six-column
+      primary-key shape where FlightSql.proto defines the shared
+      thirteen-column foreign-key one.
+
+    Asserting the invariant directly is cheaper than covering each command
+    through a client, and it holds for commands no client here exercises.
+    """
+
+    def test_every_catalog_command_streams_its_advertised_schema(self) -> None:
+        import threading
+
+        from ob_flight.server import _CATALOG_COMMAND_SCHEMAS, OBFlightServer
+        from ob_flight.server_catalog import build_catalog_table
+
+        server = OBFlightServer.__new__(OBFlightServer)
+        server._session_manager = None
+        server._default_dialect = "duckdb"
+        server._lock = threading.Lock()
+        server._pending = {}
+        server._prepared = {}
+        server._pending_ttl = 300
+        server._batch_size = 1024
+        server._cache = None
+        server._cache_config = None
+
+        mismatches = []
+        for type_url, advertised in _CATALOG_COMMAND_SCHEMAS.items():
+            streamed = build_catalog_table(server, type_url).schema
+            if streamed != advertised:
+                mismatches.append(
+                    f"{type_url.rsplit('.', 1)[-1]}:\n"
+                    f"  advertised {advertised}\n"
+                    f"  streamed   {streamed}"
+                )
+        assert not mismatches, "\n".join(mismatches)
+
+    def test_foreign_key_commands_share_one_schema(self) -> None:
+        """FlightSql.proto gives all three the same thirteen columns.
+
+        Only ``GetPrimaryKeys`` uses the six-column shape.
+        """
+        from ob_flight.flight_sql import FOREIGN_KEYS_SCHEMA, PRIMARY_KEYS_SCHEMA
+        from ob_flight.server import _CATALOG_COMMAND_SCHEMAS
+
+        fk_commands = [
+            u
+            for u in _CATALOG_COMMAND_SCHEMAS
+            if u.endswith(("ImportedKeys", "ExportedKeys", "CrossReference"))
+        ]
+        assert len(fk_commands) == 3, fk_commands
+        for url in fk_commands:
+            assert _CATALOG_COMMAND_SCHEMAS[url] is FOREIGN_KEYS_SCHEMA, url
+
+        assert len(FOREIGN_KEYS_SCHEMA) == 13
+        assert len(PRIMARY_KEYS_SCHEMA) == 6
+        assert FOREIGN_KEYS_SCHEMA.names[:4] == [
+            "pk_catalog_name",
+            "pk_db_schema_name",
+            "pk_table_name",
+            "pk_column_name",
+        ]
