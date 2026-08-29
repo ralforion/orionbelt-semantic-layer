@@ -116,14 +116,35 @@ def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
 
 
 def _projects_only_artefacts(ast: Any, model: Any) -> bool:
-    """True when every SELECT item names a dimension, measure or metric.
+    """True when every SELECT item resolves to a dimension, measure or metric.
 
     Used to tell a data query apart from a metadata preview when the FROM
-    target is schema-qualified. ``SELECT *`` yields a Star (not a Column),
-    so it correctly answers False and keeps the preview behaviour BI tools
-    rely on.
+    target is schema-qualified.
+
+    Resolution deliberately reuses the OBSQL translator's own helpers
+    rather than re-deriving "what does this projection refer to".
+    ``_column_name`` already unwraps aliases, ``CAST``/``TRY_CAST`` (Tableau
+    wraps every dimension in ``CAST(... AS TEXT)``) and the
+    ``MEASURE()``/``AGG()`` markers, and ``_classify_aggregate_wrap``
+    handles ``SUM(...)`` and friends. A local reimplementation accepted
+    only bare columns, so ``SELECT SUM("Total Revenue") FROM
+    "sales"."model"`` and ``SELECT CAST("Customer Country" AS TEXT) FROM
+    "sales"."model"`` still fell through to the catalog and answered with
+    column-metadata rows.
+
+    Anything that resolves to no label at all — ``SELECT *``, a literal, a
+    scalar probe like ``current_schema()`` — answers False and keeps the
+    preview behaviour BI tools rely on.
+
+    A projection that names artefacts but in a shape the translator cannot
+    compile is still routed to the semantic path on purpose: the caller
+    then gets a specific ``UNSUPPORTED_SQL_FEATURE`` instead of a table of
+    metadata that silently answers a different question.
     """
-    import sqlglot.expressions as exp
+    from orionbelt.compiler.sql_translator import (
+        _classify_aggregate_wrap,
+        _column_name,
+    )
 
     known = {label.lower() for label in model.dimensions}
     known |= {label.lower() for label in model.effective_measures}
@@ -133,10 +154,12 @@ def _projects_only_artefacts(ast: Any, model: Any) -> bool:
     if not projections:
         return False
     for proj in projections:
-        inner = proj.this if isinstance(proj, exp.Alias) else proj
-        if not isinstance(inner, exp.Column):
-            return False
-        if (getattr(inner, "name", "") or "").lower() not in known:
+        label = _column_name(proj)
+        if label is None:
+            agg_wrap = _classify_aggregate_wrap(proj)
+            if agg_wrap is not None:
+                label = _column_name(agg_wrap[2])
+        if label is None or label.lower() not in known:
             return False
     return True
 

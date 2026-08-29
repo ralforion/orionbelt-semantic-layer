@@ -214,6 +214,26 @@ class TestExecution:
         )
         assert table.num_rows == 2
 
+    def test_qualified_cast_projection_is_a_data_query(self, conn: Any) -> None:
+        """Tableau wraps every dimension in ``CAST(... AS TEXT)``.
+
+        The translator unwraps casts, so a qualified projection of a cast
+        artefact is a data query — not a metadata preview.
+        """
+        table = _fetch(
+            conn,
+            f'SELECT CAST("Customer Country" AS TEXT) FROM "{MODEL_NAME}"."model"',
+        )
+        assert table.num_rows == 2
+        assert "column_name" not in table.column_names, table.column_names
+
+    def test_qualified_aggregate_projection_is_a_data_query(self, conn: Any) -> None:
+        """``SUM(<measure>)`` is a shape the translator folds, not metadata."""
+        table = _fetch(conn, f'SELECT SUM("Total Revenue") FROM "{MODEL_NAME}"."model"')
+        assert table.num_rows == 1
+        assert "column_name" not in table.column_names, table.column_names
+        assert list(table.to_pylist()[0].values())[0] == pytest.approx(225.0)
+
     def test_qualified_star_still_previews_metadata(self, conn: Any) -> None:
         """``SELECT *`` over a qualified model stays a metadata preview.
 
