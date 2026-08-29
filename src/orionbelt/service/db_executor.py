@@ -754,6 +754,11 @@ def execute_sql(
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
+    except _config_errors() as exc:
+        # A credential / configuration problem, not a warehouse failure: surfacing it as
+        # ExecutionError would render as a 502 and send the reader looking at
+        # the database instead of at their environment.
+        raise ExecutionUnavailableError(str(exc)) from None
     except Exception as exc:
         raise ExecutionError(f"Database execution failed: {exc}") from exc
 
@@ -960,8 +965,34 @@ def explain_sql(sql: str, *, dialect: str) -> str:
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
+    except _config_errors() as exc:
+        # Same contract as execute_sql: a credential / configuration problem
+        # is not an EXPLAIN failure, and reporting it as one sends the reader
+        # to the database instead of to their environment.
+        raise ExecutionUnavailableError(str(exc)) from None
     except Exception as exc:
         raise ExecutionError(f"EXPLAIN failed: {exc}") from exc
+
+
+_CONFIG_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+
+
+def _config_errors() -> tuple[type[BaseException], ...]:
+    """Exception types that mean "misconfigured", not "the warehouse failed".
+
+    Resolved lazily and cached: ``ob_flight`` is an optional install, and the
+    core package must not import it at module scope. Returns an empty tuple
+    when it is absent, which makes the ``except`` clause a no-op.
+    """
+    global _CONFIG_ERROR_TYPES  # noqa: PLW0603
+    if _CONFIG_ERROR_TYPES is None:
+        try:
+            from ob_flight.db_router import MotherDuckTokenMissingError
+
+            _CONFIG_ERROR_TYPES = (MotherDuckTokenMissingError,)
+        except Exception:  # noqa: BLE001 — ob_flight not installed
+            _CONFIG_ERROR_TYPES = ()
+    return _CONFIG_ERROR_TYPES
 
 
 def _try_fetch_arrow(cursor: Any) -> Any:
