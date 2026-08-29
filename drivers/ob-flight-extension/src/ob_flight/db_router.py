@@ -98,18 +98,27 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
 # indication why.
 _ENV_ALIASES: dict[str, tuple[str, ...]] = {
     "DATABRICKS_ACCESS_TOKEN": ("DATABRICKS_TOKEN",),
-    # MotherDuck's own docs and CLI use the lowercase ``motherduck_token``,
-    # which the DuckDB extension also reads straight from the environment.
-    # Accepting it means someone set up for the MotherDuck CLI needs no extra
-    # configuration; the uppercase name stays canonical for consistency with
-    # every other vendor key here.
-    "MOTHERDUCK_ACCESS_TOKEN": ("motherduck_token",),
+    # MotherDuck's docs and examples use both ``MOTHERDUCK_TOKEN`` and the
+    # lowercase ``motherduck_token`` (the latter is what the DuckDB extension
+    # reads straight from the environment). Accepting both means an
+    # environment already set up for MotherDuck's own tooling needs no extra
+    # configuration; the ``_ACCESS_`` name stays canonical for consistency
+    # with every other vendor key here.
+    "MOTHERDUCK_ACCESS_TOKEN": (
+        "MOTHERDUCK_TOKEN",
+        "motherduck_token",  # noqa: SIM112 — MotherDuck's own lowercase spelling
+    ),
 }
 
 # A DuckDB database string beginning with this prefix is MotherDuck, not a
 # local file: remote, authenticated, and not subject to the file-lock
 # reasoning behind the read-only default.
 _MOTHERDUCK_PREFIX = "md:"
+
+# Token parameters MotherDuck accepts on the database string. A read-scaling
+# token authenticates against the read replica pool and is spelled
+# differently, so a URI already carrying one must not be treated as tokenless.
+_MOTHERDUCK_URI_TOKEN_PARAMS = ("motherduck_token", "read_scaling_token")
 
 # Env var name -> connect() kwarg name mapping
 _ENV_TO_KWARG: dict[str, str] = {
@@ -152,8 +161,15 @@ _ENV_TO_KWARG: dict[str, str] = {
 }
 
 
-def get_credentials(dialect: str) -> dict[str, Any]:
+def get_credentials(dialect: str, **overrides: Any) -> dict[str, Any]:
     """Read vendor credentials from environment variables.
+
+    ``overrides`` are applied *before* any dialect-specific post-processing,
+    so a caller-supplied value is what that processing sees. This matters for
+    MotherDuck: folding the token into the database string has to happen after
+    an override may have replaced the database, or ``connect()`` would raise
+    for an env-configured ``md:`` that the caller overrode away — and would
+    pass a tokenless ``md:`` when the caller supplied one.
 
     Returns a dict of kwargs suitable for the vendor's connect() function.
     Only includes env vars that are actually set. A canonical name that is
@@ -173,6 +189,7 @@ def get_credentials(dialect: str) -> dict[str, Any]:
             kwarg_name = _ENV_TO_KWARG.get(env_key, env_key.lower())
             # Convert port to int
             creds[kwarg_name] = int(raw) if env_key.endswith("_PORT") else raw
+    creds.update(overrides)
     if dialect == "duckdb":
         _apply_motherduck_token(creds)
     return creds
@@ -199,8 +216,8 @@ def _apply_motherduck_token(creds: dict[str, Any]) -> None:
     database = creds.get("database")
     if not isinstance(database, str) or not database.startswith(_MOTHERDUCK_PREFIX):
         return
-    if "motherduck_token=" in database:
-        return  # caller embedded it in DUCKDB_DATABASE already
+    if any(f"{name}=" in database for name in _MOTHERDUCK_URI_TOKEN_PARAMS):
+        return  # caller embedded a token in DUCKDB_DATABASE already
     if not token:
         raise MotherDuckTokenMissingError(
             f"DUCKDB_DATABASE is {database!r} (MotherDuck) but no token is set. "
@@ -223,8 +240,7 @@ def connect(dialect: str, **overrides: Any) -> Any:
     if dialect not in VENDOR_MAP:
         raise KeyError(f"Unsupported dialect: {dialect!r}. Supported: {sorted(VENDOR_MAP)}")
     module = importlib.import_module(VENDOR_MAP[dialect])
-    kwargs = get_credentials(dialect)
-    kwargs.update(overrides)
+    kwargs = get_credentials(dialect, **overrides)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --
     # but read-only is still correct for a semantic layer that only reads,

@@ -27,14 +27,22 @@ MOTHERDUCK_ACCESS_TOKEN=<token>
 ```
 
 Create the token at [app.motherduck.com](https://app.motherduck.com) under
-your organization name → **Settings** → **Create token**. A **Read Scaling**
-token is the better fit than the default Read/Write one: OrionBelt only ever
-issues `SELECT`, and read-scaling tokens are built for concurrent readers.
+your organization name → **Settings** → **Create token**. The default
+**Read/Write** token is the right choice for most setups — a read-scaling
+token cannot create tables, so it cannot load fixtures or seed a database.
 
-The lowercase `motherduck_token` that MotherDuck's own CLI exports is accepted
-as an alias, so an environment already set up for the CLI needs no changes.
-`MOTHERDUCK_ACCESS_TOKEN` is the canonical spelling, matching the other vendor
-credentials.
+A **Read Scaling** token suits a query-only deployment: it grants `SELECT`
+and connects against the read replica pool, which is the better shape for
+many concurrent readers. It is not required in order to connect read-only —
+OrionBelt opens `read_only=True` connections happily with a normal
+read/write token.
+
+`MOTHERDUCK_ACCESS_TOKEN` is the canonical spelling, matching the other
+vendor credentials. `MOTHERDUCK_TOKEN` and the lowercase `motherduck_token`
+that MotherDuck's own tooling uses are both accepted as aliases, so an
+environment already set up for the MotherDuck CLI needs no changes. A token
+embedded directly in the database string — either `motherduck_token=` or
+`read_scaling_token=` — is left alone.
 
 !!! warning "A `md:` database without a token is refused"
 

@@ -132,9 +132,7 @@ class TestCredentialEnvAliases:
 
         assert "access_token" not in get_credentials("databricks")
 
-    def test_dialects_without_aliases_are_unaffected(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_dialects_without_aliases_are_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from ob_flight.db_router import get_credentials
 
         monkeypatch.setenv("POSTGRES_HOST", "localhost")
@@ -142,3 +140,92 @@ class TestCredentialEnvAliases:
         creds = get_credentials("postgres")
         assert creds["host"] == "localhost"
         assert creds["port"] == 5432  # still coerced to int
+
+
+class TestMotherDuckCredentials:
+    """A ``md:`` database needs its token folded into the database string.
+
+    ``duckdb.connect`` takes no token argument, so the token travels as a
+    query parameter. Getting this wrong is quiet rather than loud: without a
+    token the DuckDB extension falls back to interactive browser auth, which
+    on a server hangs instead of failing.
+    """
+
+    @staticmethod
+    def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in (
+            "DUCKDB_DATABASE",
+            "MOTHERDUCK_ACCESS_TOKEN",
+            "MOTHERDUCK_TOKEN",
+            "motherduck_token",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.parametrize(
+        "env_name", ["MOTHERDUCK_ACCESS_TOKEN", "MOTHERDUCK_TOKEN", "motherduck_token"]
+    )
+    def test_every_accepted_spelling_supplies_the_token(
+        self, monkeypatch: pytest.MonkeyPatch, env_name: str
+    ) -> None:
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "md:analytics")
+        monkeypatch.setenv(env_name, "abc")
+        assert get_credentials("duckdb")["database"] == "md:analytics?motherduck_token=abc"
+
+    def test_token_is_url_encoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "md:analytics")
+        monkeypatch.setenv("MOTHERDUCK_ACCESS_TOKEN", "a/b+c=d")
+        assert "motherduck_token=a%2Fb%2Bc%3Dd" in get_credentials("duckdb")["database"]
+
+    @pytest.mark.parametrize("param", ["motherduck_token", "read_scaling_token"])
+    def test_an_embedded_token_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, param: str
+    ) -> None:
+        """A read-scaling token is spelled differently and is still a token."""
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", f"md:analytics?{param}=abc")
+        assert get_credentials("duckdb")["database"] == f"md:analytics?{param}=abc"
+
+    def test_local_file_is_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "/tmp/local.duckdb")
+        assert get_credentials("duckdb") == {"database": "/tmp/local.duckdb"}
+
+    def test_tokenless_md_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ob_flight.db_router import MotherDuckTokenMissingError, get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "md:analytics")
+        with pytest.raises(MotherDuckTokenMissingError, match="MOTHERDUCK_ACCESS_TOKEN"):
+            get_credentials("duckdb")
+
+    def test_override_away_from_md_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The override contract: a caller-supplied database wins outright.
+
+        Folding used to run before overrides were merged, so an env-configured
+        tokenless ``md:`` raised even when the caller passed a local file.
+        """
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "md:prod")
+        assert get_credentials("duckdb", database=":memory:") == {"database": ":memory:"}
+
+    def test_override_into_md_gets_the_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """And the reverse: an overridden ``md:`` must still be authenticated."""
+        from ob_flight.db_router import get_credentials
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("DUCKDB_DATABASE", "/tmp/local.duckdb")
+        monkeypatch.setenv("MOTHERDUCK_ACCESS_TOKEN", "T")
+        creds = get_credentials("duckdb", database="md:analytics")
+        assert creds["database"] == "md:analytics?motherduck_token=T"

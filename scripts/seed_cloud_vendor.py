@@ -131,14 +131,27 @@ def _motherduck() -> tuple[Callable[[str], None], Callable[[str], list[tuple]], 
             "Missing environment: DUCKDB_DATABASE must be a MotherDuck database "
             f"(md:<name>), got {database!r}"
         )
-    # SIM112 wants an uppercase name; the lowercase spelling is MotherDuck's
-    # own documented variable and what its CLI exports, so it is accepted
-    # verbatim rather than renamed.
-    token = os.environ.get("MOTHERDUCK_ACCESS_TOKEN") or os.environ.get(
-        "motherduck_token"  # noqa: SIM112
+    # Same spellings db_router accepts. SIM112 wants an uppercase name; the
+    # lowercase one is MotherDuck's own documented variable and what its CLI
+    # exports, so it is accepted verbatim rather than renamed.
+    token = next(
+        (
+            v
+            for v in (
+                os.environ.get("MOTHERDUCK_ACCESS_TOKEN"),
+                os.environ.get("MOTHERDUCK_TOKEN"),
+                os.environ.get("motherduck_token"),  # noqa: SIM112
+            )
+            if v
+        ),
+        None,
     )
     if not token:
-        raise SystemExit("Missing environment: MOTHERDUCK_ACCESS_TOKEN (or motherduck_token)")
+        raise SystemExit(
+            "Missing environment: MOTHERDUCK_ACCESS_TOKEN "
+            "(or MOTHERDUCK_TOKEN / motherduck_token). Seeding writes, so this "
+            "must be a read/write token - a read-scaling token cannot create tables."
+        )
     sep = "&" if "?" in database else "?"
     # Seeding writes, so unlike the query path this connection is not read-only.
     conn = duckdb.connect(f"{database}{sep}motherduck_token={quote(token, safe='')}")
