@@ -45,10 +45,22 @@ LOCAL_COMMERCE = REPO_ROOT / "examples" / "orionbelt_1_commerce.duckdb"
 SCHEMA = "orionbelt_1"
 
 
+def _token_env_names() -> tuple[str, ...]:
+    """Every env var the router accepts for the MotherDuck token.
+
+    Read from ``_ENV_ALIASES`` rather than restated here. A local copy of the
+    list is exactly what went stale when ``MOTHERDUCK_TOKEN`` was added to the
+    router: the live fixture skipped for anyone using that spelling, and
+    ``test_missing_token_fails_fast`` failed because it never cleared it.
+    """
+    from ob_flight.db_router import _ENV_ALIASES
+
+    canonical = "MOTHERDUCK_ACCESS_TOKEN"
+    return (canonical, *_ENV_ALIASES.get(canonical, ()))
+
+
 def _token() -> str | None:
-    return os.environ.get("MOTHERDUCK_ACCESS_TOKEN") or os.environ.get(
-        "motherduck_token"  # noqa: SIM112 — MotherDuck's own documented spelling
-    )
+    return next((v for v in (os.environ.get(n) for n in _token_env_names()) if v), None)
 
 
 @pytest.fixture(scope="module")
@@ -122,8 +134,8 @@ class TestConnection:
         from ob_flight.db_router import MotherDuckTokenMissingError, get_credentials
 
         monkeypatch.setenv("DUCKDB_DATABASE", "md:some_db")
-        monkeypatch.delenv("MOTHERDUCK_ACCESS_TOKEN", raising=False)
-        monkeypatch.delenv("motherduck_token", raising=False)
+        for name in _token_env_names():
+            monkeypatch.delenv(name, raising=False)
 
         with pytest.raises(MotherDuckTokenMissingError, match="MOTHERDUCK_ACCESS_TOKEN"):
             get_credentials("duckdb")
