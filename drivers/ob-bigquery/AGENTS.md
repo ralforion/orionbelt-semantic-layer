@@ -12,7 +12,7 @@ compilation to `ob-driver-core`; it does not use a direct in-process
 
 **OB dialect string:** `"bigquery"`
 **Author:** Ralf Becher / RALFORION d.o.o. (info@orionbelt.ai)
-**License:** BSL-1.1
+**License:** BUSL-1.1
 
 ---
 

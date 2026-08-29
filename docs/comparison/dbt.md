@@ -21,7 +21,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and the **dbt S
 | Object scoping | Each `DataObject` has its own `columns:`; dimensions/measures/metrics live at model scope and reference `{[DataObject].[Column]}` | Dimensions/measures/entities are scoped *inside* each `semantic_model`; metrics reference measures |
 | Identity for joins | Explicit `joins` between data objects with `columnsFrom`/`columnsTo`, `joinType`, `secondary`, `pathName` | Implicit: `entities` of type `primary`/`foreign`/`unique`/`natural`; MetricFlow auto-resolves joins by matching entity names |
 | Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | Flatten upstream in a dbt model first |
-| Deployment | Self-hosted FastAPI service, MCP server, Gradio UI; OSS | Definitions in dbt Core OSS; **query API gated behind dbt Cloud** |
+| Deployment | Self-hosted FastAPI service, MCP server, Gradio UI; source-available (BUSL-1.1) | Definitions in dbt Core OSS; **query API gated behind dbt Cloud** |
 
 ---
 
@@ -258,7 +258,7 @@ OBSL validates column arity at model-load time and gates dialect support at comp
 | Caching | Result cache based on freshness inheritance (file backend, off by default): TTL derived from per-`dataObject` `refresh:` contract; ETL `POST /v1/heartbeat` invalidates dependent entries by physical table | dbt Cloud query cache |
 | Versioned governance, lineage to upstream models | No (model is standalone) | Strong — inherits dbt's lineage, tests, docs, exposures |
 | Filter ergonomics | `MeasureFilter`, `FilterContext`, `GrainOverride`, query-level `where`/`having` | Per-metric `filter:`, `metric_time` |
-| Vendor-agnostic | Yes — pure OSS | Practical lock-in: production query APIs require dbt Cloud |
+| Vendor-agnostic | Yes — self-hostable, no vendor runtime | Practical lock-in: production query APIs require dbt Cloud |
 
 ---
 

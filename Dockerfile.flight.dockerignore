@@ -28,7 +28,10 @@ tests/
 docs/
 mkdocs.yml
 CLAUDE.md
-LICENSE
+# LICENSE is NOT excluded: pyproject declares license-files = ["LICENSE"], so
+# a build without it produces a wheel with no License-File metadata and an
+# empty dist-info/licenses/. Docker reads this file instead of .dockerignore
+# for `-f Dockerfile.flight`, so the exclusion has to be lifted in both.
 .mcpregistry_github_token
 .mcpregistry_registry_token
 Dockerfile

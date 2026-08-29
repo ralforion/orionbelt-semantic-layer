@@ -12,4 +12,4 @@ pip install ob-clickhouse
 
 ## License
 
-BSL-1.1 — see [LICENSE](LICENSE) for details.
+BUSL-1.1 — see [LICENSE](LICENSE) for details.

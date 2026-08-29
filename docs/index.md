@@ -1,5 +1,5 @@
 ---
-description: OrionBelt Semantic Layer is an open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance. YAML models compile to SQL across 8 dialects, exposed via REST, MCP, Arrow Flight SQL, and Postgres wire.
+description: OrionBelt Semantic Layer is a source-available Semantic Sidecar for agentic AI, analytics, data quality, and governance. YAML models compile to SQL across 8 dialects, exposed via REST, MCP, Arrow Flight SQL, and Postgres wire.
 ---
 
 <p align="center">
@@ -8,7 +8,7 @@ description: OrionBelt Semantic Layer is an open-source Semantic Sidecar for age
 
 # OrionBelt&reg; Semantic Layer and Sidecar
 
-**An open-source Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.**
+**A source-available Semantic Sidecar for agentic AI, analytics, data quality, and governance systems.**
 
 **Inject governed semantics into systems that never had them.**
 
@@ -27,7 +27,7 @@ OBSL applies the same pattern to **semantics**:
 - It's a **runtime, not a rewrite.** Existing BI tools, AI agents, governance systems, and DQ pipelines keep talking to their databases — OBSL attaches a governed semantic interface alongside them.
 - It's **multi-surface by design.** The same model is reachable over REST (for agents and apps), MCP (for LLM clients), Arrow Flight SQL + PostgreSQL wire (for BI tools), and direct DB-API drivers (for Python). One model, many channels.
 - It's **opinionated about correctness, not deployment.** Dialect-aware SQL generation, fan-trap-safe joins, and dimensional metrics are non-negotiable; where to run OBSL — embedded in your app, alongside a warehouse, behind a proxy, in a single container — is your call.
-- It's **open by default.** BSL 1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.
+- It's **source-available, with a clock on it.** BUSL-1.1 today, converts to Apache 2.0 in 2030. No SaaS lock-in is required to use the full v2.6 surface.
 
 ## The OrionBelt trio
 
@@ -183,7 +183,7 @@ Ready to dive in? Start with [Installation](getting-started/installation.md) and
 
 ## Commercial Offerings
 
-OrionBelt Semantic Layer is open by default — the OSS distribution has full parity on the shipped v2.6 surface and is production-grade for self-hosted use. For teams that want production support, a managed runtime, or embedded analytics terms, RALFORION offers:
+OrionBelt Semantic Layer is source-available under BUSL-1.1 until its Apache-2.0 conversion — the free distribution has full parity on the shipped v2.6 surface and is production-grade for self-hosted use. For teams that want production support, a managed runtime, or embedded analytics terms, RALFORION offers:
 
 - **Embedded analytics license** — relicensing terms for shipping OBSL inside a commercial product
 - **Commercial cloud offering** — managed OrionBelt runtime with SLAs
@@ -197,7 +197,7 @@ Contact [RALFORION d.o.o.](https://ralforion.com) for details.
 <p align="center">
   <a href="https://ralforion.com"><img src="assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200"></a>
   <br>
-  Copyright &copy; 2026 RALFORION d.o.o. &mdash; Licensed under BSL 1.1
+  Copyright &copy; 2026 RALFORION d.o.o. &mdash; Licensed under BUSL-1.1
   <br>
   OrionBelt&reg; is a registered trademark of RALFORION d.o.o.
 </p>

@@ -7,7 +7,7 @@ A feature comparison between **OrionBelt Semantic Layer (OBSL)** and **LookML**,
 ## TL;DR
 
 - **LookML wins on**: deep BI integration (drill fields, parameters, Liquid templating, PDTs, access filters/grants), `dimension_group` auto-timeframe expansion, symmetric aggregates (Looker invented the term), the broadest warehouse connector portfolio, and a polished proprietary IDE/UI.
-- **OBSL wins on**: being **open-source and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where LookML expresses these via table calculations or filtered measures — not declarative metric types, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, and an explicit **CFL multi-fact planner**. (An MCP server is no longer an OBSL differentiator here: Looker shipped a managed MCP server in 2026, alongside the LookML Agent for AI-assisted modeling and a GA Conversational Analytics API.)
+- **OBSL wins on**: being **source-available (BUSL-1.1) and self-hostable** (LookML is Looker-only — proprietary, paid, vendor-locked), a **language-agnostic JSON Query API** consumable by any client, **richer modeling topologies** (multi-rooted DAG with first-class named secondary join paths) where LookML's explore is a single-rooted tree, **first-class metric types** for cumulative (with `partitionBy`), period-over-period, and **window** (rank / lag / lead / ntile / first_value / last_value) where LookML expresses these via table calculations or filtered measures — not declarative metric types, **9 statistical aggregates** (CORR / COVAR_* / REGR_* / STDDEV_* / VAR_*), an **RDF/SPARQL graph view** of the model, and an explicit **CFL multi-fact planner**. (An MCP server is no longer an OBSL differentiator here: Looker shipped a managed MCP server in 2026, alongside the LookML Agent for AI-assisted modeling and a GA Conversational Analytics API.)
 - **Different niches**: LookML is "the modeling language for Looker, your BI platform." OBSL is "an embeddable semantic compiler that exposes metrics over a stable API to apps, agents, and BI tools you didn't have to buy."
 
 LookML and Looker are inseparable in practice — you cannot run LookML without Looker. So this is also a comparison of build-vs-buy on the runtime.
@@ -23,7 +23,7 @@ LookML and Looker are inseparable in practice — you cannot run LookML without 
 | Top-level constructs | `dataObjects`, `dimensions`, `measures`, `metrics`, `filters` | `connection`, `model`, `view`, `explore`, `dimension`, `dimension_group`, `measure`, `parameter`, `filter`, `derived_table`, `access_filter`, `access_grant` |
 | Object scoping | Each `DataObject` has `columns:`; dimensions/measures/metrics live at model scope | Dimensions and measures are *inside* `view`s; joins live in `explore`s in `model` files |
 | Repeated columns (`ARRAY<STRUCT>`) | Declared as a data object with `nestedIn`; unnested per dialect — see [Nested data objects](../guide/model-format.md#nested-data-objects-nestedin) | An `UNNEST` derived table, or a view whose `sql_table_name` unnests |
-| Runtime | OSS, self-hosted | **Looker proprietary platform only** (Google Cloud) |
+| Runtime | Source-available (BUSL-1.1), self-hosted | **Looker proprietary platform only** (Google Cloud) |
 
 ---
 
@@ -216,17 +216,17 @@ Looker is broader on enterprise legacy databases; OBSL is competitive on modern 
 
 ---
 
-## 9. Open source vs. proprietary
+## 9. Licensing vs. proprietary
 
 This is the most consequential difference and worth calling out separately.
 
 | | OBSL | LookML |
 |---|---|---|
-| License | Source-available (BSL) | Proprietary (Google Cloud / Looker) |
+| License | Source-available (BUSL-1.1) | Proprietary (Google Cloud / Looker) |
 | Self-hostable | Yes — runs anywhere Python runs | Limited: Looker is a hosted SaaS; "Looker (original)" had a self-hosted option but is being deprecated |
-| Cost | OSS is free for self-hosted production; commercial tiers available for embedded analytics, managed cloud, and enterprise features | Per-user licensing on the Looker platform |
+| Cost | Free for self-hosted production under BUSL-1.1; commercial tiers available for embedded analytics, managed cloud, and enterprise features | Per-user licensing on the Looker platform |
 | Commercial offering | Embedded analytics license · commercial cloud offering · enterprise features · consulting + support | Looker platform — per-user licensing, hosted by Google Cloud |
-| Self-host parity | OSS has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | n/a — Looker is not self-hostable in the modern offering |
+| Self-host parity | The free tier has full parity on the shipped v2.6 surface; enterprise tier adds enterprise-specific capabilities on top | n/a — Looker is not self-hostable in the modern offering |
 | Vendor lock-in | None | LookML files only run inside Looker |
 | Air-gapped deploy | Possible | Not supported |
 | Format portability | OBML is plain YAML, can be read by any tool | LookML is a Looker-specific DSL with no widely-adopted external parser other than `pylookml` |
@@ -258,7 +258,7 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 | AI-assisted model authoring | ❌ | ✅ LookML Agent in the Looker VS Code extension (natural language → LookML, model generation from BigQuery/AlloyDB datasets) |
 | Conversational analytics | ❌ | ✅ Conversational Analytics API (GA) with SDK and iframe embedding |
 | Reads other vendors' semantic models | OSI ↔ OBML conversion | ✅ reads BigQuery graph definitions and Snowflake semantic views natively |
-| OSS / self-hostable | ✅ | ❌ |
+| Source-available / self-hostable | ✅ | ❌ |
 | Built-in BI front-end | ❌ | ✅ |
 
 ---
@@ -276,7 +276,7 @@ For embedded SaaS, multi-tenant analytics, or air-gapped/on-prem use cases, OBSL
 
 ### Pick **OBSL** when:
 
-- You need an **open-source, self-hostable, embeddable** semantic layer — no vendor lock-in.
+- You need a **source-available, self-hostable, embeddable** semantic layer — no vendor lock-in.
 - Your consumers are **applications, agents, or LLMs** — a stable JSON Query API beats requiring callers to know LookML.
 - You need first-class, *reusable* **cumulative** and **period-over-period** metric types instead of expressing them as table calculations.
 - You target ClickHouse, Databricks, Dremio, or DuckDB.
@@ -304,7 +304,7 @@ A common hybrid: ship Looker for the human BI audience and run OBSL alongside it
 
 ### To match OBSL, LookML/Looker would need:
 
-1. **Open-source / self-hostable runtime** (the structural blocker).
+1. **Source-available / self-hostable runtime** (the structural blocker).
 2. **First-class cumulative & period-over-period metric types** — declarative versions of what's currently table calculations.
 3. **Named secondary join paths** with per-query selection.
 4. **RDF/SPARQL graph surface** for governance/lineage.

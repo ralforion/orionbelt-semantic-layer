@@ -28,7 +28,10 @@ tests/
 docs/
 mkdocs.yml
 CLAUDE.md
-LICENSE
+# LICENSE is NOT excluded: pyproject declares license-files = ["LICENSE"], so
+# a build without it produces a wheel with no License-File metadata and an
+# empty dist-info/licenses/ - silently, since hatchling does not fail on a
+# missing licence file.
 .mcpregistry_github_token
 .mcpregistry_registry_token
 # NOTE: drivers/ used to be excluded because the published image only
