@@ -409,11 +409,17 @@ def run_bigquery() -> Iterator[Callable[[str], object]]:
 def run_databricks() -> Iterator[Callable[[str], object]]:
     from databricks import sql as dbsql
 
-    _require_env("DATABRICKS_SERVER_HOSTNAME", "DATABRICKS_HTTP_PATH", "DATABRICKS_TOKEN")
+    _require_env("DATABRICKS_SERVER_HOSTNAME", "DATABRICKS_HTTP_PATH")
+    # Accept either spelling, like every other consumer in the repo.
+    token = os.environ.get("DATABRICKS_ACCESS_TOKEN") or os.environ.get("DATABRICKS_TOKEN")
+    if not token:
+        raise SystemExit(
+            "Missing environment variables: DATABRICKS_ACCESS_TOKEN (or DATABRICKS_TOKEN)"
+        )
     con = dbsql.connect(
         server_hostname=os.environ["DATABRICKS_SERVER_HOSTNAME"],
         http_path=os.environ["DATABRICKS_HTTP_PATH"],
-        access_token=os.environ["DATABRICKS_TOKEN"],
+        access_token=token,
         catalog=os.environ.get("DATABRICKS_CATALOG"),
     )
 
