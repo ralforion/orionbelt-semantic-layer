@@ -301,6 +301,55 @@ class TestExecuteSql:
         mock_result.fetchall.assert_not_called()
         mock_conn.close.assert_called_once()
 
+    def test_interval_values_agree_across_paths(self) -> None:
+        """An interval renders the same whether or not the Arrow path ran.
+
+        ``to_pylist()`` yields a ``MonthDayNano`` namedtuple whose ``str()``
+        is ``"MonthDayNano(months=0, days=1, nanoseconds=0)"``, while the
+        PEP 249 path yields a ``timedelta`` serialising to
+        ``"1 day, 0:00:00"``. Normalising in ``_arrow_to_rows`` keeps
+        JSON / TSV / pgwire output stable regardless of whether pyarrow
+        happened to be imported.
+
+        The month->day rule mirrors DuckDB's own conversion: 30 days per
+        month, so ``INTERVAL 3 MONTH`` is 90 days and ``INTERVAL 1 YEAR``
+        is 360.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        from datetime import timedelta
+
+        from orionbelt.service.db_executor import _arrow_to_rows
+
+        table = pa.table(
+            {
+                "one_day": pa.array(
+                    [pa.MonthDayNano([0, 1, 0])], type=pa.month_day_nano_interval()
+                ),
+                "three_months": pa.array(
+                    [pa.MonthDayNano([3, 0, 0])], type=pa.month_day_nano_interval()
+                ),
+                "ninety_min": pa.array(
+                    [pa.MonthDayNano([0, 0, 5_400_000_000_000])],
+                    type=pa.month_day_nano_interval(),
+                ),
+                "duration": pa.array([timedelta(hours=2)], type=pa.duration("us")),
+                "null_interval": pa.array([None], type=pa.month_day_nano_interval()),
+            }
+        )
+
+        expected = _serialize_row(
+            (
+                timedelta(days=1),
+                timedelta(days=90),
+                timedelta(minutes=90),
+                timedelta(hours=2),
+                None,
+            )
+        )
+        assert _arrow_to_rows(table) == [expected]
+        assert expected[0] == "1 day, 0:00:00"
+
     def test_interval_hint_agrees_across_mappings(self) -> None:
         """INTERVAL classifies the same whichever path produced it.
 

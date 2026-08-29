@@ -15,7 +15,7 @@ import contextlib
 import logging
 import re
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -602,6 +602,40 @@ def _is_string_stored_numeric_arrow_type(arrow_type: Any) -> bool:
         return False
 
 
+def _is_interval_arrow_type(arrow_type: Any) -> bool:
+    """True for Arrow interval / duration types."""
+    try:
+        import pyarrow as pa
+
+        return bool(pa.types.is_interval(arrow_type) or pa.types.is_duration(arrow_type))
+    except (AttributeError, TypeError, ImportError):
+        return False
+
+
+def _interval_to_timedelta(val: Any) -> Any:
+    """Normalise an Arrow interval cell to ``timedelta``, as DuckDB does.
+
+    ``month_day_nano_interval`` comes out of ``to_pylist()`` as a
+    ``MonthDayNano`` namedtuple, whose ``str()`` is
+    ``"MonthDayNano(months=0, days=1, nanoseconds=0)"`` — while the PEP 249
+    path returns a ``timedelta`` that serialises to ``"1 day, 0:00:00"``.
+    The same query would then render differently depending only on whether
+    pyarrow was imported.
+
+    DuckDB's own PEP 249 conversion counts a month as 30 days (``INTERVAL 3
+    MONTH`` -> ``timedelta(days=90)``, ``INTERVAL 1 YEAR`` -> 360 days), so
+    reproducing that rule makes the two paths agree exactly. Arrow
+    ``duration`` cells are already ``timedelta`` and pass through.
+    """
+    months = getattr(val, "months", None)
+    if months is None:
+        return val
+    return timedelta(
+        days=months * 30 + val.days,
+        microseconds=val.nanoseconds // 1000,
+    )
+
+
 def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
     """Convert an Arrow Table to a list of JSON-serializable rows.
 
@@ -618,6 +652,9 @@ def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
     string_numeric_cols: set[str] = {
         field.name for field in table.schema if _is_string_stored_numeric_arrow_type(field.type)
     }
+    interval_cols: set[str] = {
+        field.name for field in table.schema if _is_interval_arrow_type(field.type)
+    }
 
     result: list[list[Any]] = []
     for i in range(n_rows):
@@ -627,6 +664,8 @@ def _arrow_to_rows(table: Any, tz: ZoneInfo | None = None) -> list[list[Any]]:
             if name in string_numeric_cols and isinstance(val, str):
                 with contextlib.suppress(TypeError, ValueError, InvalidOperation):
                     val = Decimal(val)
+            elif name in interval_cols:
+                val = _interval_to_timedelta(val)
             row.append(_serialize_value(val, tz))
         result.append(row)
     return result
