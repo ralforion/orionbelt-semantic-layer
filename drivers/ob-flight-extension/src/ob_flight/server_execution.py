@@ -136,9 +136,13 @@ def _projects_model_artefacts(ast: Any, model: Any) -> bool:
     ``UNSUPPORTED_SQL_FEATURE`` naming the offending expression, which is
     a far better answer than a table of metadata for a different question.
 
-    ``SELECT *`` and projections with no column reference at all
-    (literals, ``current_schema()``, ``COUNT(*)``) answer False and keep
-    the preview behaviour BI tools rely on.
+    No separate ``SELECT *`` guard: a star carries no column reference, so
+    the same scan already answers False for ``SELECT *``, ``COUNT(*)``,
+    ``t.*``, literals and ``current_schema()``, keeping the preview
+    behaviour BI tools rely on. An explicit star check was worse than
+    redundant — short-circuiting on it sent ``SELECT *, "Total Revenue"``
+    to the catalog, when the projection names an artefact and the
+    translator has a precise refusal for the star.
     """
     import sqlglot.expressions as exp
 
@@ -146,17 +150,9 @@ def _projects_model_artefacts(ast: Any, model: Any) -> bool:
     known |= {label.lower() for label in model.effective_measures}
     known |= {label.lower() for label in model.metrics}
 
-    projections = list(getattr(ast, "expressions", []) or [])
-    if not projections:
-        return False
-    for proj in projections:
-        # A star anywhere means "show me everything about this relation",
-        # which over a qualified model is the preview BI tools ask for.
-        if isinstance(proj, exp.Star) or next(proj.find_all(exp.Star), None) is not None:
-            return False
     return any(
         (col.name or "").lower() in known
-        for proj in projections
+        for proj in getattr(ast, "expressions", []) or []
         for col in proj.find_all(exp.Column)
     )
 

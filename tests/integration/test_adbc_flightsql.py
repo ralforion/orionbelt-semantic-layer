@@ -245,6 +245,22 @@ class TestExecution:
         with pytest.raises(Exception, match="(?i)unsupported|reject|translation"):
             _fetch(conn, f'SELECT LOWER("Customer Country") FROM "{MODEL_NAME}"."model"')
 
+    def test_qualified_star_mixed_with_artefact_errors(self, conn: Any) -> None:
+        """A star *alongside* an artefact is a data query, so it must error.
+
+        Short-circuiting on the star sent this to the catalog, which
+        answered with metadata rows even though the projection plainly
+        names a measure. The translator has a precise refusal for
+        ``SELECT *``; that is the answer the caller should get.
+        """
+        with pytest.raises(Exception, match="(?i)unsupported|reject|translation|\\*"):
+            _fetch(conn, f'SELECT *, "Total Revenue" FROM "{MODEL_NAME}"."model"')
+
+    def test_qualified_qualified_star_still_previews_metadata(self, conn: Any) -> None:
+        """``t.*`` carries no artefact reference, so it stays a preview."""
+        table = _fetch(conn, f'SELECT "model".* FROM "{MODEL_NAME}"."model"')
+        assert "column_name" in table.column_names, table.column_names
+
     def test_qualified_count_star_still_previews_metadata(self, conn: Any) -> None:
         """``COUNT(*)`` references no artefact, so it stays a preview probe."""
         table = _fetch(conn, f'SELECT COUNT(*) FROM "{MODEL_NAME}"."model"')
