@@ -232,10 +232,16 @@ class TestExecuteSql:
 
     @_needs_ob_flight
     def test_duckdb_direct_execution(self) -> None:
-        """DuckDB uses a direct native path (no get_connection)."""
+        """DuckDB falls back to the PEP 249 path when Arrow is unavailable."""
         mock_result = MagicMock()
         mock_result.fetchall.return_value = [("US", 100)]
         mock_result.description = [("country",), ("revenue",)]
+        # A MagicMock answers every attribute, so it would claim Arrow
+        # support it does not have and route this test down the Arrow
+        # branch. Delete both probed names to model a result without an
+        # Arrow fetch.
+        del mock_result.to_arrow_table
+        del mock_result.fetch_arrow_table
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
@@ -254,6 +260,126 @@ class TestExecuteSql:
         assert result.row_count == 1
         assert result.rows == [["US", 100]]
         mock_conn.close.assert_called_once()
+
+    @_needs_ob_flight
+    def test_duckdb_direct_execution_arrow(self) -> None:
+        """DuckDB prefers the Arrow fetch and carries the exact schema.
+
+        The zero-row case is the one that matters: rebuilding a table from
+        Python rows re-infers types and would collapse an empty ``int64``
+        column to ``null``, so a cached entry would no longer match the
+        schema a fresh read advertises.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        table = pa.table(
+            {"country": pa.array([], type=pa.string()), "revenue": pa.array([], type=pa.int64())}
+        )
+        mock_result = MagicMock()
+        # ``to_arrow_table`` is the non-deprecated name and the one the
+        # DuckDB path probes first.
+        mock_result.to_arrow_table.return_value = table
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = mock_result
+
+        with (
+            patch(
+                "ob_flight.db_router.get_credentials",
+                return_value={"database": ":memory:"},
+                create=True,
+            ),
+            patch("duckdb.connect", return_value=mock_conn),
+        ):
+            result = execute_sql("SELECT 1", dialect="duckdb")
+
+        assert isinstance(result, ExecutionResult)
+        assert result.row_count == 0
+        assert result.rows == []
+        assert [c.name for c in result.columns] == ["country", "revenue"]
+        assert [c.type_hint for c in result.columns] == ["string", "number"]
+        mock_result.fetchall.assert_not_called()
+        mock_conn.close.assert_called_once()
+
+    def test_interval_values_agree_across_paths(self) -> None:
+        """An interval renders the same whether or not the Arrow path ran.
+
+        ``to_pylist()`` yields a ``MonthDayNano`` namedtuple whose ``str()``
+        is ``"MonthDayNano(months=0, days=1, nanoseconds=0)"``, while the
+        PEP 249 path yields a ``timedelta`` serialising to
+        ``"1 day, 0:00:00"``. Normalising in ``_arrow_to_rows`` keeps
+        JSON / TSV / pgwire output stable regardless of whether pyarrow
+        happened to be imported.
+
+        The month->day rule mirrors DuckDB's own conversion: 30 days per
+        month, so ``INTERVAL 3 MONTH`` is 90 days and ``INTERVAL 1 YEAR``
+        is 360.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        from datetime import timedelta
+
+        from orionbelt.service.db_executor import _arrow_to_rows
+
+        table = pa.table(
+            {
+                "one_day": pa.array(
+                    [pa.MonthDayNano([0, 1, 0])], type=pa.month_day_nano_interval()
+                ),
+                "three_months": pa.array(
+                    [pa.MonthDayNano([3, 0, 0])], type=pa.month_day_nano_interval()
+                ),
+                "ninety_min": pa.array(
+                    [pa.MonthDayNano([0, 0, 5_400_000_000_000])],
+                    type=pa.month_day_nano_interval(),
+                ),
+                "duration": pa.array([timedelta(hours=2)], type=pa.duration("us")),
+                "null_interval": pa.array([None], type=pa.month_day_nano_interval()),
+            }
+        )
+
+        expected = _serialize_row(
+            (
+                timedelta(days=1),
+                timedelta(days=90),
+                timedelta(minutes=90),
+                timedelta(hours=2),
+                None,
+            )
+        )
+        assert _arrow_to_rows(table) == [expected]
+        assert expected[0] == "1 day, 0:00:00"
+
+    def test_interval_hint_agrees_across_mappings(self) -> None:
+        """INTERVAL classifies the same whichever path produced it.
+
+        Four mappings can see an interval: ``_duckdb_type_hint`` (PEP 249
+        fallback), ``_arrow_type_to_hint`` (Arrow fetch, both DuckDB's
+        month_day_nano_interval and a duration), pgwire's
+        ``_duckdb_desc_to_hint`` (catalog), and ADBC's
+        ``coarse_hint_from_type_name`` for the Postgres driver's opaque
+        "interval" (see ``test_opaque_interval_maps_to_datetime``). They
+        must agree, or the same column is advertised with a different
+        Postgres OID depending only on which driver answered.
+
+        ``_duckdb_desc_to_hint`` used to return "number" here, because
+        "interval" contains "int" and the numeric substring check ran
+        first.
+        """
+        pa = pytest.importorskip("pyarrow")
+
+        from orionbelt.pgwire.catalog import _duckdb_desc_to_hint
+        from orionbelt.service.db_executor import _arrow_type_to_hint, _duckdb_type_hint
+
+        assert _duckdb_type_hint("INTERVAL") == "datetime"
+        assert _arrow_type_to_hint(pa.month_day_nano_interval()) == "datetime"
+        assert _arrow_type_to_hint(pa.duration("us")) == "datetime"
+        assert _duckdb_desc_to_hint(("v", "INTERVAL")) == "datetime"
+
+        # Genuine integers still read as numbers despite sharing the "int"
+        # substring that used to swallow INTERVAL.
+        for name in ("INTEGER", "BIGINT", "TINYINT", "HUGEINT"):
+            assert _duckdb_desc_to_hint(("v", name)) == "number"
 
     @_needs_ob_flight
     def test_db_error_raises_execution_error(self) -> None:

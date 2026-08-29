@@ -170,6 +170,7 @@ def _render_response(
     timezone: str | None,
     cached: bool = False,
     cached_at: str | None = None,
+    arrow_schema: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Render already-resolved columns + RAW rows into the requested surface.
 
@@ -206,7 +207,13 @@ def _render_response(
             ]
         else:
             arrow_rows = rows
-        gzipped_data = result_codec.encode_data(column_names, arrow_rows)
+        # ``arrow_schema`` keeps an empty / all-null column from decoding as
+        # ``null`` while the envelope's column metadata calls it numeric. It
+        # is irrelevant under format_values, where every cell is a display
+        # string by construction.
+        gzipped_data = result_codec.encode_data(
+            column_names, arrow_rows, None if format_values else arrow_schema
+        )
         meta = _arrow_envelope_dict(
             columns_meta=columns_meta,
             sql=sql,
@@ -345,6 +352,7 @@ def _build_execute_response(
         accept_encoding=accept_encoding,
         columns_meta=columns_meta,
         rows=exec_result.rows,
+        arrow_schema=exec_result.arrow_schema,
         fmt_map=fmt_map,
         type_map=type_map,
         sql=format_sql(compile_result.sql, compile_result.dialect),

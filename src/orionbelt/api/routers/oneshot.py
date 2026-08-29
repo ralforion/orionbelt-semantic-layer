@@ -437,6 +437,7 @@ async def _run_query(
                 model_id=model_id,
                 dialect=dialect,
                 physical_tables=physical_tables,
+                schema=exec_result.arrow_schema,
             )
         elif ttl_outcome.no_cache_reason is not None:
             ttl_source = (
@@ -672,8 +673,16 @@ async def _try_oneshot_cache_set(
     model_id: str,
     dialect: str,
     physical_tables: list[str],
+    schema: Any = None,
 ) -> None:
-    """Best-effort cache set for oneshot batch entries (row data only)."""
+    """Best-effort cache set for oneshot batch entries (row data only).
+
+    ``schema`` is the executor's driver Arrow schema. The envelope has
+    already reduced the result to JSON rows, so without it an empty or
+    all-null column would be stored as Arrow ``null`` — and this writer
+    populates the *shared* cache, so a later raw ``format=arrow`` hit would
+    serve that blob verbatim against numeric column metadata.
+    """
     await try_cache_set(
         cache=cache,
         key=key,
@@ -686,4 +695,5 @@ async def _try_oneshot_cache_set(
         ttl_seconds=ttl_seconds,
         datasource=datasource,
         model_id=model_id,
+        schema=schema,
     )

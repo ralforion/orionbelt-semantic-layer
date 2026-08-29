@@ -23,6 +23,7 @@ Two deliberate choices, both measured in the plan:
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 from typing import Any
 
@@ -37,13 +38,50 @@ _GZIP_LEVEL = 6
 _MAX_CHUNKSIZE = 100_000
 
 
-def build_result_table(column_names: list[str], rows: list[list[Any]]) -> Any:
+def _serialized_field_type(arrow_type: Any) -> Any:
+    """The Arrow type a column has *after* the executor serialises its cells.
+
+    ``encode_data`` is handed rows that already went through
+    ``_serialize_value``: temporals become ISO strings, binary becomes base64,
+    intervals become ``str(timedelta)``. Numerics, booleans, strings and
+    ``Decimal`` pass through untouched. This maps a driver's Arrow type onto
+    the type its *serialised* values carry, so a hint derived from the
+    executor's schema agrees with what a non-empty result would infer.
+    """
+    import pyarrow as pa
+
+    try:
+        if (
+            pa.types.is_integer(arrow_type)
+            or pa.types.is_floating(arrow_type)
+            or pa.types.is_boolean(arrow_type)
+            or pa.types.is_decimal(arrow_type)
+        ):
+            return arrow_type
+    except (AttributeError, TypeError):
+        return pa.string()
+    return pa.string()
+
+
+def build_result_table(column_names: list[str], rows: list[list[Any]], schema: Any = None) -> Any:
     """Build a pyarrow Table from result column names + list-of-lists rows.
 
     Rows are padded to the column arity and transposed into columns. Types are
     inferred by pyarrow from the (already JSON-serializable) cell values — the
     same typed, locale-neutral shape the executor produces, so a cached entry
     and a fresh execution serialize identically.
+
+    ``schema`` is an optional *driver* Arrow schema (from ``ExecutionResult``)
+    used **only** to rescue columns inference would otherwise type as ``null``:
+    an empty result, or one whose every cell is NULL. Without it, a
+    ``SELECT 1::BIGINT AS n WHERE false`` blob decodes as ``n: null`` while the
+    envelope's sidecar says the column is numeric — one payload contradicting
+    itself, and a raw-arrow cache hit serves that blob verbatim.
+
+    Deliberately narrow: a column whose inferred type is already concrete keeps
+    it, so no existing value representation can change. Types are matched by
+    position, since the caller's ``column_names`` are the model-decorated names
+    for the same columns in the same order.
     """
     import pyarrow as pa
 
@@ -57,7 +95,20 @@ def build_result_table(column_names: list[str], rows: list[list[Any]]) -> Any:
         ]
     else:
         cols_data = [[] for _ in column_names]
-    arrays = [pa.array(col, from_pandas=False) for col in cols_data]
+
+    hints: list[Any] = []
+    if schema is not None and len(schema) == width:
+        hints = [_serialized_field_type(f.type) for f in schema]
+
+    arrays = []
+    for i, col in enumerate(cols_data):
+        arr = pa.array(col, from_pandas=False)
+        if hints and pa.types.is_null(arr.type) and not pa.types.is_null(hints[i]):
+            # Every cell is NULL (or there are none), so re-typing cannot alter
+            # a value — but it does keep the declared type visible to clients.
+            with contextlib.suppress(pa.ArrowInvalid, pa.ArrowTypeError, TypeError, ValueError):
+                arr = pa.array(col, type=hints[i], from_pandas=False)
+        arrays.append(arr)
     return pa.Table.from_arrays(arrays, names=list(column_names))
 
 
@@ -80,16 +131,18 @@ def to_ipc_stream(table: Any) -> bytes:
     return raw
 
 
-def encode_data(column_names: list[str], rows: list[list[Any]]) -> bytes:
+def encode_data(column_names: list[str], rows: list[list[Any]], schema: Any = None) -> bytes:
     """Serialize row data as a gzip'd Arrow IPC stream blob (data only).
 
     No response envelope is baked in — the blob is a pure Arrow data stream. The
     caller stores this in the cache; metadata is rebuilt fresh on every read.
     Types are inferred from the row values (see :func:`build_result_table`); a
     caller that already holds a fully-typed table should use
-    :func:`encode_table` instead to preserve the exact schema.
+    :func:`encode_table` instead to preserve the exact schema. ``schema`` is
+    the executor's driver Arrow schema, used only to keep empty / all-null
+    columns from decoding as ``null``.
     """
-    table = build_result_table(column_names, rows)
+    table = build_result_table(column_names, rows, schema)
     return gzip.compress(to_ipc_stream(table), _GZIP_LEVEL)
 
 

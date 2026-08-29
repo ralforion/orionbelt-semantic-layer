@@ -259,8 +259,18 @@ async def try_cache_set(
     ttl_seconds: int,
     datasource: str,
     model_id: str,
+    schema: Any,
 ) -> None:
     """Encode and store the row data + column schema. Failures are logged.
+
+    ``schema`` is the executor's driver Arrow schema
+    (``ExecutionResult.arrow_schema``), or ``None`` when the result came from
+    a PEP 249 driver that has none. It is **required, not defaulted**: rows
+    alone cannot type an empty or all-null column, so a writer that omits it
+    silently stores an Arrow ``null`` column that a raw ``format=arrow`` hit
+    then serves verbatim against numeric column metadata. Making callers pass
+    it explicitly turns that omission into a signature error instead of a
+    payload that contradicts its own envelope.
 
     Only the row data (blob) and the result's column schema + row count (entry
     sidecar) are cached; the response envelope (sql, explain, timing, ``cached``
@@ -274,7 +284,7 @@ async def try_cache_set(
     from orionbelt.cache import key as cache_key_mod
 
     try:
-        payload = encode_data([c.name for c in columns], rows)
+        payload = encode_data([c.name for c in columns], rows, schema)
     except Exception:
         logger.debug("cache encode failed", exc_info=True)
         return
@@ -416,6 +426,10 @@ async def execute_query_with_cache(
         override_db_tz=override_db_tz,
     )
     columns = build_result_columns(model, exec_result)
+    # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
+    # construction so this is safe regardless, but keeping it explicit
+    # documents that the encoders want the driver's declared types.
+    arrow_schema = exec_result.arrow_schema
 
     if (
         cacheable
@@ -435,6 +449,7 @@ async def execute_query_with_cache(
             ttl_seconds=ttl_outcome.ttl.seconds,
             datasource=ds,
             model_id=model_id,
+            schema=arrow_schema,
         )
 
     return CachedExecution(
