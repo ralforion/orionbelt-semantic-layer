@@ -77,6 +77,20 @@ _CREDENTIAL_KEYS: dict[str, list[str]] = {
     ],
 }
 
+# Alternate spellings accepted for a credential env var, tried in order when
+# the canonical name is unset.
+#
+# ``DATABRICKS_TOKEN`` is the name Databricks' own CLI and SDK export, so it
+# is what people already have in their environment; ``.env.template`` and
+# ``docs/drivers.md`` document ``DATABRICKS_ACCESS_TOKEN``. Every other
+# consumer in the repo already accepts both (tests, seed and probe scripts) —
+# this router was the sole holdout, which meant an environment written to the
+# Databricks convention produced a connection with no token at all and no
+# indication why.
+_ENV_ALIASES: dict[str, tuple[str, ...]] = {
+    "DATABRICKS_ACCESS_TOKEN": ("DATABRICKS_TOKEN",),
+}
+
 # Env var name -> connect() kwarg name mapping
 _ENV_TO_KWARG: dict[str, str] = {
     "BIGQUERY_PROJECT": "project",
@@ -121,12 +135,19 @@ def get_credentials(dialect: str) -> dict[str, Any]:
     """Read vendor credentials from environment variables.
 
     Returns a dict of kwargs suitable for the vendor's connect() function.
-    Only includes env vars that are actually set.
+    Only includes env vars that are actually set. A canonical name that is
+    unset falls back to any alias in :data:`_ENV_ALIASES`, so the canonical
+    spelling always wins when both are present.
     """
     creds: dict[str, Any] = {}
     keys = _CREDENTIAL_KEYS.get(dialect, [])
     for env_key in keys:
         raw = os.getenv(env_key)
+        if raw is None:
+            for alias in _ENV_ALIASES.get(env_key, ()):
+                raw = os.getenv(alias)
+                if raw is not None:
+                    break
         if raw is not None:
             kwarg_name = _ENV_TO_KWARG.get(env_key, env_key.lower())
             # Convert port to int

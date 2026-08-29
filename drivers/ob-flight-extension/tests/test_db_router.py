@@ -87,3 +87,58 @@ class TestConnect:
             connect("postgres", host="override-host")
             call_kwargs = mock_module.connect.call_args.kwargs
             assert call_kwargs["host"] == "override-host"
+
+
+class TestCredentialEnvAliases:
+    """A canonical credential name may fall back to an alternate spelling.
+
+    ``DATABRICKS_TOKEN`` is what Databricks' own CLI and SDK export, so it is
+    what people already have set; ``.env.template`` and ``docs/drivers.md``
+    document ``DATABRICKS_ACCESS_TOKEN``. Tests, the seed script and the probe
+    script all accepted both — this router did not, so an environment written
+    to the Databricks convention produced a connection with **no token** and
+    nothing to explain why.
+    """
+
+    def test_alias_supplies_the_token_when_canonical_is_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ob_flight.db_router import get_credentials
+
+        monkeypatch.delenv("DATABRICKS_ACCESS_TOKEN", raising=False)
+        monkeypatch.setenv("DATABRICKS_SERVER_HOSTNAME", "example.databricks.com")
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/x")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "from-alias")
+
+        creds = get_credentials("databricks")
+        assert creds["access_token"] == "from-alias"
+
+    def test_canonical_wins_when_both_are_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ob_flight.db_router import get_credentials
+
+        monkeypatch.setenv("DATABRICKS_SERVER_HOSTNAME", "example.databricks.com")
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/x")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "from-alias")
+        monkeypatch.setenv("DATABRICKS_ACCESS_TOKEN", "canonical")
+
+        assert get_credentials("databricks")["access_token"] == "canonical"
+
+    def test_no_token_set_yields_no_access_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ob_flight.db_router import get_credentials
+
+        monkeypatch.delenv("DATABRICKS_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setenv("DATABRICKS_SERVER_HOSTNAME", "example.databricks.com")
+
+        assert "access_token" not in get_credentials("databricks")
+
+    def test_dialects_without_aliases_are_unaffected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ob_flight.db_router import get_credentials
+
+        monkeypatch.setenv("POSTGRES_HOST", "localhost")
+        monkeypatch.setenv("POSTGRES_PORT", "5432")
+        creds = get_credentials("postgres")
+        assert creds["host"] == "localhost"
+        assert creds["port"] == 5432  # still coerced to int
