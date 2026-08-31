@@ -84,6 +84,20 @@ def test_connect_returns_connection() -> None:
         assert kwargs["password"] == "secret"
 
 
+def test_connect_asks_for_exact_decimals() -> None:
+    """NUMBER with a scale must arrive as ``decimal128``, not as a float.
+
+    Without ``arrow_number_to_decimal`` the connector converts every scaled
+    NUMBER to a double on the Arrow path: measured on a live account,
+    ``CAST(2.55 AS NUMBER(18, 2))`` came back as ``double`` and
+    ``NUMBER(19, 2)`` holding 12345678901234567.89 came back 11 cents wrong.
+    """
+    with patch("snowflake.connector.connect") as mock_connect:
+        mock_connect.return_value = _make_mock_native()
+        ob_snowflake.connect(account="xy12345", user="testuser", password="secret")
+        assert mock_connect.call_args.kwargs["arrow_number_to_decimal"] is True
+
+
 def test_connect_with_all_params() -> None:
     with patch("snowflake.connector.connect") as mock_connect:
         mock_connect.return_value = _make_mock_native()

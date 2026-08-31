@@ -25,7 +25,14 @@ class PostgresDialect(Dialect):
         "integer": "INTEGER",
         "double": "DOUBLE PRECISION",
         "date": "DATE",
-        "timestamp": "TIMESTAMPTZ",
+        # OBML's cast vocabulary has one timestamp and it is the naive one:
+        # ``timestamp_tz`` exists as a column declaration but has no cast
+        # target (see ``resolution._CASTABLE_TEMPORAL_TYPES``). Rendering it
+        # as TIMESTAMPTZ invented a zone the model never declared, and
+        # PostgreSQL then moved the value: a dimension declaring ``resultType:
+        # timestamp`` over ``2026-08-15 13:45:00`` came back as 11:45 UTC.
+        # Every other dialect renders the naive type here.
+        "timestamp": "TIMESTAMP",
         "time": "TIME",
         "string": "TEXT",
         "boolean": "BOOLEAN",

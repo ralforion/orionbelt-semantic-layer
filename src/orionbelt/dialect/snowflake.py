@@ -23,7 +23,11 @@ class SnowflakeDialect(Dialect):
         "integer": "NUMBER(38, 0)",
         "double": "FLOAT",
         "date": "DATE",
-        "timestamp": "TIMESTAMP_TZ",
+        # The naive type, matching every other dialect and this driver's own
+        # note to "use TIMESTAMP_NTZ for timezone-naive datetimes in generated
+        # SQL". TIMESTAMP_TZ attached the session zone to a value the model
+        # declared without one.
+        "timestamp": "TIMESTAMP_NTZ",
         "time": "TIME",
         "string": "VARCHAR",
         "boolean": "BOOLEAN",

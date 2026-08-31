@@ -100,6 +100,15 @@ def connect(
     if authenticator is not None:
         connect_kwargs["authenticator"] = authenticator
 
+    # Without this, the connector converts every NUMBER with a scale to a
+    # float on the Arrow path: ``CAST(2.55 AS NUMBER(18, 2))`` comes back as
+    # ``double``, and ``NUMBER(19, 2)`` holding 12345678901234567.89 comes
+    # back 11 cents wrong. Snowflake is the only vendor whose driver drops a
+    # fixed-point type it was handed; every other ob-* driver returns
+    # ``decimal128``. A semantic layer whose measures are money cannot make
+    # that trade, so exactness is the default rather than an opt-in.
+    connect_kwargs["arrow_number_to_decimal"] = True
+
     native = snowflake.connector.connect(**connect_kwargs)
     return Connection(
         native,
