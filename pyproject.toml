@@ -222,6 +222,20 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
+# Gradio attaches its event methods (``click``, ``change``, ``select`` ...) to
+# each component class at class-creation time, and writes the matching ``.pyi``
+# into its own site-packages directory the first time it is imported
+# (``component_meta.create_or_modify_pyi``). The wheel ships one of them; the
+# other forty-odd exist only after something has imported gradio. mypy neither
+# imports it nor generates them, so on a fresh checkout every ``Button.click``
+# reads as ``has no attribute`` -- while a machine that has run the UI once
+# passes, which is how this stayed invisible locally and failed in CI.
+# Skipping the follow makes the components ``Any``, so the events resolve
+# whether or not the stubs happen to be on disk.
+module = ["gradio", "gradio.*"]
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
 module = "pandas.*"
 ignore_missing_imports = true
 
