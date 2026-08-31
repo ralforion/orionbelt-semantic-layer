@@ -13,13 +13,20 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   drift:
     runs-on: ubuntu-latest
+    # Only this job files the drift issue, so the write scope lives here rather
+    # than on the workflow.
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify every Action is pinned to its named release
+        run: ./scripts/check-action-pins.sh
 
       - name: Check upstream Ossie schema drift
         id: drift
@@ -31,7 +38,7 @@ jobs:
 
       - name: Open or update tracking issue on drift
         if: steps.drift.outputs.code == '1'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');

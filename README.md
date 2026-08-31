@@ -636,7 +636,34 @@ uv run mypy src/                  # type check
 
 # Docs
 uv sync --extra docs && uv run mkdocs serve  # docs on :8080
+
+# CI workflows
+./scripts/check-action-pins.sh              # verify every Action pin
+./scripts/check-action-pins.sh --offline    # skip the upstream tag lookups
 ```
+
+### GitHub Actions pinning
+
+Every `uses:` in `.github/workflows` is pinned to a 40-character commit SHA
+rather than a tag, because a tag such as `v7` is a movable label: it runs
+whichever commit its owner has pointed it at when the job starts. The
+`# vX.Y.Z` comment beside each SHA names the exact patch release that SHA was
+cut from, and it has to be a patch release, since a major tag moves with every
+upstream bump.
+
+Pinning fixes *which* code runs but makes the reference unreadable, so
+`scripts/check-action-pins.sh` keeps the SHA and its comment honest. It walks
+every `uses:` line and requires a commit SHA, an owner from its `ALLOWED_OWNERS`
+allowlist, and an exact-patch version comment, then resolves that tag upstream
+with `git ls-remote` and fails when the commit it names is not the one pinned.
+Container actions must be pinned by digest; local `./` actions are skipped.
+`--offline` checks only the SHA and comment format, with no network calls.
+
+The check runs as the `pins` job in CI, and as the first step after checkout in
+the workflows that publish (Docker, PyPI, docs), so a tag can never ship
+artifacts built by steps whose pins were never verified. Adding an owner to
+`ALLOWED_OWNERS` is a deliberate decision: a SHA matching its own tag says
+nothing about whether that action belongs in this repo at all.
 
 ---
 
