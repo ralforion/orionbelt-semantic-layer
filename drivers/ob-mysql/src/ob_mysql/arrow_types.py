@@ -14,16 +14,32 @@ MySQL states the type in the column-definition packet, so the type comes from
 ``cursor.description`` instead: entry 1 is the field type and entry 7 the flag
 bits, which together fix the Arrow type before a single value is read.
 
-The one thing ``description`` will not give up is decimal width. MySQL sends a
-column length and a scale in that packet, but ``MySQLProtocol.parse_column``
-unpacks them into throwaway locals, so ``description`` reports ``precision``
-and ``scale`` as ``None`` on both the pure-Python and the C-extension paths.
-The scale survives elsewhere: the connector builds each value from MySQL's
-decimal text, which carries the column's own scale, so ``DECIMAL(18, 2)``
-yields ``Decimal('10.00')`` rather than ``Decimal('10')``. Taking the widest
-scale in the column recovers the declared one for any non-empty result, and
-the precision is widened to the decimal128 limit rather than guessed, so the
-type can never claim the column holds fewer digits than it does.
+The one thing ``description`` will not give up is decimal width, and it is the
+one place this module cannot deliver on the rule above. MySQL sends a column
+length and a scale in that packet, but ``MySQLProtocol.parse_column`` unpacks
+both into throwaway locals and its caller drops the packet, so ``description``
+reports ``precision`` and ``scale`` as ``None`` on the pure-Python and the
+C-extension paths alike.
+
+The scale survives only in the values. The connector builds each value from
+MySQL's decimal text, which carries the column's own scale, so
+``DECIMAL(18, 2)`` yields ``Decimal('10.00')`` rather than ``Decimal('10')``.
+Taking the widest scale in the column recovers the declared one for any result
+holding at least one non-null value, and the precision is widened to the
+decimal128 limit rather than guessed, so the type can never claim the column
+holds fewer digits than it does.
+
+**A decimal column with no value to read the scale from is the exception.** An
+empty result or an all-NULL column falls back to
+:data:`_DEFAULT_DECIMAL_SCALE`, so ``DECIMAL(18, 2)`` reports
+``decimal128(38, 0)`` there and ``decimal128(38, 2)`` once a value arrives. A
+fixed scale would remove the difference, but not for free: it would rescale
+every value, and ``Decimal('10.00')`` carried at a fixed scale of 30 reaches
+JSON and TSV with thirty decimal places. No value is misrepresented by the
+fallback, since in both cases there is no value; what it costs is a schema a
+consumer cannot compare across an empty and a non-empty result. A consumer
+needing one stable schema has to take it from the model rather than from the
+driver, which is what the Flight surface already does.
 """
 
 from __future__ import annotations
@@ -69,6 +85,12 @@ _GEOMETRY = 255
 #: flag decides the signedness rather than the values deciding it.
 _UNSIGNED_FLAG = 32
 
+#: ``FieldFlag.SET``. MySQL sends a SET column as ``STRING`` carrying this flag
+#: rather than as the ``SET`` type code, and mysql-connector-python turns the
+#: value into a Python ``set``. Reading the flag is the only way to know that
+#: before a value arrives.
+_SET_FLAG = 2048
+
 #: ``charsetnr`` for the binary collation. The string and blob types are one
 #: type each on the wire; this is what separates text from bytes.
 _BINARY_CHARSET = 63
@@ -103,10 +125,16 @@ _FIXED_TYPES: dict[int, pa.DataType] = {
     _DATETIME: pa.timestamp("us"),
     _TIMESTAMP: pa.timestamp("us"),
     _JSON: pa.string(),
+    # Measured: mysql-connector-python returns BIT as a Python ``int``, not as
+    # bytes -- ``BIT(8)`` holding b'10101010' arrives as 170. BIT tops out at 64
+    # bits and the column carries the UNSIGNED flag, so uint64 holds every value.
+    _BIT: pa.uint64(),
+    _GEOMETRY: pa.binary(),
+    # ENUM and SET have their own type codes in the protocol, but MySQL does not
+    # use them on the wire: both arrive as STRING with a flag. Mapped anyway so a
+    # server that does send them is not pushed onto the inference path.
     _ENUM: pa.string(),
     _SET: pa.string(),
-    _BIT: pa.binary(),
-    _GEOMETRY: pa.binary(),
 }
 
 #: Types whose Arrow mapping depends on ``charsetnr``: text unless the column
@@ -165,6 +193,12 @@ def arrow_type_for(description_entry: tuple[Any, ...], values: list[Any]) -> pa.
     if field_type in _SIGNED_INTS:
         unsigned = bool((flags or 0) & _UNSIGNED_FLAG)
         return (_UNSIGNED_INTS if unsigned else _SIGNED_INTS)[field_type]
+    if (flags or 0) & _SET_FLAG:
+        # A SET arrives as a Python ``set``, which no string array will take.
+        # ``_coerce`` renders it back to the comma-separated form MySQL itself
+        # prints, so the column is one scalar per row rather than a list whose
+        # type would depend on what came back.
+        return pa.string()
     if field_type in _TEXT_OR_BINARY:
         return pa.binary() if charset == _BINARY_CHARSET else pa.string()
     fixed = _FIXED_TYPES.get(field_type)
@@ -183,7 +217,11 @@ def _infer(values: list[Any]) -> pa.DataType:
 
 
 def _coerce(value: object, arrow_type: pa.DataType) -> object:
-    """Nudge the few values whose Python type does not match *arrow_type*."""
+    """Nudge the few values whose Python type does not match *arrow_type*.
+
+    Without this the array build would fail and fall through to inference,
+    which is the row-dependence this module exists to remove.
+    """
     # A DATETIME column can hold a DATE-only value, which the connector returns
     # as ``date``. Arrow will not put a ``date`` in a timestamp column.
     if (
@@ -192,6 +230,11 @@ def _coerce(value: object, arrow_type: pa.DataType) -> object:
         and not isinstance(value, datetime.datetime)
     ):
         return datetime.datetime(value.year, value.month, value.day)
+    # A SET is a Python ``set``, and an unordered one: the connector has already
+    # dropped the definition order MySQL prints, so sorting is what is left to
+    # make the rendering deterministic rather than a choice against it.
+    if isinstance(value, (set, frozenset)) and pa.types.is_string(arrow_type):
+        return ",".join(sorted(str(member) for member in value))
     return value
 
 
