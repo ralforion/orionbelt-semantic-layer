@@ -33,7 +33,7 @@ property of the rows.
 **A decimal column with no value to read the scale from is the exception.** An
 empty result or an all-NULL column falls back to
 :data:`_DEFAULT_DECIMAL_SCALE`, so ``DECIMAL(18, 2)`` reports
-``decimal128(38, 0)`` there and ``decimal128(38, 2)`` once a value arrives. A
+``decimal256(76, 0)`` there and ``decimal256(76, 2)`` once a value arrives. A
 fixed scale would remove the difference, but not for free: it would rescale
 every value, and ``Decimal('10.00')`` carried at a fixed scale of 30 reaches
 JSON and TSV with thirty decimal places. No value is misrepresented by the
