@@ -162,8 +162,8 @@ def _reads_a_number(measure: Measure, settings: ModelSettings | None) -> bool:
     return isinstance(declared, DecimalType) or declared.name in ("integer", "bigint", "double")
 
 
-def _flags_as_numbers(expr: Expr) -> Expr:
-    """Read every boolean column in *expr* as a number.
+def _flag_as_number(expr: Expr) -> Expr:
+    """Read *expr* as a number when it is itself a boolean column.
 
     Only for a measure whose output is a number. An engine that carries a type
     through an aggregate then hands a boolean to whatever the measure declares:
@@ -171,24 +171,25 @@ def _flags_as_numbers(expr: Expr) -> Expr:
     'true' and raised, where ``SUM`` of the same column had always been a
     number and worked.
 
-    Keyed on the type the reference already carries, so it reaches a measure
-    written either way. ``columns:`` and ``expression:`` are two spellings of
-    one measure and were not one rule: scoping this to the ``columns:`` branch
-    left ``expression: "{[ev].[Flag]}"`` failing exactly as before.
+    **The value being aggregated, not every boolean inside it.** Rewriting each
+    reference reached the ones a measure uses as a *predicate*, and a predicate
+    is not read as a number: ``CASE WHEN {Flag} THEN {Amt} ELSE 0 END`` became
+    ``CASE WHEN CAST(flag AS INTEGER)``, which PostgreSQL refuses outright
+    ("argument of CASE/WHEN must be type boolean") and BigQuery with it. The
+    same reference reached through a computed column's body, so a measure could
+    break without naming a boolean at all.
 
-    The abstract name renders per dialect, and nothing here reaches a measure
-    that passes its value through - those emit no cast for a boolean to arrive
-    at, and casting them changed what they answer rather than its type.
+    Keyed on the type the reference carries, which both spellings of a measure
+    populate -- ``make_column_expr`` for ``columns:`` and the tokenizer for
+    ``expression:`` -- so one rule serves either. Anything larger than a bare
+    reference is left alone: its own shape decides what its parts mean, and
+    this cannot read that.
     """
-
-    def rewrite(node: Expr) -> Expr | None:
+    if isinstance(expr, ColumnRef) and expr.abstract_type == DataType.BOOLEAN:
         # Equality, not identity: the node carries the value as a plain string
-        # where the model carries the enum, and is quietly matched neither.
-        if isinstance(node, ColumnRef) and node.abstract_type == DataType.BOOLEAN:
-            return Cast(expr=node, type_name="int")
-        return None
-
-    return map_nodes(expr, rewrite)
+        # where the model carries the enum, and ``is`` quietly matched neither.
+        return Cast(expr=expr, type_name="int")
+    return expr
 
 
 def make_dimension_expr(
@@ -1402,7 +1403,7 @@ class QueryResolver:
                 if obj and col_name in obj.columns:
                     col_expr = make_column_expr(ctx.model, obj_name, col_name)
                     if numeric_output:
-                        col_expr = _flags_as_numbers(col_expr)
+                        col_expr = _flag_as_number(col_expr)
                     args.append(col_expr)
                 else:
                     args.append(ColumnRef(name=col_name, table=obj_name))
@@ -1459,7 +1460,7 @@ class QueryResolver:
         # measure, so a boolean reaches a numeric output as a number either
         # way. Scoping it to the other branch left this one failing.
         if _reads_a_number(measure, ctx.model.settings):
-            inner = _flags_as_numbers(inner)
+            inner = _flag_as_number(inner)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":

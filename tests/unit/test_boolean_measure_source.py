@@ -26,6 +26,11 @@ dataObjects:
     code: ev
     columns:
       Flag: {code: flag, abstractType: boolean}
+      Amt:  {code: amt, abstractType: float, numClass: additive}
+      Guarded:
+        expression: "CASE WHEN {Flag} THEN {Amt} ELSE 0 END"
+        abstractType: float
+        numClass: additive
 measures:
   MaxPass:    {columns: [{dataObject: ev, column: Flag}], resultType: string, aggregation: max}
   AnyPass:
@@ -49,6 +54,14 @@ measures:
     resultType: float
     dataType: "decimal(18, 2)"
     aggregation: max
+  CaseSum:
+    expression: "CASE WHEN {[ev].[Flag]} THEN {[ev].[Amt]} ELSE 0 END"
+    resultType: float
+    aggregation: sum
+  ComputedSum:
+    columns: [{dataObject: ev, column: Guarded}]
+    resultType: float
+    aggregation: sum
 """
 
 DIALECTS = ("duckdb", "clickhouse", "postgres", "bigquery", "mysql", "snowflake")
@@ -100,3 +113,21 @@ def test_a_numeric_measure_reads_the_flag_as_a_number(model, measure: str, diale
     # around the aggregate -- the boolean arriving inside it uncast is exactly
     # the bug. The inner one is what this is about.
     assert _projection(model, measure, dialect).count("CAST(") >= 2
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+@pytest.mark.parametrize("measure", ["CaseSum", "ComputedSum"])
+def test_a_boolean_used_as_a_predicate_is_left_alone(model, measure: str, dialect: str) -> None:
+    """A predicate is not read as a number, and casting it breaks the query.
+
+    Both of these have a numeric output, so the measure *is* read as a number
+    -- but the boolean inside it is a condition, not the value. Rewriting every
+    reference produced ``CASE WHEN CAST(flag AS INTEGER)``, which PostgreSQL
+    refuses ("argument of CASE/WHEN must be type boolean") and BigQuery with
+    it, while DuckDB accepted it and answered the same number. ``ComputedSum``
+    reaches the same reference through a computed column's body, so a measure
+    could break without naming a boolean at all.
+    """
+    projection = _projection(model, measure, dialect)
+    assert "WHEN CAST(" not in projection, projection
+    assert "CASE WHEN" in projection, projection
