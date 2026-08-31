@@ -236,3 +236,58 @@ measures:
         run("MaxNote")
 
     ch_setup.command("DROP TABLE bool_measure")
+
+
+@pytest.mark.parametrize(
+    ("literal", "obml_type", "expected"),
+    [
+        # The measured defect: the Float64 nearest 2.55 sits just below it, so
+        # rounding to 2 places and then truncating at 2 places returned 2.54.
+        ("2.55", "decimal(18, 2)", "2.55"),
+        ("toFloat64(2.55)", "decimal(18, 2)", "2.55"),
+        # An exact Decimal source was never affected, and must not regress.
+        ("toDecimal64('2.55', 2)", "decimal(18, 2)", "2.55"),
+        # Ties still round away from zero, which is what the pre-round is for.
+        ("2.545", "decimal(18, 2)", "2.55"),
+        ("2.555", "decimal(18, 2)", "2.56"),
+        ("-2.555", "decimal(18, 2)", "-2.56"),
+        # Past Float64's exact-integer range the answer is the value the float
+        # actually holds. Casting through a wide decimal instead returned
+        # 12345678901234567.17, digits the input never had.
+        ("12345678901234567.89", "decimal(19, 2)", "12345678901234568.00"),
+        ("1e19", "decimal(38, 2)", "10000000000000000000.00"),
+    ],
+)
+def test_decimal_cast_keeps_the_place_it_rounded_to(
+    ch_setup, literal: str, obml_type: str, expected: str
+) -> None:
+    """A declared decimal type must not lose the place the pre-round decided."""
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(expected)
+
+
+def test_decimal_cast_still_raises_on_input_it_cannot_read(ch_setup) -> None:
+    """The implicit cast raises; only OBML's ``cast()`` answers NULL (#375).
+
+    Converting through text is what makes the rounding exact, and it would
+    equally make a date parse to NULL if it used the ``OrNull`` conversion the
+    ``cast()`` path needs. It does not, so a type error stays a type error.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql="toDate('2026-08-15')"), parse_data_type("decimal(18, 2)")
+    )
+    with pytest.raises(Exception, match="(?i)cannot parse|illegal|exception"):
+        _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
