@@ -437,7 +437,7 @@ class ClickHouseDialect(Dialect):
         ):
             scale_token = resolved_type.split(",")[-1].rstrip(") ")
             scale = int(scale_token.strip())
-            inner_sql = f"round({inner_sql}, {scale})"
+            inner_sql = self._exact_decimal_round(inner_sql, scale, or_null=False)
         elif (
             not isinstance(inner, Literal)
             and _is_numeric_expr(inner)
@@ -553,6 +553,41 @@ class ClickHouseDialect(Dialect):
     #: the half wants one place more than the count and 77 is out of range.
     _MAX_ROUND_DIGITS: int = 76
 
+    def _exact_decimal_round(self, inner_sql: str, scale: int, *, or_null: bool) -> str:
+        """Round *inner_sql* to *scale* places without a float ever holding it.
+
+        Rounding before the cast is what aligns this engine with the four whose
+        decimal CAST rounds, but ``round`` answers a Float64 for a Float64 and
+        ``CAST(Float64 AS Decimal)`` *truncates*. Rounding to the target scale
+        and then truncating at that same scale is a no-op on the way down and a
+        lost place on the way up: measured, ``CAST(round(2.55, 2) AS
+        Decimal(18, 2))`` returned 2.54, because the Float64 nearest 2.55 sits
+        just below it and the truncation kept the shortfall the round had
+        already conceded.
+
+        Converting through the value's own text is what fixes it. ClickHouse
+        prints a Float64 as the shortest string that reads back as the same
+        float, so ``toString`` recovers the decimal the value was written as,
+        and the round then runs in Decimal256 where it is exact. Casting to a
+        wide decimal instead was measured and rejected: ``CAST(Float64 AS
+        Decimal(76, 3))`` carries the engine's own float drift into the digits
+        it invents, turning 12345678901234567.89 into ...67.17 and 1e19 into
+        10000000000000000000.48, where the text route answers
+        12345678901234568.00 and 10000000000000000000.00 -- the value the
+        Float64 actually holds.
+
+        One place more than the target scale, because that is what rounding to
+        the target scale needs to see, and no more than Decimal256 carries.
+
+        *or_null* picks the failure mode, which is the one thing the two cast
+        paths do not share: OBML's ``cast()`` is specified to answer NULL for
+        input it cannot read (#355), while an implicit cast over a declared
+        type raises, as it did before this wrapping existed.
+        """
+        exact_scale = min(scale + 1, self._MAX_ROUND_DIGITS)
+        to_decimal = "toDecimal256OrNull" if or_null else "toDecimal256"
+        return f"round({to_decimal}(toString({inner_sql}), {exact_scale}), {scale})"
+
     def _coerce_text_argument(self, expr: Expr) -> Expr:
         """Read a ``FixedString`` by value rather than by storage.
 
@@ -610,9 +645,8 @@ class ClickHouseDialect(Dialect):
         assert target is not None
         if not isinstance(target, DecimalType):
             return super()._render_cast_call(args)
-        exact_scale = min(target.scale + 1, self._MAX_ROUND_DIGITS)
-        exact = f"toDecimal256OrNull(toString({self.compile_expr(args[0])}), {exact_scale})"
-        return f"CAST(round({exact}, {target.scale}) AS Nullable({self.render_obml_type(target)}))"
+        rounded = self._exact_decimal_round(self.compile_expr(args[0]), target.scale, or_null=True)
+        return f"CAST({rounded} AS Nullable({self.render_obml_type(target)}))"
 
     def _round_half_sql(self, half: str) -> str:
         """A bare ``0.005`` is a Float64 here, unlike MySQL, and adding one to a

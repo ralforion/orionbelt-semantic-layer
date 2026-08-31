@@ -1630,7 +1630,9 @@ class TestCastTargets:
         """
         dialect = DialectRegistry.get("clickhouse")
         cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
-        assert dialect.compile_expr(cast) == 'CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))'
+        assert dialect.compile_expr(cast) == (
+            'CAST(round(toDecimal256(toString("amt"), 3), 2) AS Nullable(Decimal(18, 2)))'
+        )
 
 
 class TestToNumber:
