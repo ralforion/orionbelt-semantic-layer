@@ -1597,9 +1597,16 @@ class TestCastTargets:
             # The extra place comes out of the integer side, so it can only be
             # asked for while the target leaves a digit spare. These three have
             # none: 56, 1 and 0 integer digits against Decimal256's 76.
+            ("decimal(76, 2)", 2),
             ("decimal(76, 20)", 20),
             ("decimal(76, 75)", 75),
             ("decimal(76, 76)", 76),
+            # Above the ceiling the final type is clamped to Decimal(76, s), so
+            # the intermediate has to be computed from the clamped width too.
+            # From the raw request, decimal(77, 2) asked for scale 1 and lost a
+            # cent, and decimal(100, 2) asked for scale -22, which is rejected.
+            ("decimal(77, 2)", 2),
+            ("decimal(100, 2)", 2),
         ],
     )
     def test_clickhouse_keeps_the_intermediate_within_decimal256(
@@ -1720,3 +1727,30 @@ class TestToNumber:
         sql = _render("to_number(x)", dialect).upper()
         assert "TRIM" in sql, sql
         assert "CAST" in sql or "TOSTRING" in sql, sql
+
+
+class TestClickHouseDecimalCeiling:
+    """What the precision ceiling costs, pinned so it cannot drift unnoticed.
+
+    The exactness rewrite converts through an intermediate one place wider than
+    the target, and Decimal256 is 76 digits wherever the point sits. At
+    precision 76 that place and the target's full integer width cannot both
+    exist, so the conversion truncates instead of rounding. Every way of having
+    both was measured and rejected: asking for the place anyway means
+    ``decimal(76, 75)`` cannot take 1.5, a coalesce fallback wraps to a negative
+    number, and no ClickHouse text conversion rounds.
+    """
+
+    def test_below_the_ceiling_the_extra_place_is_available(self) -> None:
+        assert "toString('x'), 3)" in _render("cast(x, 'decimal(75, 2)')", "clickhouse")
+
+    def test_at_the_ceiling_it_is_not(self) -> None:
+        """Recorded rather than fixed: declaring 75 restores the rounding."""
+        assert "toString('x'), 2)" in _render("cast(x, 'decimal(76, 2)')", "clickhouse")
+
+    def test_a_request_above_the_ceiling_is_clamped_before_it_is_used(self) -> None:
+        """Not scale 1, and never a negative scale."""
+        for target in ("decimal(77, 2)", "decimal(100, 2)"):
+            sql = _render(f"cast(x, '{target}')", "clickhouse")
+            assert "toString('x'), 2)" in sql, sql
+            assert ", -" not in sql, sql

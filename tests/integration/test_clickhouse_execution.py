@@ -338,3 +338,53 @@ def test_a_max_scale_decimal_cast_still_takes_an_integer_part(ch_setup) -> None:
     cast = dialect.cast_to_obml_type(RawSQL(sql="1.5"), parse_data_type("decimal(76, 75)"))
     rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
     assert rows[0]["v"] == Decimal("1.5")
+
+
+@pytest.mark.parametrize(
+    ("obml_type", "literal", "expected"),
+    [
+        # Below the ceiling the extra place exists and the tie rounds up.
+        ("decimal(18, 2)", "2.555", "2.56"),
+        ("decimal(75, 2)", "2.555", "2.56"),
+        # At the ceiling it does not, and the conversion truncates. Recorded
+        # rather than fixed: the place and the target's full integer width
+        # cannot both exist in 76 digits. Declaring 75 restores the rounding.
+        ("decimal(76, 2)", "2.555", "2.55"),
+    ],
+)
+def test_rounding_at_and_below_the_precision_ceiling(
+    ch_setup, obml_type: str, literal: str, expected: str
+) -> None:
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(expected)
+
+
+def test_a_decimal_request_above_the_ceiling_still_executes(ch_setup) -> None:
+    """The final type is clamped to Decimal(76, s), so the intermediate must be.
+
+    Through OBML's ``cast()`` rather than ``cast_to_obml_type``: only the
+    catalog path carried the raw request, because the implicit path reads the
+    scale back off the already-clamped rendered type. Computed from the raw
+    request, ``decimal(77, 2)`` asked for an intermediate at scale 1 and lost a
+    cent, and ``decimal(100, 2)`` asked for scale -22, which ClickHouse rejects
+    before running.
+    """
+    from decimal import Decimal
+
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    for obml_type in ("decimal(77, 2)", "decimal(100, 2)"):
+        ast = parse_expression(tokenize_metric_formula(f"cast('2.555', '{obml_type}')"))
+        rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(ast)} AS v")
+        # Clamped to Decimal(76, 2), which is at the ceiling, so it truncates.
+        assert rows[0]["v"] == Decimal("2.55"), obml_type
