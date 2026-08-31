@@ -719,7 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def _favicon() -> FileResponse:
             return FileResponse(_favicon_path, media_type="image/png")
 
-        app = gr.mount_gradio_app(app, demo, path="/ui")
+        app = gr.mount_gradio_app(app, demo, path="/ui", **demo.ob_frontend)
         logger.info("Gradio UI mounted at %s/ui", api_url)
     except Exception:
         pass  # gradio not installed or mount failed — skip UI mount

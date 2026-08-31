@@ -95,6 +95,7 @@ __all__ = [
     "_warn_if_auth_required_without_key",
     "compile_sql",
     "create_blocks",
+    "frontend_assets",
     "create_ui",
     "execute_query",
     "main",
@@ -652,10 +653,13 @@ _ALIGN_HEADERS_JS = """
             b.addEventListener('click', function (e) {
                 e.stopPropagation();
                 e.preventDefault();
-                var signal = document.querySelector('#ob-sort-signal textarea');
-                if (!signal) return;
-                signal.value = label + '|' + p[1] + '|' + Date.now();
-                signal.dispatchEvent(new Event('input', { bubbles: true }));
+                // Park the payload where the button's js= step reads it, then
+                // click. Writing the textbox directly stopped working in
+                // Gradio 6, which ignores an input event the page dispatches.
+                window.__obSortSignal = label + '|' + p[1] + '|' + Date.now();
+                var apply = document.querySelector('#ob-sort-apply button')
+                    || document.querySelector('#ob-sort-apply');
+                if (apply) apply.click();
             });
             wrap.appendChild(b);
         });
@@ -669,32 +673,46 @@ _ALIGN_HEADERS_JS = """
     // rebuilt: tearing them down made the icons disappear and pop back on every
     // re-render, which read as a flicker on each sort click. Keeping the nodes
     // also keeps their click listeners, so no rebinding is needed.
+    // The column name, and the node the controls hang off. Both are read from
+    // the header's own structure rather than from "the first button in the th":
+    // Gradio 6 puts an "Open cell menu" (\u22ee) button inside every header, so
+    // that button is no longer the column label. Taking it as one labelled every
+    // column \u22ee and appended the controls inside a zero-width button, which
+    // left sorting present in the DOM and impossible to click.
+    function headerLabel(th) {
+        var title = (th.getAttribute('title') || '').trim();
+        if (title) return title;
+        var span = th.querySelector('.header-content span[role="button"]');
+        if (span) return (span.textContent || '').trim();
+        var btn = th.querySelector('button');
+        return ((btn || th).textContent || '').trim();
+    }
+    function sortHost(th) {
+        // Never the cell-menu button: it renders as a glyph-sized box.
+        return th.querySelector('.header-content') || th;
+    }
     function injectSortControls() {
         var root = document.querySelector('.result-table');
         var ths = root ? root.querySelectorAll('th') : [];
         if (!ths.length) return false;
         var sortMap = readSortMap();
         ths.forEach(function (th) {
-            var btn = th.querySelector('button');
+            var label = headerLabel(th);
             var existing = th.querySelector('.ob-sort');
             if (existing) {
-                // The header text with the glyphs stripped back out. If Gradio
-                // reused this node for a different column, the controls carry
-                // the wrong label and must be rebuilt rather than recoloured.
-                var current = ((btn || th).textContent || '')
-                    .replace(existing.textContent, '').trim();
-                if (current === existing.dataset.label) {
-                    var known = existing.dataset.label;
+                // If Gradio reused this node for a different column, the
+                // controls carry the wrong label and must be rebuilt rather
+                // than recoloured.
+                if (label && label === existing.dataset.label) {
                     existing.querySelectorAll('.ob-sort-btn').forEach(function (b) {
-                        b.classList.toggle('ob-active', sortMap[known] === b.dataset.dir);
+                        b.classList.toggle('ob-active', sortMap[label] === b.dataset.dir);
                     });
                     return;
                 }
                 existing.remove();
             }
-            var label = ((btn || th).textContent || '').trim();
             if (!label || label === '#') return;       // skip the index + empty columns
-            (btn || th).appendChild(buildControls(label, sortMap));
+            sortHost(th).appendChild(buildControls(label, sortMap));
         });
         return true;
     }
@@ -1134,6 +1152,18 @@ _IMPORT_OSI_JS = """
 """
 
 
+def frontend_assets(head_html: str | None = None) -> dict[str, str]:
+    """The css/js/head every way of serving this app has to pass along.
+
+    Gradio 6 takes these on ``launch()`` and ``mount_gradio_app()`` rather than
+    on the ``Blocks`` constructor.
+    """
+    assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
+    if head_html:
+        assets["head"] = head_html
+    return assets
+
+
 def create_blocks(
     default_api_url: str | None = None,
     embedded_settings: dict[str, Any] | None = None,
@@ -1204,12 +1234,7 @@ def create_blocks(
         # seed the editor with a starter template.
         example_model = _load_example_model()
 
-    with gr.Blocks(
-        title="OrionBelt Semantic Layer",
-        css=_CSS,
-        js=_DARK_MODE_INIT_JS,
-        head=head_html,
-    ) as demo:
+    with gr.Blocks(title="OrionBelt Semantic Layer") as demo:
         # ── Browser-persisted state (localStorage via Gradio BrowserState) ──
         saved_model = gr.BrowserState("", storage_key="ob_model_yaml")
         saved_query = gr.BrowserState("", storage_key="ob_query_yaml")
@@ -1250,7 +1275,11 @@ def create_blocks(
                 f'<a href="https://ralforion.com'
                 f'/orionbelt-semantic-layer/"'
                 f' target="_blank">Docs</a>'
-                f"</span></div>"
+                f"</span></div>",
+                # Gradio 6 flipped this default from True to False, and the
+                # wrapper has no CSS of its own, so the header would lose its
+                # padding silently. Stated to keep the layout as it was.
+                padding=True,
             )
             dark_btn = gr.Button("Light / Dark", size="sm", scale=0, min_width=120)
 
@@ -1304,7 +1333,7 @@ def create_blocks(
                             max_lines=1,
                             interactive=not cohosted,
                         )
-                    gr.HTML("", elem_classes=["settings-spacer"])
+                    gr.HTML("", elem_classes=["settings-spacer"], padding=True)
                     import_osi_btn = gr.Button(
                         "Import OSI",
                         size="sm",
@@ -1660,6 +1689,23 @@ def create_blocks(
                     container=False,
                     show_label=False,
                 )
+                # The header icons trigger the re-sort by clicking this rather
+                # than by typing into the textbox above. Gradio 6 does not act
+                # on a value written into a component's DOM: an ``input`` event
+                # the page dispatches itself is ignored, where a real one is
+                # honoured, so the icons wrote the signal and nothing happened.
+                # A click is delivered whether or not the page synthesised it,
+                # which is what makes this the durable half of the bridge.
+                # Hidden by the ``ob-bridge`` clip rather than by
+                # ``visible=False``: Gradio 6 does not render an invisible
+                # component at all, so there would be no button in the DOM for
+                # the header icons to click. The clip keeps it out of sight and
+                # out of the layout while leaving it clickable.
+                sort_apply = gr.Button(
+                    "sort",
+                    elem_id="ob-sort-apply",
+                    elem_classes=["ob-bridge"],
+                )
                 # Holds the active orderBy ("field|dir" per line) so the header JS
                 # can colour the active ▲/▼ per column.
                 sort_state = gr.Textbox(
@@ -1854,8 +1900,20 @@ def create_blocks(
 
             # Per-header sort icons -> rewrite orderBy + execute in one shot
             # (same output shape as the filter handlers, incl. the chip).
+            # Step one is pure JS with no Python side: it hands Gradio the
+            # payload the header icons parked on ``window``, so the value
+            # arrives through the framework's own update path rather than by
+            # poking the DOM. ``.then`` runs the unchanged handler once the
+            # signal is set. Reading it here rather than in a ``js=`` on the
+            # handler itself keeps the two ``gr.State`` inputs server-side,
+            # which a ``js=`` over the full input list could not.
             _wire_post(
-                sort_signal.input(
+                sort_apply.click(
+                    fn=None,
+                    inputs=None,
+                    outputs=[sort_signal],
+                    js="() => window.__obSortSignal || ''",
+                ).then(
                     fn=sort_and_execute,
                     inputs=[
                         sort_signal,
@@ -2059,6 +2117,7 @@ def create_blocks(
                         "from the model YAML.</p>"
                     ),
                     elem_id="ob-ontology-graph-container",
+                    padding=True,
                 )
 
                 _ontology_inputs = [
@@ -2420,6 +2479,14 @@ def create_blocks(
         # Gradio's demo.unload() cannot access gr.State, so we rely on TTL expiry
         # and auto-recovery in _ensure_session_and_model() for stale sessions.
 
+    # Gradio 6 moved css/js/head off the Blocks constructor: passing them there
+    # is accepted and then ignored, so the page renders unstyled with no warning
+    # a test would catch. They belong to whichever call serves the app, and this
+    # app is served two ways -- mounted under the API at /ui and mounted or
+    # launched standalone -- so the assets travel with the object rather than
+    # being restated at each site, where forgetting one is silent.
+    demo.ob_frontend = frontend_assets(head_html)
+
     return demo
 
 
@@ -2478,7 +2545,7 @@ def create_ui() -> None:
             # API host), serve a disallow-all so crawlers skip it.
             return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
-        app = gr.mount_gradio_app(app, demo, path=root_path)
+        app = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2496,6 +2563,7 @@ def create_ui() -> None:
             server_name="0.0.0.0",
             server_port=port,
             favicon_path=str(favicon_file),
+            **demo.ob_frontend,
         )
 
 
