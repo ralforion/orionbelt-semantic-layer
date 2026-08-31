@@ -291,3 +291,50 @@ def test_decimal_cast_still_raises_on_input_it_cannot_read(ch_setup) -> None:
     )
     with pytest.raises(Exception, match="(?i)cannot parse|illegal|exception"):
         _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+
+
+def test_a_max_width_decimal_cast_reaches_its_target(ch_setup) -> None:
+    """A value the target accepts must not fail on the way in.
+
+    The exactness rewrite converts through an intermediate one place wider
+    than the target, and Decimal256 is 76 digits wherever the point sits, so
+    that place is taken from the integer side. For ``decimal(76, 20)`` the
+    target holds 56 integer digits and the intermediate held 55, which meant a
+    56-digit value ClickHouse would cast directly raised ARGUMENT_OUT_OF_BOUND
+    through the rendering meant to make it exact.
+
+    This is the CFL alignment width (``cfl_projection`` picks
+    ``Decimal(76, 20)`` for ClickHouse), so it is reached by a multi-fact
+    query rather than only by a hand-written cast.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "9" * 56
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql=f"toDecimal256('{widest}', 0)"), parse_data_type("decimal(76, 20)")
+    )
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_a_max_scale_decimal_cast_still_takes_an_integer_part(ch_setup) -> None:
+    """``decimal(76, 75)`` holds one integer digit, and 1.5 has to fit in it.
+
+    Clamping the intermediate on the scale alone left this asking for 76
+    fractional places, which leaves no room for the 1.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql="1.5"), parse_data_type("decimal(76, 75)"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal("1.5")

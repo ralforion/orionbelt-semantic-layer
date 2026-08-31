@@ -1591,18 +1591,33 @@ class TestCastTargets:
 
     @pytest.mark.parametrize(
         ("target", "expected_scale"),
-        [("decimal(18, 2)", 3), ("decimal(76, 75)", 76), ("decimal(76, 76)", 76)],
+        [
+            ("decimal(18, 2)", 3),
+            ("decimal(38, 9)", 10),
+            # The extra place comes out of the integer side, so it can only be
+            # asked for while the target leaves a digit spare. These three have
+            # none: 56, 1 and 0 integer digits against Decimal256's 76.
+            ("decimal(76, 20)", 20),
+            ("decimal(76, 75)", 75),
+            ("decimal(76, 76)", 76),
+        ],
     )
     def test_clickhouse_keeps_the_intermediate_within_decimal256(
         self, target: str, expected_scale: int
     ) -> None:
-        """One place more than the target, and never more than 76.
+        """One place more than the target, and never wider than Decimal256.
 
-        The extra place is what rounding to the target scale needs to see, and
-        Decimal256 has none to give at the ceiling: ``decimal(76, 76)`` asked
-        for 77 and ClickHouse answered ARGUMENT_OUT_OF_BOUND before the cast
-        ran. Nothing is lost by clamping, since a value already at scale 76 is
-        unchanged by rounding to 76 places.
+        Decimal256 is 76 digits wherever the point sits, so the extra place is
+        taken from the integer side rather than added to the type. Clamping on
+        the scale alone was not enough, and the gap was reachable: an
+        intermediate at scale 21 for ``decimal(76, 20)`` leaves 55 integer
+        digits where the target holds 56, so a 56-digit value the target
+        accepts raised ARGUMENT_OUT_OF_BOUND before reaching it. Measured on a
+        live server, as was ``decimal(76, 75)``, which failed the same way on
+        ``1.5`` while this test asserted the rendering that failed.
+
+        Nothing is lost by clamping: a value needing every integer digit the
+        target has cannot also carry a fractional place beyond it to round.
         """
         sql = _render(f"cast(x, '{target}')", "clickhouse")
         assert f"toDecimal256OrNull(toString('x'), {expected_scale})" in sql, sql
