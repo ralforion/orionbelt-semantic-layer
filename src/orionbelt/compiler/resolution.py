@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     CaseExpr,
+    Cast,
     ColumnRef,
     Expr,
     FunctionCall,
@@ -32,6 +33,7 @@ from orionbelt.compiler.filters import (
     collect_measure_filter_objects,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
+from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
 from orionbelt.models.query import (
@@ -59,12 +61,13 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ModelFilter,
+    ModelSettings,
     PeriodOverPeriodComparison,
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
 )
-from orionbelt.models.types import parse_data_type
+from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
@@ -145,6 +148,47 @@ def _build_computed_column_expr(
 #: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
 #: absent because the format has no cast target for them.
 _CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
+
+
+def _reads_a_number(measure: Measure, settings: ModelSettings | None) -> bool:
+    """Whether this measure's value is read as a number.
+
+    ``None`` means the measure passes its value through and emits no cast, so
+    a boolean has nothing to arrive at.
+    """
+    declared = resolve_measure_data_type(measure, settings)
+    if declared is None:
+        return False
+    return isinstance(declared, DecimalType) or declared.name in ("integer", "bigint", "double")
+
+
+def _flags_as_numbers(expr: Expr) -> Expr:
+    """Read every boolean column in *expr* as a number.
+
+    Only for a measure whose output is a number. An engine that carries a type
+    through an aggregate then hands a boolean to whatever the measure declares:
+    ``MAX(flag)`` declared decimal reached ClickHouse's decimal conversion as
+    'true' and raised, where ``SUM`` of the same column had always been a
+    number and worked.
+
+    Keyed on the type the reference already carries, so it reaches a measure
+    written either way. ``columns:`` and ``expression:`` are two spellings of
+    one measure and were not one rule: scoping this to the ``columns:`` branch
+    left ``expression: "{[ev].[Flag]}"`` failing exactly as before.
+
+    The abstract name renders per dialect, and nothing here reaches a measure
+    that passes its value through - those emit no cast for a boolean to arrive
+    at, and casting them changed what they answer rather than its type.
+    """
+
+    def rewrite(node: Expr) -> Expr | None:
+        # Equality, not identity: the node carries the value as a plain string
+        # where the model carries the enum, and is quietly matched neither.
+        if isinstance(node, ColumnRef) and node.abstract_type == DataType.BOOLEAN:
+            return Cast(expr=node, type_name="int")
+        return None
+
+    return map_nodes(expr, rewrite)
 
 
 def make_dimension_expr(
@@ -1338,6 +1382,11 @@ class QueryResolver:
         # — without this, ``count_distinct`` over an ``expression:``
         # column would emit ``COUNT(DISTINCT "obj"."")`` (zero-length
         # identifier, DB error).
+        # Whether a cast is coming, and whether it is a numeric one. A boolean
+        # source only has to become a number when it is about to be read as
+        # one; ``None`` here means the measure passes its value through.
+        numeric_output = _reads_a_number(measure, ctx.model.settings)
+
         args: list[Expr] = []
         if measure.columns:
             for ref in measure.columns:
@@ -1351,7 +1400,10 @@ class QueryResolver:
                     continue
                 obj = ctx.model.data_objects.get(obj_name)
                 if obj and col_name in obj.columns:
-                    args.append(make_column_expr(ctx.model, obj_name, col_name))
+                    col_expr = make_column_expr(ctx.model, obj_name, col_name)
+                    if numeric_output:
+                        col_expr = _flags_as_numbers(col_expr)
+                    args.append(col_expr)
                 else:
                     args.append(ColumnRef(name=col_name, table=obj_name))
         if not args:
@@ -1403,6 +1455,11 @@ class QueryResolver:
         # a dimension names: otherwise one column means two instants depending
         # on how the query reached it.
         inner = apply_query_timezone(parse_expression(tokens), ctx.model)
+        # The same rule the ``columns:`` form gets: two spellings of one
+        # measure, so a boolean reaches a numeric output as a number either
+        # way. Scoping it to the other branch left this one failing.
+        if _reads_a_number(measure, ctx.model.settings):
+            inner = _flags_as_numbers(inner)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":
