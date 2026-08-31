@@ -177,7 +177,7 @@ since Dremio is the one dialect that puts them in identifier position.
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
-| `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero |
+| `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero, except at ClickHouse's `decimal(76, s)` ceiling, which truncates |
 | `to_number(x)` | float | The number `x` names, or **NULL** when it does not name one; surrounding whitespace ignored |
 
 ## Casting, and what it does not promise
@@ -197,6 +197,15 @@ correctly. That conversion is also what lets ClickHouse take a **text**
 argument at all: `round('4.6', 2)` raises there, so a cast over a `json_value`
 — which returns a string by definition — did not compile to something the
 engine would run.
+
+One exception, on ClickHouse alone: **a target at that engine's precision
+ceiling truncates instead of rounding.** The conversion reads one place more
+than the target so the rounding has a digit to work from, and `Decimal256` is
+76 digits wherever the point sits — so at `decimal(76, s)` that place and the
+target's own integer width cannot both exist. `2.555` answers `2.56` at
+`decimal(75, 2)` and `2.55` at `decimal(76, 2)`. A model that wants the
+rounding declares one digit less, which costs nothing: no value needs the
+seventy-sixth.
 
 **What it does not pin is failure**, and that limit is the point of the entry
 rather than a footnote on it. A cast over a number is portable. A cast over
