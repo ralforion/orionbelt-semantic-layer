@@ -106,6 +106,7 @@ class SemanticValidator:
                 model, {e.path for e in reference_errors if e.path}
             )
         )
+        errors.extend(self._check_measure_expressions(model))
         errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_query_timezone_coverage(model))
         errors.extend(self._check_reference_name_collisions(model))
@@ -1192,6 +1193,50 @@ class SemanticValidator:
                             context={"dataObject": obj_name, "column": col_name},
                         )
                     )
+        return errors
+
+    def _check_measure_expressions(self, model: SemanticModel) -> list[SemanticError]:
+        """A measure expression has to parse, the way a computed column's does.
+
+        A computed column whose body does not parse is refused at load
+        (``INVALID_COLUMN_EXPRESSION``); a measure carrying the same body was
+        accepted, and the failure arrived when someone selected the measure -
+        as a bare ``ValueError`` out of the tokenizer, which the query handler
+        has no branch for, so it left the route as a 500 rather than a 422
+        naming the measure. Two authors writing the same malformed expression
+        in two places got a model-load error and a server error.
+
+        Parsed through the compiler's own entry points, for the reason the
+        computed-column check gives: a validator that parsed the body its own
+        way could answer differently from the code that has to build it.
+        """
+        from orionbelt.compiler.expr_parser import (
+            parse_expression,
+            tokenize_measure_expression,
+        )
+
+        errors: list[SemanticError] = []
+        for name, measure in model.measures.items():
+            if not measure.expression:
+                continue
+            try:
+                parse_expression(tokenize_measure_expression(measure.expression, model))
+            except RecursionError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
+                errors.append(
+                    SemanticError(
+                        code="INVALID_MEASURE_EXPRESSION",
+                        message=f"Measure '{name}' has invalid expression: {exc}",
+                        path=f"measures.{name}.expression",
+                        hint=(
+                            "The expression parser reads a subset of SQL. A "
+                            "construct it does not accept has to be written "
+                            "another way, or moved into the source view."
+                        ),
+                        context={"measure": name},
+                    )
+                )
         return errors
 
     def _check_expression_functions(self, model: SemanticModel) -> list[SemanticError]:

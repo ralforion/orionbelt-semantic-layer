@@ -2158,3 +2158,66 @@ measures:
     )
     def test_a_type_wide_enough_for_the_bucket_is_allowed(self, spec: str) -> None:
         assert "RESULT_TYPE_LOSES_GRAIN" not in self._errors(spec), spec
+
+
+class TestMeasureExpressionsParse:
+    """A malformed measure expression is refused at load, not at query time.
+
+    A computed column with the same body was already refused
+    (``INVALID_COLUMN_EXPRESSION``). A measure carrying it loaded, and the
+    failure arrived when someone selected the measure -- as a bare
+    ``ValueError`` out of the tokenizer, which the query handler has no branch
+    for, so it left the route as a 500 rather than a 422 naming the measure.
+    """
+
+    TEMPLATE = """version: 1.0
+dataObjects:
+  Event:
+    code: ev
+    columns:
+      Amount: {{code: amount, abstractType: float, numClass: additive}}
+measures:
+  Bad:
+    expression: "{expr}"
+    resultType: float
+    aggregation: sum
+"""
+
+    def _errors(self, expr: str) -> list[SemanticError]:
+        import tempfile
+        from pathlib import Path
+
+        path = Path(tempfile.mkdtemp()) / "m.yaml"
+        path.write_text(self.TEMPLATE.format(expr=expr))
+        raw, source_map = TrackedLoader().load(path)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return SemanticValidator().validate(model)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "ABS({[Event].[Amount]} + 1",  # the call never closes
+            "({[Event].[Amount]} + 1",  # nor does the group
+            "{[Event].[Amount]} +",  # nothing to add to
+        ],
+    )
+    def test_an_unparseable_expression_is_refused(self, expr: str) -> None:
+        errors = self._errors(expr)
+        assert any(e.code == "INVALID_MEASURE_EXPRESSION" for e in errors), (
+            f"{expr!r} loaded; got {[e.code for e in errors]}"
+        )
+
+    def test_the_error_names_the_measure_and_its_path(self) -> None:
+        """Enough to fix the model without running the query that found it."""
+        error = next(
+            e
+            for e in self._errors("ABS({[Event].[Amount]} + 1")
+            if e.code == "INVALID_MEASURE_EXPRESSION"
+        )
+        assert error.path == "measures.Bad.expression"
+        assert "Bad" in error.message
+        assert "Missing closing" in error.message
+
+    def test_a_valid_expression_still_loads(self) -> None:
+        errors = self._errors("ABS({[Event].[Amount]} + 1)")
+        assert not any(e.code == "INVALID_MEASURE_EXPRESSION" for e in errors)
