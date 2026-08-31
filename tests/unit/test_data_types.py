@@ -210,6 +210,35 @@ class TestDialectRendering:
         result = d.render_obml_type(DecimalType(50, 10))
         assert result == "NUMBER(38, 10)"
 
+    @pytest.mark.parametrize(
+        ("dialect_name", "expected"),
+        [
+            ("bigquery", "TIMESTAMP"),
+            ("clickhouse", "DateTime64(3)"),
+            ("databricks", "TIMESTAMP"),
+            ("dremio", "TIMESTAMP"),
+            ("duckdb", "TIMESTAMP"),
+            ("mysql", "TIMESTAMP"),
+            ("postgres", "TIMESTAMP"),
+            ("snowflake", "TIMESTAMP_NTZ"),
+        ],
+    )
+    def test_timestamp_renders_the_naive_type(self, dialect_name: str, expected: str) -> None:
+        """OBML's cast vocabulary has one timestamp, and it is the naive one.
+
+        ``timestamp_tz`` is a column declaration with no cast target (see
+        ``resolution._CASTABLE_TEMPORAL_TYPES``), so rendering ``timestamp`` as
+        a zoned type invents a zone the model never declared. PostgreSQL then
+        moved the value -- a dimension declaring ``resultType: timestamp`` over
+        ``2026-08-15 13:45:00`` came back as ``11:45 UTC`` -- and Snowflake
+        attached the session zone to it.
+        """
+        from orionbelt.dialect.registry import DialectRegistry
+
+        rendered = DialectRegistry.get(dialect_name).render_obml_type(SimpleType("timestamp"))
+        assert rendered == expected
+        assert rendered not in {"TIMESTAMPTZ", "TIMESTAMP_TZ", "TIMESTAMP WITH TIME ZONE"}
+
 
 class TestModelValidation:
     def test_valid_data_type_on_measure(self) -> None:
