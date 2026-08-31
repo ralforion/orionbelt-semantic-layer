@@ -95,6 +95,7 @@ __all__ = [
     "_warn_if_auth_required_without_key",
     "compile_sql",
     "create_blocks",
+    "frontend_assets",
     "create_ui",
     "execute_query",
     "main",
@@ -1134,6 +1135,18 @@ _IMPORT_OSI_JS = """
 """
 
 
+def frontend_assets(head_html: str | None = None) -> dict[str, str]:
+    """The css/js/head every way of serving this app has to pass along.
+
+    Gradio 6 takes these on ``launch()`` and ``mount_gradio_app()`` rather than
+    on the ``Blocks`` constructor.
+    """
+    assets = {"css": _CSS, "js": _DARK_MODE_INIT_JS}
+    if head_html:
+        assets["head"] = head_html
+    return assets
+
+
 def create_blocks(
     default_api_url: str | None = None,
     embedded_settings: dict[str, Any] | None = None,
@@ -1204,12 +1217,7 @@ def create_blocks(
         # seed the editor with a starter template.
         example_model = _load_example_model()
 
-    with gr.Blocks(
-        title="OrionBelt Semantic Layer",
-        css=_CSS,
-        js=_DARK_MODE_INIT_JS,
-        head=head_html,
-    ) as demo:
+    with gr.Blocks(title="OrionBelt Semantic Layer") as demo:
         # ── Browser-persisted state (localStorage via Gradio BrowserState) ──
         saved_model = gr.BrowserState("", storage_key="ob_model_yaml")
         saved_query = gr.BrowserState("", storage_key="ob_query_yaml")
@@ -1250,7 +1258,11 @@ def create_blocks(
                 f'<a href="https://ralforion.com'
                 f'/orionbelt-semantic-layer/"'
                 f' target="_blank">Docs</a>'
-                f"</span></div>"
+                f"</span></div>",
+                # Gradio 6 flipped this default from True to False, and the
+                # wrapper has no CSS of its own, so the header would lose its
+                # padding silently. Stated to keep the layout as it was.
+                padding=True,
             )
             dark_btn = gr.Button("Light / Dark", size="sm", scale=0, min_width=120)
 
@@ -1304,7 +1316,7 @@ def create_blocks(
                             max_lines=1,
                             interactive=not cohosted,
                         )
-                    gr.HTML("", elem_classes=["settings-spacer"])
+                    gr.HTML("", elem_classes=["settings-spacer"], padding=True)
                     import_osi_btn = gr.Button(
                         "Import OSI",
                         size="sm",
@@ -2059,6 +2071,7 @@ def create_blocks(
                         "from the model YAML.</p>"
                     ),
                     elem_id="ob-ontology-graph-container",
+                    padding=True,
                 )
 
                 _ontology_inputs = [
@@ -2420,6 +2433,14 @@ def create_blocks(
         # Gradio's demo.unload() cannot access gr.State, so we rely on TTL expiry
         # and auto-recovery in _ensure_session_and_model() for stale sessions.
 
+    # Gradio 6 moved css/js/head off the Blocks constructor: passing them there
+    # is accepted and then ignored, so the page renders unstyled with no warning
+    # a test would catch. They belong to whichever call serves the app, and this
+    # app is served two ways -- mounted under the API at /ui and mounted or
+    # launched standalone -- so the assets travel with the object rather than
+    # being restated at each site, where forgetting one is silent.
+    demo.ob_frontend = frontend_assets(head_html)
+
     return demo
 
 
@@ -2478,7 +2499,7 @@ def create_ui() -> None:
             # API host), serve a disallow-all so crawlers skip it.
             return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
-        app = gr.mount_gradio_app(app, demo, path=root_path)
+        app = gr.mount_gradio_app(app, demo, path=root_path, **demo.ob_frontend)
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -2496,6 +2517,7 @@ def create_ui() -> None:
             server_name="0.0.0.0",
             server_port=port,
             favicon_path=str(favicon_file),
+            **demo.ob_frontend,
         )
 
 
