@@ -32,7 +32,12 @@ class BigQueryDialect(Dialect):
         "integer": "INT64",
         "double": "FLOAT64",
         "date": "DATE",
-        "timestamp": "TIMESTAMP",
+        # DATETIME, not TIMESTAMP. OBML's cast vocabulary has one timestamp and
+        # it is the naive one, and BigQuery's TIMESTAMP is an instant: casting
+        # to it read the value as UTC and handed back a zoned result, so a
+        # dimension declaring ``resultType: timestamp`` carried a zone the model
+        # never declared. DATETIME is this engine's wall clock.
+        "timestamp": "DATETIME",
         "time": "TIME",
         "string": "STRING",
         "boolean": "BOOL",
@@ -115,7 +120,9 @@ class BigQueryDialect(Dialect):
         "date": "DATE",
         "time": "TIME",
         "time_tz": "TIME",
-        "timestamp": "TIMESTAMP",
+        # ``timestamp`` and ``timestamp_tz`` are two OBML types, and mapping
+        # both to the instant made them synonyms on this engine.
+        "timestamp": "DATETIME",
         "timestamp_tz": "TIMESTAMP",
         "boolean": "BOOL",
     }

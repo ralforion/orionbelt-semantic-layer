@@ -177,3 +177,26 @@ def test_measure_sweep(bigquery_setup, vendor_model, kind: str, name: str, dims:
     sql = compile_for(sweep_query(name, dims), vendor_model, "bigquery")
     rows = _fetch_bigquery(client, sql)  # raises on a BigQuery execution error
     assert isinstance(rows, list), f"{kind} {name!r} returned no result set"
+
+
+def test_timestamp_is_a_wall_clock(bigquery_setup) -> None:
+    """A declared ``timestamp`` must keep its wall clock and carry no zone.
+
+    BigQuery's TIMESTAMP is an instant, so casting to it read the value as UTC
+    and handed back a zoned result. OBML's cast vocabulary has one timestamp
+    and it is the naive one -- ``timestamp_tz`` is the zoned declaration and
+    has no cast target -- so the engine's wall clock type is DATETIME.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    client, _cfg = bigquery_setup
+    dialect = DialectRegistry.get("bigquery")
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql="'2026-08-15 13:45:00'"), parse_data_type("timestamp")
+    )
+    rows = _fetch_bigquery(client, f"SELECT {dialect.compile_expr(cast)} AS v")
+    value = rows[0]["v"]
+    assert value.tzinfo is None, f"a declared timestamp carried a zone: {value!r}"
+    assert (value.hour, value.minute) == (13, 45)
