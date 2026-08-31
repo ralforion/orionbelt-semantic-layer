@@ -435,9 +435,10 @@ class ClickHouseDialect(Dialect):
         if not is_null_literal and (
             upper.startswith("DECIMAL") or upper.startswith("NULLABLE(DECIMAL")
         ):
-            scale_token = resolved_type.split(",")[-1].rstrip(") ")
-            scale = int(scale_token.strip())
-            inner_sql = self._exact_decimal_round(inner_sql, scale, or_null=False)
+            width = re.search(r"Decimal\d*\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", resolved_type)
+            assert width is not None, resolved_type
+            precision, scale = int(width.group(1)), int(width.group(2))
+            inner_sql = self._exact_decimal_round(inner_sql, precision, scale, or_null=False)
         elif (
             not isinstance(inner, Literal)
             and _is_numeric_expr(inner)
@@ -553,7 +554,9 @@ class ClickHouseDialect(Dialect):
     #: the half wants one place more than the count and 77 is out of range.
     _MAX_ROUND_DIGITS: int = 76
 
-    def _exact_decimal_round(self, inner_sql: str, scale: int, *, or_null: bool) -> str:
+    def _exact_decimal_round(
+        self, inner_sql: str, precision: int, scale: int, *, or_null: bool
+    ) -> str:
         """Round *inner_sql* to *scale* places without a float ever holding it.
 
         Rounding before the cast is what aligns this engine with the four whose
@@ -584,7 +587,20 @@ class ClickHouseDialect(Dialect):
         input it cannot read (#355), while an implicit cast over a declared
         type raises, as it did before this wrapping existed.
         """
-        exact_scale = min(scale + 1, self._MAX_ROUND_DIGITS)
+        # The extra place is taken from the integer side, because Decimal256 is
+        # 76 digits wherever the point sits. So it can only be asked for while
+        # the target leaves a digit spare: ``decimal(76, 20)`` holds 56 integer
+        # digits, an intermediate at scale 21 holds 55, and a value the target
+        # accepts raised ARGUMENT_OUT_OF_BOUND before reaching it. Measured on
+        # a live server: a 56-digit integer casts to ``Decimal(76, 20)`` and
+        # failed through the intermediate.
+        #
+        # Where there is no room, the intermediate is the target's own scale
+        # and the round is the identity - which costs nothing that was
+        # available anyway: a value needing every integer digit the target has
+        # cannot also carry a fractional place beyond it to round.
+        integer_digits = precision - scale
+        exact_scale = min(scale + 1, self._MAX_ROUND_DIGITS - integer_digits)
         to_decimal = "toDecimal256OrNull" if or_null else "toDecimal256"
         return f"round({to_decimal}(toString({inner_sql}), {exact_scale}), {scale})"
 
@@ -645,7 +661,9 @@ class ClickHouseDialect(Dialect):
         assert target is not None
         if not isinstance(target, DecimalType):
             return super()._render_cast_call(args)
-        rounded = self._exact_decimal_round(self.compile_expr(args[0]), target.scale, or_null=True)
+        rounded = self._exact_decimal_round(
+            self.compile_expr(args[0]), target.precision, target.scale, or_null=True
+        )
         return f"CAST({rounded} AS Nullable({self.render_obml_type(target)}))"
 
     def _round_half_sql(self, half: str) -> str:
