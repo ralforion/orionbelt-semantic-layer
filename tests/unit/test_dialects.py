@@ -435,9 +435,17 @@ class TestClickHouseDialect:
         assert dialect.compile_expr(expr) == "CAST(NULL AS Nullable(Int32))"
 
     def test_non_integer_casts_are_untouched(self, dialect: ClickHouseDialect) -> None:
-        """The rewrite is scoped to integer targets; decimal keeps its pre-round."""
+        """The rewrite is scoped to integer targets; decimal keeps its pre-round.
+
+        The pre-round runs over the value's own text because ``round`` answers a
+        Float64 for a Float64 and ``CAST(Float64 AS Decimal)`` truncates, so
+        rounding to the target scale and truncating at that same scale lost the
+        place the round had just decided.
+        """
         dec = dialect.cast_to_obml_type(col("amt"), parse_data_type("decimal(18, 2)"))
-        assert dialect.compile_expr(dec) == ('CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))')
+        assert dialect.compile_expr(dec) == (
+            'CAST(round(toDecimal256(toString("amt"), 3), 2) AS Nullable(Decimal(18, 2)))'
+        )
         text = dialect.cast_to_obml_type(col("amt"), parse_data_type("string"))
         assert dialect.compile_expr(text) == 'CAST("amt" AS Nullable(String))'
 

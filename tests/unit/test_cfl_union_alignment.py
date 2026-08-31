@@ -241,9 +241,11 @@ class TestUnionAlignmentPreservesInput:
             "two legs times two measures should each carry the union type; "
             f"found {len(typed)}, so a leg is projecting uncast:\n{legs}"
         )
-        assert re.search(r"CAST\(round\(SUM\(.*?\), 2\) AS Nullable\(Decimal\(18, 2\)\)\)", sql), (
-            f"the outer aggregate should still narrow to the declared type:\n{sql}"
-        )
+        assert re.search(
+            r"CAST\(round\(toDecimal256\(toString\(SUM\(.*?\)\), 3\), 2\) "
+            r"AS Nullable\(Decimal\(18, 2\)\)\)",
+            sql,
+        ), f"the outer aggregate should still narrow to the declared type:\n{sql}"
 
     def test_the_engines_that_unify_still_leave_the_leg_alone(self) -> None:
         """The cast is not a general rule; it is one engine's requirement.

@@ -14,7 +14,7 @@ FROM (SELECT arrayJoin(range(0, toUInt32(dateDiff('month', (SELECT min_date FROM
 ),
 "pop_base" AS (
 SELECT "date_spine".spine_date AS "Sales Month",
-       CAST(round(SUM("__ob_pop_src"."Sales__salesamount"), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
+       CAST(round(toDecimal256(toString(SUM("__ob_pop_src"."Sales__salesamount")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Total Sales"
   FROM "date_spine"
   LEFT JOIN (
     SELECT toStartOfMonth("Sales"."salesdate") AS "__ob_bucket",
@@ -32,5 +32,5 @@ SELECT "pop_base"."Sales Month" AS "Sales Month",
   LEFT JOIN "pop_base" AS pop_prev
     ON "date_spine".spine_date_prev = pop_prev."Sales Month"
 )
-SELECT "Sales Month" AS "Sales Month", CAST(round("Sales YoY Growth", 4) AS Nullable(Decimal(18, 4))) AS "Sales YoY Growth"
+SELECT "Sales Month" AS "Sales Month", CAST(round(toDecimal256(toString("Sales YoY Growth"), 5), 4) AS Nullable(Decimal(18, 4))) AS "Sales YoY Growth"
 FROM "pop_compare" AS "pop_compare"
