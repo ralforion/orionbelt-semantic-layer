@@ -24,6 +24,7 @@ from orionbelt.models.semantic import (
     MeasureFilterGroup,
     MeasureFilterItem,
     SemanticModel,
+    TimeGrain,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
 from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
@@ -88,6 +89,7 @@ class SemanticValidator:
         errors.extend(self._check_references_resolve(model))
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
+        errors.extend(self._check_result_type_holds_the_grain(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         # An expression whose references do not resolve is reported once, by the
@@ -726,6 +728,68 @@ class SemanticValidator:
                         path=f"dimensions.{name}",
                     )
                 )
+        return errors
+
+    #: The temporal declarations OBML can cast to, mirroring
+    #: ``compiler.resolution._CASTABLE_TEMPORAL_TYPES``. A non-temporal
+    #: ``resultType`` is not cast at all, so it cannot drop part of a bucket.
+    _CASTABLE_TEMPORAL_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIME}
+
+    #: Grains that carry a time of day. Anything coarser lands on midnight.
+    _SUB_DAY_GRAINS = {TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND}
+
+    #: What each declared type can hold without dropping part of the bucket.
+    _TIMESTAMP_TYPES = {DataType.TIMESTAMP, DataType.TIMESTAMP_TZ}
+    _DATE_BEARING_TYPES = _TIMESTAMP_TYPES | {DataType.DATE}
+
+    def _check_result_type_holds_the_grain(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a declared type that cannot hold the bucket the grain makes.
+
+        A temporal ``resultType`` is emitted as a CAST around the truncation,
+        and that cast sits in the GROUP BY as well as in the projection. So a
+        declaration narrower than the grain does not merely relabel the column,
+        it merges buckets and changes the measures - silently, because nothing
+        about it is a SQL error:
+
+        - ``timeGrain: hour`` with ``resultType: date`` drops the time, so
+          09:00 and 10:00 on one day become a single row whose total is the sum
+          of both.
+        - ``resultType: time`` drops the date, so the same hour on different
+          days collapses together; over a month grain every row in the model
+          becomes one bucket at ``00:00:00``.
+
+        The reverse is harmless and stays allowed: a month grain declared
+        ``timestamp`` is a date at midnight, and nothing is lost by carrying
+        the zeros.
+        """
+        errors: list[SemanticError] = []
+        for name, dim in model.dimensions.items():
+            grain = dim.time_grain
+            declared = dim.result_type
+            if grain is None or declared not in self._CASTABLE_TEMPORAL_TYPES:
+                continue
+            if grain in self._SUB_DAY_GRAINS:
+                allowed, keeps = self._TIMESTAMP_TYPES, "timestamp"
+                lost = "the time of day" if declared is DataType.DATE else "the date"
+            else:
+                allowed, keeps = self._DATE_BEARING_TYPES, "date or timestamp"
+                lost = "the date"
+            if declared in allowed:
+                continue
+            errors.append(
+                SemanticError(
+                    code="RESULT_TYPE_LOSES_GRAIN",
+                    message=(
+                        f"Dimension '{name}' has timeGrain '{grain.value}' but "
+                        f"resultType '{declared.value}', which cannot hold it: "
+                        f"{lost} would be dropped. The cast is applied in the "
+                        f"GROUP BY as well, so buckets would merge and the "
+                        f"measures would change without an error. Declare "
+                        f"{keeps}, or use the grain the type implies."
+                    ),
+                    path=f"dimensions.{name}",
+                )
+            )
         return errors
 
     def _check_num_class_on_numeric_columns(self, model: SemanticModel) -> list[SemanticError]:

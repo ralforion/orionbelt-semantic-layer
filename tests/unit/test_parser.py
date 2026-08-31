@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.semantic import (
     AggregationType,
@@ -2082,3 +2084,70 @@ class TestIncompleteColumnRefs:
         )
         model.dimensions["Fine Dim"] = Dimension(name="Fine Dim", view="Sales", column="Amount")
         assert self._validate(model) == []
+
+
+class TestResultTypeHoldsTheGrain:
+    """A declared type narrower than the grain changes the numbers, silently.
+
+    The temporal ``resultType`` is emitted as a CAST around the truncation and
+    that cast sits in the GROUP BY, so the declaration does not merely relabel
+    the column: it merges buckets. Measured on DuckDB before this check, three
+    rows at 09:00, 10:00 and 11:00 under ``timeGrain: hour`` with
+    ``resultType: date`` came back as one row carrying the sum of all three.
+    """
+
+    TEMPLATE = """version: 1.0
+dataObjects:
+  Event:
+    code: ev
+    columns:
+      Stamp:  {{code: stamp, abstractType: timestamp}}
+      Amount: {{code: amount, abstractType: float, numClass: additive}}
+dimensions:
+  D: {{dataObject: Event, column: Stamp, {spec}}}
+measures:
+  Total:
+    columns: [{{dataObject: Event, column: Amount}}]
+    resultType: float
+    aggregation: sum
+"""
+
+    def _errors(self, spec: str) -> list[str]:
+        import tempfile
+        from pathlib import Path
+
+        path = Path(tempfile.mkdtemp()) / "m.yaml"
+        path.write_text(self.TEMPLATE.format(spec=spec))
+        raw, source_map = TrackedLoader().load(path)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return [e.code for e in SemanticValidator().validate(model)]
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "resultType: date, timeGrain: hour",  # drops the time of day
+            "resultType: date, timeGrain: minute",
+            "resultType: date, timeGrain: second",
+            "resultType: time, timeGrain: hour",  # drops the date
+            "resultType: time, timeGrain: month",  # every row into one bucket
+            "resultType: time, timeGrain: day",
+        ],
+    )
+    def test_a_type_that_cannot_hold_the_bucket_is_refused(self, spec: str) -> None:
+        assert "RESULT_TYPE_LOSES_GRAIN" in self._errors(spec), spec
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "resultType: timestamp, timeGrain: hour",
+            "resultType: timestamp, timeGrain: second",
+            "resultType: timestamp, timeGrain: month",
+            "resultType: date, timeGrain: month",  # midnight, nothing to lose
+            "resultType: date, timeGrain: day",
+            "resultType: date, timeGrain: year",
+            "resultType: time",  # no grain, nothing to hold
+            "resultType: string, timeGrain: month",  # not cast, so nothing dropped
+        ],
+    )
+    def test_a_type_wide_enough_for_the_bucket_is_allowed(self, spec: str) -> None:
+        assert "RESULT_TYPE_LOSES_GRAIN" not in self._errors(spec), spec
