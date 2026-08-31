@@ -375,8 +375,17 @@ class Dialect(ABC):
         — "Parameterized types are not allowed in CAST expressions") can
         override to wrap the cast with a ROUND to honour the user-specified
         scale.
+
+        An expression already cast to the same type is returned as it is. The
+        two casts a grained dimension can attract - the one the grain applies to
+        keep its own type, and the one the declared ``resultType`` applies on
+        top - agree whenever the model declares what the grain already
+        produces, and ``CAST(CAST(x AS DATE) AS DATE)`` says it twice.
         """
-        return Cast(expr=expr, type_name=self.render_obml_type(obml_type))
+        rendered = self.render_obml_type(obml_type)
+        if isinstance(expr, Cast) and expr.type_name == rendered:
+            return expr
+        return Cast(expr=expr, type_name=rendered)
 
     # Widest decimal every supported engine accepts, and the integer digits kept
     # free for a running total. A sum is as many digits as its rows make it, so

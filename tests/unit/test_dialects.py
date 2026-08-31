@@ -670,16 +670,23 @@ class TestMySQLDialect:
         assert "`c`" in sql
 
     def test_time_grain_day(self, dialect: MySQLDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.DAY)
-        assert isinstance(result, FunctionCall)
-        assert result.name == "DATE_FORMAT"
+        """DATE_FORMAT answers a string, so the grain casts it back to a DATE.
+
+        Every other dialect's grain returns a date or a timestamp; without the
+        cast this one returned text, which is the same dimension arriving as a
+        different type depending on the engine underneath it.
+        """
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.DAY))
+        assert sql == "CAST(DATE_FORMAT(`dt`, '%Y-%m-%d') AS DATE)"
 
     def test_time_grain_month(self, dialect: MySQLDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.MONTH)
-        assert isinstance(result, FunctionCall)
-        assert result.name == "DATE_FORMAT"
-        sql = dialect.compile_expr(result)
-        assert "%Y-%m-01" in sql
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.MONTH))
+        assert sql == "CAST(DATE_FORMAT(`dt`, '%Y-%m-01') AS DATE)"
+
+    def test_a_sub_day_grain_keeps_its_time(self, dialect: MySQLDialect) -> None:
+        """An hour grain casts to DATETIME, not DATE, or the hour is lost."""
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.HOUR))
+        assert sql == "CAST(DATE_FORMAT(`dt`, '%Y-%m-%d %H:00:00') AS DATETIME)"
 
     def test_time_grain_quarter(self, dialect: MySQLDialect) -> None:
         from orionbelt.ast.nodes import RawSQL
@@ -690,10 +697,8 @@ class TestMySQLDialect:
         assert "QUARTER" in result.sql
 
     def test_time_grain_year(self, dialect: MySQLDialect) -> None:
-        result = dialect.render_time_grain(col("dt"), TimeGrain.YEAR)
-        assert isinstance(result, FunctionCall)
-        sql = dialect.compile_expr(result)
-        assert "%Y-01-01" in sql
+        sql = dialect.compile_expr(dialect.render_time_grain(col("dt"), TimeGrain.YEAR))
+        assert sql == "CAST(DATE_FORMAT(`dt`, '%Y-01-01') AS DATE)"
 
     def test_time_grain_week(self, dialect: MySQLDialect) -> None:
         """Breaking: a weekly bucket is the week's start date, not a ``%Y-%u``

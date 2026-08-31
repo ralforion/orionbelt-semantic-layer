@@ -270,9 +270,25 @@ class MySQLDialect(Dialect):
             )
 
         fmt = grain_format_map.get(grain) or "%Y-%m-%d"
-        return FunctionCall(
-            name="DATE_FORMAT",
-            args=[column, Literal.string(fmt)],
+        formatted = FunctionCall(name="DATE_FORMAT", args=[column, Literal.string(fmt)])
+        # DATE_FORMAT answers a string, so without this the grain handed back
+        # text where all seven other dialects hand back a date or a timestamp:
+        # the same model, the same dimension, a different type per engine. It
+        # also made ``resultType: string`` on a grained dimension look like a
+        # deliberate label rather than a description of this defect.
+        #
+        # The same cast, for the same reason, is already applied by this
+        # dialect's portable date-truncation ("cast back so the result compares
+        # and sorts as a date rather than lexically"); the dimension grain was
+        # the path that missed it. Quarter and week never needed it: they are
+        # rendered with date arithmetic rather than a format string.
+        return Cast(
+            expr=formatted,
+            type_name=(
+                "DATETIME"
+                if grain in (TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND)
+                else "DATE"
+            ),
         )
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
@@ -340,7 +356,10 @@ class MySQLDialect(Dialect):
         This puts MySQL where BigQuery already sits, which returns the true
         value for the same query because its ``NUMERIC`` is (38, 9).
         """
-        return Cast(expr=expr, type_name=self.render_obml_type(self._widened(obml_type)))
+        rendered = self.render_obml_type(self._widened(obml_type))
+        if isinstance(expr, Cast) and expr.type_name == rendered:
+            return expr
+        return Cast(expr=expr, type_name=rendered)
 
     @staticmethod
     def _widened(obml_type: OBMLType) -> OBMLType:

@@ -29,6 +29,12 @@ htmlcov/
 # written per browser session. The console logs were already caught by
 # *.log above, which left only the .yml page dumps showing as untracked.
 .playwright-mcp/
+# Playwright writes screenshots to the working directory when the tool is
+# given a bare filename, which is the repo root. Twice now one has been
+# swept into a commit by ``git add -A``.
+*.playwright.png
+gradio*-production.png
+ui-gradio*.png
 /cache/
 /usage/
 security/
