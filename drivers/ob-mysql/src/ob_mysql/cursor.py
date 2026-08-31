@@ -117,28 +117,16 @@ class Cursor:
         """Fetch all remaining rows as a PyArrow Table.
 
         mysql-connector-python has no native Arrow support, so this method
-        fetches all rows via ``fetchall()`` and converts them to a PyArrow
-        Table using column names from ``description``.
+        assembles the table from ``fetchall()``. The schema comes from
+        ``cursor.description`` rather than from the values, so a column's type
+        does not change with the rows that happen to come back -- see
+        :mod:`ob_mysql.arrow_types`.
         """
-        import pyarrow as pa
+        from ob_mysql.arrow_types import table_from_rows
 
         self._check_open()
         rows = self._native.fetchall()
-        desc = self._native.description or []
-        col_names = [col[0] for col in desc]
-
-        if not rows:
-            # Return empty table with correct schema
-            arrays = [pa.array([], type=pa.utf8()) for _ in col_names]
-            return pa.table(dict(zip(col_names, arrays, strict=True)))
-
-        # Transpose rows to columns and let PyArrow infer types
-        columns: dict[str, list[Any]] = {name: [] for name in col_names}
-        for row in rows:
-            for i, name in enumerate(col_names):
-                columns[name].append(row[i])
-
-        return pa.table(columns)
+        return table_from_rows(rows, list(self._native.description or []))
 
     def close(self) -> None:
         """Close the cursor."""

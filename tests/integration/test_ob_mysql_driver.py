@@ -13,6 +13,7 @@ Skipped automatically when:
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -252,3 +253,132 @@ class TestOBMySQLDriver:
         assert "Revenue" in col_names
         cur.fetchall()  # consume results before close (MySQL requires this)
         cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Arrow schema stability across every MySQL type
+# ---------------------------------------------------------------------------
+
+_ALL_TYPES_DDL = """CREATE TABLE alltypes (
+  c_dec DECIMAL(18,2), c_tiny TINYINT, c_bool TINYINT(1), c_small SMALLINT,
+  c_medium MEDIUMINT, c_int INT, c_big BIGINT, c_ubig BIGINT UNSIGNED,
+  c_float FLOAT, c_double DOUBLE, c_bit BIT(8), c_date DATE, c_time TIME,
+  c_dt DATETIME, c_ts TIMESTAMP NULL, c_year YEAR, c_char CHAR(4),
+  c_vchar VARCHAR(20), c_text TEXT, c_blob BLOB, c_enum ENUM('a','b'),
+  c_set SET('a','b'), c_json JSON, c_bin BINARY(4))"""
+
+_ALL_TYPES_ROW = """INSERT INTO alltypes VALUES (2.55, 1, 1, 2, 3, 4, 5,
+  18446744073709551615, 1.5, 2.5, b'10101010', '2026-08-15', '01:02:03',
+  '2026-08-15 13:45:00', '2026-08-15 13:45:00', 2026, 'ab', 'x', 'y', 'z',
+  'a', 'a,b', '{"k": 1}', 'bin')"""
+
+
+@pytest.fixture(scope="module")
+def alltypes_conn(mysql_conn):
+    """The same connection, with a table covering every MySQL column type."""
+    cur = mysql_conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS alltypes")
+    cur.execute(_ALL_TYPES_DDL)
+    cur.execute(_ALL_TYPES_ROW)
+    cur.close()
+    return mysql_conn
+
+
+def _schema_of(conn, sql: str) -> pa.Schema:
+    cur = conn.cursor()
+    cur.execute(sql)
+    schema = cur.fetch_arrow_table().schema
+    cur.close()
+    return schema
+
+
+class TestArrowSchemaComesFromMetadata:
+    """A column's Arrow type must not change with the rows that come back.
+
+    The mappings are asserted against a live server rather than a hand-written
+    ``description`` tuple, because two of them were wrong in a way only the
+    server could show: MySQL sends BIT as an integer rather than as bytes, and
+    sends SET as ``STRING`` plus a flag, with the value arriving as a Python
+    ``set``. Both built an array that the declared type would not take, which
+    fell through to inference and put the row-dependence back.
+    """
+
+    def test_every_type_survives_an_empty_result_unchanged(self, alltypes_conn) -> None:
+        """Populated and empty results agree on every column but the decimal."""
+        populated = _schema_of(alltypes_conn, "SELECT * FROM alltypes")
+        empty = _schema_of(alltypes_conn, "SELECT * FROM alltypes WHERE 1=0")
+
+        drifted = {
+            field.name: (str(field.type), str(empty.field(field.name).type))
+            for field in populated
+            if field.type != empty.field(field.name).type
+        }
+        # The decimal is the documented exception: MySQL discards the scale
+        # before ``description`` is built, so an empty result has nothing to
+        # read it from. Pinned here so the exception stays the only one.
+        assert set(drifted) == {"c_dec"}, f"columns drifted with the rows: {drifted}"
+        assert drifted["c_dec"] == ("decimal256(76, 2)", "decimal256(76, 0)")
+
+    def test_all_null_column_keeps_the_type_of_a_populated_one(self, alltypes_conn) -> None:
+        cur = alltypes_conn.cursor()
+        cur.execute("INSERT INTO alltypes (c_int) VALUES (NULL)")
+        cur.close()
+        nulls = _schema_of(alltypes_conn, "SELECT c_bit, c_set, c_blob FROM alltypes WHERE 1=0")
+        populated = _schema_of(alltypes_conn, "SELECT c_bit, c_set, c_blob FROM alltypes")
+        assert nulls == populated
+
+    def test_the_mappings_measured_against_the_server(self, alltypes_conn) -> None:
+        """Each of these was read off a live MySQL, not off the documentation."""
+        schema = _schema_of(alltypes_conn, "SELECT * FROM alltypes")
+        by_name = {field.name: field.type for field in schema}
+        assert by_name["c_bit"] == pa.uint64(), "BIT arrives as an int, not as bytes"
+        assert by_name["c_set"] == pa.string(), "SET arrives as a Python set"
+        assert by_name["c_enum"] == pa.string()
+        assert by_name["c_ubig"] == pa.uint64()
+        assert by_name["c_int"] == pa.int32()
+        assert by_name["c_tiny"] == pa.int8()
+        assert by_name["c_year"] == pa.int16()
+        assert by_name["c_float"] == pa.float32()
+        assert by_name["c_time"] == pa.duration("us")
+        assert by_name["c_text"] == pa.string()
+        assert by_name["c_blob"] == pa.binary()
+        assert by_name["c_bin"] == pa.binary()
+        assert by_name["c_json"] == pa.string()
+
+    def test_a_wide_decimal_reports_one_width_for_every_filter(self, alltypes_conn) -> None:
+        """Two filters over one DECIMAL(65, 2) column must agree on the type.
+
+        Measuring the precision from the values and narrowing to decimal128
+        when they fit made the width a property of the rows, so the same
+        column answered decimal128 below 10^36 and decimal256 above it.
+        """
+        cur = alltypes_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS wide_decimal")
+        cur.execute("CREATE TABLE wide_decimal (d DECIMAL(65,2))")
+        cur.execute("INSERT INTO wide_decimal VALUES (1.50), (%s)" % ("9" * 40 + ".99"))
+        cur.close()
+
+        small = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d < 2")
+        large = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d > 2")
+        both = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal")
+        assert small == large == both
+        assert small.field("d").type == pa.decimal256(76, 2)
+
+        cur = alltypes_conn.cursor()
+        cur.execute("SELECT d FROM wide_decimal WHERE d > 2")
+        table = cur.fetch_arrow_table()
+        cur.close()
+        assert table.column(0)[0].as_py() == Decimal("9" * 40 + ".99")
+
+    def test_values_survive_the_declared_types(self, alltypes_conn) -> None:
+        cur = alltypes_conn.cursor()
+        cur.execute("SELECT c_bit, c_set, c_ubig, c_dec FROM alltypes WHERE c_int = 4")
+        table = cur.fetch_arrow_table()
+        cur.close()
+        row = {name: table.column(name)[0].as_py() for name in table.column_names}
+        assert row["c_bit"] == 170
+        # A set has no order left by the time the connector hands it over, so
+        # the rendering sorts rather than inventing one.
+        assert row["c_set"] == "a,b"
+        assert row["c_ubig"] == 18446744073709551615
+        assert row["c_dec"] == Decimal("2.55")
