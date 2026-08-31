@@ -51,7 +51,28 @@ class TestSchemaDoesNotFollowTheValues:
         description = [_column("amount", NEWDECIMAL)]
         two_dp = _type_of([(Decimal("2.55"),), (Decimal("1.10"),)], description)
         one_row = _type_of([(Decimal("12345.67"),)], description)
-        assert two_dp == one_row == pa.decimal128(38, 2)
+        assert two_dp == one_row == pa.decimal256(76, 2)
+
+    def test_precision_does_not_follow_the_magnitude_of_the_rows(self) -> None:
+        """A wide column must not narrow because this page happened to be small.
+
+        Measuring the precision and picking decimal128 when it fit made the
+        width a property of the rows: a real ``DECIMAL(65, 2)`` reported
+        ``decimal128(38, 2)`` for the values below 10^36 and
+        ``decimal256(76, 2)`` for the ones above it, so two filters over one
+        column disagreed.
+        """
+        description = [_column("amount", NEWDECIMAL)]
+        small = _type_of([(Decimal("1.50"),)], description)
+        large = _type_of([(Decimal("9" * 40 + ".99"),)], description)
+        assert small == large == pa.decimal256(76, 2)
+
+    def test_the_fixed_precision_holds_the_widest_mysql_decimal(self) -> None:
+        """DECIMAL(65, 30) is MySQL's widest, and it has to fit without loss."""
+        widest = Decimal("9" * 35 + "." + "9" * 30)
+        table = table_from_rows([(widest,)], [_column("amount", NEWDECIMAL)])
+        assert table.schema.field(0).type == pa.decimal256(76, 30)
+        assert table.column(0)[0].as_py() == widest
 
     def test_decimal_scale_comes_from_the_declared_scale(self) -> None:
         """MySQL renders a decimal with its column's scale, zeros included.
@@ -62,13 +83,8 @@ class TestSchemaDoesNotFollowTheValues:
         wire's scale byte.
         """
         description = [_column("amount", NEWDECIMAL)]
-        assert _type_of([(Decimal("10.00"),)], description) == pa.decimal128(38, 2)
-        assert _type_of([(Decimal("2.500000000"),)], description) == pa.decimal128(38, 9)
-
-    def test_decimal_widens_past_decimal128(self) -> None:
-        """MySQL DECIMAL runs to 65 digits; decimal128 stops at 38."""
-        wide = Decimal("1" * 40)
-        assert _type_of([(wide,)], [_column("amount", NEWDECIMAL)]) == pa.decimal256(76, 0)
+        assert _type_of([(Decimal("10.00"),)], description) == pa.decimal256(76, 2)
+        assert _type_of([(Decimal("2.500000000"),)], description) == pa.decimal256(76, 9)
 
     def test_integer_width_comes_from_the_field_type(self) -> None:
         """A small value in an INT column is still an int32."""

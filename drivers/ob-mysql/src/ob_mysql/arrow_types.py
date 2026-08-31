@@ -25,9 +25,10 @@ The scale survives only in the values. The connector builds each value from
 MySQL's decimal text, which carries the column's own scale, so
 ``DECIMAL(18, 2)`` yields ``Decimal('10.00')`` rather than ``Decimal('10')``.
 Taking the widest scale in the column recovers the declared one for any result
-holding at least one non-null value, and the precision is widened to the
-decimal128 limit rather than guessed, so the type can never claim the column
-holds fewer digits than it does.
+holding at least one non-null value. The precision is not measured at all: it is
+fixed at the decimal256 limit, which no MySQL DECIMAL can overflow, because
+choosing a narrower type when the values happened to fit made the width a
+property of the rows.
 
 **A decimal column with no value to read the scale from is the exception.** An
 empty result or an all-NULL column falls back to
@@ -145,10 +146,18 @@ _TEXT_OR_BINARY = frozenset(
 
 _DECIMALS = frozenset({_DECIMAL, _NEWDECIMAL})
 
-#: Widest decimal128 / decimal256 precision. MySQL's own DECIMAL maximum is 65
-#: digits, so decimal256 covers every value the server can send.
-_DECIMAL128_MAX_PRECISION = 38
-_DECIMAL256_MAX_PRECISION = 76
+#: The precision every decimal column reports, chosen once rather than per
+#: result. MySQL's DECIMAL tops out at 65 digits with a scale of at most 30, so
+#: a value has at most 65 significant digits, and ``decimal256`` carries 76:
+#: whatever the scale, ``76 - scale`` integer digits is more than the ``65 -
+#: scale`` MySQL can supply, so no value can overflow it.
+#:
+#: Picking the narrower ``decimal128`` when the values happen to fit is what a
+#: previous version did, and it made the width a property of the rows: a real
+#: ``DECIMAL(65, 2)`` column reported ``decimal128(38, 2)`` for the rows below
+#: 10^36 and ``decimal256(76, 2)`` for the rows above it. The cost of fixing it
+#: here is 32 bytes a value instead of 16, paid by every decimal column.
+_DECIMAL_PRECISION = 76
 
 #: Scale for a decimal column with no values to read it from. Only reachable
 #: for an empty or all-NULL result, where no value can be misrepresented by it.
@@ -156,26 +165,24 @@ _DEFAULT_DECIMAL_SCALE = 0
 
 
 def _decimal_type(values: list[Any]) -> pa.DataType:
-    """The narrowest decimal type that holds every value in *values* exactly."""
+    """A decimal wide enough for any MySQL DECIMAL, at the column's own scale.
+
+    The precision is fixed (see :data:`_DECIMAL_PRECISION`) rather than measured,
+    so it cannot move with the rows. Only the scale is read from the values, and
+    only because MySQL discards it before ``description`` is built; it is stable
+    for any result holding at least one non-null value, since the connector
+    renders every value at the column's declared scale.
+    """
     scale = _DEFAULT_DECIMAL_SCALE
-    integral_digits = 1
     for value in values:
         if not isinstance(value, Decimal):
             continue
-        sign, digits, exponent = value.as_tuple()
+        exponent = value.as_tuple().exponent
         if not isinstance(exponent, int):
             # NaN and the infinities have a symbolic exponent and no scale.
             continue
         scale = max(scale, -exponent if exponent < 0 else 0)
-        integral_digits = max(integral_digits, len(digits) + min(exponent, 0))
-    precision = max(integral_digits + scale, 1)
-    if precision <= _DECIMAL128_MAX_PRECISION:
-        return pa.decimal128(_DECIMAL128_MAX_PRECISION, scale)
-    if precision <= _DECIMAL256_MAX_PRECISION:
-        return pa.decimal256(_DECIMAL256_MAX_PRECISION, scale)
-    # Unreachable against a MySQL server (DECIMAL tops out at 65 digits), but a
-    # value Arrow cannot hold is better rendered than raised on.
-    return pa.string()
+    return pa.decimal256(_DECIMAL_PRECISION, scale)
 
 
 def arrow_type_for(description_entry: tuple[Any, ...], values: list[Any]) -> pa.DataType:

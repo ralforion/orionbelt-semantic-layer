@@ -317,7 +317,7 @@ class TestArrowSchemaComesFromMetadata:
         # before ``description`` is built, so an empty result has nothing to
         # read it from. Pinned here so the exception stays the only one.
         assert set(drifted) == {"c_dec"}, f"columns drifted with the rows: {drifted}"
-        assert drifted["c_dec"] == ("decimal128(38, 2)", "decimal128(38, 0)")
+        assert drifted["c_dec"] == ("decimal256(76, 2)", "decimal256(76, 0)")
 
     def test_all_null_column_keeps_the_type_of_a_populated_one(self, alltypes_conn) -> None:
         cur = alltypes_conn.cursor()
@@ -344,6 +344,31 @@ class TestArrowSchemaComesFromMetadata:
         assert by_name["c_blob"] == pa.binary()
         assert by_name["c_bin"] == pa.binary()
         assert by_name["c_json"] == pa.string()
+
+    def test_a_wide_decimal_reports_one_width_for_every_filter(self, alltypes_conn) -> None:
+        """Two filters over one DECIMAL(65, 2) column must agree on the type.
+
+        Measuring the precision from the values and narrowing to decimal128
+        when they fit made the width a property of the rows, so the same
+        column answered decimal128 below 10^36 and decimal256 above it.
+        """
+        cur = alltypes_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS wide_decimal")
+        cur.execute("CREATE TABLE wide_decimal (d DECIMAL(65,2))")
+        cur.execute("INSERT INTO wide_decimal VALUES (1.50), (%s)" % ("9" * 40 + ".99"))
+        cur.close()
+
+        small = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d < 2")
+        large = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal WHERE d > 2")
+        both = _schema_of(alltypes_conn, "SELECT d FROM wide_decimal")
+        assert small == large == both
+        assert small.field("d").type == pa.decimal256(76, 2)
+
+        cur = alltypes_conn.cursor()
+        cur.execute("SELECT d FROM wide_decimal WHERE d > 2")
+        table = cur.fetch_arrow_table()
+        cur.close()
+        assert table.column(0)[0].as_py() == Decimal("9" * 40 + ".99")
 
     def test_values_survive_the_declared_types(self, alltypes_conn) -> None:
         cur = alltypes_conn.cursor()
