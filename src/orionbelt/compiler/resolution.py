@@ -184,10 +184,22 @@ def _flag_as_number(expr: Expr) -> Expr:
     ``expression:`` -- so one rule serves either. Anything larger than a bare
     reference is left alone: its own shape decides what its parts mean, and
     this cannot read that.
+
+    **A computed boolean column is the known gap, and it is older than this.**
+    ``{expression: "{Amt} > 0", abstractType: boolean}`` inlines to the
+    comparison itself, which carries no declared type, so a measure summing it
+    emits ``SUM("ev"."amt" > 0)`` -- rejected by PostgreSQL, whose ``sum`` has
+    no boolean overload, and by BigQuery. That is what ``main`` emits for the
+    same model today, in both measure spellings: this rule leaves it exactly
+    where it found it while fixing the bare-column case beside it. Closing it
+    means carrying a declared type onto an inlined body, which is the same
+    threading ``cast_to_obml_type`` wants and a piece of work in its own right.
     """
-    if isinstance(expr, ColumnRef) and expr.abstract_type == DataType.BOOLEAN:
-        # Equality, not identity: the node carries the value as a plain string
-        # where the model carries the enum, and ``is`` quietly matched neither.
+    # ColumnRef and NestedField are the two nodes that carry a declared type;
+    # a field of an unnested element is as much a source as a column is.
+    # Equality, not identity: the node carries the value as a plain string
+    # where the model carries the enum, and ``is`` quietly matched neither.
+    if isinstance(expr, ColumnRef | NestedField) and expr.abstract_type == DataType.BOOLEAN:
         return Cast(expr=expr, type_name="int")
     return expr
 

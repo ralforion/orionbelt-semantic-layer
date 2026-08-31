@@ -31,6 +31,9 @@ dataObjects:
         expression: "CASE WHEN {Flag} THEN {Amt} ELSE 0 END"
         abstractType: float
         numClass: additive
+      Positive:
+        expression: "{Amt} > 0"
+        abstractType: boolean
 measures:
   MaxPass:    {columns: [{dataObject: ev, column: Flag}], resultType: string, aggregation: max}
   AnyPass:
@@ -60,6 +63,14 @@ measures:
     aggregation: sum
   ComputedSum:
     columns: [{dataObject: ev, column: Guarded}]
+    resultType: float
+    aggregation: sum
+  PositiveSum:
+    columns: [{dataObject: ev, column: Positive}]
+    resultType: float
+    aggregation: sum
+  PositiveExpr:
+    expression: "{[ev].[Positive]}"
     resultType: float
     aggregation: sum
 """
@@ -131,3 +142,25 @@ def test_a_boolean_used_as_a_predicate_is_left_alone(model, measure: str, dialec
     projection = _projection(model, measure, dialect)
     assert "WHEN CAST(" not in projection, projection
     assert "CASE WHEN" in projection, projection
+
+
+@pytest.mark.parametrize("measure", ["PositiveSum", "PositiveExpr"])
+def test_a_computed_boolean_column_is_a_known_gap(model, measure: str) -> None:
+    """Recorded rather than fixed, and older than this rule.
+
+    ``{expression: "{Amt} > 0", abstractType: boolean}`` inlines to the
+    comparison, which carries no declared type, so the source cannot be
+    recognised as boolean and the measure emits ``SUM("ev"."amt" > 0)``.
+    PostgreSQL rejects that -- its ``sum`` has no boolean overload -- and
+    BigQuery with it.
+
+    ``main`` emits the same SQL for the same model, in both measure spellings,
+    so this rule leaves the gap exactly where it found it while fixing the
+    bare-column case beside it. Closing it means carrying a declared type onto
+    an inlined body. Pinned here so it cannot change unnoticed, and so the
+    limitation is findable from the rule that does not cover it.
+    """
+    projection = _projection(model, measure, "postgres")
+    assert "CAST(" in projection  # the declared numeric output, not the source
+    assert '"ev"."amt" > 0' in projection, projection
+    assert 'CAST("ev"."amt" > 0' not in projection, projection
