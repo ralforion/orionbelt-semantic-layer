@@ -595,10 +595,34 @@ class ClickHouseDialect(Dialect):
         # a live server: a 56-digit integer casts to ``Decimal(76, 20)`` and
         # failed through the intermediate.
         #
-        # Where there is no room, the intermediate is the target's own scale
-        # and the round is the identity - which costs nothing that was
-        # available anyway: a value needing every integer digit the target has
-        # cannot also carry a fractional place beyond it to round.
+        # Where there is no room, the intermediate is the target's own scale and
+        # the round becomes the identity, so the conversion truncates. That is
+        # the residual, and it is forced rather than chosen: at precision 76 the
+        # extra place and the target's full integer width cannot both exist, and
+        # every way of having both was measured and rejected.
+        #
+        # Asking for the place anyway trades a rare failure for a common one:
+        # ``decimal(76, 75)`` holds a single integer digit, so an intermediate
+        # one place wider cannot take 1.5. Falling back through
+        # ``coalesce(round(OrNull at s+1), OrNull at s)`` is worse still - the
+        # branches have different scales, ClickHouse resolves the pair to the
+        # wider one, and the fallback wraps to a negative number instead of
+        # raising. Nor is there a conversion that rounds: measured,
+        # ``toDecimal256``, ``toDecimal256OrNull``, ``CAST`` and
+        # ``accurateCast`` all truncate text at the target scale.
+        #
+        # So it lands only on ``decimal(76, s)``, where a model wanting the
+        # rounding can declare 75 and lose a digit no value has: measured,
+        # 2.555 answers 2.56 at ``decimal(75, 2)`` and 2.55 at
+        # ``decimal(76, 2)``.
+        # Clamped the way ``render_obml_type`` clamps, and for the same reason:
+        # the final cast is to the clamped type, so computing the intermediate
+        # from the raw request describes a type that is never emitted. A
+        # ``decimal(77, 2)`` asked for an intermediate at scale 1 and lost a
+        # cent against a ``Decimal(76, 2)`` target; ``decimal(100, 2)`` asked
+        # for scale -22, which ClickHouse rejects outright.
+        precision = min(precision, self._MAX_DECIMAL_PRECISION)
+        scale = min(scale, precision)
         integer_digits = precision - scale
         exact_scale = min(scale + 1, self._MAX_ROUND_DIGITS - integer_digits)
         to_decimal = "toDecimal256OrNull" if or_null else "toDecimal256"
