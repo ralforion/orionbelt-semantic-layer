@@ -368,10 +368,12 @@ settings:
 A timestamp column is then converted **at the column**, so every expression
 reading it starts from the same frame — `AT TIME ZONE` on DuckDB and Postgres,
 `toTimeZone` on ClickHouse, `CONVERT_TIMEZONE` on Snowflake and Dremio,
-`CONVERT_TZ` on MySQL, `DATETIME(x, zone)` on BigQuery, `from_utc_timestamp` on
-Databricks. Converting at the column rather than around an expression is what
-keeps a conversion from being applied twice: on MySQL, the same conversion
-applied twice moves 00:30 to 02:30.
+`CONVERT_TZ` on MySQL, `DATETIME(x, zone)` on BigQuery — where a naive column
+is declared with `TIMESTAMP(x, defaultTimezone)` first, since BigQuery's wall
+clock type is DATETIME and `DATETIME` has no signature that takes one —
+`from_utc_timestamp` on Databricks. Converting at the column rather than around
+an expression is what keeps a conversion from being applied twice: on MySQL, the
+same conversion applied twice moves 00:30 to 02:30.
 
 Two column kinds are treated differently, because they are different questions:
 

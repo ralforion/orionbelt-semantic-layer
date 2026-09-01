@@ -769,9 +769,9 @@ measures:
             ("clickhouse", "toTimeZone(toDateTime("),
             ("mysql", "CONVERT_TZ("),
             ("snowflake", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
-            # BigQuery maps the OBML timestamp type to its own TIMESTAMP, an
-            # instant, so there is no source zone left to declare.
-            ("bigquery", "DATETIME("),
+            # BigQuery's wall clock is DATETIME, which has no two-argument
+            # signature: the naive value is declared with TIMESTAMP first.
+            ("bigquery", "DATETIME(TIMESTAMP("),
             ("databricks", "from_utc_timestamp(to_utc_timestamp("),
             ("dremio", "CONVERT_TIMEZONE('UTC', 'Europe/Zagreb'"),
         ],
