@@ -113,12 +113,16 @@ SUB_DAY_GRAINS = frozenset({TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND})
 #: declaring one is projected as whatever the engine's truncation returns.
 CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
 
-#: Declarations that carry a date, and the narrower set that carries a time too.
-_DATE_BEARING_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+#: Types that carry a date, read two ways: a column must carry one to be
+#: truncated to a grain at all, and a dimension's ``resultType`` must carry one
+#: to hold the bucket that truncation makes.
+DATE_BEARING_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+#: The narrower set that carries a time of day as well.
 _TIMESTAMP_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
 
 #: Every declaration that names a point in time, cast target or not.
-_TEMPORAL_TYPES = _DATE_BEARING_TYPES | {DataType.TIME, DataType.TIME_TZ}
+_TEMPORAL_TYPES = DATE_BEARING_TYPES | {DataType.TIME, DataType.TIME_TZ}
 
 
 def result_type_holds_grain(grain: TimeGrain, declared: DataType) -> bool:
@@ -148,7 +152,7 @@ def result_type_holds_grain(grain: TimeGrain, declared: DataType) -> bool:
     """
     if declared not in _TEMPORAL_TYPES:
         return True
-    allowed = _TIMESTAMP_TYPES if grain in SUB_DAY_GRAINS else _DATE_BEARING_TYPES
+    allowed = _TIMESTAMP_TYPES if grain in SUB_DAY_GRAINS else DATE_BEARING_TYPES
     return declared in allowed
 
 

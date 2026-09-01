@@ -47,6 +47,7 @@ from orionbelt.models.query import (
 )
 from orionbelt.models.semantic import (
     CASTABLE_TEMPORAL_TYPES,
+    DATE_BEARING_TYPES,
     SUB_DAY_GRAINS,
     AggregationType,
     CumulativeAggType,
@@ -1261,6 +1262,8 @@ class QueryResolver:
         source_col = vf.code if vf else col_name
 
         grain = ref.grain or dim.time_grain
+        if grain is not None and not self._grain_fits_the_column(ctx, ref, dim, vf, grain):
+            return None
         if grain is not None and not self._grain_survives_the_cast(ctx, ref, dim, grain):
             return None
 
@@ -1271,6 +1274,46 @@ class QueryResolver:
             source_column=source_col,
             grain=grain,
         )
+
+    @staticmethod
+    def _grain_fits_the_column(
+        ctx: _ResolutionContext,
+        ref: DimensionRef,
+        dim: Dimension,
+        column: DataObjectColumn | None,
+        grain: TimeGrain,
+    ) -> bool:
+        """Refuse a grain over a column that carries no date to truncate.
+
+        A grain compiles to ``date_trunc(grain, column)``, which the engine
+        refuses over text: measured on DuckDB, ``"Name:hour"`` over a string
+        column compiled and then died in the binder with "No function matches
+        the given name and argument types 'date_trunc(STRING_LITERAL,
+        VARCHAR)'". The model validator refuses a declared ``timeGrain`` over
+        such a column for exactly that reason, and a query can name a grain the
+        model never declared, so the same rule is read here - an error naming
+        the dimension and the column beats one naming generated SQL.
+
+        A column the model does not define is left alone: its type is unknown
+        here, and the reference itself is reported elsewhere.
+        """
+        if column is None or column.abstract_type in DATE_BEARING_TYPES:
+            return True
+        ctx.errors.append(
+            SemanticError(
+                code="TIME_GRAIN_ON_NON_TEMPORAL",
+                message=(
+                    f"Dimension '{ref.name}' is asked for at grain '{grain.value}' "
+                    f"but underlying column '{dim.view}.{dim.column}' has "
+                    f"abstractType '{column.abstract_type.value}'. A time grain "
+                    f"requires the column to be date, timestamp, or timestamp_tz. "
+                    f"Ask for the dimension without a grain, fix the column's "
+                    f"abstractType, or define a computed column with to_date()."
+                ),
+                path="select.dimensions",
+            )
+        )
+        return False
 
     @staticmethod
     def _grain_survives_the_cast(

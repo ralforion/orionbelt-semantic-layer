@@ -91,10 +91,17 @@ Supported grains: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `
 
 This overrides any `timeGrain` set on the dimension definition.
 
-The dimension's `resultType` must be wide enough to hold the grain the query
-asks for: a temporal `resultType` is emitted as a CAST around the truncation,
-in the `GROUP BY` as well as the projection, so asking for `hour` on a
-dimension declaring `date` would merge the hours of a day into one row and sum
+Two things are checked before the query is answered rather than after.
+
+The underlying column must carry a date: a grain compiles to
+`date_trunc(grain, column)`, which no engine will evaluate over text, so a grain
+over a string column is rejected with `TIME_GRAIN_ON_NON_TEMPORAL` rather than
+left to fail in the engine's binder.
+
+The dimension's `resultType` must also be wide enough to hold the grain the
+query asks for: a temporal `resultType` is emitted as a CAST around the
+truncation, in the `GROUP BY` as well as the projection, so asking for `hour` on
+a dimension declaring `date` would merge the hours of a day into one row and sum
 their measures. That query is rejected with `RESULT_TYPE_LOSES_GRAIN` rather
 than answered - `hour`, `minute` and `second` need `timestamp`, and neither
 `time` nor `time_tz` takes a grain at all, because a grain always carries a

@@ -48,6 +48,7 @@ dataObjects:
       Occurred: {code: occurred, abstractType: date}
       Stamp:    {code: stamp, abstractType: timestamp}
       Amount:   {code: amount, abstractType: float, numClass: additive}
+      Label:    {code: label, abstractType: string}
 
 dimensions:
   Occurred Day:   {dataObject: Event, column: Occurred, resultType: date}
@@ -55,6 +56,7 @@ dimensions:
   Stamp Hour:     {dataObject: Event, column: Stamp, resultType: timestamp, timeGrain: hour}
   Month Label:    {dataObject: Event, column: Occurred, resultType: string, timeGrain: month}
   Zoned Clock:    {dataObject: Event, column: Stamp, resultType: time_tz}
+  Event Label:    {dataObject: Event, column: Label, resultType: string}
 
 measures:
   Total:
@@ -310,6 +312,26 @@ class TestAQueryGrainIsHeldToTheSameRule:
         self, model: SemanticModel, dimension: str
     ) -> None:
         assert "SELECT" in _sql(model, dimension)
+
+    @pytest.mark.parametrize("dimension", ["Event Label:hour", "Event Label:month"])
+    def test_a_grain_over_a_column_with_no_date_is_refused(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
+        """A grain the column cannot be truncated to is the query's error too.
+
+        The validator refuses a declared ``timeGrain`` over a non-temporal
+        column because ``date_trunc`` fails at runtime; a query names its own
+        grain, and this one compiled. Measured on DuckDB, ``"Event Label:hour"``
+        over a string column: "No function matches the given name and argument
+        types 'date_trunc(STRING_LITERAL, VARCHAR)'", from the engine, about
+        generated SQL, rather than from the query about the dimension.
+        """
+        from orionbelt.compiler.resolution import ResolutionError
+
+        with pytest.raises(ResolutionError) as caught:
+            _sql(model, dimension)
+        assert [e.code for e in caught.value.errors] == ["TIME_GRAIN_ON_NON_TEMPORAL"]
+        assert "Event.Label" in caught.value.errors[0].message
 
     def test_an_hourly_override_still_answers_hours_where_it_is_declarable(
         self, model: SemanticModel

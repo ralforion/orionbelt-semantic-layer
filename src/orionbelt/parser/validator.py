@@ -17,6 +17,7 @@ from orionbelt.models.expressions import (
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
     CASTABLE_TEMPORAL_TYPES,
+    DATE_BEARING_TYPES,
     SUB_DAY_GRAINS,
     DataColumnRef,
     DataType,
@@ -692,7 +693,6 @@ class SemanticValidator:
         return errors
 
     _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
-    _TIME_GRAIN_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ}
 
     def _check_time_grain_on_temporal_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure timeGrain is only set when the underlying column is temporal.
@@ -701,6 +701,9 @@ class SemanticValidator:
         runtime if the column's abstractType is not date/timestamp/timestamp_tz.
         Reject at model-load time so the error surfaces during validation rather
         than during the first query.
+
+        A query can name a grain of its own, which no model ever declared, so
+        the resolver holds a ``dimension:grain`` override to this same rule.
         """
         errors: list[SemanticError] = []
         for name, dim in model.dimensions.items():
@@ -715,7 +718,7 @@ class SemanticValidator:
                 # Caught by _check_references_resolve.
                 continue
             col = obj.columns[col_name]
-            if col.abstract_type not in self._TIME_GRAIN_TYPES:
+            if col.abstract_type not in DATE_BEARING_TYPES:
                 errors.append(
                     SemanticError(
                         code="TIME_GRAIN_ON_NON_TEMPORAL",
