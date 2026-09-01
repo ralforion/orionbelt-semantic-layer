@@ -16,6 +16,7 @@ from orionbelt.models.expressions import (
 )
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
+    CASTABLE_TEMPORAL_TYPES,
     SUB_DAY_GRAINS,
     DataColumnRef,
     DataType,
@@ -25,6 +26,7 @@ from orionbelt.models.semantic import (
     MeasureFilterGroup,
     MeasureFilterItem,
     SemanticModel,
+    TimeGrain,
     result_type_holds_grain,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
@@ -731,11 +733,6 @@ class SemanticValidator:
                 )
         return errors
 
-    #: The temporal declarations OBML can cast to, mirroring
-    #: ``compiler.resolution._CASTABLE_TEMPORAL_TYPES``. A non-temporal
-    #: ``resultType`` is not cast at all, so it cannot drop part of a bucket.
-    _CASTABLE_TEMPORAL_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIME}
-
     def _check_result_type_holds_the_grain(self, model: SemanticModel) -> list[SemanticError]:
         """Reject a declared type that cannot hold the bucket the grain makes.
 
@@ -765,30 +762,47 @@ class SemanticValidator:
         for name, dim in model.dimensions.items():
             grain = dim.time_grain
             declared = dim.result_type
-            if grain is None or declared not in self._CASTABLE_TEMPORAL_TYPES:
+            if grain is None or result_type_holds_grain(grain, declared):
                 continue
-            if result_type_holds_grain(grain, declared):
-                continue
-            if grain in SUB_DAY_GRAINS:
-                keeps = "timestamp"
-                lost = "the time of day" if declared is DataType.DATE else "the date"
-            else:
-                keeps, lost = "date or timestamp", "the date"
+            keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
             errors.append(
                 SemanticError(
                     code="RESULT_TYPE_LOSES_GRAIN",
                     message=(
                         f"Dimension '{name}' has timeGrain '{grain.value}' but "
                         f"resultType '{declared.value}', which cannot hold it: "
-                        f"{lost} would be dropped. The cast is applied in the "
-                        f"GROUP BY as well, so buckets would merge and the "
-                        f"measures would change without an error. Declare "
+                        f"{self._why_it_cannot_hold(grain, declared)} Declare "
                         f"{keeps}, or use the grain the type implies."
                     ),
                     path=f"dimensions.{name}",
                 )
             )
         return errors
+
+    @staticmethod
+    def _why_it_cannot_hold(grain: TimeGrain, declared: DataType) -> str:
+        """What the declaration costs, which is not the same in both cases.
+
+        A cast target drops part of the bucket in the GROUP BY, so it changes
+        the measures. ``time_tz`` is not a cast target, so nothing merges and
+        the numbers stay right - the dimension simply answers a date-bearing
+        value under a label that cannot describe one.
+        """
+        if declared not in CASTABLE_TEMPORAL_TYPES:
+            return (
+                f"a grain always carries a date. OBML has no cast target for "
+                f"'{declared.value}', so nothing would merge, but the dimension "
+                f"would answer a date-bearing value under a label for a time."
+            )
+        if grain in SUB_DAY_GRAINS and declared is DataType.DATE:
+            lost = "the time of day"
+        else:
+            lost = "the date"
+        return (
+            f"{lost} would be dropped. The cast is applied in the GROUP BY as "
+            f"well, so buckets would merge and the measures would change without "
+            f"an error."
+        )
 
     def _check_num_class_on_numeric_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure numClass is only set on numeric columns (int or float)."""

@@ -46,6 +46,7 @@ from orionbelt.models.query import (
     UsePathName,
 )
 from orionbelt.models.semantic import (
+    CASTABLE_TEMPORAL_TYPES,
     SUB_DAY_GRAINS,
     AggregationType,
     CumulativeAggType,
@@ -145,11 +146,6 @@ def _build_computed_column_expr(
     return apply_query_timezone(parsed, model)
 
 
-#: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
-#: absent because the format has no cast target for them.
-_CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
-
-
 def make_dimension_expr(
     model: SemanticModel,
     dim: ResolvedDimension,
@@ -183,7 +179,7 @@ def make_dimension_expr(
         return col
     col = dialect.render_time_grain(col, dim.grain)
     declared = model.dimensions.get(dim.name)
-    if declared is None or declared.result_type not in _CASTABLE_TEMPORAL_TYPES:
+    if declared is None or declared.result_type not in CASTABLE_TEMPORAL_TYPES:
         return col
     return dialect.cast_to_obml_type(col, parse_data_type(declared.result_type.value))
 
@@ -1292,21 +1288,35 @@ class QueryResolver:
         two rows where three were asked for, the two hours of one day summed
         into one. The model is not at fault there and cannot be checked for it;
         the query is, and this is where it is read.
+
+        ``time_tz`` is refused here too, and it is the one case that merges
+        nothing: OBML has no cast target for it, so the value is left alone and
+        only the label is wrong. Refused all the same, because a grain always
+        carries a date and that declaration cannot describe one.
         """
         declared = dim.result_type
-        if declared not in _CASTABLE_TEMPORAL_TYPES or result_type_holds_grain(grain, declared):
+        if result_type_holds_grain(grain, declared):
             return True
         keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
         asked = "asked for at" if ref.grain is not None else "grouped by"
+        if declared in CASTABLE_TEMPORAL_TYPES:
+            cost = (
+                "The cast is applied in the GROUP BY as well, so buckets would "
+                "merge and the measures would change without an error."
+            )
+        else:
+            cost = (
+                f"A grain always carries a date, and OBML has no cast target for "
+                f"'{declared.value}', so the dimension would answer a date-bearing "
+                f"value under a label for a time."
+            )
         ctx.errors.append(
             SemanticError(
                 code="RESULT_TYPE_LOSES_GRAIN",
                 message=(
                     f"Dimension '{ref.name}' is {asked} grain '{grain.value}' but "
                     f"declares resultType '{declared.value}', which cannot hold it. "
-                    f"The cast is applied in the GROUP BY as well, so buckets "
-                    f"would merge and the measures would change without an error. "
-                    f"Declare {keeps}, or ask for the grain the type implies."
+                    f"{cost} Declare {keeps}, or ask for the grain the type implies."
                 ),
                 path="select.dimensions",
             )

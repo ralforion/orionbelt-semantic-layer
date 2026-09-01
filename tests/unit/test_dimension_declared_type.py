@@ -54,6 +54,7 @@ dimensions:
   Occurred Month: {dataObject: Event, column: Occurred, resultType: date, timeGrain: month}
   Stamp Hour:     {dataObject: Event, column: Stamp, resultType: timestamp, timeGrain: hour}
   Month Label:    {dataObject: Event, column: Occurred, resultType: string, timeGrain: month}
+  Zoned Clock:    {dataObject: Event, column: Stamp, resultType: time_tz}
 
 measures:
   Total:
@@ -276,13 +277,26 @@ class TestAQueryGrainIsHeldToTheSameRule:
     rows, the two hours of one day summed into 30.00, with no error.
     """
 
-    def test_a_grain_the_declared_type_cannot_hold_is_refused(self, model: SemanticModel) -> None:
+    @pytest.mark.parametrize(
+        "dimension",
+        [
+            "Occurred Day:hour",  # date drops the time of day, and merges the buckets
+            # ``time_tz`` is not a cast target, so this one merges nothing: the
+            # value is left alone and only the label is wrong. Refused all the
+            # same - a grain always carries a date.
+            "Zoned Clock:hour",
+            "Zoned Clock:month",
+        ],
+    )
+    def test_a_grain_the_declared_type_cannot_hold_is_refused(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
         from orionbelt.compiler.resolution import ResolutionError
 
         with pytest.raises(ResolutionError) as caught:
-            _sql(model, "Occurred Day:hour")
+            _sql(model, dimension)
         assert [e.code for e in caught.value.errors] == ["RESULT_TYPE_LOSES_GRAIN"]
-        assert "hour" in caught.value.errors[0].message
+        assert dimension.split(":")[1] in caught.value.errors[0].message
 
     @pytest.mark.parametrize(
         "dimension",

@@ -98,8 +98,10 @@ dimensions:
                                   # a string/int column is rejected at validation time
                                   # (error code TIME_GRAIN_ON_NON_TEMPORAL). The dimension's
                                   # resultType must also be wide enough to hold the bucket:
-                                  # hour/minute/second need timestamp, and time never holds a
-                                  # grain (error code RESULT_TYPE_LOSES_GRAIN). For text columns
+                                  # hour/minute/second need timestamp, and neither time nor
+                                  # time_tz ever holds a grain, since a grain carries a date
+                                  # (error code RESULT_TYPE_LOSES_GRAIN, raised at load and for
+                                  # a query-time "dimension:grain" override). For text columns
                                   # encoding dates (e.g. '2024-03'), define a computed column
                                   # with to_date() and point the dimension at that.
     via: Orders                   # optional: force join path through this data object

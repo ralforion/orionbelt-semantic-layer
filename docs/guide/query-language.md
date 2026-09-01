@@ -96,8 +96,9 @@ asks for: a temporal `resultType` is emitted as a CAST around the truncation,
 in the `GROUP BY` as well as the projection, so asking for `hour` on a
 dimension declaring `date` would merge the hours of a day into one row and sum
 their measures. That query is rejected with `RESULT_TYPE_LOSES_GRAIN` rather
-than answered - `hour`, `minute` and `second` need `timestamp`. A non-temporal
-`resultType` is not cast at all and takes any grain.
+than answered - `hour`, `minute` and `second` need `timestamp`, and neither
+`time` nor `time_tz` takes a grain at all, because a grain always carries a
+date. A non-temporal `resultType` is not cast and takes any grain.
 
 ### Coalesce (Merging Role-Playing Dimensions)
 

@@ -2131,6 +2131,11 @@ measures:
             "resultType: time, timeGrain: hour",  # drops the date
             "resultType: time, timeGrain: month",  # every row into one bucket
             "resultType: time, timeGrain: day",
+            # No cast target, so nothing merges - but a grain always carries a
+            # date and this declaration cannot describe one, so the dimension
+            # would answer a date-bearing value under a label for a time.
+            "resultType: time_tz, timeGrain: month",
+            "resultType: time_tz, timeGrain: hour",
         ],
     )
     def test_a_type_that_cannot_hold_the_bucket_is_refused(self, spec: str) -> None:
@@ -2146,7 +2151,9 @@ measures:
             "resultType: date, timeGrain: day",
             "resultType: date, timeGrain: year",
             "resultType: time",  # no grain, nothing to hold
+            "resultType: time_tz",  # likewise
             "resultType: string, timeGrain: month",  # not cast, so nothing dropped
+            "resultType: timestamp_tz, timeGrain: hour",  # holds any bucket
         ],
     )
     def test_a_type_wide_enough_for_the_bucket_is_allowed(self, spec: str) -> None:
