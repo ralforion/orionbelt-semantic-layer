@@ -2,7 +2,7 @@ WITH `date_range` AS (
 SELECT MIN(`__ob_pop_src`.`__ob_bucket`) AS min_date,
        MAX(`__ob_pop_src`.`__ob_bucket`) AS max_date
   FROM (
-    SELECT DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS `__ob_bucket`
+    SELECT CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE) AS `__ob_bucket`
       FROM `orionbelt_1`.`sales` AS `Sales`
   ) AS `__ob_pop_src`
 ),
@@ -25,7 +25,7 @@ SELECT `date_spine`.spine_date AS `Sales Month`,
        CAST(SUM(`__ob_pop_src`.`Sales__salesamount`) AS DECIMAL(38, 2)) AS `Total Sales`
   FROM `date_spine`
   LEFT JOIN (
-    SELECT DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS `__ob_bucket`,
+    SELECT CAST(DATE_FORMAT(`Sales`.`salesdate`, '%Y-%m-01') AS DATE) AS `__ob_bucket`,
            `Sales`.`salesamount` AS `Sales__salesamount`
       FROM `orionbelt_1`.`sales` AS `Sales`
   ) AS `__ob_pop_src`

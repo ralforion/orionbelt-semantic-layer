@@ -147,3 +147,92 @@ def test_commerce_case(ch_setup, vendor_model, truth_results, case: CommerceCase
     sql = compile_for(case.query, vendor_model, "clickhouse")
     actual = _fetch_clickhouse(ch_setup, sql)
     compare_rows(actual, truth_results[case.name], case=case.name)
+
+
+def test_a_boolean_measure_survives_a_declared_decimal_type(ch_setup) -> None:
+    """A boolean column aggregated under a declared decimal has to run.
+
+    ClickHouse carries the type through MIN/MAX/any, and the decimal
+    conversion reads its value as text, so ``MAX(flag)`` arrived as 'true' and
+    raised CANNOT_PARSE_TEXT. The fix is at the layer that knows the column is
+    boolean, so the engine is handed a number and the SQL needs no special
+    case: through the dialect alone it could only be told apart from a string
+    at run time, and every shape that did cost either the wrong answer for
+    text or the operand written out three times.
+
+    Executed through the compiler rather than a hand-written cast, because
+    that is the only path carrying the column's declared type.
+
+    On today's rendering this passes with or without the cast, because the
+    engine is handed the flag and rounds it. It is here for the rendering that
+    reads the value as text, where the flag arrives as 'true' and raises. The
+    guard that bites either way is the emitted SQL, in
+    ``tests/unit/test_boolean_measure_source.py``.
+    """
+    from decimal import Decimal
+    from pathlib import Path
+    from tempfile import mkdtemp
+
+    from orionbelt.compiler.pipeline import CompilationPipeline
+    from orionbelt.models.query import QueryObject, QuerySelect
+    from orionbelt.parser.loader import TrackedLoader
+    from orionbelt.parser.resolver import ReferenceResolver
+
+    ch_setup.command("DROP TABLE IF EXISTS bool_measure")
+    ch_setup.command("CREATE TABLE bool_measure (flag Bool, note String) ENGINE=Memory")
+    ch_setup.command("INSERT INTO bool_measure VALUES (true, 'true'), (false, 'nope')")
+
+    model_yaml = """version: 1.0
+dataObjects:
+  bool_measure:
+    code: bool_measure
+    columns:
+      Flag: {code: flag, abstractType: boolean}
+      Note: {code: note, abstractType: string}
+measures:
+  MaxFlag:
+    columns: [{dataObject: bool_measure, column: Flag}]
+    resultType: float
+    dataType: "decimal(18, 2)"
+    aggregation: max
+  SumFlag:
+    columns: [{dataObject: bool_measure, column: Flag}]
+    resultType: float
+    dataType: "decimal(18, 2)"
+    aggregation: sum
+  MaxNote:
+    columns: [{dataObject: bool_measure, column: Note}]
+    resultType: float
+    dataType: "decimal(18, 2)"
+    aggregation: max
+  ExprFlag:
+    expression: "{[bool_measure].[Flag]}"
+    resultType: float
+    dataType: "decimal(18, 2)"
+    aggregation: max
+"""
+    path = Path(mkdtemp()) / "m.yaml"
+    path.write_text(model_yaml)
+    raw, source_map = TrackedLoader().load(path)
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    pipeline = CompilationPipeline()
+
+    def run(measure: str):
+        sql = pipeline.compile(
+            QueryObject(select=QuerySelect(measures=[measure])), model, "clickhouse"
+        ).sql
+        return ch_setup.query(sql).result_rows[0][0]
+
+    assert run("MaxFlag") == Decimal("1.00")
+    assert run("SumFlag") == Decimal("1.00")
+    # The same measure written as an expression rather than a column list.
+    # Two spellings of one thing, and the rule has to reach both.
+    assert run("ExprFlag") == Decimal("1.00")
+
+    # The string column is left alone. Reinterpreting the words a flag prints
+    # would have turned this 'true' into 1.00 -- a number nobody wrote.
+    with pytest.raises(Exception, match="(?i)cannot parse|exception"):
+        run("MaxNote")
+
+    ch_setup.command("DROP TABLE bool_measure")

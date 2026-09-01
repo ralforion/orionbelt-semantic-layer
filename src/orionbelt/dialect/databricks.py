@@ -23,7 +23,11 @@ class DatabricksDialect(Dialect):
         "integer": "INT",
         "double": "DOUBLE",
         "date": "DATE",
-        "timestamp": "TIMESTAMP",
+        # TIMESTAMP_NTZ, not TIMESTAMP. OBML's cast vocabulary has one timestamp
+        # and it is the naive one; this engine's TIMESTAMP is an instant read in
+        # the session zone, so casting to it attached a zone the model never
+        # declared.
+        "timestamp": "TIMESTAMP_NTZ",
         "time": "STRING",
         "string": "STRING",
         "boolean": "BOOLEAN",
@@ -37,7 +41,8 @@ class DatabricksDialect(Dialect):
         "date": "DATE",
         "time": "STRING",
         "time_tz": "STRING",
-        "timestamp": "TIMESTAMP",
+        # Two OBML types, and mapping both to the instant made them synonyms.
+        "timestamp": "TIMESTAMP_NTZ",
         "timestamp_tz": "TIMESTAMP",
         "boolean": "BOOLEAN",
     }

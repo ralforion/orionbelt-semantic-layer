@@ -230,6 +230,26 @@ Project.Ancestors` addresses the array without any further declaration.
 | `synonyms` | list | No | Alternative names or terms (LLM hints) |
 | `owner` | string | No | Responsible team or person |
 
+#### Timestamps carry a zone only when you say so
+
+`timestamp` is a wall clock: a reading with no zone attached. `timestamp_tz`
+is an instant, and describes a stored column only -- it is not something a
+dimension or measure can be cast to.
+
+Wherever a declared `timestamp` produces a cast, it renders to the engine's own
+wall-clock type: `DATETIME` on BigQuery and MySQL, `TIMESTAMP_NTZ` on Databricks
+and Snowflake, `TIMESTAMP` on PostgreSQL, DuckDB and Dremio. A `timestamp`
+therefore means the same reading on every dialect, rather than picking up
+whichever zone the session happened to be set to.
+
+ClickHouse is the exception, and it is the engine's rather than the model's:
+every `DateTime64` carries a zone, defaulting to the server's. The reading is
+preserved, but the label follows the server, so the same model can report a
+different zone on a different ClickHouse.
+
+To move a reading into a zone deliberately, set `defaultTimezone` and
+`queryTimezone` in model settings rather than relying on a cast.
+
 #### Computed Columns
 
 A column with `expression` instead of `code` defines a **computed column**: a column-level SQL expression that references *sibling columns of the same data object* via single-brace `{Column}` placeholders. The expression is inlined wherever the column is referenced — there's no materialization, no extra join.
@@ -572,7 +592,7 @@ measures:
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `columns` | list | No | List of column references (`dataObject`+`column`) for simple single-column measures |
-| `resultType` | enum | Yes | Data type of the result (informative only, not used for SQL generation) |
+| `resultType` | enum | Yes | Data type of the result. Emitted as a CAST around the aggregate, so the measure carries its declared precision and type |
 | `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical: `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
 | `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |

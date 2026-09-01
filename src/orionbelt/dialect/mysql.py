@@ -243,18 +243,14 @@ class MySQLDialect(Dialect):
         return f"`{escaped}`"
 
     def _render_time_grain(self, column: Expr, grain: TimeGrain) -> Expr:
-        """MySQL time grain truncation via DATE_FORMAT or DATE_ADD+MAKEDATE for quarters."""
-        grain_format_map: dict[TimeGrain, str | None] = {
-            TimeGrain.SECOND: "%Y-%m-%d %H:%i:%s",
-            TimeGrain.MINUTE: "%Y-%m-%d %H:%i:00",
-            TimeGrain.HOUR: "%Y-%m-%d %H:00:00",
-            TimeGrain.DAY: "%Y-%m-%d",
-            TimeGrain.WEEK: "%Y-%u",
-            TimeGrain.MONTH: "%Y-%m-01",
-            TimeGrain.QUARTER: None,  # handled below
-            TimeGrain.YEAR: "%Y-01-01",
-        }
+        """MySQL time grain truncation via DATE_FORMAT or DATE_ADD+MAKEDATE for quarters.
 
+        The format strings live in one table, ``_DATE_FORMAT_BY_UNIT``, which
+        the catalog's ``date_trunc`` and the string-level helper read too: three
+        copies of the same truncation drifted twice, once on the cast and once
+        on the sub-day grains. A week never arrives here - the base class floors
+        it through the model's calendar first.
+        """
         if grain == TimeGrain.QUARTER:
             from orionbelt.ast.nodes import RawSQL
 
@@ -269,11 +265,20 @@ class MySQLDialect(Dialect):
                 )
             )
 
-        fmt = grain_format_map.get(grain) or "%Y-%m-%d"
-        return FunctionCall(
-            name="DATE_FORMAT",
-            args=[column, Literal.string(fmt)],
-        )
+        fmt = self._DATE_FORMAT_BY_UNIT.get(grain.value, "%Y-%m-%d")
+        formatted = FunctionCall(name="DATE_FORMAT", args=[column, Literal.string(fmt)])
+        # DATE_FORMAT answers a string, so without this the grain handed back
+        # text where all seven other dialects hand back a date or a timestamp:
+        # the same model, the same dimension, a different type per engine. It
+        # also made ``resultType: string`` on a grained dimension look like a
+        # deliberate label rather than a description of this defect.
+        #
+        # The same cast, for the same reason, is already applied by this
+        # dialect's portable date-truncation ("cast back so the result compares
+        # and sorts as a date rather than lexically"); the dimension grain was
+        # the path that missed it. Quarter and week never needed it: they are
+        # rendered with date arithmetic rather than a format string.
+        return Cast(expr=formatted, type_name=self._truncated_type(grain.value))
 
     def render_cast(self, expr: Expr, target_type: str) -> Expr:
         return Cast(expr=expr, type_name=target_type)
@@ -340,7 +345,10 @@ class MySQLDialect(Dialect):
         This puts MySQL where BigQuery already sits, which returns the true
         value for the same query because its ``NUMERIC`` is (38, 9).
         """
-        return Cast(expr=expr, type_name=self.render_obml_type(self._widened(obml_type)))
+        rendered = self.render_obml_type(self._widened(obml_type))
+        if isinstance(expr, Cast) and expr.type_name == rendered:
+            return expr
+        return Cast(expr=expr, type_name=rendered)
 
     @staticmethod
     def _widened(obml_type: OBMLType) -> OBMLType:
@@ -533,13 +541,26 @@ class MySQLDialect(Dialect):
             )
         if unit == "week":
             return f"DATE(DATE_SUB({rendered}, INTERVAL WEEKDAY({rendered}) DAY))"
-        pattern = self._DATE_FORMAT_BY_UNIT[unit]
-        formatted = f"DATE_FORMAT({rendered}, '{pattern}')"
-        # DATE_FORMAT returns a string; cast back so the result compares and
-        # sorts as a date rather than lexically.
-        return (
-            f"CAST({formatted} AS {'DATETIME' if unit in ('hour', 'minute', 'second') else 'DATE'})"
-        )
+        return self._format_truncation(rendered, unit)
+
+    @staticmethod
+    def _truncated_type(unit: str) -> str:
+        """What a truncation to *unit* is cast back to.
+
+        An hour and finer keep a time of day, so they are a DATETIME; a day and
+        coarser have none left to keep.
+        """
+        return "DATETIME" if unit in ("hour", "minute", "second") else "DATE"
+
+    def _format_truncation(self, rendered: str, unit: str) -> str:
+        """Truncate to *unit* with a format string, cast back to its own type.
+
+        DATE_FORMAT returns a string; the cast makes the result compare and sort
+        as a point in time rather than lexically, and it is what keeps an hourly
+        bucket an hour rather than the midnight a DATE would round it to.
+        """
+        formatted = f"DATE_FORMAT({rendered}, '{self._DATE_FORMAT_BY_UNIT[unit]}')"
+        return f"CAST({formatted} AS {self._truncated_type(unit)})"
 
     def _render_week_start_sunday(self, value: Expr) -> str:
         """MySQL: ``DAYOFWEEK`` numbers Sunday as 1, so the offset is one less.
@@ -651,17 +672,34 @@ class MySQLDialect(Dialect):
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit.upper()})"
 
     def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        """The same truncation as the dimension grain, over SQL text.
+
+        This one feeds the period-over-period spine, and it answered a bare
+        ``DATE_FORMAT`` where the grain answered a cast one. Both halves of that
+        mattered. MySQL's recursive CTE takes ``spine_date``'s type from its
+        anchor row, which is the MIN of these buckets, so text there made the
+        PoP time dimension a ``VARCHAR`` - measured on MySQL 8 over the emitted
+        spine, ``varchar(10)`` before and ``date`` after, same values. And an
+        unlisted grain fell through to ``DATE(...)``, which rounded an hourly
+        bucket to midnight: an hourly PoP compared one bucket a day against a
+        spine stepping by the hour, so every other row found no rows to join.
+
+        Quarter, week and day stay as they are: they are date arithmetic
+        already, and a day has no time of day to lose.
+        """
         grain_map = {
-            "year": f"DATE_FORMAT({column_sql}, '%Y-01-01')",
             "quarter": (
                 f"DATE_ADD(MAKEDATE(YEAR({column_sql}), 1), "
                 f"INTERVAL (QUARTER({column_sql}) - 1) * 3 MONTH)"
             ),
-            "month": f"DATE_FORMAT({column_sql}, '%Y-%m-01')",
             "week": f"DATE_SUB({column_sql}, INTERVAL WEEKDAY({column_sql}) DAY)",
             "day": f"DATE({column_sql})",
         }
-        return grain_map.get(grain, f"DATE({column_sql})")
+        if grain in grain_map:
+            return grain_map[grain]
+        if grain in self._DATE_FORMAT_BY_UNIT:
+            return self._format_truncation(column_sql, grain)
+        return f"DATE({column_sql})"
 
     def render_date_spine_cte_sql(
         self, min_date: str, max_date: str, grain: str, offset: int, offset_grain: str

@@ -213,9 +213,14 @@ class TestDialectRendering:
     @pytest.mark.parametrize(
         ("dialect_name", "expected"),
         [
-            ("bigquery", "TIMESTAMP"),
+            ("bigquery", "DATETIME"),
+            # ClickHouse is the exception and cannot be fixed by naming a type:
+            # every DateTime64 carries a zone, defaulting to the server's. The
+            # wall clock is preserved, only the label is the server's; pinning
+            # one instead shifts the value, because relabelling a stored
+            # DateTime moves it (measured: 13:45 Berlin becomes 11:45 UTC).
             ("clickhouse", "DateTime64(3)"),
-            ("databricks", "TIMESTAMP"),
+            ("databricks", "TIMESTAMP_NTZ"),
             ("dremio", "TIMESTAMP"),
             ("duckdb", "TIMESTAMP"),
             ("mysql", "TIMESTAMP"),
@@ -238,6 +243,21 @@ class TestDialectRendering:
         rendered = DialectRegistry.get(dialect_name).render_obml_type(SimpleType("timestamp"))
         assert rendered == expected
         assert rendered not in {"TIMESTAMPTZ", "TIMESTAMP_TZ", "TIMESTAMP WITH TIME ZONE"}
+
+    @pytest.mark.parametrize("dialect_name", ["bigquery", "databricks"])
+    def test_timestamp_and_timestamp_tz_are_not_synonyms(self, dialect_name: str) -> None:
+        """Two OBML types must not render as one SQL type.
+
+        Both engines spell the instant ``TIMESTAMP`` and mapping the naive type
+        to it as well left a model no way to say which one it meant.
+        """
+        from orionbelt.dialect.registry import DialectRegistry
+
+        dialect = DialectRegistry.get(dialect_name)
+        naive = dialect._resolve_type_name(DataType.TIMESTAMP.value)
+        zoned = dialect._resolve_type_name(DataType.TIMESTAMP_TZ.value)
+        assert naive != zoned
+        assert zoned == "TIMESTAMP"
 
 
 class TestModelValidation:

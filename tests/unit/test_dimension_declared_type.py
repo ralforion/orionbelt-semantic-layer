@@ -158,15 +158,22 @@ def test_a_timestamp_dimension_keeps_its_time(model: SemanticModel) -> None:
 
 
 def test_a_string_dimension_over_a_grain_is_not_cast(model: SemanticModel) -> None:
-    """A grain declared ``string`` is asking for a label, and a label it stays.
+    """A grained dimension is temporal on every dialect, whatever it declares.
 
-    MySQL renders a month grain as ``DATE_FORMAT``, a string by construction, so
-    a model that wants the label declares ``resultType: string``. Casting that
-    to ``CHAR`` would add a cast that says nothing.
+    This test used to assert the opposite, and the reason is worth keeping:
+    MySQL's grain was a bare ``DATE_FORMAT``, a string by construction, so a
+    model that wanted the month back as a label declared ``resultType: string``
+    to describe what MySQL happened to return. That made a defect look like a
+    feature. The grain now casts back to a DATE, so the declaration describes
+    nothing MySQL does, and no dialect answers a grain with text.
+
+    A time bucket is a point in time. Handing one back as a string loses the
+    type, and with it the ordering, the range filters and the client's ability
+    to read it as a date at all.
     """
     sql = _sql(model, "Month Label", "mysql")
-    assert "DATE_FORMAT(`Event`.`occurred`, '%Y-%m-01') AS `Month Label`" in sql
-    assert "CAST(DATE_FORMAT" not in sql
+    assert "CAST(DATE_FORMAT(`Event`.`occurred`, '%Y-%m-01') AS DATE)" in sql
+    assert "AS CHAR" not in sql
 
 
 def test_an_ungrained_dimension_is_unchanged(model: SemanticModel) -> None:
@@ -355,3 +362,19 @@ class TestAQueryGrainIsHeldToTheSameRule:
             (datetime.datetime(2024, 3, 15, 10, 0), 20.0),
             (datetime.datetime(2024, 4, 20, 11, 0), 5.0),
         ]
+
+
+def test_no_dialect_answers_a_grain_with_text(model: SemanticModel) -> None:
+    """The invariant behind the fix: a time bucket is never a string.
+
+    MySQL was the only dialect that broke it, and only on the six grains it
+    renders with a format string -- quarter and week were already date
+    arithmetic, so one dialect disagreed with itself as well as with the
+    other seven.
+    """
+    for dialect in ("duckdb", "postgres", "mysql", "clickhouse", "bigquery", "snowflake"):
+        sql = _sql(model, "Occurred Month", dialect)
+        projection = sql.split("FROM")[0]
+        assert "DATE_FORMAT" not in projection or "CAST(DATE_FORMAT" in projection, (
+            f"{dialect} projects a grain as text: {projection}"
+        )

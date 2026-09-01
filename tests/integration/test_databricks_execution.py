@@ -293,3 +293,25 @@ def test_measure_sweep(
     sql = compile_for(sweep_query(name, dims), vendor_model, "databricks")
     rows = _fetch_databricks(con, sql)  # raises on a Databricks execution error
     assert isinstance(rows, list), f"{kind} {name!r} returned no result set"
+
+
+def test_timestamp_is_a_wall_clock(databricks_setup) -> None:
+    """A declared ``timestamp`` must keep its wall clock and carry no zone.
+
+    Databricks' TIMESTAMP is an instant read in the session zone, so casting to
+    it attached a zone the model never declared. TIMESTAMP_NTZ is this engine's
+    wall clock, which is what its own driver notes already prescribed.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    con, _cfg = databricks_setup
+    dialect = DialectRegistry.get("databricks")
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql="'2026-08-15 13:45:00'"), parse_data_type("timestamp")
+    )
+    rows = _fetch_databricks(con, f"SELECT {dialect.compile_expr(cast)} AS v")
+    value = rows[0]["v"]
+    assert value.tzinfo is None, f"a declared timestamp carried a zone: {value!r}"
+    assert (value.hour, value.minute) == (13, 45)

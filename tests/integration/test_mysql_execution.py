@@ -182,3 +182,138 @@ def test_commerce_case(mysql_setup, vendor_model, truth_results, case: CommerceC
     sql = compile_for(case.query, vendor_model, "mysql")
     actual = _fetch_mysql(conn, sql)
     compare_rows(actual, truth_results[case.name], case=case.name)
+
+
+def test_a_period_over_period_month_comes_back_as_a_date(mysql_setup, vendor_model) -> None:
+    """The PoP time dimension is a date here too, not a formatted string.
+
+    The spine's bucket goes through the string-level truncation rather than the
+    dimension grain, and MySQL's recursive CTE takes ``spine_date``'s type from
+    its anchor row: a ``DATE_FORMAT`` bucket made it ``varchar(10)``, so the
+    same ``Sales Month`` came back as a date without a PoP metric in the query
+    and as text with one. Executed, because the string sorts and reads the same
+    and only the type gives it away.
+    """
+    import datetime
+
+    from orionbelt.models.query import QueryObject, QuerySelect
+
+    conn, _schema = mysql_setup
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Sales Month"], measures=["Sales YoY Growth"])
+    )
+    rows = _fetch_mysql(conn, compile_for(query, vendor_model, "mysql"))
+    assert rows, "the PoP query returned no rows"
+    month = rows[0]["Sales Month"]
+    assert isinstance(month, datetime.date), f"the month came back as {type(month).__name__}"
+
+
+_HOURLY_MODEL_YAML = """\
+version: 1.0
+dataObjects:
+  Events:
+    code: pop_events
+    schema: {schema}
+    columns:
+      Event ID: {{code: id, abstractType: string}}
+      Occurred At: {{code: occurred_at, abstractType: timestamp}}
+      Amount: {{code: amount, abstractType: float, numClass: additive}}
+dimensions:
+  Occurred Hour:
+    dataObject: Events
+    column: Occurred At
+    resultType: timestamp
+    timeGrain: hour
+measures:
+  Revenue:
+    columns: [{{dataObject: Events, column: Amount}}]
+    resultType: float
+    aggregation: sum
+metrics:
+  Revenue HoH Diff:
+    type: period_over_period
+    expression: '{{[Revenue]}}'
+    periodOverPeriod:
+      timeDimension: Occurred Hour
+      grain: hour
+      offset: -1
+      offsetGrain: hour
+      comparison: difference
+"""
+
+
+@pytest.fixture(scope="module")
+def hourly_events(mysql_setup):
+    """Four rows across three hours of one day, and the model that reads them."""
+    from orionbelt.parser.loader import TrackedLoader
+    from orionbelt.parser.resolver import ReferenceResolver
+
+    conn, schema = mysql_setup
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS pop_events")
+    cur.execute(
+        "CREATE TABLE pop_events (id VARCHAR(8), occurred_at DATETIME, amount DECIMAL(10, 2))"
+    )
+    cur.execute(
+        "INSERT INTO pop_events VALUES ('a', '2024-03-15 09:15:00', 10.0),"
+        " ('b', '2024-03-15 09:40:00', 5.0), ('c', '2024-03-15 10:20:00', 20.0),"
+        " ('d', '2024-03-15 11:05:00', 7.0)"
+    )
+    cur.close()
+    raw, source_map = TrackedLoader().load_string(_HOURLY_MODEL_YAML.format(schema=schema))
+    model, result = ReferenceResolver().resolve(raw, source_map)
+    assert result.valid, result.errors
+    return model
+
+
+def test_an_hourly_period_over_period_compares_hours(mysql_setup, hourly_events) -> None:
+    """``grain: hour`` buckets by the hour, rather than summing the whole day.
+
+    ``PeriodOverPeriod.grain`` is the whole ``TimeGrain`` enum, and the spine's
+    bucket comes from the string-level truncation, which had no entry for the
+    sub-day grains and fell through to ``DATE(...)``. The three hours collapsed
+    into one row of 42.00 under a date, with nothing to compare it to, and no
+    error anywhere: the wrong answer here is a plausible-looking one.
+    """
+    import datetime
+
+    from orionbelt.models.query import QueryObject, QuerySelect
+
+    conn, _schema = mysql_setup
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Occurred Hour"], measures=["Revenue", "Revenue HoH Diff"])
+    )
+    rows = _fetch_mysql(conn, compile_for(query, hourly_events, "mysql"))
+    assert [(r["Occurred Hour"], float(r["Revenue"]), r["Revenue HoH Diff"]) for r in rows] == [
+        (datetime.datetime(2024, 3, 15, 9, 0), 15.0, None),
+        (datetime.datetime(2024, 3, 15, 10, 0), 20.0, 5.0),
+        (datetime.datetime(2024, 3, 15, 11, 0), 7.0, -13.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "grain", ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]
+)
+def test_both_truncation_paths_answer_the_same_value(mysql_setup, hourly_events, grain) -> None:
+    """The dimension grain and the spine's bucket are the same truncation.
+
+    They are rendered by two helpers -- one over the AST for a dimension, one
+    over SQL text for the period-over-period spine -- and they have drifted
+    twice: once on the cast that DATE_FORMAT's text needs, once on the sub-day
+    grains. Compared by value rather than by spelling, so a difference in how
+    either is written cannot hide one in what it answers.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.semantic import TimeGrain
+
+    conn, _schema = mysql_setup
+    dialect = DialectRegistry.get("mysql")
+    column = "`occurred_at`"
+    grained = dialect.compile_expr(dialect.render_time_grain(RawSQL(sql=column), TimeGrain(grain)))
+    bucketed = dialect.render_date_trunc_sql(column, grain)
+    rows = _fetch_mysql(
+        conn, f"SELECT {grained} AS grained, {bucketed} AS bucketed FROM pop_events ORDER BY id"
+    )
+    for row in rows:
+        assert row["grained"] == row["bucketed"], f"{grain}: {grained} vs {bucketed}"

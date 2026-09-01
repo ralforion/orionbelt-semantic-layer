@@ -32,7 +32,12 @@ class BigQueryDialect(Dialect):
         "integer": "INT64",
         "double": "FLOAT64",
         "date": "DATE",
-        "timestamp": "TIMESTAMP",
+        # DATETIME, not TIMESTAMP. OBML's cast vocabulary has one timestamp and
+        # it is the naive one, and BigQuery's TIMESTAMP is an instant: casting
+        # to it read the value as UTC and handed back a zoned result, so a
+        # dimension declaring ``resultType: timestamp`` carried a zone the model
+        # never declared. DATETIME is this engine's wall clock.
+        "timestamp": "DATETIME",
         "time": "TIME",
         "string": "STRING",
         "boolean": "BOOL",
@@ -115,7 +120,9 @@ class BigQueryDialect(Dialect):
         "date": "DATE",
         "time": "TIME",
         "time_tz": "TIME",
-        "timestamp": "TIMESTAMP",
+        # ``timestamp`` and ``timestamp_tz`` are two OBML types, and mapping
+        # both to the instant made them synonyms on this engine.
+        "timestamp": "DATETIME",
         "timestamp_tz": "TIMESTAMP",
         "boolean": "BOOL",
     }
@@ -245,14 +252,23 @@ class BigQueryDialect(Dialect):
         """BigQuery has no ``AT TIME ZONE`` outside EXTRACT: ``DATETIME(x, zone)``
         reads a TIMESTAMP as wall clock in that zone, which is the same contract
         and composes with every date function unchanged.
+
+        A naive value is a DATETIME here -- the type OBML's ``timestamp`` maps
+        to -- and DATETIME has no two-argument signature that takes one:
+        probed, ``DATETIME(DATETIME '2026-08-15 13:45:00', 'Europe/Zagreb')``
+        is "No matching signature". ``TIMESTAMP(x, from_zone)`` declares the
+        wall clock as an instant first, and the pair round-trips: probed,
+        ``DATETIME(TIMESTAMP(DATETIME '2026-08-15 13:45:00', 'UTC'),
+        'Europe/Zagreb')`` is 15:45.
+
+        The declaration is the two-argument ``TIMESTAMP``'s own precondition,
+        so it also rejects a TIMESTAMP outright ("No matching signature"): a
+        column declared naive that is really an instant fails loudly instead of
+        answering with a wrong number.
         """
         rendered = self.compile_expr(value)
-        # ``from_zone`` is ignored here, and deliberately: this dialect maps the
-        # OBML ``timestamp`` type to BigQuery's TIMESTAMP, which is an instant
-        # rather than a wall clock, so there is no zone left to declare.
-        # ``TIMESTAMP(x, zone)`` takes a DATETIME and rejects a TIMESTAMP
-        # outright ("No matching signature"), which is the loud failure a
-        # genuinely naive DATETIME column would get rather than a wrong number.
+        if from_zone is not None:
+            rendered = f"TIMESTAMP({rendered}, {self._quote_zone(from_zone)})"
         return f"DATETIME({rendered}, {self._quote_zone(zone)})"
 
     def _render_date_trunc(self, unit: str, value: Expr) -> str:
