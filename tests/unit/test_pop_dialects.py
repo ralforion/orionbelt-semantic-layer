@@ -178,7 +178,12 @@ def test_quarter_week_spine_executes_on_duckdb(grain: str) -> None:
     assert rows, f"empty {grain} spine"
 
 
-@pytest.mark.parametrize("grain", DATE_GRAINS)
+#: Every grain a ``periodOverPeriod`` may name: ``PeriodOverPeriod.grain`` is the
+#: whole ``TimeGrain`` enum, so the spine's bucket has to render all eight.
+ALL_GRAINS = [*DATE_GRAINS, "hour", "minute", "second"]
+
+
+@pytest.mark.parametrize("grain", ALL_GRAINS)
 def test_the_spine_bucket_is_never_text_on_mysql(grain: str) -> None:
     """The bucket the spine is built from is a date, not a formatted string.
 
@@ -191,3 +196,18 @@ def test_the_spine_bucket_is_never_text_on_mysql(grain: str) -> None:
     """
     sql = DialectRegistry.get("mysql").render_date_trunc_sql("`Sales`.`salesdate`", grain)
     assert "DATE_FORMAT" not in sql or sql.startswith("CAST(DATE_FORMAT"), sql
+
+
+@pytest.mark.parametrize("grain", ["hour", "minute", "second"])
+def test_a_sub_day_spine_bucket_keeps_its_time_on_mysql(grain: str) -> None:
+    """A grain finer than a day is a DATETIME, not the midnight a DATE rounds to.
+
+    These grains were not in the helper's table at all and fell through to
+    ``DATE(...)``, so an hourly PoP bucketed a whole day into one row while the
+    spine stepped by the hour. Executed on MySQL 8 over four rows across three
+    hours: one row of 42.00 under a date before, three hourly rows with the
+    hour-over-hour differences after.
+    """
+    sql = DialectRegistry.get("mysql").render_date_trunc_sql("`Events`.`occurred_at`", grain)
+    assert sql.endswith(" AS DATETIME)"), sql
+    assert "%H" in sql, sql
