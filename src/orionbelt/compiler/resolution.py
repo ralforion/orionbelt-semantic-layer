@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from orionbelt.ast.nodes import (
     CaseExpr,
+    Cast,
     ColumnRef,
     Expr,
     FunctionCall,
@@ -32,6 +33,7 @@ from orionbelt.compiler.filters import (
     collect_measure_filter_objects,
 )
 from orionbelt.compiler.graph import JoinGraph, JoinStep, path_overrides
+from orionbelt.compiler.type_resolver import resolve_measure_data_type
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import find_qualified_refs, substitute_placeholders
 from orionbelt.models.query import (
@@ -59,12 +61,13 @@ from orionbelt.models.semantic import (
     Metric,
     MetricType,
     ModelFilter,
+    ModelSettings,
     PeriodOverPeriodComparison,
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
 )
-from orionbelt.models.types import parse_data_type
+from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
 
 if TYPE_CHECKING:
@@ -145,6 +148,60 @@ def _build_computed_column_expr(
 #: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
 #: absent because the format has no cast target for them.
 _CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
+
+
+def _reads_a_number(measure: Measure, settings: ModelSettings | None) -> bool:
+    """Whether this measure's value is read as a number.
+
+    ``None`` means the measure passes its value through and emits no cast, so
+    a boolean has nothing to arrive at.
+    """
+    declared = resolve_measure_data_type(measure, settings)
+    if declared is None:
+        return False
+    return isinstance(declared, DecimalType) or declared.name in ("integer", "bigint", "double")
+
+
+def _flag_as_number(expr: Expr) -> Expr:
+    """Read *expr* as a number when it is itself a boolean column.
+
+    Only for a measure whose output is a number. An engine that carries a type
+    through an aggregate then hands a boolean to whatever the measure declares:
+    ``MAX(flag)`` declared decimal reached ClickHouse's decimal conversion as
+    'true' and raised, where ``SUM`` of the same column had always been a
+    number and worked.
+
+    **The value being aggregated, not every boolean inside it.** Rewriting each
+    reference reached the ones a measure uses as a *predicate*, and a predicate
+    is not read as a number: ``CASE WHEN {Flag} THEN {Amt} ELSE 0 END`` became
+    ``CASE WHEN CAST(flag AS INTEGER)``, which PostgreSQL refuses outright
+    ("argument of CASE/WHEN must be type boolean") and BigQuery with it. The
+    same reference reached through a computed column's body, so a measure could
+    break without naming a boolean at all.
+
+    Keyed on the type the reference carries, which both spellings of a measure
+    populate -- ``make_column_expr`` for ``columns:`` and the tokenizer for
+    ``expression:`` -- so one rule serves either. Anything larger than a bare
+    reference is left alone: its own shape decides what its parts mean, and
+    this cannot read that.
+
+    **A computed boolean column is the known gap, and it is older than this.**
+    ``{expression: "{Amt} > 0", abstractType: boolean}`` inlines to the
+    comparison itself, which carries no declared type, so a measure summing it
+    emits ``SUM("ev"."amt" > 0)`` -- rejected by PostgreSQL, whose ``sum`` has
+    no boolean overload, and by BigQuery. That is what ``main`` emits for the
+    same model today, in both measure spellings: this rule leaves it exactly
+    where it found it while fixing the bare-column case beside it. Closing it
+    means carrying a declared type onto an inlined body, which is the same
+    threading ``cast_to_obml_type`` wants and a piece of work in its own right.
+    """
+    # ColumnRef and NestedField are the two nodes that carry a declared type;
+    # a field of an unnested element is as much a source as a column is.
+    # Equality, not identity: the node carries the value as a plain string
+    # where the model carries the enum, and ``is`` quietly matched neither.
+    if isinstance(expr, ColumnRef | NestedField) and expr.abstract_type == DataType.BOOLEAN:
+        return Cast(expr=expr, type_name="int")
+    return expr
 
 
 def make_dimension_expr(
@@ -1338,6 +1395,11 @@ class QueryResolver:
         # — without this, ``count_distinct`` over an ``expression:``
         # column would emit ``COUNT(DISTINCT "obj"."")`` (zero-length
         # identifier, DB error).
+        # Whether a cast is coming, and whether it is a numeric one. A boolean
+        # source only has to become a number when it is about to be read as
+        # one; ``None`` here means the measure passes its value through.
+        numeric_output = _reads_a_number(measure, ctx.model.settings)
+
         args: list[Expr] = []
         if measure.columns:
             for ref in measure.columns:
@@ -1351,7 +1413,10 @@ class QueryResolver:
                     continue
                 obj = ctx.model.data_objects.get(obj_name)
                 if obj and col_name in obj.columns:
-                    args.append(make_column_expr(ctx.model, obj_name, col_name))
+                    col_expr = make_column_expr(ctx.model, obj_name, col_name)
+                    if numeric_output:
+                        col_expr = _flag_as_number(col_expr)
+                    args.append(col_expr)
                 else:
                     args.append(ColumnRef(name=col_name, table=obj_name))
         if not args:
@@ -1403,6 +1468,11 @@ class QueryResolver:
         # a dimension names: otherwise one column means two instants depending
         # on how the query reached it.
         inner = apply_query_timezone(parse_expression(tokens), ctx.model)
+        # The same rule the ``columns:`` form gets: two spellings of one
+        # measure, so a boolean reaches a numeric output as a number either
+        # way. Scoping it to the other branch left this one failing.
+        if _reads_a_number(measure, ctx.model.settings):
+            inner = _flag_as_number(inner)
 
         distinct = measure.distinct
         if agg == "COUNT_DISTINCT":
