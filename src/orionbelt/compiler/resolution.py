@@ -46,11 +46,13 @@ from orionbelt.models.query import (
     UsePathName,
 )
 from orionbelt.models.semantic import (
+    SUB_DAY_GRAINS,
     AggregationType,
     CumulativeAggType,
     DataObject,
     DataObjectColumn,
     DataType,
+    Dimension,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -63,6 +65,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
+    result_type_holds_grain,
 )
 from orionbelt.models.types import parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
@@ -1261,13 +1264,54 @@ class QueryResolver:
         vf = obj.columns.get(col_name)
         source_col = vf.code if vf else col_name
 
+        grain = ref.grain or dim.time_grain
+        if grain is not None and not self._grain_survives_the_cast(ctx, ref, dim, grain):
+            return None
+
         return ResolvedDimension(
             name=ref.name,
             object_name=obj_name,
             column_name=col_name,
             source_column=source_col,
-            grain=ref.grain or dim.time_grain,
+            grain=grain,
         )
+
+    @staticmethod
+    def _grain_survives_the_cast(
+        ctx: _ResolutionContext, ref: DimensionRef, dim: Dimension, grain: TimeGrain
+    ) -> bool:
+        """Refuse a grain the dimension's declared type cannot hold.
+
+        ``make_dimension_expr`` casts a grained dimension to its declared
+        ``resultType``, in the GROUP BY as well as the projection, so a
+        declaration narrower than the grain merges buckets and changes the
+        measures rather than relabelling the column. The model validator refuses
+        that combination at load, but a query writes its own: ``Occurred:hour``
+        names a grain the dimension never declared, so a dimension declaring
+        ``date`` -- perfectly valid, with no ``timeGrain`` of its own -- answered
+        two rows where three were asked for, the two hours of one day summed
+        into one. The model is not at fault there and cannot be checked for it;
+        the query is, and this is where it is read.
+        """
+        declared = dim.result_type
+        if declared not in _CASTABLE_TEMPORAL_TYPES or result_type_holds_grain(grain, declared):
+            return True
+        keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
+        asked = "asked for at" if ref.grain is not None else "grouped by"
+        ctx.errors.append(
+            SemanticError(
+                code="RESULT_TYPE_LOSES_GRAIN",
+                message=(
+                    f"Dimension '{ref.name}' is {asked} grain '{grain.value}' but "
+                    f"declares resultType '{declared.value}', which cannot hold it. "
+                    f"The cast is applied in the GROUP BY as well, so buckets "
+                    f"would merge and the measures would change without an error. "
+                    f"Declare {keeps}, or ask for the grain the type implies."
+                ),
+                path="select.dimensions",
+            )
+        )
+        return False
 
     # -- measures & metrics --------------------------------------------------
 

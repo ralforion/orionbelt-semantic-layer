@@ -105,6 +105,36 @@ class TimeGrain(StrEnum):
     SECOND = "second"
 
 
+#: Grains whose bucket carries a time of day, which a ``date`` cannot hold.
+SUB_DAY_GRAINS = frozenset({TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND})
+
+#: Declarations that carry a date, and the narrower set that carries a time too.
+_DATE_BEARING_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+_TIMESTAMP_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+
+def result_type_holds_grain(grain: TimeGrain, declared: DataType) -> bool:
+    """Whether a dimension declaring *declared* can carry a bucket of *grain*.
+
+    A temporal ``resultType`` is emitted as a CAST around the truncation, and
+    that cast sits in the GROUP BY as well as in the projection. A declaration
+    narrower than the grain therefore does not relabel the column, it merges
+    buckets and changes the measures, silently, because nothing about it is a
+    SQL error. A grain always carries a date, so ``time`` never holds one; a
+    sub-day bucket carries a time of day as well, which a ``date`` drops.
+
+    The wide direction is harmless and allowed: a month grain declared
+    ``timestamp`` is a date at midnight, and carrying the zeros costs nothing.
+
+    One rule with two readers, because a grain reaches the cast two ways: the
+    model validator checks what a dimension declares, and the query resolver
+    checks the grain a ``dimension:grain`` override names, which the model never
+    saw.
+    """
+    allowed = _TIMESTAMP_TYPES if grain in SUB_DAY_GRAINS else _DATE_BEARING_TYPES
+    return declared in allowed
+
+
 class ExpressionMode(StrEnum):
     """How strictly an expression's function calls are held to the catalog.
 

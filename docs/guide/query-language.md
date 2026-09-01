@@ -91,6 +91,14 @@ Supported grains: `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `
 
 This overrides any `timeGrain` set on the dimension definition.
 
+The dimension's `resultType` must be wide enough to hold the grain the query
+asks for: a temporal `resultType` is emitted as a CAST around the truncation,
+in the `GROUP BY` as well as the projection, so asking for `hour` on a
+dimension declaring `date` would merge the hours of a day into one row and sum
+their measures. That query is rejected with `RESULT_TYPE_LOSES_GRAIN` rather
+than answered - `hour`, `minute` and `second` need `timestamp`. A non-temporal
+`resultType` is not cast at all and takes any grain.
+
 ### Coalesce (Merging Role-Playing Dimensions)
 
 Role-playing dimensions (e.g. `Sales Employee` and `Purchase Employee`, both pointing to `Employees.Employee Name` via different facts) appear as separate columns in CFL output — one row per role per person. To collapse them into a single output column, use a coalesce group inside `dimensions`:

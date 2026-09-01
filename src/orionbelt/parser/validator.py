@@ -16,6 +16,7 @@ from orionbelt.models.expressions import (
 )
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
+    SUB_DAY_GRAINS,
     DataColumnRef,
     DataType,
     ExpressionMode,
@@ -24,7 +25,7 @@ from orionbelt.models.semantic import (
     MeasureFilterGroup,
     MeasureFilterItem,
     SemanticModel,
-    TimeGrain,
+    result_type_holds_grain,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
 from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
@@ -735,13 +736,6 @@ class SemanticValidator:
     #: ``resultType`` is not cast at all, so it cannot drop part of a bucket.
     _CASTABLE_TEMPORAL_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIME}
 
-    #: Grains that carry a time of day. Anything coarser lands on midnight.
-    _SUB_DAY_GRAINS = {TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND}
-
-    #: What each declared type can hold without dropping part of the bucket.
-    _TIMESTAMP_TYPES = {DataType.TIMESTAMP, DataType.TIMESTAMP_TZ}
-    _DATE_BEARING_TYPES = _TIMESTAMP_TYPES | {DataType.DATE}
-
     def _check_result_type_holds_the_grain(self, model: SemanticModel) -> list[SemanticError]:
         """Reject a declared type that cannot hold the bucket the grain makes.
 
@@ -761,6 +755,11 @@ class SemanticValidator:
         The reverse is harmless and stays allowed: a month grain declared
         ``timestamp`` is a date at midnight, and nothing is lost by carrying
         the zeros.
+
+        The rule itself is ``models.semantic.result_type_holds_grain``, because
+        a query may name a grain the model never declared: ``dimension:grain``
+        overrides what the dimension says, and the resolver holds that grain to
+        the same rule.
         """
         errors: list[SemanticError] = []
         for name, dim in model.dimensions.items():
@@ -768,14 +767,13 @@ class SemanticValidator:
             declared = dim.result_type
             if grain is None or declared not in self._CASTABLE_TEMPORAL_TYPES:
                 continue
-            if grain in self._SUB_DAY_GRAINS:
-                allowed, keeps = self._TIMESTAMP_TYPES, "timestamp"
+            if result_type_holds_grain(grain, declared):
+                continue
+            if grain in SUB_DAY_GRAINS:
+                keeps = "timestamp"
                 lost = "the time of day" if declared is DataType.DATE else "the date"
             else:
-                allowed, keeps = self._DATE_BEARING_TYPES, "date or timestamp"
-                lost = "the date"
-            if declared in allowed:
-                continue
+                keeps, lost = "date or timestamp", "the date"
             errors.append(
                 SemanticError(
                     code="RESULT_TYPE_LOSES_GRAIN",

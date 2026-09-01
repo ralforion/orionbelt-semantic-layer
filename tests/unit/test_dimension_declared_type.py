@@ -259,3 +259,63 @@ def test_dimensions_exclude_returns_the_missing_month_combinations() -> None:
         (datetime.date(2024, 1, 1), "Books"),
         (datetime.date(2024, 2, 1), "Toys"),
     ]
+
+
+# ── a grain the query names, which the model never saw ──────────────────────
+
+
+class TestAQueryGrainIsHeldToTheSameRule:
+    """``dimension:grain`` overrides the model, so it can write the lossy pair.
+
+    The validator refuses a declared ``resultType`` that cannot hold its own
+    ``timeGrain``, but a query names a grain of its own: ``Occurred Day:hour``
+    asks for hours of a dimension that declares ``date`` and no grain at all.
+    The model is valid and cannot be checked for it - the combination does not
+    exist until the query is written - and the cast merged the buckets just the
+    same. Measured on DuckDB over three rows at 09:00, 10:00 and 11:00: two
+    rows, the two hours of one day summed into 30.00, with no error.
+    """
+
+    def test_a_grain_the_declared_type_cannot_hold_is_refused(self, model: SemanticModel) -> None:
+        from orionbelt.compiler.resolution import ResolutionError
+
+        with pytest.raises(ResolutionError) as caught:
+            _sql(model, "Occurred Day:hour")
+        assert [e.code for e in caught.value.errors] == ["RESULT_TYPE_LOSES_GRAIN"]
+        assert "hour" in caught.value.errors[0].message
+
+    @pytest.mark.parametrize(
+        "dimension",
+        [
+            "Stamp Hour:day",  # timestamp holds a coarser bucket
+            "Occurred Day:month",  # date holds a month
+            "Month Label:hour",  # a string is not cast, so nothing is dropped
+        ],
+    )
+    def test_a_grain_the_declared_type_holds_is_allowed(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
+        assert "SELECT" in _sql(model, dimension)
+
+    def test_an_hourly_override_still_answers_hours_where_it_is_declarable(
+        self, model: SemanticModel
+    ) -> None:
+        """Executed, so the refusal above cannot be a refusal of the feature.
+
+        ``Stamp Hour`` declares ``timestamp``, which holds an hour, so asking
+        for one over it is exactly the query the other test refuses on a
+        ``date`` dimension - and it must still come back with a row per hour.
+        """
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-03-15', TIMESTAMP '2024-03-15 09:00', 10.0),"
+            " (DATE '2024-03-15', TIMESTAMP '2024-03-15 10:00', 20.0),"
+            " (DATE '2024-04-20', TIMESTAMP '2024-04-20 11:00', 5.0)) t(occurred, stamp, amount)"
+        )
+        rows = sorted(con.execute(_sql(model, "Stamp Hour:hour")).fetchall())
+        assert [(r[0], float(r[1])) for r in rows] == [
+            (datetime.datetime(2024, 3, 15, 9, 0), 10.0),
+            (datetime.datetime(2024, 3, 15, 10, 0), 20.0),
+            (datetime.datetime(2024, 4, 20, 11, 0), 5.0),
+        ]
