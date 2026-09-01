@@ -176,3 +176,18 @@ def test_quarter_week_spine_executes_on_duckdb(grain: str) -> None:
     )
     rows = duckdb.sql(f"WITH date_spine AS ({body}) SELECT * FROM date_spine").fetchall()
     assert rows, f"empty {grain} spine"
+
+
+@pytest.mark.parametrize("grain", DATE_GRAINS)
+def test_the_spine_bucket_is_never_text_on_mysql(grain: str) -> None:
+    """The bucket the spine is built from is a date, not a formatted string.
+
+    MySQL's ``DATE_FORMAT`` answers text, and the spine's recursive CTE takes
+    ``spine_date``'s type from its anchor row -- the MIN of these buckets. Text
+    there made the PoP time dimension come back as a ``VARCHAR`` while the same
+    dimension, in the same model, came back as a ``DATE`` when no PoP metric was
+    in the query. Measured on MySQL 8 over the emitted spine: ``varchar(10)``
+    before the cast, ``date`` after, same values.
+    """
+    sql = DialectRegistry.get("mysql").render_date_trunc_sql("`Sales`.`salesdate`", grain)
+    assert "DATE_FORMAT" not in sql or sql.startswith("CAST(DATE_FORMAT"), sql

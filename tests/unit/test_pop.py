@@ -614,6 +614,26 @@ class TestPoPMultiDialect:
         assert "DATE_RANGE" in sql
         assert "POP_COMPARE" in sql
 
+    def test_the_mysql_bucket_carries_the_same_type_as_the_grain(self) -> None:
+        """The PoP bucket and the dimension grain are the same truncation.
+
+        The grain a dimension renders with is typed, but the spine's bucket is
+        rendered by the string-level helper, which was still bare text: the
+        same model answered ``Order Date`` as a date without a PoP metric and
+        as a string with one.
+        """
+        model = _load_model()
+        query = QueryObject(
+            select=QuerySelect(
+                dimensions=["Order Date"],
+                measures=["Revenue", "Revenue YoY Growth"],
+            ),
+        )
+        sql = CompilationPipeline().compile(query, model, "mysql").sql
+        assert "DATE_FORMAT" in sql, "the format-string path is not exercised"
+        for before in sql.split("DATE_FORMAT")[:-1]:
+            assert before.endswith("CAST("), f"a bucket is projected as text: ...{before[-60:]}"
+
     def test_pop_with_multiple_dimensions(self) -> None:
         """PoP with non-time dimensions should include them in the self-join."""
         model = _load_model()

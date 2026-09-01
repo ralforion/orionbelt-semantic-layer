@@ -182,3 +182,27 @@ def test_commerce_case(mysql_setup, vendor_model, truth_results, case: CommerceC
     sql = compile_for(case.query, vendor_model, "mysql")
     actual = _fetch_mysql(conn, sql)
     compare_rows(actual, truth_results[case.name], case=case.name)
+
+
+def test_a_period_over_period_month_comes_back_as_a_date(mysql_setup, vendor_model) -> None:
+    """The PoP time dimension is a date here too, not a formatted string.
+
+    The spine's bucket goes through the string-level truncation rather than the
+    dimension grain, and MySQL's recursive CTE takes ``spine_date``'s type from
+    its anchor row: a ``DATE_FORMAT`` bucket made it ``varchar(10)``, so the
+    same ``Sales Month`` came back as a date without a PoP metric in the query
+    and as text with one. Executed, because the string sorts and reads the same
+    and only the type gives it away.
+    """
+    import datetime
+
+    from orionbelt.models.query import QueryObject, QuerySelect
+
+    conn, _schema = mysql_setup
+    query = QueryObject(
+        select=QuerySelect(dimensions=["Sales Month"], measures=["Sales YoY Growth"])
+    )
+    rows = _fetch_mysql(conn, compile_for(query, vendor_model, "mysql"))
+    assert rows, "the PoP query returned no rows"
+    month = rows[0]["Sales Month"]
+    assert isinstance(month, datetime.date), f"the month came back as {type(month).__name__}"

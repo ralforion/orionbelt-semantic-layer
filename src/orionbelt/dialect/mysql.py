@@ -670,13 +670,24 @@ class MySQLDialect(Dialect):
         return f"DATE_ADD({date_sql}, INTERVAL {count} {unit.upper()})"
 
     def _render_date_trunc_sql(self, column_sql: str, grain: str) -> str:
+        """The string-level truncation, cast for the same reason as the others.
+
+        ``DATE_FORMAT`` answers a string, and this helper feeds the
+        period-over-period spine, whose recursive CTE takes ``spine_date``'s
+        type from its anchor row. Text there made the PoP time dimension a
+        ``VARCHAR`` while the same dimension, in the same model, came back as a
+        ``DATE`` when no PoP metric was in the query. Measured on MySQL 8 over
+        the emitted spine: ``varchar(10)`` before, ``date`` after, same values.
+
+        Quarter, week and day need nothing: they are date arithmetic already.
+        """
         grain_map = {
-            "year": f"DATE_FORMAT({column_sql}, '%Y-01-01')",
+            "year": f"CAST(DATE_FORMAT({column_sql}, '%Y-01-01') AS DATE)",
             "quarter": (
                 f"DATE_ADD(MAKEDATE(YEAR({column_sql}), 1), "
                 f"INTERVAL (QUARTER({column_sql}) - 1) * 3 MONTH)"
             ),
-            "month": f"DATE_FORMAT({column_sql}, '%Y-%m-01')",
+            "month": f"CAST(DATE_FORMAT({column_sql}, '%Y-%m-01') AS DATE)",
             "week": f"DATE_SUB({column_sql}, INTERVAL WEEKDAY({column_sql}) DAY)",
             "day": f"DATE({column_sql})",
         }
