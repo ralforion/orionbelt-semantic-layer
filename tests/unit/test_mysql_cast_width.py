@@ -146,7 +146,12 @@ class TestWhatDoesNotMove:
         assert "CAST(COUNT(`S`.`qty`) AS SIGNED)" in _sql("Sale Count", "mysql")
 
     def test_a_pass_through_measure_still_has_no_cast(self) -> None:
-        assert "CAST(" not in _sql("Biggest", "mysql")
+        # Scoped to the measure. The statement carries one cast that is not the
+        # measure's: MySQL's grain is a DATE_FORMAT, and it is cast back to a
+        # DATE so the dimension keeps the type every other dialect gives it.
+        sql = _sql("Biggest", "mysql")
+        assert "MAX(`S`.`amt`) AS `Biggest`" in sql
+        assert "CAST(MAX(" not in sql
 
 
 @pytest.mark.parametrize(
