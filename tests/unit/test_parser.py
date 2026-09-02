@@ -2250,3 +2250,47 @@ measures:
         malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
         assert len(malformed) == 1
         assert "missing opening '[' on column" in malformed[0].message
+
+    COLUMN_TEMPLATE = """version: 1.0
+dataObjects:
+  Event:
+    code: ev
+    columns:
+      Amount: {code: amount, abstractType: float, numClass: additive}
+      Bad: {expression: "CAST({Amount} AS integer)", abstractType: int}
+      Chained: {expression: "{Bad} + 1", abstractType: int}
+measures:
+  Reader:
+    expression: "%s"
+    resultType: float
+    aggregation: sum
+"""
+
+    def _column_errors(self, expr: str) -> list[SemanticError]:
+        raw, source_map = TrackedLoader().load_string(self.COLUMN_TEMPLATE % expr)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return SemanticValidator().validate(model)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "{[Event].[Bad]} + 1",  # reads the refused column itself
+            "{[Event].[Chained]} + 1",  # reads a column that reads it
+        ],
+    )
+    def test_a_measure_reading_a_refused_column_is_not_reported_again(self, expr: str) -> None:
+        """The fault is the column's, and the column already says so.
+
+        The tokenizer inlines a computed column's body in place, so a measure
+        reading a refused one fails to parse for a reason that has nothing to
+        do with the measure. One bad column would otherwise multiply into an
+        error per measure that reads it.
+        """
+        codes = [e.code for e in self._column_errors(expr)]
+        assert "INVALID_COLUMN_EXPRESSION" in codes, codes
+        assert "INVALID_MEASURE_EXPRESSION" not in codes, codes
+
+    def test_a_measure_with_its_own_fault_is_still_reported(self) -> None:
+        """The skip is for the borrowed fault only, not for any body that reads a column."""
+        codes = [e.code for e in self._column_errors("ABS({[Event].[Amount]} + 1")]
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes

@@ -102,12 +102,16 @@ class SemanticValidator:
         # "unknown column 'X'" is the useful half of that pair.
         reference_errors = self._check_computed_column_refs(model)
         errors.extend(reference_errors)
+        # Parsed once, for both checks that have to know: the column's own, and
+        # the measure check, which stays quiet on a body whose only fault is a
+        # column already reported here.
+        refused_columns = self._refused_computed_columns(model)
         errors.extend(
             self._check_computed_column_expressions(
-                model, {e.path for e in reference_errors if e.path}
+                model, refused_columns, {e.path for e in reference_errors if e.path}
             )
         )
-        errors.extend(self._check_measure_expressions(model))
+        errors.extend(self._check_measure_expressions(model, set(refused_columns)))
         errors.extend(self._check_expression_functions(model))
         errors.extend(self._check_query_timezone_coverage(model))
         errors.extend(self._check_reference_name_collisions(model))
@@ -1134,8 +1138,42 @@ class SemanticValidator:
                     metric.expression,
                 )
 
+    def _refused_computed_columns(self, model: SemanticModel) -> dict[tuple[str, str], Exception]:
+        """Every computed column whose body the expression parser refuses.
+
+        Keyed by ``(data object, column)``, carrying what the parser said, so
+        the column's own check can report it and the measure check can tell a
+        measure that merely *reads* such a column from one that is itself
+        malformed.
+
+        A cycle is left out: :meth:`_check_no_cyclic_computed_columns` names
+        both ends of it rather than wherever the recursion happened to stop.
+        """
+        # Imported here rather than at module scope: the tokenizer lives in the
+        # compiler, and the parser package does not depend on it to be imported.
+        # It is the compiler's own entry point on purpose - a check that parsed
+        # the body its own way could answer differently from the code that has
+        # to build it.
+        from orionbelt.compiler.resolution import parse_column_expression
+
+        refused: dict[tuple[str, str], Exception] = {}
+        for obj_name, obj in model.data_objects.items():
+            for col_name, column in obj.columns.items():
+                if not column.expression:
+                    continue
+                try:
+                    parse_column_expression(column, obj, model)
+                except RecursionError:
+                    continue
+                except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
+                    refused[(obj_name, col_name)] = exc
+        return refused
+
     def _check_computed_column_expressions(
-        self, model: SemanticModel, already_reported: set[str]
+        self,
+        model: SemanticModel,
+        refused: dict[tuple[str, str], Exception],
+        already_reported: set[str],
     ) -> list[SemanticError]:
         """A computed column's expression has to parse, or the column is nothing.
 
@@ -1160,43 +1198,32 @@ class SemanticValidator:
         paths it claimed. Both of those fail to parse too, and neither is
         better described as a syntax error.
         """
-        # Imported here rather than at module scope: the tokenizer lives in the
-        # compiler, and the parser package does not depend on it to be imported.
-        # It is the compiler's own entry point on purpose - a check that parsed
-        # the body its own way could answer differently from the code that has
-        # to build it.
-        from orionbelt.compiler.resolution import parse_column_expression
-
         errors: list[SemanticError] = []
-        for obj_name, obj in model.data_objects.items():
-            for col_name, column in obj.columns.items():
-                path = f"dataObjects.{obj_name}.columns.{col_name}.expression"
-                if not column.expression or path in already_reported:
-                    continue
-                try:
-                    parse_column_expression(column, obj, model)
-                except RecursionError:
-                    continue
-                except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
-                    errors.append(
-                        SemanticError(
-                            code="INVALID_COLUMN_EXPRESSION",
-                            message=(
-                                f"Computed column '{col_name}' in data object "
-                                f"'{obj_name}' has invalid expression: {exc}"
-                            ),
-                            path=path,
-                            hint=(
-                                "The expression parser reads a subset of SQL. A "
-                                "construct it does not accept has to be written "
-                                "another way, or moved into the source view."
-                            ),
-                            context={"dataObject": obj_name, "column": col_name},
-                        )
-                    )
+        for (obj_name, col_name), exc in refused.items():
+            path = f"dataObjects.{obj_name}.columns.{col_name}.expression"
+            if path in already_reported:
+                continue
+            errors.append(
+                SemanticError(
+                    code="INVALID_COLUMN_EXPRESSION",
+                    message=(
+                        f"Computed column '{col_name}' in data object "
+                        f"'{obj_name}' has invalid expression: {exc}"
+                    ),
+                    path=path,
+                    hint=(
+                        "The expression parser reads a subset of SQL. A "
+                        "construct it does not accept has to be written "
+                        "another way, or moved into the source view."
+                    ),
+                    context={"dataObject": obj_name, "column": col_name},
+                )
+            )
         return errors
 
-    def _check_measure_expressions(self, model: SemanticModel) -> list[SemanticError]:
+    def _check_measure_expressions(
+        self, model: SemanticModel, refused_columns: set[tuple[str, str]]
+    ) -> list[SemanticError]:
         """A measure expression has to parse, the way a computed column's does.
 
         A computed column whose body does not parse is refused at load
@@ -1210,6 +1237,12 @@ class SemanticValidator:
         Parsed through the compiler's own entry points, for the reason the
         computed-column check gives: a validator that parsed the body its own
         way could answer differently from the code that has to build it.
+
+        Which is also why *refused_columns* is needed: the tokenizer inlines a
+        computed column's body in place, so a measure reading a column already
+        refused fails to parse for a fault that is not the measure's. Reported
+        once, at the column, or one bad column would multiply into an error per
+        measure that reads it.
         """
         from orionbelt.compiler.expr_parser import (
             parse_expression,
@@ -1224,6 +1257,8 @@ class SemanticValidator:
                 # Reported once, by the check that names the bracket: a
                 # reference the scanner cannot read does not parse either, and
                 # "missing ']' on column" is the useful half of that pair.
+                continue
+            if any(ref in refused_columns for ref in find_qualified_refs(measure.expression)):
                 continue
             try:
                 parse_expression(tokenize_measure_expression(measure.expression, model))
