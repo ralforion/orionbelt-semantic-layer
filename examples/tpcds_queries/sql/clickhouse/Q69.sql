@@ -7,7 +7,7 @@ SELECT
   "Customer Demographics"."cd_education_status" AS "Education Status",
   "Customer Demographics"."cd_purchase_estimate" AS "Purchase Estimate",
   "Customer Demographics"."cd_credit_rating" AS "Credit Rating",
-  CAST(COUNT(1) AS Nullable(Int32)) AS "Customer Count"
+  accurateCast(trunc(COUNT(1)), 'Nullable(Int32)') AS "Customer Count"
 FROM "tpcds"."customer" AS "Customer"
 LEFT JOIN "tpcds"."customer_demographics" AS "Customer Demographics"
   ON "Customer"."c_current_cdemo_sk" = "Customer Demographics"."cd_demo_sk"

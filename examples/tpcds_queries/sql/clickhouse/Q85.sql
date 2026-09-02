@@ -4,7 +4,7 @@
 WITH "__ob_main" AS (
   SELECT
     SUBSTRING(toString("Reason"."r_reason_desc"), 1, 20) AS "Reason Description 20",
-    CAST(round(AVG("Web Sales"."ws_quantity"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Web Quantity"
+    CAST(round(toDecimal256(toString(AVG("Web Sales"."ws_quantity")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Web Quantity"
   FROM "tpcds"."web_sales" AS "Web Sales"
   LEFT JOIN "tpcds"."web_returns" AS "Web Returns"
     ON "Web Sales"."ws_item_sk" = "Web Returns"."wr_item_sk"
@@ -65,8 +65,8 @@ WITH "__ob_main" AS (
 ), "__ob_dedup_0" AS (
   SELECT
     "__ob_dedup_src_0"."Reason Description 20" AS "Reason Description 20",
-    CAST(round(AVG("__ob_dedup_src_0"."__ob_c0"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Refunded Cash",
-    CAST(round(AVG("__ob_dedup_src_0"."__ob_c1"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Return Fee"
+    CAST(round(toDecimal256(toString(AVG("__ob_dedup_src_0"."__ob_c0")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Refunded Cash",
+    CAST(round(toDecimal256(toString(AVG("__ob_dedup_src_0"."__ob_c1")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Return Fee"
   FROM (
     SELECT DISTINCT
       SUBSTRING(toString("Reason"."r_reason_desc"), 1, 20) AS "Reason Description 20",

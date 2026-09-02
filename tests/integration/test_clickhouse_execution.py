@@ -476,3 +476,32 @@ def test_where_the_seventy_seventh_digit_would_be_read_the_value_truncates(
     # significant digits came back as 10000...000.6.
     rows = _fetch_clickhouse(ch_setup, f"SELECT toString({dialect.compile_expr(ast)}) AS v")
     assert rows[0]["v"] == f"{whole}.{expected_cents}"
+
+
+def test_an_exact_operand_rounds_without_the_text_route(ch_setup) -> None:
+    """The shortcut has to answer what the long way answers.
+
+    A SUM over a column the model declares with a width cannot be a float, so
+    the conversion through text has nothing to recover and the plain round is
+    already exact. Both renderings are run here against the same rows, because
+    the whole claim is that they agree.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    ch_setup.command("CREATE TABLE IF NOT EXISTS exact_sum (amt Decimal(7, 2)) ENGINE = Memory")
+    ch_setup.command("TRUNCATE TABLE exact_sum")
+    ch_setup.command("INSERT INTO exact_sum VALUES (2.55), (0.005), (-1.10)")
+
+    source = RawSQL(sql="SUM(amt)")
+    target = parse_data_type("decimal(18, 2)")
+    shortcut = dialect.compile_expr(dialect.cast_to_obml_type(source, target, source_exact=True))
+    long_way = dialect.compile_expr(dialect.cast_to_obml_type(source, target))
+    assert "toString(" not in shortcut, shortcut
+    assert "toString(" in long_way, long_way
+
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {shortcut} AS a, {long_way} AS b FROM exact_sum")
+    assert rows[0]["a"] == rows[0]["b"], rows[0]
+    ch_setup.command("DROP TABLE exact_sum")

@@ -142,6 +142,9 @@ dataObjects:
       GMT Offset:
         code: ca_gmt_offset
         abstractType: float
+        sqlType: DECIMAL(5,2)
+        sqlPrecision: 5
+        sqlScale: 2
 
   # The same physical table in its second role: the address a sale was made
   # to (ss_addr_sk), as opposed to the customer's current address reached
@@ -396,10 +399,16 @@ dataObjects:
       Current Price:
         code: i_current_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Wholesale Cost:
         code: i_wholesale_cost
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Product Name:
         code: i_product_name
@@ -441,6 +450,9 @@ dataObjects:
       GMT Offset:
         code: s_gmt_offset
         abstractType: float
+        sqlType: DECIMAL(5,2)
+        sqlPrecision: 5
+        sqlScale: 2
       Store City 30:
         expression: "SUBSTRING({Store City}, 1, 30)"
         abstractType: string
@@ -688,42 +700,72 @@ dataObjects:
       Sales Price:
         code: ss_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       List Price:
         code: ss_list_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Coupon Amount:
         code: ss_coupon_amt
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Wholesale Cost:
         code: ss_wholesale_cost
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Ext Discount Amount:
         code: ss_ext_discount_amt
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Paid:
         code: ss_net_paid
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Ext Wholesale Cost:
         code: ss_ext_wholesale_cost
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Ext Sales Price:
         code: ss_ext_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Ext List Price:
         code: ss_ext_list_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Ext Tax:
         code: ss_ext_tax
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       # Cross-object: how long after the sale the return came back. TPC-DS
       # date keys are sequential day numbers, so the difference is in days.
@@ -737,6 +779,9 @@ dataObjects:
       Net Profit:
         code: ss_net_profit
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
     joins:
       - joinType: many-to-one
@@ -816,10 +861,16 @@ dataObjects:
       Return Amount:
         code: sr_return_amt
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Loss:
         code: sr_net_loss
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
     joins:
       - joinType: many-to-one
@@ -895,14 +946,23 @@ dataObjects:
       Sales Price:
         code: ws_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Ext Sales Price:
         code: ws_ext_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Profit:
         code: ws_net_profit
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
     joins:
       - joinType: many-to-one
@@ -1007,22 +1067,37 @@ dataObjects:
       Sales Price:
         code: cs_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Coupon Amount:
         code: cs_coupon_amt
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       List Price:
         code: cs_list_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: non-additive
       Ext Sales Price:
         code: cs_ext_sales_price
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Profit:
         code: cs_net_profit
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       # Cross-object comparisons between the three date roles and inventory.
       Inventory Same Week:
@@ -1129,14 +1204,23 @@ dataObjects:
       Return Amount:
         code: cr_return_amount
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Loss:
         code: cr_net_loss
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Refunded Cash:
         code: cr_refunded_cash
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
     joins:
       - joinType: many-to-one
@@ -1183,10 +1267,16 @@ dataObjects:
       Return Amount:
         code: wr_return_amt
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Net Loss:
         code: wr_net_loss
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Refunded CDemo Key:
         code: wr_refunded_cdemo_sk
@@ -1200,10 +1290,16 @@ dataObjects:
       Refunded Cash:
         code: wr_refunded_cash
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
       Return Fee:
         code: wr_fee
         abstractType: float
+        sqlType: DECIMAL(7,2)
+        sqlPrecision: 7
+        sqlScale: 2
         numClass: additive
     joins:
       - joinType: many-to-one

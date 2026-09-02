@@ -6,7 +6,7 @@ SELECT
   "Item"."i_brand" AS "Brand",
   "Item"."i_class" AS "Class",
   "Item"."i_category" AS "Category",
-  CAST(round(AVG("Inventory"."inv_quantity_on_hand"), 2) AS Nullable(Decimal(18, 2))) AS "Avg Inventory",
+  CAST(round(toDecimal256(toString(AVG("Inventory"."inv_quantity_on_hand")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Avg Inventory",
   GROUPING("Item"."i_product_name") AS "_g_Product Name",
   GROUPING("Item"."i_brand") AS "_g_Brand",
   GROUPING("Item"."i_class") AS "_g_Class",

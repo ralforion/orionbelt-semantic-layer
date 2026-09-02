@@ -3,10 +3,10 @@
 
 SELECT
   "Item"."i_item_id" AS "Item ID",
-  CAST(round(AVG("Store Sales"."ss_quantity"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Quantity",
-  CAST(round(AVG("Store Sales"."ss_list_price"), 6) AS Nullable(Decimal(18, 6))) AS "Avg List Price Precise",
-  CAST(round(AVG("Store Sales"."ss_coupon_amt"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Coupon Amount",
-  CAST(round(AVG("Store Sales"."ss_sales_price"), 6) AS Nullable(Decimal(18, 6))) AS "Avg Sales Price Precise"
+  CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_quantity")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Quantity",
+  CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_list_price")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg List Price Precise",
+  CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_coupon_amt")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Coupon Amount",
+  CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_sales_price")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Sales Price Precise"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."item" AS "Item"
   ON "Store Sales"."ss_item_sk" = "Item"."i_item_sk"

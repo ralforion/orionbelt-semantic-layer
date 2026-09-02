@@ -125,7 +125,11 @@ class ASTVisitor:
         return CaseExpr(when_clauses=whens, else_clause=else_)
 
     def visit_cast(self, node: Cast) -> Any:
-        return Cast(expr=self.visit(node.expr), type_name=node.type_name)
+        return Cast(
+            expr=self.visit(node.expr),
+            type_name=node.type_name,
+            source_exact=node.source_exact,
+        )
 
     def visit_subqueryexpr(self, node: SubqueryExpr) -> Any:
         return SubqueryExpr(query=self.visit(node.query))

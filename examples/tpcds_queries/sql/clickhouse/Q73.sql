@@ -7,7 +7,7 @@ SELECT
   "Customer"."c_salutation" AS "Customer Salutation",
   "Customer"."c_preferred_cust_flag" AS "Customer Preferred Flag",
   "Store Sales"."ss_ticket_number" AS "Ticket Number",
-  CAST(COUNT(1) AS Nullable(Int32)) AS "Store Sales Count"
+  accurateCast(trunc(COUNT(1)), 'Nullable(Int32)') AS "Store Sales Count"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."customer" AS "Customer"
   ON "Store Sales"."ss_customer_sk" = "Customer"."c_customer_sk"

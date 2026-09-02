@@ -8,6 +8,7 @@ import pytest
 
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.type_resolver import (
+    measure_source_is_exact,
     resolve_measure_data_type,
     resolve_metric_data_type,
 )
@@ -581,3 +582,176 @@ class TestBigQueryNumericSpill:
         )
         assert "BIGNUMERIC" in rendered, rendered
         assert "NUMERIC)" not in rendered.replace("BIGNUMERIC)", ""), rendered
+
+
+class TestMeasureSourceIsExact:
+    """When a measure's operand cannot be a float, and so needs no text route.
+
+    ClickHouse converts through the value's own text to round a float exactly,
+    which is most of the length of its generated SQL. An operand the model
+    declares with a width cannot be a float, so the plain round is already
+    exact - but only a caller holding the model can say so, since the AST
+    carries an abstract type and OBML has no ``decimal`` among those.
+    """
+
+    @staticmethod
+    def _model(**column_kwargs: object) -> SemanticModel:
+        from orionbelt.models.semantic import DataColumnRef, DataObject, DataObjectColumn
+
+        column = DataObjectColumn(
+            name="Amount", code="amount", abstract_type=DataType.FLOAT, **column_kwargs
+        )
+        model = SemanticModel(
+            data_objects={
+                "Sales": DataObject(
+                    name="Sales",
+                    code="sales",
+                    database="db",
+                    schema_name="public",
+                    columns={"Amount": column},
+                )
+            }
+        )
+        model.measures["Total"] = Measure(
+            name="Total",
+            aggregation="sum",
+            columns=[DataColumnRef(view="Sales", column="Amount")],
+        )
+        return model
+
+    def _exact(self, model: SemanticModel, **measure_kwargs: object) -> bool:
+        measure = model.measures["Total"].model_copy(update=measure_kwargs)
+        return measure_source_is_exact(measure, model)
+
+    def test_a_declared_width_is_exact(self) -> None:
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model) is True
+
+    def test_an_integer_column_is_exact_without_a_width(self) -> None:
+        """An integer has no fraction to lose, so nothing needs recovering."""
+        model = self._model()
+        model.data_objects["Sales"].columns["Amount"].abstract_type = DataType.INT
+        assert self._exact(model) is True
+
+    def test_a_bare_float_declaration_is_not(self) -> None:
+        """The default for a numeric column, and the case the text route is for."""
+        assert self._exact(self._model()) is False
+
+    def test_half_a_width_is_not(self) -> None:
+        """``sqlPrecision`` alone says nothing about scale, per #313."""
+        assert self._exact(self._model(sql_precision=7)) is False
+
+    def test_avg_is_not_exact_whatever_its_operand(self) -> None:
+        """Measured: ``AVG(Decimal(7,2))`` is ``Float64`` on ClickHouse."""
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model, aggregation="avg") is False
+
+    def test_an_expression_measure_is_not(self) -> None:
+        """It may divide, or name a column this cannot see."""
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model, expression="{[Sales].[Amount]} / 2") is False
+
+    def test_a_computed_column_is_not(self) -> None:
+        model = self._model(sql_precision=7, sql_scale=2)
+        model.data_objects["Sales"].columns["Amount"].expression = "{Other} / 2"
+        assert self._exact(model) is False
+
+    def test_a_fractional_default_is_not(self) -> None:
+        """Measured: ``coalesce(SUM(dec), 0.5)`` is a Variant carrying a Float64."""
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model, default_value=0.5) is False
+        assert self._exact(model, default_value=0) is True
+
+    @pytest.mark.parametrize("default", ["0", "0.5", True])
+    def test_a_default_that_is_not_a_written_number_is_not(self, default: object) -> None:
+        """``defaultValue`` takes a string, and it is emitted as one.
+
+        ``defaultValue: "0"`` compiles to ``COALESCE(SUM(x), '0')``, whose type
+        the engine decides: the plain round would be asking it to round whatever
+        that comes out as. Measured, ``coalesce(SUM(dec), '0.5')`` answers 0.
+        """
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model, default_value=default) is False
+
+
+class TestClickHouseSkipsTheTextRouteForAnExactOperand:
+    """The rendering the flag buys, on the one dialect that reads it."""
+
+    @staticmethod
+    def _sql(*, source_exact: bool) -> str:
+        from orionbelt.ast.nodes import ColumnRef, FunctionCall
+        from orionbelt.models.types import parse_data_type
+
+        dialect = ClickHouseDialect()
+        agg = FunctionCall(name="SUM", args=[ColumnRef(name="amt", table="s")])
+        cast = dialect.cast_to_obml_type(
+            agg, parse_data_type("decimal(18, 2)"), source_exact=source_exact
+        )
+        return dialect.compile_expr(cast)
+
+    def test_an_exact_operand_rounds_in_place(self) -> None:
+        assert self._sql(source_exact=True) == (
+            'CAST(round(SUM("s"."amt"), 2) AS Nullable(Decimal(18, 2)))'
+        )
+
+    def test_anything_else_still_converts_through_text(self) -> None:
+        assert self._sql(source_exact=False) == (
+            'CAST(round(toDecimal256(toString(SUM("s"."amt")), 3), 2) AS Nullable(Decimal(18, 2)))'
+        )
+
+    def test_the_flag_is_off_by_default(self) -> None:
+        """A caller that says nothing gets the safe rendering."""
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.models.types import parse_data_type
+
+        dialect = ClickHouseDialect()
+        cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
+        assert "toString(" in dialect.compile_expr(cast)
+
+
+class TestCastSourceExactIsAHintNotAnIdentity:
+    """Two casts of the same value to the same type are the same cast.
+
+    The planners match expressions to remap an ORDER BY onto its projection, so
+    a flag that split those matches would drop the ordering rather than change
+    a rendering. It also has to survive the generic walkers, or a rewritten
+    expression silently reverts to the long form.
+    """
+
+    @staticmethod
+    def _casts() -> tuple[object, object]:
+        from orionbelt.ast.nodes import Cast, ColumnRef
+
+        inner = ColumnRef(name="amt", table="s")
+        return (
+            Cast(expr=inner, type_name="Decimal(18, 2)"),
+            Cast(expr=inner, type_name="Decimal(18, 2)", source_exact=True),
+        )
+
+    def test_it_does_not_decide_equality(self) -> None:
+        plain, exact = self._casts()
+        assert plain == exact
+        assert hash(plain) == hash(exact)
+
+    def test_a_rewrite_carries_it(self) -> None:
+        """Through a rewrite that actually rebuilds the node, not past it.
+
+        ``map_nodes`` stops where *fn* answers a replacement, so a pass that
+        rewrote only the column under the cast is what exercises the rebuild.
+        """
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.compiler.expr_rewrite import map_nodes
+
+        _, exact = self._casts()
+        rewritten = map_nodes(
+            exact,
+            lambda node: ColumnRef(name="other") if isinstance(node, ColumnRef) else None,
+        )
+        assert rewritten.source_exact is True  # type: ignore[union-attr]
+        assert rewritten.expr.name == "other"  # type: ignore[union-attr]
+
+    def test_a_visitor_carries_it(self) -> None:
+        from orionbelt.ast.visitor import ASTVisitor
+
+        _, exact = self._casts()
+        assert ASTVisitor().visit(exact).source_exact is True

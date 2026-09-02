@@ -90,8 +90,8 @@ def map_nodes(expr: Expr, fn: Callable[[Expr], Expr | None]) -> Expr:
                 when_clauses=[(map_nodes(w, fn), map_nodes(t, fn)) for w, t in whens],
                 else_clause=(None if else_clause is None else map_nodes(else_clause, fn)),
             )
-        case Cast(expr=inner, type_name=type_name):
-            return Cast(expr=map_nodes(inner, fn), type_name=type_name)
+        case Cast(expr=inner, type_name=type_name, source_exact=source_exact):
+            return Cast(expr=map_nodes(inner, fn), type_name=type_name, source_exact=source_exact)
         case Between(expr=inner, low=low, high=high, negated=negated):
             return Between(
                 expr=map_nodes(inner, fn),
