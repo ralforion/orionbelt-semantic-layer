@@ -23,6 +23,33 @@ Usage::
     uv run python scripts/probe_types.py postgres snowflake
     uv run python scripts/probe_types.py all             # every reachable engine
 
+All eight engines can be measured on a laptop. Six read their credentials from
+``.env``; the two that do not have containers, and a matrix missing them is an
+incomplete matrix rather than a fact about the world - MySQL is the only engine
+that loses ``boolean``, and nobody saw that while it sat out.
+
+MySQL, on the image the tests pin::
+
+    docker run -d --name probe-mysql -p 13306:3306 \
+      -e MYSQL_ROOT_PASSWORD=probe -e MYSQL_DATABASE=probe mysql:8.0
+    # ready in ~30s: docker exec probe-mysql mysqladmin ping -uroot -pprobe
+    MYSQL_HOST=127.0.0.1 MYSQL_PORT=13306 MYSQL_DATABASE=probe \
+    MYSQL_USER=root MYSQL_PASSWORD=probe \
+    uv run python scripts/probe_types.py mysql
+
+Dremio, from the demo stack in ``demo/dremio``. ``run-demo.sh`` builds images and
+promotes datasets; a probe needs neither, only the engine and its admin user::
+
+    docker compose -f demo/dremio/docker-compose.yml up -d dremio   # ~20s
+    curl -s -X PUT http://localhost:19047/apiv2/bootstrap/firstuser \
+      -H 'Content-Type: application/json' -H 'Authorization: _dremionull' \
+      -d '{"userName":"obsl_admin","firstName":"OBSL","lastName":"Demo",
+           "email":"obsl@example.invalid","createdAt":1756800000000,
+           "password":"obsl_admin_pw_123!"}'
+    DREMIO_HOST=localhost DREMIO_PORT=32010 DREMIO_USERNAME=obsl_admin \
+    DREMIO_PASSWORD='obsl_admin_pw_123!' \
+    uv run python scripts/probe_types.py dremio
+
 Each row prints a verdict, the Arrow type and the round-tripped value:
 
 * ``EXACT``   -- the declared type came back unchanged.
@@ -75,12 +102,16 @@ EXPECTED: dict[str, pa.DataType] = {
 }
 
 #: Engines whose ``SELECT`` needs a FROM clause for a bare scalar expression.
+#: Engines that will not select from nothing. BigQuery takes a bare constant but
+#: refuses to aggregate one - "Aggregate function SUM not allowed in SELECT
+#: without FROM clause" - and the aggregate cases are the ones worth measuring,
+#: since an aggregate is where an engine decides a result precision. So it gets
+#: a row source rather than losing those cases: skipping them printed nothing at
+#: all, which reads as a missing row rather than a case that was never run.
 FROM_SUFFIX: dict[str, str] = {
     "dremio": " FROM (VALUES (1))",
+    "bigquery": " FROM (SELECT 1)",
 }
-
-#: Engines that reject an aggregate over a constant with no FROM clause.
-NO_BARE_AGGREGATE = frozenset({"bigquery"})
 
 ENGINES = (
     "duckdb",
@@ -155,8 +186,6 @@ def render(engine: str) -> list[tuple[str, str, str]]:
     dialect = DialectRegistry.get(engine)
     out: list[tuple[str, str, str]] = []
     for label, literal, obml_type, aggregate in CASES:
-        if aggregate and engine in NO_BARE_AGGREGATE:
-            continue
         expr: Any = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
         if aggregate:
             expr = FunctionCall(name="SUM", args=[expr])
