@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import mysql.connector  # type: ignore[import-untyped]
+import mysql.connector
 
 from ob_mysql.connection import Connection
 from ob_mysql.exceptions import (

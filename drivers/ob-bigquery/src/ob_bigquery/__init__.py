@@ -70,7 +70,11 @@ def connect(
     if credentials_file is not None and credentials is None:
         from google.oauth2 import service_account
 
-        credentials = service_account.Credentials.from_service_account_file(credentials_file)
+        # google-auth annotates the class but not this constructor, so a
+        # typed caller has to say it knows.
+        credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
+            credentials_file
+        )
 
     client_kwargs: dict[str, Any] = {}
     if project is not None:
