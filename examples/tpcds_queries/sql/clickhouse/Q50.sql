@@ -12,36 +12,61 @@ SELECT
   "Store"."s_county" AS "Store County",
   "Store"."s_state" AS "Store State",
   "Store"."s_zip" AS "Store Zip",
-  CAST(COUNT(
-    CASE
-      WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" <= 30
-      THEN "Store Sales"."ss_ticket_number"
-    END
-  ) AS Nullable(Int64)) AS "Store Return 30 days",
-  CAST(COUNT(
-    CASE
-      WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 31 AND 60
-      THEN "Store Sales"."ss_ticket_number"
-    END
-  ) AS Nullable(Int64)) AS "Store Return 31-60 days",
-  CAST(COUNT(
-    CASE
-      WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 61 AND 90
-      THEN "Store Sales"."ss_ticket_number"
-    END
-  ) AS Nullable(Int64)) AS "Store Return 61-90 days",
-  CAST(COUNT(
-    CASE
-      WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 91 AND 120
-      THEN "Store Sales"."ss_ticket_number"
-    END
-  ) AS Nullable(Int64)) AS "Store Return 91-120 days",
-  CAST(COUNT(
-    CASE
-      WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" > 120
-      THEN "Store Sales"."ss_ticket_number"
-    END
-  ) AS Nullable(Int64)) AS "Store Return over 120 days"
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" <= 30
+          THEN "Store Sales"."ss_ticket_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Store Return 30 days",
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 31 AND 60
+          THEN "Store Sales"."ss_ticket_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Store Return 31-60 days",
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 61 AND 90
+          THEN "Store Sales"."ss_ticket_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Store Return 61-90 days",
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" BETWEEN 91 AND 120
+          THEN "Store Sales"."ss_ticket_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Store Return 91-120 days",
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Store Returns"."sr_returned_date_sk" - "Store Sales"."ss_sold_date_sk" > 120
+          THEN "Store Sales"."ss_ticket_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Store Return over 120 days"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."store" AS "Store"
   ON "Store Sales"."ss_store_sk" = "Store"."s_store_sk"

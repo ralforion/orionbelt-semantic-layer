@@ -2,7 +2,7 @@
 -- Regenerate: uv run python sweep.py --dialect clickhouse --dump
 
 SELECT
-  CAST(SUM("Store Sales"."ss_quantity") AS Nullable(Int64)) AS "Quantity Sum"
+  accurateCast(trunc(SUM("Store Sales"."ss_quantity")), 'Nullable(Int64)') AS "Quantity Sum"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."date_dim" AS "Date"
   ON "Store Sales"."ss_sold_date_sk" = "Date"."d_date_sk"

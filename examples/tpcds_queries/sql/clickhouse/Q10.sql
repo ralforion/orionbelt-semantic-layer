@@ -10,7 +10,7 @@ SELECT
   "Customer Demographics"."cd_dep_count" AS "Customer Dependent Count",
   "Customer Demographics"."cd_dep_employed_count" AS "Customer Employed Dependent Count",
   "Customer Demographics"."cd_dep_college_count" AS "Customer College Dependent Count",
-  CAST(COUNT(1) AS Nullable(Int32)) AS "Customer Count"
+  accurateCast(trunc(COUNT(1)), 'Nullable(Int32)') AS "Customer Count"
 FROM "tpcds"."customer" AS "Customer"
 LEFT JOIN "tpcds"."customer_demographics" AS "Customer Demographics"
   ON "Customer"."c_current_cdemo_sk" = "Customer Demographics"."cd_demo_sk"

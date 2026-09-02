@@ -8,7 +8,7 @@ WITH "base" AS (
     "Item"."i_category" AS "Category",
     "Item"."i_class" AS "Class",
     "Item"."i_current_price" AS "Current Price",
-    CAST(round(SUM("Catalog Sales"."cs_ext_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Catalog Sales Amount",
+    CAST(round(toDecimal256(toString(SUM("Catalog Sales"."cs_ext_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Catalog Sales Amount",
     SUM("Catalog Sales"."cs_ext_sales_price") AS "Catalog Class Revenue"
   FROM "tpcds"."catalog_sales" AS "Catalog Sales"
   LEFT JOIN "tpcds"."item" AS "Item"

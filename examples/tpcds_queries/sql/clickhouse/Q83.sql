@@ -4,7 +4,7 @@
 WITH "composite_01" AS (
   SELECT
     "Item"."i_item_id" AS "Item ID",
-    CAST("Store Returns"."sr_return_quantity" AS Nullable(Int64)) AS "Store Returns Quantity",
+    accurateCast(trunc("Store Returns"."sr_return_quantity"), 'Nullable(Int64)') AS "Store Returns Quantity",
     CAST(1 AS Nullable(Int32)) AS "Store Returns Count",
     CAST(NULL AS Nullable(Int64)) AS "Catalog Returns Quantity",
     CAST(NULL AS Nullable(Int32)) AS "Catalog Returns Count",
@@ -29,7 +29,7 @@ WITH "composite_01" AS (
     "Item"."i_item_id" AS "Item ID",
     CAST(NULL AS Nullable(Int64)) AS "Store Returns Quantity",
     CAST(NULL AS Nullable(Int32)) AS "Store Returns Count",
-    CAST("Catalog Returns"."cr_return_quantity" AS Nullable(Int64)) AS "Catalog Returns Quantity",
+    accurateCast(trunc("Catalog Returns"."cr_return_quantity"), 'Nullable(Int64)') AS "Catalog Returns Quantity",
     CAST(1 AS Nullable(Int32)) AS "Catalog Returns Count",
     CAST(NULL AS Nullable(Int64)) AS "Web Returns Quantity",
     CAST(NULL AS Nullable(Int32)) AS "Web Returns Count"
@@ -54,7 +54,7 @@ WITH "composite_01" AS (
     CAST(NULL AS Nullable(Int32)) AS "Store Returns Count",
     CAST(NULL AS Nullable(Int64)) AS "Catalog Returns Quantity",
     CAST(NULL AS Nullable(Int32)) AS "Catalog Returns Count",
-    CAST("Web Returns"."wr_return_quantity" AS Nullable(Int64)) AS "Web Returns Quantity",
+    accurateCast(trunc("Web Returns"."wr_return_quantity"), 'Nullable(Int64)') AS "Web Returns Quantity",
     CAST(1 AS Nullable(Int32)) AS "Web Returns Count"
   FROM "tpcds"."web_returns" AS "Web Returns"
   LEFT JOIN "tpcds"."date_dim" AS "Date"
@@ -73,40 +73,60 @@ WITH "composite_01" AS (
 )
 SELECT
   "Item ID" AS "Item ID",
-  CAST(SUM("composite_01"."Store Returns Quantity") AS Nullable(Int64)) AS "Store Returns Quantity",
-  CAST(SUM("composite_01"."Catalog Returns Quantity") AS Nullable(Int64)) AS "Catalog Returns Quantity",
-  CAST(SUM("composite_01"."Web Returns Quantity") AS Nullable(Int64)) AS "Web Returns Quantity",
+  accurateCast(trunc(SUM("composite_01"."Store Returns Quantity")), 'Nullable(Int64)') AS "Store Returns Quantity",
+  accurateCast(trunc(SUM("composite_01"."Catalog Returns Quantity")), 'Nullable(Int64)') AS "Catalog Returns Quantity",
+  accurateCast(trunc(SUM("composite_01"."Web Returns Quantity")), 'Nullable(Int64)') AS "Web Returns Quantity",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
-      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
-      0
-    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    toDecimal256(
+      toString(
+        CAST(CAST(SUM("composite_01"."Store Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100
+      ),
+      9
+    ),
     8
   ) AS Nullable(Decimal(18, 8))) AS "Store Return Share",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
-      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
-      0
-    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    toDecimal256(
+      toString(
+        CAST(CAST(SUM("composite_01"."Catalog Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100
+      ),
+      9
+    ),
     8
   ) AS Nullable(Decimal(18, 8))) AS "Catalog Return Share",
   CAST(round(
-    CAST(CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
-      CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
-      0
-    ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100,
+    toDecimal256(
+      toString(
+        CAST(CAST(SUM("composite_01"."Web Returns Quantity") * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))),
+          0
+        ) AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))) * 100
+      ),
+      9
+    ),
     8
   ) AS Nullable(Decimal(18, 8))) AS "Web Return Share",
   CAST(round(
-    CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14))),
+    toDecimal256(
+      toString(
+        CAST(SUM("composite_01"."Store Returns Quantity") + SUM("composite_01"."Catalog Returns Quantity") + SUM("composite_01"."Web Returns Quantity") AS Nullable(Decimal(38, 14))) / CAST(3.0 AS Nullable(Decimal(38, 14)))
+      ),
+      7
+    ),
     6
   ) AS Nullable(Decimal(18, 6))) AS "Average Channel Returns"
 FROM "composite_01" AS "composite_01"
 GROUP BY ALL
 HAVING
-  CAST(COUNT("composite_01"."Store Returns Count") AS Nullable(Int32)) > 0
-  AND CAST(COUNT("composite_01"."Catalog Returns Count") AS Nullable(Int32)) > 0
-  AND CAST(COUNT("composite_01"."Web Returns Count") AS Nullable(Int32)) > 0
+  accurateCast(trunc(COUNT("composite_01"."Store Returns Count")), 'Nullable(Int32)') > 0
+  AND accurateCast(trunc(COUNT("composite_01"."Catalog Returns Count")), 'Nullable(Int32)') > 0
+  AND accurateCast(trunc(COUNT("composite_01"."Web Returns Count")), 'Nullable(Int32)') > 0
 ORDER BY
   "Item ID" ASC,
   "Store Returns Quantity" ASC

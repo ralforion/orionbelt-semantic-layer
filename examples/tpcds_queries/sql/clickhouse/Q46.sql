@@ -7,8 +7,8 @@ SELECT
   "Customer Address"."ca_city" AS "Customer City",
   "Sale Address"."ca_city" AS "Bought City",
   "Store Sales"."ss_ticket_number" AS "Ticket Number",
-  CAST(round(SUM("Store Sales"."ss_coupon_amt"), 2) AS Nullable(Decimal(18, 2))) AS "Coupon Amount Sum",
-  CAST(round(SUM("Store Sales"."ss_net_profit"), 2) AS Nullable(Decimal(18, 2))) AS "Store Net Profit"
+  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_coupon_amt")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Coupon Amount Sum",
+  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_net_profit")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Net Profit"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."customer" AS "Customer"
   ON "Store Sales"."ss_customer_sk" = "Customer"."c_customer_sk"

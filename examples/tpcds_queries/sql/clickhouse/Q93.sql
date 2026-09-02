@@ -4,16 +4,21 @@
 SELECT
   "Store Sales"."ss_customer_sk" AS "Customer SK",
   CAST(round(
-    SUM(
-      CASE
-        WHEN NOT (
-          "Store Returns"."sr_return_quantity" IS NULL
+    toDecimal256(
+      toString(
+        SUM(
+          CASE
+            WHEN NOT (
+              "Store Returns"."sr_return_quantity" IS NULL
+            )
+            THEN (
+              "Store Sales"."ss_quantity" - "Store Returns"."sr_return_quantity"
+            ) * "Store Sales"."ss_sales_price"
+            ELSE "Store Sales"."ss_quantity" * "Store Sales"."ss_sales_price"
+          END
         )
-        THEN (
-          "Store Sales"."ss_quantity" - "Store Returns"."sr_return_quantity"
-        ) * "Store Sales"."ss_sales_price"
-        ELSE "Store Sales"."ss_quantity" * "Store Sales"."ss_sales_price"
-      END
+      ),
+      3
     ),
     2
   ) AS Nullable(Decimal(18, 2))) AS "Act Sales"

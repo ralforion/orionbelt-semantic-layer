@@ -3,23 +3,28 @@
 
 SELECT
   CAST(round(
-    CAST(COUNT(
-      CASE
-        WHEN "Time"."t_hour" BETWEEN 8 AND 9
-        AND "Household Demographics"."hd_dep_count" = 6
-        AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
-        THEN "Web Sales"."ws_order_number"
-      END
-    ) AS Nullable(Decimal(38, 14))) / nullIf(
-      CAST(COUNT(
-        CASE
-          WHEN "Time"."t_hour" BETWEEN 19 AND 20
-          AND "Household Demographics"."hd_dep_count" = 6
-          AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
-          THEN "Web Sales"."ws_order_number"
-        END
-      ) AS Nullable(Decimal(38, 14))),
-      0
+    toDecimal256(
+      toString(
+        CAST(COUNT(
+          CASE
+            WHEN "Time"."t_hour" BETWEEN 8 AND 9
+            AND "Household Demographics"."hd_dep_count" = 6
+            AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
+            THEN "Web Sales"."ws_order_number"
+          END
+        ) AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(COUNT(
+            CASE
+              WHEN "Time"."t_hour" BETWEEN 19 AND 20
+              AND "Household Demographics"."hd_dep_count" = 6
+              AND "Web Page"."wp_char_count" BETWEEN 5000 AND 5200
+              THEN "Web Sales"."ws_order_number"
+            END
+          ) AS Nullable(Decimal(38, 14))),
+          0
+        )
+      ),
+      7
     ),
     6
   ) AS Nullable(Decimal(18, 6))) AS "am_pm_ratio"

@@ -5,7 +5,7 @@ WITH "base" AS (
   SELECT
     "Item"."i_manufact_id" AS "Manufacturer ID",
     "Date"."d_qoy" AS "Quarter of Year",
-    CAST(round(SUM("Store Sales"."ss_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
+    CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
     SUM("Store Sales"."ss_sales_price") AS "Manufacturer Sales",
     COUNT(DISTINCT "Date"."d_qoy") AS "Manufacturer Quarter Groups",
     SUM("Store Sales"."ss_sales_price") AS "Manufacturer Sales",

@@ -3,7 +3,7 @@
 
 SELECT
   "Customer Address"."ca_zip" AS "Customer Zip",
-  CAST(round(SUM("Catalog Sales"."cs_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Catalog Sales Price Sum"
+  CAST(round(toDecimal256(toString(SUM("Catalog Sales"."cs_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Catalog Sales Price Sum"
 FROM "tpcds"."catalog_sales" AS "Catalog Sales"
 LEFT JOIN "tpcds"."customer" AS "Customer"
   ON "Catalog Sales"."cs_bill_customer_sk" = "Customer"."c_customer_sk"

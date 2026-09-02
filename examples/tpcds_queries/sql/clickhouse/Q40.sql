@@ -5,26 +5,36 @@ SELECT
   "Warehouse"."w_state" AS "Warehouse State",
   "Item"."i_item_id" AS "Item ID",
   CAST(round(
-    COALESCE(
-      SUM(
-        CASE
-          WHEN "Date"."d_date" < '2000-03-11'
-          THEN "Catalog Sales"."cs_sales_price" - COALESCE("Catalog Returns"."cr_refunded_cash", 0)
-        END
+    toDecimal256(
+      toString(
+        COALESCE(
+          SUM(
+            CASE
+              WHEN "Date"."d_date" < '2000-03-11'
+              THEN "Catalog Sales"."cs_sales_price" - COALESCE("Catalog Returns"."cr_refunded_cash", 0)
+            END
+          ),
+          0
+        )
       ),
-      0
+      3
     ),
     2
   ) AS Nullable(Decimal(18, 2))) AS "Sales Before",
   CAST(round(
-    COALESCE(
-      SUM(
-        CASE
-          WHEN "Date"."d_date" >= '2000-03-11'
-          THEN "Catalog Sales"."cs_sales_price" - COALESCE("Catalog Returns"."cr_refunded_cash", 0)
-        END
+    toDecimal256(
+      toString(
+        COALESCE(
+          SUM(
+            CASE
+              WHEN "Date"."d_date" >= '2000-03-11'
+              THEN "Catalog Sales"."cs_sales_price" - COALESCE("Catalog Returns"."cr_refunded_cash", 0)
+            END
+          ),
+          0
+        )
       ),
-      0
+      3
     ),
     2
   ) AS Nullable(Decimal(18, 2))) AS "Sales After"

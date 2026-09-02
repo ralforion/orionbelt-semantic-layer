@@ -5,21 +5,31 @@ SELECT
   "Item"."i_item_desc" AS "Item Description",
   "Inventory Warehouse"."w_warehouse_name" AS "Inventory Warehouse Name",
   "Catalog Sold Date"."d_week_seq" AS "Catalog Sold Week",
-  CAST(COUNT(
-    CASE
-      WHEN "Promotion"."p_promo_sk" IS NULL
-      THEN "Catalog Sales"."cs_order_number"
-    END
-  ) AS Nullable(Int64)) AS "Catalog Sales No Promo Count",
-  CAST(COUNT(
-    CASE
-      WHEN NOT (
-        "Promotion"."p_promo_sk" IS NULL
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN "Promotion"."p_promo_sk" IS NULL
+          THEN "Catalog Sales"."cs_order_number"
+        END
       )
-      THEN "Catalog Sales"."cs_order_number"
-    END
-  ) AS Nullable(Int64)) AS "Catalog Sales Promo Count",
-  CAST(COUNT("Catalog Sales"."cs_order_number") AS Nullable(Int64)) AS "Catalog Sales Row Count"
+    ),
+    'Nullable(Int64)'
+  ) AS "Catalog Sales No Promo Count",
+  accurateCast(
+    trunc(
+      COUNT(
+        CASE
+          WHEN NOT (
+            "Promotion"."p_promo_sk" IS NULL
+          )
+          THEN "Catalog Sales"."cs_order_number"
+        END
+      )
+    ),
+    'Nullable(Int64)'
+  ) AS "Catalog Sales Promo Count",
+  accurateCast(trunc(COUNT("Catalog Sales"."cs_order_number")), 'Nullable(Int64)') AS "Catalog Sales Row Count"
 FROM "tpcds"."catalog_sales" AS "Catalog Sales"
 LEFT JOIN "tpcds"."date_dim" AS "Catalog Sold Date"
   ON "Catalog Sales"."cs_sold_date_sk" = "Catalog Sold Date"."d_date_sk"

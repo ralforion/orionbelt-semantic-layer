@@ -6,7 +6,7 @@ SELECT
   "Item"."i_brand" AS "Brand",
   "Item"."i_manufact_id" AS "Manufacturer ID",
   "Item"."i_manufact" AS "Manufacturer",
-  CAST(round(SUM("Store Sales"."ss_ext_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount"
+  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."item" AS "Item"
   ON "Store Sales"."ss_item_sk" = "Item"."i_item_sk"

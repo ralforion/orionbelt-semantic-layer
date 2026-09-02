@@ -5,7 +5,7 @@ WITH "base" AS (
   SELECT
     "Item"."i_manager_id" AS "Manager ID",
     "Date"."d_moy" AS "Month of Year",
-    CAST(round(SUM("Store Sales"."ss_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
+    CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
     SUM("Store Sales"."ss_sales_price") AS "Manager Sales",
     COUNT(DISTINCT "Date"."d_moy") AS "Manager Month Groups",
     SUM("Store Sales"."ss_sales_price") AS "Manager Sales",

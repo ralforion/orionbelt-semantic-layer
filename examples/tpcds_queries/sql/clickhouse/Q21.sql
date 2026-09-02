@@ -5,40 +5,55 @@ SELECT
   "Warehouse"."w_warehouse_name" AS "Warehouse Name",
   "Item"."i_item_id" AS "Item ID",
   CAST(round(
-    SUM(
-      CASE
-        WHEN "Date"."d_date" < '2000-03-11'
-        THEN "Inventory"."inv_quantity_on_hand"
-      END
-    ),
-    3
-  ) AS Nullable(Decimal(18, 3))) AS "Inventory Before",
-  CAST(round(
-    SUM(
-      CASE
-        WHEN "Date"."d_date" >= '2000-03-11'
-        THEN "Inventory"."inv_quantity_on_hand"
-      END
-    ),
-    3
-  ) AS Nullable(Decimal(18, 3))) AS "Inventory After",
-  CAST(round(
-    CAST(SUM(
-      CASE
-        WHEN "Date"."d_date" >= '2000-03-11'
-        THEN "Inventory"."inv_quantity_on_hand"
-      END
-    ) * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
-      CAST(nullIf(
+    toDecimal256(
+      toString(
         SUM(
           CASE
             WHEN "Date"."d_date" < '2000-03-11'
             THEN "Inventory"."inv_quantity_on_hand"
           END
-        ),
-        0
-      ) AS Nullable(Decimal(38, 14))),
-      0
+        )
+      ),
+      4
+    ),
+    3
+  ) AS Nullable(Decimal(18, 3))) AS "Inventory Before",
+  CAST(round(
+    toDecimal256(
+      toString(
+        SUM(
+          CASE
+            WHEN "Date"."d_date" >= '2000-03-11'
+            THEN "Inventory"."inv_quantity_on_hand"
+          END
+        )
+      ),
+      4
+    ),
+    3
+  ) AS Nullable(Decimal(18, 3))) AS "Inventory After",
+  CAST(round(
+    toDecimal256(
+      toString(
+        CAST(SUM(
+          CASE
+            WHEN "Date"."d_date" >= '2000-03-11'
+            THEN "Inventory"."inv_quantity_on_hand"
+          END
+        ) * 1.0 AS Nullable(Decimal(38, 14))) / nullIf(
+          CAST(nullIf(
+            SUM(
+              CASE
+                WHEN "Date"."d_date" < '2000-03-11'
+                THEN "Inventory"."inv_quantity_on_hand"
+              END
+            ),
+            0
+          ) AS Nullable(Decimal(38, 14))),
+          0
+        )
+      ),
+      7
     ),
     6
   ) AS Nullable(Decimal(18, 6))) AS "Inventory Ratio"

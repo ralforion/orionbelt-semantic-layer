@@ -2,7 +2,7 @@
 -- Regenerate: uv run python sweep.py --dialect clickhouse --dump
 
 SELECT
-  CAST(COUNT(1) AS Nullable(Int32)) AS "Store Sales Count"
+  accurateCast(trunc(COUNT(1)), 'Nullable(Int32)') AS "Store Sales Count"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."time_dim" AS "Time"
   ON "Store Sales"."ss_sold_time_sk" = "Time"."t_time_sk"
