@@ -116,6 +116,26 @@ def _decimal_column_type(col: tuple[Any, ...], sampled: list[Any]) -> pa.DataTyp
     return decimal_arrow_type(int_digits + scale, scale)
 
 
+def _zone_of(value: datetime.datetime) -> str:
+    """The zone an aware value carries, as Arrow spells one.
+
+    Preferring the IANA key matters rather than being tidy: a fixed offset read
+    off one sample labels the whole column, and a column spanning a DST change
+    holds rows at two offsets. ``Europe/Berlin`` answers each row's own offset;
+    ``+02:00`` would answer August's for January's rows. Drivers that resolve a
+    zone hand back a ``ZoneInfo`` and take the first branch; only a driver that
+    reports a bare offset reaches the second, where one offset is all there is
+    to know.
+    """
+    key = getattr(value.tzinfo, "key", None)
+    if isinstance(key, str) and key:
+        return key
+    offset = value.utcoffset() or datetime.timedelta(0)
+    minutes = int(offset.total_seconds() // 60)
+    sign = "-" if minutes < 0 else "+"
+    return f"{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+
+
 def _python_type_to_arrow(value: Any) -> pa.DataType:
     """Infer Arrow type from a Python value (fallback when type codes are unreliable)."""
     if isinstance(value, bool):
@@ -127,7 +147,7 @@ def _python_type_to_arrow(value: Any) -> pa.DataType:
     if isinstance(value, Decimal):
         return decimal_arrow_type(*_decimal_precision_scale(value))
     if isinstance(value, datetime.datetime):
-        return pa.timestamp("us")
+        return pa.timestamp("us", tz=_zone_of(value)) if value.tzinfo else pa.timestamp("us")
     if isinstance(value, datetime.date):
         return pa.date32()
     if isinstance(value, datetime.time):

@@ -15,6 +15,10 @@ requires-python = ">=3.12"
 dependencies = [
     "ob-driver-core>=0.1",
     "snowflake-connector-python>=3.0",
+    # ``fetch_arrow_table`` builds its schema from the cursor description, so
+    # Arrow is a runtime dependency of this driver and not only of the
+    # connector's optional Arrow path - see ``ob_snowflake.arrow_types``.
+    "pyarrow>=16.0",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +48,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
 python_version = "3.12"
 strict = true
 files = ["src/ob_snowflake"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -2503,6 +2503,7 @@ version = "2.6.1"
 source = { editable = "drivers/ob-snowflake" }
 dependencies = [
     { name = "ob-driver-core" },
+    { name = "pyarrow" },
     { name = "snowflake-connector-python" },
 ]
 
@@ -2522,6 +2523,7 @@ sqlalchemy = [
 requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "ob-driver-core", editable = "drivers/ob-driver-core" },
+    { name = "pyarrow", specifier = ">=16.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21" },
