@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.flight as flight
 
 from ob_driver_core.detection import is_obml, parse_obml  # type: ignore[import-untyped]
@@ -682,10 +683,51 @@ def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:
             # Column set/order differs from the advertised schema — don't risk
             # a positional cast onto the wrong columns.
             return table
-        return table.cast(schema)
+        return _wall_clock_where_naive(table, schema).cast(schema)
     except Exception:
         logger.debug("cache hit schema align failed; streaming raw", exc_info=True)
         return table
+
+
+def _wall_clock_where_naive(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Read a zoned column as the wall clock, where the model asked for one.
+
+    OBML declares two timestamp types and the difference is the whole point of
+    the pair: ``timestamp`` is a wall clock, ``timestamp_tz`` is an instant.
+    Arrow reconciles a zoned column with a naive declaration by converting to
+    UTC, which answers the second question when the first was asked - measured
+    on a ClickHouse server set to Europe/Berlin, a declared 13:45 streamed as
+    11:45.
+
+    ClickHouse is the engine that reaches this, because it has no zone-free
+    ``DateTime``: the type is an instant that renders against the server's
+    timezone. Its own SQL answers ``13:45+02:00``, so 13:45 is the clock the
+    statement shows and the one a naive column has to carry.
+
+    Advertising the zone instead was measured and rejected: it makes what a BI
+    tool displays depend on the tool's session timezone (13:45 in Berlin, 07:45
+    in New York) for a value that has no instant to convert, and it leaves this
+    engine alone among the eight in answering a zoned column where the other
+    seven answer naive.
+
+    ``local_timestamp`` reads the offset *at each value* rather than once, so a
+    column crossing a DST boundary keeps 13:45 on both sides of it - a single
+    offset would be an hour out for half the year.
+
+    Stated in terms of the two Arrow types, not the engine: anything answering
+    zoned where the model declared naive is read the same way, and a
+    ``timestamp_tz`` target is left exactly as it was.
+    """
+    for i, field in enumerate(schema):
+        source = table.column(i).type
+        if (
+            pa.types.is_timestamp(source)
+            and source.tz is not None
+            and pa.types.is_timestamp(field.type)
+            and field.type.tz is None
+        ):
+            table = table.set_column(i, field.name, pc.local_timestamp(table.column(i)))
+    return table
 
 
 def execute_sql(
