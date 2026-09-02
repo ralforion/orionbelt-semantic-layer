@@ -215,12 +215,14 @@ class TestDialectRendering:
         ("dialect_name", "expected"),
         [
             ("bigquery", "DATETIME"),
-            # ClickHouse is the exception and cannot be fixed by naming a type:
-            # every DateTime64 carries a zone, defaulting to the server's. The
-            # wall clock is preserved, only the label is the server's; pinning
-            # one instead shifts the value, because relabelling a stored
-            # DateTime moves it (measured: 13:45 Berlin becomes 11:45 UTC).
-            ("clickhouse", "DateTime64(3)"),
+            # ClickHouse has no naive type - every DateTime64 carries a zone,
+            # defaulting to the server's - so naming one is not enough on its
+            # own: relabelling a stored DateTime moves it (measured, 13:45
+            # Berlin becomes 11:45 UTC). The label is honest here because
+            # ``_wall_clock_timestamp`` converts through the value's own text
+            # first, so what is labelled UTC is the wall clock the engine
+            # showed. Both halves are the fix; neither works alone.
+            ("clickhouse", "DateTime64(3, 'UTC')"),
             ("databricks", "TIMESTAMP_NTZ"),
             ("dremio", "TIMESTAMP"),
             ("duckdb", "TIMESTAMP"),

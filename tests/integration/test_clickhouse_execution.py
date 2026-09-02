@@ -505,3 +505,53 @@ def test_an_exact_operand_rounds_without_the_text_route(ch_setup) -> None:
     rows = _fetch_clickhouse(ch_setup, f"SELECT {shortcut} AS a, {long_way} AS b FROM exact_sum")
     assert rows[0]["a"] == rows[0]["b"], rows[0]
     ch_setup.command("DROP TABLE exact_sum")
+
+
+@pytest.mark.parametrize("session_zone", ["Europe/Berlin", "America/New_York", "UTC"])
+def test_a_declared_timestamp_is_the_same_wall_clock_on_any_server(
+    ch_setup, session_zone: str
+) -> None:
+    """The server's timezone must not decide what a declared timestamp says.
+
+    ClickHouse's DateTime is an instant that renders against the server's own
+    zone, so before this the same stored value answered 13:45 on a Berlin
+    deployment and 07:45 on a New York one. The conversion reads the wall clock
+    as text and labels it UTC, which is a label the reading has made true.
+
+    ``session_timezone`` stands in for the server setting, so the case is
+    reachable from a container that runs UTC.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    stored = RawSQL(sql="CAST('2026-08-15 13:45:00' AS DateTime64(3))")
+    sql = dialect.compile_expr(dialect.cast_to_obml_type(stored, parse_data_type("timestamp")))
+    # Read back in UTC, which is what makes the assertion say anything: a
+    # plain toString renders in the session zone, so the old rendering and this
+    # one would print the same text for different instants.
+    rows = _fetch_clickhouse(
+        ch_setup,
+        f"SELECT toString(toTimeZone({sql}, 'UTC')) AS v "
+        f"SETTINGS session_timezone = '{session_zone}'",
+    )
+    assert rows[0]["v"] == "2026-08-15 13:45:00.000"
+
+
+def test_the_wall_clock_survives_a_dst_boundary(ch_setup) -> None:
+    """The offset differs by season, so nothing here may apply one."""
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    for stamp in ("2026-08-15 13:45:00", "2026-01-15 13:45:00"):
+        stored = RawSQL(sql=f"CAST('{stamp}' AS DateTime64(3))")
+        sql = dialect.compile_expr(dialect.cast_to_obml_type(stored, parse_data_type("timestamp")))
+        rows = _fetch_clickhouse(
+            ch_setup,
+            f"SELECT toString(toTimeZone({sql}, 'UTC')) AS v "
+            f"SETTINGS session_timezone = 'Europe/Berlin'",
+        )
+        assert rows[0]["v"] == f"{stamp}.000", stamp

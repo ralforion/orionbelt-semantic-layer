@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.flight as flight
 
 from ob_driver_core.detection import is_obml, parse_obml  # type: ignore[import-untyped]
@@ -682,10 +683,44 @@ def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:
             # Column set/order differs from the advertised schema — don't risk
             # a positional cast onto the wrong columns.
             return table
-        return table.cast(schema)
+        return _wall_clock_where_naive(table, schema).cast(schema)
     except Exception:
         logger.debug("cache hit schema align failed; streaming raw", exc_info=True)
         return table
+
+
+def _wall_clock_where_naive(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Read a zoned column as the wall clock, where the model asked for one.
+
+    Arrow casts a zoned timestamp to a naive one by converting to UTC, which is
+    the right answer for an instant and the wrong one for a wall clock. OBML
+    declares both and the difference is the whole point of the pair:
+    ``timestamp`` is a wall clock, ``timestamp_tz`` is an instant. So a column
+    arriving zoned under a *naive* declaration is reinterpreted here first, and
+    a ``timestamp_tz`` target is left exactly as it was.
+
+    ClickHouse is the engine that reaches this: it has no zone-free DateTime, so
+    a ``DateTime64(3)`` resolves against the server's timezone and arrives as
+    ``timestamp[ms, tz=Europe/Berlin]``. Measured on a Berlin server, a declared
+    13:45 streamed as 11:45 - the cast doing exactly what it promises to an
+    instant. ``local_timestamp`` reads the offset *at each value* rather than
+    once, so the same column crossing a DST boundary keeps 13:45 on both sides
+    of it, which a fixed offset could not.
+
+    The guard is not ClickHouse-specific on purpose: it is stated in terms of
+    the two Arrow types, so any engine that answers zoned where the model
+    declared naive is read the same way.
+    """
+    for i, field in enumerate(schema):
+        source = table.column(i).type
+        if (
+            pa.types.is_timestamp(source)
+            and source.tz is not None
+            and pa.types.is_timestamp(field.type)
+            and field.type.tz is None
+        ):
+            table = table.set_column(i, field.name, pc.local_timestamp(table.column(i)))
+    return table
 
 
 def execute_sql(
