@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
-from ob_driver_core.type_codes import (  # type: ignore[import-untyped]
+from ob_driver_core.type_codes import (
     BINARY,
     DATETIME,
     NUMBER,

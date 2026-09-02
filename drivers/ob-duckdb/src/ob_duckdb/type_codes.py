@@ -6,11 +6,18 @@ The DUCKDB_TYPE_MAP maps these to PEP 249 type objects.
 
 from __future__ import annotations
 
-from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
+from ob_driver_core.type_codes import (
+    BINARY,
+    DATETIME,
+    NUMBER,
+    ROWID,
+    STRING,
+    DBAPITypeObject,
+)
 
 __all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "DUCKDB_TYPE_MAP"]
 
-DUCKDB_TYPE_MAP: dict[str, object] = {
+DUCKDB_TYPE_MAP: dict[str, DBAPITypeObject] = {
     # String types
     "VARCHAR": STRING,
     "TEXT": STRING,

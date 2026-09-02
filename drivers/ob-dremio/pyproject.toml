@@ -45,6 +45,11 @@ python_version = "3.12"
 strict = true
 files = ["src/ob_dremio"]
 
+# Untyped upstream - neither ships a py.typed marker.
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

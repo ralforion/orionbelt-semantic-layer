@@ -46,6 +46,11 @@ python_version = "3.12"
 strict = true
 files = ["src/ob_postgres"]
 
+# Untyped upstream - neither ships a py.typed marker.
+[[tool.mypy.overrides]]
+module = ["pyarrow.*", "adbc_driver_postgresql.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

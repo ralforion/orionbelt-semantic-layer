@@ -48,7 +48,14 @@ class Cursor:
 
     @property
     def rowcount(self) -> int:
-        return self._native.rowcount
+        """Rows the last statement produced, or -1 where the driver says nothing.
+
+        ``self._native`` is untyped, so the value arrives as ``Any``; PEP 249
+        promises an ``int`` and -1 is what it reserves for "unknown", which is
+        what a connector answering ``None`` means.
+        """
+        count = self._native.rowcount
+        return int(count) if isinstance(count, int) else -1
 
     def _check_open(self) -> None:
         if self._closed:

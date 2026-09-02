@@ -12,7 +12,7 @@ from ob_dremio.cursor import Cursor
 from ob_dremio.exceptions import ProgrammingError
 
 if TYPE_CHECKING:
-    import pyarrow.flight  # type: ignore[import-untyped]
+    import pyarrow.flight
 
 
 class Connection:
