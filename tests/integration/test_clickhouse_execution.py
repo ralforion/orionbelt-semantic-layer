@@ -445,3 +445,34 @@ def test_a_wide_target_still_rounds_where_the_place_fits(ch_setup) -> None:
     cast = dialect.cast_to_obml_type(RawSQL(sql="2.555"), parse_data_type("decimal(75, 2)"))
     rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
     assert rows[0]["v"] == Decimal("2.56")
+
+
+@pytest.mark.parametrize(
+    ("integer_digits", "expected_cents"),
+    [(73, "56"), (74, "55")],
+)
+def test_where_the_seventy_seventh_digit_would_be_read_the_value_truncates(
+    ch_setup, integer_digits: int, expected_cents: str
+) -> None:
+    """The documented residual, pinned on both sides of the boundary.
+
+    Rounding reads one digit more than the value carries, and Decimal256 holds
+    76. At 73 integer digits ``.555`` still has a place to be read from and
+    rounds to ``.56``; at 74 the third decimal would be a seventy-seventh digit,
+    so the conversion falls back to the target's own scale and truncates - even
+    though ``.56`` would have fitted the target.
+
+    Only text reaches this: no ClickHouse numeric type carries 77 significant
+    digits, and a Float64 this large has no third decimal to round.
+    """
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    whole = "1" + "0" * (integer_digits - 1)
+    ast = parse_expression(tokenize_metric_formula(f"cast('{whole}.555', 'decimal(75, 2)')"))
+    # Read back as text: the answer is what the engine computed, and a value
+    # this wide does not survive the driver's own decimal context - 76
+    # significant digits came back as 10000...000.6.
+    rows = _fetch_clickhouse(ch_setup, f"SELECT toString({dialect.compile_expr(ast)}) AS v")
+    assert rows[0]["v"] == f"{whole}.{expected_cents}"

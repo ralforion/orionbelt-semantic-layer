@@ -636,6 +636,13 @@ class ClickHouseDialect(Dialect):
           refused, which is the answer this engine gave before any of this
           wrapping existed.
 
+        Both are the same arithmetic: the rounding reads one digit more than
+        the value carries, and there are 76. A value that spends them all is
+        truncated wherever it appears, so ``...000.555`` answers ``.56`` at 73
+        integer digits and ``.55`` at 74. It reaches this only as text - no
+        ClickHouse numeric type holds 77 significant digits, and a Float64 that
+        large carries no third decimal to round.
+
         *or_null* picks the failure mode, which is the one thing the two cast
         paths do not share: OBML's ``cast()`` is specified to answer NULL for
         input it cannot read (#355), while an implicit cast over a declared
