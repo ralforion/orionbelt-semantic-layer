@@ -112,9 +112,15 @@ class Cursor:
         Snowflake connector returns Arrow natively (zero-copy from the
         internal result format).  Significantly more memory-efficient
         than materialising Python row objects via ``fetchall()``.
+
+        The integer widths come from ``description`` rather than from the
+        values, and an empty result answers a schema rather than ``None`` -
+        see :mod:`ob_snowflake.arrow_types`.
         """
         self._check_open()
-        return self._native.fetch_arrow_all()
+        from ob_snowflake.arrow_types import stable_arrow_table
+
+        return stable_arrow_table(self._native.fetch_arrow_all(), self._native.description)
 
     def close(self) -> None:
         """Close the cursor."""
