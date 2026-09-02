@@ -2312,3 +2312,18 @@ measures:
         model, _ = ReferenceResolver().resolve(raw, source_map)
         SemanticValidator().validate(model)
         assert model.data_objects["Event"].columns["Bad"].expression == "CAST({Amount} AS integer)"
+
+    def test_a_malformed_reference_does_not_hide_the_rest_of_the_body(self) -> None:
+        """The bracket is one fault; a dangling operator beside it is another.
+
+        Skipping the body whole once its reference check fired meant the author
+        fixed the brackets, reloaded, and failed again on a '+' that was there
+        all along.
+        """
+        raw, source_map = TrackedLoader().load_string(
+            self.TEMPLATE.format(expr="ABS({[Event].Amount]} +)")
+        )
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert any(e.code == "MALFORMED_EXPRESSION_REF" for e in result.errors)
+        codes = [e.code for e in SemanticValidator().validate(model)]
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes

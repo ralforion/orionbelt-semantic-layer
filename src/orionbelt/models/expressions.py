@@ -324,3 +324,37 @@ def find_malformed_measure_refs(expression: str) -> list[tuple[str, str]]:
         for match in pattern.finditer(remainder):
             found.append((shape.format(*match.groups()), reason))
     return found
+
+
+#: What a botched reference stands for while an expression is judged on its own
+#: syntax: a bare literal, which the parser takes anywhere a column reference
+#: goes. Never compiled - only ever parsed, to answer whether the rest reads.
+_NEUTRAL_FACTOR = "0"
+
+_REFERENCE_SHAPES = re.compile(
+    "|".join(
+        [
+            f"(?P<valid>{VALID_MEASURE_REF.pattern})",
+            *(pattern.pattern for pattern, _, _ in _MALFORMED_MEASURE_REFS),
+        ]
+    )
+)
+
+
+def expression_without_malformed_refs(expression: str) -> str:
+    """*expression* with every botched reference replaced by a plain factor.
+
+    What a reference is meant to be, grammatically, is one factor - so a body
+    whose brackets are wrong can still be asked whether the rest of it reads.
+    Without this, a measure had to be skipped whole once its reference check
+    fired, and an unrelated syntax error in the same body stayed hidden until
+    the author fixed the brackets and reloaded.
+
+    Well-formed references are left as they are, so what the parser complains
+    about still names the author's own columns.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        return match.group(0) if match.group("valid") is not None else _NEUTRAL_FACTOR
+
+    return _REFERENCE_SHAPES.sub(_replace, expression)

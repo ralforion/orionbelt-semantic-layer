@@ -10,8 +10,8 @@ import networkx as nx
 from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import (
     QUALIFIED_COLUMN_REF,
+    expression_without_malformed_refs,
     find_function_calls,
-    find_malformed_measure_refs,
     find_placeholders,
     find_qualified_refs,
 )
@@ -1262,13 +1262,19 @@ class SemanticValidator:
         computed-column check gives: a validator that parsed the body its own
         way could answer differently from the code that has to build it.
 
-        Which is also why *refused_columns* is needed: the tokenizer inlines a
-        computed column's body in place, so a measure reading a column already
-        refused would fail to parse for a fault that is not the measure's, and
-        one bad column would multiply into an error per measure that reads it.
-        Parsed against :meth:`_model_without` instead, where those columns stand
-        for themselves, so what is left to fail is the measure's own syntax and
-        an author sees both faults in one pass rather than one per reload.
+        Two faults belonging to another check are neutralized rather than
+        skipped, so that what is left to fail is the measure's own syntax:
+
+        * a reference the scanner cannot read, which
+          :func:`expression_without_malformed_refs` stands in a factor for;
+        * a computed column the parser already refused - the tokenizer inlines
+          such a body in place, so one bad column would otherwise multiply into
+          an error per measure that reads it. *refused_columns* names them and
+          :meth:`_model_without` lets them stand for themselves.
+
+        Skipping the measure whole was the first shape of both, and it hid an
+        unrelated syntax error in the same body until the author fixed the
+        other fault and reloaded. An author sees both in one pass instead.
         """
         from orionbelt.compiler.expr_parser import (
             parse_expression,
@@ -1280,13 +1286,13 @@ class SemanticValidator:
         for name, measure in model.measures.items():
             if not measure.expression:
                 continue
-            if find_malformed_measure_refs(measure.expression):
-                # Reported once, by the check that names the bracket: a
-                # reference the scanner cannot read does not parse either, and
-                # "missing ']' on column" is the useful half of that pair.
-                continue
+            # A botched reference is reported once, by the check that names
+            # the bracket - "missing ']' on column" is the useful half of that
+            # pair - so it stands for a plain factor here and the rest of the
+            # body is still judged on its own syntax.
+            body = expression_without_malformed_refs(measure.expression)
             try:
-                parse_expression(tokenize_measure_expression(measure.expression, probe))
+                parse_expression(tokenize_measure_expression(body, probe))
             except RecursionError:
                 continue
             except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
