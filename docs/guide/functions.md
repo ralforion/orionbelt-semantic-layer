@@ -177,7 +177,7 @@ since Dremio is the one dialect that puts them in identifier position.
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, per the database session |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
-| `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero |
+| `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero, except where ClickHouse has no room for the digit the rounding reads |
 | `to_number(x)` | float | The number `x` names, or **NULL** when it does not name one; surrounding whitespace ignored |
 
 ## Casting, and what it does not promise
@@ -197,6 +197,24 @@ correctly. That conversion is also what lets ClickHouse take a **text**
 argument at all: `round('4.6', 2)` raises there, so a cast over a `json_value`
 — which returns a string by definition — did not compile to something the
 engine would run.
+
+One exception, on ClickHouse alone: **the rounding reads one digit more than
+the value it rounds, and `Decimal256` holds 76 of them.** Where the value and
+that extra digit do not both fit, the conversion truncates instead. Two shapes
+reach it:
+
+- **the `decimal(76, s)` ceiling**, where the target's own width already spends
+  every digit: `2.555` answers `2.56` at `decimal(75, 2)` and `2.55` at
+  `decimal(76, 2)`. A model that wants the rounding declares one digit less,
+  and that costs no range — both widths are stored in the same 256-bit integer,
+  and a value in the digit the engine carries beyond what a decimal declares is
+  truncated rather than refused.
+- **a value wide enough to reach the same limit** under a narrower target: at
+  `decimal(75, 2)`, 73 integer digits and `.555` round to `.56`, and 74 truncate
+  to `.55`, because reading the third place would take a seventy-seventh digit.
+
+Neither is reachable from a number this engine holds — 77 significant digits
+arrive as text, since no ClickHouse numeric type carries that many.
 
 **What it does not pin is failure**, and that limit is the point of the entry
 rather than a footnote on it. A cast over a number is portable. A cast over

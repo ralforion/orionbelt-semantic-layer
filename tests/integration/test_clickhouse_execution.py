@@ -236,3 +236,243 @@ measures:
         run("MaxNote")
 
     ch_setup.command("DROP TABLE bool_measure")
+
+
+@pytest.mark.parametrize(
+    ("literal", "obml_type", "expected"),
+    [
+        # The measured defect: the Float64 nearest 2.55 sits just below it, so
+        # rounding to 2 places and then truncating at 2 places returned 2.54.
+        ("2.55", "decimal(18, 2)", "2.55"),
+        ("toFloat64(2.55)", "decimal(18, 2)", "2.55"),
+        # An exact Decimal source was never affected, and must not regress.
+        ("toDecimal64('2.55', 2)", "decimal(18, 2)", "2.55"),
+        # Ties still round away from zero, which is what the pre-round is for.
+        ("2.545", "decimal(18, 2)", "2.55"),
+        ("2.555", "decimal(18, 2)", "2.56"),
+        ("-2.555", "decimal(18, 2)", "-2.56"),
+        # Past Float64's exact-integer range the answer is the value the float
+        # actually holds. Casting through a wide decimal instead returned
+        # 12345678901234567.17, digits the input never had.
+        ("12345678901234567.89", "decimal(19, 2)", "12345678901234568.00"),
+        ("1e19", "decimal(38, 2)", "10000000000000000000.00"),
+    ],
+)
+def test_decimal_cast_keeps_the_place_it_rounded_to(
+    ch_setup, literal: str, obml_type: str, expected: str
+) -> None:
+    """A declared decimal type must not lose the place the pre-round decided."""
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(expected)
+
+
+def test_decimal_cast_still_raises_on_input_it_cannot_read(ch_setup) -> None:
+    """The implicit cast raises; only OBML's ``cast()`` answers NULL (#375).
+
+    Converting through text is what makes the rounding exact, and it would
+    equally make a date parse to NULL if it used the ``OrNull`` conversion the
+    ``cast()`` path needs. It does not, so a type error stays a type error.
+    """
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql="toDate('2026-08-15')"), parse_data_type("decimal(18, 2)")
+    )
+    with pytest.raises(Exception, match="(?i)cannot parse|illegal|exception"):
+        _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+
+
+def test_a_max_width_decimal_cast_reaches_its_target(ch_setup) -> None:
+    """A value the target accepts must not fail on the way in.
+
+    The exactness rewrite converts through an intermediate one place wider
+    than the target, and Decimal256 is 76 digits wherever the point sits, so
+    that place is taken from the integer side. For ``decimal(76, 20)`` the
+    target holds 56 integer digits and the intermediate held 55, which meant a
+    56-digit value ClickHouse would cast directly raised ARGUMENT_OUT_OF_BOUND
+    through the rendering meant to make it exact.
+
+    This is the CFL alignment width (``cfl_projection`` picks
+    ``Decimal(76, 20)`` for ClickHouse), so it is reached by a multi-fact
+    query rather than only by a hand-written cast.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "9" * 56
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql=f"toDecimal256('{widest}', 0)"), parse_data_type("decimal(76, 20)")
+    )
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_a_max_scale_decimal_cast_still_takes_an_integer_part(ch_setup) -> None:
+    """``decimal(76, 75)`` holds one integer digit, and 1.5 has to fit in it.
+
+    Clamping the intermediate on the scale alone left this asking for 76
+    fractional places, which leaves no room for the 1.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql="1.5"), parse_data_type("decimal(76, 75)"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal("1.5")
+
+
+@pytest.mark.parametrize(
+    ("obml_type", "literal", "expected"),
+    [
+        # Below the ceiling the extra place exists and the tie rounds up.
+        ("decimal(18, 2)", "2.555", "2.56"),
+        ("decimal(75, 2)", "2.555", "2.56"),
+        # At the ceiling it does not, and the conversion truncates. Recorded
+        # rather than fixed: the place and the target's full integer width
+        # cannot both exist in 76 digits. Declaring 75 restores the rounding.
+        ("decimal(76, 2)", "2.555", "2.55"),
+    ],
+)
+def test_rounding_at_and_below_the_precision_ceiling(
+    ch_setup, obml_type: str, literal: str, expected: str
+) -> None:
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql=literal), parse_data_type(obml_type))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(expected)
+
+
+def test_a_decimal_request_above_the_ceiling_still_executes(ch_setup) -> None:
+    """The final type is clamped to Decimal(76, s), so the intermediate must be.
+
+    Through OBML's ``cast()`` rather than ``cast_to_obml_type``: only the
+    catalog path carried the raw request, because the implicit path reads the
+    scale back off the already-clamped rendered type. Computed from the raw
+    request, ``decimal(77, 2)`` asked for an intermediate at scale 1 and lost a
+    cent, and ``decimal(100, 2)`` asked for scale -22, which ClickHouse rejects
+    before running.
+    """
+    from decimal import Decimal
+
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    for obml_type in ("decimal(77, 2)", "decimal(100, 2)"):
+        ast = parse_expression(tokenize_metric_formula(f"cast('2.555', '{obml_type}')"))
+        rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(ast)} AS v")
+        # Clamped to Decimal(76, 2), which is at the ceiling, so it truncates.
+        assert rows[0]["v"] == Decimal("2.55"), obml_type
+
+
+def test_a_value_wider_than_the_target_declares_still_lands(ch_setup) -> None:
+    """This engine's CAST holds one digit more than the decimal declares.
+
+    A 74-digit integer casts to ``Decimal(75, 2)``, which promises 73, and the
+    conversion has to reach as far: an intermediate at scale 3 leaves 73 and
+    answered ARGUMENT_OUT_OF_BOUND on a value the target itself took. The
+    fallback converts at the target's own scale instead, so the value arrives
+    truncated rather than not at all.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "1" + "0" * 73
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql=f"toDecimal256('{widest}', 0)"), parse_data_type("decimal(75, 2)")
+    )
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_the_same_value_through_cast_is_not_null(ch_setup) -> None:
+    """``cast()`` answers NULL for input it cannot read, and this it can read.
+
+    The ``OrNull`` conversion the contract needs made the width limit silent:
+    the same 74-digit value came back as NULL rather than as an error, which is
+    the shape of a value that does not name a number.
+    """
+    from decimal import Decimal
+
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "1" + "0" * 73
+    ast = parse_expression(tokenize_metric_formula(f"cast('{widest}', 'decimal(75, 2)')"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(ast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_a_wide_target_still_rounds_where_the_place_fits(ch_setup) -> None:
+    """The fallback is a fallback: an ordinary value takes the rounded branch."""
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql="2.555"), parse_data_type("decimal(75, 2)"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal("2.56")
+
+
+@pytest.mark.parametrize(
+    ("integer_digits", "expected_cents"),
+    [(73, "56"), (74, "55")],
+)
+def test_where_the_seventy_seventh_digit_would_be_read_the_value_truncates(
+    ch_setup, integer_digits: int, expected_cents: str
+) -> None:
+    """The documented residual, pinned on both sides of the boundary.
+
+    Rounding reads one digit more than the value carries, and Decimal256 holds
+    76. At 73 integer digits ``.555`` still has a place to be read from and
+    rounds to ``.56``; at 74 the third decimal would be a seventy-seventh digit,
+    so the conversion falls back to the target's own scale and truncates - even
+    though ``.56`` would have fitted the target.
+
+    Only text reaches this: no ClickHouse numeric type carries 77 significant
+    digits, and a Float64 this large has no third decimal to round.
+    """
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    whole = "1" + "0" * (integer_digits - 1)
+    ast = parse_expression(tokenize_metric_formula(f"cast('{whole}.555', 'decimal(75, 2)')"))
+    # Read back as text: the answer is what the engine computed, and a value
+    # this wide does not survive the driver's own decimal context - 76
+    # significant digits came back as 10000...000.6.
+    rows = _fetch_clickhouse(ch_setup, f"SELECT toString({dialect.compile_expr(ast)}) AS v")
+    assert rows[0]["v"] == f"{whole}.{expected_cents}"

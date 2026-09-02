@@ -1591,18 +1591,41 @@ class TestCastTargets:
 
     @pytest.mark.parametrize(
         ("target", "expected_scale"),
-        [("decimal(18, 2)", 3), ("decimal(76, 75)", 76), ("decimal(76, 76)", 76)],
+        [
+            ("decimal(18, 2)", 3),
+            ("decimal(38, 9)", 10),
+            ("decimal(75, 2)", 3),
+            # The extra place comes out of the integer side, so it can only be
+            # asked for while the target leaves a digit spare. These three have
+            # none: 56, 1 and 0 integer digits against Decimal256's 76.
+            ("decimal(76, 2)", 2),
+            ("decimal(76, 20)", 20),
+            ("decimal(76, 75)", 75),
+            ("decimal(76, 76)", 76),
+            # Above the ceiling the final type is clamped to Decimal(76, s), so
+            # the intermediate has to be computed from the clamped width too.
+            # From the raw request, decimal(77, 2) asked for scale 1 and lost a
+            # cent, and decimal(100, 2) asked for scale -22, which is rejected.
+            ("decimal(77, 2)", 2),
+            ("decimal(100, 2)", 2),
+        ],
     )
     def test_clickhouse_keeps_the_intermediate_within_decimal256(
         self, target: str, expected_scale: int
     ) -> None:
-        """One place more than the target, and never more than 76.
+        """One place more than the target, and never wider than Decimal256.
 
-        The extra place is what rounding to the target scale needs to see, and
-        Decimal256 has none to give at the ceiling: ``decimal(76, 76)`` asked
-        for 77 and ClickHouse answered ARGUMENT_OUT_OF_BOUND before the cast
-        ran. Nothing is lost by clamping, since a value already at scale 76 is
-        unchanged by rounding to 76 places.
+        Decimal256 is 76 digits wherever the point sits, so the extra place is
+        taken from the integer side rather than added to the type. Clamping on
+        the scale alone was not enough, and the gap was reachable: an
+        intermediate at scale 21 for ``decimal(76, 20)`` leaves 55 integer
+        digits where the target holds 56, so a 56-digit value the target
+        accepts raised ARGUMENT_OUT_OF_BOUND before reaching it. Measured on a
+        live server, as was ``decimal(76, 75)``, which failed the same way on
+        ``1.5`` while this test asserted the rendering that failed.
+
+        Nothing is lost by clamping: a value needing every integer digit the
+        target has cannot also carry a fractional place beyond it to round.
         """
         sql = _render(f"cast(x, '{target}')", "clickhouse")
         assert f"toDecimal256OrNull(toString('x'), {expected_scale})" in sql, sql
@@ -1630,7 +1653,9 @@ class TestCastTargets:
         """
         dialect = DialectRegistry.get("clickhouse")
         cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
-        assert dialect.compile_expr(cast) == 'CAST(round("amt", 2) AS Nullable(Decimal(18, 2)))'
+        assert dialect.compile_expr(cast) == (
+            'CAST(round(toDecimal256(toString("amt"), 3), 2) AS Nullable(Decimal(18, 2)))'
+        )
 
 
 class TestToNumber:
@@ -1703,3 +1728,49 @@ class TestToNumber:
         sql = _render("to_number(x)", dialect).upper()
         assert "TRIM" in sql, sql
         assert "CAST" in sql or "TOSTRING" in sql, sql
+
+
+class TestClickHouseDecimalCeiling:
+    """What the widest decimal targets cost, pinned so it cannot drift.
+
+    The exactness rewrite reads one place more than the target, and Decimal256
+    is 76 digits wherever the point sits, so the place has to come out of the
+    integer side. Two shapes follow, and between them no value the target holds
+    is refused on the way in:
+
+    * at ``decimal(76, s)`` there is no spare digit, so the intermediate is the
+      target's own scale and the conversion truncates. Declaring 75 restores
+      the rounding and costs nothing: both are Int256, and the fallback below
+      keeps the wider value reachable.
+    * below it the place exists within the declared width, and a value in the
+      digit this engine holds beyond that width falls back to a conversion at
+      the target's own scale rather than raising ARGUMENT_OUT_OF_BOUND.
+    """
+
+    def test_below_the_ceiling_the_extra_place_is_available(self) -> None:
+        assert "toString('x'), 3)" in _render("cast(x, 'decimal(75, 2)')", "clickhouse")
+
+    def test_at_the_ceiling_it_is_not(self) -> None:
+        """Recorded rather than fixed: declaring 75 restores the rounding."""
+        sql = _render("cast(x, 'decimal(76, 2)')", "clickhouse")
+        assert "toString('x'), 2)" in sql, sql
+        assert "ifNull(" not in sql, sql
+
+    def test_a_target_wider_than_it_declares_falls_back_rather_than_raising(self) -> None:
+        """Both branches at the target's scale, which is what keeps it safe."""
+        sql = _render("cast(x, 'decimal(75, 2)')", "clickhouse")
+        assert "ifNull(" in sql, sql
+        assert "AS Nullable(Decimal256(2))" in sql, sql
+        assert "toDecimal256OrNull(toString('x'), 2)" in sql, sql
+
+    def test_an_ordinary_target_carries_no_fallback(self) -> None:
+        """Int128 and narrower cannot hold what the intermediate would refuse."""
+        for target in ("decimal(18, 2)", "decimal(38, 9)"):
+            assert "ifNull(" not in _render(f"cast(x, '{target}')", "clickhouse"), target
+
+    def test_a_request_above_the_ceiling_is_clamped_before_it_is_used(self) -> None:
+        """Not scale 1, and never a negative scale."""
+        for target in ("decimal(77, 2)", "decimal(100, 2)"):
+            sql = _render(f"cast(x, '{target}')", "clickhouse")
+            assert "toString('x'), 2)" in sql, sql
+            assert ", -" not in sql, sql
