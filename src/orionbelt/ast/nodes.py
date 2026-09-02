@@ -152,7 +152,11 @@ class Cast:
 
     expr: Expr
     type_name: str
-    source_exact: bool = False
+    #: Excluded from equality and hashing: two casts of the same value to the
+    #: same type are the same cast, and this only says how one engine may
+    #: render it. The planners match expressions to remap an ORDER BY onto a
+    #: projection, and a hint that split those matches would drop the ordering.
+    source_exact: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)

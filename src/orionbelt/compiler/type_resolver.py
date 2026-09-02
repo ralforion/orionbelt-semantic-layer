@@ -409,9 +409,14 @@ def measure_source_is_exact(measure: Measure, model: SemanticModel | None) -> bo
       ``sqlScale``, the pair ``cfl_projection`` already trusts - or declared
       ``int``, which has no fraction to lose. A computed column is excluded:
       its body is an expression again;
-    * a ``defaultValue`` that is absent or whole. Measured, ``coalesce(SUM(dec),
-      0)`` is a Decimal and ``coalesce(SUM(dec), 0.5)`` is a Variant carrying a
-      Float64.
+    * a ``defaultValue`` that is absent or a whole number *written as one*.
+      The field takes a string too, and it is emitted as the literal it was
+      written as: ``defaultValue: "0"`` becomes ``COALESCE(SUM(x), '0')``,
+      whose type is the engine's to decide. Measured, ``coalesce(SUM(dec), 0)``
+      is a Decimal, ``coalesce(SUM(dec), 0.5)`` is a Variant carrying a Float64,
+      and a quoted one leans on an implicit conversion that is not this rule's
+      to promise - ``coalesce(SUM(dec), '0.5')`` answers 0. So only an integer
+      qualifies, and a bool is not one however Python counts it.
 
     It trusts the model to describe its warehouse, the way the union-alignment
     width already does. A column declared exact that is really a float loses the
@@ -422,7 +427,8 @@ def measure_source_is_exact(measure: Measure, model: SemanticModel | None) -> bo
         return False
     if measure.aggregation.upper() not in _TYPE_PRESERVING_AGGREGATIONS:
         return False
-    if isinstance(measure.default_value, float) and measure.default_value % 1:
+    default = measure.default_value
+    if default is not None and (isinstance(default, bool) or not isinstance(default, int)):
         return False
     for ref in measure.columns:
         obj = model.data_objects.get(ref.view or "")

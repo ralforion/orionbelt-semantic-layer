@@ -662,6 +662,17 @@ class TestMeasureSourceIsExact:
         assert self._exact(model, default_value=0.5) is False
         assert self._exact(model, default_value=0) is True
 
+    @pytest.mark.parametrize("default", ["0", "0.5", True])
+    def test_a_default_that_is_not_a_written_number_is_not(self, default: object) -> None:
+        """``defaultValue`` takes a string, and it is emitted as one.
+
+        ``defaultValue: "0"`` compiles to ``COALESCE(SUM(x), '0')``, whose type
+        the engine decides: the plain round would be asking it to round whatever
+        that comes out as. Measured, ``coalesce(SUM(dec), '0.5')`` answers 0.
+        """
+        model = self._model(sql_precision=7, sql_scale=2)
+        assert self._exact(model, default_value=default) is False
+
 
 class TestClickHouseSkipsTheTextRouteForAnExactOperand:
     """The rendering the flag buys, on the one dialect that reads it."""
@@ -696,3 +707,51 @@ class TestClickHouseSkipsTheTextRouteForAnExactOperand:
         dialect = ClickHouseDialect()
         cast = dialect.cast_to_obml_type(ColumnRef(name="amt"), parse_data_type("decimal(18, 2)"))
         assert "toString(" in dialect.compile_expr(cast)
+
+
+class TestCastSourceExactIsAHintNotAnIdentity:
+    """Two casts of the same value to the same type are the same cast.
+
+    The planners match expressions to remap an ORDER BY onto its projection, so
+    a flag that split those matches would drop the ordering rather than change
+    a rendering. It also has to survive the generic walkers, or a rewritten
+    expression silently reverts to the long form.
+    """
+
+    @staticmethod
+    def _casts() -> tuple[object, object]:
+        from orionbelt.ast.nodes import Cast, ColumnRef
+
+        inner = ColumnRef(name="amt", table="s")
+        return (
+            Cast(expr=inner, type_name="Decimal(18, 2)"),
+            Cast(expr=inner, type_name="Decimal(18, 2)", source_exact=True),
+        )
+
+    def test_it_does_not_decide_equality(self) -> None:
+        plain, exact = self._casts()
+        assert plain == exact
+        assert hash(plain) == hash(exact)
+
+    def test_a_rewrite_carries_it(self) -> None:
+        """Through a rewrite that actually rebuilds the node, not past it.
+
+        ``map_nodes`` stops where *fn* answers a replacement, so a pass that
+        rewrote only the column under the cast is what exercises the rebuild.
+        """
+        from orionbelt.ast.nodes import ColumnRef
+        from orionbelt.compiler.expr_rewrite import map_nodes
+
+        _, exact = self._casts()
+        rewritten = map_nodes(
+            exact,
+            lambda node: ColumnRef(name="other") if isinstance(node, ColumnRef) else None,
+        )
+        assert rewritten.source_exact is True  # type: ignore[union-attr]
+        assert rewritten.expr.name == "other"  # type: ignore[union-attr]
+
+    def test_a_visitor_carries_it(self) -> None:
+        from orionbelt.ast.visitor import ASTVisitor
+
+        _, exact = self._casts()
+        assert ASTVisitor().visit(exact).source_exact is True
