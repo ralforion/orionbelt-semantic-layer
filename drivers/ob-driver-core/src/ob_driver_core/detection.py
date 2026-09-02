@@ -33,4 +33,7 @@ def is_obml(query: str) -> bool:
 
 def parse_obml(query: str) -> dict[str, Any]:
     """Parse an OBML YAML string into a dict. Call only after :func:`is_obml`."""
-    return yaml.safe_load(query.strip())  # type: ignore[return-value]
+    parsed: Any = yaml.safe_load(query.strip())
+    if not isinstance(parsed, dict):
+        raise ValueError("OBML must parse to a mapping")
+    return parsed

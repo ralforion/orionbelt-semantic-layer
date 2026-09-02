@@ -126,7 +126,7 @@ class ExecutionResult:
 def _map_type_code(type_code: Any) -> str:
     """Map a PEP 249 type code to a simple string type hint."""
     try:
-        from ob_driver_core.type_codes import (  # type: ignore[import-untyped]
+        from ob_driver_core.type_codes import (
             BINARY,
             DATETIME,
             NUMBER,

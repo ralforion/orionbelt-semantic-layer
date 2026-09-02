@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 import pyarrow.flight as flight
 
-from ob_driver_core.detection import is_obml, parse_obml  # type: ignore[import-untyped]
+from ob_driver_core.detection import is_obml, parse_obml
 
 from ob_flight.converters import rows_to_batch, schema_from_description
 
