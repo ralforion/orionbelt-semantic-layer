@@ -477,7 +477,7 @@ def prepare_sql(
     if is_obml(sql):
         obml = parse_obml(sql)
         logger.info("OBML request:\n%s", sql)
-        compiled = server._compile_obml(obml, model, dialect)
+        query, compiled = server._compile_obml(obml, model, dialect)
         sql = server._rewrite_table_names(compiled.sql, model)
         logger.info("Compiled SQL:\n%s", sql)
         # OBML compiles to deterministic SQL like OBSQL; share the cache.
@@ -487,7 +487,11 @@ def prepare_sql(
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
         )
-        return sql, dialect, model, None, _MODE_SEMANTIC, cache_meta
+        # And the same declared schema. Without it the OBML path fell back to
+        # probing the rows, so a model-declared ``timestamp`` streamed with
+        # whatever zone the engine attached rather than as the wall clock.
+        schema_hint = server._semantic_result_schema(query, model)
+        return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
     mode = server._classify_sql(sql, model)
 
@@ -644,18 +648,24 @@ def reject_write_operation(sql: str) -> None:
     )
 
 
-def compile_obml(server: OBFlightServer, obml: dict[str, Any], model: Any, dialect: str) -> Any:
+def compile_obml(
+    server: OBFlightServer, obml: dict[str, Any], model: Any, dialect: str
+) -> tuple[Any, Any]:
     """Compile OBML to SQL using the OrionBelt pipeline directly.
 
-    Returns the full ``CompilationResult`` so callers can access
-    ``sql`` plus ``physical_tables`` (needed for the freshness-
-    driven cache TTL resolution).
+    Returns the parsed ``QueryObject`` with the full ``CompilationResult``, so
+    callers reach ``sql`` and ``physical_tables`` (needed for the
+    freshness-driven cache TTL) *and* the query the declared result schema is
+    built from. The query used to be parsed here and dropped, which left the
+    OBML path advertising a schema inferred from the rows while the OBSQL path
+    advertised the model's own - the same request answered two ways depending
+    on which spelling asked it.
     """
     from orionbelt.compiler.pipeline import CompilationPipeline
     from orionbelt.models.query import QueryObject
 
     query = QueryObject.model_validate(obml)
-    return CompilationPipeline().compile(query, model, dialect)
+    return query, CompilationPipeline().compile(query, model, dialect)
 
 
 def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:

@@ -247,7 +247,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     def _reject_write_operation(sql: str) -> None:
         server_execution.reject_write_operation(sql)
 
-    def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> Any:
+    def _compile_obml(self, obml: dict[str, Any], model: Any, dialect: str) -> tuple[Any, Any]:
         return server_execution.compile_obml(self, obml, model, dialect)
 
     def _execute_sql(

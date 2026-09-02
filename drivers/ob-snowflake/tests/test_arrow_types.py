@@ -93,3 +93,16 @@ def test_a_description_that_does_not_line_up_is_ignored() -> None:
     """Best effort: a loose schema beats a positional cast onto the wrong column."""
     table = pa.table({"N": pa.array([42], type=pa.int8())})
     assert stable_arrow_table(table, [NUMBER_38_0, TEXT]).schema.field(0).type == pa.int8()
+
+
+def test_two_columns_of_one_name_both_survive() -> None:
+    """``SELECT a AS X, b AS X`` is an ordinary result, and a dict keeps one.
+
+    Reached only on the empty path, where the schema is built rather than
+    carried over from the connector's own table.
+    """
+    out = stable_arrow_table(None, [Column("X", 2), Column("X", 0, 38, 0)])
+    assert out is not None
+    assert out.num_columns == 2
+    assert [f.name for f in out.schema] == ["X", "X"]
+    assert [f.type for f in out.schema] == [pa.string(), pa.int64()]

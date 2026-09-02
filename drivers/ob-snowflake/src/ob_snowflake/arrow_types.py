@@ -77,11 +77,14 @@ def stable_arrow_table(table: pa.Table | None, description: list[object] | None)
     if description is None:
         return table
     if table is None:
-        return pa.table(
-            {
-                str(getattr(col, "name", f"c{i}")): pa.array([], type=_column_type(col))
-                for i, col in enumerate(description)
-            }
+        # From arrays and an explicit schema rather than a dict: two columns of
+        # one name is ordinary in a result - ``SELECT a AS X, b AS X`` - and a
+        # dict keeps the last of them.
+        names = [str(getattr(col, "name", f"c{i}")) for i, col in enumerate(description)]
+        types = [_column_type(col) for col in description]
+        return pa.Table.from_arrays(
+            [pa.array([], type=t) for t in types],
+            schema=pa.schema([pa.field(n, t) for n, t in zip(names, types, strict=True)]),
         )
     if table.num_columns != len(description):
         return table
