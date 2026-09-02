@@ -19,14 +19,14 @@ from ob_driver_core.exceptions import (
 )
 
 __all__ = [
-    "Warning",
-    "Error",
-    "InterfaceError",
-    "DatabaseError",
     "DataError",
-    "OperationalError",
+    "DatabaseError",
+    "Error",
     "IntegrityError",
+    "InterfaceError",
     "InternalError",
-    "ProgrammingError",
     "NotSupportedError",
+    "OperationalError",
+    "ProgrammingError",
+    "Warning",
 ]

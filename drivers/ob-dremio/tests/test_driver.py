@@ -16,7 +16,6 @@ from ob_dremio.cursor import Cursor
 from ob_dremio.exceptions import NotSupportedError, ProgrammingError
 from ob_dremio.type_codes import BINARY, DATETIME, NUMBER, STRING
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build mock pyarrow Flight objects
 # ---------------------------------------------------------------------------
@@ -42,7 +41,7 @@ def _make_arrow_field(name: str, type_str: str) -> MagicMock:
 
 def _make_arrow_schema(names: list[str], type_strs: list[str]) -> MagicMock:
     """Create a mock Arrow schema."""
-    fields = [_make_arrow_field(n, t) for n, t in zip(names, type_strs)]
+    fields = [_make_arrow_field(n, t) for n, t in zip(names, type_strs, strict=False)]
     schema = MagicMock()
     schema.__iter__ = MagicMock(return_value=iter(fields))
     return schema
@@ -588,11 +587,10 @@ def test_plain_sql_passthrough() -> None:
     """Plain SQL is passed through without OBML compilation — no REST call."""
     mock_client = _make_mock_client()
     conn = Connection(mock_client)
-    with patch("httpx.post") as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM orders")
-            mock_post.assert_not_called()
-            mock_client.get_flight_info.assert_called_once()
+    with patch("httpx.post") as mock_post, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM orders")
+        mock_post.assert_not_called()
+        mock_client.get_flight_info.assert_called_once()
 
 
 def test_obml_execute_with_description() -> None:
@@ -686,8 +684,8 @@ def test_timestamp_with_params_maps_to_datetime() -> None:
 def test_exceptions_importable() -> None:
     """All PEP 249 exceptions should be importable from ob_dremio.exceptions."""
     from ob_dremio.exceptions import (
-        DataError,
         DatabaseError,
+        DataError,
         Error,
         IntegrityError,
         InterfaceError,

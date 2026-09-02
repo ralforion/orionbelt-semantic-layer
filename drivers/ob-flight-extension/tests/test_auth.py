@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pyarrow.flight as flight
 import pytest
+from pyarrow import flight
 
 from ob_flight.auth import (
     NoopAuthHandler,

@@ -6,8 +6,8 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
-import pyarrow.flight as flight
 import pytest
+from pyarrow import flight
 
 from ob_flight.server import OBFlightServer
 
@@ -102,7 +102,7 @@ class TestGetModel:
     def test_returns_first_model(self, mock_session_manager):
         server = _make_server(mock_session_manager, "duckdb")
 
-        model, dialect = server._get_model()
+        _model, dialect = server._get_model()
         mock_session_manager.get_store.assert_called_once_with("__default__")
         assert dialect == "duckdb"
 
@@ -155,7 +155,7 @@ class TestGetFlightInfo:
             info = server.get_flight_info(context, descriptor)
         assert len(info.endpoints) == 1
         assert len(server._pending) == 1
-        ticket_id = list(server._pending.keys())[0]
+        ticket_id = next(iter(server._pending.keys()))
         pending = server._pending[ticket_id][0]
         # Scalar probes precompute the catalog table at get_flight_info
         # time so FlightInfo advertises the real schema (not a placeholder).
@@ -186,7 +186,7 @@ class TestGetFlightInfo:
         declared_schema.assert_called_once()
         assert declared_schema.call_args[0][0] is query
         assert len(server._pending) == 1
-        ticket_id = list(server._pending.keys())[0]
+        ticket_id = next(iter(server._pending.keys()))
         pending = server._pending[ticket_id][0]
         assert pending[0] == "sql"
         assert pending[1] == compiled_sql
@@ -242,7 +242,7 @@ class TestGetFlightInfo:
 
         info = server.get_flight_info(context, descriptor)
         assert len(info.endpoints) == 1
-        ticket_id = list(server._pending.keys())[0]
+        ticket_id = next(iter(server._pending.keys()))
         pending = server._pending[ticket_id][0]
         assert pending[0] == "catalog"
         assert pending[1] == CMD_GET_TABLES
@@ -694,8 +694,9 @@ class TestFlightCacheEnvelope:
         columns (encode_data infers types from values, and there are none), so a
         Flight cache hit would stream null/null even though FlightInfo advertised
         the real types. Aligning the hit to the advertised schema fixes it."""
-        from ob_flight.server_execution import align_cached_table
         from orionbelt.cache.result_codec import decode_data, encode_data
+
+        from ob_flight.server_execution import align_cached_table
 
         # REST-style empty payload for ["id", "name"] — types inferred as null.
         decoded = decode_data(encode_data(["id", "name"], []))
@@ -714,9 +715,10 @@ class TestFlightCacheEnvelope:
         advertised schema (int64/utf8), not the null/null the blob decoded to."""
         from datetime import UTC, datetime
 
-        from ob_flight import server_execution
         from orionbelt.cache.protocol import CachedResult
         from orionbelt.cache.result_codec import encode_data
+
+        from ob_flight import server_execution
 
         server = _make_server()
         store = {

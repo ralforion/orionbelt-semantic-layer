@@ -147,6 +147,33 @@ jobs:
         working-directory: packages/osi-orionbelt
         run: uv run mypy src/osi_orionbelt
 
+      # The ten driver packages each carry their own ruff/mypy settings - a
+      # PEP 249 driver's signatures are untyped by specification, so the root
+      # config does not describe them. Run each from its own directory, and
+      # keep going after a failure so one package's error does not hide the
+      # rest.
+      - name: Ruff and mypy, driver packages
+        run: |
+          status=0
+          for pkg in drivers/*/; do
+            name=$(basename "$pkg")
+            echo "::group::$name"
+            (
+              cd "$pkg"
+              # ob-bigquery ships no tests yet, so lint what exists. Assigned
+              # on its own line: an assignment carries the exit status of its
+              # command substitution, and inside an && chain a missing tests
+              # directory would skip the checks rather than narrow them.
+              paths="src"
+              [ -d tests ] && paths="src tests"
+              uv run --no-project ruff check $paths \
+                && uv run --no-project ruff format --check $paths \
+                && uv run --no-project mypy src
+            ) || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
   # osi-orionbelt is published with skip-existing, so editing it without
   # bumping its version makes the release upload nothing and still pass. That
   # shipped: the six converter changes in 2.24.0 never reached PyPI, and the

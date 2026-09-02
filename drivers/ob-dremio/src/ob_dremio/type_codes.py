@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "ARROW_TYPE_MAP"]
+__all__ = ["ARROW_TYPE_MAP", "BINARY", "DATETIME", "NUMBER", "ROWID", "STRING"]
 
 # Map base Arrow type string representations to PEP 249 type objects.
 # We strip bracket/parenthesised parameters (e.g. ``timestamp[ns]`` -> ``timestamp``,

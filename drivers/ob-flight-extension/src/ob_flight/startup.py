@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
@@ -114,11 +115,7 @@ def _shutdown_safely(server: Any) -> None:
     ``wait()`` is the call that actually releases the bound port — without
     it, ``shutdown()`` returns but the gRPC C++ thread can keep the socket.
     """
-    try:
+    with contextlib.suppress(Exception):
         server.shutdown()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         server.wait()
-    except Exception:
-        pass

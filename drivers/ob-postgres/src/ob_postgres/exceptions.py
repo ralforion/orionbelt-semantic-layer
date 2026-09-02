@@ -6,8 +6,8 @@ Allows users to do: ``from ob_postgres.exceptions import ProgrammingError``
 from __future__ import annotations
 
 from ob_driver_core.exceptions import (
-    DataError,
     DatabaseError,
+    DataError,
     Error,
     IntegrityError,
     InterfaceError,
@@ -19,14 +19,14 @@ from ob_driver_core.exceptions import (
 )
 
 __all__ = [
-    "Warning",
-    "Error",
-    "InterfaceError",
-    "DatabaseError",
     "DataError",
-    "OperationalError",
+    "DatabaseError",
+    "Error",
     "IntegrityError",
+    "InterfaceError",
     "InternalError",
-    "ProgrammingError",
     "NotSupportedError",
+    "OperationalError",
+    "ProgrammingError",
+    "Warning",
 ]

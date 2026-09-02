@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "PG_OID_MAP"]
+__all__ = ["BINARY", "DATETIME", "NUMBER", "PG_OID_MAP", "ROWID", "STRING"]
 
 # Common PostgreSQL OIDs — see pg_type catalog
 # https://www.postgresql.org/docs/current/catalog-pg-type.html

@@ -36,6 +36,17 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+ignore = [
+    # PEP 249 is an untyped boundary by specification: ``execute()`` takes
+    # whatever the caller passes, and every cursor wraps a native object no
+    # vendor annotates. ``Any`` there is the honest signature, not a missing one.
+    "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# A test reads better with its patches nested, and its return type says nothing
+# a reader needs.
+"tests/**" = ["ANN001", "ANN201", "SIM117"]
 
 [tool.mypy]
 python_version = "3.12"

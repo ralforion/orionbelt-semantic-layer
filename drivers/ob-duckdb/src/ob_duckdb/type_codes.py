@@ -15,7 +15,7 @@ from ob_driver_core.type_codes import (
     DBAPITypeObject,
 )
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "DUCKDB_TYPE_MAP"]
+__all__ = ["BINARY", "DATETIME", "DUCKDB_TYPE_MAP", "NUMBER", "ROWID", "STRING"]
 
 DUCKDB_TYPE_MAP: dict[str, DBAPITypeObject] = {
     # String types

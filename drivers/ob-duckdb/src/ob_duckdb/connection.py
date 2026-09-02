@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import duckdb
 
 from ob_duckdb.cursor import Cursor
@@ -52,10 +54,10 @@ class Connection:
         No-op if no transaction is active (DuckDB auto-commits by default).
         """
         self._check_open()
-        try:
+        # No active transaction is not an error here: DuckDB auto-commits, so
+        # a rollback with nothing open is the ordinary case.
+        with contextlib.suppress(duckdb.TransactionException):
             self._native.rollback()
-        except duckdb.TransactionException:
-            pass  # no active transaction — nothing to roll back
 
     def close(self) -> None:
         """Close the connection."""

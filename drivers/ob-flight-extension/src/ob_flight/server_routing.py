@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import pyarrow.flight as flight
+from pyarrow import flight
 
 if TYPE_CHECKING:
     from ob_flight.server import OBFlightServer

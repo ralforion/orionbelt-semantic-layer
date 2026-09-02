@@ -16,7 +16,6 @@ from ob_postgres.connection import Connection
 from ob_postgres.exceptions import NotSupportedError, ProgrammingError
 from ob_postgres.type_codes import DATETIME, NUMBER, STRING
 
-
 # ---------------------------------------------------------------------------
 # Helper to build a mock psycopg2 connection
 # ---------------------------------------------------------------------------
@@ -417,8 +416,7 @@ def test_plain_sql_passthrough() -> None:
     """Plain SQL is passed through without OBML compilation — no REST call."""
     mock_native = _make_mock_native()
     conn = Connection(mock_native)
-    with patch("httpx.post") as mock_post:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM orders")
-            mock_post.assert_not_called()
-            mock_native.cursor().execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
+    with patch("httpx.post") as mock_post, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM orders")
+        mock_post.assert_not_called()
+        mock_native.cursor().execute.assert_called_once_with("SELECT COUNT(*) FROM orders")

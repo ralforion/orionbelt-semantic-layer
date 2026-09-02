@@ -19,8 +19,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pyarrow as pa
-import pyarrow.flight as flight
 import pytest
+from orionbelt.parser.loader import TrackedLoader
+from orionbelt.parser.resolver import ReferenceResolver
+from pyarrow import flight
 
 from ob_flight.catalog import (
     model_to_flight_infos,
@@ -29,8 +31,6 @@ from ob_flight.catalog import (
 from ob_flight.flight_sql import build_columns_table, build_tables_table
 from ob_flight.server import OBFlightServer
 from ob_flight.server_execution import semantic_result_schema
-from orionbelt.parser.loader import TrackedLoader
-from orionbelt.parser.resolver import ReferenceResolver
 
 # Inline a small OBML model — independent of the main project's fixtures.
 _MODEL_YAML = """\

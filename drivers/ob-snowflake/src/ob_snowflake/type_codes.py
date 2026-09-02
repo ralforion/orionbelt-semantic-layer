@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "SF_TYPE_MAP"]
+__all__ = ["BINARY", "DATETIME", "NUMBER", "ROWID", "SF_TYPE_MAP", "STRING"]
 
 # Snowflake type IDs from snowflake.connector.constants.FIELD_ID_TO_NAME
 SF_TYPE_MAP: dict[int, object] = {

@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-import pyarrow.flight as flight
+from pyarrow import flight
 
 from ob_flight.catalog import (
     VIRTUAL_TABLES,

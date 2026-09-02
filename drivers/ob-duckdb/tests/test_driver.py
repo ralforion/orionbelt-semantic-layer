@@ -15,7 +15,6 @@ from ob_duckdb.connection import Connection
 from ob_duckdb.exceptions import NotSupportedError, ProgrammingError
 from ob_duckdb.type_codes import DATETIME, NUMBER, STRING
 
-
 # ---------------------------------------------------------------------------
 # PEP 249 module-level constants
 # ---------------------------------------------------------------------------
@@ -53,10 +52,9 @@ def test_connect_memory_default() -> None:
 
 
 def test_connect_context_manager() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            assert cur.fetchone() == (1,)
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1")
+        assert cur.fetchone() == (1,)
 
 
 # ---------------------------------------------------------------------------
@@ -95,88 +93,80 @@ def test_connection_rollback() -> None:
 
 
 def test_cursor_execute_select() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS a, 'hello' AS b, CAST(3.14 AS DOUBLE) AS c")
-            row = cur.fetchone()
-            assert row == (1, "hello", 3.14)
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 AS a, 'hello' AS b, CAST(3.14 AS DOUBLE) AS c")
+        row = cur.fetchone()
+        assert row == (1, "hello", 3.14)
 
 
 def test_cursor_description() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS num, 'txt' AS str, CURRENT_DATE AS dt")
-            desc = cur.description
-            assert desc is not None
-            assert len(desc) == 3
-            # Each entry is a 7-tuple
-            assert all(len(col) == 7 for col in desc)
-            # Column names
-            assert desc[0][0] == "num"
-            assert desc[1][0] == "str"
-            assert desc[2][0] == "dt"
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 AS num, 'txt' AS str, CURRENT_DATE AS dt")
+        desc = cur.description
+        assert desc is not None
+        assert len(desc) == 3
+        # Each entry is a 7-tuple
+        assert all(len(col) == 7 for col in desc)
+        # Column names
+        assert desc[0][0] == "num"
+        assert desc[1][0] == "str"
+        assert desc[2][0] == "dt"
 
 
 def test_cursor_description_type_codes() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT "
-                "CAST(1 AS INTEGER) AS i, "
-                "CAST('x' AS VARCHAR) AS v, "
-                "CAST('2024-01-01' AS DATE) AS d, "
-                "CAST(1.5 AS DOUBLE) AS f"
-            )
-            desc = cur.description
-            assert desc is not None
-            assert desc[0][1] == NUMBER
-            assert desc[1][1] == STRING
-            assert desc[2][1] == DATETIME
-            assert desc[3][1] == NUMBER
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "CAST(1 AS INTEGER) AS i, "
+            "CAST('x' AS VARCHAR) AS v, "
+            "CAST('2024-01-01' AS DATE) AS d, "
+            "CAST(1.5 AS DOUBLE) AS f"
+        )
+        desc = cur.description
+        assert desc is not None
+        assert desc[0][1] == NUMBER
+        assert desc[1][1] == STRING
+        assert desc[2][1] == DATETIME
+        assert desc[3][1] == NUMBER
 
 
 def test_cursor_fetchall() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
-            rows = cur.fetchall()
-            assert len(rows) == 3
-            assert rows[0] == (1, "a")
-            assert rows[2] == (3, "c")
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
+        rows = cur.fetchall()
+        assert len(rows) == 3
+        assert rows[0] == (1, "a")
+        assert rows[2] == (3, "c")
 
 
 def test_cursor_fetchmany() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM range(10) AS t(n)")
-            batch = cur.fetchmany(3)
-            assert len(batch) == 3
-            rest = cur.fetchall()
-            assert len(rest) == 7
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM range(10) AS t(n)")
+        batch = cur.fetchmany(3)
+        assert len(batch) == 3
+        rest = cur.fetchall()
+        assert len(rest) == 7
 
 
 def test_cursor_fetchone_exhausted() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            assert cur.fetchone() is not None
-            assert cur.fetchone() is None
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1")
+        assert cur.fetchone() is not None
+        assert cur.fetchone() is None
 
 
 def test_cursor_iteration() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM range(5) AS t(n)")
-            rows = list(cur)
-            assert len(rows) == 5
-            assert rows[0] == (0,)
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM range(5) AS t(n)")
+        rows = list(cur)
+        assert len(rows) == 5
+        assert rows[0] == (0,)
 
 
 def test_cursor_execute_returns_self() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            result = cur.execute("SELECT 1")
-            assert result is cur
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        result = cur.execute("SELECT 1")
+        assert result is cur
 
 
 def test_cursor_close_then_fetch_raises() -> None:
@@ -189,45 +179,39 @@ def test_cursor_close_then_fetch_raises() -> None:
 
 
 def test_cursor_executemany_plain_sql() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("CREATE TABLE t (id INTEGER, name VARCHAR)")
-            cur.executemany("INSERT INTO t VALUES (?, ?)", [(1, "a"), (2, "b")])
-            cur.execute("SELECT COUNT(*) FROM t")
-            assert cur.fetchone() == (2,)
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("CREATE TABLE t (id INTEGER, name VARCHAR)")
+        cur.executemany("INSERT INTO t VALUES (?, ?)", [(1, "a"), (2, "b")])
+        cur.execute("SELECT COUNT(*) FROM t")
+        assert cur.fetchone() == (2,)
 
 
 def test_cursor_executemany_obml_raises() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            obml = "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
-            with pytest.raises(NotSupportedError, match="executemany"):
-                cur.executemany(obml, [])
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        obml = "select:\n  dimensions:\n    - Region\n  measures:\n    - Revenue\n"
+        with pytest.raises(NotSupportedError, match="executemany"):
+            cur.executemany(obml, [])
 
 
 def test_cursor_setinputsizes_noop() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.setinputsizes([])  # should not raise
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.setinputsizes([])  # should not raise
 
 
 def test_cursor_setoutputsize_noop() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.setoutputsize(1000)  # should not raise
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.setoutputsize(1000)  # should not raise
 
 
 def test_cursor_lastrowid_is_none() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            assert cur.lastrowid is None
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        assert cur.lastrowid is None
 
 
 def test_cursor_with_parameters() -> None:
-    with ob_duckdb.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT ? + ? AS result", [3, 4])
-            assert cur.fetchone() == (7,)
+    with ob_duckdb.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT ? + ? AS result", [3, 4])
+        assert cur.fetchone() == (7,)
 
 
 # ---------------------------------------------------------------------------

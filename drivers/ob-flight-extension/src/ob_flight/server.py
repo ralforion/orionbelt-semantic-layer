@@ -9,7 +9,7 @@ import uuid
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.flight as flight
+from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
 from ob_flight.db_router import connect as db_connect
@@ -53,10 +53,10 @@ from ob_flight.server_routing import (
 logger = logging.getLogger("ob_flight.server")
 
 __all__ = [
+    "_ROUTING_MIDDLEWARE_KEY",
     "OBFlightServer",
     "_SessionRoutingFactory",
     "_SessionRoutingMiddleware",
-    "_ROUTING_MIDDLEWARE_KEY",
     "db_connect",
 ]
 
@@ -591,5 +591,4 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             model, _ = self._get_model(context)
         except Exception:
             return
-        for info in model_to_flight_infos(model, "default"):
-            yield info
+        yield from model_to_flight_infos(model, "default")
