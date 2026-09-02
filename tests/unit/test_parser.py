@@ -2294,3 +2294,21 @@ measures:
         """The skip is for the borrowed fault only, not for any body that reads a column."""
         codes = [e.code for e in self._column_errors("ABS({[Event].[Amount]} + 1")]
         assert "INVALID_MEASURE_EXPRESSION" in codes, codes
+
+    def test_a_measure_reading_a_refused_column_keeps_its_own_syntax_error(self) -> None:
+        """Both faults in one pass, rather than one per reload.
+
+        Skipping the measure whole would hide a trailing '+' behind the
+        column's error: the author fixes the column, reloads, and the model
+        fails a second time for something that was there all along.
+        """
+        codes = [e.code for e in self._column_errors("{[Event].[Bad]} +")]
+        assert "INVALID_COLUMN_EXPRESSION" in codes, codes
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes
+
+    def test_the_probe_leaves_the_model_alone(self) -> None:
+        """Validation answers a question about the model; it does not edit one."""
+        raw, source_map = TrackedLoader().load_string(self.COLUMN_TEMPLATE % "{[Event].[Bad]} + 1")
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        SemanticValidator().validate(model)
+        assert model.data_objects["Event"].columns["Bad"].expression == "CAST({Amount} AS integer)"

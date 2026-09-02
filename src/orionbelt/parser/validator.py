@@ -1221,6 +1221,30 @@ class SemanticValidator:
             )
         return errors
 
+    @staticmethod
+    def _model_without(
+        model: SemanticModel, refused_columns: set[tuple[str, str]]
+    ) -> SemanticModel:
+        """*model* with the body of each refused computed column dropped.
+
+        Such a column then reads as a plain column reference - the parser takes
+        one anywhere it takes an expression - which is what a body that cannot
+        be read has to stand for while another expression is being judged.
+
+        Copied rather than mutated, and only along the path to a refused
+        column: the model belongs to whoever asked for validation, and this is
+        a probe.
+        """
+        objects = dict(model.data_objects)
+        for obj_name, col_name in refused_columns:
+            obj = objects.get(obj_name)
+            if obj is None or col_name not in obj.columns:
+                continue
+            columns = dict(obj.columns)
+            columns[col_name] = columns[col_name].model_copy(update={"expression": None})
+            objects[obj_name] = obj.model_copy(update={"columns": columns})
+        return model.model_copy(update={"data_objects": objects})
+
     def _check_measure_expressions(
         self, model: SemanticModel, refused_columns: set[tuple[str, str]]
     ) -> list[SemanticError]:
@@ -1240,15 +1264,18 @@ class SemanticValidator:
 
         Which is also why *refused_columns* is needed: the tokenizer inlines a
         computed column's body in place, so a measure reading a column already
-        refused fails to parse for a fault that is not the measure's. Reported
-        once, at the column, or one bad column would multiply into an error per
-        measure that reads it.
+        refused would fail to parse for a fault that is not the measure's, and
+        one bad column would multiply into an error per measure that reads it.
+        Parsed against :meth:`_model_without` instead, where those columns stand
+        for themselves, so what is left to fail is the measure's own syntax and
+        an author sees both faults in one pass rather than one per reload.
         """
         from orionbelt.compiler.expr_parser import (
             parse_expression,
             tokenize_measure_expression,
         )
 
+        probe = self._model_without(model, refused_columns) if refused_columns else model
         errors: list[SemanticError] = []
         for name, measure in model.measures.items():
             if not measure.expression:
@@ -1258,10 +1285,8 @@ class SemanticValidator:
                 # reference the scanner cannot read does not parse either, and
                 # "missing ']' on column" is the useful half of that pair.
                 continue
-            if any(ref in refused_columns for ref in find_qualified_refs(measure.expression)):
-                continue
             try:
-                parse_expression(tokenize_measure_expression(measure.expression, model))
+                parse_expression(tokenize_measure_expression(measure.expression, probe))
             except RecursionError:
                 continue
             except Exception as exc:  # noqa: BLE001 - any parse failure, reported as one
