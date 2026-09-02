@@ -5,7 +5,7 @@ SELECT
   CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_quantity")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Quantity",
   CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_ext_sales_price")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Ext Sales Price",
   CAST(round(toDecimal256(toString(AVG("Store Sales"."ss_ext_wholesale_cost")), 7), 6) AS Nullable(Decimal(18, 6))) AS "Avg Ext Wholesale Cost",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_wholesale_cost")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Ext Wholesale Cost Sum"
+  CAST(round(SUM("Store Sales"."ss_ext_wholesale_cost"), 2) AS Nullable(Decimal(18, 2))) AS "Ext Wholesale Cost Sum"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."date_dim" AS "Date"
   ON "Store Sales"."ss_sold_date_sk" = "Date"."d_date_sk"

@@ -367,7 +367,9 @@ class Dialect(ABC):
             return f"DECIMAL({p}, {s})"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
-    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+    def cast_to_obml_type(
+        self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
+    ) -> Expr:
         """Build an Expr that coerces ``expr`` to the given OBML type.
 
         Default form is a plain ``CAST(expr AS <type>)``. Dialects whose
@@ -381,11 +383,16 @@ class Dialect(ABC):
         keep its own type, and the one the declared ``resultType`` applies on
         top - agree whenever the model declares what the grain already
         produces, and ``CAST(CAST(x AS DATE) AS DATE)`` says it twice.
+
+        *source_exact* is the caller's statement that no float can reach this
+        cast, which only a caller holding the model can make. It rides on the
+        node - see :class:`~orionbelt.ast.nodes.Cast` - and every dialect but
+        ClickHouse ignores it.
         """
         rendered = self.render_obml_type(obml_type)
         if isinstance(expr, Cast) and expr.type_name == rendered:
             return expr
-        return Cast(expr=expr, type_name=rendered)
+        return Cast(expr=expr, type_name=rendered, source_exact=source_exact)
 
     # Widest decimal every supported engine accepts, and the integer digits kept
     # free for a running total. A sum is as many digits as its rows make it, so
@@ -1573,7 +1580,7 @@ class Dialect(ABC):
             result += f" WITHIN GROUP (ORDER BY {ob})"
         return result
 
-    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+    def _compile_cast(self, inner: Expr, type_name: str, *, source_exact: bool = False) -> str:
         """Render ``CAST(expr AS type)``. Dialects override to handle nullability."""
         resolved_type = self._resolve_type_name(type_name)
         return f"CAST({self.compile_expr(inner)} AS {resolved_type})"
@@ -2014,8 +2021,8 @@ class Dialect(ABC):
                     parts.append(f"ELSE {self.compile_expr(else_)}")
                 parts.append("END")
                 return " ".join(parts)
-            case Cast(expr=inner, type_name=type_name):
-                return self._compile_cast(inner, type_name)
+            case Cast(expr=inner, type_name=type_name, source_exact=source_exact):
+                return self._compile_cast(inner, type_name, source_exact=source_exact)
             case SubqueryExpr(query=query):
                 return f"(\n{self.compile_select(query)}\n)"
             case Exists(subquery=subq, negated=False):

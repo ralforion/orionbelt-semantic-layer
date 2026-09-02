@@ -10,7 +10,7 @@ WITH "base" AS (
     "Item"."i_current_price" AS "Current Price",
     "Item"."i_wholesale_cost" AS "Item Wholesale Cost",
     "Item"."i_brand" AS "Brand",
-    CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
+    CAST(round(SUM("Store Sales"."ss_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Sales Price Sum",
     SUM("Store Sales"."ss_sales_price") AS "Store Revenue",
     COUNT(
       DISTINCT CASE

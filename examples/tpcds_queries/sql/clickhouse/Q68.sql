@@ -7,9 +7,9 @@ SELECT
   "Customer Address"."ca_city" AS "Customer City",
   "Sale Address"."ca_city" AS "Bought City",
   "Store Sales"."ss_ticket_number" AS "Ticket Number",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_list_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Ext List Price",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_tax")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Ext Tax"
+  CAST(round(SUM("Store Sales"."ss_ext_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount",
+  CAST(round(SUM("Store Sales"."ss_ext_list_price"), 2) AS Nullable(Decimal(18, 2))) AS "Store Ext List Price",
+  CAST(round(SUM("Store Sales"."ss_ext_tax"), 2) AS Nullable(Decimal(18, 2))) AS "Store Ext Tax"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."customer" AS "Customer"
   ON "Store Sales"."ss_customer_sk" = "Customer"."c_customer_sk"

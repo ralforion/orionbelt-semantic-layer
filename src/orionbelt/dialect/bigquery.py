@@ -103,11 +103,18 @@ class BigQueryDialect(Dialect):
             return "NUMERIC"
         return self._OBML_SIMPLE_TYPE_MAP.get(obml_type.name, obml_type.name.upper())
 
-    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+    def cast_to_obml_type(
+        self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
+    ) -> Expr:
         """BigQuery: wrap the CAST with ROUND for DecimalType to enforce the
         OBML-specified scale, since BigQuery's CAST drops the scale parameter.
+
+        *source_exact* is carried onto the node and otherwise unread here: this
+        engine's CAST does not truncate a float, so it has nothing to skip.
         """
-        cast_expr = Cast(expr=expr, type_name=self.render_obml_type(obml_type))
+        cast_expr = Cast(
+            expr=expr, type_name=self.render_obml_type(obml_type), source_exact=source_exact
+        )
         if isinstance(obml_type, DecimalType):
             return FunctionCall(name="ROUND", args=[cast_expr, Literal.number(obml_type.scale)])
         return cast_expr

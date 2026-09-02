@@ -139,10 +139,20 @@ class CaseExpr:
 
 @dataclass(frozen=True)
 class Cast:
-    """CAST(expr AS type)."""
+    """CAST(expr AS type).
+
+    ``source_exact`` says the value being cast cannot be a float: an aggregate
+    that carries its operand's type over a column the model declares with an
+    exact width. Only the compiler can know it - the model is where the widths
+    are - so it is recorded here rather than inferred at codegen, and only
+    ClickHouse reads it. That engine converts through the value's own text to
+    round a float exactly, which an exact operand does not need and which is
+    most of the length of its generated SQL.
+    """
 
     expr: Expr
     type_name: str
+    source_exact: bool = False
 
 
 @dataclass(frozen=True)

@@ -381,6 +381,60 @@ def _widen_to_integer_range(default: DecimalType) -> DecimalType:
     )
 
 
+#: Aggregates that answer their operand's own type, so an exact operand makes an
+#: exact result. ``AVG`` is deliberately absent: measured on ClickHouse, it
+#: answers Float64 even over a Decimal column, which is the case an engine's
+#: exactness rewrite exists for. So are the statistical ones, which are floating
+#: by definition, and ``MEDIAN``, which interpolates.
+_TYPE_PRESERVING_AGGREGATIONS = frozenset({"SUM", "MIN", "MAX", "ANY_VALUE"})
+
+
+def measure_source_is_exact(measure: Measure, model: SemanticModel | None) -> bool:
+    """Whether no floating value can reach this measure's cast.
+
+    A dialect renders from the AST, where a column carries its abstract type
+    and nothing else - and OBML's abstract types have no ``decimal``, so a
+    decimal column is declared ``float`` and the width lives in ``sqlPrecision``
+    and ``sqlScale`` on the model. Only a caller holding the model can answer
+    this, so it is answered here and carried on the node (see
+    :class:`~orionbelt.ast.nodes.Cast`).
+
+    True needs all of:
+
+    * an aggregate that carries its operand's type through, per
+      :data:`_TYPE_PRESERVING_AGGREGATIONS`;
+    * the ``columns:`` form, which names its source outright. An ``expression``
+      may divide, or name a column this cannot see;
+    * every named column declared with a width - ``sqlPrecision`` **and**
+      ``sqlScale``, the pair ``cfl_projection`` already trusts - or declared
+      ``int``, which has no fraction to lose. A computed column is excluded:
+      its body is an expression again;
+    * a ``defaultValue`` that is absent or whole. Measured, ``coalesce(SUM(dec),
+      0)`` is a Decimal and ``coalesce(SUM(dec), 0.5)`` is a Variant carrying a
+      Float64.
+
+    It trusts the model to describe its warehouse, the way the union-alignment
+    width already does. A column declared exact that is really a float loses the
+    place its engine would have rounded, which is what the declaration promises
+    it is not.
+    """
+    if model is None or measure.expression or not measure.columns:
+        return False
+    if measure.aggregation.upper() not in _TYPE_PRESERVING_AGGREGATIONS:
+        return False
+    if isinstance(measure.default_value, float) and measure.default_value % 1:
+        return False
+    for ref in measure.columns:
+        obj = model.data_objects.get(ref.view or "")
+        column = obj.columns.get(ref.column) if obj and ref.column else None
+        if column is None or column.expression:
+            return False
+        exact_width = column.sql_precision is not None and column.sql_scale is not None
+        if not exact_width and column.abstract_type is not DataType.INT:
+            return False
+    return True
+
+
 def cast_measure_to_resolved_type(
     expr: Expr,
     measure: Measure,
@@ -412,7 +466,9 @@ def cast_measure_to_resolved_type(
     resolved = resolve_measure_cast_type(measure, settings, dialect, model)
     if resolved is None:
         return expr
-    return dialect.cast_to_obml_type(expr, resolved)
+    return dialect.cast_to_obml_type(
+        expr, resolved, source_exact=measure_source_is_exact(measure, model)
+    )
 
 
 def _unwrap_default(expr: Expr) -> tuple[Expr, Callable[[Expr], Expr]]:

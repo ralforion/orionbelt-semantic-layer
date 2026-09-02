@@ -311,7 +311,9 @@ class MySQLDialect(Dialect):
         )
         return f"LEFT JOIN {table} ON TRUE" if node.outer else f", {table}"
 
-    def cast_to_obml_type(self, expr: Expr, obml_type: OBMLType) -> Expr:
+    def cast_to_obml_type(
+        self, expr: Expr, obml_type: OBMLType, *, source_exact: bool = False
+    ) -> Expr:
         """MySQL: a measure's decimal cast carries at least 38 digits.
 
         Every other supported engine refuses a value the target type cannot
@@ -348,7 +350,7 @@ class MySQLDialect(Dialect):
         rendered = self.render_obml_type(self._widened(obml_type))
         if isinstance(expr, Cast) and expr.type_name == rendered:
             return expr
-        return Cast(expr=expr, type_name=rendered)
+        return Cast(expr=expr, type_name=rendered, source_exact=source_exact)
 
     @staticmethod
     def _widened(obml_type: OBMLType) -> OBMLType:
@@ -378,7 +380,7 @@ class MySQLDialect(Dialect):
         wide = "DECIMAL(38, 14)"
         return f"CAST({left_sql} AS {wide}) / CAST({right_sql} AS {wide})"
 
-    def _compile_cast(self, inner: Expr, type_name: str) -> str:
+    def _compile_cast(self, inner: Expr, type_name: str, *, source_exact: bool = False) -> str:
         """MySQL ``CAST`` accepts a fixed vocabulary that excludes ``VARCHAR``.
 
         Allowed target types in MySQL are ``BINARY``, ``CHAR``, ``DATE``,

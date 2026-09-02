@@ -5,7 +5,7 @@ SELECT
   "Date"."d_year" AS "Year",
   "Item"."i_brand" AS "Brand",
   "Item"."i_brand_id" AS "Brand ID",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount"
+  CAST(round(SUM("Store Sales"."ss_ext_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount"
 FROM "tpcds"."store_sales" AS "Store Sales"
 LEFT JOIN "tpcds"."date_dim" AS "Date"
   ON "Store Sales"."ss_sold_date_sk" = "Date"."d_date_sk"

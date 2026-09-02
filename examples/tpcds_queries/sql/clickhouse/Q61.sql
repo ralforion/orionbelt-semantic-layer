@@ -3,22 +3,17 @@
 
 SELECT
   CAST(round(
-    toDecimal256(
-      toString(
-        SUM(
-          CASE
-            WHEN "Promotion"."p_channel_dmail" = 'Y'
-            OR "Promotion"."p_channel_email" = 'Y'
-            OR "Promotion"."p_channel_tv" = 'Y'
-            THEN "Store Sales"."ss_ext_sales_price"
-          END
-        )
-      ),
-      3
+    SUM(
+      CASE
+        WHEN "Promotion"."p_channel_dmail" = 'Y'
+        OR "Promotion"."p_channel_email" = 'Y'
+        OR "Promotion"."p_channel_tv" = 'Y'
+        THEN "Store Sales"."ss_ext_sales_price"
+      END
     ),
     2
   ) AS Nullable(Decimal(18, 2))) AS "Promotional Sales",
-  CAST(round(toDecimal256(toString(SUM("Store Sales"."ss_ext_sales_price")), 3), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount",
+  CAST(round(SUM("Store Sales"."ss_ext_sales_price"), 2) AS Nullable(Decimal(18, 2))) AS "Store Sales Amount",
   CAST(round(
     toDecimal256(
       toString(
