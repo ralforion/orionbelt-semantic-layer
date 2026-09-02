@@ -11,6 +11,7 @@ from orionbelt.models.errors import SemanticError
 from orionbelt.models.expressions import (
     QUALIFIED_COLUMN_REF,
     find_function_calls,
+    find_malformed_measure_refs,
     find_placeholders,
     find_qualified_refs,
 )
@@ -1218,6 +1219,11 @@ class SemanticValidator:
         errors: list[SemanticError] = []
         for name, measure in model.measures.items():
             if not measure.expression:
+                continue
+            if find_malformed_measure_refs(measure.expression):
+                # Reported once, by the check that names the bracket: a
+                # reference the scanner cannot read does not parse either, and
+                # "missing ']' on column" is the useful half of that pair.
                 continue
             try:
                 parse_expression(tokenize_measure_expression(measure.expression, model))

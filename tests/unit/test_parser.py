@@ -2221,3 +2221,32 @@ measures:
     def test_a_valid_expression_still_loads(self) -> None:
         errors = self._errors("ABS({[Event].[Amount]} + 1)")
         assert not any(e.code == "INVALID_MEASURE_EXPRESSION" for e in errors)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "ABS({[Event].Amount]} + 1)",  # missing '[' on the column
+            "ABS({[Event][Amount]} + 1)",  # missing the '.' separator
+            "ABS({[Event].[Amount} + 1)",  # missing ']' on the column
+        ],
+    )
+    def test_a_malformed_reference_is_reported_once(self, expr: str) -> None:
+        """By the check that names the bracket, not twice.
+
+        A reference the scanner cannot read does not parse either, so both
+        checks have something to say about it. "missing opening '[' on column"
+        is the half that tells the author what to type; a second error saying
+        the same body does not parse is noise on the same line.
+        """
+        codes = [e.code for e in self._errors(expr)]
+        assert "INVALID_MEASURE_EXPRESSION" not in codes, codes
+
+    def test_the_reference_check_still_names_the_bracket(self) -> None:
+        """The half that is kept has to actually be reported."""
+        raw, source_map = TrackedLoader().load_string(
+            self.TEMPLATE.format(expr="ABS({[Event].Amount]} + 1)")
+        )
+        _model, result = ReferenceResolver().resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing opening '[' on column" in malformed[0].message
