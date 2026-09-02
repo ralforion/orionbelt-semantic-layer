@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.flight as flight
 
 from ob_driver_core.detection import is_obml, parse_obml  # type: ignore[import-untyped]
@@ -382,6 +383,36 @@ def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
     return decimal_arrow_type(precision, scale, exact=True)
 
 
+def _dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:
+    """The column a selected dimension produces, and the model's declaration of it.
+
+    Both have to be read the way the compiler reads them, or the advertised
+    schema names columns the stream does not have:
+
+    * ``"At:day"`` is a grain request. The compiler resolves it through
+      :meth:`DimensionRef.parse` and projects ``AS "At"``, so the entry is
+      neither the label nor the lookup key - taking it for both advertised
+      ``At:day`` as a string beside a stream carrying a timestamp called ``At``.
+    * a coalesce entry names its output in ``as`` and its inputs in
+      ``coalesce``. The alias is the label, and the type is its members', which
+      the model requires to agree; looking the alias up in ``model.dimensions``
+      finds nothing and called a timestamp a string.
+    """
+    from orionbelt.models.query import DimensionRef
+
+    if isinstance(entry, str):
+        name = DimensionRef.parse(entry).name
+        return name, model.dimensions.get(name)
+    label = getattr(entry, "alias", None)
+    if label is None:
+        return None, None
+    for member in getattr(entry, "coalesce", None) or []:
+        declared = model.dimensions.get(member)
+        if declared is not None:
+            return label, declared
+    return label, None
+
+
 def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa.Schema:
     """Build the result Arrow schema for a semantic query without DB I/O.
 
@@ -394,11 +425,10 @@ def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa
     fields: list[pa.Field] = []
     dims = getattr(query.select, "dimensions", [])
     measures = getattr(query.select, "measures", [])
-    for name in dims:
-        label = name if isinstance(name, str) else getattr(name, "alias", None)
+    for entry in dims:
+        label, dim = _dimension_label_and_declaration(entry, model)
         if label is None:
             continue
-        dim = model.dimensions.get(label)
         rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
         fields.append(pa.field(label, _obml_type_to_arrow(rt)))
     for label in measures:
@@ -415,8 +445,8 @@ def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa
     if query.grouping is not None:
         # GROUPING() flag columns — int64, one per dimension. See
         # PLAN_with_rollup.md §"Output: GROUPING() flag columns".
-        for name in dims:
-            label = name if isinstance(name, str) else getattr(name, "alias", None)
+        for entry in dims:
+            label, _ = _dimension_label_and_declaration(entry, model)
             if label is None:
                 continue
             fields.append(pa.field(f"_g_{label}", pa.int64()))
@@ -476,7 +506,7 @@ def prepare_sql(
     if is_obml(sql):
         obml = parse_obml(sql)
         logger.info("OBML request:\n%s", sql)
-        compiled = server._compile_obml(obml, model, dialect)
+        query, compiled = server._compile_obml(obml, model, dialect)
         sql = server._rewrite_table_names(compiled.sql, model)
         logger.info("Compiled SQL:\n%s", sql)
         # OBML compiles to deterministic SQL like OBSQL; share the cache.
@@ -486,7 +516,11 @@ def prepare_sql(
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
         )
-        return sql, dialect, model, None, _MODE_SEMANTIC, cache_meta
+        # And the same declared schema. Without it the OBML path fell back to
+        # probing the rows, so a model-declared ``timestamp`` streamed with
+        # whatever zone the engine attached rather than as the wall clock.
+        schema_hint = server._semantic_result_schema(query, model)
+        return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
     mode = server._classify_sql(sql, model)
 
@@ -643,18 +677,24 @@ def reject_write_operation(sql: str) -> None:
     )
 
 
-def compile_obml(server: OBFlightServer, obml: dict[str, Any], model: Any, dialect: str) -> Any:
+def compile_obml(
+    server: OBFlightServer, obml: dict[str, Any], model: Any, dialect: str
+) -> tuple[Any, Any]:
     """Compile OBML to SQL using the OrionBelt pipeline directly.
 
-    Returns the full ``CompilationResult`` so callers can access
-    ``sql`` plus ``physical_tables`` (needed for the freshness-
-    driven cache TTL resolution).
+    Returns the parsed ``QueryObject`` with the full ``CompilationResult``, so
+    callers reach ``sql`` and ``physical_tables`` (needed for the
+    freshness-driven cache TTL) *and* the query the declared result schema is
+    built from. The query used to be parsed here and dropped, which left the
+    OBML path advertising a schema inferred from the rows while the OBSQL path
+    advertised the model's own - the same request answered two ways depending
+    on which spelling asked it.
     """
     from orionbelt.compiler.pipeline import CompilationPipeline
     from orionbelt.models.query import QueryObject
 
     query = QueryObject.model_validate(obml)
-    return CompilationPipeline().compile(query, model, dialect)
+    return query, CompilationPipeline().compile(query, model, dialect)
 
 
 def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:
@@ -682,10 +722,51 @@ def align_cached_table(table: pa.Table, schema: pa.Schema | None) -> pa.Table:
             # Column set/order differs from the advertised schema — don't risk
             # a positional cast onto the wrong columns.
             return table
-        return table.cast(schema)
+        return _wall_clock_where_naive(table, schema).cast(schema)
     except Exception:
         logger.debug("cache hit schema align failed; streaming raw", exc_info=True)
         return table
+
+
+def _wall_clock_where_naive(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Read a zoned column as the wall clock, where the model asked for one.
+
+    OBML declares two timestamp types and the difference is the whole point of
+    the pair: ``timestamp`` is a wall clock, ``timestamp_tz`` is an instant.
+    Arrow reconciles a zoned column with a naive declaration by converting to
+    UTC, which answers the second question when the first was asked - measured
+    on a ClickHouse server set to Europe/Berlin, a declared 13:45 streamed as
+    11:45.
+
+    ClickHouse is the engine that reaches this, because it has no zone-free
+    ``DateTime``: the type is an instant that renders against the server's
+    timezone. Its own SQL answers ``13:45+02:00``, so 13:45 is the clock the
+    statement shows and the one a naive column has to carry.
+
+    Advertising the zone instead was measured and rejected: it makes what a BI
+    tool displays depend on the tool's session timezone (13:45 in Berlin, 07:45
+    in New York) for a value that has no instant to convert, and it leaves this
+    engine alone among the eight in answering a zoned column where the other
+    seven answer naive.
+
+    ``local_timestamp`` reads the offset *at each value* rather than once, so a
+    column crossing a DST boundary keeps 13:45 on both sides of it - a single
+    offset would be an hour out for half the year.
+
+    Stated in terms of the two Arrow types, not the engine: anything answering
+    zoned where the model declared naive is read the same way, and a
+    ``timestamp_tz`` target is left exactly as it was.
+    """
+    for i, field in enumerate(schema):
+        source = table.column(i).type
+        if (
+            pa.types.is_timestamp(source)
+            and source.tz is not None
+            and pa.types.is_timestamp(field.type)
+            and field.type.tz is None
+        ):
+            table = table.set_column(i, field.name, pc.local_timestamp(table.column(i)))
+    return table
 
 
 def execute_sql(

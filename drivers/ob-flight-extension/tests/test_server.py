@@ -123,9 +123,13 @@ class TestCompileObml:
 
         with patch("orionbelt.compiler.pipeline.CompilationPipeline", mock_pipeline_cls):
             with patch("orionbelt.models.query.QueryObject", mock_qo_cls):
-                result = server._compile_obml(
+                query, result = server._compile_obml(
                     {"select": {"dimensions": ["Region"]}}, model, "duckdb"
                 )
+                # The query comes back with the result: the OBML path needs it
+                # to advertise the model's declared schema rather than one
+                # probed from the rows.
+                assert query is not None
                 assert result.sql == "SELECT region FROM orders"
                 mock_qo_cls.model_validate.assert_called_once()
                 mock_pipeline_cls.return_value.compile.assert_called_once()
@@ -170,9 +174,17 @@ class TestGetFlightInfo:
         compiled = MagicMock()
         compiled.sql = compiled_sql
         compiled.physical_tables = []
-        with patch.object(server, "_compile_obml", return_value=compiled):
+        query = MagicMock()
+        with patch.object(server, "_compile_obml", return_value=(query, compiled)):
             with patch.object(server, "_probe_schema", return_value=self._mock_probe()):
-                server.get_flight_info(context, descriptor)
+                with patch.object(
+                    server, "_semantic_result_schema", return_value=self._mock_probe()
+                ) as declared_schema:
+                    server.get_flight_info(context, descriptor)
+        # The declared schema, not a probe of the rows: an OBML request and the
+        # OBSQL spelling of it have to be answered the same way.
+        declared_schema.assert_called_once()
+        assert declared_schema.call_args[0][0] is query
         assert len(server._pending) == 1
         ticket_id = list(server._pending.keys())[0]
         pending = server._pending[ticket_id][0]
