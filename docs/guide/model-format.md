@@ -594,7 +594,7 @@ measures:
 | `columns` | list | No | List of column references (`dataObject`+`column`) for simple single-column measures |
 | `resultType` | enum | Yes | Data type of the result. Emitted as a CAST around the aggregate, so the measure carries its declared precision and type |
 | `aggregation` | enum | Yes | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `any_value`, `median`, `mode`, `listagg`; statistical: `stddev`, `stddev_pop`, `variance`, `var_pop`, `corr`, `covar_pop`, `covar_samp`, `regr_slope`, `regr_intercept` — see [Aggregation Types](#aggregation-types) for dialect coverage |
-| `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders |
+| `expression` | string | No | Expression with `{[DataObject].[Column]}` placeholders. It has to parse: a body the expression parser does not accept is refused at load with `INVALID_MEASURE_EXPRESSION`, the way a computed column's is with `INVALID_COLUMN_EXPRESSION` |
 | `distinct` | bool | No | Apply DISTINCT to aggregation |
 | `total` | bool | No | Grand total shorthand (equivalent to `grain: { mode: FIXED }`) |
 | `anchor` | string | No | [Data object whose grain a cross-fact expression is evaluated at](compilation.md#cross-fact-measure-expressions). Only meaningful when the expression reads facts no join path reaches together |

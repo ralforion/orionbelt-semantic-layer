@@ -2158,3 +2158,172 @@ measures:
     )
     def test_a_type_wide_enough_for_the_bucket_is_allowed(self, spec: str) -> None:
         assert "RESULT_TYPE_LOSES_GRAIN" not in self._errors(spec), spec
+
+
+class TestMeasureExpressionsParse:
+    """A malformed measure expression is refused at load, not at query time.
+
+    A computed column with the same body was already refused
+    (``INVALID_COLUMN_EXPRESSION``). A measure carrying it loaded, and the
+    failure arrived when someone selected the measure -- as a bare
+    ``ValueError`` out of the tokenizer, which the query handler has no branch
+    for, so it left the route as a 500 rather than a 422 naming the measure.
+    """
+
+    TEMPLATE = """version: 1.0
+dataObjects:
+  Event:
+    code: ev
+    columns:
+      Amount: {{code: amount, abstractType: float, numClass: additive}}
+measures:
+  Bad:
+    expression: "{expr}"
+    resultType: float
+    aggregation: sum
+"""
+
+    def _errors(self, expr: str) -> list[SemanticError]:
+        import tempfile
+        from pathlib import Path
+
+        path = Path(tempfile.mkdtemp()) / "m.yaml"
+        path.write_text(self.TEMPLATE.format(expr=expr))
+        raw, source_map = TrackedLoader().load(path)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return SemanticValidator().validate(model)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "ABS({[Event].[Amount]} + 1",  # the call never closes
+            "({[Event].[Amount]} + 1",  # nor does the group
+            "{[Event].[Amount]} +",  # nothing to add to
+        ],
+    )
+    def test_an_unparseable_expression_is_refused(self, expr: str) -> None:
+        errors = self._errors(expr)
+        assert any(e.code == "INVALID_MEASURE_EXPRESSION" for e in errors), (
+            f"{expr!r} loaded; got {[e.code for e in errors]}"
+        )
+
+    def test_the_error_names_the_measure_and_its_path(self) -> None:
+        """Enough to fix the model without running the query that found it."""
+        error = next(
+            e
+            for e in self._errors("ABS({[Event].[Amount]} + 1")
+            if e.code == "INVALID_MEASURE_EXPRESSION"
+        )
+        assert error.path == "measures.Bad.expression"
+        assert "Bad" in error.message
+        assert "Missing closing" in error.message
+
+    def test_a_valid_expression_still_loads(self) -> None:
+        errors = self._errors("ABS({[Event].[Amount]} + 1)")
+        assert not any(e.code == "INVALID_MEASURE_EXPRESSION" for e in errors)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "ABS({[Event].Amount]} + 1)",  # missing '[' on the column
+            "ABS({[Event][Amount]} + 1)",  # missing the '.' separator
+            "ABS({[Event].[Amount} + 1)",  # missing ']' on the column
+        ],
+    )
+    def test_a_malformed_reference_is_reported_once(self, expr: str) -> None:
+        """By the check that names the bracket, not twice.
+
+        A reference the scanner cannot read does not parse either, so both
+        checks have something to say about it. "missing opening '[' on column"
+        is the half that tells the author what to type; a second error saying
+        the same body does not parse is noise on the same line.
+        """
+        codes = [e.code for e in self._errors(expr)]
+        assert "INVALID_MEASURE_EXPRESSION" not in codes, codes
+
+    def test_the_reference_check_still_names_the_bracket(self) -> None:
+        """The half that is kept has to actually be reported."""
+        raw, source_map = TrackedLoader().load_string(
+            self.TEMPLATE.format(expr="ABS({[Event].Amount]} + 1)")
+        )
+        _model, result = ReferenceResolver().resolve(raw, source_map)
+        malformed = [e for e in result.errors if e.code == "MALFORMED_EXPRESSION_REF"]
+        assert len(malformed) == 1
+        assert "missing opening '[' on column" in malformed[0].message
+
+    COLUMN_TEMPLATE = """version: 1.0
+dataObjects:
+  Event:
+    code: ev
+    columns:
+      Amount: {code: amount, abstractType: float, numClass: additive}
+      Bad: {expression: "CAST({Amount} AS integer)", abstractType: int}
+      Chained: {expression: "{Bad} + 1", abstractType: int}
+measures:
+  Reader:
+    expression: "%s"
+    resultType: float
+    aggregation: sum
+"""
+
+    def _column_errors(self, expr: str) -> list[SemanticError]:
+        raw, source_map = TrackedLoader().load_string(self.COLUMN_TEMPLATE % expr)
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        return SemanticValidator().validate(model)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "{[Event].[Bad]} + 1",  # reads the refused column itself
+            "{[Event].[Chained]} + 1",  # reads a column that reads it
+        ],
+    )
+    def test_a_measure_reading_a_refused_column_is_not_reported_again(self, expr: str) -> None:
+        """The fault is the column's, and the column already says so.
+
+        The tokenizer inlines a computed column's body in place, so a measure
+        reading a refused one fails to parse for a reason that has nothing to
+        do with the measure. One bad column would otherwise multiply into an
+        error per measure that reads it.
+        """
+        codes = [e.code for e in self._column_errors(expr)]
+        assert "INVALID_COLUMN_EXPRESSION" in codes, codes
+        assert "INVALID_MEASURE_EXPRESSION" not in codes, codes
+
+    def test_a_measure_with_its_own_fault_is_still_reported(self) -> None:
+        """The skip is for the borrowed fault only, not for any body that reads a column."""
+        codes = [e.code for e in self._column_errors("ABS({[Event].[Amount]} + 1")]
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes
+
+    def test_a_measure_reading_a_refused_column_keeps_its_own_syntax_error(self) -> None:
+        """Both faults in one pass, rather than one per reload.
+
+        Skipping the measure whole would hide a trailing '+' behind the
+        column's error: the author fixes the column, reloads, and the model
+        fails a second time for something that was there all along.
+        """
+        codes = [e.code for e in self._column_errors("{[Event].[Bad]} +")]
+        assert "INVALID_COLUMN_EXPRESSION" in codes, codes
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes
+
+    def test_the_probe_leaves_the_model_alone(self) -> None:
+        """Validation answers a question about the model; it does not edit one."""
+        raw, source_map = TrackedLoader().load_string(self.COLUMN_TEMPLATE % "{[Event].[Bad]} + 1")
+        model, _ = ReferenceResolver().resolve(raw, source_map)
+        SemanticValidator().validate(model)
+        assert model.data_objects["Event"].columns["Bad"].expression == "CAST({Amount} AS integer)"
+
+    def test_a_malformed_reference_does_not_hide_the_rest_of_the_body(self) -> None:
+        """The bracket is one fault; a dangling operator beside it is another.
+
+        Skipping the body whole once its reference check fired meant the author
+        fixed the brackets, reloaded, and failed again on a '+' that was there
+        all along.
+        """
+        raw, source_map = TrackedLoader().load_string(
+            self.TEMPLATE.format(expr="ABS({[Event].Amount]} +)")
+        )
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert any(e.code == "MALFORMED_EXPRESSION_REF" for e in result.errors)
+        codes = [e.code for e in SemanticValidator().validate(model)]
+        assert "INVALID_MEASURE_EXPRESSION" in codes, codes

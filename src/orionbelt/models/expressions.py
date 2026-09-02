@@ -244,3 +244,117 @@ def find_qualified_refs(expression: str) -> list[tuple[str, str]]:
             continue
         refs.extend((obj.strip(), col.strip()) for obj, col in QUALIFIED_COLUMN_REF.findall(text))
     return refs
+
+
+VALID_MEASURE_REF = re.compile(r"\{\[[^\]{}\[]+\]\.\[[^\]{}\[]+\]\}")
+"""A well-formed ``{[Data Object].[Column]}`` reference, brackets and all.
+
+Stricter than :data:`QUALIFIED_COLUMN_REF`, which is what the tokenizer reads:
+this one refuses a nested brace or bracket, so stripping every match leaves a
+remainder in which a botched reference still shows its shape.
+"""
+
+#: ``(pattern, shape, what is wrong)`` for each way a measure reference is
+#: misspelled. ``shape`` renders the offending text back the way the author
+#: typed it, from the pattern's groups.
+_MALFORMED_MEASURE_REFS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(r"\{\[([^\]{}\[]+)\]\[([^\]{}\[]+)\]\}"),
+        "{{[{0}][{1}]}}",
+        "missing '.' separator",
+    ),
+    (
+        re.compile(r"\{\[([^\]{}\[]+\.[^\]{}\[]+)\]\}"),
+        "{{[{0}]}}",
+        "use '{[Obj].[Col]}' syntax",
+    ),
+    (
+        re.compile(r"\{([A-Za-z][^\[{}\]]*\.[A-Za-z][^\[{}\]]*)\}"),
+        "{{{0}}}",
+        "missing '[' and ']', use '{[Obj].[Col]}' syntax",
+    ),
+    (
+        re.compile(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\](?!\})"),
+        "{{[{0}].[{1}]",
+        "missing closing '}'",
+    ),
+    (
+        re.compile(r"(?<!\{)\[([^\]{}\[]+)\]\.\[([^\]{}\[]+)\]\}"),
+        "[{0}].[{1}]}}",
+        "missing opening '{'",
+    ),
+    (
+        re.compile(r"\{\[([^\]{}\[]+)\]\.\[([^\]{}\[]*)\}(?!\])"),
+        "{{[{0}].[{1}}}",
+        "missing closing ']' on column",
+    ),
+    (
+        re.compile(r"\{\[([^\]{}\[]*)\.?\[([^\]{}\[]+)\]\}"),
+        "{{[{0}.[{1}]}}",
+        "missing closing ']' on data object",
+    ),
+    (
+        re.compile(r"\{([^\[{}\]]+)\]\.\[([^\]{}\[]+)\]\}"),
+        "{{{0}].[{1}]}}",
+        "missing opening '[' on data object",
+    ),
+    (
+        re.compile(r"\{\[([^\]{}\[]+)\]\.([^\[{}\]]+)\]\}"),
+        "{{[{0}].{1}]}}",
+        "missing opening '[' on column",
+    ),
+)
+
+
+def find_malformed_measure_refs(expression: str) -> list[tuple[str, str]]:
+    """The botched ``{[Data Object].[Column]}`` references *expression* carries.
+
+    Each pair is the offending text as the author typed it and what is wrong
+    with it. Well-formed references are stripped first, so only the attempts
+    are scanned.
+
+    Read by the two places that have to agree on what a malformed reference is:
+    the resolver reports each one, and the measure-expression parse check stays
+    quiet on a body that carries any - a reference the scanner cannot read does
+    not parse either, and naming the bracket is the useful half of that pair.
+    """
+    remainder = VALID_MEASURE_REF.sub("", expression)
+    found: list[tuple[str, str]] = []
+    for pattern, shape, reason in _MALFORMED_MEASURE_REFS:
+        for match in pattern.finditer(remainder):
+            found.append((shape.format(*match.groups()), reason))
+    return found
+
+
+#: What a botched reference stands for while an expression is judged on its own
+#: syntax: a bare literal, which the parser takes anywhere a column reference
+#: goes. Never compiled - only ever parsed, to answer whether the rest reads.
+_NEUTRAL_FACTOR = "0"
+
+_REFERENCE_SHAPES = re.compile(
+    "|".join(
+        [
+            f"(?P<valid>{VALID_MEASURE_REF.pattern})",
+            *(pattern.pattern for pattern, _, _ in _MALFORMED_MEASURE_REFS),
+        ]
+    )
+)
+
+
+def expression_without_malformed_refs(expression: str) -> str:
+    """*expression* with every botched reference replaced by a plain factor.
+
+    What a reference is meant to be, grammatically, is one factor - so a body
+    whose brackets are wrong can still be asked whether the rest of it reads.
+    Without this, a measure had to be skipped whole once its reference check
+    fired, and an unrelated syntax error in the same body stayed hidden until
+    the author fixed the brackets and reloaded.
+
+    Well-formed references are left as they are, so what the parser complains
+    about still names the author's own columns.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        return match.group(0) if match.group("valid") is not None else _NEUTRAL_FACTOR
+
+    return _REFERENCE_SHAPES.sub(_replace, expression)
