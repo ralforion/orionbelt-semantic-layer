@@ -1594,6 +1594,7 @@ class TestCastTargets:
         [
             ("decimal(18, 2)", 3),
             ("decimal(38, 9)", 10),
+            ("decimal(75, 2)", 3),
             # The extra place comes out of the integer side, so it can only be
             # asked for while the target leaves a digit spare. These three have
             # none: 56, 1 and 0 integer digits against Decimal256's 76.
@@ -1730,15 +1731,20 @@ class TestToNumber:
 
 
 class TestClickHouseDecimalCeiling:
-    """What the precision ceiling costs, pinned so it cannot drift unnoticed.
+    """What the widest decimal targets cost, pinned so it cannot drift.
 
-    The exactness rewrite converts through an intermediate one place wider than
-    the target, and Decimal256 is 76 digits wherever the point sits. At
-    precision 76 that place and the target's full integer width cannot both
-    exist, so the conversion truncates instead of rounding. Every way of having
-    both was measured and rejected: asking for the place anyway means
-    ``decimal(76, 75)`` cannot take 1.5, a coalesce fallback wraps to a negative
-    number, and no ClickHouse text conversion rounds.
+    The exactness rewrite reads one place more than the target, and Decimal256
+    is 76 digits wherever the point sits, so the place has to come out of the
+    integer side. Two shapes follow, and between them no value the target holds
+    is refused on the way in:
+
+    * at ``decimal(76, s)`` there is no spare digit, so the intermediate is the
+      target's own scale and the conversion truncates. Declaring 75 restores
+      the rounding and costs nothing: both are Int256, and the fallback below
+      keeps the wider value reachable.
+    * below it the place exists within the declared width, and a value in the
+      digit this engine holds beyond that width falls back to a conversion at
+      the target's own scale rather than raising ARGUMENT_OUT_OF_BOUND.
     """
 
     def test_below_the_ceiling_the_extra_place_is_available(self) -> None:
@@ -1746,7 +1752,21 @@ class TestClickHouseDecimalCeiling:
 
     def test_at_the_ceiling_it_is_not(self) -> None:
         """Recorded rather than fixed: declaring 75 restores the rounding."""
-        assert "toString('x'), 2)" in _render("cast(x, 'decimal(76, 2)')", "clickhouse")
+        sql = _render("cast(x, 'decimal(76, 2)')", "clickhouse")
+        assert "toString('x'), 2)" in sql, sql
+        assert "ifNull(" not in sql, sql
+
+    def test_a_target_wider_than_it_declares_falls_back_rather_than_raising(self) -> None:
+        """Both branches at the target's scale, which is what keeps it safe."""
+        sql = _render("cast(x, 'decimal(75, 2)')", "clickhouse")
+        assert "ifNull(" in sql, sql
+        assert "AS Nullable(Decimal256(2))" in sql, sql
+        assert "toDecimal256OrNull(toString('x'), 2)" in sql, sql
+
+    def test_an_ordinary_target_carries_no_fallback(self) -> None:
+        """Int128 and narrower cannot hold what the intermediate would refuse."""
+        for target in ("decimal(18, 2)", "decimal(38, 9)"):
+            assert "ifNull(" not in _render(f"cast(x, '{target}')", "clickhouse"), target
 
     def test_a_request_above_the_ceiling_is_clamped_before_it_is_used(self) -> None:
         """Not scale 1, and never a negative scale."""

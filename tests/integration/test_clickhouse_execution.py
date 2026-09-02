@@ -388,3 +388,60 @@ def test_a_decimal_request_above_the_ceiling_still_executes(ch_setup) -> None:
         rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(ast)} AS v")
         # Clamped to Decimal(76, 2), which is at the ceiling, so it truncates.
         assert rows[0]["v"] == Decimal("2.55"), obml_type
+
+
+def test_a_value_wider_than_the_target_declares_still_lands(ch_setup) -> None:
+    """This engine's CAST holds one digit more than the decimal declares.
+
+    A 74-digit integer casts to ``Decimal(75, 2)``, which promises 73, and the
+    conversion has to reach as far: an intermediate at scale 3 leaves 73 and
+    answered ARGUMENT_OUT_OF_BOUND on a value the target itself took. The
+    fallback converts at the target's own scale instead, so the value arrives
+    truncated rather than not at all.
+    """
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "1" + "0" * 73
+    cast = dialect.cast_to_obml_type(
+        RawSQL(sql=f"toDecimal256('{widest}', 0)"), parse_data_type("decimal(75, 2)")
+    )
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_the_same_value_through_cast_is_not_null(ch_setup) -> None:
+    """``cast()`` answers NULL for input it cannot read, and this it can read.
+
+    The ``OrNull`` conversion the contract needs made the width limit silent:
+    the same 74-digit value came back as NULL rather than as an error, which is
+    the shape of a value that does not name a number.
+    """
+    from decimal import Decimal
+
+    from orionbelt.compiler.expr_parser import parse_expression, tokenize_metric_formula
+    from orionbelt.dialect.registry import DialectRegistry
+
+    dialect = DialectRegistry.get("clickhouse")
+    widest = "1" + "0" * 73
+    ast = parse_expression(tokenize_metric_formula(f"cast('{widest}', 'decimal(75, 2)')"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(ast)} AS v")
+    assert rows[0]["v"] == Decimal(widest)
+
+
+def test_a_wide_target_still_rounds_where_the_place_fits(ch_setup) -> None:
+    """The fallback is a fallback: an ordinary value takes the rounded branch."""
+    from decimal import Decimal
+
+    from orionbelt.ast.nodes import RawSQL
+    from orionbelt.dialect.registry import DialectRegistry
+    from orionbelt.models.types import parse_data_type
+
+    dialect = DialectRegistry.get("clickhouse")
+    cast = dialect.cast_to_obml_type(RawSQL(sql="2.555"), parse_data_type("decimal(75, 2)"))
+    rows = _fetch_clickhouse(ch_setup, f"SELECT {dialect.compile_expr(cast)} AS v")
+    assert rows[0]["v"] == Decimal("2.56")

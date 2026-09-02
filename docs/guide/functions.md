@@ -204,8 +204,9 @@ than the target so the rounding has a digit to work from, and `Decimal256` is
 76 digits wherever the point sits — so at `decimal(76, s)` that place and the
 target's own integer width cannot both exist. `2.555` answers `2.56` at
 `decimal(75, 2)` and `2.55` at `decimal(76, 2)`. A model that wants the
-rounding declares one digit less, which costs nothing: no value needs the
-seventy-sixth.
+rounding declares one digit less, and that costs no range: both widths are
+stored in the same 256-bit integer, and a value in the digit the engine carries
+beyond what a decimal declares is truncated rather than refused.
 
 **What it does not pin is failure**, and that limit is the point of the entry
 rather than a footnote on it. A cast over a number is portable. A cast over

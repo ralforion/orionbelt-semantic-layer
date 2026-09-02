@@ -180,6 +180,35 @@ _NUMERIC_ABSTRACT_TYPES: frozenset[str] = frozenset({"int", "float"})
 #: rather than ``CAST`` because ``CAST`` saturates on overflow (#356).
 _INT_TYPE_RE = re.compile(r"^\s*U?Int(?:8|16|32|64|128|256)\s*$", re.IGNORECASE)
 
+#: A decimal cast target's width. Case-insensitive, and both spellings the
+#: engine takes: ``Decimal(P, S)`` names its own precision, while the fixed
+#: ``Decimal32/64/128/256(S)`` carry theirs in the name.
+_DECIMAL_TYPE_RE = re.compile(
+    r"Decimal(32|64|128|256)?\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)", re.IGNORECASE
+)
+
+#: The precision each fixed-width decimal alias stands for.
+_DECIMAL_ALIAS_PRECISION: dict[str, int] = {"32": 9, "64": 18, "128": 38, "256": 76}
+
+
+def _decimal_width(sql_type: str) -> tuple[int, int] | None:
+    """The ``(precision, scale)`` *sql_type* declares, or ``None``.
+
+    ``None`` for anything this cannot read - including a decimal spelled some
+    way not listed above - because the pre-round below has to know the target's
+    own width, and a guess would round to a scale the cast does not have.
+    """
+    match = _DECIMAL_TYPE_RE.search(sql_type)
+    if match is None:
+        return None
+    alias, first, second = match.group(1), int(match.group(2)), match.group(3)
+    if alias is not None:
+        # ``Decimal256(20)`` names the scale; the precision is the alias width.
+        return _DECIMAL_ALIAS_PRECISION[alias], first
+    if second is None:
+        return None
+    return first, int(second)
+
 
 @DialectRegistry.register
 class ClickHouseDialect(Dialect):
@@ -425,20 +454,18 @@ class ClickHouseDialect(Dialect):
         if not nullable.startswith("Nullable("):
             nullable = f"Nullable({resolved_type})"
         inner_sql = self.compile_expr(inner)
-        # Detect Decimal(P, S) targets and round to scale S first. A NULL
-        # literal is exempt: rounding it is a no-op - measured, ``round(NULL,
-        # 20)`` is NULL typed ``Nullable(Nothing)`` and casts cleanly - and
-        # every CFL NULL pad carries a decimal type, so the rule as written put
-        # ``round(NULL, 20)`` in every union leg for nothing.
-        upper = resolved_type.upper()
+        # Detect a decimal target and round to its scale first. A NULL literal
+        # is exempt: rounding it is a no-op - measured, ``round(NULL, 20)`` is
+        # NULL typed ``Nullable(Nothing)`` and casts cleanly - and every CFL
+        # NULL pad carries a decimal type, so the rule as written put
+        # ``round(NULL, 20)`` in every union leg for nothing. A decimal spelled
+        # some way :func:`_decimal_width` cannot read is cast as it stands: the
+        # pre-round needs the target's own scale, and no other branch below
+        # claims a decimal.
         is_null_literal = isinstance(inner, Literal) and inner.value is None
-        if not is_null_literal and (
-            upper.startswith("DECIMAL") or upper.startswith("NULLABLE(DECIMAL")
-        ):
-            width = re.search(r"Decimal\d*\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", resolved_type)
-            assert width is not None, resolved_type
-            precision, scale = int(width.group(1)), int(width.group(2))
-            inner_sql = self._exact_decimal_round(inner_sql, precision, scale, or_null=False)
+        width = None if is_null_literal else _decimal_width(resolved_type)
+        if width is not None:
+            inner_sql = self._exact_decimal_round(inner_sql, *width, or_null=False)
         elif (
             not isinstance(inner, Literal)
             and _is_numeric_expr(inner)
@@ -554,6 +581,12 @@ class ClickHouseDialect(Dialect):
     #: the half wants one place more than the count and 77 is out of range.
     _MAX_ROUND_DIGITS: int = 76
 
+    #: Where a decimal target starts being stored in Int256, which is also
+    #: where it starts to reach as wide as :meth:`_exact_decimal_round`'s own
+    #: intermediate. Below it the target is an Int32, Int64 or Int128 and
+    #: cannot hold a value that intermediate would refuse.
+    _DECIMAL256_MIN_PRECISION: int = 39
+
     def _exact_decimal_round(
         self, inner_sql: str, precision: int, scale: int, *, or_null: bool
     ) -> str:
@@ -582,39 +615,32 @@ class ClickHouseDialect(Dialect):
         One place more than the target scale, because that is what rounding to
         the target scale needs to see, and no more than Decimal256 carries.
 
+        That place is taken from the integer side, because Decimal256 is 76
+        digits wherever the point sits, so the intermediate cannot be asked for
+        it unless the target leaves a digit spare. Two cases follow, and between
+        them no value the target can hold is refused on the way in:
+
+        * ``decimal(76, s)`` has nothing spare, so the intermediate is the
+          target's own scale, the round is the identity and the conversion
+          truncates. That is the residual, and it is forced rather than chosen:
+          at precision 76 the extra place and the target's full integer width
+          cannot both exist, and no ClickHouse text conversion rounds -
+          measured, ``toDecimal256``, ``toDecimal256OrNull``, ``CAST`` and
+          ``accurateCast`` all truncate text at the target scale.
+        * Below it the place exists, but only within the *declared* width. This
+          engine's CAST holds one digit more than it declares - a 74-digit
+          integer casts to ``Decimal(75, 2)``, which promises 73 - and that
+          digit does not fit an intermediate at scale 3. So the rounded
+          conversion falls back to one at the target's own scale, which reaches
+          as wide as the target itself. The value is truncated rather than
+          refused, which is the answer this engine gave before any of this
+          wrapping existed.
+
         *or_null* picks the failure mode, which is the one thing the two cast
         paths do not share: OBML's ``cast()`` is specified to answer NULL for
         input it cannot read (#355), while an implicit cast over a declared
         type raises, as it did before this wrapping existed.
         """
-        # The extra place is taken from the integer side, because Decimal256 is
-        # 76 digits wherever the point sits. So it can only be asked for while
-        # the target leaves a digit spare: ``decimal(76, 20)`` holds 56 integer
-        # digits, an intermediate at scale 21 holds 55, and a value the target
-        # accepts raised ARGUMENT_OUT_OF_BOUND before reaching it. Measured on
-        # a live server: a 56-digit integer casts to ``Decimal(76, 20)`` and
-        # failed through the intermediate.
-        #
-        # Where there is no room, the intermediate is the target's own scale and
-        # the round becomes the identity, so the conversion truncates. That is
-        # the residual, and it is forced rather than chosen: at precision 76 the
-        # extra place and the target's full integer width cannot both exist, and
-        # every way of having both was measured and rejected.
-        #
-        # Asking for the place anyway trades a rare failure for a common one:
-        # ``decimal(76, 75)`` holds a single integer digit, so an intermediate
-        # one place wider cannot take 1.5. Falling back through
-        # ``coalesce(round(OrNull at s+1), OrNull at s)`` is worse still - the
-        # branches have different scales, ClickHouse resolves the pair to the
-        # wider one, and the fallback wraps to a negative number instead of
-        # raising. Nor is there a conversion that rounds: measured,
-        # ``toDecimal256``, ``toDecimal256OrNull``, ``CAST`` and
-        # ``accurateCast`` all truncate text at the target scale.
-        #
-        # So it lands only on ``decimal(76, s)``, where a model wanting the
-        # rounding can declare 75 and lose a digit no value has: measured,
-        # 2.555 answers 2.56 at ``decimal(75, 2)`` and 2.55 at
-        # ``decimal(76, 2)``.
         # Clamped the way ``render_obml_type`` clamps, and for the same reason:
         # the final cast is to the clamped type, so computing the intermediate
         # from the raw request describes a type that is never emitted. A
@@ -626,7 +652,26 @@ class ClickHouseDialect(Dialect):
         integer_digits = precision - scale
         exact_scale = min(scale + 1, self._MAX_ROUND_DIGITS - integer_digits)
         to_decimal = "toDecimal256OrNull" if or_null else "toDecimal256"
-        return f"round({to_decimal}(toString({inner_sql}), {exact_scale}), {scale})"
+        rounded = f"round({to_decimal}(toString({inner_sql}), {exact_scale}), {scale})"
+        if exact_scale == scale or precision < self._DECIMAL256_MIN_PRECISION:
+            # Nothing was borrowed from the integer side, so nothing can
+            # overflow that the target would have held: at precision 76 the
+            # intermediate is already the target's width, and below Int256 the
+            # target is the narrower of the pair. Either way the fallback below
+            # would be unreachable weight - and it lands on the CFL alignment
+            # width, Decimal(76, 20), which every multi-fact query carries.
+            return rounded
+        # Both branches are Decimal256(scale), which is what makes the fallback
+        # safe. Left at their own scales, ClickHouse resolves the pair to the
+        # wider one and converting the fallback's value into it wraps to a
+        # negative number - measured, and the reason an earlier ``coalesce``
+        # shape was rejected. Casting the rounded branch back down is exact: it
+        # already carries zero in the place it rounded away.
+        rounded = f"round(toDecimal256OrNull(toString({inner_sql}), {exact_scale}), {scale})"
+        return (
+            f"ifNull(CAST({rounded} AS Nullable(Decimal256({scale}))), "
+            f"{to_decimal}(toString({inner_sql}), {scale}))"
+        )
 
     def _coerce_text_argument(self, expr: Expr) -> Expr:
         """Read a ``FixedString`` by value rather than by storage.

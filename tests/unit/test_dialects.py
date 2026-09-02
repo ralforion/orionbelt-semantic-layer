@@ -449,6 +449,34 @@ class TestClickHouseDialect:
         text = dialect.cast_to_obml_type(col("amt"), parse_data_type("string"))
         assert dialect.compile_expr(text) == 'CAST("amt" AS Nullable(String))'
 
+    @pytest.mark.parametrize(
+        "type_name",
+        ["Decimal(18, 2)", "DECIMAL(18, 2)", "decimal(18,2)", "Nullable(DECIMAL(18, 2))"],
+    )
+    def test_a_concrete_decimal_target_is_read_whatever_its_case(
+        self, dialect: ClickHouseDialect, type_name: str
+    ) -> None:
+        """A ``Cast`` node carries the type as it was written.
+
+        ``cast_to_obml_type`` renders the target itself, so it always spells it
+        one way; a hand-built ``Cast`` does not, and the pre-round has to read
+        the width off whichever spelling arrives or it rounds nothing.
+        """
+        sql = dialect.compile_expr(Cast(expr=col("amt"), type_name=type_name))
+        assert "round(toDecimal256(toString(" in sql, sql
+
+    def test_a_fixed_width_decimal_alias_names_its_scale(self, dialect: ClickHouseDialect) -> None:
+        """``Decimal64(2)`` is scale 2 at precision 18, not precision 2."""
+        sql = dialect.compile_expr(Cast(expr=col("amt"), type_name="Decimal64(2)"))
+        assert 'round(toDecimal256(toString("amt"), 3), 2)' in sql, sql
+
+    def test_a_decimal_target_this_cannot_measure_is_cast_as_it_stands(
+        self, dialect: ClickHouseDialect
+    ) -> None:
+        """No width, no pre-round - and no crash on the way past it."""
+        sql = dialect.compile_expr(Cast(expr=col("amt"), type_name="Decimal(18)"))
+        assert sql == 'CAST("amt" AS Nullable(Decimal(18)))', sql
+
 
 class TestDatabricksDialect:
     @pytest.fixture
