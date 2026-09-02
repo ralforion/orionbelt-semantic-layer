@@ -19,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # The package parses YAML, so checking its own types needs the stubs.
+    "types-PyYAML>=6.0",
     "pytest>=8.0",
     "mypy>=1.10",
     "ruff>=0.4",
