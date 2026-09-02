@@ -383,6 +383,36 @@ def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
     return decimal_arrow_type(precision, scale, exact=True)
 
 
+def _dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:
+    """The column a selected dimension produces, and the model's declaration of it.
+
+    Both have to be read the way the compiler reads them, or the advertised
+    schema names columns the stream does not have:
+
+    * ``"At:day"`` is a grain request. The compiler resolves it through
+      :meth:`DimensionRef.parse` and projects ``AS "At"``, so the entry is
+      neither the label nor the lookup key - taking it for both advertised
+      ``At:day`` as a string beside a stream carrying a timestamp called ``At``.
+    * a coalesce entry names its output in ``as`` and its inputs in
+      ``coalesce``. The alias is the label, and the type is its members', which
+      the model requires to agree; looking the alias up in ``model.dimensions``
+      finds nothing and called a timestamp a string.
+    """
+    from orionbelt.models.query import DimensionRef
+
+    if isinstance(entry, str):
+        name = DimensionRef.parse(entry).name
+        return name, model.dimensions.get(name)
+    label = getattr(entry, "alias", None)
+    if label is None:
+        return None, None
+    for member in getattr(entry, "coalesce", None) or []:
+        declared = model.dimensions.get(member)
+        if declared is not None:
+            return label, declared
+    return label, None
+
+
 def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa.Schema:
     """Build the result Arrow schema for a semantic query without DB I/O.
 
@@ -395,11 +425,10 @@ def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa
     fields: list[pa.Field] = []
     dims = getattr(query.select, "dimensions", [])
     measures = getattr(query.select, "measures", [])
-    for name in dims:
-        label = name if isinstance(name, str) else getattr(name, "alias", None)
+    for entry in dims:
+        label, dim = _dimension_label_and_declaration(entry, model)
         if label is None:
             continue
-        dim = model.dimensions.get(label)
         rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
         fields.append(pa.field(label, _obml_type_to_arrow(rt)))
     for label in measures:
@@ -416,8 +445,8 @@ def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa
     if query.grouping is not None:
         # GROUPING() flag columns — int64, one per dimension. See
         # PLAN_with_rollup.md §"Output: GROUPING() flag columns".
-        for name in dims:
-            label = name if isinstance(name, str) else getattr(name, "alias", None)
+        for entry in dims:
+            label, _ = _dimension_label_and_declaration(entry, model)
             if label is None:
                 continue
             fields.append(pa.field(f"_g_{label}", pa.int64()))
