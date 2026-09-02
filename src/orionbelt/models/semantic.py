@@ -105,6 +105,57 @@ class TimeGrain(StrEnum):
     SECOND = "second"
 
 
+#: Grains whose bucket carries a time of day, which a ``date`` cannot hold.
+SUB_DAY_GRAINS = frozenset({TimeGrain.HOUR, TimeGrain.MINUTE, TimeGrain.SECOND})
+
+#: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
+#: absent because the format has no cast target for them, so a dimension
+#: declaring one is projected as whatever the engine's truncation returns.
+CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
+
+#: Types that carry a date, read two ways: a column must carry one to be
+#: truncated to a grain at all, and a dimension's ``resultType`` must carry one
+#: to hold the bucket that truncation makes.
+DATE_BEARING_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+#: The narrower set that carries a time of day as well.
+_TIMESTAMP_TYPES = frozenset({DataType.TIMESTAMP, DataType.TIMESTAMP_TZ})
+
+#: Every declaration that names a point in time, cast target or not.
+_TEMPORAL_TYPES = DATE_BEARING_TYPES | {DataType.TIME, DataType.TIME_TZ}
+
+
+def result_type_holds_grain(grain: TimeGrain, declared: DataType) -> bool:
+    """Whether a dimension declaring *declared* can carry a bucket of *grain*.
+
+    A temporal ``resultType`` is emitted as a CAST around the truncation, and
+    that cast sits in the GROUP BY as well as in the projection. A declaration
+    narrower than the grain therefore does not relabel the column, it merges
+    buckets and changes the measures, silently, because nothing about it is a
+    SQL error. A grain always carries a date, so ``time`` never holds one; a
+    sub-day bucket carries a time of day as well, which a ``date`` drops.
+
+    The wide direction is harmless and allowed: a month grain declared
+    ``timestamp`` is a date at midnight, and carrying the zeros costs nothing.
+
+    A non-temporal declaration holds anything: it is not cast at all, so no part
+    of the bucket is dropped, and MySQL's month grain is a ``DATE_FORMAT`` --
+    a string by construction. A temporal one is held to the rule whether or not
+    OBML can cast to it: ``time_tz`` is not a cast target, so it merges no
+    buckets, but a dimension declaring it over a grain answers a date-bearing
+    value under a label that cannot describe one.
+
+    One rule with two readers, because a grain reaches a dimension two ways: the
+    model validator checks what a dimension declares, and the query resolver
+    checks the grain a ``dimension:grain`` override names, which the model never
+    saw.
+    """
+    if declared not in _TEMPORAL_TYPES:
+        return True
+    allowed = _TIMESTAMP_TYPES if grain in SUB_DAY_GRAINS else DATE_BEARING_TYPES
+    return declared in allowed
+
+
 class ExpressionMode(StrEnum):
     """How strictly an expression's function calls are held to the catalog.
 

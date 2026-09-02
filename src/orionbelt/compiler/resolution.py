@@ -48,11 +48,15 @@ from orionbelt.models.query import (
     UsePathName,
 )
 from orionbelt.models.semantic import (
+    CASTABLE_TEMPORAL_TYPES,
+    DATE_BEARING_TYPES,
+    SUB_DAY_GRAINS,
     AggregationType,
     CumulativeAggType,
     DataObject,
     DataObjectColumn,
     DataType,
+    Dimension,
     FilterContext,
     GrainMode,
     GrainOverride,
@@ -66,6 +70,7 @@ from orionbelt.models.semantic import (
     SemanticModel,
     TimeGrain,
     WindowFunctionKind,
+    result_type_holds_grain,
 )
 from orionbelt.models.types import DecimalType, parse_data_type
 from orionbelt.models.warnings import WarningCode, warning
@@ -143,11 +148,6 @@ def _build_computed_column_expr(
     if not in_query_timezone:
         return parsed
     return apply_query_timezone(parsed, model)
-
-
-#: Temporal declarations OBML can cast to. ``timestamp_tz`` and ``time_tz`` are
-#: absent because the format has no cast target for them.
-_CASTABLE_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TIME})
 
 
 def _reads_a_number(measure: Measure, settings: ModelSettings | None) -> bool:
@@ -237,7 +237,7 @@ def make_dimension_expr(
         return col
     col = dialect.render_time_grain(col, dim.grain)
     declared = model.dimensions.get(dim.name)
-    if declared is None or declared.result_type not in _CASTABLE_TEMPORAL_TYPES:
+    if declared is None or declared.result_type not in CASTABLE_TEMPORAL_TYPES:
         return col
     return dialect.cast_to_obml_type(col, parse_data_type(declared.result_type.value))
 
@@ -1318,13 +1318,110 @@ class QueryResolver:
         vf = obj.columns.get(col_name)
         source_col = vf.code if vf else col_name
 
+        grain = ref.grain or dim.time_grain
+        if grain is not None and not self._grain_fits_the_column(ctx, ref, dim, vf, grain):
+            return None
+        if grain is not None and not self._grain_survives_the_cast(ctx, ref, dim, grain):
+            return None
+
         return ResolvedDimension(
             name=ref.name,
             object_name=obj_name,
             column_name=col_name,
             source_column=source_col,
-            grain=ref.grain or dim.time_grain,
+            grain=grain,
         )
+
+    @staticmethod
+    def _grain_fits_the_column(
+        ctx: _ResolutionContext,
+        ref: DimensionRef,
+        dim: Dimension,
+        column: DataObjectColumn | None,
+        grain: TimeGrain,
+    ) -> bool:
+        """Refuse a grain over a column that carries no date to truncate.
+
+        A grain compiles to ``date_trunc(grain, column)``, which the engine
+        refuses over text: measured on DuckDB, ``"Name:hour"`` over a string
+        column compiled and then died in the binder with "No function matches
+        the given name and argument types 'date_trunc(STRING_LITERAL,
+        VARCHAR)'". The model validator refuses a declared ``timeGrain`` over
+        such a column for exactly that reason, and a query can name a grain the
+        model never declared, so the same rule is read here - an error naming
+        the dimension and the column beats one naming generated SQL.
+
+        A column the model does not define is left alone: its type is unknown
+        here, and the reference itself is reported elsewhere.
+        """
+        if column is None or column.abstract_type in DATE_BEARING_TYPES:
+            return True
+        ctx.errors.append(
+            SemanticError(
+                code="TIME_GRAIN_ON_NON_TEMPORAL",
+                message=(
+                    f"Dimension '{ref.name}' is asked for at grain '{grain.value}' "
+                    f"but underlying column '{dim.view}.{dim.column}' has "
+                    f"abstractType '{column.abstract_type.value}'. A time grain "
+                    f"requires the column to be date, timestamp, or timestamp_tz. "
+                    f"Ask for the dimension without a grain, fix the column's "
+                    f"abstractType, or define a computed column with to_date()."
+                ),
+                path="select.dimensions",
+            )
+        )
+        return False
+
+    @staticmethod
+    def _grain_survives_the_cast(
+        ctx: _ResolutionContext, ref: DimensionRef, dim: Dimension, grain: TimeGrain
+    ) -> bool:
+        """Refuse a grain the dimension's declared type cannot hold.
+
+        ``make_dimension_expr`` casts a grained dimension to its declared
+        ``resultType``, in the GROUP BY as well as the projection, so a
+        declaration narrower than the grain merges buckets and changes the
+        measures rather than relabelling the column. The model validator refuses
+        that combination at load, but a query writes its own: ``Occurred:hour``
+        names a grain the dimension never declared, so a dimension declaring
+        ``date`` -- perfectly valid, with no ``timeGrain`` of its own -- answered
+        two rows where three were asked for, the two hours of one day summed
+        into one. The model is not at fault there and cannot be checked for it;
+        the query is, and this is where it is read.
+
+        ``time_tz`` is refused here too, and it is the one case that merges
+        nothing: OBML has no cast target for it, so the value is left alone and
+        only the label is wrong. Refused all the same, because a grain always
+        carries a date and that declaration cannot describe one.
+        """
+        declared = dim.result_type
+        if result_type_holds_grain(grain, declared):
+            return True
+        keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
+        asked = "asked for at" if ref.grain is not None else "grouped by"
+        if declared in CASTABLE_TEMPORAL_TYPES:
+            cost = (
+                "The cast is applied in the GROUP BY as well, so buckets would "
+                "merge and the measures would change without an error."
+            )
+        else:
+            cost = (
+                f"A grain always carries a date, and OBML has no cast target for "
+                f"'{declared.value}', so the dimension would answer a date-bearing "
+                f"value under a label for a time."
+            )
+        ctx.errors.append(
+            SemanticError(
+                code="RESULT_TYPE_LOSES_GRAIN",
+                message=(
+                    f"Dimension '{ref.name}' is {asked} grain '{grain.value}' but "
+                    f"declares resultType '{declared.value}', which cannot hold it. "
+                    f"{cost} Declare {keeps}, or ask for the grain the type implies."
+                ),
+                path="select.dimensions",
+            )
+        )
+        return False
 
     # -- measures & metrics --------------------------------------------------
 

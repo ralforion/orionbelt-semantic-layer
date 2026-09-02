@@ -48,12 +48,15 @@ dataObjects:
       Occurred: {code: occurred, abstractType: date}
       Stamp:    {code: stamp, abstractType: timestamp}
       Amount:   {code: amount, abstractType: float, numClass: additive}
+      Label:    {code: label, abstractType: string}
 
 dimensions:
   Occurred Day:   {dataObject: Event, column: Occurred, resultType: date}
   Occurred Month: {dataObject: Event, column: Occurred, resultType: date, timeGrain: month}
   Stamp Hour:     {dataObject: Event, column: Stamp, resultType: timestamp, timeGrain: hour}
   Month Label:    {dataObject: Event, column: Occurred, resultType: string, timeGrain: month}
+  Zoned Clock:    {dataObject: Event, column: Stamp, resultType: time_tz}
+  Event Label:    {dataObject: Event, column: Label, resultType: string}
 
 measures:
   Total:
@@ -266,6 +269,99 @@ def test_dimensions_exclude_returns_the_missing_month_combinations() -> None:
         (datetime.date(2024, 1, 1), "Books"),
         (datetime.date(2024, 2, 1), "Toys"),
     ]
+
+
+# ── a grain the query names, which the model never saw ──────────────────────
+
+
+class TestAQueryGrainIsHeldToTheSameRule:
+    """``dimension:grain`` overrides the model, so it can write the lossy pair.
+
+    The validator refuses a declared ``resultType`` that cannot hold its own
+    ``timeGrain``, but a query names a grain of its own: ``Occurred Day:hour``
+    asks for hours of a dimension that declares ``date`` and no grain at all.
+    The model is valid and cannot be checked for it - the combination does not
+    exist until the query is written - and the cast merged the buckets just the
+    same. Measured on DuckDB over three rows at 09:00, 10:00 and 11:00: two
+    rows, the two hours of one day summed into 30.00, with no error.
+    """
+
+    @pytest.mark.parametrize(
+        "dimension",
+        [
+            "Occurred Day:hour",  # date drops the time of day, and merges the buckets
+            # ``time_tz`` is not a cast target, so this one merges nothing: the
+            # value is left alone and only the label is wrong. Refused all the
+            # same - a grain always carries a date.
+            "Zoned Clock:hour",
+            "Zoned Clock:month",
+        ],
+    )
+    def test_a_grain_the_declared_type_cannot_hold_is_refused(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
+        from orionbelt.compiler.resolution import ResolutionError
+
+        with pytest.raises(ResolutionError) as caught:
+            _sql(model, dimension)
+        assert [e.code for e in caught.value.errors] == ["RESULT_TYPE_LOSES_GRAIN"]
+        assert dimension.split(":")[1] in caught.value.errors[0].message
+
+    @pytest.mark.parametrize(
+        "dimension",
+        [
+            "Stamp Hour:day",  # timestamp holds a coarser bucket
+            "Occurred Day:month",  # date holds a month
+            "Month Label:hour",  # a string is not cast, so nothing is dropped
+        ],
+    )
+    def test_a_grain_the_declared_type_holds_is_allowed(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
+        assert "SELECT" in _sql(model, dimension)
+
+    @pytest.mark.parametrize("dimension", ["Event Label:hour", "Event Label:month"])
+    def test_a_grain_over_a_column_with_no_date_is_refused(
+        self, model: SemanticModel, dimension: str
+    ) -> None:
+        """A grain the column cannot be truncated to is the query's error too.
+
+        The validator refuses a declared ``timeGrain`` over a non-temporal
+        column because ``date_trunc`` fails at runtime; a query names its own
+        grain, and this one compiled. Measured on DuckDB, ``"Event Label:hour"``
+        over a string column: "No function matches the given name and argument
+        types 'date_trunc(STRING_LITERAL, VARCHAR)'", from the engine, about
+        generated SQL, rather than from the query about the dimension.
+        """
+        from orionbelt.compiler.resolution import ResolutionError
+
+        with pytest.raises(ResolutionError) as caught:
+            _sql(model, dimension)
+        assert [e.code for e in caught.value.errors] == ["TIME_GRAIN_ON_NON_TEMPORAL"]
+        assert "Event.Label" in caught.value.errors[0].message
+
+    def test_an_hourly_override_still_answers_hours_where_it_is_declarable(
+        self, model: SemanticModel
+    ) -> None:
+        """Executed, so the refusal above cannot be a refusal of the feature.
+
+        ``Stamp Hour`` declares ``timestamp``, which holds an hour, so asking
+        for one over it is exactly the query the other test refuses on a
+        ``date`` dimension - and it must still come back with a row per hour.
+        """
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE event AS SELECT * FROM (VALUES"
+            " (DATE '2024-03-15', TIMESTAMP '2024-03-15 09:00', 10.0),"
+            " (DATE '2024-03-15', TIMESTAMP '2024-03-15 10:00', 20.0),"
+            " (DATE '2024-04-20', TIMESTAMP '2024-04-20 11:00', 5.0)) t(occurred, stamp, amount)"
+        )
+        rows = sorted(con.execute(_sql(model, "Stamp Hour:hour")).fetchall())
+        assert [(r[0], float(r[1])) for r in rows] == [
+            (datetime.datetime(2024, 3, 15, 9, 0), 10.0),
+            (datetime.datetime(2024, 3, 15, 10, 0), 20.0),
+            (datetime.datetime(2024, 4, 20, 11, 0), 5.0),
+        ]
 
 
 def test_no_dialect_answers_a_grain_with_text(model: SemanticModel) -> None:

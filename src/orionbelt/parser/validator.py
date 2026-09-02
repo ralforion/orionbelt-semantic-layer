@@ -16,6 +16,9 @@ from orionbelt.models.expressions import (
 )
 from orionbelt.models.functions import CAST_TARGETS, JSON_PATH_RE, TIME_UNITS, lookup_function
 from orionbelt.models.semantic import (
+    CASTABLE_TEMPORAL_TYPES,
+    DATE_BEARING_TYPES,
+    SUB_DAY_GRAINS,
     DataColumnRef,
     DataType,
     ExpressionMode,
@@ -24,6 +27,8 @@ from orionbelt.models.semantic import (
     MeasureFilterGroup,
     MeasureFilterItem,
     SemanticModel,
+    TimeGrain,
+    result_type_holds_grain,
 )
 from orionbelt.models.synthesis import count_label, model_count_pattern
 from orionbelt.models.types import DecimalType, OBMLType, parse_data_type
@@ -88,6 +93,7 @@ class SemanticValidator:
         errors.extend(self._check_references_resolve(model))
         errors.extend(self._check_num_class_on_numeric_columns(model))
         errors.extend(self._check_time_grain_on_temporal_columns(model))
+        errors.extend(self._check_result_type_holds_the_grain(model))
         errors.extend(self._check_measure_filter_refs(model))
         errors.extend(self._check_within_group_refs(model))
         # An expression whose references do not resolve is reported once, by the
@@ -687,7 +693,6 @@ class SemanticValidator:
         return errors
 
     _NUMERIC_TYPES = {DataType.INT, DataType.FLOAT}
-    _TIME_GRAIN_TYPES = {DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP_TZ}
 
     def _check_time_grain_on_temporal_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure timeGrain is only set when the underlying column is temporal.
@@ -696,6 +701,9 @@ class SemanticValidator:
         runtime if the column's abstractType is not date/timestamp/timestamp_tz.
         Reject at model-load time so the error surfaces during validation rather
         than during the first query.
+
+        A query can name a grain of its own, which no model ever declared, so
+        the resolver holds a ``dimension:grain`` override to this same rule.
         """
         errors: list[SemanticError] = []
         for name, dim in model.dimensions.items():
@@ -710,7 +718,7 @@ class SemanticValidator:
                 # Caught by _check_references_resolve.
                 continue
             col = obj.columns[col_name]
-            if col.abstract_type not in self._TIME_GRAIN_TYPES:
+            if col.abstract_type not in DATE_BEARING_TYPES:
                 errors.append(
                     SemanticError(
                         code="TIME_GRAIN_ON_NON_TEMPORAL",
@@ -727,6 +735,77 @@ class SemanticValidator:
                     )
                 )
         return errors
+
+    def _check_result_type_holds_the_grain(self, model: SemanticModel) -> list[SemanticError]:
+        """Reject a declared type that cannot hold the bucket the grain makes.
+
+        A temporal ``resultType`` is emitted as a CAST around the truncation,
+        and that cast sits in the GROUP BY as well as in the projection. So a
+        declaration narrower than the grain does not merely relabel the column,
+        it merges buckets and changes the measures - silently, because nothing
+        about it is a SQL error:
+
+        - ``timeGrain: hour`` with ``resultType: date`` drops the time, so
+          09:00 and 10:00 on one day become a single row whose total is the sum
+          of both.
+        - ``resultType: time`` drops the date, so the same hour on different
+          days collapses together; over a month grain every row in the model
+          becomes one bucket at ``00:00:00``.
+
+        The reverse is harmless and stays allowed: a month grain declared
+        ``timestamp`` is a date at midnight, and nothing is lost by carrying
+        the zeros.
+
+        The rule itself is ``models.semantic.result_type_holds_grain``, because
+        a query may name a grain the model never declared: ``dimension:grain``
+        overrides what the dimension says, and the resolver holds that grain to
+        the same rule.
+        """
+        errors: list[SemanticError] = []
+        for name, dim in model.dimensions.items():
+            grain = dim.time_grain
+            declared = dim.result_type
+            if grain is None or result_type_holds_grain(grain, declared):
+                continue
+            keeps = "timestamp" if grain in SUB_DAY_GRAINS else "date or timestamp"
+            errors.append(
+                SemanticError(
+                    code="RESULT_TYPE_LOSES_GRAIN",
+                    message=(
+                        f"Dimension '{name}' has timeGrain '{grain.value}' but "
+                        f"resultType '{declared.value}', which cannot hold it: "
+                        f"{self._why_it_cannot_hold(grain, declared)} Declare "
+                        f"{keeps}, or use the grain the type implies."
+                    ),
+                    path=f"dimensions.{name}",
+                )
+            )
+        return errors
+
+    @staticmethod
+    def _why_it_cannot_hold(grain: TimeGrain, declared: DataType) -> str:
+        """What the declaration costs, which is not the same in both cases.
+
+        A cast target drops part of the bucket in the GROUP BY, so it changes
+        the measures. ``time_tz`` is not a cast target, so nothing merges and
+        the numbers stay right - the dimension simply answers a date-bearing
+        value under a label that cannot describe one.
+        """
+        if declared not in CASTABLE_TEMPORAL_TYPES:
+            return (
+                f"a grain always carries a date. OBML has no cast target for "
+                f"'{declared.value}', so nothing would merge, but the dimension "
+                f"would answer a date-bearing value under a label for a time."
+            )
+        if grain in SUB_DAY_GRAINS and declared is DataType.DATE:
+            lost = "the time of day"
+        else:
+            lost = "the date"
+        return (
+            f"{lost} would be dropped. The cast is applied in the GROUP BY as "
+            f"well, so buckets would merge and the measures would change without "
+            f"an error."
+        )
 
     def _check_num_class_on_numeric_columns(self, model: SemanticModel) -> list[SemanticError]:
         """Ensure numClass is only set on numeric columns (int or float)."""
