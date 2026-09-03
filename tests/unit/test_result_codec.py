@@ -136,3 +136,114 @@ def test_decode_data_is_shared_across_surfaces() -> None:
 def test_table_to_rows_preserves_schema_order() -> None:
     table = result_codec.build_result_table(["x", "y"], [[1, 2], [3, 4]])
     assert result_codec.table_to_rows(table) == [[1, 2], [3, 4]]
+
+
+# ---------------------------------------------------------------------------
+# The driver schema decides the column types
+# ---------------------------------------------------------------------------
+
+_DECIMAL_SCHEMA = pa.schema(
+    [
+        pa.field("Amount", pa.decimal128(18, 2)),
+        pa.field("Orders", pa.int64()),
+        pa.field("Ordered At", pa.timestamp("us")),
+        pa.field("Shipped", pa.bool_()),
+    ]
+)
+_DECIMAL_NAMES = ["Amount", "Orders", "Ordered At", "Shipped"]
+
+
+def test_declared_decimal_width_survives_narrow_values() -> None:
+    """A ``decimal(18, 2)`` measure holding 1.50 stays ``decimal128(18, 2)``.
+
+    Inference reads the digits that happen to be present and answered
+    ``decimal128(3, 2)``, so the blob advertised a narrower column than the
+    model declares.
+    """
+    from decimal import Decimal
+
+    rows = [[Decimal("1.50"), 3, "2026-08-15T13:45:00", True]]
+    table = result_codec.build_result_table(_DECIMAL_NAMES, rows, _DECIMAL_SCHEMA)
+
+    assert table.schema.field("Amount").type == pa.decimal128(18, 2)
+    assert table.to_pylist()[0]["Amount"] == Decimal("1.50")
+
+
+def test_declared_width_is_stable_across_result_sets() -> None:
+    """The same column answers the same Arrow type whatever rows it returns.
+
+    This is the property, not the width itself: a consumer that read the schema
+    from one result was wrong about the next, which is the failure #393 fixed on
+    MySQL and #407 on Snowflake.
+    """
+    from decimal import Decimal
+
+    narrow = result_codec.build_result_table(
+        _DECIMAL_NAMES, [[Decimal("1.50"), 3, "2026-08-15T13:45:00", True]], _DECIMAL_SCHEMA
+    )
+    wide = result_codec.build_result_table(
+        _DECIMAL_NAMES, [[Decimal("123456.78"), 4, "2026-08-15T14:45:00", False]], _DECIMAL_SCHEMA
+    )
+    empty = result_codec.build_result_table(_DECIMAL_NAMES, [], _DECIMAL_SCHEMA)
+
+    assert narrow.schema == wide.schema == empty.schema
+
+
+def test_temporals_still_serialize_as_strings() -> None:
+    """The declared type is mapped through serialisation first, so a
+    ``timestamp[us]`` column keeps the ISO string the executor produced rather
+    than a declaration no serialised row could satisfy."""
+    rows = [[None, None, "2026-08-15T13:45:00", None]]
+    table = result_codec.build_result_table(_DECIMAL_NAMES, rows, _DECIMAL_SCHEMA)
+
+    assert table.schema.field("Ordered At").type == pa.string()
+    assert table.to_pylist()[0]["Ordered At"] == "2026-08-15T13:45:00"
+
+
+def test_values_that_outgrow_the_declaration_fall_back_to_inference() -> None:
+    """A declared type is offered, never forced: pyarrow raises rather than
+    coercing, and the column is inferred instead of failing the encode."""
+    from decimal import Decimal
+
+    schema = pa.schema([pa.field("Amount", pa.decimal128(18, 2))])
+    table = result_codec.build_result_table(["Amount"], [[Decimal("1.5678")]], schema)
+
+    assert table.to_pylist() == [{"Amount": Decimal("1.5678")}]
+
+
+def test_string_backed_numeric_falls_back_to_decimal() -> None:
+    """PostgreSQL NUMERIC arrives as a string-backed extension type whose cells
+    reach the codec as ``Decimal``. The offered ``string`` is refused, so the
+    column is inferred as a decimal - what it was before the schema decided
+    types, and the value is unchanged either way."""
+    from decimal import Decimal
+
+    schema = pa.schema([pa.field("Amount", pa.string())])
+    table = result_codec.build_result_table(["Amount"], [[Decimal("1.50")]], schema)
+
+    assert pa.types.is_decimal(table.schema.field("Amount").type)
+    assert table.to_pylist() == [{"Amount": Decimal("1.50")}]
+
+
+def test_types_are_inferred_without_a_schema() -> None:
+    """The PEP 249 path has no Arrow schema, and the ``format_values`` arrow
+    response deliberately passes none. Both keep value inference."""
+    from decimal import Decimal
+
+    table = result_codec.build_result_table(["Amount"], [[Decimal("1.50")]])
+
+    assert table.schema.field("Amount").type == pa.decimal128(3, 2)
+
+
+def test_declared_types_survive_the_cache_round_trip() -> None:
+    """What the schema decided is what a cache hit reads back."""
+    from decimal import Decimal
+
+    rows = [[Decimal("1.50"), 3, "2026-08-15T13:45:00", True]]
+    decoded = result_codec.decode_data(
+        result_codec.encode_data(_DECIMAL_NAMES, rows, _DECIMAL_SCHEMA)
+    )
+
+    assert decoded.schema.field("Amount").type == pa.decimal128(18, 2)
+    assert decoded.schema.field("Orders").type == pa.int64()
+    assert result_codec.table_to_rows(decoded) == rows

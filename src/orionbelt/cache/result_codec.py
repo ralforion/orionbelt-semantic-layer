@@ -45,8 +45,9 @@ def _serialized_field_type(arrow_type: Any) -> Any:
     ``_serialize_value``: temporals become ISO strings, binary becomes base64,
     intervals become ``str(timedelta)``. Numerics, booleans, strings and
     ``Decimal`` pass through untouched. This maps a driver's Arrow type onto
-    the type its *serialised* values carry, so a hint derived from the
-    executor's schema agrees with what a non-empty result would infer.
+    the type its *serialised* values carry, which is the type the blob can
+    actually hold - naming the driver's ``timestamp[us]`` here would be a
+    declaration no serialised row could satisfy.
     """
     import pyarrow as pa
 
@@ -66,22 +67,34 @@ def _serialized_field_type(arrow_type: Any) -> Any:
 def build_result_table(column_names: list[str], rows: list[list[Any]], schema: Any = None) -> Any:
     """Build a pyarrow Table from result column names + list-of-lists rows.
 
-    Rows are padded to the column arity and transposed into columns. Types are
-    inferred by pyarrow from the (already JSON-serializable) cell values — the
-    same typed, locale-neutral shape the executor produces, so a cached entry
-    and a fresh execution serialize identically.
+    Rows are padded to the column arity and transposed into columns.
 
-    ``schema`` is an optional *driver* Arrow schema (from ``ExecutionResult``)
-    used **only** to rescue columns inference would otherwise type as ``null``:
-    an empty result, or one whose every cell is NULL. Without it, a
-    ``SELECT 1::BIGINT AS n WHERE false`` blob decodes as ``n: null`` while the
-    envelope's sidecar says the column is numeric — one payload contradicting
-    itself, and a raw-arrow cache hit serves that blob verbatim.
+    ``schema`` is the *driver* Arrow schema (from ``ExecutionResult``), and
+    where it is given it **decides** each column's type rather than merely
+    rescuing the ones inference would type as ``null``. Inference reads the
+    values that happen to be present, so a ``decimal(18, 2)`` measure holding
+    1.50 and 2.25 came back ``decimal128(3, 2)``, and the same column came back
+    a different width for a different filter: a consumer that read the schema
+    once was wrong about the next result. That is the failure #393 fixed on
+    MySQL and #407 on Snowflake, arriving here by a third route, and the fix is
+    the same one - read the width from the declaration, not from the rows.
 
-    Deliberately narrow: a column whose inferred type is already concrete keeps
-    it, so no existing value representation can change. Types are matched by
-    position, since the caller's ``column_names`` are the model-decorated names
-    for the same columns in the same order.
+    The declared type is only *offered*: rows have already been through
+    ``_serialize_value``, so a column whose values no longer fit what the driver
+    declared falls back to inference. That is not a rare path. PostgreSQL
+    NUMERIC arrives as a string-backed extension type and its cells reach here
+    as ``Decimal``, so the offered ``string`` is refused and inference types the
+    column ``decimal128`` - which is what it did before this. pyarrow raises on
+    every such mismatch rather than coercing (measured: a Decimal into a string
+    array, a value wider than the declared precision, an integer too large for
+    the declared width), so the fallback cannot silently change a value.
+
+    Without a schema, types are inferred as before. That is the PEP 249 path,
+    which has no Arrow schema to read, and the ``format_values`` arrow response,
+    where every cell is a display string by construction.
+
+    Types are matched by position, since the caller's ``column_names`` are the
+    model-decorated names for the same columns in the same order.
     """
     import pyarrow as pa
 
@@ -102,12 +115,12 @@ def build_result_table(column_names: list[str], rows: list[list[Any]], schema: A
 
     arrays = []
     for i, col in enumerate(cols_data):
-        arr = pa.array(col, from_pandas=False)
-        if hints and pa.types.is_null(arr.type) and not pa.types.is_null(hints[i]):
-            # Every cell is NULL (or there are none), so re-typing cannot alter
-            # a value — but it does keep the declared type visible to clients.
+        arr = None
+        if hints and not pa.types.is_null(hints[i]):
             with contextlib.suppress(pa.ArrowInvalid, pa.ArrowTypeError, TypeError, ValueError):
                 arr = pa.array(col, type=hints[i], from_pandas=False)
+        if arr is None:
+            arr = pa.array(col, from_pandas=False)
         arrays.append(arr)
     return pa.Table.from_arrays(arrays, names=list(column_names))
 
@@ -136,11 +149,11 @@ def encode_data(column_names: list[str], rows: list[list[Any]], schema: Any = No
 
     No response envelope is baked in — the blob is a pure Arrow data stream. The
     caller stores this in the cache; metadata is rebuilt fresh on every read.
-    Types are inferred from the row values (see :func:`build_result_table`); a
-    caller that already holds a fully-typed table should use
-    :func:`encode_table` instead to preserve the exact schema. ``schema`` is
-    the executor's driver Arrow schema, used only to keep empty / all-null
-    columns from decoding as ``null``.
+    ``schema`` is the executor's driver Arrow schema, and it decides the
+    column types (see :func:`build_result_table`); without one they are
+    inferred from the values. A caller that already holds a fully-typed table
+    should use :func:`encode_table` instead, which keeps the table's own schema
+    with no serialisation step in between.
     """
     table = build_result_table(column_names, rows, schema)
     return gzip.compress(to_ipc_stream(table), _GZIP_LEVEL)
