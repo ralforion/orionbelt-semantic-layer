@@ -47,8 +47,8 @@ packages = ["src/ob_flight"]
 line-length = 100
 target-version = "py312"
 
-
 [tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
 ignore = [
     # PEP 249 is an untyped boundary by specification: ``execute()`` takes
     # whatever the caller passes, and every cursor wraps a native object no

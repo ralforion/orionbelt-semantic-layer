@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
@@ -136,7 +137,7 @@ class TestCompileObml:
 
 
 class TestGetFlightInfo:
-    def _mock_probe(self):
+    def _mock_probe(self) -> pa.Schema:
         """Return a schema patch for _probe_schema."""
         return pa.schema([pa.field("n", pa.int64())])
 
@@ -514,7 +515,7 @@ class TestFlightCacheEnvelope:
         captured: dict = {}
 
         class FakeCache:
-            async def set(self, key, payload, **kwargs):
+            async def set(self, key, payload, **kwargs: Any) -> None:
                 captured["payload"] = payload
                 captured["kwargs"] = kwargs
                 captured["key"] = key
@@ -567,7 +568,7 @@ class TestFlightCacheEnvelope:
         captured: dict = {}
 
         class FakeCache:
-            async def set(self, key, payload, **kwargs):
+            async def set(self, key, payload, **kwargs: Any) -> None:
                 captured["kwargs"] = kwargs
 
         server._cache = FakeCache()
@@ -607,7 +608,7 @@ class TestFlightCacheEnvelope:
         assert all("data_type" not in c for c in cols)
 
     @staticmethod
-    def _roundtrip_server():
+    def _roundtrip_server() -> OBFlightServer:
         """A server whose FakeCache stores set() payloads and serves them on
         get(), so a put/get pair exercises the real codec byte format."""
         from datetime import UTC, datetime
@@ -618,7 +619,7 @@ class TestFlightCacheEnvelope:
         store: dict = {}
 
         class FakeCache:
-            async def set(self, key, payload, **kwargs):
+            async def set(self, key, payload, **kwargs: Any) -> None:
                 store[key] = CachedResult(
                     payload=payload,
                     cached_at=datetime.now(UTC),
@@ -627,7 +628,7 @@ class TestFlightCacheEnvelope:
                     row_count=kwargs.get("row_count", 0),
                 )
 
-            async def get(self, key):
+            async def get(self, key) -> CachedResult | None:
                 return store.get(key)
 
         server._cache = FakeCache()
@@ -732,7 +733,7 @@ class TestFlightCacheEnvelope:
         }
 
         class FakeCache:
-            async def get(self, key):
+            async def get(self, key) -> CachedResult | None:
                 return store.get(key)
 
         server._cache = FakeCache()
@@ -740,7 +741,7 @@ class TestFlightCacheEnvelope:
         captured: dict = {}
 
         class FakeStream:
-            def __init__(self, table):
+            def __init__(self, table) -> None:
                 captured["table"] = table
 
         monkeypatch.setattr(server_execution.flight, "RecordBatchStream", FakeStream)
@@ -804,13 +805,13 @@ class TestFlightBuildCacheMeta:
     resolve_cache_plan), not just the shared plan in isolation.
     """
 
-    def _server_with_cache(self, mock_session_manager, dialect: str = "postgres"):
+    def _server_with_cache(self, mock_session_manager, dialect: str = "postgres") -> OBFlightServer:
         server = _make_server(mock_session_manager, dialect)
 
         class FakeCache:
             backend_name = "memory"
 
-            def heartbeats_snapshot(self):
+            def heartbeats_snapshot(self) -> dict:
                 return {}
 
         class FakeConfig:

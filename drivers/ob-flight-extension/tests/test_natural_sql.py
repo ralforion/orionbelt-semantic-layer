@@ -16,6 +16,7 @@ Spec: design/PLAN_flight_natural_sql.md.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
@@ -479,13 +480,13 @@ class TestSemanticResultSchemaDecimals:
     so the FlightInfo schema matches the high-precision value the stream carries
     (issue #136), sourced from the declared ``dataType`` like pgwire (#116)."""
 
-    def _query(self, measures: list[str]):
+    def _query(self, measures: list[str]) -> SimpleNamespace:
         return SimpleNamespace(
             select=SimpleNamespace(dimensions=["Region"], measures=measures),
             grouping=None,
         )
 
-    def _model(self, **kw):
+    def _model(self, **kw: Any) -> SimpleNamespace:
         dim = SimpleNamespace(result_type=SimpleNamespace(value="string"))
         return SimpleNamespace(
             dimensions={"Region": dim},
