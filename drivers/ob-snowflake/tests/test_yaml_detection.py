@@ -1,6 +1,7 @@
 """Unit tests for OBML YAML detection — no external services required."""
 
 import pytest
+
 from ob_snowflake.compiler import is_obml, parse_obml
 
 

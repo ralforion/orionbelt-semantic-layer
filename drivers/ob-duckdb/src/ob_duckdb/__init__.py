@@ -21,8 +21,8 @@ import duckdb
 
 from ob_duckdb.connection import Connection
 from ob_duckdb.exceptions import (
-    DataError,
     DatabaseError,
+    DataError,
     Error,
     IntegrityError,
     InterfaceError,
@@ -72,19 +72,19 @@ def connect(
 
 
 __all__ = [
-    "apilevel",
-    "threadsafety",
-    "paramstyle",
-    "connect",
     "Connection",
-    "Warning",
-    "Error",
-    "InterfaceError",
-    "DatabaseError",
     "DataError",
-    "OperationalError",
+    "DatabaseError",
+    "Error",
     "IntegrityError",
+    "InterfaceError",
     "InternalError",
-    "ProgrammingError",
     "NotSupportedError",
+    "OperationalError",
+    "ProgrammingError",
+    "Warning",
+    "apilevel",
+    "connect",
+    "paramstyle",
+    "threadsafety",
 ]

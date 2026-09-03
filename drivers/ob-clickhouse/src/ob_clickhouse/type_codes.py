@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "CH_TYPE_MAP"]
+__all__ = ["BINARY", "CH_TYPE_MAP", "DATETIME", "NUMBER", "ROWID", "STRING"]
 
 # Map base ClickHouse type names → PEP 249 type objects.
 # We strip parenthesised parameters (e.g. ``Decimal(18,2)`` → ``Decimal``)

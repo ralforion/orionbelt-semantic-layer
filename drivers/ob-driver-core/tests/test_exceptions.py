@@ -1,8 +1,8 @@
 """Verify the PEP 249 exception hierarchy."""
 
 from ob_driver_core.exceptions import (
-    DataError,
     DatabaseError,
+    DataError,
     Error,
     IntegrityError,
     InterfaceError,
@@ -59,5 +59,5 @@ def test_can_raise_and_catch_by_parent() -> None:
         raise ProgrammingError("bad query")
     except DatabaseError as exc:
         assert str(exc) == "bad query"
-    except Exception:
-        raise AssertionError("ProgrammingError should be catchable as DatabaseError")
+    except Exception as exc:
+        raise AssertionError("ProgrammingError should be catchable as DatabaseError") from exc

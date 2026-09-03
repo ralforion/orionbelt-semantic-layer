@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "DBR_TYPE_MAP"]
+__all__ = ["BINARY", "DATETIME", "DBR_TYPE_MAP", "NUMBER", "ROWID", "STRING"]
 
 # Databricks SQL connector type names from cursor.description
 # https://docs.databricks.com/en/sql/language-manual/sql-ref-datatypes.html

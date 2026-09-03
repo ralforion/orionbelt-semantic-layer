@@ -39,7 +39,7 @@ def test_rowid_matches() -> None:
 
 def test_equality_between_type_objects() -> None:
     other = DBAPITypeObject("STRING", "VARCHAR", "TEXT", "CHAR", "NVARCHAR", "NCHAR")
-    assert STRING == other
+    assert other == STRING
 
 
 def test_repr() -> None:

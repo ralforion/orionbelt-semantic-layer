@@ -10,7 +10,6 @@ import pytest
 from ob_driver_core.compiler import compile_obml
 from ob_driver_core.exceptions import OperationalError, ProgrammingError
 
-
 SAMPLE_OBML = {"select": {"dimensions": ["Region"], "measures": ["Revenue"]}}
 
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pyarrow as pa
-
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, STRING
+
 from ob_flight.converters import (
     cursor_to_batches,
     decimal_arrow_type,

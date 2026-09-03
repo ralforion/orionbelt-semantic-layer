@@ -15,7 +15,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-import pyarrow.flight as flight
+from pyarrow import flight
 
 logger = logging.getLogger("ob_flight.auth")
 

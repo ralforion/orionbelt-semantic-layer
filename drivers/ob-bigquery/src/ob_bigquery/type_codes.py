@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "BQ_TYPE_MAP"]
+__all__ = ["BINARY", "BQ_TYPE_MAP", "DATETIME", "NUMBER", "ROWID", "STRING"]
 
 # BigQuery standard SQL type names
 # https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types

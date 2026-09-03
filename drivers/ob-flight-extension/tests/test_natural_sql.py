@@ -16,11 +16,14 @@ Spec: design/PLAN_flight_natural_sql.md.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
-import pyarrow.flight as flight
 import pytest
+from orionbelt.parser.loader import TrackedLoader
+from orionbelt.parser.resolver import ReferenceResolver
+from pyarrow import flight
 
 from ob_flight.catalog import (
     model_to_flight_infos,
@@ -29,8 +32,6 @@ from ob_flight.catalog import (
 from ob_flight.flight_sql import build_columns_table, build_tables_table
 from ob_flight.server import OBFlightServer
 from ob_flight.server_execution import semantic_result_schema
-from orionbelt.parser.loader import TrackedLoader
-from orionbelt.parser.resolver import ReferenceResolver
 
 # Inline a small OBML model — independent of the main project's fixtures.
 _MODEL_YAML = """\
@@ -479,13 +480,13 @@ class TestSemanticResultSchemaDecimals:
     so the FlightInfo schema matches the high-precision value the stream carries
     (issue #136), sourced from the declared ``dataType`` like pgwire (#116)."""
 
-    def _query(self, measures: list[str]):
+    def _query(self, measures: list[str]) -> SimpleNamespace:
         return SimpleNamespace(
             select=SimpleNamespace(dimensions=["Region"], measures=measures),
             grouping=None,
         )
 
-    def _model(self, **kw):
+    def _model(self, **kw: Any) -> SimpleNamespace:
         dim = SimpleNamespace(result_type=SimpleNamespace(value="string"))
         return SimpleNamespace(
             dimensions={"Region": dim},

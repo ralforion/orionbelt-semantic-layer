@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from ob_driver_core.type_codes import BINARY, DATETIME, NUMBER, ROWID, STRING
 
-__all__ = ["STRING", "BINARY", "NUMBER", "DATETIME", "ROWID", "MYSQL_TYPE_MAP"]
+__all__ = ["BINARY", "DATETIME", "MYSQL_TYPE_MAP", "NUMBER", "ROWID", "STRING"]
 
 # Common MySQL field type IDs from the wire protocol
 MYSQL_TYPE_MAP: dict[int, object] = {

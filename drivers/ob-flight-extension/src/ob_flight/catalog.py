@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.flight as flight
-
+from pyarrow import flight
 
 # Map OBML abstract types to Arrow types. Covers the full OBML DataType enum.
 _OBML_TYPE_MAP: dict[str, pa.DataType] = {

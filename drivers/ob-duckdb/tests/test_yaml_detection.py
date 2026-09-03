@@ -1,6 +1,7 @@
 """Unit tests for OBML YAML detection — runs without any external service."""
 
 import pytest
+
 from ob_duckdb.compiler import is_obml, parse_obml
 
 
