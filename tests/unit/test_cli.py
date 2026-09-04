@@ -421,10 +421,58 @@ def test_execute_remote_sql_limit_warns(monkeypatch, query_file):
 def test_validate_remote(monkeypatch, model_file):
     from orionbelt.cli import _remote
 
-    def fake_validate(self, model_yaml):
+    def fake_validate(self, model_yaml, *, online=False, dialect=None):
         return {"valid": True, "errors": [], "warnings": []}
 
     monkeypatch.setattr(_remote.RemoteClient, "validate", fake_validate)
     result = runner.invoke(app, ["validate", model_file, "-s", "http://example", "-f", "json"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["valid"] is True
+
+
+def test_validate_remote_forwards_online_flags(monkeypatch, model_file):
+    from orionbelt.cli import _remote
+
+    seen = {}
+
+    def fake_validate(self, model_yaml, *, online=False, dialect=None):
+        seen["online"] = online
+        seen["dialect"] = dialect
+        return {"valid": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(_remote.RemoteClient, "validate", fake_validate)
+    result = runner.invoke(
+        app,
+        ["validate", model_file, "-s", "http://example", "-f", "json", "--online", "-d", "duckdb"],
+    )
+    assert result.exit_code == 0
+    assert seen == {"online": True, "dialect": "duckdb"}
+
+
+def test_validate_online_query_params(monkeypatch):
+    """``online`` and ``dialect`` travel as query params, not in the body."""
+    from orionbelt.cli._remote import RemoteClient
+
+    seen = {}
+
+    def fake_request(self, method, path, *, json=None, params=None):
+        seen["params"] = params
+        return {"valid": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(RemoteClient, "_request", fake_request)
+    RemoteClient("http://example", None).validate("version: 1.0", online=True, dialect="postgres")
+    assert seen["params"] == {"online": "true", "dialect": "postgres"}
+
+
+def test_validate_offline_sends_no_params(monkeypatch):
+    from orionbelt.cli._remote import RemoteClient
+
+    seen = {}
+
+    def fake_request(self, method, path, *, json=None, params=None):
+        seen["params"] = params
+        return {"valid": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(RemoteClient, "_request", fake_request)
+    RemoteClient("http://example", None).validate("version: 1.0")
+    assert seen["params"] is None

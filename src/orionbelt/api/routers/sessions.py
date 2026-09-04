@@ -110,6 +110,7 @@ __all__ = [
     "router",
     # re-exported helpers (imported by other modules from this namespace)
     "_resolve_dialect",
+    "_probe_dialect",
     "_run_with_cache",
     "_build_execute_response",
     "_build_explain_response",
@@ -444,13 +445,42 @@ async def remove_model(
 # -- validation & query -----------------------------------------------------
 
 
+def _probe_dialect(online: bool, dialect: str | None) -> str | None:
+    """The dialect the datasource probe should use, or ``None`` when offline.
+
+    Deliberately *not* the chain :func:`_resolve_dialect` walks. That one picks
+    the SQL to generate, where the model's ``defaultDialect`` is the best
+    answer; this one picks a *connection to open*, and the only connection a
+    deployment is configured for is ``DB_VENDOR``. A model that declares
+    ``defaultDialect: snowflake`` on a DuckDB deployment would otherwise be
+    probed by opening a Snowflake connection that does not exist, and every
+    data object would come back unavailable.
+    """
+    if not online:
+        return None
+    from orionbelt.api.deps import get_db_vendor
+
+    return dialect or get_db_vendor()
+
+
 @router.post("/{session_id}/validate", response_model=ValidateResponse)
 async def validate_model(
     session_id: str,
     body: ValidateRequest,
+    online: bool = False,
+    dialect: str | None = None,
     mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
 ) -> ValidateResponse:
-    """Validate an OBML model within a session context."""
+    """Validate an OBML model within a session context.
+
+    With ``online=true`` the model is additionally checked against the
+    configured datasource: each data object is probed for its table and its
+    declared columns, and drift is reported as an error. ``dialect`` selects
+    the datasource to probe and defaults to ``DB_VENDOR`` — it names a
+    connection to open, not SQL to generate, so unlike the ``dialect`` on the
+    query endpoints it does not fall back to the model's
+    ``settings.defaultDialect``.
+    """
     if not body.model_yaml and not body.model_json:
         raise HTTPException(status_code=422, detail="Provide either model_yaml or model_json")
     store = _get_store(session_id, mgr)
@@ -459,6 +489,7 @@ async def validate_model(
         raw_dict=cast("dict[str, object] | None", body.model_json),
         extends_yaml=body.extends,
         inherits_model_id=body.inherits,
+        datasource_dialect=_probe_dialect(online, dialect),
     )
     return ValidateResponse(
         valid=summary.valid,

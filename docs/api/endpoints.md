@@ -283,6 +283,82 @@ Validate OBML YAML within a session context. Does not store the model.
 }
 ```
 
+#### Checking the model against the datasource
+
+Validation is offline by default: the model is checked against itself and the
+OBML schema, and no connection is opened. That leaves one thing unchecked — the
+physical binding. A data object's `database` / `schema` / `code`, and each
+column's `code`, are opaque strings to the validator, so a model can be valid in
+every structural sense and still name a table that was dropped or a column that
+was renamed. The first thing to say so is the warehouse, at query time.
+
+`?online=true` closes that gap:
+
+| Query param | Default | Meaning |
+|---|---|---|
+| `online` | `false` | Probe the datasource for every data object's table and declared columns |
+| `dialect` | `DB_VENDOR` | Which configured datasource to probe |
+
+`dialect` here selects a *connection to open*, which is why it falls back to
+`DB_VENDOR` rather than to the model's `settings.defaultDialect` — a model
+declaring `defaultDialect: snowflake` on a DuckDB deployment would otherwise be
+probed by opening a Snowflake connection that does not exist.
+
+Each data object costs one round trip: a `SELECT <declared columns> FROM <table>
+LIMIT 0`, quoted exactly as a compiled query would quote it. That plans without
+scanning, and proves the columns are addressable through the same connection and
+the same spelling real queries use — which also settles identifier case without
+OBSL having to know which engines fold it. Only when that projection fails does
+a second `SELECT * ... LIMIT 0` run, to tell a missing table from a missing
+column and to name which one.
+
+Findings are errors like any other, so `valid` goes to `false`:
+
+```json
+{
+ "valid": false,
+ "errors": [
+ {
+ "code": "DATASOURCE_COLUMN_MISSING",
+ "message": "Column 'order_id' does not exist on main.orders (data object 'Orders').",
+ "path": "dataObjects.Orders.columns.Order ID.code",
+ "hint": "Correct the column's 'code', or drop the column from the model."
+ },
+ {
+ "code": "DATASOURCE_TYPE_MISMATCH",
+ "message": "Column 'amount' on data object 'Orders' is declared 'float' but the datasource returns a string column.",
+ "path": "dataObjects.Orders.columns.Amount.abstractType"
+ }
+ ],
+ "warnings": []
+}
+```
+
+| Code | Meaning |
+|---|---|
+| `DATASOURCE_TABLE_MISSING` | The table a data object maps to could not be read. Carries the driver's own error. |
+| `DATASOURCE_COLUMN_MISSING` | A declared `code` names no column on an existing table. |
+| `DATASOURCE_COLUMN_CASE` | The column exists under a different letter case, and this engine rejected the model's spelling. The hint carries the real one. |
+| `DATASOURCE_TYPE_MISMATCH` | The column's type is not in the family its `abstractType` declares. |
+| `DATASOURCE_UNAVAILABLE` | The check could not run at all — no driver, no credentials, no connection. Reported once, not per data object. |
+| `DATASOURCE_UNSUPPORTED_DIALECT` | `dialect` names an engine OBSL has no dialect for. |
+| `DATASOURCE_PROBE_FAILED` | The table and columns are all there but the read was still refused (a column-level grant, most likely). Carries the driver's error. |
+
+Since the flag is opt-in, it fails closed: asking for a check that cannot run
+returns `DATASOURCE_UNAVAILABLE` and `valid: false` rather than a green light.
+
+Two things are deliberately out of scope. Type comparison is by *family* —
+number, datetime, string, boolean, binary — so a `float` backed by `DECIMAL(38,9)`
+or a `timestamp` backed by `DATE` is not drift; only a `float` backed by text
+is. And a column that comes back null-typed, which a zero-row fetch is exactly
+where you find, is skipped rather than reported. Data objects sourced through
+`nestedIn` are not probed: their rows come from unnesting a parent's array
+column, so their columns belong to that array's element type rather than to any
+table of their own.
+
+The same options are on `POST /v1/validate` (stateless) and on the CLI as
+`obsl validate --online`.
+
 ---
 
 ## Session Query Compilation & Execution

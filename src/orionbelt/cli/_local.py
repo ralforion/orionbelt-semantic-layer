@@ -85,9 +85,18 @@ def _compile(
         raise CliError(str(exc)) from None
 
 
-def validate(model_yaml: str) -> ValidationSummary:
-    """Validate an OBML model without storing it."""
-    return ModelStore().validate(model_yaml)
+def validate(
+    model_yaml: str, *, online: bool = False, dialect: str | None = None
+) -> ValidationSummary:
+    """Validate an OBML model without storing it.
+
+    ``online`` additionally probes the configured datasource for every data
+    object's table and declared columns. The dialect selects the *connection*
+    to open, so it falls back to ``DB_VENDOR`` rather than to the model's
+    ``defaultDialect`` — see ``api.routers.sessions._probe_dialect``.
+    """
+    probe_dialect = (dialect or os.getenv("DB_VENDOR") or "duckdb") if online else None
+    return ModelStore().validate(model_yaml, datasource_dialect=probe_dialect)
 
 
 def _load(model_yaml: str) -> tuple[ModelStore, str, SemanticModel]:

@@ -611,6 +611,58 @@ class TestSessionModelFlow:
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
+    async def test_validate_is_offline_by_default(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sample model names WAREHOUSE.PUBLIC tables that exist nowhere,
+        so a probe that ran would fail it."""
+
+        def explode(*args: object, **kwargs: object) -> object:
+            raise AssertionError("validate must not touch the datasource by default")
+
+        monkeypatch.setattr("orionbelt.service.db_executor.execute_sql", explode)
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        response = await client.post(
+            f"/v1/sessions/{sid}/validate", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        assert response.json()["valid"] is True
+
+    async def test_validate_online_reports_datasource_drift(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orionbelt.service.db_executor import ExecutionError
+
+        def missing(*args: object, **kwargs: object) -> object:
+            raise ExecutionError("relation does not exist")
+
+        monkeypatch.setattr("orionbelt.service.db_executor.execute_sql", missing)
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        response = await client.post(
+            f"/v1/sessions/{sid}/validate?online=true&dialect=duckdb",
+            json={"model_yaml": SAMPLE_MODEL_YAML},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["valid"] is False
+        assert {e["code"] for e in body["errors"]} == {"DATASOURCE_TABLE_MISSING"}
+
+    async def test_shortcut_validate_online(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orionbelt.service.db_executor import ExecutionUnavailableError
+
+        def unavailable(*args: object, **kwargs: object) -> object:
+            raise ExecutionUnavailableError("no credentials configured")
+
+        monkeypatch.setattr("orionbelt.service.db_executor.execute_sql", unavailable)
+        response = await client.post(
+            "/v1/validate?online=true&dialect=duckdb", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["valid"] is False
+        assert [e["code"] for e in body["errors"]] == ["DATASOURCE_UNAVAILABLE"]
+
     async def test_compile_query_in_session(self, client: AsyncClient) -> None:
         sid = (await client.post("/v1/sessions")).json()["session_id"]
         load = await client.post(

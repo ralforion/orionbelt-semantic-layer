@@ -53,7 +53,7 @@ For `compile` and `execute` you supply the query one of two ways (exactly one):
 | Command | Options |
 | --- | --- |
 | _common (where remote-capable)_ | `-f, --format {table,json,csv,tsv}` · `-s, --server URL` (env `OBSL_SERVER`) · `--api-key KEY` (env `OBSL_API_KEY`) |
-| `validate` | `-f/--format` · `-s/--server` · `--api-key` |
+| `validate` | `--online` · `-d/--dialect NAME` (with `--online`; defaults to `DB_VENDOR`) · `-f/--format` · `-s/--server` · `--api-key` |
 | `compile` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--explain` · `--pretty/--no-pretty` (default pretty) · `-f/--format` · `-s/--server` · `--api-key` |
 | `execute` | `-q/--query PATH` · `--sql TEXT` · `-d/--dialect NAME` · `--limit N` (default 1000; see note) · `-f/--format` · `-s/--server` · `--api-key` |
 | `describe` | `-f/--format` |
@@ -85,6 +85,52 @@ obsl validate model.yaml -f json   # machine-readable result
 - run: |
     for m in models/*.yaml; do obsl validate "$m" || exit 1; done
 ```
+
+### Checking against the datasource
+
+Validation is offline by default: the model is checked against itself and the
+OBML schema, and no connection is opened. The physical binding is what that
+leaves out — a data object's `code` and each column's `code` are opaque strings
+to the validator, so a model stays valid after the table behind it is dropped or
+a column is renamed, and the warehouse is the first thing to say otherwise.
+
+`--online` adds a probe of every data object: one `SELECT <declared columns>
+FROM <table> LIMIT 0`, quoted the way a compiled query would quote it, which
+plans without scanning and proves the columns are readable under the spelling
+the model uses.
+
+```bash
+obsl validate model.yaml --online
+# error: model is invalid:
+# error:   [DATASOURCE_COLUMN_MISSING] Column 'order_id' does not exist on main.orders
+#          (data object 'Orders'). (dataObjects.Orders.columns.Order ID.code)
+# error:   [DATASOURCE_TYPE_MISMATCH] Column 'amount' on data object 'Orders' is declared
+#          'float' but the datasource returns a string column.
+# error:   [DATASOURCE_TABLE_MISSING] Data object 'Shipments' maps to main.shipments,
+#          which the datasource could not read: Catalog Error: Table with name
+#          shipments does not exist!
+```
+
+Findings are errors like any other, so the command exits `1` — which is what
+makes it useful as a post-deploy check, run against the warehouse the model will
+actually query:
+
+```yaml
+- run: obsl validate models/sales.yaml --online
+  env:
+    DB_VENDOR: postgres
+    POSTGRES_HOST: ${{ secrets.PG_HOST }}
+```
+
+`-d/--dialect` picks which configured datasource to probe. Note that it defaults
+to `DB_VENDOR` rather than to the model's `defaultDialect`, unlike the `--dialect`
+on `compile` and `execute`: here it selects a *connection to open*, and the model's
+declared dialect says what SQL to generate, not what server is reachable.
+
+Because the flag is opt-in it fails closed — if the connection is missing you get
+`DATASOURCE_UNAVAILABLE` and a non-zero exit, not a pass. See
+[the endpoint reference](../api/endpoints.md#checking-the-model-against-the-datasource)
+for the full list of codes and what the probe deliberately does not check.
 
 ## Compile
 

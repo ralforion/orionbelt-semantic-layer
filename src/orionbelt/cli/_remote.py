@@ -70,8 +70,16 @@ class RemoteClient:
 
     # -- operations ---------------------------------------------------------
 
-    def validate(self, model_yaml: str) -> dict[str, Any]:
-        return cast("dict[str, Any]", self._post("/validate", {"model_yaml": model_yaml}))
+    def validate(
+        self, model_yaml: str, *, online: bool = False, dialect: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"online": "true"} if online else {}
+        if online and dialect:
+            params["dialect"] = dialect
+        return cast(
+            "dict[str, Any]",
+            self._post("/validate", {"model_yaml": model_yaml}, params=params or None),
+        )
 
     def _query_body(self, query: QueryObject) -> dict[str, Any]:
         return query.model_dump(by_alias=True, mode="json", exclude_none=True)

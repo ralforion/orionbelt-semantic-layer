@@ -154,21 +154,55 @@ def _remote_input_schema_warnings(data: dict[str, Any], label: str) -> list[str]
 # --------------------------------------------------------------------------
 
 
+OnlineOpt = Annotated[
+    bool,
+    typer.Option(
+        "--online",
+        help=(
+            "Also check the model against the datasource: probe every data object "
+            "for its table, declared columns and column types."
+        ),
+    ),
+]
+#: Separate from ``DialectOpt`` because it selects a different thing. That one
+#: picks the SQL to generate and falls back to the model's ``defaultDialect``;
+#: this one picks the connection the probe opens, and the only connection a
+#: deployment has is ``DB_VENDOR``.
+ProbeDialectOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--dialect",
+        "-d",
+        help="Datasource to probe with --online (defaults to DB_VENDOR).",
+    ),
+]
+
+
 @app.command()
 def validate(
     model: ModelArg,
     fmt: FormatOpt = OutputFormat.table,
+    online: OnlineOpt = False,
+    dialect: ProbeDialectOpt = None,
     server: ServerOpt = None,
     api_key: ApiKeyOpt = None,
 ) -> None:
-    """Validate an OBML model. Exits non-zero when the model is invalid."""
+    """Validate an OBML model. Exits non-zero when the model is invalid.
+
+    Offline by default: the model is checked against itself and the OBML
+    schema, and no connection is opened. ``--online`` adds a datasource probe
+    whose findings are errors like any other, so a dropped table or a renamed
+    column fails the command.
+    """
     model_yaml = _io.read_text(model)
     if server:
         from orionbelt.cli._local import CliError
         from orionbelt.cli._remote import RemoteClient
 
         try:
-            data = RemoteClient(server, api_key).validate(model_yaml)
+            data = RemoteClient(server, api_key).validate(
+                model_yaml, online=online, dialect=dialect
+            )
         except CliError as exc:
             raise _fail(str(exc)) from None
         valid = bool(data.get("valid"))
@@ -177,7 +211,7 @@ def validate(
     else:
         from orionbelt.cli import _local
 
-        summary = _local.validate(model_yaml)
+        summary = _local.validate(model_yaml, online=online, dialect=dialect)
         valid = summary.valid
         errors = [dataclasses.asdict(e) for e in summary.errors]
         warnings = [dataclasses.asdict(w) for w in summary.warnings]
