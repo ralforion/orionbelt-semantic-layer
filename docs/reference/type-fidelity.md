@@ -30,7 +30,7 @@ uv run python scripts/probe_types.py --json all   # regenerate the data below
 |---|---|---|---|---|---|---|---|---|
 | `decimal(18,2)` | EXACT | LOSSY | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
 | `decimal(38,9)` | EXACT | LOSSY | WIDENED | EXACT | EXACT | EXACT | EXACT | EXACT |
-| `decimal(18,2) big` | EXACT | LOSSY | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
+| `decimal(19,2) big` | EXACT | LOSSY | WIDENED | EXACT | WIDENED | WIDENED | EXACT | EXACT |
 | `SUM decimal(18,2)` | WIDENED | LOSSY | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED | WIDENED |
 | `integer` | EXACT | EXACT | FAMILY | EXACT | FAMILY | FAMILY | EXACT | EXACT |
 | `bigint` | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT | EXACT |
@@ -46,7 +46,7 @@ uv run python scripts/probe_types.py --json all   # regenerate the data below
 |---|---|---|---|---|---|---|---|---|
 | `decimal(18,2)` | `decimal128(18, 2)` | `extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>` | `decimal256(76, 2)` | `decimal128(18, 2)` | `decimal128(38, 2)` | `decimal128(38, 9)` | `decimal128(18, 2)` | `decimal128(18, 2)` |
 | `decimal(38,9)` | `decimal128(38, 9)` | `extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>` | `decimal256(76, 9)` | `decimal128(38, 9)` | `decimal128(38, 9)` | `decimal128(38, 9)` | `decimal128(38, 9)` | `decimal128(38, 9)` |
-| `decimal(18,2) big` | `decimal128(19, 2)` | `extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>` | `decimal256(76, 2)` | `decimal128(19, 2)` | `decimal128(38, 2)` | `decimal128(38, 9)` | `decimal128(19, 2)` | `decimal128(19, 2)` |
+| `decimal(19,2) big` | `decimal128(19, 2)` | `extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>` | `decimal256(76, 2)` | `decimal128(19, 2)` | `decimal128(38, 2)` | `decimal128(38, 9)` | `decimal128(19, 2)` | `decimal128(19, 2)` |
 | `SUM decimal(18,2)` | `decimal128(38, 2)` | `extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>` | `decimal256(76, 2)` | `decimal128(38, 2)` | `decimal128(38, 2)` | `decimal128(38, 9)` | `decimal128(28, 2)` | `decimal128(38, 2)` |
 | `integer` | `int32` | `int32` | `int64` | `int32` | `int64` | `int64` | `int32` | `int32` |
 | `bigint` | `int64` | `int64` | `int64` | `int64` | `int64` | `int64` | `int64` | `int64` |

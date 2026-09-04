@@ -80,7 +80,11 @@ import pyarrow as pa
 CASES: list[tuple[str, str, str, bool]] = [
     ("decimal(18,2)", "2.55", "decimal(18, 2)", False),
     ("decimal(38,9)", "2.123456789", "decimal(38, 9)", False),
-    ("decimal(18,2) big", "12345678901234567.89", "decimal(19, 2)", False),
+    # 19 significant digits (17 + 2), so this needs decimal(19, 2) and the
+    # label has to say so: the published table's first column is the *declared*
+    # type, and a row labelled decimal(18,2) beside a CAST to DECIMAL(19, 2)
+    # publishes a declaration nobody made.
+    ("decimal(19,2) big", "12345678901234567.89", "decimal(19, 2)", False),
     ("SUM decimal(18,2)", "2.55", "decimal(18, 2)", True),
     ("integer", "42", "integer", False),
     ("bigint", "9007199254740993", "bigint", False),
@@ -212,11 +216,24 @@ def fetch(engine: str, sql: str) -> pa.Table:
             cursor.close()
 
 
+class EngineUnreachableError(RuntimeError):
+    """No case got an answer, so there is nothing to report about the engine."""
+
+
 def measure(engine: str) -> dict[str, dict[str, str]]:
     """Run every case against *engine* and return its row of the matrix.
 
     Keyed by case label, so a caller comparing two runs compares like with
     like even if the case list grows.
+
+    Raises :class:`EngineUnreachableError` when not one case came back. The
+    per-case retry below exists so a single unsupported cast cannot blank an
+    engine, but it cannot tell "this cast failed" from "nothing answered", and
+    on a dead connection it turns one connection error into a full row of
+    them. That row then reads as eleven measured failures, which is a claim
+    about the engine rather than about the connection - and in JSON it is
+    worse, because a published matrix showing a blank row claims a measurement
+    nobody took.
     """
     cases = render(engine)
     tables: dict[int, pa.Table] = {}
@@ -244,6 +261,9 @@ def measure(engine: str) -> dict[str, dict[str, str]]:
             "arrow": str(arrow_type),
             "value": repr(table.column(0)[0].as_py()),
         }
+    if not tables:
+        detail = next((c.get("detail", "") for c in row.values()), "")
+        raise EngineUnreachableError(detail or "no case returned a result")
     return row
 
 
@@ -273,17 +293,22 @@ def main(argv: list[str]) -> int:
     for engine in engines:
         try:
             matrix[engine] = measure(engine) if as_json else probe(engine)
-        except Exception:
-            # Unreachable is the normal state for an engine with no live
-            # target; say so in a way a reader can tell from a probe bug.
-            # An unreachable engine is *omitted* from JSON rather than
-            # recorded as empty: a published matrix that shows a blank row
-            # claims a measurement nobody took.
+        except EngineUnreachableError as exc:
+            # The normal state for an engine with no live target. Omitted from
+            # JSON rather than recorded as empty, because a published matrix
+            # showing a blank row claims a measurement nobody took.
             if as_json:
-                print(f"unreachable: {engine}", file=sys.stderr)
+                print(f"unreachable: {engine}: {exc}", file=sys.stderr)
             else:
-                print(f"\n===== {engine}\n  UNREACHABLE")
-                traceback.print_exc(limit=2)
+                # ``probe`` has already printed the engine header.
+                print(f"  UNREACHABLE  {exc}")
+        except Exception:
+            # A probe bug rather than a dead connection; show it as one.
+            if as_json:
+                print(f"failed: {engine}", file=sys.stderr)
+            else:
+                print("  FAILED")
+            traceback.print_exc(limit=2)
     if as_json:
         json.dump(
             {"measured": _today(), "engines": matrix},

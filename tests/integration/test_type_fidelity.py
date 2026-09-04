@@ -25,7 +25,9 @@ measured.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -153,8 +155,6 @@ def test_a_server_start_makes_results_carry_a_driver_schema(duckdb_file: Path) -
     is typed by inference over the values one result happened to contain -
     which is the fix #410 shipped and #412 discovered was not running.
     """
-    import subprocess
-
     env = {**os.environ, "DUCKDB_DATABASE": str(duckdb_file)}
     proc = subprocess.run(
         [sys.executable, "-c", _CLEAN_PROCESS_CHECK],
@@ -165,3 +165,94 @@ def test_a_server_start_makes_results_carry_a_driver_schema(duckdb_file: Path) -
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "decimal128(18, 2)"
+
+
+# ---------------------------------------------------------------------------
+# The probe's own contract
+# ---------------------------------------------------------------------------
+
+
+class TestProbeOmitsUnreachableEngines:
+    """A published matrix must not show a row nobody measured.
+
+    The per-case retry in ``measure`` exists so one unsupported cast cannot
+    blank an engine, but it cannot tell "this cast failed" from "nothing
+    answered": on a dead connection it turned a single connection error into a
+    full row of ERR cells, and ``main`` never reached its omit branch. That row
+    then reads as eleven measured failures - a claim about the engine rather
+    than about the connection. It shipped that way for Dremio in the first run
+    of this matrix, which was really a stopped container.
+    """
+
+    def _probe_module(self):
+        import importlib.util
+
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "probe_types", root / "scripts" / "probe_types.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_measure_raises_rather_than_returning_a_row_of_errors(self) -> None:
+        probe = self._probe_module()
+        previous = os.environ.pop("DUCKDB_DATABASE", None)
+        try:
+            with pytest.raises(probe.EngineUnreachableError):
+                probe.measure("duckdb")
+        finally:
+            if previous is not None:
+                os.environ["DUCKDB_DATABASE"] = previous
+
+    def test_json_output_omits_the_engine(self) -> None:
+        probe = self._probe_module()
+        previous = os.environ.pop("DUCKDB_DATABASE", None)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(Path(probe.__file__)), "--json", "duckdb"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert proc.returncode == 0, proc.stderr
+            assert json.loads(proc.stdout)["engines"] == {}
+            assert "unreachable: duckdb" in proc.stderr
+        finally:
+            if previous is not None:
+                os.environ["DUCKDB_DATABASE"] = previous
+
+
+class TestPublishedLabelsMatchWhatIsCast:
+    """The matrix's first column is the *declared* type, so a label that
+    disagrees with the cast publishes a declaration nobody made. The ``big``
+    row said ``decimal(18,2)`` beside a ``CAST(... AS DECIMAL(19, 2))``.
+    """
+
+    def test_every_case_label_names_its_declared_type(self) -> None:
+        import importlib.util
+
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "probe_types", root / "scripts" / "probe_types.py"
+        )
+        assert spec is not None and spec.loader is not None
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+
+        for label, _literal, obml_type, aggregate in probe.CASES:
+            stem = label.replace("SUM ", "").replace(" big", "").strip()
+            declared = obml_type.replace(" ", "")
+            assert stem.replace(" ", "") == declared, (
+                f"case {label!r} is cast as {obml_type!r}; the label has to say so"
+            )
+            assert aggregate == label.startswith("SUM ")
+
+    def test_the_published_matrix_uses_the_same_labels(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        matrix = json.loads((root / "scripts" / "type-fidelity-matrix.json").read_text())
+        page = (root / "docs" / "reference" / "type-fidelity.md").read_text()
+        for row in matrix["engines"].values():
+            for label in row:
+                assert f"`{label}`" in page, f"{label!r} measured but not published"

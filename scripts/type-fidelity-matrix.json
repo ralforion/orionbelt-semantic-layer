@@ -26,7 +26,7 @@
         "value": "Decimal('2.550000000')",
         "verdict": "WIDENED decimal128(38, 9)"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(38, 9)",
         "value": "Decimal('12345678901234567.890000000')",
         "verdict": "WIDENED decimal128(38, 9)"
@@ -83,7 +83,7 @@
         "value": "Decimal('2.55')",
         "verdict": "EXACT"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(19, 2)",
         "value": "Decimal('12345678901234568.00')",
         "verdict": "EXACT"
@@ -140,7 +140,7 @@
         "value": "Decimal('2.55')",
         "verdict": "EXACT"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(19, 2)",
         "value": "Decimal('12345678901234567.89')",
         "verdict": "EXACT"
@@ -197,7 +197,7 @@
         "value": "Decimal('2.55')",
         "verdict": "EXACT"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(19, 2)",
         "value": "Decimal('12345678901234567.89')",
         "verdict": "EXACT"
@@ -254,7 +254,7 @@
         "value": "Decimal('2.55')",
         "verdict": "EXACT"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(19, 2)",
         "value": "Decimal('12345678901234567.89')",
         "verdict": "EXACT"
@@ -311,7 +311,7 @@
         "value": "Decimal('2.55')",
         "verdict": "WIDENED decimal256(76, 2)"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal256(76, 2)",
         "value": "Decimal('12345678901234567.89')",
         "verdict": "WIDENED decimal256(76, 2)"
@@ -368,7 +368,7 @@
         "value": "'2.55'",
         "verdict": "LOSSY   string"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
         "value": "'12345678901234567.89'",
         "verdict": "LOSSY   string"
@@ -425,7 +425,7 @@
         "value": "Decimal('2.55')",
         "verdict": "WIDENED decimal128(38, 2)"
       },
-      "decimal(18,2) big": {
+      "decimal(19,2) big": {
         "arrow": "decimal128(38, 2)",
         "value": "Decimal('12345678901234567.89')",
         "verdict": "WIDENED decimal128(38, 2)"
