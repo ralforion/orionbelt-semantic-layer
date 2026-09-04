@@ -45,6 +45,12 @@ _MAX_CHUNKSIZE = 100_000
 # equal by ``test_numeric_tokens_match_the_service_definition``.
 _NUMERIC_TYPE_TOKENS = ("number", "int", "float", "decimal", "numeric", "double", "real")
 
+# Type names a token matches without the type being numeric. The tokens are
+# substrings because the numeric names are a family rather than a list -
+# ``bigint``, ``smallint`` and ``integer`` all have to match ``int`` - and
+# ``interval`` is what that costs: it contains ``int`` and is a duration.
+_NOT_NUMERIC_TYPE_NAMES = ("interval",)
+
 
 def _is_string_backed_numeric(arrow_type: Any) -> bool:
     """Whether the type is an Arrow extension wrapping a *number* as a string.
@@ -58,10 +64,15 @@ def _is_string_backed_numeric(arrow_type: Any) -> bool:
     makes.
 
     The ``type_name`` test is what keeps this narrow, and it is load-bearing
-    rather than defensive. An opaque ``json`` or ``uuid`` is string-backed too,
-    and its cells stay strings all the way here, so ``string`` is the right
-    offer for it and refusing one would make *those* columns value-dependent
-    instead - inferred ``string`` when populated and ``null`` when empty.
+    rather than defensive. An opaque ``json``, ``uuid`` or ``interval`` is
+    string-backed too, and its cells stay strings all the way here, so
+    ``string`` is the right offer for it and refusing one would make *those*
+    columns value-dependent instead - inferred ``string`` when populated and
+    ``null`` when empty.
+
+    ``interval`` needs saying twice because the tokens are substrings: the
+    numeric names are a family, so ``int`` has to match ``bigint`` and
+    ``integer``, and it matches ``interval`` on the way past.
     """
     import pyarrow as pa
 
@@ -75,6 +86,8 @@ def _is_string_backed_numeric(arrow_type: Any) -> bool:
         if isinstance(type_name, bytes):
             type_name = type_name.decode("utf-8", "ignore")
         name = str(type_name).lower()
+        if any(excluded in name for excluded in _NOT_NUMERIC_TYPE_NAMES):
+            return False
         return any(tok in name for tok in _NUMERIC_TYPE_TOKENS)
     except (AttributeError, TypeError):
         return False

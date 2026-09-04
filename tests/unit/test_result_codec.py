@@ -308,30 +308,57 @@ def test_declared_types_survive_the_cache_round_trip() -> None:
     assert result_codec.table_to_rows(decoded) == rows
 
 
-def test_non_numeric_string_backed_extension_keeps_its_string_hint() -> None:
-    """An opaque ``json`` or ``uuid`` is string-backed too, and its cells stay
-    strings all the way to the codec.
+@pytest.mark.parametrize(
+    ("type_name", "value"),
+    [
+        ("json", '{"a": 1}'),
+        ("uuid", "0b3d1f8e-6a1a-4c2a-9f3a-2b8b6f5a1c77"),
+        # ``interval`` contains ``int``, so a substring match calls it numeric.
+        ("interval", "1 day 02:00:00"),
+    ],
+)
+def test_non_numeric_string_backed_extension_keeps_its_string_hint(
+    type_name: str, value: str
+) -> None:
+    """An opaque ``json``, ``uuid`` or ``interval`` is string-backed too, and
+    its cells stay strings all the way to the codec.
 
     So ``string`` is the right offer for it, and the numeric refusal must not
-    reach it: without the ``type_name`` test these columns would be the
-    value-dependent ones instead, inferred ``string`` when populated and
-    ``null`` when empty.
+    reach it: these columns would otherwise be the value-dependent ones
+    instead, inferred ``string`` when populated and ``null`` when empty.
     """
-    schema = [_StringBackedField("Payload", type_name="json")]
+    schema = [_StringBackedField("Payload", type_name=type_name)]
 
-    populated = result_codec.build_result_table(["Payload"], [['{"a": 1}']], schema)
+    populated = result_codec.build_result_table(["Payload"], [[value]], schema)
     all_null = result_codec.build_result_table(["Payload"], [[None], [None]], schema)
     empty = result_codec.build_result_table(["Payload"], [], schema)
 
     assert populated.schema == all_null.schema == empty.schema
     assert pa.types.is_string(empty.schema.field("Payload").type)
-    assert populated.to_pylist() == [{"Payload": '{"a": 1}'}]
+    assert populated.to_pylist() == [{"Payload": value}]
+
+
+@pytest.mark.parametrize("type_name", ["numeric", "decimal", "bigint", "smallint", "integer"])
+def test_numeric_string_backed_names_still_refuse_the_string_hint(type_name: str) -> None:
+    """The exclusion must not cost the family it sits inside: every numeric name
+    still reaches the refusal, which is why the tokens are substrings."""
+    from decimal import Decimal
+
+    schema = [_StringBackedField("Amount", type_name=type_name)]
+    table = result_codec.build_result_table(["Amount"], [[Decimal("1.50")]], schema)
+
+    assert pa.types.is_decimal(table.schema.field("Amount").type)
 
 
 def test_numeric_tokens_match_the_service_definition() -> None:
     """The cache may not import the service layer
     (``tests/architecture/test_dependencies.py``), so the numeric ``type_name``
-    tokens are spelled twice. A test is what keeps the copies equal."""
+    tokens are spelled twice. A test is what keeps the copies equal.
+
+    The codec's exclusion list is its own: ``is_numeric_type_hint`` reads a
+    column's *declared* type, where ``interval`` never appears, while this reads
+    an extension's ``type_name``, where it does.
+    """
     from orionbelt.service.value_formatting import _NUMERIC_TYPE_TOKENS
 
     assert result_codec._NUMERIC_TYPE_TOKENS == _NUMERIC_TYPE_TOKENS
