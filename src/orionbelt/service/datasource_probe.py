@@ -100,6 +100,13 @@ def _arrow_family(arrow_type: Any) -> str | None:
             pa.types.is_timestamp(arrow_type)
             or pa.types.is_date(arrow_type)
             or pa.types.is_time(arrow_type)
+            # An interval is not a point in time, but "datetime" is the bucket
+            # this codebase puts it in, and ADBC's Postgres driver hands a real
+            # ``INTERVAL`` back as ``month_day_nano_interval`` rather than
+            # wrapping it. Without these two the column is unclassified and a
+            # ``timestamp`` declared over it is never checked.
+            or pa.types.is_interval(arrow_type)
+            or pa.types.is_duration(arrow_type)
         ):
             return _DATETIME
         if pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type):
@@ -107,12 +114,35 @@ def _arrow_family(arrow_type: Any) -> str | None:
         if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
             return _BINARY
     except (AttributeError, TypeError):
-        # Mirrors ``db_executor._arrow_type_to_hint``: ADBC hands back
-        # OpaqueType subclasses that do not implement the full DataType
-        # protocol, and the ``pa.types.is_*`` helpers raise on them rather
-        # than returning False.
+        # ADBC hands back OpaqueType subclasses that do not implement the full
+        # DataType protocol, and the ``pa.types.is_*`` helpers raise on them
+        # rather than returning False. Fall through to the name-based route.
+        pass
+    return _opaque_family(arrow_type)
+
+
+def _opaque_family(arrow_type: Any) -> str | None:
+    """Family for a type PyArrow cannot represent natively, by its vendor name.
+
+    ADBC's Postgres driver wraps ``NUMERIC``, ``MONEY`` and friends in an
+    ``OpaqueType`` whose storage is a string. Every ``pa.types.is_*`` helper
+    answers False for it, so the structural route above classifies a Postgres
+    ``NUMERIC`` column as nothing at all and a measure declared over it is
+    never type-checked - the one place the check is most worth having.
+
+    ``db_executor`` already recovers these from the ``type_name`` the wrapper
+    carries; this reuses that mapping rather than growing a second copy of it.
+    The result is coarse, so it goes through :func:`_hint_family` for the same
+    reason the PEP 249 path does: ``coarse_hint_from_type_name`` answers
+    ``"string"`` both for a real text type and for everything it does not
+    recognise, and that cannot be allowed to refute a declaration.
+    """
+    from orionbelt.service.db_executor import coarse_hint_from_type_name
+
+    type_name = getattr(arrow_type, "type_name", None)
+    if not isinstance(type_name, str):
         return None
-    return None
+    return _hint_family(coarse_hint_from_type_name(type_name))
 
 
 def _hint_family(type_hint: str) -> str | None:

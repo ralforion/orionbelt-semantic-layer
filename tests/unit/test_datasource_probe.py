@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from orionbelt.parser.resolver import ReferenceResolver
+from orionbelt.service import datasource_probe
 from orionbelt.service.datasource_probe import probe_datasource
 from orionbelt.service.db_executor import ExecutionError, ExecutionUnavailableError
 
@@ -505,3 +506,82 @@ class TestValidateIntegration:
         summary = ModelStore().validate("key: [unclosed", datasource_dialect="duckdb")
         assert summary.valid is False
         assert executor.sql == []
+
+
+class TestOpaqueAndIntervalTypes:
+    """Types PyArrow cannot represent natively still have to be classified.
+
+    ADBC's Postgres driver wraps NUMERIC and MONEY in an ``OpaqueType`` whose
+    storage is a string, and every ``pa.types.is_*`` helper answers False for
+    it. Structural classification alone therefore skips exactly the columns a
+    measure is most likely to be declared over. Verified against a live
+    Postgres: `numeric` arrives opaque, `interval` arrives as a native
+    `month_day_nano_interval`, and before this both were unclassified.
+    """
+
+    def test_opaque_numeric_is_a_number(self) -> None:
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="numeric", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) == "number"
+
+    def test_opaque_money_is_a_number(self) -> None:
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="money", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) == "number"
+
+    def test_opaque_interval_is_datetime(self) -> None:
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="interval", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) == "datetime"
+
+    def test_native_interval_is_datetime(self) -> None:
+        """Not opaque at all - ADBC returns a real Arrow interval."""
+        import pyarrow as pa
+
+        assert datasource_probe._arrow_family(pa.month_day_nano_interval()) == "datetime"
+        assert datasource_probe._arrow_family(pa.duration("s")) == "datetime"
+
+    def test_unrecognised_opaque_name_refutes_nothing(self) -> None:
+        """``coarse_hint_from_type_name`` answers "string" for a real text type
+        and for everything it does not recognise alike, so it must not be
+        allowed to contradict a declaration."""
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="tsvector", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) is None
+
+    def test_declared_string_over_postgres_numeric_is_reported(self, model: Any, stub: Any) -> None:
+        """The finding this fixes, end to end: `Order ID` is declared string."""
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.opaque(pa.string(), "numeric", "PostgreSQL")),
+                    ("amount", pa.float64()),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        findings = probe_datasource(model, dialect="postgres")
+        assert [f.code for f in findings] == ["DATASOURCE_TYPE_MISMATCH"]
+        assert findings[0].context is not None
+        assert findings[0].context["actualFamily"] == "number"
+
+    def test_declared_float_over_postgres_numeric_is_clean(self, model: Any, stub: Any) -> None:
+        """The other half: a NUMERIC behind a `float` must not now false-fire."""
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.opaque(pa.string(), "numeric", "PostgreSQL")),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        assert probe_datasource(model, dialect="postgres") == []
