@@ -38,8 +38,16 @@ _GZIP_LEVEL = 6
 _MAX_CHUNKSIZE = 100_000
 
 
-def _is_string_backed_extension(arrow_type: Any) -> bool:
-    """Whether the type is an Arrow extension wrapping a value as a string.
+# Substrings that mark an extension's ``type_name`` as numeric. Mirrors
+# ``service.value_formatting._NUMERIC_TYPE_TOKENS``, which the cache layer may
+# not import (``tests/architecture/test_dependencies.py`` forbids cache ->
+# service; Flight reaches this module through the cache). The two are pinned
+# equal by ``test_numeric_tokens_match_the_service_definition``.
+_NUMERIC_TYPE_TOKENS = ("number", "int", "float", "decimal", "numeric", "double", "real")
+
+
+def _is_string_backed_numeric(arrow_type: Any) -> bool:
+    """Whether the type is an Arrow extension wrapping a *number* as a string.
 
     ADBC's PostgreSQL driver represents NUMERIC as
     ``arrow.opaque[storage_type=string, type_name=numeric]`` to keep precision
@@ -47,16 +55,27 @@ def _is_string_backed_extension(arrow_type: Any) -> bool:
     to ``Decimal`` before they reach this module. Duck-typed on the
     ``storage_type`` / ``type_name`` pair that plain Arrow types do not carry -
     the same detection ``db_executor._is_string_stored_numeric_arrow_type``
-    makes, repeated here rather than imported because the cache must not depend
-    on the service layer (Flight imports this module).
+    makes.
+
+    The ``type_name`` test is what keeps this narrow, and it is load-bearing
+    rather than defensive. An opaque ``json`` or ``uuid`` is string-backed too,
+    and its cells stay strings all the way here, so ``string`` is the right
+    offer for it and refusing one would make *those* columns value-dependent
+    instead - inferred ``string`` when populated and ``null`` when empty.
     """
     import pyarrow as pa
 
     try:
         storage = getattr(arrow_type, "storage_type", None)
-        if storage is None or getattr(arrow_type, "type_name", None) is None:
+        type_name = getattr(arrow_type, "type_name", None)
+        if storage is None or type_name is None:
             return False
-        return bool(pa.types.is_string(storage))
+        if not pa.types.is_string(storage):
+            return False
+        if isinstance(type_name, bytes):
+            type_name = type_name.decode("utf-8", "ignore")
+        name = str(type_name).lower()
+        return any(tok in name for tok in _NUMERIC_TYPE_TOKENS)
     except (AttributeError, TypeError):
         return False
 
@@ -88,7 +107,7 @@ def _serialized_field_type(arrow_type: Any) -> Any:
     """
     import pyarrow as pa
 
-    if _is_string_backed_extension(arrow_type):
+    if _is_string_backed_numeric(arrow_type):
         return None
     try:
         if (

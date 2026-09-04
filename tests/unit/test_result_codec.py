@@ -213,8 +213,8 @@ def test_values_that_outgrow_the_declaration_fall_back_to_inference() -> None:
     assert table.to_pylist() == [{"Amount": Decimal("1.5678")}]
 
 
-class _StringBackedNumericField:
-    """A schema field whose type is a string-backed numeric extension.
+class _StringBackedField:
+    """A schema field whose type is a string-backed Arrow extension.
 
     ``pa.opaque`` is used where the installed pyarrow has it and stood in for
     otherwise, since the floor is ``pyarrow>=16`` and the constructor arrived in
@@ -222,13 +222,13 @@ class _StringBackedNumericField:
     ``type``, which is all either shape has to provide.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, type_name: str = "numeric") -> None:
         self.name = name
         opaque = getattr(pa, "opaque", None)
         if opaque is not None:
-            self.type: Any = opaque(pa.string(), "numeric", "postgresql")
+            self.type: Any = opaque(pa.string(), type_name, "postgresql")
         else:
-            self.type = SimpleNamespace(storage_type=pa.string(), type_name="numeric")
+            self.type = SimpleNamespace(storage_type=pa.string(), type_name=type_name)
 
 
 def test_string_backed_numeric_is_never_typed_as_text() -> None:
@@ -244,7 +244,7 @@ def test_string_backed_numeric_is_never_typed_as_text() -> None:
     """
     from decimal import Decimal
 
-    schema = [_StringBackedNumericField("Amount")]
+    schema = [_StringBackedField("Amount")]
 
     populated = result_codec.build_result_table(["Amount"], [[Decimal("1.50")]], schema)
     all_null = result_codec.build_result_table(["Amount"], [[None], [None]], schema)
@@ -265,7 +265,7 @@ def test_string_backed_numeric_keeps_its_scale_through_the_cache() -> None:
     ``1.50`` has to come back ``1.50``."""
     from decimal import Decimal
 
-    schema = [_StringBackedNumericField("Amount")]
+    schema = [_StringBackedField("Amount")]
     payload = result_codec.encode_data(["Amount"], [[Decimal("1.50")]], schema)
 
     assert result_codec.table_to_rows(result_codec.decode_data(payload)) == [[Decimal("1.50")]]
@@ -306,3 +306,32 @@ def test_declared_types_survive_the_cache_round_trip() -> None:
     assert decoded.schema.field("Amount").type == pa.decimal128(18, 2)
     assert decoded.schema.field("Orders").type == pa.int64()
     assert result_codec.table_to_rows(decoded) == rows
+
+
+def test_non_numeric_string_backed_extension_keeps_its_string_hint() -> None:
+    """An opaque ``json`` or ``uuid`` is string-backed too, and its cells stay
+    strings all the way to the codec.
+
+    So ``string`` is the right offer for it, and the numeric refusal must not
+    reach it: without the ``type_name`` test these columns would be the
+    value-dependent ones instead, inferred ``string`` when populated and
+    ``null`` when empty.
+    """
+    schema = [_StringBackedField("Payload", type_name="json")]
+
+    populated = result_codec.build_result_table(["Payload"], [['{"a": 1}']], schema)
+    all_null = result_codec.build_result_table(["Payload"], [[None], [None]], schema)
+    empty = result_codec.build_result_table(["Payload"], [], schema)
+
+    assert populated.schema == all_null.schema == empty.schema
+    assert pa.types.is_string(empty.schema.field("Payload").type)
+    assert populated.to_pylist() == [{"Payload": '{"a": 1}'}]
+
+
+def test_numeric_tokens_match_the_service_definition() -> None:
+    """The cache may not import the service layer
+    (``tests/architecture/test_dependencies.py``), so the numeric ``type_name``
+    tokens are spelled twice. A test is what keeps the copies equal."""
+    from orionbelt.service.value_formatting import _NUMERIC_TYPE_TOKENS
+
+    assert result_codec._NUMERIC_TYPE_TOKENS == _NUMERIC_TYPE_TOKENS
