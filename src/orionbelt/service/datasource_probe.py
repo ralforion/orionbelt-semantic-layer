@@ -32,7 +32,6 @@ so a caller that already renders validation errors renders these unchanged.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -443,25 +442,6 @@ def _table_missing(obj_name: str, obj: DataObject, error: str) -> SemanticError:
     )
 
 
-def _ensure_arrow() -> None:
-    """Import pyarrow, when installed, before any probe runs.
-
-    ``db_executor`` takes a driver's Arrow path only when pyarrow is *already*
-    in ``sys.modules``: it will not pull a heavy dependency in behind a query's
-    back. That is the right default for executing a query, where the coarse
-    PEP 249 hint carries enough type information for the response. It is the
-    wrong one here, because that coarse bucket folds BOOLEAN and every type
-    code the driver does not recognise into ``"string"`` — which
-    :func:`_hint_family` correctly refuses to treat as a claim, so the type
-    check quietly stops running. Which types a probe can compare would then
-    depend on whether something else in the process happened to import pyarrow
-    first, and the same model would validate differently under the API and the
-    CLI. Importing it up front is what makes the comparison deterministic.
-    """
-    with contextlib.suppress(ImportError):
-        import pyarrow  # noqa: F401
-
-
 def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticError]:
     """Check every data object in *model* against the configured datasource.
 
@@ -475,9 +455,9 @@ def probe_datasource(model: SemanticModel, *, dialect: str) -> list[SemanticErro
     codes against the fallback ``code`` table would report drift that is not
     there.
     """
-    from orionbelt.service.db_executor import ExecutionUnavailableError
+    from orionbelt.service.db_executor import ExecutionUnavailableError, ensure_arrow
 
-    _ensure_arrow()
+    ensure_arrow()
     try:
         impl = DialectRegistry.get(dialect)
     except UnsupportedDialectError:
