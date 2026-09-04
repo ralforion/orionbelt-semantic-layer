@@ -413,11 +413,23 @@ async def shortcut_sparql(
 @router.post("/validate", response_model=ValidateResponse, tags=["validation"])
 async def shortcut_validate(
     body: ValidateRequest,
+    online: bool = False,
+    dialect: str | None = None,
 ) -> ValidateResponse:
-    """Validate an OBML model (stateless — no session required)."""
+    """Validate an OBML model (stateless — no session required).
+
+    With ``online=true`` the model is additionally checked against the
+    configured datasource: each data object is probed for its table and its
+    declared columns, and drift is reported as an error. ``dialect`` selects
+    the engine to probe, defaulting to ``DB_VENDOR``.
+    """
+    from orionbelt.api.routers.sessions import _probe_dialect
+
     store = ModelStore()
     raw = cast("dict[str, object] | None", body.model_json)
-    summary = store.validate(body.model_yaml, raw_dict=raw)
+    summary = store.validate(
+        body.model_yaml, raw_dict=raw, datasource_dialect=_probe_dialect(online, dialect)
+    )
     return ValidateResponse(
         valid=summary.valid,
         errors=[error_info_to_detail(e) for e in summary.errors],

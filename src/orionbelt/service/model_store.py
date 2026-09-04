@@ -939,6 +939,7 @@ class ModelStore:
         raw_dict: dict[str, object] | None = None,
         extends_yaml: list[str] | None = None,
         inherits_model_id: str | None = None,
+        datasource_dialect: str | None = None,
     ) -> ValidationSummary:
         """Validate a model without storing it.  Accepts YAML string or raw dict.
 
@@ -946,6 +947,13 @@ class ModelStore:
         ``/validate`` endpoints match what the schema-guarded load/query
         endpoints enforce — a model that fails the schema is reported invalid
         here rather than being silently coerced.
+
+        ``datasource_dialect`` turns on the online check: every data object is
+        probed against the configured warehouse for that dialect and any drift
+        — a dropped table, a renamed column, a column whose type no longer
+        matches ``abstractType`` — is reported as an error alongside the
+        offline ones. Left as ``None``, validation stays entirely offline and
+        opens no connection.
         """
         _model, raw, errors, warnings = self._parse_and_validate(
             yaml_str,
@@ -960,11 +968,35 @@ class ModelStore:
         fatal = {"YAML_SAFETY_ERROR", "YAML_PARSE_ERROR"}
         if not any(e.code in fatal for e in errors):
             errors = self._schema_errors(raw) + errors
+        if datasource_dialect:
+            errors = errors + self._datasource_errors(_model, datasource_dialect)
         return ValidationSummary(
             valid=len(errors) == 0,
             errors=errors,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _datasource_errors(model: SemanticModel, dialect: str) -> list[ErrorInfo]:
+        """Online findings for *model*, as ``ErrorInfo``.
+
+        Imported here rather than at module scope so that the offline path —
+        which is every caller that does not ask for the check — never pulls in
+        the executor and its driver stack.
+        """
+        from orionbelt.service.datasource_probe import probe_datasource
+
+        return [
+            ErrorInfo(
+                code=f.code,
+                message=f.message,
+                path=f.path,
+                severity=f.severity,
+                hint=f.hint,
+                context=f.context,
+            )
+            for f in probe_datasource(model, dialect=dialect)
+        ]
 
     @staticmethod
     def _schema_errors(raw: dict[str, object]) -> list[ErrorInfo]:
