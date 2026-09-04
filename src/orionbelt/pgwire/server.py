@@ -32,6 +32,7 @@ from orionbelt.pgwire.auth import (
 )
 from orionbelt.pgwire.extended import ExtendedSession
 from orionbelt.pgwire.scram import SCRAM_SHA_256, ScramError, ScramServerExchange
+from orionbelt.service import db_executor
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,15 @@ class PgWireServer:
         return int(sockets[0].getsockname()[1])
 
     async def start(self) -> int:
+        # Before the first connection, for the reason given on
+        # ``db_executor.ensure_arrow``: the executor's Arrow fetch only runs
+        # when pyarrow is already imported, and that is what lets a result
+        # carry the driver's schema instead of types inferred from its values.
+        if not db_executor.ensure_arrow():
+            logger.warning(
+                "pyarrow is not installed — result columns will be typed by "
+                "inference rather than from the driver schema"
+            )
         self._server = await asyncio.start_server(
             self._handle_connection, host=self.host, port=self.port
         )

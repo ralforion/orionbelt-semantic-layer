@@ -56,6 +56,7 @@ from orionbelt.api.routers import (
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
+from orionbelt.service import db_executor
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 
@@ -272,18 +273,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         unknown_default_ttl_seconds=settings.cache_unknown_freshness_default_ttl,
         heartbeat_auth_token=settings.heartbeat_auth_token,
     )
-    if cache.backend_name == "file":
-        # Pay every lazy-import tax at startup so the first user-visible
-        # cache hit doesn't include ~100ms of cold imports + first-call
-        # codec setup. Top-level ``pyarrow`` alone is ~60MB of native
-        # code; ``pyarrow.ipc`` is the Arrow stream reader/writer that
-        # ``result_codec`` actually uses. DuckDB lazy-imports ``pytz``
-        # on the first TIMESTAMPTZ bind. We exercise all three with a
-        # full encode → decode round-trip on a one-row payload.
-        try:
-            import pyarrow  # noqa: F401
-            import pyarrow.ipc  # noqa: F401
+    # Load pyarrow before serving, whatever the cache backend. The executor's
+    # Arrow fetch paths refuse to run unless it is already imported, so this is
+    # what decides whether a result carries the driver's schema — and that
+    # schema is what types a cached or ``format=arrow`` column from the
+    # declaration rather than from the values one result happened to contain
+    # (#410). It used to sit inside the ``backend_name == "file"`` branch
+    # below, so on the default ``cache_backend=noop`` it never ran and every
+    # column fell back to inference. Startup is also the only safe moment:
+    # importing it inside a live uvicorn loop on macOS drags in gRPC
+    # initialisation mid-request, which is why the executor guards rather than
+    # imports.
+    if not db_executor.ensure_arrow():
+        logger.warning(
+            "pyarrow is not installed — result columns will be typed by "
+            "inference rather than from the driver schema"
+        )
 
+    if cache.backend_name == "file":
+        # Pay the remaining lazy-import taxes at startup so the first
+        # user-visible cache hit doesn't include first-call codec setup.
+        # DuckDB lazy-imports ``pytz`` on the first TIMESTAMPTZ bind. We
+        # exercise these with a full encode → decode round-trip on a one-row
+        # payload.
+        try:
             from orionbelt.cache import result_codec
 
             # Run the encode → decode round-trip on the default threadpool so

@@ -995,6 +995,39 @@ def _config_errors() -> tuple[type[BaseException], ...]:
     return _CONFIG_ERROR_TYPES
 
 
+def ensure_arrow() -> bool:
+    """Import pyarrow so the Arrow fetch paths are available. Idempotent.
+
+    The two ``_try_fetch_*_arrow`` helpers refuse to fetch unless pyarrow is
+    *already* in ``sys.modules``, and that guard is deliberate: importing it
+    lazily inside a running uvicorn loop on macOS triggers heavy gRPC
+    initialisation at the worst possible moment. What the guard does not do is
+    ensure the import ever happens - so whether a result carries a driver
+    schema depended on whatever else the process had touched first.
+
+    That mattered more than it looks. ``ExecutionResult.arrow_schema`` is what
+    ``cache.result_codec.build_result_table`` reads to type a column from the
+    driver's declaration instead of from the values a result happens to
+    contain (#410, and #393/#407 before it). With no schema it falls back to
+    inference, and a ``decimal(18, 2)`` column comes back ``decimal128(3, 2)``
+    for one filter and a different width for the next. The only thing importing
+    pyarrow early was a cache warm-up gated on ``cache_backend == "file"``, and
+    that setting defaults to ``noop`` - so on a default deployment the fix
+    shipped in #410 never ran.
+
+    Call this at a startup or entry boundary, never mid-request from inside a
+    server's event loop; that is the hazard the guard exists for. Returns
+    whether pyarrow is available, so a caller can log the degraded case rather
+    than wonder about it.
+    """
+    with contextlib.suppress(ImportError):
+        import pyarrow  # noqa: F401
+        import pyarrow.ipc  # noqa: F401
+
+        return True
+    return False
+
+
 def _try_fetch_arrow(cursor: Any) -> Any:
     """Try to fetch results as an Arrow Table. Returns None on failure.
 

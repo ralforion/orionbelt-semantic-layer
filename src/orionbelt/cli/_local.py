@@ -25,7 +25,12 @@ from orionbelt.dialect.base import (
 from orionbelt.dialect.registry import DialectRegistry, UnsupportedDialectError
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
-from orionbelt.service.db_executor import ExecutionResult, execute_sql, resolve_timezone
+from orionbelt.service.db_executor import (
+    ExecutionResult,
+    ensure_arrow,
+    execute_sql,
+    resolve_timezone,
+)
 from orionbelt.service.diagram import generate_mermaid_er
 from orionbelt.service.model_store import (
     ModelDescription,
@@ -171,6 +176,10 @@ def _execute_loaded(
         default_timezone=getattr(settings, "default_timezone", None) if settings else None
     )
     override = bool(getattr(settings, "override_database_timezone", False)) if settings else False
+    # See ``db_executor.ensure_arrow``: without it the executor cannot take a
+    # driver's Arrow path, and the result's columns get typed by inference over
+    # the values rather than from the driver's schema.
+    ensure_arrow()
     executed = execute_sql(compiled.sql, dialect=resolved_dialect, tz=tz, override_db_tz=override)
     return compiled, executed
 
