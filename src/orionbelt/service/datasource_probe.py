@@ -74,15 +74,35 @@ _DECLARED_FAMILY: dict[DataType, str] = {
 }
 
 
-def _arrow_family(arrow_type: Any) -> str | None:
-    """Family for a PyArrow type, or ``None`` when it should not be compared.
+#: Opaque vendor type names that are positively text, as opposed to names
+#: ``coarse_hint_from_type_name`` merely fails to place. It answers ``"string"``
+#: for both, so without this list a Postgres ``uuid`` or ``xml`` column stays
+#: undecidable and a ``float`` declared over it passes. Every entry is a type
+#: whose values *are* text; a name not here (``tsvector``, a vendor type nobody
+#: has seen) still refutes nothing.
+_OPAQUE_STRING_NAMES = frozenset(
+    {
+        "uuid",
+        "xml",
+        "json",
+        "jsonb",
+        "inet",
+        "cidr",
+        "macaddr",
+        "macaddr8",
+        "citext",
+        "name",
+        "bpchar",
+        "character",
+        "character varying",
+        "varchar",
+        "text",
+    }
+)
 
-    ``None`` is the answer for a null-typed column and for anything this does
-    not recognise: a nested or extension type carries no claim the model made,
-    and guessing at one would report a mismatch that is really an omission
-    here. A ``LIMIT 0`` fetch is where null-typed columns turn up, so that
-    branch is load-bearing rather than defensive.
-    """
+
+def _structural_family(arrow_type: Any) -> str | None:
+    """Family from PyArrow's own type predicates, or ``None`` if none match."""
     import pyarrow as pa
 
     try:
@@ -114,35 +134,57 @@ def _arrow_family(arrow_type: Any) -> str | None:
         if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
             return _BINARY
     except (AttributeError, TypeError):
-        # ADBC hands back OpaqueType subclasses that do not implement the full
+        # ADBC hands back extension subclasses that do not implement the full
         # DataType protocol, and the ``pa.types.is_*`` helpers raise on them
-        # rather than returning False. Fall through to the name-based route.
-        pass
-    return _opaque_family(arrow_type)
+        # rather than returning False.
+        return None
+    return None
 
 
-def _opaque_family(arrow_type: Any) -> str | None:
-    """Family for a type PyArrow cannot represent natively, by its vendor name.
+def _arrow_family(arrow_type: Any) -> str | None:
+    """Family for a PyArrow type, or ``None`` when it should not be compared.
 
-    ADBC's Postgres driver wraps ``NUMERIC``, ``MONEY`` and friends in an
-    ``OpaqueType`` whose storage is a string. Every ``pa.types.is_*`` helper
-    answers False for it, so the structural route above classifies a Postgres
-    ``NUMERIC`` column as nothing at all and a measure declared over it is
-    never type-checked - the one place the check is most worth having.
+    ``None`` is the answer for a null-typed column and for anything neither
+    route below places: an unplaced type carries no claim the model made, and
+    guessing would report a mismatch that is really an omission here. A
+    ``LIMIT 0`` fetch is where null-typed columns turn up, so that branch is
+    load-bearing rather than defensive.
 
-    ``db_executor`` already recovers these from the ``type_name`` the wrapper
-    carries; this reuses that mapping rather than growing a second copy of it.
-    The result is coarse, so it goes through :func:`_hint_family` for the same
-    reason the PEP 249 path does: ``coarse_hint_from_type_name`` answers
-    ``"string"`` both for a real text type and for everything it does not
-    recognise, and that cannot be allowed to refute a declaration.
+    Two routes, because a driver has two ways of handing back a type PyArrow
+    has no native spelling for, and they need opposite treatment:
+
+    ``arrow.opaque``
+        ADBC's escape hatch for a vendor type it cannot convert - Postgres
+        ``NUMERIC``, ``MONEY``, ``uuid``, ``tsvector``. Its storage is a
+        *carrier*, almost always a string, and says nothing about the value:
+        classifying ``NUMERIC`` by its storage would call it text. Only the
+        vendor ``type_name`` means anything, so that is what is read.
+
+    A canonical extension (``arrow.json``, ...)
+        The opposite. Its storage *is* the representation - Postgres ``json``
+        and ``jsonb`` both arrive as ``arrow.json`` over string storage - so
+        the storage type is exactly the right thing to classify, and it keeps
+        working for canonical extensions that do not exist yet.
     """
-    from orionbelt.service.db_executor import coarse_hint_from_type_name
+    family = _structural_family(arrow_type)
+    if family is not None:
+        return family
 
     type_name = getattr(arrow_type, "type_name", None)
-    if not isinstance(type_name, str):
-        return None
-    return _hint_family(coarse_hint_from_type_name(type_name))
+    if isinstance(type_name, str):
+        if type_name.lower() in _OPAQUE_STRING_NAMES:
+            return _STRING
+        from orionbelt.service.db_executor import coarse_hint_from_type_name
+
+        # Coarse, so it goes through ``_hint_family`` for the reason the PEP 249
+        # path does: ``"string"`` is that mapping's unknown bucket as well as
+        # its answer for text, and an unknown must not refute a declaration.
+        return _hint_family(coarse_hint_from_type_name(type_name))
+
+    storage = getattr(arrow_type, "storage_type", None)
+    if storage is not None:
+        return _structural_family(storage)
+    return None
 
 
 def _hint_family(type_hint: str) -> str | None:

@@ -585,3 +585,108 @@ class TestOpaqueAndIntervalTypes:
             )
         )
         assert probe_datasource(model, dialect="postgres") == []
+
+
+class TestStringFamilyExtensionTypes:
+    """A driver has two ways to hand back a type PyArrow cannot spell natively,
+    and they need opposite treatment. Verified against a live Postgres:
+    ``json``/``jsonb`` arrive as the canonical ``arrow.json`` extension over
+    string storage, while ``uuid``/``xml``/``inet`` arrive as ``arrow.opaque``
+    with only a vendor name to go on.
+    """
+
+    def test_canonical_json_extension_is_a_string(self) -> None:
+        """Postgres json and jsonb both arrive this way."""
+        import pyarrow as pa
+
+        assert datasource_probe._arrow_family(pa.json_(pa.string())) == "string"
+
+    @pytest.mark.parametrize("name", ["uuid", "xml", "inet", "json", "text", "varchar"])
+    def test_named_opaque_text_types_are_strings(self, name: str) -> None:
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name=name, vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) == "string"
+
+    def test_opaque_name_matching_is_case_insensitive(self) -> None:
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="UUID", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) == "string"
+
+    def test_unknown_opaque_name_stays_undecidable(self) -> None:
+        """``tsvector`` is text-ish, but the mapping cannot *say* so, and its
+        storage is a carrier rather than a claim. Silence beats a guess."""
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="tsvector", vendor_name="PostgreSQL")
+        assert datasource_probe._arrow_family(opaque) is None
+
+    def test_opaque_numeric_is_not_read_as_its_string_storage(self) -> None:
+        """The reason opaque storage is never consulted: ADBC carries NUMERIC
+        over string storage, so a storage-based answer would call money text.
+        """
+        import pyarrow as pa
+
+        opaque = pa.opaque(pa.string(), type_name="numeric", vendor_name="PostgreSQL")
+        assert opaque.storage_type == pa.string()
+        assert datasource_probe._arrow_family(opaque) == "number"
+
+    def test_declared_float_over_a_json_column_is_reported(self, model: Any, stub: Any) -> None:
+        """End to end: OBML maps json to the string family, so a float declared
+        over a Postgres JSON column is drift and must not pass."""
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.json_(pa.string())),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        findings = probe_datasource(model, dialect="postgres")
+        assert [f.code for f in findings] == ["DATASOURCE_TYPE_MISMATCH"]
+        assert findings[0].context is not None
+        assert findings[0].context["actualFamily"] == "string"
+
+    def test_declared_float_over_an_opaque_uuid_is_reported(self, model: Any, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.opaque(pa.string(), "uuid", "PostgreSQL")),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        findings = probe_datasource(model, dialect="postgres")
+        assert [f.code for f in findings] == ["DATASOURCE_TYPE_MISMATCH"]
+
+    def test_declared_json_over_a_json_column_is_clean(self, stub: Any) -> None:
+        """OBML ``json`` sits in the string family, so this must not fire."""
+        import pyarrow as pa
+
+        from orionbelt.parser.loader import TrackedLoader
+
+        yaml = MODEL_YAML.replace(
+            "      Amount:\n        code: amount\n        abstractType: float",
+            "      Amount:\n        code: amount\n        abstractType: json",
+        ).replace("aggregation: sum", "aggregation: count")
+        raw, source_map = TrackedLoader().load_string(yaml)
+        resolved, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.json_(pa.string())),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        assert probe_datasource(resolved, dialect="postgres") == []
