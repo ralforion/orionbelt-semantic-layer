@@ -690,3 +690,45 @@ class TestStringFamilyExtensionTypes:
             )
         )
         assert probe_datasource(resolved, dialect="postgres") == []
+
+
+class TestTypeMismatchHint:
+    """The hint has to name the family that came back, not the declared one.
+
+    Naming the declared family reads as "change float to a number type" -
+    advice to make no change at all - which is what it did before.
+    """
+
+    def test_hint_names_the_actual_family_not_the_declared_one(self, model: Any, stub: Any) -> None:
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.string()),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        (finding,) = probe_datasource(model, dialect="duckdb")
+        assert finding.hint is not None
+        assert "change abstractType to a 'string' type" in finding.hint
+        assert "'number'" not in finding.hint
+
+    def test_hint_offers_the_cast_back_to_the_declared_type(self, model: Any, stub: Any) -> None:
+        """The other half of the choice: fix the model, or fix the source."""
+        import pyarrow as pa
+
+        stub(
+            FakeResult(
+                [
+                    ("order_id", pa.string()),
+                    ("amount", pa.string()),
+                    ("ordered_at", pa.timestamp("us")),
+                ]
+            )
+        )
+        (finding,) = probe_datasource(model, dialect="duckdb")
+        assert finding.hint is not None
+        assert "cast 'amount' to float" in finding.hint

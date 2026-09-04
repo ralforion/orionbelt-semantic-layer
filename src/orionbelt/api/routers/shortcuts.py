@@ -421,7 +421,10 @@ async def shortcut_validate(
     With ``online=true`` the model is additionally checked against the
     configured datasource: each data object is probed for its table and its
     declared columns, and drift is reported as an error. ``dialect`` selects
-    the engine to probe, defaulting to ``DB_VENDOR``.
+    the datasource to probe and defaults to ``DB_VENDOR`` — it names a
+    connection to open, not SQL to generate, so unlike the ``dialect`` on the
+    query endpoints it does not fall back to the model's
+    ``settings.defaultDialect``.
     """
     from orionbelt.api.routers.sessions import _probe_dialect
 

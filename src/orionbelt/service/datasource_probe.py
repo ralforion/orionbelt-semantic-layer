@@ -278,8 +278,12 @@ def _type_findings(
                 ),
                 path=f"dataObjects.{obj_name}.columns.{col.name}.abstractType",
                 hint=(
-                    f"Change abstractType to one of the '{declared}' family that matches "
-                    f"the column, or cast it in the source view."
+                    # Names the family that came back, not the declared one. The
+                    # declared family is what the model already says, so offering
+                    # it as the correction reads as "change float to a number
+                    # type" - advice to make no change at all.
+                    f"Either change abstractType to a '{actual}' type, or cast "
+                    f"'{col.code}' to {col.abstract_type} in the source view."
                 ),
                 context={
                     "dataObject": obj_name,
