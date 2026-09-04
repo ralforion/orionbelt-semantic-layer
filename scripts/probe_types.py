@@ -65,6 +65,8 @@ Each row prints a verdict, the Arrow type and the round-tripped value:
 
 from __future__ import annotations
 
+import datetime
+import json
 import sys
 import traceback
 from typing import Any
@@ -123,6 +125,11 @@ ENGINES = (
     "databricks",
     "dremio",
 )
+
+
+def _today() -> str:
+    """UTC date the measurement was taken, for the published matrix."""
+    return datetime.datetime.now(datetime.UTC).date().isoformat()
 
 
 def _family(t: pa.DataType) -> str:
@@ -205,10 +212,15 @@ def fetch(engine: str, sql: str) -> pa.Table:
             cursor.close()
 
 
-def probe(engine: str) -> None:
-    print(f"\n===== {engine}")
+def measure(engine: str) -> dict[str, dict[str, str]]:
+    """Run every case against *engine* and return its row of the matrix.
+
+    Keyed by case label, so a caller comparing two runs compares like with
+    like even if the case list grows.
+    """
     cases = render(engine)
     tables: dict[int, pa.Table] = {}
+    row: dict[str, dict[str, str]] = {}
     try:
         combined = "SELECT " + ", ".join(f"{sql} AS c{i}" for i, (_, _, sql) in enumerate(cases))
         table = fetch(engine, combined)
@@ -221,34 +233,65 @@ def probe(engine: str) -> None:
                 tables[i] = fetch(engine, f"SELECT {sql} AS c{i}")
             except Exception as exc:  # noqa: BLE001 — a failure is a result here
                 detail = str(exc).splitlines()[0][:64] if str(exc).strip() else type(exc).__name__
-                print(f"  {label:19} ERR     {detail}")
+                row[label] = {"verdict": "ERR", "arrow": "", "detail": detail}
     for i, (label, obml_type, _) in enumerate(cases):
         table = tables.get(i)
         if table is None:
             continue
         arrow_type = table.schema.field(0).type
-        value = table.column(0)[0].as_py()
-        print(f"  {label:19} {verdict(obml_type, arrow_type):24} {str(arrow_type):28} {value!r}")
+        row[label] = {
+            "verdict": verdict(obml_type, arrow_type),
+            "arrow": str(arrow_type),
+            "value": repr(table.column(0)[0].as_py()),
+        }
+    return row
+
+
+def probe(engine: str) -> dict[str, dict[str, str]]:
+    print(f"\n===== {engine}")
+    row = measure(engine)
+    for label, cell in row.items():
+        if cell["verdict"] == "ERR":
+            print(f"  {label:19} ERR     {cell['detail']}")
+        else:
+            print(f"  {label:19} {cell['verdict']:24} {cell['arrow']:28} {cell['value']}")
+    return row
 
 
 def main(argv: list[str]) -> int:
-    requested = argv[1:]
+    requested = [a for a in argv[1:] if a != "--json"]
+    as_json = "--json" in argv[1:]
     if not requested:
-        print(f"usage: probe_types.py <{' | '.join(ENGINES)} | all>", file=sys.stderr)
+        print(f"usage: probe_types.py [--json] <{' | '.join(ENGINES)} | all>", file=sys.stderr)
         return 2
     engines = list(ENGINES) if requested == ["all"] else requested
     unknown = [e for e in engines if e not in ENGINES]
     if unknown:
         print(f"unknown engine(s): {', '.join(unknown)}", file=sys.stderr)
         return 2
+    matrix: dict[str, dict[str, dict[str, str]]] = {}
     for engine in engines:
         try:
-            probe(engine)
+            matrix[engine] = measure(engine) if as_json else probe(engine)
         except Exception:
             # Unreachable is the normal state for an engine with no live
-            # target; print enough to tell that apart from a probe bug.
-            print(f"\n===== {engine}\n  UNREACHABLE")
-            traceback.print_exc(limit=2)
+            # target; say so in a way a reader can tell from a probe bug.
+            # An unreachable engine is *omitted* from JSON rather than
+            # recorded as empty: a published matrix that shows a blank row
+            # claims a measurement nobody took.
+            if as_json:
+                print(f"unreachable: {engine}", file=sys.stderr)
+            else:
+                print(f"\n===== {engine}\n  UNREACHABLE")
+                traceback.print_exc(limit=2)
+    if as_json:
+        json.dump(
+            {"measured": _today(), "engines": matrix},
+            sys.stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        print()
     return 0
 
 
