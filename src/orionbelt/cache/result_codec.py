@@ -38,18 +38,90 @@ _GZIP_LEVEL = 6
 _MAX_CHUNKSIZE = 100_000
 
 
+# Substrings that mark an extension's ``type_name`` as numeric. Mirrors
+# ``service.value_formatting._NUMERIC_TYPE_TOKENS``, which the cache layer may
+# not import (``tests/architecture/test_dependencies.py`` forbids cache ->
+# service; Flight reaches this module through the cache). The two are pinned
+# equal by ``test_numeric_tokens_match_the_service_definition``.
+_NUMERIC_TYPE_TOKENS = ("number", "int", "float", "decimal", "numeric", "double", "real")
+
+# Type names a token matches without the type being numeric. The tokens are
+# substrings because the numeric names are a family rather than a list -
+# ``bigint``, ``smallint`` and ``integer`` all have to match ``int`` - and
+# ``interval`` is what that costs: it contains ``int`` and is a duration.
+_NOT_NUMERIC_TYPE_NAMES = ("interval",)
+
+
+def _is_string_backed_numeric(arrow_type: Any) -> bool:
+    """Whether the type is an Arrow extension wrapping a *number* as a string.
+
+    ADBC's PostgreSQL driver represents NUMERIC as
+    ``arrow.opaque[storage_type=string, type_name=numeric]`` to keep precision
+    Arrow's ``decimal128`` cannot hold, and the executor parses those cells back
+    to ``Decimal`` before they reach this module. Duck-typed on the
+    ``storage_type`` / ``type_name`` pair that plain Arrow types do not carry -
+    the same detection ``db_executor._is_string_stored_numeric_arrow_type``
+    makes.
+
+    The ``type_name`` test is what keeps this narrow, and it is load-bearing
+    rather than defensive. An opaque ``json``, ``uuid`` or ``interval`` is
+    string-backed too, and its cells stay strings all the way here, so
+    ``string`` is the right offer for it and refusing one would make *those*
+    columns value-dependent instead - inferred ``string`` when populated and
+    ``null`` when empty.
+
+    ``interval`` needs saying twice because the tokens are substrings: the
+    numeric names are a family, so ``int`` has to match ``bigint`` and
+    ``integer``, and it matches ``interval`` on the way past.
+    """
+    import pyarrow as pa
+
+    try:
+        storage = getattr(arrow_type, "storage_type", None)
+        type_name = getattr(arrow_type, "type_name", None)
+        if storage is None or type_name is None:
+            return False
+        if not pa.types.is_string(storage):
+            return False
+        if isinstance(type_name, bytes):
+            type_name = type_name.decode("utf-8", "ignore")
+        name = str(type_name).lower()
+        if any(excluded in name for excluded in _NOT_NUMERIC_TYPE_NAMES):
+            return False
+        return any(tok in name for tok in _NUMERIC_TYPE_TOKENS)
+    except (AttributeError, TypeError):
+        return False
+
+
 def _serialized_field_type(arrow_type: Any) -> Any:
-    """The Arrow type a column has *after* the executor serialises its cells.
+    """The Arrow type a column has *after* the executor serialises its cells,
+    or ``None`` where the declaration says nothing the blob can use.
 
     ``encode_data`` is handed rows that already went through
     ``_serialize_value``: temporals become ISO strings, binary becomes base64,
     intervals become ``str(timedelta)``. Numerics, booleans, strings and
     ``Decimal`` pass through untouched. This maps a driver's Arrow type onto
-    the type its *serialised* values carry, so a hint derived from the
-    executor's schema agrees with what a non-empty result would infer.
+    the type its *serialised* values carry, which is the type the blob can
+    actually hold - naming the driver's ``timestamp[us]`` here would be a
+    declaration no serialised row could satisfy.
+
+    A string-backed numeric is the one case with no usable answer, and
+    ``None`` rather than ``string`` is what keeps it honest. Its cells arrive as
+    ``Decimal``, so ``string`` is refused wherever there are values and accepted
+    wherever there are none - the same column typed ``decimal128`` for one
+    filter and ``string`` for another, which is the instability this schema
+    exists to remove. A width cannot be invented instead: ADBC's opaque type
+    carries none, PostgreSQL reports typmod ``-1`` for a computed expression,
+    and offering a fixed one would rescale the value - ``1.50`` stored under
+    ``decimal128(38, 9)`` reads back ``1.500000000``, which is what a cache hit
+    would then render. So the column is inferred where it has values and left
+    ``null`` where it has none, and the entry's column sidecar carries the
+    ``number`` type and its format either way.
     """
     import pyarrow as pa
 
+    if _is_string_backed_numeric(arrow_type):
+        return None
     try:
         if (
             pa.types.is_integer(arrow_type)
@@ -66,22 +138,38 @@ def _serialized_field_type(arrow_type: Any) -> Any:
 def build_result_table(column_names: list[str], rows: list[list[Any]], schema: Any = None) -> Any:
     """Build a pyarrow Table from result column names + list-of-lists rows.
 
-    Rows are padded to the column arity and transposed into columns. Types are
-    inferred by pyarrow from the (already JSON-serializable) cell values — the
-    same typed, locale-neutral shape the executor produces, so a cached entry
-    and a fresh execution serialize identically.
+    Rows are padded to the column arity and transposed into columns.
 
-    ``schema`` is an optional *driver* Arrow schema (from ``ExecutionResult``)
-    used **only** to rescue columns inference would otherwise type as ``null``:
-    an empty result, or one whose every cell is NULL. Without it, a
-    ``SELECT 1::BIGINT AS n WHERE false`` blob decodes as ``n: null`` while the
-    envelope's sidecar says the column is numeric — one payload contradicting
-    itself, and a raw-arrow cache hit serves that blob verbatim.
+    ``schema`` is the *driver* Arrow schema (from ``ExecutionResult``), and
+    where it is given it **decides** each column's type rather than merely
+    rescuing the ones inference would type as ``null``. Inference reads the
+    values that happen to be present, so a ``decimal(18, 2)`` measure holding
+    1.50 and 2.25 came back ``decimal128(3, 2)``, and the same column came back
+    a different width for a different filter: a consumer that read the schema
+    once was wrong about the next result. That is the failure #393 fixed on
+    MySQL and #407 on Snowflake, arriving here by a third route, and the fix is
+    the same one - read the width from the declaration, not from the rows.
 
-    Deliberately narrow: a column whose inferred type is already concrete keeps
-    it, so no existing value representation can change. Types are matched by
-    position, since the caller's ``column_names`` are the model-decorated names
-    for the same columns in the same order.
+    The declared type is only *offered*: rows have already been through
+    ``_serialize_value``, so a column whose values no longer fit what the driver
+    declared falls back to inference. pyarrow raises on every such mismatch
+    rather than coercing (measured: a Decimal into a string array, a value wider
+    than the declared precision, an integer too large for the declared width),
+    so the fallback cannot silently change a value.
+
+    One declaration is refused before it is offered. A string-backed numeric -
+    PostgreSQL NUMERIC under ADBC - carries no width to read and its cells
+    arrive as ``Decimal``, so ``_serialized_field_type`` answers ``None`` for it
+    and the column is inferred, exactly as it was before this. Offering
+    ``string`` there would have been accepted by an empty result and refused by
+    a populated one, which is the instability this schema exists to remove.
+
+    Without a schema, types are inferred as before. That is the PEP 249 path,
+    which has no Arrow schema to read, and the ``format_values`` arrow response,
+    where every cell is a display string by construction.
+
+    Types are matched by position, since the caller's ``column_names`` are the
+    model-decorated names for the same columns in the same order.
     """
     import pyarrow as pa
 
@@ -102,12 +190,12 @@ def build_result_table(column_names: list[str], rows: list[list[Any]], schema: A
 
     arrays = []
     for i, col in enumerate(cols_data):
-        arr = pa.array(col, from_pandas=False)
-        if hints and pa.types.is_null(arr.type) and not pa.types.is_null(hints[i]):
-            # Every cell is NULL (or there are none), so re-typing cannot alter
-            # a value — but it does keep the declared type visible to clients.
+        arr = None
+        if hints and hints[i] is not None and not pa.types.is_null(hints[i]):
             with contextlib.suppress(pa.ArrowInvalid, pa.ArrowTypeError, TypeError, ValueError):
                 arr = pa.array(col, type=hints[i], from_pandas=False)
+        if arr is None:
+            arr = pa.array(col, from_pandas=False)
         arrays.append(arr)
     return pa.Table.from_arrays(arrays, names=list(column_names))
 
@@ -136,11 +224,11 @@ def encode_data(column_names: list[str], rows: list[list[Any]], schema: Any = No
 
     No response envelope is baked in — the blob is a pure Arrow data stream. The
     caller stores this in the cache; metadata is rebuilt fresh on every read.
-    Types are inferred from the row values (see :func:`build_result_table`); a
-    caller that already holds a fully-typed table should use
-    :func:`encode_table` instead to preserve the exact schema. ``schema`` is
-    the executor's driver Arrow schema, used only to keep empty / all-null
-    columns from decoding as ``null``.
+    ``schema`` is the executor's driver Arrow schema, and it decides the
+    column types (see :func:`build_result_table`); without one they are
+    inferred from the values. A caller that already holds a fully-typed table
+    should use :func:`encode_table` instead, which keeps the table's own schema
+    with no serialisation step in between.
     """
     table = build_result_table(column_names, rows, schema)
     return gzip.compress(to_ipc_stream(table), _GZIP_LEVEL)
