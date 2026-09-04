@@ -38,8 +38,32 @@ _GZIP_LEVEL = 6
 _MAX_CHUNKSIZE = 100_000
 
 
+def _is_string_backed_extension(arrow_type: Any) -> bool:
+    """Whether the type is an Arrow extension wrapping a value as a string.
+
+    ADBC's PostgreSQL driver represents NUMERIC as
+    ``arrow.opaque[storage_type=string, type_name=numeric]`` to keep precision
+    Arrow's ``decimal128`` cannot hold, and the executor parses those cells back
+    to ``Decimal`` before they reach this module. Duck-typed on the
+    ``storage_type`` / ``type_name`` pair that plain Arrow types do not carry -
+    the same detection ``db_executor._is_string_stored_numeric_arrow_type``
+    makes, repeated here rather than imported because the cache must not depend
+    on the service layer (Flight imports this module).
+    """
+    import pyarrow as pa
+
+    try:
+        storage = getattr(arrow_type, "storage_type", None)
+        if storage is None or getattr(arrow_type, "type_name", None) is None:
+            return False
+        return bool(pa.types.is_string(storage))
+    except (AttributeError, TypeError):
+        return False
+
+
 def _serialized_field_type(arrow_type: Any) -> Any:
-    """The Arrow type a column has *after* the executor serialises its cells.
+    """The Arrow type a column has *after* the executor serialises its cells,
+    or ``None`` where the declaration says nothing the blob can use.
 
     ``encode_data`` is handed rows that already went through
     ``_serialize_value``: temporals become ISO strings, binary becomes base64,
@@ -48,9 +72,24 @@ def _serialized_field_type(arrow_type: Any) -> Any:
     the type its *serialised* values carry, which is the type the blob can
     actually hold - naming the driver's ``timestamp[us]`` here would be a
     declaration no serialised row could satisfy.
+
+    A string-backed numeric is the one case with no usable answer, and
+    ``None`` rather than ``string`` is what keeps it honest. Its cells arrive as
+    ``Decimal``, so ``string`` is refused wherever there are values and accepted
+    wherever there are none - the same column typed ``decimal128`` for one
+    filter and ``string`` for another, which is the instability this schema
+    exists to remove. A width cannot be invented instead: ADBC's opaque type
+    carries none, PostgreSQL reports typmod ``-1`` for a computed expression,
+    and offering a fixed one would rescale the value - ``1.50`` stored under
+    ``decimal128(38, 9)`` reads back ``1.500000000``, which is what a cache hit
+    would then render. So the column is inferred where it has values and left
+    ``null`` where it has none, and the entry's column sidecar carries the
+    ``number`` type and its format either way.
     """
     import pyarrow as pa
 
+    if _is_string_backed_extension(arrow_type):
+        return None
     try:
         if (
             pa.types.is_integer(arrow_type)
@@ -81,13 +120,17 @@ def build_result_table(column_names: list[str], rows: list[list[Any]], schema: A
 
     The declared type is only *offered*: rows have already been through
     ``_serialize_value``, so a column whose values no longer fit what the driver
-    declared falls back to inference. That is not a rare path. PostgreSQL
-    NUMERIC arrives as a string-backed extension type and its cells reach here
-    as ``Decimal``, so the offered ``string`` is refused and inference types the
-    column ``decimal128`` - which is what it did before this. pyarrow raises on
-    every such mismatch rather than coercing (measured: a Decimal into a string
-    array, a value wider than the declared precision, an integer too large for
-    the declared width), so the fallback cannot silently change a value.
+    declared falls back to inference. pyarrow raises on every such mismatch
+    rather than coercing (measured: a Decimal into a string array, a value wider
+    than the declared precision, an integer too large for the declared width),
+    so the fallback cannot silently change a value.
+
+    One declaration is refused before it is offered. A string-backed numeric -
+    PostgreSQL NUMERIC under ADBC - carries no width to read and its cells
+    arrive as ``Decimal``, so ``_serialized_field_type`` answers ``None`` for it
+    and the column is inferred, exactly as it was before this. Offering
+    ``string`` there would have been accepted by an empty result and refused by
+    a populated one, which is the instability this schema exists to remove.
 
     Without a schema, types are inferred as before. That is the PEP 249 path,
     which has no Arrow schema to read, and the ``format_values`` arrow response,
@@ -116,7 +159,7 @@ def build_result_table(column_names: list[str], rows: list[list[Any]], schema: A
     arrays = []
     for i, col in enumerate(cols_data):
         arr = None
-        if hints and not pa.types.is_null(hints[i]):
+        if hints and hints[i] is not None and not pa.types.is_null(hints[i]):
             with contextlib.suppress(pa.ArrowInvalid, pa.ArrowTypeError, TypeError, ValueError):
                 arr = pa.array(col, type=hints[i], from_pandas=False)
         if arr is None:
