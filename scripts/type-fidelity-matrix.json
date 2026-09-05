@@ -1,0 +1,461 @@
+{
+  "engines": {
+    "bigquery": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.550000000')",
+        "verdict": "WIDENED decimal128(38, 9)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.550000000')",
+        "verdict": "WIDENED decimal128(38, 9)"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('12345678901234567.890000000')",
+        "verdict": "WIDENED decimal128(38, 9)"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int64",
+        "value": "42",
+        "verdict": "FAMILY  int64"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[us]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "clickhouse": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(18, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "EXACT"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(19, 2)",
+        "value": "Decimal('12345678901234568.00')",
+        "verdict": "EXACT"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int32",
+        "value": "42",
+        "verdict": "EXACT"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[ms, tz=Europe/Berlin]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45, tzinfo=zoneinfo.ZoneInfo(key='Europe/Berlin'))",
+        "verdict": "ZONED   tz=Europe/Berlin"
+      }
+    },
+    "databricks": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(28, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(28, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(18, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "EXACT"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(19, 2)",
+        "value": "Decimal('12345678901234567.89')",
+        "verdict": "EXACT"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int32",
+        "value": "42",
+        "verdict": "EXACT"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[us]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "dremio": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date64[ms]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "FAMILY  date64[ms]"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(18, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "EXACT"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(19, 2)",
+        "value": "Decimal('12345678901234567.89')",
+        "verdict": "EXACT"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int32",
+        "value": "42",
+        "verdict": "EXACT"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[ms]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "duckdb": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(18, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "EXACT"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(19, 2)",
+        "value": "Decimal('12345678901234567.89')",
+        "verdict": "EXACT"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int32",
+        "value": "42",
+        "verdict": "EXACT"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[us]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "mysql": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal256(76, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal256(76, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "int64",
+        "value": "1",
+        "verdict": "LOSSY   integer"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal256(76, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal256(76, 2)"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal256(76, 2)",
+        "value": "Decimal('12345678901234567.89')",
+        "verdict": "WIDENED decimal256(76, 2)"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal256(76, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "WIDENED decimal256(76, 9)"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int64",
+        "value": "42",
+        "verdict": "FAMILY  int64"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[us]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "postgres": {
+      "SUM decimal(18,2)": {
+        "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
+        "value": "'2.55'",
+        "verdict": "LOSSY   string"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
+        "value": "'2.55'",
+        "verdict": "LOSSY   string"
+      },
+      "decimal(19,2) big": {
+        "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
+        "value": "'12345678901234567.89'",
+        "verdict": "LOSSY   string"
+      },
+      "decimal(38,9)": {
+        "arrow": "extension<arrow.opaque[storage_type=string, type_name=numeric, vendor_name=PostgreSQL]>",
+        "value": "'2.123456789'",
+        "verdict": "LOSSY   string"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int32",
+        "value": "42",
+        "verdict": "EXACT"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[us]",
+        "value": "datetime.datetime(2026, 8, 15, 13, 45)",
+        "verdict": "EXACT"
+      }
+    },
+    "snowflake": {
+      "SUM decimal(18,2)": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "bigint": {
+        "arrow": "int64",
+        "value": "9007199254740993",
+        "verdict": "EXACT"
+      },
+      "boolean": {
+        "arrow": "bool",
+        "value": "True",
+        "verdict": "EXACT"
+      },
+      "date": {
+        "arrow": "date32[day]",
+        "value": "datetime.date(2026, 8, 15)",
+        "verdict": "EXACT"
+      },
+      "decimal(18,2)": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('2.55')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "decimal(19,2) big": {
+        "arrow": "decimal128(38, 2)",
+        "value": "Decimal('12345678901234567.89')",
+        "verdict": "WIDENED decimal128(38, 2)"
+      },
+      "decimal(38,9)": {
+        "arrow": "decimal128(38, 9)",
+        "value": "Decimal('2.123456789')",
+        "verdict": "EXACT"
+      },
+      "double": {
+        "arrow": "double",
+        "value": "2.5",
+        "verdict": "EXACT"
+      },
+      "integer": {
+        "arrow": "int64",
+        "value": "42",
+        "verdict": "FAMILY  int64"
+      },
+      "string": {
+        "arrow": "string",
+        "value": "'x'",
+        "verdict": "EXACT"
+      },
+      "timestamp": {
+        "arrow": "timestamp[ns]",
+        "value": "Timestamp('2026-08-15 13:45:00')",
+        "verdict": "EXACT"
+      }
+    }
+  },
+  "measured": "2026-09-04"
+}

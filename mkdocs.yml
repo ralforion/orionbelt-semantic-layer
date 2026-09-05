@@ -170,4 +170,5 @@ nav:
       - Python API: reference/python-api.md
       - Architecture: reference/architecture.md
       - Configuration: reference/configuration.md
+      - Arrow type fidelity: reference/type-fidelity.md
   - Drivers & Flight SQL: drivers.md
