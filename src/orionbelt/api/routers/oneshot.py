@@ -74,6 +74,10 @@ from orionbelt.service.model_store import (
     ModelStore,
     ModelValidationError,
 )
+from orionbelt.service.result_schema import (
+    declared_arrow_types,
+    reconcile_to_declared,
+)
 from orionbelt.service.session_manager import (
     SessionCapacityError,
     SessionExpiredError,
@@ -332,8 +336,16 @@ async def _run_query(
             cached_at_iso = cached_hit.cached_at_iso
             # Only row data + column schema are cached; rebuild the response from
             # the compile result so per-request timing matches a fresh run.
+            # Reconcile the cached *table*, not the rebuilt result:
+            # ``execution_result_from_data`` hands back a row-backed result, so
+            # ``reconcile_to_declared`` on it finds no Arrow table and returns
+            # nothing. Without this a cached unsafe boolean reported
+            # ``type=boolean`` beside rows of 0/1/7 and warned about neither.
+            hit_table, hit_skips = reconcile_to_declared(
+                cached_hit.data_table, declared_arrow_types(model, item.query)
+            )
             hit_exec = execution_result_from_data(
-                cached_hit.data_table,
+                hit_table,
                 execution_time_ms=fetch_elapsed_ms,
                 tz=tz,
                 columns=cached_hit.columns,
