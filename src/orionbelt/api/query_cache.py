@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -54,16 +54,28 @@ RESULT_TYPE_TO_HINT: dict[str, str] = {
     "time_tz": "datetime",
     "timestamp": "datetime",
     "timestamp_tz": "datetime",
-    "boolean": "string",
+    # Not "string": a declared boolean reported as text made the response
+    # metadata contradict its own data on every engine that returns a real
+    # bool, and hid the MySQL gap where the data really is an integer. The
+    # field already carries raw declared types ("decimal(18, 2)"), so this
+    # widens no vocabulary; ``is_numeric_type_hint`` stays False for it.
+    "boolean": "boolean",
 }
 
 
-def build_type_map(model: Any) -> dict[str, str]:
+def build_type_map(model: Any, query: Any = None) -> dict[str, str]:
     """Build a column-name -> type map from model definitions.
 
     Uses ``dataType`` when available (e.g. ``decimal(18, 2)``), then falls back
     to ``settings.defaultNumericDataType`` for numeric measures/metrics,
     otherwise maps ``resultType`` to a simple hint.
+
+    *query* adds the columns only a query can name. A coalesce entry outputs
+    its ``as`` alias, which is not a model dimension, so a model-only map has
+    no entry for it and the column falls back to the executor's coarse hint -
+    reporting a reconciled boolean as "string", because that hint cannot tell
+    the two apart. The alias takes its type from its members, which the model
+    requires to agree.
     """
     default_num = None
     if model.settings and model.settings.default_numeric_data_type:
@@ -86,6 +98,17 @@ def build_type_map(model: Any) -> dict[str, str]:
             types[label] = default_num
         else:
             types[label] = "number"
+    if query is not None:
+        from orionbelt.service.result_schema import dimension_label_and_declaration
+
+        select = getattr(query, "select", None)
+        for entry in getattr(select, "dimensions", None) or []:
+            if isinstance(entry, str):
+                continue  # a plain name, already mapped under it
+            label, declared = dimension_label_and_declaration(entry, model)
+            rt = getattr(getattr(declared, "result_type", None), "value", None)
+            if label and rt:
+                types[label] = RESULT_TYPE_TO_HINT.get(rt, "string")
     return types
 
 
@@ -110,6 +133,8 @@ def build_result_columns(
     *,
     type_map: dict[str, str] | None = None,
     fmt_map: dict[str, str | None] | None = None,
+    query: Any = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> list[ColumnMetadata]:
     """Decorate executor columns with model-declared types and formats.
 
@@ -118,15 +143,18 @@ def build_result_columns(
     Callers that already built the type/format maps (the REST response builder)
     can pass them in to avoid rebuilding.
     """
-    model_type_map = type_map if type_map is not None else build_type_map(model)
+    model_type_map = type_map if type_map is not None else build_type_map(model, query)
     fmt_map = fmt_map if fmt_map is not None else build_format_map(model)
     for c in exec_result.columns:
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
+    # See ``_columns_and_maps``: a column reconciliation could not apply keeps
+    # the engine's type, and the sidecar has to say so or a hit rebuilds
+    # metadata that contradicts the rows it ships with.
     return [
         ColumnMetadata(
             name=c.name,
-            type=model_type_map.get(c.name, c.type_hint),
+            type=(c.type_hint if c.name in skipped else model_type_map.get(c.name, c.type_hint)),
             format=fmt_map.get(c.name),
         )
         for c in exec_result.columns
@@ -337,6 +365,11 @@ class CachedExecution:
     # hit frames the verbatim blob without decoding it.
     hit_columns: list[dict[str, Any]] | None = None
     row_count: int | None = None
+    # Columns reconciliation could not cast to their declared type, as
+    # ``(column, reason)``. Carried rather than recomputed because
+    # reconciliation happens here - before the cache write - and is a no-op by
+    # the time the response builder sees the result.
+    declared_skips: list[tuple[str, str]] = field(default_factory=list)
 
 
 async def execute_query_with_cache(
@@ -353,6 +386,8 @@ async def execute_query_with_cache(
     override_db_tz: bool = False,
     cacheable: bool = True,
     decode_payload: bool = True,
+    declared_types: dict[str, Any] | None = None,
+    query: Any = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -425,7 +460,24 @@ async def execute_query_with_cache(
         tz=tz,
         override_db_tz=override_db_tz,
     )
-    columns = build_result_columns(model, exec_result)
+    # Reconcile to the declared types *first*. ``rows`` below materialises the
+    # Arrow table and frees it, and reconciliation needs that table - so doing
+    # this later is doing it never, and the cache would additionally store the
+    # engine's types rather than the model's. Both the response and the stored
+    # blob therefore carry the reconciled column.
+    # Opt-in, not defaulted. Defaulting to ``declared_arrow_types(model)``
+    # enrolled every caller of this shared helper, including pgwire, which
+    # asks for no reconciliation and whose wire types are consumed by BI
+    # clients: a declared boolean cast to Arrow ``bool`` reports the coarse
+    # hint "string", and pgwire's OID moved 701 (FLOAT8) -> 25 (TEXT) without
+    # anyone choosing it. A surface opts in by passing its declared types.
+    declared_skips = (
+        exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
+    )
+
+    columns = build_result_columns(
+        model, exec_result, query=query, skipped=frozenset(n for n, _ in declared_skips)
+    )
     # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
     # construction so this is safe regardless, but keeping it explicit
     # documents that the encoders want the driver's declared types.
@@ -459,6 +511,7 @@ async def execute_query_with_cache(
         exec_result=exec_result,
         columns=columns,
         fetch_elapsed_ms=None,
+        declared_skips=declared_skips,
     )
 
 
@@ -529,6 +582,9 @@ def execution_result_from_data(
         row_count=data_table.num_rows,
         execution_time_ms=execution_time_ms,
         tz=tz,
+        # The table's own schema, so a re-encode on the way out keeps the types
+        # rather than re-inferring them from the rows.
+        arrow_schema=data_table.schema,
     )
 
 

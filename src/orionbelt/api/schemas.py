@@ -99,8 +99,8 @@ class ColumnMetadata(BaseModel):
     name: str
     type: str = Field(
         description=(
-            "Column type: 'string', 'number', 'datetime', 'binary', or a "
-            "'decimal(p, s)' string for governed DECIMAL columns. DECIMAL "
+            "Column type: 'string', 'number', 'datetime', 'boolean', 'binary', "
+            "or a 'decimal(p, s)' string for governed DECIMAL columns. DECIMAL "
             "cells are delivered in JSON as an exact decimal string (not a "
             "float) so precision beyond float's ~15-16 significant digits is "
             "preserved (issue #136); the pgwire surface reports them as NUMERIC."

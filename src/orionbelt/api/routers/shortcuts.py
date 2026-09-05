@@ -732,6 +732,7 @@ async def shortcut_execute_query(
     cache_config = get_cache_config()
     effective_format = negotiate_execute_format(format, request.headers.get("accept"))
     return await _run_with_cache(
+        query=query,
         store=store,
         model=model,
         compile_result=result,

@@ -74,6 +74,10 @@ from orionbelt.service.model_store import (
     ModelStore,
     ModelValidationError,
 )
+from orionbelt.service.result_schema import (
+    declared_arrow_types,
+    reconcile_to_declared,
+)
 from orionbelt.service.session_manager import (
     SessionCapacityError,
     SessionExpiredError,
@@ -332,8 +336,16 @@ async def _run_query(
             cached_at_iso = cached_hit.cached_at_iso
             # Only row data + column schema are cached; rebuild the response from
             # the compile result so per-request timing matches a fresh run.
+            # Reconcile the cached *table*, not the rebuilt result:
+            # ``execution_result_from_data`` hands back a row-backed result, so
+            # ``reconcile_to_declared`` on it finds no Arrow table and returns
+            # nothing. Without this a cached unsafe boolean reported
+            # ``type=boolean`` beside rows of 0/1/7 and warned about neither.
+            hit_table, hit_skips = reconcile_to_declared(
+                cached_hit.data_table, declared_arrow_types(model, item.query)
+            )
             hit_exec = execution_result_from_data(
-                cached_hit.data_table,
+                hit_table,
                 execution_time_ms=fetch_elapsed_ms,
                 tz=tz,
                 columns=cached_hit.columns,
@@ -342,6 +354,10 @@ async def _run_query(
                 compile_result=compile_result,
                 exec_result=hit_exec,
                 model=model,
+                # A cache hit passes no ``declared_skips``, so reconciliation
+                # re-runs: a no-op for the columns the miss already cast, and
+                # it re-derives the warnings for the ones it could not.
+                query=item.query,
                 response_format="json",
                 format_values=False,
                 locale="",
@@ -361,7 +377,10 @@ async def _run_query(
                 row_count=hit_envelope.row_count,
                 execution_time_ms=hit_envelope.execution_time_ms,
                 executed=True,
-                warnings=warnings,
+                # The envelope's, not the pre-execution list: reconciliation
+                # warnings (DECLARED_TYPE_NOT_APPLIED) are produced while the
+                # response is built, so ``warnings`` here predates them.
+                warnings=hit_envelope.warnings,
                 physical_tables=physical_tables,
                 cached=True,
                 cached_at=hit_envelope.cached_at,
@@ -407,6 +426,7 @@ async def _run_query(
         # type hints, and format strings stay consistent with /query/execute.
         envelope = _build_execute_response(
             compile_result=compile_result,
+            query=item.query,
             exec_result=exec_result,
             model=model,
             response_format="json",
@@ -459,7 +479,7 @@ async def _run_query(
             row_count=envelope.row_count,
             execution_time_ms=envelope.execution_time_ms,
             executed=True,
-            warnings=warnings,
+            warnings=envelope.warnings,
             physical_tables=physical_tables,
             cached=False,
             ttl_seconds=ttl_seconds,

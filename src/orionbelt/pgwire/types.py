@@ -39,6 +39,8 @@ OID_TIMESTAMPTZ: Final[int] = 1184
 def oid_for_type_hint(type_hint: str) -> int:
     """Pick a Postgres OID for one of the executor's coarse type hints."""
 
+    if type_hint == "boolean":
+        return OID_BOOL
     if type_hint == "number":
         return OID_FLOAT8
     if type_hint == "decimal":

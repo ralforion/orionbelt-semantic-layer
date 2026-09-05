@@ -26,10 +26,19 @@ logger = logging.getLogger("ob_flight.server")
 
 def _arrow_to_obsl_type_hint(arrow_type: pa.DataType) -> str:
     """Map an Arrow DataType to the OBSL ``ColumnMetadata.type`` vocabulary
-    (``string`` / ``number`` / ``datetime`` / ``binary``). Used when Flight
-    writes to the shared result cache so REST readers decode column types
-    correctly instead of falling back to ``string``.
+    (``string`` / ``number`` / ``datetime`` / ``boolean`` / ``binary``). Used
+    when Flight writes to the shared result cache so readers on the other
+    surfaces decode column types correctly instead of falling back to
+    ``string``.
     """
+    # Before the numeric test, which Arrow's ``is_integer`` does not exclude a
+    # bool from on every version, and because ``string`` is the fallback here:
+    # a boolean landing there is indistinguishable from an unrecognised type.
+    # A sidecar written ``string`` makes pgwire advertise a declared boolean as
+    # TEXT (OID 25) on a Flight-warmed entry, whatever the reader reconciles
+    # the data itself to.
+    if pa.types.is_boolean(arrow_type):
+        return "boolean"
     if pa.types.is_integer(arrow_type) or pa.types.is_floating(arrow_type):
         return "number"
     if pa.types.is_decimal(arrow_type):
@@ -350,106 +359,16 @@ def classify_sql(server: OBFlightServer, sql: str, model: Any) -> str:
     return _MODE_REJECTED
 
 
-def _numeric_result_arrow_type(item: Any, model: Any) -> pa.DataType | None:
-    """Advertise a governed measure/metric's declared DECIMAL as an Arrow decimal.
-
-    A DECIMAL column's precision/scale comes from the model's declared
-    ``dataType`` (e.g. ``decimal(18, 2)``), falling back to the model-level
-    ``defaultNumericDataType`` — the same source of truth the pgwire NUMERIC
-    surface uses (issue #116). Advertising the exact Arrow decimal here keeps
-    the FlightInfo schema aligned with the exact value the stream carries so
-    high-precision decimals survive (issue #136). Returns ``None`` when the item
-    has no declared decimal type, so the caller falls back to ``result_type``.
-
-    A declared precision wider than Arrow's decimal256 limit (76) — which OBML
-    permits but Arrow cannot represent — degrades to ``float64`` via
-    ``decimal_arrow_type`` rather than raising during schema construction.
-    """
-    from orionbelt.service.db_executor import parse_decimal_type
-
-    from ob_flight.converters import decimal_arrow_type
-
-    declared = getattr(item, "data_type", None)
-    if not declared:
-        settings = getattr(model, "settings", None)
-        declared = getattr(settings, "default_numeric_data_type", None) if settings else None
-    if not declared:
-        return None
-    parsed = parse_decimal_type(declared)
-    if parsed is None:
-        return None
-    precision, scale = parsed
-    return decimal_arrow_type(precision, scale, exact=True)
-
-
-def _dimension_label_and_declaration(entry: Any, model: Any) -> tuple[str | None, Any]:
-    """The column a selected dimension produces, and the model's declaration of it.
-
-    Both have to be read the way the compiler reads them, or the advertised
-    schema names columns the stream does not have:
-
-    * ``"At:day"`` is a grain request. The compiler resolves it through
-      :meth:`DimensionRef.parse` and projects ``AS "At"``, so the entry is
-      neither the label nor the lookup key - taking it for both advertised
-      ``At:day`` as a string beside a stream carrying a timestamp called ``At``.
-    * a coalesce entry names its output in ``as`` and its inputs in
-      ``coalesce``. The alias is the label, and the type is its members', which
-      the model requires to agree; looking the alias up in ``model.dimensions``
-      finds nothing and called a timestamp a string.
-    """
-    from orionbelt.models.query import DimensionRef
-
-    if isinstance(entry, str):
-        name = DimensionRef.parse(entry).name
-        return name, model.dimensions.get(name)
-    label = getattr(entry, "alias", None)
-    if label is None:
-        return None, None
-    for member in getattr(entry, "coalesce", None) or []:
-        declared = model.dimensions.get(member)
-        if declared is not None:
-            return label, declared
-    return label, None
-
-
 def semantic_result_schema(server: OBFlightServer, query: Any, model: Any) -> pa.Schema:
-    """Build the result Arrow schema for a semantic query without DB I/O.
+    """The result schema for a semantic query, from the model, without DB I/O.
 
-    Reads ``result_type`` from each selected dimension / measure / metric,
-    upgrading governed DECIMAL measures/metrics to an exact Arrow decimal
-    (issue #136). See ``design/PLAN_flight_natural_sql.md`` §3.4 "Schema probe".
+    Thin wrapper over ``orionbelt.service.result_schema.declared_result_schema``,
+    which REST and pgwire share. ``server`` is unused and kept so the Flight
+    call sites do not have to change.
     """
-    from ob_flight.catalog import _obml_type_to_arrow
+    from orionbelt.service.result_schema import declared_result_schema
 
-    fields: list[pa.Field] = []
-    dims = getattr(query.select, "dimensions", [])
-    measures = getattr(query.select, "measures", [])
-    for entry in dims:
-        label, dim = _dimension_label_and_declaration(entry, model)
-        if label is None:
-            continue
-        rt = getattr(getattr(dim, "result_type", None), "value", None) or "string"
-        fields.append(pa.field(label, _obml_type_to_arrow(rt)))
-    for label in measures:
-        meas = model.measures.get(label)
-        met = model.metrics.get(label) if meas is None else None
-        decimal_type = _numeric_result_arrow_type(meas or met, model)
-        if decimal_type is not None:
-            fields.append(pa.field(label, decimal_type))
-        elif meas is not None:
-            rt = getattr(getattr(meas, "result_type", None), "value", None) or "float"
-            fields.append(pa.field(label, _obml_type_to_arrow(rt)))
-        else:
-            fields.append(pa.field(label, pa.float64()))
-    if query.grouping is not None:
-        # GROUPING() flag columns — int64, one per dimension. See
-        # PLAN_with_rollup.md §"Output: GROUPING() flag columns".
-        for entry in dims:
-            label, _ = _dimension_label_and_declaration(entry, model)
-            if label is None:
-                continue
-            fields.append(pa.field(f"_g_{label}", pa.int64()))
-    return pa.schema(fields)
+    return declared_result_schema(query, model)
 
 
 def prepare_sql(

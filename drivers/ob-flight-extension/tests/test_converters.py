@@ -233,3 +233,70 @@ class TestCursorToBatches:
         cursor.fetchmany.return_value = []
         batches = cursor_to_batches(cursor, schema)
         assert len(batches) == 0
+
+
+class TestSidecarTypeHints:
+    """What Flight writes into the *shared* cache sidecar.
+
+    The sidecar is read back by the other surfaces, and pgwire turns it into a
+    Postgres OID. A boolean falling through to ``string`` - which is also this
+    mapping's bucket for anything unrecognised - made a Flight-warmed entry
+    advertise a declared boolean as TEXT (OID 25), whatever the reader then
+    reconciled the data itself to.
+    """
+
+    def test_a_boolean_is_written_as_boolean(self) -> None:
+        import pyarrow as pa
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        assert _arrow_to_obsl_type_hint(pa.bool_()) == "boolean"
+
+    def test_a_flight_written_boolean_reaches_pgwire_as_bool(self) -> None:
+        """The whole chain, since each half looked right on its own."""
+        import pyarrow as pa
+        from orionbelt.pgwire.types import OID_BOOL, oid_for_type_hint
+        from orionbelt.service.db_executor import coarse_hint_from_type_name
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        sidecar = _arrow_to_obsl_type_hint(pa.bool_())
+        assert oid_for_type_hint(coarse_hint_from_type_name(sidecar)) == OID_BOOL
+
+    def test_the_other_buckets_are_unmoved(self) -> None:
+        import pyarrow as pa
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        assert _arrow_to_obsl_type_hint(pa.int64()) == "number"
+        assert _arrow_to_obsl_type_hint(pa.decimal128(18, 2)) == "number"
+        assert _arrow_to_obsl_type_hint(pa.date32()) == "datetime"
+        assert _arrow_to_obsl_type_hint(pa.timestamp("us")) == "datetime"
+        assert _arrow_to_obsl_type_hint(pa.binary()) == "binary"
+        assert _arrow_to_obsl_type_hint(pa.utf8()) == "string"
+
+    def test_it_agrees_with_the_executor_s_mapping(self) -> None:
+        """There are two copies of this. Fixing one and missing the other is
+        exactly how the boolean case shipped, so pin that they agree on every
+        type either is asked about.
+        """
+        import pyarrow as pa
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        from ob_flight.server_execution import _arrow_to_obsl_type_hint
+
+        for arrow_type in (
+            pa.bool_(),
+            pa.int64(),
+            pa.int32(),
+            pa.float64(),
+            pa.decimal128(18, 2),
+            pa.date32(),
+            pa.timestamp("us"),
+            pa.time64("us"),
+            pa.binary(),
+            pa.utf8(),
+        ):
+            assert _arrow_to_obsl_type_hint(arrow_type) == _arrow_type_to_hint(arrow_type), (
+                f"the two mappings disagree on {arrow_type}"
+            )

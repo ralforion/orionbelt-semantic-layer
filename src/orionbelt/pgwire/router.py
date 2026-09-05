@@ -59,6 +59,10 @@ from orionbelt.service.db_executor import (
     parse_decimal_type,
 )
 from orionbelt.service.model_store import ModelStore
+from orionbelt.service.result_schema import (
+    declared_arrow_types,
+    reconcile_to_declared,
+)
 from orionbelt.service.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -298,10 +302,25 @@ class SemanticRouter:
                     cache=self._cache,
                     cache_config=self._cache_config,
                     cacheable=getattr(self._cache, "backend_name", "noop") != "noop",
+                    # pgwire reconciles too. A column's type is a property of
+                    # the model, not of the engine behind it *or the transport
+                    # in front of it* - and the cache is shared, so a surface
+                    # that opted out would serve, and be served, results whose
+                    # values depended on which surface warmed the entry.
+                    declared_types=declared_arrow_types(target.model, query),
+                    query=query,
                 )
                 if cached.cached:
+                    # Reconcile the cached table for the same reason REST does:
+                    # ``execution_result_from_data`` rebuilds with ``raw_rows``,
+                    # so reconciling the rebuilt result would be a no-op, and an
+                    # entry written before this - or by a surface that does not
+                    # reconcile - would come back in the engine's types.
+                    hit_table, _ = reconcile_to_declared(
+                        cached.data_table, declared_arrow_types(target.model, query)
+                    )
                     result = execution_result_from_data(
-                        cached.data_table,
+                        hit_table,
                         execution_time_ms=cached.fetch_elapsed_ms or 0.0,
                         columns=cached.hit_columns,
                     )
@@ -309,7 +328,13 @@ class SemanticRouter:
                     assert cached.exec_result is not None  # a miss always executed
                     result = cached.exec_result
             else:
+                # No cache configured - ``start_pgwire(cache=None)`` allows it,
+                # and the tests use it. Reconciliation is a property of the
+                # surface, not of whether a cache happens to be attached, so it
+                # has to happen here too or a declared boolean comes back as
+                # OID 701 with values 1/0 on exactly this path.
                 result = execute_sql(compile_result.sql, dialect=dialect)
+                result.reconcile_to_declared(declared_arrow_types(target.model, query))
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
