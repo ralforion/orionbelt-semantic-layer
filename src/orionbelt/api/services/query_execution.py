@@ -23,16 +23,19 @@ from orionbelt.api.schemas import (
     ExplainPlanResponse,
     QueryExecuteResponse,
     ResolvedInfoResponse,
+    StructuredWarning,
 )
 from orionbelt.api.warnings_adapter import semantic_error_to_warning
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.validator import format_sql
+from orionbelt.models.warnings import WarningCode
 from orionbelt.service.db_executor import (
     ExecutionError,
     ExecutionUnavailableError,
     resolve_timezone,
 )
 from orionbelt.service.model_store import ModelStore
+from orionbelt.service.result_schema import declared_arrow_types
 from orionbelt.service.value_formatting import format_row, to_tsv
 
 # Column type/format helpers live in orionbelt.api.query_cache (shared with the
@@ -343,6 +346,21 @@ def _build_execute_response(
     cache hit ``exec_result`` is reconstructed from the cached data table, with
     ``execution_time_ms`` set to the cache fetch time and ``cached=True``.
     """
+    # Reconcile against the declaration before anything reads ``rows``, which
+    # materialises the Arrow table and frees it. An engine answers in the types
+    # it has, and those are not always the ones the model named: MySQL has no
+    # boolean, so a declared one arrives as ``int64`` 1; Dremio returns ``date``
+    # as ``date64[ms]``. Flight has always cast to the declared schema; this is
+    # REST catching up, so a column's type is a property of the model rather
+    # than of whichever engine is behind it today.
+    declared_warnings = [
+        StructuredWarning(
+            code=WarningCode.DECLARED_TYPE_NOT_APPLIED,
+            message=f"Column '{name}' was not reconciled to its declared type: {reason}",
+            context={"column": name, "reason": reason},
+        )
+        for name, reason in exec_result.reconcile_to_declared(declared_arrow_types(model))
+    ]
     columns_meta, fmt_map, type_map = _columns_and_maps(model, exec_result.columns)
 
     return _render_response(
@@ -358,7 +376,8 @@ def _build_execute_response(
         sql=format_sql(compile_result.sql, compile_result.dialect),
         dialect=compile_result.dialect,
         explain=_build_explain_response(compile_result),
-        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings],
+        warnings=[semantic_error_to_warning(w) for w in compile_result.warnings]
+        + declared_warnings,
         sql_valid=compile_result.sql_valid,
         resolved=ResolvedInfoResponse(
             fact_tables=compile_result.resolved.fact_tables,

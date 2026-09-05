@@ -180,3 +180,129 @@ def declared_result_schema(query: Any, model: Any) -> Any:
                 continue
             fields.append(pa.field(f"_g_{label}", pa.int64()))
     return pa.schema(fields)
+
+
+def declared_arrow_types(model: Any) -> dict[str, Any]:
+    """Column label -> the Arrow type *model* declares for it.
+
+    Keyed by name rather than built from a query, because the surfaces that
+    need it have the executor's columns and not always the ``QueryObject``.
+    A column absent from the map - a raw ``select.fields`` projection of a
+    physical column, a ``GROUPING()`` flag - is one the model makes no claim
+    about, and is left alone.
+    """
+    types: dict[str, Any] = {}
+    for label, dim in model.dimensions.items():
+        rt = getattr(getattr(dim, "result_type", None), "value", None)
+        if rt:
+            types[label] = obml_type_to_arrow(rt)
+    for label, item in list(model.measures.items()) + list(model.metrics.items()):
+        decimal_type = numeric_result_arrow_type(item, model)
+        if decimal_type is not None:
+            types[label] = decimal_type
+            continue
+        rt = getattr(getattr(item, "result_type", None), "value", None)
+        if rt:
+            types[label] = obml_type_to_arrow(rt)
+    return types
+
+
+def _bool_is_safe(column: Any) -> bool:
+    """Whether an integer column holds only 0, 1 and NULL.
+
+    Arrow's ``int -> bool`` cast maps every nonzero to ``True``, so a column
+    holding 7 would be asserted ``true`` by a plain cast. That is a judgement
+    about data the model did not make: the declaration says the column is a
+    boolean, and a 7 says it is not one yet. Reconciling only the values whose
+    meaning is unambiguous, and reporting the rest, keeps this a change of
+    representation rather than of content.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if column.null_count == len(column):
+        return True
+    try:
+        distinct = pc.unique(
+            column.combine_chunks() if hasattr(column, "combine_chunks") else column
+        )
+        return all(v.as_py() in (0, 1, None) for v in distinct)
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError, AttributeError):
+        return False
+
+
+def reconcile_to_declared(
+    table: Any, declared: dict[str, Any]
+) -> tuple[Any, list[tuple[str, str]]]:
+    """Cast *table*'s columns to the types *declared* names for them.
+
+    Returns the table and one ``(column, reason)`` pair per column left alone,
+    so a surface can report what it could not apply instead of silently not
+    applying it - Flight's equivalent is silent, and a mismatch there is
+    invisible.
+
+    Reconciliation is per column and best-effort: a column the model does not
+    name, or one whose cast fails, is passed through unchanged. An engine
+    answering in a type it has instead of the one the model named is the normal
+    case this exists for - MySQL has no boolean, Dremio's ``date`` is 64-bit -
+    and a failure to bridge that is worth reporting, not worth failing a query.
+    """
+    import pyarrow as pa
+
+    skipped: list[tuple[str, str]] = []
+    fields: list[Any] = []
+    for field in table.schema:
+        target = declared.get(field.name)
+        if target is None or field.type.equals(target):
+            fields.append(field)
+            continue
+        if (
+            pa.types.is_boolean(target)
+            and pa.types.is_integer(field.type)
+            and not _bool_is_safe(table.column(field.name))
+        ):
+            skipped.append(
+                (
+                    field.name,
+                    f"declared boolean but the column holds values other than "
+                    f"0 and 1; left as {field.type}",
+                )
+            )
+            fields.append(field)
+            continue
+        fields.append(pa.field(field.name, target))
+    if all(f.type.equals(t.type) for f, t in zip(fields, table.schema, strict=True)):
+        return table, skipped
+    try:
+        return table.cast(pa.schema(fields)), skipped
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as exc:
+        # One column's cast failed and Arrow casts a table whole, so fall back
+        # to per-column so a single bad column cannot drop every other
+        # reconciliation on the result.
+        return _reconcile_per_column(table, declared, skipped, str(exc))
+
+
+def _reconcile_per_column(
+    table: Any, declared: dict[str, Any], skipped: list[tuple[str, str]], whole_error: str
+) -> tuple[Any, list[tuple[str, str]]]:
+    """Cast column by column, keeping the ones that work."""
+    import pyarrow as pa
+
+    already = {name for name, _ in skipped}
+    columns: list[Any] = []
+    fields: list[Any] = []
+    for field in table.schema:
+        column = table.column(field.name)
+        target = declared.get(field.name)
+        if target is None or field.type.equals(target) or field.name in already:
+            columns.append(column)
+            fields.append(field)
+            continue
+        try:
+            columns.append(column.cast(target))
+            fields.append(pa.field(field.name, target))
+        except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+            skipped.append((field.name, f"cannot cast {field.type} to {target}"))
+            columns.append(column)
+            fields.append(field)
+    return pa.Table.from_arrays(columns, schema=pa.schema(fields)), skipped

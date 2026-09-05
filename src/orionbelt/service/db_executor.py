@@ -106,6 +106,32 @@ class ExecutionResult:
         """
         return self._arrow_schema
 
+    def reconcile_to_declared(self, declared: dict[str, Any]) -> list[tuple[str, str]]:
+        """Cast the held Arrow table to the types the model declares. Idempotent.
+
+        Must run before :attr:`rows`, which materialises and then frees the
+        table. Returns one ``(column, reason)`` pair per column left alone, so
+        the caller can report what it could not apply.
+
+        A PEP 249 result has no table to cast and is skipped: there is nothing
+        to reconcile *to* a declaration without Arrow types to compare, and the
+        coarse hint the caller has instead cannot tell a boolean from a string.
+        Since #412 that path is the exception rather than the default.
+        """
+        if self._arrow_table is None or not declared:
+            return []
+        from orionbelt.service.result_schema import reconcile_to_declared
+
+        table, skipped = reconcile_to_declared(self._arrow_table, declared)
+        self._arrow_table = table
+        self._arrow_schema = table.schema
+        by_name = {c.name: c for c in self.columns}
+        for field in table.schema:
+            column = by_name.get(field.name)
+            if column is not None:
+                column.type_hint = _arrow_type_to_hint(field.type)
+        return skipped
+
     @property
     def rows(self) -> list[list[Any]]:
         """JSON-serializable rows — materialised lazily from Arrow table."""

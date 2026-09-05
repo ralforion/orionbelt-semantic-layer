@@ -54,7 +54,12 @@ RESULT_TYPE_TO_HINT: dict[str, str] = {
     "time_tz": "datetime",
     "timestamp": "datetime",
     "timestamp_tz": "datetime",
-    "boolean": "string",
+    # Not "string": a declared boolean reported as text made the response
+    # metadata contradict its own data on every engine that returns a real
+    # bool, and hid the MySQL gap where the data really is an integer. The
+    # field already carries raw declared types ("decimal(18, 2)"), so this
+    # widens no vocabulary; ``is_numeric_type_hint`` stays False for it.
+    "boolean": "boolean",
 }
 
 

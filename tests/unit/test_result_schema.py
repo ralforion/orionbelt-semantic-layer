@@ -17,8 +17,10 @@ from orionbelt.service.result_schema import (
     DECIMAL128_MAX_PRECISION,
     DECIMAL256_MAX_PRECISION,
     decimal_arrow_type,
+    declared_arrow_types,
     declared_result_schema,
     obml_type_to_arrow,
+    reconcile_to_declared,
 )
 
 
@@ -109,3 +111,106 @@ class TestDeclaredResultSchema:
             pytest.skip("fixture has no temporal dimension")
         query = QueryObject.model_validate({"select": {"dimensions": [f"{dim}:month"]}})
         assert declared_result_schema(query, sales_model).names == [dim]
+
+
+class TestDeclaredArrowTypes:
+    def test_maps_dimensions_and_measures_by_label(self, sales_model) -> None:
+        types = declared_arrow_types(sales_model)
+        assert types
+        for label, dim in sales_model.dimensions.items():
+            rt = getattr(getattr(dim, "result_type", None), "value", None)
+            if rt:
+                assert types[label] == obml_type_to_arrow(rt)
+
+    def test_a_column_the_model_does_not_name_is_absent(self, sales_model) -> None:
+        """Raw ``select.fields`` projections and GROUPING() flags are left alone."""
+        assert "no_such_column" not in declared_arrow_types(sales_model)
+
+
+class TestReconcileToDeclared:
+    """The MySQL boolean and Dremio date cases, and the line around them."""
+
+    def test_mysql_boolean_becomes_a_boolean(self) -> None:
+        table = pa.table({"flag": pa.array([1, 0, None], type=pa.int64())})
+        out, skipped = reconcile_to_declared(table, {"flag": pa.bool_()})
+        assert out.column("flag").to_pylist() == [True, False, None]
+        assert skipped == []
+
+    def test_a_value_that_is_not_a_boolean_is_left_alone(self) -> None:
+        """Arrow would map 7 to True. The model declared a boolean; a 7 says
+        the column is not one yet, and asserting otherwise invents content."""
+        table = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
+        out, skipped = reconcile_to_declared(table, {"flag": pa.bool_()})
+        assert out.column("flag").to_pylist() == [0, 1, 7]
+        assert len(skipped) == 1
+        assert skipped[0][0] == "flag"
+        assert "other than 0 and 1" in skipped[0][1]
+
+    def test_an_all_null_integer_column_reconciles(self) -> None:
+        """Nothing contradicts the declaration, so the declaration stands."""
+        table = pa.table({"flag": pa.array([None, None], type=pa.int64())})
+        out, _ = reconcile_to_declared(table, {"flag": pa.bool_()})
+        assert out.schema.field("flag").type == pa.bool_()
+
+    def test_dremio_date64_narrows_to_date32(self) -> None:
+        import datetime
+
+        table = pa.table({"d": pa.array([datetime.date(2026, 8, 15)], type=pa.date64())})
+        out, skipped = reconcile_to_declared(table, {"d": pa.date32()})
+        assert out.schema.field("d").type == pa.date32()
+        assert out.column("d").to_pylist() == [datetime.date(2026, 8, 15)]
+        assert skipped == []
+
+    def test_a_column_the_model_does_not_name_is_untouched(self) -> None:
+        table = pa.table({"raw": pa.array([1, 2], type=pa.int64())})
+        out, skipped = reconcile_to_declared(table, {})
+        assert out.schema.field("raw").type == pa.int64()
+        assert skipped == []
+
+    def test_a_matching_column_is_a_no_op(self) -> None:
+        table = pa.table({"n": pa.array([1], type=pa.int64())})
+        out, skipped = reconcile_to_declared(table, {"n": pa.int64()})
+        assert out is table
+        assert skipped == []
+
+    def test_one_impossible_cast_does_not_drop_the_others(self) -> None:
+        """Arrow casts a table whole, so a single bad column would otherwise
+        cost every other reconciliation on the result."""
+        table = pa.table(
+            {
+                "good": pa.array([1, 0], type=pa.int64()),
+                "bad": pa.array(["x", "y"], type=pa.string()),
+            }
+        )
+        out, skipped = reconcile_to_declared(table, {"good": pa.bool_(), "bad": pa.timestamp("us")})
+        assert out.schema.field("good").type == pa.bool_()
+        assert out.schema.field("bad").type == pa.string()
+        assert [name for name, _ in skipped] == ["bad"]
+
+
+class TestExecutionResultReconciliation:
+    def test_reconcile_updates_schema_and_hints(self) -> None:
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        table = pa.table({"flag": pa.array([1, 0], type=pa.int64())})
+        result = ExecutionResult(
+            columns=[ColumnMeta(name="flag", type_hint="number")],
+            arrow_table=table,
+            row_count=2,
+        )
+        assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
+        assert result.arrow_schema.field("flag").type == pa.bool_()
+        assert result.rows == [[True], [False]]
+
+    def test_a_pep249_result_has_nothing_to_reconcile(self) -> None:
+        """No Arrow types to compare, and the coarse hint cannot tell a boolean
+        from a string. Since #412 this path is the exception."""
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        result = ExecutionResult(
+            columns=[ColumnMeta(name="flag", type_hint="number")],
+            raw_rows=[[1]],
+            row_count=1,
+        )
+        assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
+        assert result.rows == [[1]]

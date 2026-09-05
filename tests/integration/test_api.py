@@ -611,6 +611,20 @@ class TestSessionModelFlow:
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
+    async def test_declared_boolean_is_reported_as_boolean(self, client: AsyncClient) -> None:
+        """A declared boolean reported as "string" made the response metadata
+        contradict its own data on every engine returning a real bool."""
+        from orionbelt.api.query_cache import RESULT_TYPE_TO_HINT
+
+        assert RESULT_TYPE_TO_HINT["boolean"] == "boolean"
+
+    async def test_a_boolean_hint_is_not_numeric(self, client: AsyncClient) -> None:
+        """``is_numeric_type_hint`` is lexical, so a new hint could match by
+        accident and start formatting booleans with a decimal pattern."""
+        from orionbelt.service.value_formatting import is_numeric_type_hint
+
+        assert is_numeric_type_hint("boolean") is False
+
     async def test_validate_is_offline_by_default(
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
