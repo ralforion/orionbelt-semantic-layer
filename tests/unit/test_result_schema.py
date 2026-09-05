@@ -463,3 +463,70 @@ class TestRestOutputDoesNotDependOnCacheHistory:
         entry = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
         _, skips = reconcile_to_declared(entry, {"flag": pa.bool_()})
         assert [name for name, _ in skips] == ["flag"]
+
+
+class TestEverySurfaceDeliversTheSameResult:
+    """The reason pgwire reconciles rather than staying out of this.
+
+    Left opted out, pgwire's *values* depended on which surface warmed the
+    shared entry - `1`/`0` from its own miss, `True`/`False` from a REST one.
+    Its OID was stable only because the sidecar drove it; the values were not.
+    """
+
+    _SIDECAR = [{"name": "flag", "type": "boolean", "format": None}]
+
+    def _delivered(self, entry: pa.Table) -> tuple[int, list[str]]:
+        from orionbelt.api.query_cache import execution_result_from_data
+        from orionbelt.pgwire.types import encode_value, oid_for_type_hint
+
+        table, _ = reconcile_to_declared(entry, {"flag": pa.bool_()})
+        result = execution_result_from_data(table, execution_time_ms=1.0, columns=self._SIDECAR)
+        hint = result.columns[0].type_hint
+        return oid_for_type_hint(hint), [encode_value(r[0], hint) for r in result.rows]
+
+    def test_a_declared_boolean_advertises_the_postgres_bool_oid(self) -> None:
+        """It fell through to TEXT (25) because the coarse hint folded booleans
+        into "string"."""
+        from orionbelt.pgwire.types import OID_BOOL
+
+        oid, _ = self._delivered(pa.table({"flag": pa.array([1, 0], type=pa.int64())}))
+        assert oid == OID_BOOL
+
+    def test_the_wire_values_are_postgres_booleans(self) -> None:
+        _, wire = self._delivered(pa.table({"flag": pa.array([1, 0], type=pa.int64())}))
+        assert wire == ["t", "f"]
+
+    def test_the_answer_does_not_depend_on_who_warmed_the_entry(self) -> None:
+        from_pgwire = self._delivered(pa.table({"flag": pa.array([1, 0], type=pa.int64())}))
+        from_rest = self._delivered(pa.table({"flag": pa.array([True, False], type=pa.bool_())}))
+        assert from_pgwire == from_rest
+
+
+class TestBooleanIsItsOwnCoarseHint:
+    """The hint fold that made a declared boolean arrive as TEXT."""
+
+    def test_an_arrow_boolean_is_hinted_boolean(self) -> None:
+        from orionbelt.service.db_executor import _arrow_type_to_hint
+
+        assert _arrow_type_to_hint(pa.bool_()) == "boolean"
+
+    def test_a_named_boolean_type_is_hinted_boolean(self) -> None:
+        from orionbelt.service.db_executor import coarse_hint_from_type_name
+
+        assert coarse_hint_from_type_name("boolean") == "boolean"
+        assert coarse_hint_from_type_name("bool") == "boolean"
+
+    def test_the_other_buckets_are_unmoved(self) -> None:
+        """``bool`` shares no substring with them, but the ordering makes that
+        independent of what is added to those lists later."""
+        from orionbelt.service.db_executor import coarse_hint_from_type_name
+
+        assert coarse_hint_from_type_name("timestamp") == "datetime"
+        assert coarse_hint_from_type_name("numeric") == "number"
+        assert coarse_hint_from_type_name("bytea") == "binary"
+        assert coarse_hint_from_type_name("interval") == "datetime"
+
+    def test_a_boolean_is_not_numeric(self) -> None:
+        from orionbelt.service.value_formatting import is_numeric_type_hint
+
+        assert is_numeric_type_hint("boolean") is False

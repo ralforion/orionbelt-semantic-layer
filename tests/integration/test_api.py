@@ -1851,10 +1851,14 @@ class TestDeclaredTypeReconciliationWiring:
         assert "if declared_types is not None else []" in source
         assert "else declared_arrow_types(model)" not in source
 
-    def test_pgwire_still_passes_no_declared_types(self) -> None:
-        """Its reconciliation is a separate PR with its own BI testing."""
+    def test_pgwire_reconciles_too(self) -> None:
+        """A column's type is a property of the model, not of the engine behind
+        it or the transport in front of it. The cache is shared, so a surface
+        that opted out would serve - and be served - results whose values
+        depended on which surface warmed the entry."""
         source = self._source("pgwire/router.py")
-        assert "declared_types" not in source
+        assert "declared_types=declared_arrow_types(target.model, query)" in source
+        assert "reconcile_to_declared(" in source
 
     def test_the_builder_chooses_rather_than_appends(self) -> None:
         """A skipped column keeps its engine type, so re-running re-derives the

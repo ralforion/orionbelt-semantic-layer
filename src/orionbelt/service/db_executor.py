@@ -294,6 +294,11 @@ def coarse_hint_from_type_name(name: str) -> str:
     ``interval`` contains ``int``) is not misclassified as a number.
     """
     lowered = (name or "").lower()
+    # Before every other test: "bool" contains none of the numeric, temporal or
+    # binary substrings, but keeping it first makes that independent of what is
+    # added to those lists later.
+    if "bool" in lowered:
+        return "boolean"
     if any(t in lowered for t in ("timestamp", "date", "time", "interval")):
         return "datetime"
     if "bytea" in lowered or "binary" in lowered:
@@ -324,6 +329,11 @@ def _arrow_type_to_hint(arrow_type: Any) -> str:
     # robust to OpaqueType subclasses, mocks, and other types that may
     # not implement the full PyArrow DataType protocol.
     try:
+        # Before the numeric branch: Arrow has no "is_numeric" that excludes
+        # bool, and a boolean folded into "string" is what made pgwire advertise
+        # a declared boolean as TEXT.
+        if pa.types.is_boolean(arrow_type):
+            return "boolean"
         if (
             pa.types.is_integer(arrow_type)
             or pa.types.is_floating(arrow_type)
