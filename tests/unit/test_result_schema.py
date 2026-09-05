@@ -173,18 +173,18 @@ class TestReconcileToDeclared:
         assert out is table
         assert skipped == []
 
-    def test_one_impossible_cast_does_not_drop_the_others(self) -> None:
+    def test_one_unreconcilable_column_does_not_drop_the_others(self) -> None:
         """Arrow casts a table whole, so a single bad column would otherwise
         cost every other reconciliation on the result."""
         table = pa.table(
             {
                 "good": pa.array([1, 0], type=pa.int64()),
-                "bad": pa.array(["x", "y"], type=pa.string()),
+                "bad": pa.array([0, 7], type=pa.int64()),
             }
         )
-        out, skipped = reconcile_to_declared(table, {"good": pa.bool_(), "bad": pa.timestamp("us")})
+        out, skipped = reconcile_to_declared(table, {"good": pa.bool_(), "bad": pa.bool_()})
         assert out.schema.field("good").type == pa.bool_()
-        assert out.schema.field("bad").type == pa.string()
+        assert out.schema.field("bad").type == pa.int64()
         assert [name for name, _ in skipped] == ["bad"]
 
 
@@ -285,3 +285,134 @@ class TestCoalesceAliases:
         assert (
             declared_arrow_types(sales_model, query)[dim] == declared_arrow_types(sales_model)[dim]
         )
+
+
+class TestCacheHitWarnings:
+    """A hit has to report the warnings its miss did.
+
+    ``execution_result_from_data`` rebuilds a hit with ``raw_rows`` rather than
+    an Arrow table - deliberately, because ``table_to_rows`` keeps native dates
+    where the executor's row builder serialises them to ISO strings, so
+    swapping it changes what a hit returns. It also leaves ``arrow_schema``
+    None, so reconciling the *result* is a no-op. The table is reconciled
+    instead, before the result is built.
+    """
+
+    def test_reconciling_the_rebuilt_result_finds_nothing(self) -> None:
+        """The failure mode, pinned so the ordering requirement is explicit."""
+        from orionbelt.api.query_cache import execution_result_from_data
+
+        stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
+        result = execution_result_from_data(stored, execution_time_ms=1.0)
+        assert result.arrow_schema is None
+        assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
+
+    def test_reconciling_the_table_recovers_the_skip(self) -> None:
+        stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
+        _, skips = reconcile_to_declared(stored, {"flag": pa.bool_()})
+        assert [name for name, _ in skips] == ["flag"]
+
+    def test_an_already_reconciled_hit_warns_about_nothing(self) -> None:
+        stored = pa.table({"flag": pa.array([False, True], type=pa.bool_())})
+        table, skips = reconcile_to_declared(stored, {"flag": pa.bool_()})
+        assert skips == []
+        assert table.schema.field("flag").type == pa.bool_()
+
+    def test_the_hit_keeps_its_native_row_shape(self) -> None:
+        """``table_to_rows`` semantics must survive the reconciliation."""
+        import datetime
+
+        from orionbelt.api.query_cache import execution_result_from_data
+
+        stored = pa.table({"d": pa.array([datetime.date(2026, 8, 15)], type=pa.date32())})
+        table, _ = reconcile_to_declared(stored, {"d": pa.date32()})
+        assert execution_result_from_data(table, execution_time_ms=1.0).rows == [
+            [datetime.date(2026, 8, 15)]
+        ]
+
+
+class TestCoalesceAliasMetadata:
+    """Casting a coalesce alias is only half of it - the reported type has to
+    agree, or the response contradicts its own data."""
+
+    def test_the_type_map_is_query_aware(self, sales_model) -> None:
+        from orionbelt.api.query_cache import build_type_map
+        from orionbelt.models.query import QueryObject
+
+        dim = next(iter(sales_model.dimensions))
+        query = QueryObject.model_validate(
+            {"select": {"dimensions": [{"as": "Any", "coalesce": [dim]}]}}
+        )
+        assert build_type_map(sales_model).get("Any") is None
+        assert build_type_map(sales_model, query)["Any"] == build_type_map(sales_model)[dim]
+
+    def test_a_plain_dimension_is_unaffected(self, sales_model) -> None:
+        from orionbelt.api.query_cache import build_type_map
+        from orionbelt.models.query import QueryObject
+
+        dim = next(iter(sales_model.dimensions))
+        query = QueryObject.model_validate({"select": {"dimensions": [dim]}})
+        assert build_type_map(sales_model, query) == {
+            **build_type_map(sales_model),
+        }
+
+
+class TestReconciliationNeverDowngrades:
+    """A ``resultType`` names a family, not the coarsest member of it.
+
+    Casting on any difference took a stored ``decimal128(38, 2)`` down to
+    ``float64`` because the measure declares ``resultType: float``, rounding
+    123456789012345678.90 to 1.2345678901234568e+17 on a cache hit. An engine
+    answering more precisely than the declaration is not drift, and the
+    existing decimal-precision contract test is what caught it.
+    """
+
+    def test_a_decimal_is_not_narrowed_to_a_declared_float(self) -> None:
+        from decimal import Decimal
+
+        table = pa.table(
+            {"amount": pa.array([Decimal("123456789012345678.90")], type=pa.decimal128(38, 2))}
+        )
+        out, skipped = reconcile_to_declared(table, {"amount": pa.float64()})
+        assert out.schema.field("amount").type == pa.decimal128(38, 2)
+        assert out.column("amount")[0].as_py() == Decimal("123456789012345678.90")
+        assert skipped == []
+
+    def test_a_wider_integer_is_not_narrowed(self) -> None:
+        table = pa.table({"n": pa.array([2**40], type=pa.int64())})
+        out, _ = reconcile_to_declared(table, {"n": pa.int32()})
+        assert out.schema.field("n").type == pa.int64()
+
+    def test_a_zoned_timestamp_is_left_to_the_wall_clock_path(self) -> None:
+        """ClickHouse's zoned-for-naive case is the same shape but needs the
+        clock preserved value by value (#407); a plain cast converts to UTC and
+        moves it."""
+        import datetime
+
+        table = pa.table(
+            {
+                "at": pa.array(
+                    [datetime.datetime(2026, 8, 15, 13, 45, tzinfo=datetime.UTC)],
+                    type=pa.timestamp("us", tz="UTC"),
+                )
+            }
+        )
+        out, skipped = reconcile_to_declared(table, {"at": pa.timestamp("us")})
+        assert out.schema.field("at").type == pa.timestamp("us", tz="UTC")
+        assert skipped == []
+
+    def test_the_two_gaps_this_exists_for_still_reconcile(self) -> None:
+        import datetime
+
+        table = pa.table(
+            {
+                "flag": pa.array([1, 0], type=pa.int64()),
+                "d": pa.array(
+                    [datetime.date(2026, 8, 15), datetime.date(2026, 8, 16)], type=pa.date64()
+                ),
+            }
+        )
+        out, skipped = reconcile_to_declared(table, {"flag": pa.bool_(), "d": pa.date32()})
+        assert out.schema.field("flag").type == pa.bool_()
+        assert out.schema.field("d").type == pa.date32()
+        assert skipped == []

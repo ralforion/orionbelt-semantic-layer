@@ -247,29 +247,61 @@ def _bool_is_safe(column: Any) -> bool:
         return False
 
 
+def _recoverable(actual: Any, target: Any) -> bool:
+    """Whether casting *actual* to *target* recovers the declaration losslessly.
+
+    An allowlist, not a general "types differ" test, and the difference is not
+    academic. The general version cast a stored ``decimal128(38, 2)`` down to
+    ``float64`` because the measure declares ``resultType: float`` - rounding
+    123456789012345678.90 to 1.2345678901234568e+17 on a cache hit. A
+    ``resultType`` is a statement about a *family*, not an instruction to
+    narrow the engine's answer to the coarsest member of it, and an engine
+    returning something more precise than the declaration is not drift.
+
+    So only the cases where an engine could not express the declared type at
+    all are reconciled:
+
+    * a declared boolean over an integer - MySQL has no boolean type, so a
+      declared one arrives as ``int64``. The caller additionally checks the
+      values are 0/1/NULL before trusting it.
+    * a declared date over a wider date - Dremio returns ``date64[ms]`` where
+      the other seven give ``date32[day]``, and a date has no sub-day part to
+      lose.
+
+    Timestamps are deliberately absent. ClickHouse's zoned-for-naive case is
+    the same shape but needs the wall clock preserved value by value (#407,
+    ``pc.local_timestamp``); a plain cast converts to UTC and moves the clock.
+    """
+    import pyarrow as pa
+
+    if pa.types.is_boolean(target) and pa.types.is_integer(actual):
+        return True
+    return bool(pa.types.is_date(target) and pa.types.is_date(actual))
+
+
 def reconcile_to_declared(
     table: Any, declared: dict[str, Any]
 ) -> tuple[Any, list[tuple[str, str]]]:
     """Cast *table*'s columns to the types *declared* names for them.
 
-    Returns the table and one ``(column, reason)`` pair per column left alone,
-    so a surface can report what it could not apply instead of silently not
-    applying it - Flight's equivalent is silent, and a mismatch there is
-    invisible.
+    Returns the table and one ``(column, reason)`` pair per column that named a
+    reconcilable difference and could not be reconciled anyway, so a surface
+    can report what it could not apply instead of silently not applying it -
+    Flight's equivalent is silent, and a mismatch there is invisible.
 
-    Reconciliation is per column and best-effort: a column the model does not
-    name, or one whose cast fails, is passed through unchanged. An engine
-    answering in a type it has instead of the one the model named is the normal
-    case this exists for - MySQL has no boolean, Dremio's ``date`` is 64-bit -
-    and a failure to bridge that is worth reporting, not worth failing a query.
+    Only the differences :func:`_recoverable` admits are acted on. A column the
+    model does not name, or one whose type differs in a way that is not an
+    engine failing to express the declaration, is passed through untouched and
+    unreported.
     """
     import pyarrow as pa
 
     skipped: list[tuple[str, str]] = []
     fields: list[Any] = []
+    changed = False
     for field in table.schema:
         target = declared.get(field.name)
-        if target is None or field.type.equals(target):
+        if target is None or field.type.equals(target) or not _recoverable(field.type, target):
             fields.append(field)
             continue
         if (
@@ -287,7 +319,8 @@ def reconcile_to_declared(
             fields.append(field)
             continue
         fields.append(pa.field(field.name, target))
-    if all(f.type.equals(t.type) for f, t in zip(fields, table.schema, strict=True)):
+        changed = True
+    if not changed:
         return table, skipped
     try:
         return table.cast(pa.schema(fields)), skipped
@@ -310,7 +343,12 @@ def _reconcile_per_column(
     for field in table.schema:
         column = table.column(field.name)
         target = declared.get(field.name)
-        if target is None or field.type.equals(target) or field.name in already:
+        if (
+            target is None
+            or field.type.equals(target)
+            or field.name in already
+            or not _recoverable(field.type, target)
+        ):
             columns.append(column)
             fields.append(field)
             continue

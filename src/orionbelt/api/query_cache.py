@@ -63,12 +63,19 @@ RESULT_TYPE_TO_HINT: dict[str, str] = {
 }
 
 
-def build_type_map(model: Any) -> dict[str, str]:
+def build_type_map(model: Any, query: Any = None) -> dict[str, str]:
     """Build a column-name -> type map from model definitions.
 
     Uses ``dataType`` when available (e.g. ``decimal(18, 2)``), then falls back
     to ``settings.defaultNumericDataType`` for numeric measures/metrics,
     otherwise maps ``resultType`` to a simple hint.
+
+    *query* adds the columns only a query can name. A coalesce entry outputs
+    its ``as`` alias, which is not a model dimension, so a model-only map has
+    no entry for it and the column falls back to the executor's coarse hint -
+    reporting a reconciled boolean as "string", because that hint cannot tell
+    the two apart. The alias takes its type from its members, which the model
+    requires to agree.
     """
     default_num = None
     if model.settings and model.settings.default_numeric_data_type:
@@ -91,6 +98,17 @@ def build_type_map(model: Any) -> dict[str, str]:
             types[label] = default_num
         else:
             types[label] = "number"
+    if query is not None:
+        from orionbelt.service.result_schema import dimension_label_and_declaration
+
+        select = getattr(query, "select", None)
+        for entry in getattr(select, "dimensions", None) or []:
+            if isinstance(entry, str):
+                continue  # a plain name, already mapped under it
+            label, declared = dimension_label_and_declaration(entry, model)
+            rt = getattr(getattr(declared, "result_type", None), "value", None)
+            if label and rt:
+                types[label] = RESULT_TYPE_TO_HINT.get(rt, "string")
     return types
 
 
@@ -115,6 +133,7 @@ def build_result_columns(
     *,
     type_map: dict[str, str] | None = None,
     fmt_map: dict[str, str | None] | None = None,
+    query: Any = None,
 ) -> list[ColumnMetadata]:
     """Decorate executor columns with model-declared types and formats.
 
@@ -123,7 +142,7 @@ def build_result_columns(
     Callers that already built the type/format maps (the REST response builder)
     can pass them in to avoid rebuilding.
     """
-    model_type_map = type_map if type_map is not None else build_type_map(model)
+    model_type_map = type_map if type_map is not None else build_type_map(model, query)
     fmt_map = fmt_map if fmt_map is not None else build_format_map(model)
     for c in exec_result.columns:
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
@@ -364,6 +383,7 @@ async def execute_query_with_cache(
     cacheable: bool = True,
     decode_payload: bool = True,
     declared_types: dict[str, Any] | None = None,
+    query: Any = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -451,7 +471,7 @@ async def execute_query_with_cache(
         exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
     )
 
-    columns = build_result_columns(model, exec_result)
+    columns = build_result_columns(model, exec_result, query=query)
     # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
     # construction so this is safe regardless, but keeping it explicit
     # documents that the encoders want the driver's declared types.
