@@ -134,6 +134,7 @@ def build_result_columns(
     type_map: dict[str, str] | None = None,
     fmt_map: dict[str, str | None] | None = None,
     query: Any = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> list[ColumnMetadata]:
     """Decorate executor columns with model-declared types and formats.
 
@@ -147,10 +148,13 @@ def build_result_columns(
     for c in exec_result.columns:
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
+    # See ``_columns_and_maps``: a column reconciliation could not apply keeps
+    # the engine's type, and the sidecar has to say so or a hit rebuilds
+    # metadata that contradicts the rows it ships with.
     return [
         ColumnMetadata(
             name=c.name,
-            type=model_type_map.get(c.name, c.type_hint),
+            type=(c.type_hint if c.name in skipped else model_type_map.get(c.name, c.type_hint)),
             format=fmt_map.get(c.name),
         )
         for c in exec_result.columns
@@ -471,7 +475,9 @@ async def execute_query_with_cache(
         exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
     )
 
-    columns = build_result_columns(model, exec_result, query=query)
+    columns = build_result_columns(
+        model, exec_result, query=query, skipped=frozenset(n for n, _ in declared_skips)
+    )
     # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
     # construction so this is safe regardless, but keeping it explicit
     # documents that the encoders want the driver's declared types.

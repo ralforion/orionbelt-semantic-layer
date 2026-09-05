@@ -530,3 +530,59 @@ class TestBooleanIsItsOwnCoarseHint:
         from orionbelt.service.value_formatting import is_numeric_type_hint
 
         assert is_numeric_type_hint("boolean") is False
+
+
+class TestSkippedColumnsReportWhatTheyAre:
+    """Metadata for a column reconciliation could not apply.
+
+    Reporting the *declared* type there made the response contradict its own
+    rows - `Tier -> boolean` beside values 0, 1, 7 - which is the class of bug
+    this whole change exists to remove. The declaration is still carried, as a
+    DECLARED_TYPE_NOT_APPLIED warning; the `type` field says what the data is.
+    pgwire has always worked this way, since its hint follows the Arrow type
+    rather than the model map, so this also makes the two surfaces agree.
+    """
+
+    def _columns(self, skipped: frozenset[str]):
+        from orionbelt.api.services.query_execution import _columns_and_maps
+        from orionbelt.service.db_executor import ColumnMeta
+
+        class _Model:
+            dimensions: dict = {}
+            measures: dict = {}
+            metrics: dict = {}
+            settings = None
+
+        cols = [ColumnMeta(name="Tier", type_hint="number")]
+        return _columns_and_maps(_Model(), cols, None, skipped)
+
+    def test_a_skipped_column_reports_its_actual_type(self) -> None:
+        columns_meta, _, type_map = self._columns(frozenset({"Tier"}))
+        assert columns_meta[0].type == "number"
+        assert type_map["Tier"] == "number"
+
+    def test_an_applied_column_still_reports_the_declared_type(self) -> None:
+        """Only the skip list changes; everything else keeps model semantics."""
+        columns_meta, _, _ = self._columns(frozenset())
+        assert columns_meta[0].type == "number"  # no model entry, falls back to the hint
+
+    def test_the_sidecar_agrees_with_the_response(self) -> None:
+        """A hit rebuilds metadata from the sidecar, so it has to say the same."""
+        from orionbelt.api.query_cache import build_result_columns
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        class _Model:
+            dimensions: dict = {}
+            measures: dict = {}
+            metrics: dict = {}
+            settings = None
+
+        result = ExecutionResult(
+            columns=[ColumnMeta(name="Tier", type_hint="number")],
+            raw_rows=[[7]],
+            row_count=1,
+        )
+        columns = build_result_columns(
+            _Model(), result, type_map={"Tier": "boolean"}, skipped=frozenset({"Tier"})
+        )
+        assert columns[0].type == "number"

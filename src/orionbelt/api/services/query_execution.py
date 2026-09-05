@@ -290,7 +290,10 @@ def _render_response(
 
 
 def _columns_and_maps(
-    model: Any, exec_columns: list[Any], query: Any = None
+    model: Any,
+    exec_columns: list[Any],
+    query: Any = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> tuple[list[ColumnMetadata], dict[str, Any], dict[str, str]]:
     """Build ``columns_meta`` + the fmt/type maps from executor columns + model.
 
@@ -311,10 +314,20 @@ def _columns_and_maps(
         if fmt_map.get(c.name) is None and getattr(c, "default_format", None):
             fmt_map[c.name] = c.default_format
 
+    # A column reconciliation could not apply keeps the engine's type, so
+    # reporting the declared one makes the metadata contradict the rows beside
+    # it - `Tier -> boolean` over values 0, 1, 7. The declaration is still
+    # carried, as a DECLARED_TYPE_NOT_APPLIED warning; what the `type` field
+    # says is what the data *is*. pgwire has always worked this way, since its
+    # hint follows the Arrow type rather than the model map.
     columns_meta = [
         ColumnMetadata(
             name=c.name,
-            type=model_type_map.get(c.name, c.type_hint or "string"),
+            type=(
+                (c.type_hint or "string")
+                if c.name in skipped
+                else model_type_map.get(c.name, c.type_hint or "string")
+            ),
             format=fmt_map.get(c.name),
         )
         for c in exec_columns
@@ -326,7 +339,12 @@ def _columns_and_maps(
     # column ("decimal(18, 2)" from the driver) wouldn't be classified as
     # numeric in format_row.
     type_map: dict[str, str] = {
-        c.name: model_type_map.get(c.name, c.type_hint or "") for c in exec_columns
+        c.name: (
+            (c.type_hint or "")
+            if c.name in skipped
+            else model_type_map.get(c.name, c.type_hint or "")
+        )
+        for c in exec_columns
     }
     return columns_meta, fmt_map, type_map
 
@@ -383,7 +401,9 @@ def _build_execute_response(
         )
         for name, reason in skips
     ]
-    columns_meta, fmt_map, type_map = _columns_and_maps(model, exec_result.columns, query)
+    columns_meta, fmt_map, type_map = _columns_and_maps(
+        model, exec_result.columns, query, frozenset(name for name, _ in skips)
+    )
 
     return _render_response(
         response_format=response_format,
