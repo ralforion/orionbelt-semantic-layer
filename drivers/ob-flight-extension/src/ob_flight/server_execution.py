@@ -26,10 +26,19 @@ logger = logging.getLogger("ob_flight.server")
 
 def _arrow_to_obsl_type_hint(arrow_type: pa.DataType) -> str:
     """Map an Arrow DataType to the OBSL ``ColumnMetadata.type`` vocabulary
-    (``string`` / ``number`` / ``datetime`` / ``binary``). Used when Flight
-    writes to the shared result cache so REST readers decode column types
-    correctly instead of falling back to ``string``.
+    (``string`` / ``number`` / ``datetime`` / ``boolean`` / ``binary``). Used
+    when Flight writes to the shared result cache so readers on the other
+    surfaces decode column types correctly instead of falling back to
+    ``string``.
     """
+    # Before the numeric test, which Arrow's ``is_integer`` does not exclude a
+    # bool from on every version, and because ``string`` is the fallback here:
+    # a boolean landing there is indistinguishable from an unrecognised type.
+    # A sidecar written ``string`` makes pgwire advertise a declared boolean as
+    # TEXT (OID 25) on a Flight-warmed entry, whatever the reader reconciles
+    # the data itself to.
+    if pa.types.is_boolean(arrow_type):
+        return "boolean"
     if pa.types.is_integer(arrow_type) or pa.types.is_floating(arrow_type):
         return "number"
     if pa.types.is_decimal(arrow_type):
