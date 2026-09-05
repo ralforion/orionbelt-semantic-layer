@@ -5,29 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
+from orionbelt.service.result_schema import obml_type_to_arrow
 from pyarrow import flight
 
-# Map OBML abstract types to Arrow types. Covers the full OBML DataType enum.
-_OBML_TYPE_MAP: dict[str, pa.DataType] = {
-    "string": pa.utf8(),
-    "json": pa.utf8(),
-    "int": pa.int64(),
-    "float": pa.float64(),
-    "boolean": pa.bool_(),
-    "date": pa.date32(),
-    "datetime": pa.timestamp("us"),
-    "time": pa.utf8(),
-    "time_tz": pa.utf8(),
-    "timestamp": pa.timestamp("us"),
-    "timestamp_tz": pa.timestamp("us", tz="UTC"),
-}
-
-
-def _obml_type_to_arrow(type_name: str | None) -> pa.DataType:
-    """Map an OBML type name to an Arrow type, defaulting to utf8."""
-    if not type_name:
-        return pa.utf8()
-    return _OBML_TYPE_MAP.get(type_name, pa.utf8())
+# The OBML -> Arrow mapping moved to ``orionbelt.service.result_schema``: it
+# is model knowledge, and REST and pgwire need the same reconciliation Flight
+# has had. Re-exported so the Flight call sites keep one name for it.
+_obml_type_to_arrow = obml_type_to_arrow
 
 
 # ---------------------------------------------------------------------------
