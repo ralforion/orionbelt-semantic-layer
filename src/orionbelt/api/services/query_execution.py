@@ -35,7 +35,11 @@ from orionbelt.service.db_executor import (
     resolve_timezone,
 )
 from orionbelt.service.model_store import ModelStore
-from orionbelt.service.result_schema import declared_arrow_types, reconcile_to_declared
+from orionbelt.service.result_schema import (
+    declared_arrow_types,
+    reconcile_to_declared,
+    reconciliation_possible,
+)
 from orionbelt.service.value_formatting import format_row, to_tsv
 
 # Column type/format helpers live in orionbelt.api.query_cache (shared with the
@@ -462,7 +466,20 @@ async def _run_with_cache(
     # A raw ``format=arrow`` request (no value formatting) only needs the stored
     # blob to hand back verbatim, so tell the cache to skip the gzip + Arrow
     # decode on a hit (true zero-copy). Every other surface needs decoded rows.
-    decode_payload = not (response_format == "arrow" and not format_values)
+    # A raw-arrow response ships the stored blob verbatim, so it normally needs
+    # no decode. The exception is a model that declares a type an engine may
+    # have failed to express: the entry could have been written by a surface
+    # that does not reconcile - pgwire shares this cache and passes no declared
+    # types - and serving it verbatim hands a REST arrow client int64 data
+    # under a sidecar that says boolean. Where that is possible the blob is
+    # decoded and reconciled like any other hit; where it is not, which is
+    # almost every query, the zero-copy path is unchanged.
+    declared_for_query = declared_arrow_types(model, query)
+    decode_payload = not (
+        response_format == "arrow"
+        and not format_values
+        and not reconciliation_possible(declared_for_query)
+    )
 
     try:
         cached = await execute_query_with_cache(
@@ -477,7 +494,7 @@ async def _run_with_cache(
             override_db_tz=override_db_tz,
             cacheable=cacheable,
             decode_payload=decode_payload,
-            declared_types=declared_arrow_types(model, query),
+            declared_types=declared_for_query,
             query=query,
         )
     except ExecutionUnavailableError as exc:
@@ -499,7 +516,11 @@ async def _run_with_cache(
         # for every surface. ``execution_time_ms`` becomes the cache fetch time.
         assert cached.fetch_elapsed_ms is not None
         fetch_ms = cached.fetch_elapsed_ms
-        if response_format == "arrow" and not format_values:
+        if (
+            response_format == "arrow"
+            and not format_values
+            and not reconciliation_possible(declared_for_query)
+        ):
             # Raw-arrow hit: ship the stored DATA blob verbatim (data stays
             # zero-copy) with a fresh JSON envelope prepended. The column schema
             # + row count come from the entry sidecar, so nothing decodes the

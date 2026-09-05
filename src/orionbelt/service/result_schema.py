@@ -360,3 +360,23 @@ def _reconcile_per_column(
             columns.append(column)
             fields.append(field)
     return pa.Table.from_arrays(columns, schema=pa.schema(fields)), skipped
+
+
+def reconciliation_possible(declared: dict[str, Any]) -> bool:
+    """Whether any declared type is one :func:`_recoverable` could act on.
+
+    Answered from the declaration alone, without looking at data, so a caller
+    holding an undecoded blob can decide whether it is safe to pass through.
+    That matters because the cache is shared: an entry written by a surface
+    that does not reconcile - pgwire passes no declared types - is stored in
+    the engine's types, and shipping it verbatim to a client whose sidecar
+    says ``boolean`` hands over data that contradicts its own metadata.
+
+    Conservative in the useful direction: it says "possible" for any model that
+    declares a boolean or a date, whether or not the engine got them wrong. The
+    cost of a false positive is one decode; the cost of a false negative is a
+    wrong answer.
+    """
+    import pyarrow as pa
+
+    return any(pa.types.is_boolean(t) or pa.types.is_date(t) for t in declared.values())

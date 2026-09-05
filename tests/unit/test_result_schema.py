@@ -21,6 +21,7 @@ from orionbelt.service.result_schema import (
     declared_result_schema,
     obml_type_to_arrow,
     reconcile_to_declared,
+    reconciliation_possible,
 )
 
 
@@ -416,3 +417,49 @@ class TestReconciliationNeverDowngrades:
         assert out.schema.field("flag").type == pa.bool_()
         assert out.schema.field("d").type == pa.date32()
         assert skipped == []
+
+
+class TestRestOutputDoesNotDependOnCacheHistory:
+    """REST and pgwire may differ live; they may not differ through the cache.
+
+    The surface difference is a deliberate boundary - pgwire exposes Postgres
+    wire metadata, so changing an int64-ish result into a boolean-like one can
+    move an advertised OID and change BI-client behaviour, which needs its own
+    testing. But the two share a cache, so an entry pgwire warmed could be
+    served to a REST client verbatim, and REST's answer would depend on who
+    queried first rather than on REST's own contract.
+
+    A raw-arrow hit is the only path that could leak it, because it ships the
+    stored blob without decoding. It now decodes whenever the model declares a
+    type reconciliation could act on.
+    """
+
+    def _pgwire_entry(self):
+        """What pgwire stores: the engine's types, because it opts out."""
+        return pa.table({"flag": pa.array([1, 0], type=pa.int64())})
+
+    def test_a_raw_arrow_hit_will_not_pass_through_a_reconcilable_model(self) -> None:
+        assert reconciliation_possible({"flag": pa.bool_()}) is True
+        assert reconciliation_possible({"d": pa.date32()}) is True
+
+    def test_zero_copy_survives_where_nothing_could_need_it(self) -> None:
+        """The gate must not cost the common case its passthrough."""
+        assert reconciliation_possible({}) is False
+        assert (
+            reconciliation_possible({"a": pa.utf8(), "b": pa.float64(), "t": pa.timestamp("us")})
+            is False
+        )
+
+    def test_rest_reads_the_same_result_whoever_warmed_the_cache(self) -> None:
+        declared = {"flag": pa.bool_()}
+        from_pgwire, _ = reconcile_to_declared(self._pgwire_entry(), declared)
+        rest_written, _ = reconcile_to_declared(self._pgwire_entry(), declared)
+        from_rest, _ = reconcile_to_declared(rest_written, declared)
+        assert from_pgwire.equals(from_rest)
+        assert from_pgwire.column("flag").to_pylist() == [True, False]
+
+    def test_the_unsafe_boolean_warns_either_way(self) -> None:
+        """A hit reports what a miss would, whichever surface wrote it."""
+        entry = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
+        _, skips = reconcile_to_declared(entry, {"flag": pa.bool_()})
+        assert [name for name, _ in skips] == ["flag"]
