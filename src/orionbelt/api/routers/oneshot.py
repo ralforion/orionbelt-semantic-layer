@@ -342,6 +342,10 @@ async def _run_query(
                 compile_result=compile_result,
                 exec_result=hit_exec,
                 model=model,
+                # A cache hit passes no ``declared_skips``, so reconciliation
+                # re-runs: a no-op for the columns the miss already cast, and
+                # it re-derives the warnings for the ones it could not.
+                query=item.query,
                 response_format="json",
                 format_values=False,
                 locale="",
@@ -410,6 +414,7 @@ async def _run_query(
         # type hints, and format strings stay consistent with /query/execute.
         envelope = _build_execute_response(
             compile_result=compile_result,
+            query=item.query,
             exec_result=exec_result,
             model=model,
             response_format="json",

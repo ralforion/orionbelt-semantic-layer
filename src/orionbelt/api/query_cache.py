@@ -38,7 +38,6 @@ from orionbelt.service.db_executor import (
     execute_sql,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
-from orionbelt.service.result_schema import declared_arrow_types
 
 logger = logging.getLogger(__name__)
 
@@ -442,8 +441,15 @@ async def execute_query_with_cache(
     # this later is doing it never, and the cache would additionally store the
     # engine's types rather than the model's. Both the response and the stored
     # blob therefore carry the reconciled column.
-    declared = declared_types if declared_types is not None else declared_arrow_types(model)
-    declared_skips = exec_result.reconcile_to_declared(declared)
+    # Opt-in, not defaulted. Defaulting to ``declared_arrow_types(model)``
+    # enrolled every caller of this shared helper, including pgwire, which
+    # asks for no reconciliation and whose wire types are consumed by BI
+    # clients: a declared boolean cast to Arrow ``bool`` reports the coarse
+    # hint "string", and pgwire's OID moved 701 (FLOAT8) -> 25 (TEXT) without
+    # anyone choosing it. A surface opts in by passing its declared types.
+    declared_skips = (
+        exec_result.reconcile_to_declared(declared_types) if declared_types is not None else []
+    )
 
     columns = build_result_columns(model, exec_result)
     # Read before ``rows`` is touched below; ``arrow_schema`` is captured at

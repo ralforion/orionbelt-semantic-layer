@@ -339,6 +339,7 @@ def _build_execute_response(
     cached: bool = False,
     cached_at: str | None = None,
     declared_skips: list[tuple[str, str]] | None = None,
+    query: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
 
@@ -354,13 +355,21 @@ def _build_execute_response(
     # as ``date64[ms]``. Flight has always cast to the declared schema; this is
     # REST catching up, so a column's type is a property of the model rather
     # than of whichever engine is behind it today.
-    # ``declared_skips`` comes from the cache-aware path, which reconciles
-    # before it writes the entry - by the time a result reaches here its rows
-    # may already be materialised, and reconciling then is reconciling never.
-    # The call is kept for the surfaces that do not go through that path, and
-    # is a no-op when the work is already done.
-    skips = list(declared_skips or []) + exec_result.reconcile_to_declared(
-        declared_arrow_types(model)
+    # ``None`` means nobody has reconciled this result yet; a list - including
+    # an empty one - means the cache-aware path already did, before it wrote
+    # the entry. Adding to it instead of choosing would double-report: a column
+    # that could not be cast keeps its engine type, so re-running re-derives
+    # the same skip and the caller sees the warning twice.
+    #
+    # A cache *hit* deliberately passes ``None``. Its data is already
+    # reconciled, so the re-run is a no-op for every column that succeeded and
+    # re-derives the skips for the ones that did not - which is how a hit
+    # reports the same warnings as the miss that filled it, without the entry
+    # having to carry them.
+    skips = (
+        list(declared_skips)
+        if declared_skips is not None
+        else exec_result.reconcile_to_declared(declared_arrow_types(model, query))
     )
     declared_warnings = [
         StructuredWarning(
@@ -539,6 +548,11 @@ async def _run_with_cache(
             compile_result=compile_result,
             exec_result=hit_exec_result,
             model=model,
+            # No ``declared_skips``: the hit re-runs reconciliation, which is a
+            # no-op for the columns the miss cast and re-derives the warnings
+            # for the ones it could not - so a hit reports what its miss did
+            # without the entry having to carry it.
+            query=query,
             response_format=response_format,
             format_values=format_values,
             locale=effective_locale,

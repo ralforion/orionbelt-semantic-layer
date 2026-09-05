@@ -1840,3 +1840,29 @@ class TestDeclaredTypeReconciliationWiring:
         """Without it a coalesce alias is never declared."""
         source = self._source("api/services/query_execution.py")
         assert "declared_arrow_types(model, query)" in source
+
+    def test_reconciliation_is_opt_in_not_defaulted(self) -> None:
+        """Defaulting enrolled every caller of the shared cache helper -
+        including pgwire, whose wire types BI clients consume. A declared
+        boolean cast to Arrow bool reports the coarse hint "string", which
+        moved pgwire's OID from 701 (FLOAT8) to 25 (TEXT) with nobody choosing
+        it."""
+        source = self._source("api/query_cache.py")
+        assert "if declared_types is not None else []" in source
+        assert "else declared_arrow_types(model)" not in source
+
+    def test_pgwire_still_passes_no_declared_types(self) -> None:
+        """Its reconciliation is a separate PR with its own BI testing."""
+        source = self._source("pgwire/router.py")
+        assert "declared_types" not in source
+
+    def test_the_builder_chooses_rather_than_appends(self) -> None:
+        """A skipped column keeps its engine type, so re-running re-derives the
+        same skip - adding to carried skips reports the warning twice."""
+        source = self._source("api/services/query_execution.py")
+        assert "if declared_skips is not None" in source
+        assert "list(declared_skips or []) +" not in source
+
+    def test_oneshot_declares_coalesce_aliases(self) -> None:
+        source = self._source("api/routers/oneshot.py")
+        assert source.count("query=item.query,") == 2
