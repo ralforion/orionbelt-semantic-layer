@@ -582,6 +582,9 @@ def execution_result_from_data(
         row_count=data_table.num_rows,
         execution_time_ms=execution_time_ms,
         tz=tz,
+        # The table's own schema, so a re-encode on the way out keeps the types
+        # rather than re-inferring them from the rows.
+        arrow_schema=data_table.schema,
     )
 
 

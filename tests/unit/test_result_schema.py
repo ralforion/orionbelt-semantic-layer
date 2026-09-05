@@ -305,8 +305,11 @@ class TestCacheHitWarnings:
 
         stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
         result = execution_result_from_data(stored, execution_time_ms=1.0)
-        assert result.arrow_schema is None
+        # The schema travels with it, so a re-encode keeps the types - but the
+        # *table* does not, and that is what reconciliation needs.
+        assert result.arrow_schema is not None
         assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
+        assert result.arrow_schema.field("flag").type == pa.int64()
 
     def test_reconciling_the_table_recovers_the_skip(self) -> None:
         stored = pa.table({"flag": pa.array([0, 1, 7], type=pa.int64())})
@@ -586,3 +589,54 @@ class TestSkippedColumnsReportWhatTheyAre:
             _Model(), result, type_map={"Tier": "boolean"}, skipped=frozenset({"Tier"})
         )
         assert columns[0].type == "number"
+
+
+class TestARowBackedHitKeepsItsTypes:
+    """A decoded hit is rebuilt from rows, and must still carry the schema.
+
+    The raw-arrow path decodes when reconciliation is possible, and the rebuilt
+    result is row-backed - ``table_to_rows`` keeps native dates where the Arrow
+    row builder serialises them, so it cannot simply hold the table. Without
+    the schema travelling alongside, the re-encode on the way out infers types
+    from values and an empty or all-null ``int64`` column comes back ``null``,
+    undoing exactly what the schema sidecar exists to preserve.
+    """
+
+    def test_an_empty_typed_column_keeps_its_type(self) -> None:
+        from orionbelt.api.query_cache import execution_result_from_data
+
+        table = pa.table({"Amount": pa.array([], type=pa.int64())})
+        result = execution_result_from_data(table, execution_time_ms=1.0)
+        assert result.arrow_schema is not None
+        assert result.arrow_schema.field("Amount").type == pa.int64()
+
+    def test_an_all_null_column_keeps_its_type(self) -> None:
+        from orionbelt.api.query_cache import execution_result_from_data
+
+        table = pa.table({"Amount": pa.array([None, None], type=pa.int64())})
+        result = execution_result_from_data(table, execution_time_ms=1.0)
+        assert result.arrow_schema is not None
+        assert result.arrow_schema.field("Amount").type == pa.int64()
+
+    def test_the_rows_are_still_the_table_to_rows_shape(self) -> None:
+        """Carrying the schema must not change what a hit returns."""
+        import datetime
+
+        from orionbelt.api.query_cache import execution_result_from_data
+
+        table = pa.table({"d": pa.array([datetime.date(2026, 8, 15)], type=pa.date32())})
+        result = execution_result_from_data(table, execution_time_ms=1.0)
+        assert result.rows == [[datetime.date(2026, 8, 15)]]
+
+    def test_a_real_arrow_table_still_wins(self) -> None:
+        """The explicit schema is a fallback, not an override."""
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        table = pa.table({"n": pa.array([1], type=pa.int64())})
+        result = ExecutionResult(
+            columns=[ColumnMeta(name="n", type_hint="number")],
+            arrow_table=table,
+            arrow_schema=pa.schema([pa.field("n", pa.float64())]),
+            row_count=1,
+        )
+        assert result.arrow_schema.field("n").type == pa.int64()

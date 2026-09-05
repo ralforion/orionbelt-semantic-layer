@@ -76,6 +76,7 @@ class ExecutionResult:
         row_count: int = 0,
         execution_time_ms: float = 0.0,
         tz: ZoneInfo | None = None,
+        arrow_schema: Any = None,
     ) -> None:
         self.columns = columns
         self.row_count = row_count
@@ -88,7 +89,14 @@ class ExecutionResult:
         # writers preserve declared types without having to read the table
         # before anything touches ``rows`` — an ordering hazard that would
         # otherwise be invisible at the call site.
-        self._arrow_schema = getattr(arrow_table, "schema", None)
+        # ``arrow_schema`` lets a row-backed result still carry the types its
+        # rows came from. A cache hit is rebuilt from ``raw_rows`` - because
+        # ``table_to_rows`` keeps native dates where the Arrow row builder
+        # serialises them - and without the schema the re-encode infers types
+        # from values, so an empty or all-null ``int64`` column comes back
+        # ``null``. That is the exact preservation the schema sidecar exists
+        # for, and losing it on the way out would undo it.
+        self._arrow_schema = getattr(arrow_table, "schema", None) or arrow_schema
 
     @property
     def timezone(self) -> str | None:

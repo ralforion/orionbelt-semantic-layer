@@ -328,7 +328,13 @@ class SemanticRouter:
                     assert cached.exec_result is not None  # a miss always executed
                     result = cached.exec_result
             else:
+                # No cache configured - ``start_pgwire(cache=None)`` allows it,
+                # and the tests use it. Reconciliation is a property of the
+                # surface, not of whether a cache happens to be attached, so it
+                # has to happen here too or a declared boolean comes back as
+                # OID 701 with values 1/0 on exactly this path.
                 result = execute_sql(compile_result.sql, dialect=dialect)
+                result.reconcile_to_declared(declared_arrow_types(target.model, query))
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(
                 severity="ERROR",
