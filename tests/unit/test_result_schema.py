@@ -214,3 +214,74 @@ class TestExecutionResultReconciliation:
         )
         assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
         assert result.rows == [[1]]
+
+
+class TestReconciliationOrdering:
+    """Reconciliation has to happen before anything reads ``rows``.
+
+    ``rows`` materialises the Arrow table and frees it, so a later
+    ``reconcile_to_declared`` finds nothing to cast and returns silently. The
+    cacheable-miss path read ``rows`` to write the cache entry *before* the
+    response builder reconciled, so with the cache enabled REST returned - and
+    stored - the engine's types, and every existing test passed because they
+    exercised the uncached path.
+    """
+
+    def _result(self):
+        from orionbelt.service.db_executor import ColumnMeta, ExecutionResult
+
+        return ExecutionResult(
+            columns=[ColumnMeta(name="flag", type_hint="number")],
+            arrow_table=pa.table({"flag": pa.array([1, 0], type=pa.int64())}),
+            row_count=2,
+        )
+
+    def test_reconciling_after_rows_is_a_no_op(self) -> None:
+        """The failure mode, pinned so the ordering requirement is explicit."""
+        result = self._result()
+        _ = result.rows
+        assert result.reconcile_to_declared({"flag": pa.bool_()}) == []
+        assert result.arrow_schema.field("flag").type == pa.int64()
+
+    def test_reconciling_before_rows_reaches_the_rows(self) -> None:
+        result = self._result()
+        result.reconcile_to_declared({"flag": pa.bool_()})
+        assert result.arrow_schema.field("flag").type == pa.bool_()
+        assert result.rows == [[True], [False]]
+
+    def test_the_cache_write_sees_the_reconciled_values(self) -> None:
+        """``try_cache_set`` is handed ``rows`` and ``arrow_schema``; both have
+        to be the declared ones or the entry outlives the fix."""
+        result = self._result()
+        result.reconcile_to_declared({"flag": pa.bool_()})
+        assert result.arrow_schema.field("flag").type == pa.bool_()
+        assert result.rows == [[True], [False]]
+
+
+class TestCoalesceAliases:
+    """A coalesce entry outputs its ``as`` alias, which is not a model
+    dimension - so a model-only map never mentions it and the column keeps
+    whatever the engine returned."""
+
+    def test_a_coalesce_alias_is_absent_without_the_query(self, sales_model) -> None:
+        assert "Any Country" not in declared_arrow_types(sales_model)
+
+    def test_the_query_supplies_the_alias(self, sales_model) -> None:
+        from orionbelt.models.query import QueryObject
+
+        dim = next(iter(sales_model.dimensions))
+        query = QueryObject.model_validate(
+            {"select": {"dimensions": [{"as": "Any Country", "coalesce": [dim]}]}}
+        )
+        types = declared_arrow_types(sales_model, query)
+        assert "Any Country" in types
+        assert types["Any Country"] == types[dim]
+
+    def test_a_plain_name_is_unaffected(self, sales_model) -> None:
+        from orionbelt.models.query import QueryObject
+
+        dim = next(iter(sales_model.dimensions))
+        query = QueryObject.model_validate({"select": {"dimensions": [dim]}})
+        assert (
+            declared_arrow_types(sales_model, query)[dim] == declared_arrow_types(sales_model)[dim]
+        )

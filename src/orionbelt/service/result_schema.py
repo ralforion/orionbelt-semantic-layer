@@ -182,14 +182,21 @@ def declared_result_schema(query: Any, model: Any) -> Any:
     return pa.schema(fields)
 
 
-def declared_arrow_types(model: Any) -> dict[str, Any]:
-    """Column label -> the Arrow type *model* declares for it.
+def declared_arrow_types(model: Any, query: Any = None) -> dict[str, Any]:
+    """Column label -> the Arrow type declared for it.
 
     Keyed by name rather than built from a query, because the surfaces that
     need it have the executor's columns and not always the ``QueryObject``.
     A column absent from the map - a raw ``select.fields`` projection of a
     physical column, a ``GROUPING()`` flag - is one the model makes no claim
     about, and is left alone.
+
+    *query* adds the labels only a query can name. A coalesce entry outputs its
+    ``as`` alias, which is not a model dimension, so a model-only map never
+    mentions it and a coalesced date or boolean keeps whatever the engine
+    returned - this reconciliation's own gap, reappearing for exactly the
+    columns a query invents. The alias takes its type from its members, which
+    the model requires to agree.
     """
     types: dict[str, Any] = {}
     for label, dim in model.dimensions.items():
@@ -204,6 +211,15 @@ def declared_arrow_types(model: Any) -> dict[str, Any]:
         rt = getattr(getattr(item, "result_type", None), "value", None)
         if rt:
             types[label] = obml_type_to_arrow(rt)
+    if query is not None:
+        select = getattr(query, "select", None)
+        for entry in getattr(select, "dimensions", None) or []:
+            if isinstance(entry, str):
+                continue  # a plain name, already in the model map under it
+            label, declared = dimension_label_and_declaration(entry, model)
+            rt = getattr(getattr(declared, "result_type", None), "value", None)
+            if label and rt:
+                types[label] = obml_type_to_arrow(rt)
     return types
 
 

@@ -338,6 +338,7 @@ def _build_execute_response(
     accept_encoding: str | None = None,
     cached: bool = False,
     cached_at: str | None = None,
+    declared_skips: list[tuple[str, str]] | None = None,
 ) -> QueryExecuteResponse | Response:
     """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
 
@@ -353,13 +354,21 @@ def _build_execute_response(
     # as ``date64[ms]``. Flight has always cast to the declared schema; this is
     # REST catching up, so a column's type is a property of the model rather
     # than of whichever engine is behind it today.
+    # ``declared_skips`` comes from the cache-aware path, which reconciles
+    # before it writes the entry - by the time a result reaches here its rows
+    # may already be materialised, and reconciling then is reconciling never.
+    # The call is kept for the surfaces that do not go through that path, and
+    # is a no-op when the work is already done.
+    skips = list(declared_skips or []) + exec_result.reconcile_to_declared(
+        declared_arrow_types(model)
+    )
     declared_warnings = [
         StructuredWarning(
             code=WarningCode.DECLARED_TYPE_NOT_APPLIED,
             message=f"Column '{name}' was not reconciled to its declared type: {reason}",
             context={"column": name, "reason": reason},
         )
-        for name, reason in exec_result.reconcile_to_declared(declared_arrow_types(model))
+        for name, reason in skips
     ]
     columns_meta, fmt_map, type_map = _columns_and_maps(model, exec_result.columns)
 
@@ -408,8 +417,13 @@ async def _run_with_cache(
     locale: str | None,
     timezone_override: str | None,
     accept_encoding: str | None = None,
+    query: Any = None,
 ) -> QueryExecuteResponse | Response:
     """Cache-aware execute pipeline shared by session and shortcut endpoints.
+
+    ``query`` is optional and used only to name the columns a query invents: a
+    coalesce entry's ``as`` alias is not a model dimension, so without it that
+    column keeps whatever type the engine returned.
 
     Looks up the cache before executing, stores on miss, and surfaces the
     ``cached`` / ``ttl_*`` metadata. The cache holds RAW, locale-neutral rows
@@ -454,6 +468,7 @@ async def _run_with_cache(
             override_db_tz=override_db_tz,
             cacheable=cacheable,
             decode_payload=decode_payload,
+            declared_types=declared_arrow_types(model, query),
         )
     except ExecutionUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
@@ -547,6 +562,7 @@ async def _run_with_cache(
         format_values=format_values,
         locale=effective_locale,
         accept_encoding=accept_encoding,
+        declared_skips=cached.declared_skips,
     )
     ttl_outcome = cached.ttl_outcome
     if (

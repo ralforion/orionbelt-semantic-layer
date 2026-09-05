@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orionbelt.api.schemas import (
@@ -38,6 +38,7 @@ from orionbelt.service.db_executor import (
     execute_sql,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
+from orionbelt.service.result_schema import declared_arrow_types
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,11 @@ class CachedExecution:
     # hit frames the verbatim blob without decoding it.
     hit_columns: list[dict[str, Any]] | None = None
     row_count: int | None = None
+    # Columns reconciliation could not cast to their declared type, as
+    # ``(column, reason)``. Carried rather than recomputed because
+    # reconciliation happens here - before the cache write - and is a no-op by
+    # the time the response builder sees the result.
+    declared_skips: list[tuple[str, str]] = field(default_factory=list)
 
 
 async def execute_query_with_cache(
@@ -358,6 +364,7 @@ async def execute_query_with_cache(
     override_db_tz: bool = False,
     cacheable: bool = True,
     decode_payload: bool = True,
+    declared_types: dict[str, Any] | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -430,6 +437,14 @@ async def execute_query_with_cache(
         tz=tz,
         override_db_tz=override_db_tz,
     )
+    # Reconcile to the declared types *first*. ``rows`` below materialises the
+    # Arrow table and frees it, and reconciliation needs that table - so doing
+    # this later is doing it never, and the cache would additionally store the
+    # engine's types rather than the model's. Both the response and the stored
+    # blob therefore carry the reconciled column.
+    declared = declared_types if declared_types is not None else declared_arrow_types(model)
+    declared_skips = exec_result.reconcile_to_declared(declared)
+
     columns = build_result_columns(model, exec_result)
     # Read before ``rows`` is touched below; ``arrow_schema`` is captured at
     # construction so this is safe regardless, but keeping it explicit
@@ -464,6 +479,7 @@ async def execute_query_with_cache(
         exec_result=exec_result,
         columns=columns,
         fetch_elapsed_ms=None,
+        declared_skips=declared_skips,
     )
 
 

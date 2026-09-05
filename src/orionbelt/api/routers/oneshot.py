@@ -361,7 +361,10 @@ async def _run_query(
                 row_count=hit_envelope.row_count,
                 execution_time_ms=hit_envelope.execution_time_ms,
                 executed=True,
-                warnings=warnings,
+                # The envelope's, not the pre-execution list: reconciliation
+                # warnings (DECLARED_TYPE_NOT_APPLIED) are produced while the
+                # response is built, so ``warnings`` here predates them.
+                warnings=hit_envelope.warnings,
                 physical_tables=physical_tables,
                 cached=True,
                 cached_at=hit_envelope.cached_at,
@@ -459,7 +462,7 @@ async def _run_query(
             row_count=envelope.row_count,
             execution_time_ms=envelope.execution_time_ms,
             executed=True,
-            warnings=warnings,
+            warnings=envelope.warnings,
             physical_tables=physical_tables,
             cached=False,
             ttl_seconds=ttl_seconds,
