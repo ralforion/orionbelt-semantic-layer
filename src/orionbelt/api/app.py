@@ -774,19 +774,23 @@ def main() -> None:
     # Load .env into os.environ so all env vars (DB credentials, POSTGRES_SCHEMA,
     # etc.) are visible to os.getenv() — not just to pydantic Settings.
     #
-    # Resolved from the working directory, which is how pydantic-settings
-    # resolves ``env_file=".env"`` (see ``settings.Settings``). Bare
-    # ``load_dotenv()`` searches upward from *this file* instead, so a source
-    # checkout's own .env was loaded whatever directory the server started in -
-    # and the two resolutions then disagreed with each other. Measured: started
-    # from a directory whose .env said ``API_SERVER_PORT=8020`` with no
-    # ``MODEL_FILES``, ``Settings()`` read exactly that while the process came
-    # up on the repo's 9003 against the repo's database. ``find_dotenv``
-    # answers "" when there is none, and ``load_dotenv("")`` is a no-op, so a
-    # deployment with no file on disk keeps using real environment variables.
-    from dotenv import find_dotenv, load_dotenv
+    # Exactly ``./.env``, which is what pydantic-settings reads for
+    # ``env_file=".env"`` (see ``settings.Settings``). Both of the obvious
+    # alternatives search, and searching is the whole problem: bare
+    # ``load_dotenv()`` walks up from *this file*, so a source checkout's .env
+    # was loaded whatever directory the server started in;
+    # ``find_dotenv(usecwd=True)`` walks up from the working directory, so a
+    # subdirectory with no .env of its own still inherits a parent's - and
+    # ``Settings`` inherits neither. Either way the two disagree, and the
+    # disagreement injects a *different deployment's* database credentials and
+    # ``MODEL_FILES`` into ``os.environ`` while ``Settings`` reads the intended
+    # ones. A missing file makes this a no-op, so a deployment configured
+    # purely by environment variables is unaffected.
+    from pathlib import Path
 
-    load_dotenv(find_dotenv(usecwd=True), override=False)
+    from dotenv import load_dotenv
+
+    load_dotenv(Path.cwd() / ".env", override=False)
 
     settings = Settings()
 
