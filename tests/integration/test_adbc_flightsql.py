@@ -600,6 +600,55 @@ class TestPreparedStatementParameters:
         assert hit == 1
         assert miss == 0
 
+    def test_a_catalog_projection_returns_only_what_was_asked_for(self, conn: Any) -> None:
+        """The SELECT list was discarded with the WHERE: a client asking for
+        one column received the whole canned view, and so did the schema."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            one = cur.fetch_arrow_table()
+            cur.execute("SELECT * FROM information_schema.tables")
+            everything = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert one.column_names == ["table_name"]
+        assert len(everything.column_names) > 1
+
+    def test_a_projected_catalog_query_advertises_what_it_streams(self, conn: Any) -> None:
+        """The advertised schema is built from the same table, so narrowing it
+        must narrow both - or ADBC rejects the stream outright."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name, table_type FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["table_name", "table_type"]
+
+    def test_a_catalog_alias_is_honoured(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name AS name FROM information_schema.tables")
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["name"]
+
+    def test_projection_and_a_bound_filter_together(self, conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT table_name FROM information_schema.tables")
+            first = cur.fetch_arrow_table().column("table_name")[0].as_py()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+                parameters=(first,),
+            )
+            table = cur.fetch_arrow_table()
+        finally:
+            cur.close()
+        assert table.column_names == ["table_name"]
+        assert table.column("table_name").to_pylist() == [first]
+
     def test_a_literal_catalog_filter_also_applies(self, conn: Any) -> None:
         """Not a parameter feature: the predicate was ignored either way."""
         cur = conn.cursor()

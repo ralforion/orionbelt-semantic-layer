@@ -547,3 +547,83 @@ class TestCatalogWhereFiltering:
         )
         assert applied is True
         assert table.num_rows == 0
+
+
+class TestCatalogProjection:
+    """A catalog SELECT list used to be discarded along with the WHERE.
+
+    The dispatch answered with a whole canned view, so a client asking for one
+    column received four. Harmless to a tolerant client and wrong to a strict
+    one - and the advertised schema is built from these columns, so it is the
+    schema that was wide too.
+    """
+
+    def _table(self) -> object:
+        import pyarrow as pa
+
+        return pa.table(
+            {
+                "catalog_name": ["orionbelt", "orionbelt"],
+                "table_name": ["model", "orders"],
+                "table_type": ["TABLE", "VIEW"],
+            }
+        )
+
+    def _project(self, sql: str) -> tuple[object, bool]:
+        import sqlglot
+
+        from ob_flight.server_catalog import project_catalog_table
+
+        return project_catalog_table(self._table(), sqlglot.parse_one(sql))
+
+    def test_one_column_is_one_column(self) -> None:
+        table, applied = self._project("SELECT table_name FROM t")
+        assert applied is True
+        assert table.column_names == ["table_name"]
+
+    def test_columns_keep_the_order_asked_for(self) -> None:
+        table, _ = self._project("SELECT table_type, table_name FROM t")
+        assert table.column_names == ["table_type", "table_name"]
+
+    def test_an_alias_renames(self) -> None:
+        """That is the name the client will look for."""
+        table, applied = self._project("SELECT table_name AS name FROM t")
+        assert applied is True
+        assert table.column_names == ["name"]
+
+    def test_names_match_case_insensitively(self) -> None:
+        table, applied = self._project("SELECT TABLE_NAME FROM t")
+        assert applied is True
+        assert table.column_names == ["table_name"]
+
+    def test_star_is_the_whole_view(self) -> None:
+        table, applied = self._project("SELECT * FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_an_unknown_column_leaves_the_view_whole(self) -> None:
+        """Rather than an empty or partial projection: the advertised schema is
+        built from these columns, and one that disagrees with the stream is
+        worse than a wide one."""
+        table, applied = self._project("SELECT no_such_column FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_an_expression_leaves_the_view_whole(self) -> None:
+        table, applied = self._project("SELECT COUNT(*) FROM t")
+        assert applied is False
+        assert len(table.column_names) == 3
+
+    def test_filtering_may_use_a_column_the_projection_drops(self) -> None:
+        """``SELECT table_name ... WHERE table_type = 'VIEW'`` is ordinary, so
+        the filter has to run before the projection throws its column away."""
+        import sqlglot
+
+        from ob_flight.server_catalog import _answer_catalog_view
+
+        answered = _answer_catalog_view(
+            self._table(),
+            sqlglot.parse_one("SELECT table_name FROM t WHERE table_type = 'VIEW'"),
+        )
+        assert answered.column_names == ["table_name"]
+        assert answered.column("table_name").to_pylist() == ["orders"]

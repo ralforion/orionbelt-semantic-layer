@@ -138,18 +138,19 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
             bare_raw = getattr(table_node, "name", None) or table_node.sql()
             bare = str(bare_raw).strip('"').strip("`").strip("'").lower()
         # Each of these returns a whole canned view, so the statement's WHERE
-        # has to be applied to it - otherwise the predicate is accepted and
-        # discarded, and the client is told every table matched its filter.
+        # and SELECT list have to be applied to it - otherwise both are
+        # accepted and discarded, and the client is told every table matched
+        # its filter and handed columns it did not ask for.
         if "information_schema.tables" in target_sql or "pg_catalog.pg_class" in target_sql:
-            return filter_catalog_table(catalog_tables_table(model), ast)[0]
+            return _answer_catalog_view(catalog_tables_table(model), ast)
         if "information_schema.columns" in target_sql or "pg_catalog.pg_attribute" in target_sql:
-            return filter_catalog_table(catalog_columns_table(model), ast)[0]
+            return _answer_catalog_view(catalog_columns_table(model), ast)
         if bare == "_dimensions_metadata" or bare == "dimensions":
-            return filter_catalog_table(build_dimensions_data(model), ast)[0]
+            return _answer_catalog_view(build_dimensions_data(model), ast)
         if bare == "_measures_metadata" or bare == "measures":
-            return filter_catalog_table(build_measures_data(model), ast)[0]
+            return _answer_catalog_view(build_measures_data(model), ast)
         if bare == "_metrics_metadata" or bare == "metrics":
-            return filter_catalog_table(build_metrics_data(model), ast)[0]
+            return _answer_catalog_view(build_metrics_data(model), ast)
         if bare == "model":
             # ``SELECT * FROM <model>.model`` — column-shape probe
             # from a BI tool clicking the model table. Same payload
@@ -159,6 +160,19 @@ def handle_catalog_sql(server: OBFlightServer, sql: str, model: Any) -> pa.Table
 
     # Unknown catalog probe — empty result. Tool moves on.
     return catalog_empty_table()
+
+
+def _answer_catalog_view(table: pa.Table, ast: Any) -> pa.Table:
+    """A canned view narrowed by the statement's WHERE and SELECT list.
+
+    Filter before project, so a predicate may name a column the SELECT list
+    does not - ``SELECT table_name ... WHERE table_type = 'VIEW'`` is an
+    ordinary thing to ask, and projecting first would throw the column the
+    filter needs.
+    """
+    filtered, _ = filter_catalog_table(table, ast)
+    projected, _ = project_catalog_table(filtered, ast)
+    return projected
 
 
 def catalog_tables_table(model: Any) -> pa.Table:
@@ -665,3 +679,44 @@ def filter_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
             return table, False
         keep.append(bool(verdict))
     return table.filter(pa.array(keep, type=pa.bool_())), True
+
+
+def project_catalog_table(table: pa.Table, ast: Any) -> tuple[pa.Table, bool]:
+    """Reduce *table* to the columns the SELECT list names, in its order.
+
+    Returns the table and whether the projection applied. ``False`` leaves it
+    whole, which is what every catalog query got before: the dispatch answered
+    with a canned view and the SELECT list was not read, so a client asking for
+    one column received four.
+
+    ``SELECT *`` is the whole view by definition. A select list this cannot
+    honour - an expression, an aggregate, a name the view does not have -
+    leaves the table alone rather than guessing, for the same reason the filter
+    does: the columns are what the advertised schema is built from, and a
+    schema that disagrees with the stream is worse than a wide one.
+
+    An alias renames: ``SELECT table_name AS name`` yields ``name``, because
+    that is the column the client will look for.
+    """
+    import sqlglot.expressions as exp
+
+    if not isinstance(ast, exp.Select) or not ast.expressions:
+        return table, False
+
+    by_lower = {name.lower(): name for name in table.column_names}
+    chosen: list[str] = []
+    labels: list[str] = []
+    for item in ast.expressions:
+        if isinstance(item, exp.Star):
+            return table, False  # the whole view, by definition
+        target = item.this if isinstance(item, exp.Alias) else item
+        if not isinstance(target, exp.Column):
+            return table, False
+        source = by_lower.get(target.name.lower())
+        if source is None:
+            return table, False
+        chosen.append(source)
+        labels.append(item.alias if isinstance(item, exp.Alias) else source)
+
+    projected = table.select(chosen)
+    return projected.rename_columns(labels), True
