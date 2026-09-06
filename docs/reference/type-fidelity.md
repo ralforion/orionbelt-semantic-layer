@@ -56,7 +56,11 @@ uv run python scripts/probe_types.py --json all   # regenerate the data below
 | `date` | `date32[day]` | `date32[day]` | `date32[day]` | `date32[day]` | `date32[day]` | `date32[day]` | `date32[day]` | `date64[ms]` |
 | `timestamp` | `timestamp[us]` | `timestamp[us]` | `timestamp[us]` | `timestamp[ms, tz=Europe/Berlin]` | `timestamp[ns]` | `timestamp[us]` | `timestamp[us]` | `timestamp[ms]` |
 
-## Reading the two rows that look alarming
+## What the table measures, and what OBSL delivers
+
+Every row above is a measurement of a **driver**. That is not the same as what
+a caller receives, because OBSL reconciles a result against the type the model
+*declared* before anyone sees it. Four rows read alarming and are not.
 
 **Postgres `LOSSY string` on every decimal is correct**, and is the clearest
 reason this table is not the whole story. ADBC represents `NUMERIC` as
@@ -72,23 +76,61 @@ The driver is lossy here; **OBSL is not**.
 OBSL surface reconciles it against the declared wall clock; see the Flight
 alignment in `ob_flight/server_execution.py`.
 
-## Open gaps
+**MySQL `LOSSY` on `boolean` and Dremio `FAMILY` on `date` are reconciled.**
+MySQL has no boolean type, so a declared one arrives as `int64` `1`; Dremio
+returns `date64[ms]` where the other seven give `date32[day]`. Both are still
+true of the drivers, and neither reaches a caller: `service/result_schema.py`
+casts them to the declared type on every surface.
 
-| Engine | Gap |
-|---|---|
-| MySQL | `boolean` is **lossy**: MySQL has no boolean type, so a declared one arrives as `int64` `1`. |
-| Dremio | `date` returns `date64[ms]` where the other seven give `date32[day]`. |
+```
+MySQL, a dimension declared boolean
+  driver returns      int64      1, 0
+  REST returns        boolean    true, false
+  pgwire advertises   OID 16     t, f
+```
+
+Reconciliation is an allowlist of exactly those two cases, not a general cast.
+A `resultType` names a *family*, so an engine answering more precisely than the
+declaration - a `decimal(38, 2)` behind a measure declared `float` - is not
+drift and is left alone. Timestamps are excluded too: ClickHouse's zoned-for-
+naive case needs the wall clock preserved value by value rather than converted.
+
+## When reconciliation is refused
+
+A declared boolean holding something other than `0`, `1` or `NULL` is not cast:
+Arrow maps every nonzero to `true`, and asserting that a column holding `7` is
+`true` invents content the model never claimed. The column keeps the engine's
+type, the response *reports* that type rather than the declared one, and the
+declaration is carried as a warning:
+
+```json
+{
+  "code": "DECLARED_TYPE_NOT_APPLIED",
+  "message": "Column 'Tier' was not reconciled to its declared type: declared boolean
+              but the column holds values other than 0 and 1; left as int64"
+}
+```
+
+So `type` always describes the bytes beside it, and `warnings` tells you where
+the model wanted otherwise.
 
 ## What CI asserts
 
-This table measures **drivers**. Every type defect OBSL has actually shipped
-lived between the driver and the caller instead - the cache codec typing a
-column from the values it happened to hold (#410), the executor never importing
-pyarrow so no result carried a schema at all (#412) - and a driver-level probe
-is blind to all of them.
+Every type defect OBSL has actually shipped lived between the driver and the
+caller, not in the driver - the cache codec typing a column from the values it
+happened to hold (#410), the executor never importing pyarrow so no result
+carried a schema at all (#412), the same reconciliation missing from one read
+path at a time (#414) - and a driver-level probe is blind to all of them.
 
 So `tests/integration/test_type_fidelity.py` asserts through
 `db_executor.execute_sql`, the path REST, pgwire and the CLI share, on DuckDB -
 the one engine needing no credentials, and therefore the one every CI machine
 can reach. The other seven stay in this table rather than in CI: a suite that
 skips six of eight rows reports green for a matrix nobody measured.
+
+Two structural guards cover what those defects had in common, both of which
+were one rule duplicated across surfaces: the Arrow-to-hint mapping is a single
+function rather than one per surface (asserted by identity, in the Flight
+driver's suite), and any code rebuilding a cached result must reconcile the
+table and hand its findings to the response
+(`tests/architecture/test_cached_hits_reconcile.py`).

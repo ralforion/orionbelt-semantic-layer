@@ -169,7 +169,7 @@ Every `warnings` list in this API uses the same shape so agents can branch on st
 }
 ```
 
-Initial warning code taxonomy: `GRAIN_OVERRIDE_INCOMPATIBLE`, `FILTER_CONTEXT_OVERRIDE_INCOMPATIBLE`, `POP_CONSTRAINT_VIOLATED`, `CUMULATIVE_CONSTRAINT_VIOLATED`, `FAN_TRAP_RISK`, `ORPHAN_DATA_OBJECT`, `SHARED_TABLE_CONTRACT_DISAGREEMENT`, `LARGE_RESULT_SET`, `CACHE_TTL_FLOOR_HIT`, `INCOMPATIBLE_COMBINATION`, `SQL_VALIDATION`, `MERGE_WARNING`. Codes are extended over time, never repurposed.
+Initial warning code taxonomy: `GRAIN_OVERRIDE_INCOMPATIBLE`, `FILTER_CONTEXT_OVERRIDE_INCOMPATIBLE`, `POP_CONSTRAINT_VIOLATED`, `CUMULATIVE_CONSTRAINT_VIOLATED`, `FAN_TRAP_RISK`, `ORPHAN_DATA_OBJECT`, `SHARED_TABLE_CONTRACT_DISAGREEMENT`, `LARGE_RESULT_SET`, `CACHE_TTL_FLOOR_HIT`, `INCOMPATIBLE_COMBINATION`, `SQL_VALIDATION`, `MERGE_WARNING`, `DECLARED_TYPE_NOT_APPLIED`. Codes are extended over time, never repurposed.
 
 **Error (403):** Single-model mode: model upload is disabled.
 
@@ -552,6 +552,45 @@ If the query has no explicit `limit`, a default of 10,000 rows is enforced.
  "explain": { "..." : "..." }
 }
 ```
+
+#### Column types follow the model, not the engine
+
+A result is reconciled against the type the model declares before it is
+returned, so a column's type is a property of the model rather than of
+whichever engine is behind it. The same query answers the same way on every
+surface - REST, pgwire and Flight - and on a cache hit as on a miss.
+
+It matters where an engine cannot express a declared type at all:
+
+| Engine | Driver returns | You receive |
+|---|---|---|
+| MySQL (no boolean type) | `int64` `1` | `true` — and `BOOL` on pgwire |
+| Dremio | `date64[ms]` | `date32[day]` |
+
+This is an allowlist of exactly those cases, not a general cast. A `resultType`
+names a *family*, so an engine answering **more** precisely than the
+declaration - a `decimal(38, 2)` behind a measure declared `float` - is left
+alone rather than narrowed. See
+[Arrow type fidelity](../reference/type-fidelity.md) for the per-engine
+measurements.
+
+**When it is refused.** A declared boolean holding something other than `0`,
+`1` or `NULL` is not cast: Arrow maps every nonzero to `true`, and asserting
+that a column holding `7` is `true` invents content the model never claimed.
+The column keeps the engine's type, `columns[].type` **reports that type**
+rather than the declared one, and the declaration comes back as a warning:
+
+```json
+{
+ "code": "DECLARED_TYPE_NOT_APPLIED",
+ "severity": "warning",
+ "message": "Column 'Tier' was not reconciled to its declared type: declared boolean but the column holds values other than 0 and 1; left as int64",
+ "context": { "column": "Tier", "reason": "declared boolean but the column holds values other than 0 and 1" }
+}
+```
+
+So `columns[].type` always describes the cells beside it, and `warnings` tells
+you where the model wanted otherwise.
 
 **Query parameters** (apply to both the session and shortcut form):
 
